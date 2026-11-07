@@ -32,20 +32,24 @@ mod completion;
 mod error;
 mod event;
 mod groups;
+mod headers;
+mod identity;
 mod producer;
 mod publish;
+mod read;
 mod sharded;
 mod status;
 mod subscription;
 mod token;
+mod topology;
 mod trim;
 
 pub use cache::{
     FELIX_IF_ABSENT, FELIX_IF_VERSION, FelixCacheCondition, FelixConditionCallback,
-    FelixCounterCallback, FelixValueCallback, FelixVersionedCallback, felix_client_cache_delete,
-    felix_client_cache_delete_if, felix_client_cache_get, felix_client_cache_get_versioned,
-    felix_client_cache_put, felix_client_cache_put_if, felix_client_counter_add,
-    felix_client_counter_get,
+    FelixCounterCallback, FelixLeaseCallback, FelixValueCallback, FelixVersionedCallback,
+    felix_client_cache_delete, felix_client_cache_delete_if, felix_client_cache_get,
+    felix_client_cache_get_versioned, felix_client_cache_put, felix_client_cache_put_if,
+    felix_client_cache_put_if_lease, felix_client_counter_add, felix_client_counter_get,
 };
 pub use cache_watch::{
     FELIX_WATCH_CHANGE, FELIX_WATCH_KEY, FELIX_WATCH_LAGGED, FELIX_WATCH_PREFIX,
@@ -74,8 +78,9 @@ pub use error::{
     felix_last_error_message,
 };
 pub use event::{
-    FelixEvent, felix_event_free, felix_event_offset, felix_event_payload, felix_event_publisher,
-    felix_event_skipped_before, felix_event_timestamp,
+    FelixEvent, felix_event_free, felix_event_header, felix_event_header_count, felix_event_key,
+    felix_event_offset, felix_event_payload, felix_event_publisher, felix_event_skipped_before,
+    felix_event_timestamp,
 };
 pub use groups::{
     FelixDeletedCallback, FelixDoneCallback, FelixExtendCallback, FelixGroupInfo,
@@ -92,6 +97,11 @@ pub use groups::{
     felix_client_stream_shards, felix_sharded_group_free, felix_sharded_group_poll,
     felix_sharded_group_shards,
 };
+pub use headers::{
+    FelixHeader, FelixRecord, felix_client_publish_batch_with_headers,
+    felix_client_publish_with_headers,
+};
+pub use identity::felix_client_with_identity;
 pub use producer::{
     FelixProducer, FelixProducerCallback, felix_client_idempotent_producer,
     felix_producer_abandon_in_doubt, felix_producer_close, felix_producer_free, felix_producer_id,
@@ -103,6 +113,7 @@ pub use publish::{
     FelixPublishCallback, FelixRecordResult, felix_client_publish, felix_client_publish_batch,
     felix_client_publish_on_shard, felix_client_publish_records,
 };
+pub use read::{FelixPageCallback, FelixStreamRecord, felix_client_read};
 pub use sharded::{
     FELIX_SHARD_LOST, FELIX_SHARD_MOVED, FELIX_SHARD_NONE, FELIX_SHARD_RECORD,
     FELIX_SHARD_RECOVERED, FELIX_SHARD_STREAM_DELETED, FelixShardItemCallback, FelixShardItemKind,
@@ -121,10 +132,15 @@ pub use subscription::{
     FELIX_START_LATEST, FELIX_START_OFFSET, FelixCloseReason, FelixEventCallback,
     FelixOffsetCallback, FelixStartKind, FelixSubscribeCallback, FelixSubscription,
     felix_client_offset_for_time, felix_client_subscribe, felix_subscription_close_reason,
-    felix_subscription_free, felix_subscription_next, felix_subscription_start_offset,
+    felix_subscription_free, felix_subscription_live_offset, felix_subscription_next,
+    felix_subscription_start_offset,
 };
 pub use token::{
     FelixTokenFetch, FelixTokenRelease, FelixTokenReply, felix_token_reply_err,
     felix_token_reply_ok,
+};
+pub use topology::{
+    FelixConnectionsCallback, FelixCountCallback, felix_client_connections_per_node,
+    felix_client_refresh_topology,
 };
 pub use trim::{FelixTrimCallback, FelixTrimOutcome, felix_client_trim_before};
