@@ -10,9 +10,10 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  # A new push cancels that PR's older run. Each main commit keeps its own
-  # group so back-to-back merges all finish and publish their badge.
-  group: coverage-${{ github.event.pull_request.number || github.sha }}
+  # A new push cancels that PR's older run. Main pushes share one group and
+  # never cancel: the running commit finishes, only the newest queued one runs
+  # next, so the badge tracks the newest commit.
+  group: coverage-${{ github.event.pull_request.number || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
