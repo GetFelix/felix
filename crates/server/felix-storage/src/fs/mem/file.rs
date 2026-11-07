@@ -1,11 +1,12 @@
 //! An open file in the in-memory tree.
 
 use std::io::{self, SeekFrom};
-use std::sync::Arc;
+use std::path::Path;
+use std::sync::{Arc, Weak};
 
 use parking_lot::Mutex;
 
-use super::FileNode;
+use super::{FileNode, Tree};
 
 /// How a file is opened, as `std::fs::OpenOptions` spells it.
 #[derive(Clone, Copy, Default)]
@@ -32,6 +33,10 @@ pub(crate) struct MemFile {
     node: Arc<FileNode>,
     cursor: Arc<Mutex<u64>>,
     access: Access,
+    tree: Weak<Tree>,
+    /// The path below the root, when the file is a log segment: an append
+    /// to one can take an armed power cut.
+    segment: Option<Arc<Path>>,
 }
 
 impl std::fmt::Debug for MemFile {
@@ -41,7 +46,12 @@ impl std::fmt::Debug for MemFile {
 }
 
 impl MemFile {
-    pub(super) fn new(node: Arc<FileNode>, flags: Flags) -> Self {
+    pub(super) fn new(
+        node: Arc<FileNode>,
+        flags: Flags,
+        tree: Weak<Tree>,
+        segment: Option<Arc<Path>>,
+    ) -> Self {
         Self {
             node,
             cursor: Arc::new(Mutex::new(0)),
@@ -50,6 +60,8 @@ impl MemFile {
                 write: flags.write,
                 append: flags.append,
             },
+            tree,
+            segment,
         }
     }
 
@@ -67,6 +79,8 @@ impl MemFile {
             node: Arc::clone(&self.node),
             cursor: Arc::clone(&self.cursor),
             access: self.access,
+            tree: self.tree.clone(),
+            segment: self.segment.clone(),
         }
     }
 
@@ -79,7 +93,14 @@ impl MemFile {
     /// Write all of `buf` at `at` without moving the cursor.
     pub(crate) fn write_at(&self, buf: &[u8], at: u64) -> io::Result<()> {
         self.writable()?;
-        self.node.data.lock().write_at(position(at)?, buf);
+        let at = position(at)?;
+        let append = {
+            let mut data = self.node.data.lock();
+            let append = data.appends_at(at);
+            data.write_at(at, buf);
+            append
+        };
+        self.appended(append, at, buf.len());
         Ok(())
     }
 
@@ -98,9 +119,27 @@ impl MemFile {
         if self.access.append {
             *cursor = data.current.len() as u64;
         }
-        data.write_at(position(*cursor)?, buf);
+        let at = position(*cursor)?;
+        let append = data.appends_at(at);
+        data.write_at(at, buf);
         *cursor += buf.len() as u64;
+        drop((data, cursor));
+        self.appended(append, at, buf.len());
         Ok(buf.len())
+    }
+
+    /// Give an armed power cut its chance at an append to a segment. A
+    /// segment's header is written at its start, so `at > 0` leaves header
+    /// writes alone.
+    fn appended(&self, append: bool, at: usize, len: usize) {
+        if append
+            && at > 0
+            && len > 0
+            && let Some(path) = &self.segment
+            && let Some(tree) = self.tree.upgrade()
+        {
+            tree.appended(&self.node, path, at, at + len);
+        }
     }
 
     pub(crate) fn seek(&self, to: SeekFrom) -> io::Result<u64> {

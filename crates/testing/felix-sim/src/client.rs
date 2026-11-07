@@ -320,7 +320,7 @@ impl SimClient {
         };
         self.hints.insert(shard, handles.index);
         tracing::debug!(client = self.id, shard, value, node = %handles.node_id, "append sent");
-        let payloads = [Bytes::copy_from_slice(&value.to_le_bytes())];
+        let payloads = [payload(value, self.cluster.config.power_loss)];
         let quorum_timeout = quorum_timeout();
         let task = spawn_on(&handles, {
             let handles = handles.clone();
@@ -584,11 +584,24 @@ fn spawn_on<T: Send + 'static>(
     work: impl Future<Output = T> + Send + 'static,
 ) -> JoinHandle<Option<T>> {
     let crashed = handles.crashed.clone();
+    let power_loss = handles.power_loss;
     let owner = Owner::Broker(handles.index);
     tokio::spawn(clock::on(owner, async move {
-        tokio::select! {
-            out = work => Some(out),
-            () = crashed.cancelled() => None,
+        if power_loss {
+            // A crash wins over an answer ready in the same poll: a power
+            // cut stops the broker inside a write, and what it would answer
+            // after that never reached a client. Only then, so a run without
+            // power cuts polls as it always has.
+            tokio::select! {
+                biased;
+                () = crashed.cancelled() => None,
+                out = work => Some(out),
+            }
+        } else {
+            tokio::select! {
+                out = work => Some(out),
+                () = crashed.cancelled() => None,
+            }
         }
     }))
 }
@@ -667,10 +680,41 @@ async fn read_pages(handles: &NodeHandles, shard: u32, committed: bool) -> Optio
     }
 }
 
+/// The payload of an append of `value`: the value, and in a power-loss run
+/// padding to 1 to 4 KiB, so an append spans several sectors and a cut can
+/// lose one sector of it before another that arrived.
+fn payload(value: u64, padded: bool) -> Bytes {
+    let mut out = value.to_le_bytes().to_vec();
+    if padded {
+        out.extend(padding(value));
+    }
+    Bytes::from(out)
+}
+
+/// The padding after `value`, a function of the value alone, so a read can
+/// tell an intact record from one with damaged bytes.
+fn padding(value: u64) -> impl Iterator<Item = u8> {
+    let mut mix = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mix = (mix ^ (mix >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mix ^= mix >> 31;
+    let len = 1024 - 8 + (mix % 3073) as usize;
+    (0..len).map(move |i| (mix >> (8 * (i % 8))) as u8 ^ i as u8)
+}
+
 fn decode(payload: &[u8]) -> u64 {
-    payload
-        .try_into()
-        .map_or(FOREIGN_PAYLOAD, u64::from_le_bytes)
+    let Some(value) = payload
+        .get(..8)
+        .and_then(|head| head.try_into().ok())
+        .map(u64::from_le_bytes)
+    else {
+        return FOREIGN_PAYLOAD;
+    };
+    let rest = &payload[8..];
+    if rest.is_empty() || rest.iter().copied().eq(padding(value)) {
+        value
+    } else {
+        FOREIGN_PAYLOAD
+    }
 }
 
 fn quorum_timeout() -> Duration {

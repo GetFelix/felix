@@ -5,7 +5,7 @@ use felix_broker_service::sim::ShardStand;
 use super::*;
 use crate::check::Severity;
 use crate::controlplane::CpFault;
-use crate::nemesis::{Fault, Step};
+use crate::nemesis::{Fault, Step, Stop};
 
 fn routed(node: usize, generation: u64, leads: bool) -> Seen {
     Seen {
@@ -27,7 +27,7 @@ fn crash(node: usize, at: u64) -> Step {
         fault: Fault::Crash {
             node,
             down_for: Duration::from_secs(5),
-            kill: false,
+            stop: Stop::Clean,
         },
     }
 }
