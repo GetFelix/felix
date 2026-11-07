@@ -2004,6 +2004,17 @@ async fn fence_followers_promised_at(
     kept: bool,
     promised: u64,
 ) -> (Outcome, Arc<Broker>, TempDir) {
+    fence_followers_under(continuing, kept, promised, LEADER).await
+}
+
+/// [`fence_followers_promised_at`], with the leader's own ballot naming
+/// `holder` at 4.
+async fn fence_followers_under(
+    continuing: bool,
+    kept: bool,
+    promised: u64,
+    holder: &str,
+) -> (Outcome, Arc<Broker>, TempDir) {
     let mut replicas = replicas_with(&[]);
     replicas.ballots = true;
     replicas
@@ -2038,7 +2049,7 @@ async fn fence_followers_promised_at(
     // It served 4 itself, so its own ballot names it there.
     kept_under(
         &leader,
-        LEADER,
+        holder,
         &[LEADER, "broker-b", "broker-c"],
         &[],
         &[
@@ -2092,6 +2103,25 @@ async fn a_continuing_joint_fence_counts_followers_answering_from_new_copies() {
         }
     );
     assert_eq!(held(&leader).await, vec!["a"]);
+}
+
+/// **Without the unified rule, continuing ignores the leader's own ballot.**
+/// The kill switch path is main's: a ballot naming another leader leaves a
+/// continuing fence counting the new copies, as with its own. Under the
+/// unified rule that ballot ends continuing (see
+/// `a_continuing_leader_opens_past_two_doubted_copies`).
+#[tokio::test]
+async fn without_the_unified_rule_the_leaders_ballot_does_not_end_continuing() {
+    for holder in [LEADER, "broker-x"] {
+        let (outcome, _leader, _dir) = fence_followers_under(true, true, 4, holder).await;
+        assert_eq!(
+            outcome,
+            Outcome::Fenced {
+                caught_up_from: None
+            },
+            "ballot for {holder}"
+        );
+    }
 }
 
 /// **The same answers do not open a failover's joint fence.** A leader that
