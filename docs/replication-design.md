@@ -713,9 +713,11 @@ would stay untrusted until the next client write, and one more failure could
 then leave a fence that never covers, although a caught-up copy exists. So a
 leader of a `Quorum` shard sends a level follower its last record again, with
 the current mark, until the follower has stored one batch that left it level
-through a commit offset above zero (`FollowerCursor::mark_carried`). A new
-process on the follower is owed one again, since it may not have the old
-process's trust. The batch holds only records the follower already has, so
+through the leader's start record and a commit offset above zero
+(`FollowerCursor::mark_carried`). A new process on the follower is owed one
+again, since it may not have the old process's trust. A follower that does
+not take generation labels is never owed one: without labels no batch can
+vouch for it. The batch holds only records the follower already has, so
 the vouch is the same as for any other batch: level through the start record
 and through the mark. `FelixShardUnifiedIdleVouch` checks that such a
 follower is trusted again while its leader serves, with no writes. Its

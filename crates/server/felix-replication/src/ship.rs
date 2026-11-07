@@ -366,16 +366,23 @@ async fn ship_batch<R: PeerRequester>(
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
     // What the follower checks before it trusts its copy again (replica.rs,
-    // the vouch). An unlabelled batch cannot vouch, so a follower sent one is
-    // not owed another for it.
-    let carries_mark = batch.generations.as_deref().is_none_or(|starts| {
-        batch
-            .commit_offset
-            .is_some_and(|mark| mark > 0 && mark <= batch_end)
-            && starts.iter().any(|start| {
-                start.generation == shard.generation && start.start_offset <= batch_end
-            })
-    });
+    // the vouch). A follower that does not take labels, or a leader with no
+    // start recorded for its own generation, can never send a batch that
+    // vouches, so such a follower is not owed another one.
+    let carries_mark = match batch.generations.as_deref() {
+        Some(starts) => {
+            batch
+                .commit_offset
+                .is_some_and(|mark| mark > 0 && mark <= batch_end)
+                && starts.iter().any(|start| {
+                    start.generation == shard.generation && start.start_offset <= batch_end
+                })
+        }
+        None => offered.is_some_and(|offered| !offered.contains(labels_needed(log_kind))),
+    } || !log
+        .generations()
+        .iter()
+        .any(|epoch| epoch.generation == shard.generation);
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.

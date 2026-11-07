@@ -1278,6 +1278,8 @@ async fn a_learners_answer_does_not_move_the_mark_until_it_is_readmitted() {
 struct LabelledFollower {
     inner: AcceptingFollower,
     identity: Mutex<crate::peer::PeerIdentity>,
+    /// Asked what it offers, it does not answer, and nothing is recorded.
+    unknown: std::sync::atomic::AtomicBool,
 }
 
 impl LabelledFollower {
@@ -1314,6 +1316,12 @@ impl PeerRequester for LabelledFollower {
         _node_id: &str,
         _addr: SocketAddr,
     ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        if self.unknown.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PeerError::Unavailable {
+                node_id: _node_id.to_string(),
+                detail: "no handshake".to_string(),
+            });
+        }
         Ok(felix_wire::internal::PeerCapabilities::GENERATION_LABELS)
     }
 
@@ -1321,7 +1329,8 @@ impl PeerRequester for LabelledFollower {
         &self,
         _node_id: &str,
     ) -> Option<felix_wire::internal::PeerCapabilities> {
-        Some(felix_wire::internal::PeerCapabilities::GENERATION_LABELS)
+        (!self.unknown.load(std::sync::atomic::Ordering::SeqCst))
+            .then_some(felix_wire::internal::PeerCapabilities::GENERATION_LABELS)
     }
 
     async fn identity(
@@ -1394,4 +1403,52 @@ async fn an_idle_follower_is_sent_the_mark_once_per_process() {
         let sent = follower.marks_sent(node);
         assert_eq!(vouching(&sent), 2, "{node} was sent {sent:?}");
     }
+}
+
+/// **A follower sent an unlabelled batch only because what it offers was
+/// unknown is still owed the mark.** It took the batch, but without labels
+/// the replica cannot vouch, so once the handshake says it takes them it is
+/// sent the mark.
+#[tokio::test]
+async fn a_follower_of_unknown_offer_is_still_sent_the_mark() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = LabelledFollower {
+        unknown: std::sync::atomic::AtomicBool::new(true),
+        ..LabelledFollower::default()
+    };
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+    );
+    let mut passes = async |count: usize| {
+        for _ in 0..count {
+            replicate_once(
+                &follower,
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut cursors,
+                &mut group,
+                &mut dead,
+                &mut counters,
+            )
+            .await;
+        }
+    };
+    passes(2).await;
+    follower
+        .unknown
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    passes(2).await;
+    let sent = follower.marks_sent("broker-b");
+    assert!(
+        sent.iter()
+            .any(|(end, mark)| mark.is_some_and(|mark| mark > 0 && mark <= *end)),
+        "{sent:?}"
+    );
 }
