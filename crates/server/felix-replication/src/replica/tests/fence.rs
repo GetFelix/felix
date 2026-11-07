@@ -2652,6 +2652,25 @@ async fn an_empty_batch_trusts_only_an_empty_copy_of_an_empty_leader() {
         );
         assert!(!start.trusted(&crate::driver::watch_key(&key())), "{case}");
     }
+
+    // The copy holding records still drops them as a dead leader's suffix
+    // when the empty leader's first record arrives.
+    let (handler, _) = unclean_follower(holding.path());
+    for batch in [empty_vouch(&[(6, 0)]), labelled(6, 6, 0, &["b"])] {
+        let answer = handler
+            .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    let log = handler
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
 }
 
 /// A fence from a caller that offered `UNIFIED_FENCE`.

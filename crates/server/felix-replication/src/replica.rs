@@ -1055,9 +1055,12 @@ impl ReplicaHandler {
                     .generations()
                     .last()
                     .is_some_and(|newest| newest.generation >= batch.shard.generation);
+                // An empty batch that compared nothing must not count this
+                // copy's own records as the sender's, or a later conflict on
+                // them would not be repaired as a dead leader's suffix.
                 if caught_up {
                     self.verified.lock().remove(&key);
-                } else {
+                } else if compared {
                     self.verified.lock().insert(
                         key.clone(),
                         Verified {
