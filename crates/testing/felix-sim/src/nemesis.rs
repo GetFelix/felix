@@ -82,7 +82,13 @@ impl Stop {
     /// kill when `power_loss`. One draw from `rng` either way, so turning
     /// power loss on keeps every other draw of a seed.
     pub fn draw(rng: &mut Rng, power_loss: bool) -> Self {
-        match (rng.percent(50), power_loss) {
+        Self::of_kill(rng.percent(50), power_loss)
+    }
+
+    /// A kill, or a power cut in its place when `power_loss`, or else a
+    /// clean stop.
+    pub fn of_kill(kill: bool, power_loss: bool) -> Self {
+        match (kill, power_loss) {
             (false, _) => Stop::Clean,
             (true, false) => Stop::Kill,
             (true, true) => Stop::PowerLoss,
@@ -608,10 +614,14 @@ impl Nemesis {
         self.lapse(down_for).await;
         if !self.stopped.is_cancelled() {
             self.recorder.fault(format!("restart b{}", node + 1));
+            self.cluster.restart(node);
+        } else if stop == Stop::PowerLoss {
+            // A power cut stops the broker inside a write and finishes the
+            // stop later, so one under way when the heal restarted every
+            // broker can still take this one down, and nobody else would
+            // bring it back.
+            self.cluster.restart(node);
         }
-        // After a heal too: a stop that was still under way when the heal
-        // restarted every broker found this one up, and nobody else will.
-        self.cluster.restart(node);
     }
 
     /// The running broker serving the most of the first shards.

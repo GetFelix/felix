@@ -489,3 +489,26 @@ fn seed_13_a_seat_race_replays_the_same_twice() {
         ],
     );
 }
+
+/// With power loss on, placement faults cut the power where they would kill:
+/// a kill makes an `OnCommit` broker forget a boot whose records were synced.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_placement_cuts_the_power_instead_of_killing() {
+    log();
+    let config = SimConfig::for_seed(3)
+        .with_placement_faults()
+        .with_power_loss();
+    let outcome = run_seed(3, config);
+    let faults = &outcome.history.faults;
+    let before_open = |verb: &str| {
+        faults
+            .iter()
+            .any(|f| f.what.starts_with(verb) && f.what.contains("before it opens"))
+    };
+    assert!(before_open("power-cut b"), "{outcome}");
+    assert!(!before_open("kill b"), "{outcome}");
+}
