@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794027882618,
+  "lastUpdate": 1794029381001,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -61248,6 +61248,72 @@ window.BENCHMARK_DATA = {
             "range": "369.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 334.00\nmean: 542.80\nstdev: 369.82\ncv: 68.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4c61f7a7cd7f986288ae834831ef26a7eeec586",
+          "message": "fix(broker): a restored directory no longer starts from its view without the control plane (#2073)\n\n* fix(broker): a restored directory no longer starts from its view without the control plane (#2071)\n\nA start from the control-plane view kept a restored directory's storage id\nand view, so it voted on its old ballots and its short log counted. Nothing\ninside the directory can tell a restore apart, so every start now writes a\nfresh token to <root>/run-token and a run witness to /dev/shm naming the\ntoken, the boot and the directory. A start from the view needs the witness\nto match; otherwise it waits for the control plane.\n\nSpec-Unaffected: the model already assumes a copy that lost its promises is\nnever the copy a leader expects (ContinuingCountsForgotten is the unsafe\nsetting). The view start and the witness are not modelled; this makes the\ncode meet that assumption again.\n\n* fix(broker): keep run witnesses per user and say which restarts keep one (#2071)\n\n/dev/shm is sticky, so a witness another uid left under the same name could\nnot be removed and the start failed. The name now carries the effective uid.\nThe docs name the restarts that keep /dev/shm: a process restart in the same\nboot, and a container restart inside a live pod.\n\nSpec-Unaffected: naming of a local file and docs only.",
+          "timestamp": "2026-11-06T21:14:11-08:00",
+          "tree_id": "a2f534b7c3a5d0c45b5f54c466776d42402e8cfb",
+          "url": "https://github.com/GetFelix/felix/commit/f4c61f7a7cd7f986288ae834831ef26a7eeec586"
+        },
+        "date": 1794029373570,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.84\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.20\nstdev: 1.79\ncv: 1.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "72.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 201.60\nstdev: 72.95\ncv: 36.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.20\nstdev: 0.45\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "6.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 262.60\nstdev: 6.91\ncv: 2.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 362,
+            "range": "244.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 362.00\nmean: 471.00\nstdev: 244.64\ncv: 51.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
