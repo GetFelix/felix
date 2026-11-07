@@ -384,6 +384,8 @@ dependencies = [
  "quinn",
  "rcgen",
  "rustls",
+ "serde",
+ "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",

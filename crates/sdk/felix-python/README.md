@@ -62,10 +62,13 @@ async def main() -> None:
 - Consumer groups: poll, acknowledge, retry later, dead letters
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
-- Idempotent producers
+- Idempotent producers, including `hand_off_batch` to queue a batch without waiting for the leader
+- Record headers, and `publisher` and `timestamp_micros` on events
+- Lease writes (`cache_put_if_lease`)
+- Asking a broker about itself: `inspect_shard`, `list_subscriptions`, `topology`, `shard_owners`, `stream_routing`, `cache_shards`, `supports`
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers are available in the Rust client only. A publish without `key=` puts every record on shard 0.
+Two things in the Rust client are not wrapped: `publish_json` (Python serializes JSON itself) and a custom `quinn` transport. A publish without `key=` puts every record on shard 0.
 
 ## Configuration
 
@@ -81,6 +84,8 @@ Record headers are available in the Rust client only. A publish without `key=` p
 | `server_name` | The name the broker's certificate carries. Default `localhost`. |
 | `client_cert_file`, `client_key_file` | The client certificate and its key, as PEM files. |
 | `reconnect_attempts`, `reconnect_deadline`, `reconnect_backoff`, `reconnect_max_backoff` | Retry policy. Times are in seconds. |
+| `publishers`, `timestamps`, `record_headers` | Ask brokers for `Event.publisher`, `Event.timestamp_micros`, and record headers (on by default). |
+| `tuning` | A `ClientTuning` with connection pools, windows, queue sizes and timeouts (in seconds). |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file: set `FELIX_TLS_CERT_EXPORT=/path/ca.pem` on the broker and pass that path as `ca_file`. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 

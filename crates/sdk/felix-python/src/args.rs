@@ -163,6 +163,13 @@ pub(crate) fn non_negative_duration(seconds: f64, name: &str) -> PyResult<std::t
     }
 }
 
+/// A cache entry's time to live in milliseconds, or a `ValueError` for one
+/// that is negative, not a number or longer than a year.
+pub(crate) fn ttl_millis(ttl: Option<f64>) -> PyResult<Option<u64>> {
+    ttl.map(|seconds| non_negative_duration(seconds, "ttl").map(|d| d.as_millis() as u64))
+        .transpose()
+}
+
 /// Four scope strings at once — the shape every group call starts with.
 pub(crate) fn owned4(a: &str, b: &str, c: &str, d: &str) -> (String, String, String, String) {
     (a.to_string(), b.to_string(), c.to_string(), d.to_string())

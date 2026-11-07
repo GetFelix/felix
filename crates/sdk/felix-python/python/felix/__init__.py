@@ -61,7 +61,18 @@ Beyond streams, both surfaces cover:
   durable shard's oldest records the same way, only if the tail is as expected.
 * **Idempotent producers** — ``producer()`` returns a producer whose batches are
   numbered, so one that got no answer can be sent again and lands once.
-  ``publish_on_shard`` sends a batch to a shard you name.
+  ``publish_on_shard`` sends a batch to a shard you name. ``hand_off_batch``
+  queues a batch and returns before the leader answers, keeping calls in order.
+* **Record headers** — ``publish(headers=...)`` and ``publish_batch(headers=...)``
+  attach named byte values and a record key; ``Event.headers`` reads them.
+  ``publishers=True`` and ``timestamps=True`` on the client add
+  ``Event.publisher`` and ``Event.timestamp_micros``.
+* **Leases** — ``cache_put_if_lease`` takes a lease on a key and returns a
+  token to present with ``with_identity``.
+* **Operations** — ``inspect_shard``, ``list_subscriptions``, ``topology``,
+  ``shard_owners``, ``stream_routing``, ``cache_shards`` and ``supports``
+  report what the connected broker knows. ``ClientTuning`` sets connection
+  pools, windows, queue sizes and timeouts.
 """
 
 from ._felix import (
@@ -80,6 +91,7 @@ from ._felix import (
     StreamRecord,
     AsyncCacheWatch,
     AsyncClient,
+    AsyncHanded,
     AsyncProducer,
     AsyncShardedSubscription,
     AsyncSubscription,
@@ -92,6 +104,7 @@ from ._felix import (
     CacheWatchLagged,
     CacheWatchShardMoved,
     Client,
+    ClientTuning,
     CommitError,
     CommitOp,
     CommitReceipt,
@@ -105,12 +118,16 @@ from ._felix import (
     GroupInfo,
     GroupPosition,
     GroupRecord,
+    Handed,
+    LeaseToken,
+    LeaseWrite,
     NotFoundError,
     NotOnOwningShardError,
     OutcomeUnknownError,
     OverloadedError,
     Producer,
     PublishRefusedError,
+    RecordHeaders,
     ShardedSubscriptionHandle,
     ShardLost,
     ShardMoved,
@@ -125,10 +142,21 @@ from ._felix import (
     __version__,
 )
 
+from .answers import (
+    BrokerEndpoint,
+    Supports,
+    InspectedSubscription,
+    ShardInspection,
+    ShardOwner,
+    SubscriptionCursor,
+    SubscriptionsPage,
+)
+
 __all__ = [
     # Clients
     "Client",
     "AsyncClient",
+    "ClientTuning",
     # Streams
     "Event",
     "SubscriptionHandle",
@@ -137,6 +165,7 @@ __all__ = [
     "StreamRecord",
     "BatchReport",
     "ShardPublish",
+    "RecordHeaders",
     # Multi-shard streams
     "ShardedSubscriptionHandle",
     "AsyncShardedSubscription",
@@ -175,9 +204,21 @@ __all__ = [
     "VersionedValue",
     "ConditionalTrim",
     "ConditionalWrite",
+    "LeaseToken",
+    "LeaseWrite",
+    # Inspection answers
+    "Supports",
+    "BrokerEndpoint",
+    "ShardOwner",
+    "ShardInspection",
+    "InspectedSubscription",
+    "SubscriptionCursor",
+    "SubscriptionsPage",
     # Idempotent producers
     "Producer",
     "AsyncProducer",
+    "Handed",
+    "AsyncHanded",
     # Errors
     "FelixError",
     "ConnectionError",

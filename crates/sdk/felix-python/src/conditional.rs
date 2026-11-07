@@ -104,6 +104,90 @@ impl<'py> IntoPyObject<'py> for OwnedVersionedValue {
     }
 }
 
+/// A token for whoever holds a lease, granting what the caller's lease
+/// templates name for the key. A bearer secret: `repr` leaves it out. Present
+/// it with `client.with_identity(tenant_id, token=lease.token.token)`.
+#[pyclass(module = "felix", frozen, get_all)]
+pub struct LeaseToken {
+    pub token: String,
+    /// When the token stops working, in seconds since the Unix epoch.
+    pub expires_at: u64,
+}
+
+#[pymethods]
+impl LeaseToken {
+    fn __repr__(&self) -> String {
+        format!(
+            "LeaseToken(token=<redacted>, expires_at={})",
+            self.expires_at
+        )
+    }
+}
+
+/// The answer to `cache_put_if_lease`: the conditional write's result and,
+/// when it applied, a token for its writer.
+#[pyclass(module = "felix", frozen, get_all)]
+pub struct LeaseWrite {
+    /// The same answer `cache_put_if` gives.
+    pub result: Py<CacheConditionResult>,
+    /// Present when the write applied and the broker minted a token.
+    pub token: Option<Py<LeaseToken>>,
+    /// Why an applied write came back without a token. The write stands.
+    pub token_refused: Option<String>,
+}
+
+#[pymethods]
+impl LeaseWrite {
+    fn __repr__(&self, py: Python<'_>) -> String {
+        let result = self.result.bind(py).get();
+        format!(
+            "LeaseWrite(applied={}, version={:?}, token={}, token_refused={:?})",
+            result.applied,
+            result.version,
+            if self.token.is_some() {
+                "<redacted>"
+            } else {
+                "None"
+            },
+            self.token_refused
+        )
+    }
+}
+
+/// `felix_client::LeaseWrite`, carried off the runtime thread.
+pub(crate) struct OwnedLeaseWrite(pub(crate) felix_client::LeaseWrite);
+
+impl<'py> IntoPyObject<'py> for OwnedLeaseWrite {
+    type Target = LeaseWrite;
+    type Output = Bound<'py, LeaseWrite>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let write = self.0;
+        let token = write
+            .token
+            .map(|t| {
+                Bound::new(
+                    py,
+                    LeaseToken {
+                        token: t.token,
+                        expires_at: t.expires_at,
+                    },
+                )
+                .map(Bound::unbind)
+            })
+            .transpose()?;
+        Bound::new(
+            py,
+            LeaseWrite {
+                result: Bound::new(py, CacheConditionResult::from(write.result))?.unbind(),
+                token,
+                token_refused: write.token_refused,
+            },
+        )
+    }
+}
+
 /// The answer to a conditional publish or commit. Nothing is written, and no
 /// offset consumed, when `written` is false.
 #[pyclass(module = "felix", frozen, get_all)]
