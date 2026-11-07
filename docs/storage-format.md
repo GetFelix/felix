@@ -1255,39 +1255,62 @@ An older release neither reads nor writes the file.
 
 ## `copy-trust`: which copies hold what they acknowledged
 
-One text file at the durable root. A directory without it never rotated its
-storage id, and every copy on it counts as trusted. Every write goes through
-`copy-trust.tmp`, synced, renamed and the directory synced.
+One text file at the durable root, kept apart from every copy's ballot so
+that taking a ballot never changes it. Every start writes it if it is
+missing, before anything reads it. Every write goes through `copy-trust.tmp`,
+synced, renamed and the directory synced.
 
 ```text
 copy_trust
-distrusted
-trusted <key in lowercase hex>
-doubted <key in lowercase hex>
-unkept <key in lowercase hex>
+storage_id <the directory's storage id, 32 hex digits>
+untrusted all
+untrusted except <key>
+doubted <key>
+unkept <key>
+unkept_since <key> <generation>
 ```
 
-The first line is fixed. `distrusted` appears once a start rotated the
-storage id (`run-state`): such a start may have lost acknowledged records on
-any copy, so a copy is trusted only when a `trusted` line names it. The start
-writes the file before it writes the new id, so a crash in between leaves a
-directory that trusts no copy. Each rotation drops every `trusted` line.
+The first line is fixed. `storage_id` names the id the file was written
+under. A file that names another id than `storage-id` holds, or none, reads
+as every mark on every copy: an older release may have rotated the id after
+a crash without touching this file, so after a downgrade and an upgrade its
+vouches say nothing. A rotation writes the file under the id it is about to
+take, before it takes it. Each later line names one of three marks and either
+`all`, or a key. After `<mark> all`, `<mark> except <key>` names a copy
+without the mark. Without `all`, `<mark> <key>` names a copy with it. A key
+is the shard's replication key (tenant, namespace, stream, shard and kind) as
+JSON, in lowercase hex. Lines are sorted.
 
-A `trusted` line is added when a leader ships the copy a batch that leaves it
-level through the leader's generation start and the batch's commit offset,
-above zero (`docs/replication-design.md`, "One fence rule for every change of
-leader"). A `doubted` line names a copy this broker led before such a crash,
-written before the copy takes a newer leader's ballot, and removed when a
-newer leader ships it level with its generation start. An `unkept` line
-names a copy that took a ballot while its promises counted for nothing, as a
-learner answering a unified fence does, written before that ballot and
-removed when the copy is readmitted. Such a ballot is no kept promise, even
-after a crash that keeps it. A rotation keeps `doubted` and `unkept` lines.
+- **untrusted**: the copy may lack records its seat acknowledged. A start
+  that rotates the storage id (`run-state`) writes `untrusted all` before it
+  writes the new id, so a crash in between still distrusts every copy. A copy
+  loses the mark when a leader ships it a batch that leaves it level through
+  the leader's generation start and the batch's commit offset, above zero
+  (`docs/replication-design.md`, "One fence rule for every change of
+  leader"). The next rotation marks every copy again.
+- **doubted**: a copy this broker led before such a crash. Written before the
+  copy takes a newer leader's ballot, and a batch that cannot write it is
+  refused. Cleared when a newer leader ships the copy level with its
+  generation start.
+- **unkept**: a copy that took a ballot while its promises counted for
+  nothing, as a learner answering a unified fence does. Written before that
+  ballot, with `unkept_since` naming the newest generation such a ballot was
+  taken at (absent reads as 0). Cleared only by a readmission: the copy's log
+  counts a set newer than that generation naming it, under its own storage
+  id, as a voter, and holds that set's generation start, shipped by that
+  set's leader or a later one. A batch alone does not clear it. Such a ballot is no
+  kept promise, even after a crash that keeps it.
 
-A key is the shard's replication key (tenant, namespace, stream, shard and
-kind) as JSON. Lines are sorted. A file that does not decode trusts no copy
-and doubts none. An older release neither reads nor writes the file, so a
-copy it ran after an unclean start counts as trusted again.
+A rotation keeps `doubted` and `unkept`. A file that does not decode reads as
+every mark on every copy, and the next write keeps that, so each copy clears
+only by the rules above. A directory that ran before without the file, such
+as one an older release ran on, starts with `untrusted all` only. It doubts
+nothing, since nothing says which copy it led and doubting all of them would
+refuse an older caller's fence on every idle shard, and it marks nothing
+unkept, since an older release never gave a learner a ballot. When the file
+does not say since when a copy is unkept, the broker writes its current
+ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
+neither reads nor writes the file.
 
 ## `run-token`: the run the witness names
 

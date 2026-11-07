@@ -119,37 +119,32 @@ impl UncleanStart {
     /// `log`, `key`'s copy, is about to take a leader's ballot at
     /// `generation` from a batch. A copy this broker led before the crash
     /// stays one until [`Self::vouch`], though the new ballot names another
-    /// leader.
-    pub(crate) fn accepting(&self, key: &ShardKey, log: &felix_broker::StreamLog, generation: u64) {
-        if self.would_doubt(key, log, generation) {
-            if let Some(trust) = &self.copy_trust
-                && let Err(err) = trust.doubt(&copy_key(key))
-            {
-                tracing::error!(
-                    stream = %key.stream,
-                    shard = key.shard,
-                    error = %err,
-                    "could not record that this copy is the one this broker led before its \
-                     crash; after a clean restart it would answer fences as if it held \
-                     everything it acknowledged",
-                );
-            }
-            self.doubted.lock().insert(key.clone());
-        }
-    }
-
-    /// Whether [`Self::accepting`] marks `log`, `key`'s copy, as doubted
-    /// before a ballot at `generation`: the copy this broker led before the
-    /// crash, taking a ballot that replaces the one saying so.
-    pub(crate) fn would_doubt(
+    /// leader. The directory's copy-trust record keeps that too, synced off
+    /// the runtime; on an error the ballot must not be taken, since a clean
+    /// restart after it would forget the copy was led here.
+    pub(crate) async fn accepting(
         &self,
         key: &ShardKey,
         log: &felix_broker::StreamLog,
         generation: u64,
-    ) -> bool {
+    ) -> Result<(), felix_storage::StorageError> {
         let accepted = log.accepted_generation();
         let raises = generation > accepted || (generation == accepted && log.gave_up());
-        raises && self.led_before(key, log, generation)
+        if !raises || !self.led_before(key, log, generation) {
+            return Ok(());
+        }
+        self.doubted.lock().insert(key.clone());
+        let Some(trust) = &self.copy_trust else {
+            return Ok(());
+        };
+        let name = copy_key(key);
+        if trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        tokio::task::spawn_blocking(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
 
     /// Whether `log`, `key`'s copy, may be short of what this broker

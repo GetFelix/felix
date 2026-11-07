@@ -25,6 +25,7 @@ use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
+use felix_storage::run_state::copy_trust::Since;
 use felix_wire::internal::{
     ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, PeerCapabilities, RefusalReason,
     ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
@@ -726,13 +727,26 @@ impl ReplicaHandler {
         }
         // Before the ballot changes: it is the evidence of a copy this
         // broker led before an unclean start.
-        if let Some(unclean) = &self.unclean
-            && own_kind(log_kind).is_none()
+        if own_kind(log_kind).is_none()
+            && let Err(err) = self
+                .doubt_before_ballot(&key, &log, batch.shard.generation)
+                .await
         {
-            unclean.accepting(
-                &crate::driver::watch_key(&key),
-                &log,
-                batch.shard.generation,
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record what this copy may have lost before taking a newer ballot \
+                 (that this broker led it before a crash, or since when it is unkept); \
+                 refusing the batch rather than take its ballot",
+            );
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                "this broker could not record what its copy may have lost before taking the ballot"
+                    .to_string(),
             );
         }
         if let Some(refusal) =
@@ -1090,7 +1104,7 @@ impl ReplicaHandler {
                 }
                 let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
                 if !learner && own_kind(log_kind).is_none() {
-                    self.record_readmitted(&crate::driver::watch_key(&key))
+                    self.record_readmitted(&key, &log, batch.shard.generation)
                         .await;
                 }
                 metrics::record_replicated(metrics::OUTCOME_OK);
@@ -1445,23 +1459,15 @@ impl ReplicaHandler {
         let kept_ballot = self.continues_from(&key, &log, generation, sender);
         // So a later fence from an older leader still finds it led before,
         // in this process and, through the copy-trust record, after a clean
-        // restart.
-        if let Some(unclean) = tracked {
-            let shard = crate::driver::watch_key(&key);
-            // The refusal this answer replaces gave the copy up on disk; the
-            // ballot erases that, so without this record a clean restart
-            // would trust the copy.
-            if unclean.would_doubt(&shard, &log, generation)
-                && let Err(err) = self.record_doubt(&shard).await
-            {
-                metrics::record_replicated(metrics::OUTCOME_ERROR);
-                return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
-            }
-            unclean.accepting(&shard, &log, generation);
+        // restart: the ballot replaces the one, or the given-up mark, that
+        // said so.
+        if attested && let Err(err) = self.doubt_before_ballot(&key, &log, generation).await {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
         // A ballot taken as no voter would read, after a crash that keeps
         // it, as a promise kept: record first that it is not one.
-        if !voter && let Err(err) = self.unkeep(&key).await {
+        if !voter && let Err(err) = self.unkeep(&key, generation).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
@@ -1567,48 +1573,29 @@ impl ReplicaHandler {
         self.fleet.as_ref().and_then(|fleet| fleet.copy_trust())
     }
 
-    /// Whether `key`'s copy took a ballot while its promises counted for
-    /// nothing and has not been readmitted since ([`Self::unkeep`]).
-    fn unkept(&self, key: &felix_router::ShardKey) -> bool {
-        self.copy_trust().is_some_and(|trust| {
-            trust.unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
-        })
-    }
-
-    /// Record, durably, that `key`'s copy is about to take a ballot while its
-    /// promises count for nothing, as a learner answering a unified fence
-    /// does. Call before the ballot is written. Afterwards the ballot reads
-    /// as a promise kept through any crash, so without this record an older
-    /// caller's fence would count it ([`Self::continues_from`]). An error
-    /// means the ballot must not be taken.
-    pub(crate) async fn unkeep(
+    /// `log`, `key`'s own log, is about to take a newer leader's ballot at
+    /// `generation` from a batch. A copy this broker led before an unclean
+    /// start is recorded as doubted first ([`UncleanStart::accepting`]), and
+    /// so is one given up on disk after a clean restart, whose given-up
+    /// ballot the new one replaces. On an error the ballot must not be taken.
+    ///
+    /// [`UncleanStart::accepting`]: crate::unclean::UncleanStart::accepting
+    async fn doubt_before_ballot(
         &self,
         key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
     ) -> Result<(), felix_storage::StorageError> {
-        let Some(trust) = self.copy_trust() else {
-            return Ok(());
-        };
-        let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
-        if trust.unkept(&name) {
-            return Ok(());
+        let shard = crate::driver::watch_key(key);
+        self.pin_unkept_floor(&shard, log).await?;
+        if let Some(unclean) = &self.unclean {
+            return unclean.accepting(&shard, log, generation).await;
         }
-        let trust = Arc::clone(trust);
-        tokio::task::spawn_blocking(move || trust.unkeep(&name))
-            .await
-            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
-    }
-
-    /// Record, durably, that `shard`'s copy is the one this broker led before
-    /// its crash. An error means the ballot must not be taken.
-    async fn record_doubt(
-        &self,
-        shard: &crate::ShardKey,
-    ) -> Result<(), felix_storage::StorageError> {
         let Some(trust) = self.copy_trust() else {
             return Ok(());
         };
-        let name = crate::unclean::copy_key(shard);
-        if trust.doubted(&name) {
+        let name = crate::unclean::copy_key(&shard);
+        if !log.gave_up() || generation < log.accepted_generation() || trust.doubted(&name) {
             return Ok(());
         }
         let trust = Arc::clone(trust);
@@ -1617,21 +1604,92 @@ impl ReplicaHandler {
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
 
-    /// The copy of `shard` is no learner after a batch: readmitted, its
-    /// promises count again.
-    async fn record_readmitted(&self, shard: &crate::ShardKey) {
+    /// A copy unkept since a generation the record does not know (it did not
+    /// decode, or named another storage id) is unkept since at least the
+    /// ballot it holds now. Recorded before a newer ballot replaces that, so
+    /// only a set newer than it readmits the copy.
+    async fn pin_unkept_floor(
+        &self,
+        shard: &crate::ShardKey,
+        log: &felix_broker::StreamLog,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(shard);
+        if trust.unkept(&name) != Some(Since::Unknown) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        let floor = log.accepted_generation();
+        tokio::task::spawn_blocking(move || trust.unkeep(&name, floor))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// Whether `key`'s copy took a ballot while its promises counted for
+    /// nothing and has not been readmitted since ([`Self::unkeep`]).
+    fn unkept(&self, key: &felix_router::ShardKey) -> bool {
+        self.copy_trust().is_some_and(|trust| {
+            trust
+                .unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+                .is_some()
+        })
+    }
+
+    /// Record, durably, that `key`'s copy is about to take a ballot while its
+    /// promises count for nothing, as a learner answering a unified fence
+    /// does. Call before the ballot is written. Afterwards the ballot reads
+    /// as a promise kept through any crash, so without this record an older
+    /// caller's fence would count it ([`Self::continues_from`]). An error
+    /// means the ballot must not be taken. `generation` is the ballot's: only
+    /// a set newer than it readmits the copy ([`Self::readmitted_since`]).
+    pub(crate) async fn unkeep(
+        &self,
+        key: &felix_router::ShardKey,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
+        if matches!(trust.unkept(&name), Some(Since::At(since)) if since >= generation) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        tokio::task::spawn_blocking(move || trust.unkeep(&name, generation))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// After a batch from the leader of `sent_at`: an unkept copy that is now
+    /// readmitted, a voter in a set newer than its unkept ballot, counts its
+    /// promises again. A batch alone, or wipe evidence without a set, is no
+    /// readmission (the design's "Wipe" row).
+    async fn record_readmitted(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sent_at: u64,
+    ) {
         let Some(trust) = self.copy_trust() else {
             return;
         };
-        let name = crate::unclean::copy_key(shard);
-        if !trust.unkept(&name) {
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        // An unknown floor is pinned before the batch's ballot; if that did
+        // not happen, nothing says which set is newer.
+        let Some(Since::At(since)) = trust.unkept(&name) else {
+            return;
+        };
+        if !self.readmitted_since(log, since, sent_at).await {
             return;
         }
         let trust = Arc::clone(trust);
         if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.clear_unkept(&name)).await {
             tracing::warn!(
-                stream = %shard.stream,
-                shard = shard.shard,
+                stream = %key.stream,
+                shard = key.shard,
                 error = %err,
                 "could not record that this copy was readmitted; its promises count for nothing \
                  until the next batch records it",
@@ -1652,14 +1710,7 @@ impl ReplicaHandler {
             return;
         }
         let trust = Arc::clone(trust);
-        let recorded = tokio::task::spawn_blocking(move || {
-            trust.clear_doubt(&name)?;
-            if trusts {
-                trust.trust(&name)?;
-            }
-            Ok::<_, felix_storage::StorageError>(())
-        })
-        .await;
+        let recorded = tokio::task::spawn_blocking(move || trust.vouch(&name, trusts)).await;
         if let Ok(Err(err)) = recorded {
             tracing::warn!(
                 stream = %shard.stream,
@@ -1946,12 +1997,15 @@ impl ReplicaHandler {
         if gives_up {
             // A batch after a clean restart replaces the given-up ballot
             // without asking who led the copy, so record that apart first.
+            // This fence is refused either way, and the given-up ballot only
+            // adds to the record; a batch that would replace it tries again
+            // and is refused if it cannot (`doubt_before_ballot`).
             if !doubted && let Some(trust) = self.copy_trust() {
                 let trust = Arc::clone(trust);
                 let name = crate::unclean::copy_key(&shard);
                 if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.doubt(&name)).await
                 {
-                    tracing::warn!(
+                    tracing::error!(
                         stream = %key.stream,
                         shard = key.shard,
                         error = %err,

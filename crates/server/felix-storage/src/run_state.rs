@@ -171,6 +171,7 @@ pub fn begin(
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
+    copy_trust::ensure(root, origin == Origin::Created)?;
     let last_run = read(root, loaded)?;
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
@@ -190,8 +191,7 @@ pub fn begin(
     let id = if rotate {
         // Before the new id: a crash in between must not leave a rotated
         // directory whose copies a later clean start still trusts.
-        copy_trust::distrust_all(root)?;
-        let id = storage_identity::replace(root, fresh())?;
+        let id = copy_trust::rotate_storage_id(root, fresh())?;
         if restored {
             tracing::warn!(
                 previous = %loaded,
