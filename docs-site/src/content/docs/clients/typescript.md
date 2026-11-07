@@ -262,7 +262,7 @@ const client = await Client.connect(addrs, "t1", {
 | `eventConnRecvWindow`, `eventStreamRecvWindow`, `eventSendWindow`, `cacheConnRecvWindow`, `cacheStreamRecvWindow`, `cacheSendWindow` | QUIC flow-control windows, in bytes. |
 | `eventRouterMaxPending`, `maxFrameBytes` | Limits on unclaimed event streams per connection and on the largest frame the client reads. |
 | `ackOnCommit` | Ask brokers to answer acknowledged publishes after the write, with the offset. Slower per publish. |
-| `connectTimeout`, `finishTimeout` | The longest one broker connect, and one producer flush, may take, in milliseconds. |
+| `connectTimeout`, `finishTimeout` | The longest one broker connect, and one producer flush, may take, in milliseconds (not seconds, unlike the Python client). |
 
 The defaults suit most programs; change one when a measurement tells you to.
 

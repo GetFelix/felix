@@ -77,7 +77,8 @@ A publish without a key puts every record on shard 0. `atLeastOnce` publishing r
 | `reconnectAttempts`, `reconnectDeadline`, `reconnectBackoff`, `reconnectMaxBackoff` | Retry policy. Times are in milliseconds. |
 | `publishers`, `timestamps` | Fill `Event.publisher` and `Event.timestampMicros`. Off by default. |
 | `clientSubQueuePolicy`, `clientSubQueueCapacity`, `brokerSubQueueCapacity` | What a subscription queue does when full, and how large it is. |
-| `publishConnPool`, `maxFrameBytes`, `connectTimeout`, and the other transport options | Connection pools, QUIC windows, frame and timeout limits. The full list is on the [TypeScript page](https://docs.getfelix.dev/clients/typescript/#tuning-the-client). |
+| `connectTimeout`, `finishTimeout` | The longest one broker connect, and one producer flush, may take, in milliseconds (not seconds). |
+| `publishConnPool`, `maxFrameBytes`, and the other transport options | Connection pools, QUIC windows and frame limits. The full list is on the [TypeScript page](https://docs.getfelix.dev/clients/typescript/#tuning-the-client). |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
