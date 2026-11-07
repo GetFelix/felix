@@ -2607,7 +2607,7 @@ AnswerFence(b, f) ==
             \/ NamedFenceSkipsBallot /\ FlipFence(b) /\ promised[f] <= bgen[b]
        ELSE promised[f] < bgen[b]
     /\ ~ShortCopyRefuses(b, f) \/ ContinuingTrusts(b, f)
-    /\ ~Unvouched(f)
+    /\ (~Unvouched(f) \/ ContinuingTrusts(b, f))
     \* Stickiness: a replica that still hears its leader refuses a candidate.
     /\ PreVote /\ Candidate(b) => ~Hears(f)
     /\ WipeWaits(f) => ~Candidate(b) /\ WipedTakesNamed
@@ -2777,7 +2777,7 @@ Followed(f) == IF ballot[f] \subseteq {f} THEN {leader} ELSE ballot[f]
 FenceStuck(b) ==
     LET can == { m \in FenceMembers(b) \ halted :
                    IF m = b THEN promised[m] <= bgen[b]
-                   ELSE MayPromise(m, b, bgen[b]) /\ ~Unvouched(m) }
+                   ELSE MayPromise(m, b, bgen[b]) /\ (~Unvouched(m) \/ ContinuingTrusts(b, m)) }
     IN \/ ~LeaderMajority(b, can)
        \/ JointFence /\ ~MajorityOfOld(can, b)
 
@@ -2884,7 +2884,8 @@ GiveUpRound(b) ==
     /\ fencing[b] /\ bgen[b] > 0 /\ Candidate(b)
     /\ LET can == answered[b] \cup {b} \cup
                   { m \in FenceMembers(b) \ halted :
-                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m)) /\ ~Unvouched(m) }
+                      MayPromise(m, b, bgen[b]) /\ ~(PreVote /\ Hears(m))
+                                       /\ (~Unvouched(m) \/ ContinuingTrusts(b, m)) }
        IN \/ ~LeaderMajority(b, can)
           \/ JointFence /\ ~MajorityOfOld(can, b)
     /\ bgen' = [bgen EXCEPT ![b] = 0]

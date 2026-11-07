@@ -406,6 +406,7 @@ expectations=(
   "FelixShardElectUncleanContinuingRetry violates RetriedContinuingNeverOpens"
   "FelixShardElectUncleanContinuingRetryBelowOnly pass"
   "FelixShardElectUncleanContinuingRetrySafe pass"
+  "FelixShardElectUncleanContinuingDoubted pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -528,6 +529,7 @@ fi
 weights=(
   "FelixShardElectUnclean 12"
   "FelixShardElectUncleanNoStartRecord 12"
+  "FelixShardElectUncleanContinuingDoubted 40"
   "FelixShardElectUncleanVouchOnShip 2"
   "FelixShardElectLiveUncleanLed 2"
   "FelixShardFencedAckMoveShort 31"
