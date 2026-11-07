@@ -46,16 +46,17 @@ on:
         required: false
         default: "off"
       parallel:
-        description: "How many jobs run at once"
+        description: "How many jobs run at once (1 to 20)"
         required: false
-        default: "10"
+        default: "4"
 
 permissions:
   contents: read
 
-# A dispatched sweep gets a group of its own, so it never cancels the night's.
+# Dispatched sweeps share one group and queue, so they never stack, and none
+# cancels the night's.
 concurrency:
-  group: dst-nightly-${{ github.ref }}-${{ github.event_name == 'schedule' && 'schedule' || github.run_id }}
+  group: dst-nightly-${{ github.ref }}-${{ github.event_name == 'schedule' && 'schedule' || 'dispatch' }}
   cancel-in-progress: false
 
 env:
@@ -81,6 +82,7 @@ jobs:
           SEEDS: ${{ inputs.seeds || '2000' }}
           SHARDS: ${{ inputs.shards || '50' }}
           MODES: ${{ inputs.modes || 'off' }}
+          PARALLEL: ${{ inputs.parallel || '4' }}
         run: |
           for value in "$FIRST" "$SEEDS" "$SHARDS"; do
             if ! [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]]; then
@@ -89,6 +91,14 @@ jobs:
           done
           if [ "$SHARDS" -gt "$SEEDS" ]; then
             echo "shards must be at most the seed count"; exit 1
+          fi
+          if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [ "$PARALLEL" -lt 1 ] || [ "$PARALLEL" -gt 20 ]; then
+            echo "parallel must be a number from 1 to 20"; exit 1
+          fi
+          # A shard runs two seeds at a time and a stalled seed takes up to 8
+          # minutes, so 50 seeds a shard is 200 minutes, under the 240 limit.
+          if [ $(( (SEEDS + SHARDS - 1) / SHARDS )) -gt 50 ]; then
+            echo "at most 50 seeds per job: raise shards or lower seeds"; exit 1
           fi
           # A run is the default faults over the whole range, plus the opt-in
           # nemeses on a 250 seed window that moves a night at a time. A
@@ -103,7 +113,7 @@ jobs:
             [ "$MODES" = all ] && MODES="off,clocks,placement,power-loss"
             plan=$(jq -cn --arg modes "$MODES" --argjson first "$FIRST" \
               --argjson seeds "$SEEDS" --argjson shards "$SHARDS" '
-              [($modes | split(",")[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
+              [($modes | split(",") | unique[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
             if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss") | not)) | length' <<<"$plan")" != 0 ]; then
               echo "modes must be from off, clocks, placement, power-loss, or all"; exit 1
             fi
@@ -167,9 +177,9 @@ jobs:
     timeout-minutes: 240
     strategy:
       fail-fast: false
-      # At most ten shards at once by default, so the sweep never takes every
+      # At most four shards at once by default, so the sweep never takes every
       # runner.
-      max-parallel: ${{ fromJSON(inputs.parallel || '10') }}
+      max-parallel: ${{ fromJSON(inputs.parallel || '4') }}
       matrix:
         shard: ${{ fromJSON(needs.build.outputs.shards) }}
     name: sweep ${{ matrix.shard.mode }} ${{ matrix.shard.first }}
@@ -229,7 +239,7 @@ jobs:
 
   report:
     needs: [build, sweep]
-    if: ${{ always() && needs.build.result == 'success' && needs.sweep.result != 'cancelled' }}
+    if: ${{ always() && needs.sweep.result != 'cancelled' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

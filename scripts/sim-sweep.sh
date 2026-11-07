@@ -47,7 +47,7 @@ done
 # when a log does not print one.
 case "$mode" in
   off) mode_env=() ; mode_prefix="" ;;
-  clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="" ;;
+  clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
   placement) mode_env=(FELIX_SIM_PLACEMENT=1); mode_prefix="FELIX_SIM_PLACEMENT=1 " ;;
   power-loss) mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
   *) echo "FELIX_SIM_MODE must be off, clocks, placement or power-loss, got $mode" >&2; exit 2 ;;

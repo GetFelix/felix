@@ -485,9 +485,9 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | `seeds` | How many seeds per mode. | 2000 |
 | `shards` | Jobs per mode. | 50 |
 | `modes` | `off`, `clocks`, `placement`, `power-loss` (comma separated), or `all`. | `off` |
-| `parallel` | Jobs running at once. | 10 |
+| `parallel` | Jobs running at once, 1 to 20. | 4 |
 
-`modes` `all` with 2000 seeds is 200 jobs (the limit is 256). The gate is no
+`modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no
 real bugs in any mode; tracked stalls are expected until their issues are fixed.
 
 Timing: a seed that passes takes a few seconds to a minute in a release build,
