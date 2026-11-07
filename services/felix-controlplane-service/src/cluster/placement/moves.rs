@@ -761,6 +761,7 @@ pub(super) fn move_step<'a>(
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -787,17 +788,14 @@ pub(super) fn move_step<'a>(
         }
         if gives_up {
             // Gone or halted before it led. Undone rather than waited out, or
-            // the move holds its slot until it times out.
-            let mut replicas = existing.replicas.clone();
-            replicas.retain(|replica| replica != successor);
+            // the move holds its slot until it times out. A successor that
+            // was a member before the stage stays one: it may hold the only
+            // copy of the log (#2088).
             return Decision::Move(
                 given_up(successor, halted),
                 ShardAssignment {
-                    successor: None,
                     move_started_at_millis: None,
-                    move_reason: None,
-                    replicas,
-                    ..existing.renamed()
+                    ..undo_staged(existing, successor, replication_factor)
                 },
             );
         }
@@ -1127,6 +1125,7 @@ pub(super) fn start(
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

@@ -695,6 +695,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 

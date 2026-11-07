@@ -143,6 +143,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -169,5 +170,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
