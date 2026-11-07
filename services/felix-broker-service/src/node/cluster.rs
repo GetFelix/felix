@@ -553,6 +553,7 @@ where
                     Arc::clone(suspects),
                     replication::suspicion::SuspicionConfig::from_env(),
                     leads_after.clone(),
+                    unclean.clone(),
                     sync_shutdown.clone(),
                 ));
             }

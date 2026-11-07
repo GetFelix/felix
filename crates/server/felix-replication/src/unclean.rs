@@ -22,9 +22,25 @@ pub struct UncleanStart {
     /// Shards a leader has shipped to this process: their copies have been
     /// compared with a leader's since the crash.
     vouched: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// The last ballot this process wrote standing for election on each
+    /// shard, with what the copy said of the crash before its first standing.
+    stood: parking_lot::Mutex<HashMap<ShardKey, Stood>>,
     /// The crash lost no ballot: the directory was neither restored nor one
     /// that already replaced a lost copy, and ballots are always synced.
     kept_promises: bool,
+}
+
+/// A ballot this process wrote for its own candidacy. It replaced the ballot
+/// the crash left, so what that ballot said is kept here.
+#[derive(Debug, Clone, Copy)]
+struct Stood {
+    generation: u64,
+    /// The copy was the one this broker led before the crash, or had been
+    /// given up.
+    led_before: bool,
+    /// The generation the copy had accepted from another leader before this
+    /// process stood on it, if any.
+    followed: Option<u64>,
 }
 
 impl UncleanStart {
@@ -33,6 +49,7 @@ impl UncleanStart {
             node_id: node_id.into(),
             led: parking_lot::Mutex::new(HashMap::default()),
             vouched: parking_lot::Mutex::new(HashSet::default()),
+            stood: parking_lot::Mutex::new(HashMap::default()),
             kept_promises: false,
         }
     }
@@ -66,12 +83,53 @@ impl UncleanStart {
         log: &felix_broker::StreamLog,
         generation: u64,
     ) -> bool {
+        if self.led_before(key, log, generation) {
+            return true;
+        }
         let accepted = log.accepted_generation();
-        self.led_before(key, log, generation)
-            || (held(log)
-                && accepted < generation
-                && !self.leads_at(key, accepted)
-                && !self.vouched.lock().contains(key))
+        if self.leads_at(key, accepted) || self.vouched.lock().contains(key) {
+            return false;
+        }
+        let followed = match self.own_ballot(key, log) {
+            Some(stood) => stood.followed,
+            None => held(log).then_some(accepted),
+        };
+        followed.is_some_and(|followed| followed < generation)
+    }
+
+    /// This process is about to write its own ballot for `key` at
+    /// `generation`, standing for election on `log`. Called before the
+    /// ballot, and only while `generation` is above the one `log` accepted,
+    /// so a ballot naming this broker at `generation` is this process's own.
+    ///
+    /// What the copy said of the crash before the first such ballot is kept:
+    /// a copy this broker led before the crash stays one after it stands.
+    pub(crate) fn stand(&self, key: &ShardKey, log: &felix_broker::StreamLog, generation: u64) {
+        let accepted = log.accepted_generation();
+        if held(log) && generation <= accepted {
+            // The ballot write fails too: a newer one landed meanwhile.
+            return;
+        }
+        let before = self.own_ballot(key, log).unwrap_or_else(|| Stood {
+            generation,
+            led_before: log.gave_up() || self.led_before(key, log, generation),
+            followed: (held(log) && !self.leads_at(key, accepted)).then_some(accepted),
+        });
+        self.stood.lock().insert(
+            key.clone(),
+            Stood {
+                generation,
+                ..before
+            },
+        );
+    }
+
+    /// The candidacy that wrote `log`'s ballot, if this process wrote it.
+    fn own_ballot(&self, key: &ShardKey, log: &felix_broker::StreamLog) -> Option<Stood> {
+        let stood = *self.stood.lock().get(key)?;
+        let own = stood.generation == log.accepted_generation()
+            && log.accepted_leader().as_deref() == Some(&*self.node_id);
+        own.then_some(stood)
     }
 
     /// This process leads `key` at `generation`.
@@ -91,6 +149,9 @@ impl UncleanStart {
     /// Without a ballot naming a leader only an assignment at the accepted
     /// generation itself says so: the control plane names one leader per
     /// generation, so a broker named at a generation it accepted led it.
+    ///
+    /// A ballot this process wrote standing for election ([`Self::stand`])
+    /// says nothing of the crash; what the copy said before it does.
     pub fn led_before(
         &self,
         key: &ShardKey,
@@ -100,6 +161,9 @@ impl UncleanStart {
         let accepted = log.accepted_generation();
         if !held(log) || self.leads_at(key, accepted) {
             return false;
+        }
+        if let Some(stood) = self.own_ballot(key, log) {
+            return stood.led_before;
         }
         match log.accepted_leader() {
             // Its own ballot, or one it already gave up.

@@ -251,6 +251,7 @@ fn ctx_with<R>(broker: &Arc<Broker>, requester: R) -> Ctx<R> {
         named_here: Default::default(),
         pre_vote_gate: None,
         leads_after: None,
+        unclean: None,
     }
 }
 
@@ -788,6 +789,7 @@ async fn a_slow_dial_carries_over_to_the_next_round() {
         named_here: Default::default(),
         pre_vote_gate: None,
         leads_after: None,
+        unclean: None,
     };
     let log = shard_log(&ctx.broker, &key()).await.expect("log");
 
@@ -2177,6 +2179,33 @@ fn the_same_seed_gives_the_same_walk() {
     let mut sorted = order;
     sorted.sort();
     assert_eq!(sorted, (0..600).collect::<Vec<_>>());
+}
+
+/// **After an unclean start a copy the open would refuse to lead does not
+/// stand (#2025)**: winning would only give the generation up, and a given-up
+/// copy refuses every other candidate. Once a leader has shipped to it, it
+/// stands, and its own ballot is not read as the copy it led before the
+/// crash.
+#[tokio::test(start_paused = true)]
+async fn an_unvouched_copy_does_not_stand() {
+    let (broker, _dir) = follower().await;
+    let unclean = Arc::new(crate::unclean::UncleanStart::new(LOCAL));
+    let ctx = Ctx {
+        unclean: Some(Arc::clone(&unclean)),
+        ..ctx(&broker, voters(None))
+    };
+    let route = ctx.router.snapshot().get(&key()).expect("route").clone();
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let shard = crate::driver::watch_key(&key());
+
+    assert_eq!(stand(&ctx, &key(), &route).await, Round::Ineligible);
+    assert_eq!(log.accepted_generation(), 3, "no ballot");
+
+    unclean.vouch(&shard);
+    let elected = stand_and_watch(&ctx).await;
+    assert_eq!(elected.generation, 4);
+    assert_eq!(log.accepted_leader().as_deref(), Some(LOCAL));
+    assert!(!unclean.led_before(&shard, &log, 5));
 }
 
 /// **The stuck scan opens no cache log.** A quiet cache shard whose log is

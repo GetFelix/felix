@@ -3783,6 +3783,18 @@ follower is behind it:
   again, because `abandon` answers `not_stranded` while it is up. `abandon`
   writes a fresh set, so it loses whatever no copy in that new set holds, the
   successor's records included.
+- **In an election.** "The copy it led" is read from the ballot, and a
+  candidate's own ballot names itself too. A ballot this process wrote
+  standing for election says nothing about the crash, so the broker keeps
+  what the copy said before its first such ballot: a copy it led stays
+  refused after it stands, and a copy it only followed takes a newer
+  candidate's fence. Reading its own candidacy as evidence of having led
+  left a set of three with a dead leader no majority until the control plane
+  came back ([#2025](https://github.com/GetFelix/felix/issues/2025)). A copy
+  the open would refuse to lead, either case in the first bullet, does not
+  stand at all: winning would only give the generation up, and a given-up
+  copy refuses every other candidate (`stand` in `election/candidate.rs`,
+  `UncleanStart::stand`).
 
 Which of the two happens does not depend on whether placement sees the new
 identity or the probe's report first. A follower the report from before the
