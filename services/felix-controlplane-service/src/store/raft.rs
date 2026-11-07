@@ -1240,6 +1240,10 @@ impl ControlPlaneStore for RaftStore {
         self.local().list_replica_reports().await
     }
 
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        self.local().get_replica_report(key).await
+    }
+
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
         // `None` is a leader without soft state, which keeps none.
         self.ask_leader(LeaderRequest::Suspicion {

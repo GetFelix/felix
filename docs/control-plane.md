@@ -1270,7 +1270,9 @@ generation, the identity it inherited for it: the one the failover that
 promoted it named, or after a set change that kept it as leader, the one it
 named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
-dropped). The next failover names such a follower by it in the assignment's
+dropped). A leader that stood for election inherits none, so for a member
+the report names no identity for and inherits none for, the control plane
+stores the one the shard's previous report named it by. The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
 count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata

@@ -385,6 +385,21 @@ pub(super) async fn inherited_storage_is_kept(store: &dyn ControlPlaneStore) {
         stored(store, shard).await.inherited_storage,
         sent.inherited_storage
     );
+    assert_eq!(
+        store
+            .get_replica_report(&key(shard))
+            .await
+            .expect("get report"),
+        Some(stored(store, shard).await),
+        "the keyed read and the listing disagree"
+    );
+    assert_eq!(
+        store
+            .get_replica_report(&key(shard + 1000))
+            .await
+            .expect("get report"),
+        None
+    );
 
     let without = report(shard, at, &["broker-y"], 20_500);
     assert_eq!(

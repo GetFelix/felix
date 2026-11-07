@@ -528,9 +528,17 @@ inherited one. Otherwise a follower cut off from the leader across the change
 is named with an empty identity, and a failover whose majority needs it can
 never open (#1922). A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
-reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
-predates the field, the member is named with an empty identity, which
-nothing matches. `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg`
+reports only once it has opened and ships to that copy. A leader that stood
+for election inherits no identities, since its route names none. For a member
+its report names no identity for and inherits none for, the control plane
+takes the one the shard's previous report named it by, as its own identity or
+an inherited one, when it stores the report. The argument is the same: the
+new leader has not reached that member, so its acknowledgements all went to
+earlier leaders, from that copy or one before it. Without it, a failover after
+an elected leader crashes names every member that leader had not reached with
+an empty identity and can wait for good. Without any identity, from a broker
+or control plane that predates the field, the member is named with an empty
+identity, which nothing matches. `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg`
 checks two leader replacements in a row with inherited names, and its witness
 shows the second one counting an inherited name. With promotions on suspicion
 (`FelixShardFencedCrashNamesByInheritance.cfg`,
@@ -557,9 +565,10 @@ coming back ends the wait. There are two ways to get there:
   the leader gone too, that is two faults, and the records the follower lost
   may be on no copy at all.
 - A follower the report named no identity for, because its leader had not
-  asked it yet when it reported, and for which the report inherits none: the
-  leader was not promoted by a failover that named one, or it predates the
-  field. It may hold everything; nothing vouches for it. Naming it by the
+  asked it yet when it reported, and for which the report inherits none:
+  neither the leader's promotion, its previous generation nor the shard's
+  previous report named one, or it predates the field. It may hold
+  everything; nothing vouches for it. Naming it by the
   identity it is registered under would not do: the report's incarnation for
   such a follower is the control plane's stamp as the report arrives, which
   can come after a crash the report predates
@@ -3102,7 +3111,8 @@ when empty). For a follower it has not reached yet at its generation, a
 leader reports the identity it inherited for it, from the failover that
 promoted it or from its own previous generation
 (`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
-Placement reads it only to name that follower in the next failover's fence
+The control plane adds to it, for a member the report names no identity for,
+the one the shard's previous report named it by. Placement reads it only to name that follower in the next failover's fence
 (see "Fencing a promotion"), never to decide who is caught up.
 `FelixShardWipe.cfg` checks the design with the identity
 comparison in place, and `FelixShardWipeNoIds.cfg` finds the lost record
