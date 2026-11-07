@@ -875,9 +875,11 @@ It is for a leader that counts a fence's promises and its coverage of
 acknowledged records separately: promises from copies that kept their
 ballots, coverage from trusted copies. Only a caller that offered
 `UNIFIED_FENCE` gets kind 54. To any other the replica drops the attestation
-and answers with `FenceKeptOk` or `FenceOk` as before. No broker offers
-`UNIFIED_FENCE` or attests yet, so every fence answer on the wire is still kind
-30 or 53.
+and answers with `FenceKeptOk` or `FenceOk` as before. A replica attests on
+every answer for a shard's own log (never a group or counter log), but no
+broker offers `UNIFIED_FENCE` yet, so every fence answer on the wire is still
+kind 30 or 53. `kept_from` is 0 or `u64::MAX` (counts for no set) for now:
+the set generation a readmission counts from is not yet tracked.
 
 | The replica | Answer |
 | --- | --- |

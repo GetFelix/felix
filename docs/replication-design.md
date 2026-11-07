@@ -651,10 +651,11 @@ sees, so its deposed leader is kept out by the lease alone either way.
 
 #### One fence rule for every change of leader
 
-This is the rule the broker is moving to. It is not in the code yet: today each
-kind of change (failover, election, rename, set change, readmission, a
-continuing leader) has its own counting, with special cases for copies doubted
-after an unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
+This is the rule the broker is moving to. Only the replica's side of the
+attestation is in the code so far, and no leader reads it: today each kind of
+change (failover, election, rename, set change, readmission, a continuing
+leader) has its own counting, with special cases for copies doubted after an
+unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
 
 A fence has to prove two separate things before the new leader at generation G
 opens.
@@ -695,7 +696,16 @@ missing records an earlier generation acknowledged. The control plane records
 this from metadata level 30; no fence reads it yet. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
-`TrustsRegistered`).
+`TrustsRegistered`). For now that is the whole run. A failed flush poisons the
+log and may have dropped acknowledged pages, so from then on the process
+attests no trusted copy, without waiting for the next start.
+
+In the code a directory **kept** its ballots when it was never restored and
+never replaced a lost copy, and, after an unclean start, the control plane's
+record names the storage id it had before (`Kept` in
+`services/felix-broker-service/src/node/storage.rs`). Trust after an unclean
+start is `UncleanStart::trust`, set where a replicated batch is applied, and the
+answer is `ReplicaHandler::attestation`.
 
 The sets a fence must cover are its own and the set of every start from an
 **anchor** up to G. The anchor is a generation with evidence it opened: its

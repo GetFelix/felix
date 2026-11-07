@@ -50,6 +50,9 @@ pub struct QuorumMarks {
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
     local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
+    /// Whether this broker's directory kept every ballot it took, as the
+    /// fence answer attests it. Unset reads as not kept.
+    kept_ballots: std::sync::OnceLock<bool>,
     /// Leaderships the replicas elected, set where this broker may stand.
     elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// When each shard's timeout was last logged.
@@ -272,6 +275,17 @@ impl QuorumMarks {
 
     pub(crate) fn local_storage(&self) -> Option<felix_storage::StorageId> {
         self.local_storage.get().map(|(storage, _)| *storage)
+    }
+
+    /// Record whether this broker's directory kept every ballot it took:
+    /// never wiped, restored or a replacement for a lost copy, and checked
+    /// against the control plane's record. Only the first call counts.
+    pub fn set_kept_ballots(&self, kept: bool) {
+        let _ = self.kept_ballots.set(kept);
+    }
+
+    pub(crate) fn kept_ballots(&self) -> bool {
+        self.kept_ballots.get().copied().unwrap_or(false)
     }
 
     /// Whether the control plane last registered this node under another

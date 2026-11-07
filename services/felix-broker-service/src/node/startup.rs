@@ -33,8 +33,8 @@ pub(super) struct Stored {
     /// Set when this start found the data directory older than the node's
     /// last registration.
     pub(super) replaced_storage: bool,
-    /// Set after an unclean start whose directory kept every ballot it took.
-    pub(super) kept_promises: bool,
+    /// What the directory kept of the ballots it took.
+    pub(super) kept: storage::Kept,
 }
 
 /// Open storage and the broker over it.
@@ -43,7 +43,7 @@ pub(super) fn open_storage(
     durable: Option<DurableStorageConfig>,
     registered: Option<&Registered>,
 ) -> Result<Stored> {
-    let (broker, durable_storage, storage_id, unclean, replaced_storage, kept_promises) =
+    let (broker, durable_storage, storage_id, unclean, replaced_storage, kept) =
         storage::open_with(config, durable, registered)?;
     Ok(Stored {
         broker,
@@ -51,7 +51,7 @@ pub(super) fn open_storage(
         storage_id,
         unclean,
         replaced_storage,
-        kept_promises,
+        kept,
     })
 }
 
@@ -87,12 +87,13 @@ pub(super) async fn wire_broker(
         storage_id,
         unclean,
         replaced_storage,
-        kept_promises,
+        kept,
     } = stored;
     let ingress_router = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
     quorum_marks.set_local_storage(storage_id, replaced_storage);
+    quorum_marks.set_kept_ballots(kept.ballots);
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
@@ -100,7 +101,7 @@ pub(super) async fn wire_broker(
         (Some(membership), Some((_, ingress, _, _))) if unclean => {
             let unclean = Arc::new(
                 felix_replication::unclean::UncleanStart::new(membership.node_id.as_str())
-                    .with_kept_promises(kept_promises),
+                    .with_kept_promises(kept.promises),
             );
             ingress.fence().bind_unclean_start(Arc::clone(&unclean));
             Some(unclean)

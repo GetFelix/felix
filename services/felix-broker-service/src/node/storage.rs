@@ -25,11 +25,11 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// lost records the broker acknowledged, or because `registered`, the
 /// control plane's record of this node, names a later incarnation than the
 /// one the directory recorded; whether `registered` names another
-/// storage id; and whether a rotation kept every ballot (see [`start_run`]).
+/// storage id; and what the directory kept of its ballots ([`Kept`]).
 pub(crate) fn open(
     config: &BrokerConfig,
     registered: Option<&Registered>,
-) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, bool)> {
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
     open_with(config, DurableStorageConfig::from_env()?, registered)
 }
 
@@ -39,21 +39,22 @@ pub(crate) fn open_with(
     config: &BrokerConfig,
     durable_config: Option<DurableStorageConfig>,
     registered: Option<&Registered>,
-) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, bool)> {
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
-    let (storage_id, unclean, replaced, kept_promises) = match &durable_config {
+    let (storage_id, unclean, replaced, kept) = match &durable_config {
         Some(durable) => start_run(
             &durable.root,
             &durable.log,
             registered,
             witness_dir().as_deref(),
         )?,
-        None => (storage_id(None)?, false, false, false),
+        // Nothing on disk outlives the process, so a restart is a wipe.
+        None => (storage_id(None)?, false, false, Kept::default()),
     };
     let hold = retention_hold(config);
     let durable_storage = match &durable_config {
@@ -181,14 +182,7 @@ pub(crate) fn open_with(
         }
         None => broker,
     };
-    Ok((
-        broker,
-        durable_storage,
-        storage_id,
-        unclean,
-        replaced,
-        kept_promises,
-    ))
+    Ok((broker, durable_storage, storage_id, unclean, replaced, kept))
 }
 
 /// Start a run on `root` and say what it started under: the storage id,
@@ -217,7 +211,7 @@ fn start_run(
     log: &felix_storage::log::LogConfig,
     registered: Option<&Registered>,
     witness: Option<&Path>,
-) -> Result<(StorageId, bool, bool, bool)> {
+) -> Result<(StorageId, bool, bool, Kept)> {
     // The id before this run rotates it: the control plane naming that one
     // is what tells a crash of this directory from a lost copy.
     let before = felix_storage::storage_identity::load(root)
@@ -235,9 +229,41 @@ fn start_run(
     let own_id = registered
         .and_then(|r| r.storage_id.as_deref())
         .is_some_and(|prior| before.as_deref() == Some(prior));
-    let kept_promises = begun.rotated && !restored && own_id && !lost;
+    let kept = Kept {
+        promises: begun.rotated && !restored && own_id && !lost,
+        // A record from before storage ids cannot tell this directory from a
+        // wiped one, as for `promises` (#2047).
+        ballots: !restored
+            && !lost
+            && (!begun.rotated || own_id)
+            && registered.is_none_or(|r| r.storage_id.is_some()),
+    };
     let replaced = note_replaced(root, begun.id, registered)?;
-    Ok((begun.id, begun.rotated, replaced, kept_promises))
+    Ok((begun.id, begun.rotated, replaced, kept))
+}
+
+/// What a start found its directory kept of the ballots it took.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Kept {
+    /// An unclean start whose crash kept every ballot: the flag
+    /// [`start_run`]'s documentation describes.
+    pub(crate) promises: bool,
+    /// The directory kept every ballot it ever took, at a clean start or an
+    /// unclean one: never restored, never a replacement for a lost copy,
+    /// not registered under a record without a storage id, and after a
+    /// rotation the control plane's record names the id it had before. What
+    /// a fence answer attests as kept.
+    pub(crate) ballots: bool,
+}
+
+impl Kept {
+    /// What a fence answer may attest as kept. A start from the view has not
+    /// checked the directory against the control plane, and a restored one
+    /// reads as kept until it has (`CountsForgotten`, `TrustsRegistered` in
+    /// `docs/formal/FelixShardUnified.tla`), so such a run attests nothing.
+    pub(crate) fn attested(self, from_view: bool) -> bool {
+        self.ballots && !from_view
+    }
 }
 
 /// Whether the directory at `root` replaced a copy the node lost, now or at
