@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794062939845,
+  "lastUpdate": 1794067830963,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62172,6 +62172,72 @@ window.BENCHMARK_DATA = {
             "range": "986.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 523.00\nmean: 963.60\nstdev: 986.43\ncv: 102.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bfd00b2b64c3565e87f2ca653e1840a46c0917d",
+          "message": "fix(broker): a start from the view attests once its restore check passes (#2103)\n\n* fix(broker): a start from the view attests once its restore check passes\n\nA broker started from its control-plane view while the control plane was\ndown set kept_ballots=false at startup, and QuorumMarks keeps the first\nvalue for the process lifetime. Once the control plane answered and the\ndeferred restore check passed, nothing re-evaluated it, so under the\nunified fence the copy never counted toward a promotion and a shard whose\nleader died stayed unelected (replica_election\na_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence).\n\nA start that keeps its view now leaves kept_ballots unset until the\ndeferred check finds the directory current, then sets what a start that\nasked first would: the run's own kept ballots, false under a record\nwithout a storage id. A failed check sets nothing and stops the broker.\n\nSpec-Unaffected: the spec already models the attestation as gated on the restore check (CountsForgotten, TrustsRegistered); this makes the code release it after the check, as modelled.\n\n* fix(broker): name the deferred check's callback type for clippy",
+          "timestamp": "2026-11-07T08:05:31-08:00",
+          "tree_id": "c9789a46500ecce1c331296c774ac32c5882d009",
+          "url": "https://github.com/GetFelix/felix/commit/3bfd00b2b64c3565e87f2ca653e1840a46c0917d"
+        },
+        "date": 1794067820439,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.60\nstdev: 1.14\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 205.80\nstdev: 3.19\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "8.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 265.00\nstdev: 8.28\ncv: 3.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "5.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 202.40\nstdev: 5.59\ncv: 2.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 406,
+            "range": "337.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 406.00\nmean: 609.80\nstdev: 337.78\ncv: 55.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1103,
+            "range": "961.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1103.00\nmean: 1297.00\nstdev: 961.05\ncv: 74.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
