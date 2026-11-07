@@ -8,6 +8,7 @@ use napi_derive::napi;
 
 use crate::args::{duration_ms, u64_of};
 use crate::errors::classify;
+use crate::types::or_null;
 
 /// A record from `ShardedGroupHandle.poll`.
 #[napi(object)]
@@ -19,6 +20,12 @@ pub struct ShardedGroupRecord {
     /// How many times this record has been handed out, this delivery included.
     pub attempts: u32,
     pub skipped_before: BigInt,
+    /// The principal that published the record. Null unless `publishers` was
+    /// set on `connect`.
+    pub publisher: Either<String, Null>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    /// Null unless `timestamps` was set on `connect`.
+    pub timestamp_micros: Either<BigInt, Null>,
 }
 
 /// What settling a `ShardedGroupRecord` needs: the shard, the offset and which
@@ -85,6 +92,8 @@ impl ShardedGroupHandle {
                 payload: r.record.payload.to_vec().into(),
                 attempts: r.record.attempts,
                 skipped_before: BigInt::from(r.record.skipped_before),
+                publisher: or_null(r.record.publisher),
+                timestamp_micros: or_null(r.record.timestamp_micros.map(BigInt::from)),
             })
             .collect())
     }

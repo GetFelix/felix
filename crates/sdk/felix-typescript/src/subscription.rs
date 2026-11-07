@@ -1,6 +1,7 @@
 //! A subscription to one stream, read with `nextEvent`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use felix_client::ClusterSubscription;
 use napi::bindgen_prelude::*;
@@ -8,7 +9,7 @@ use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
 use crate::errors::classify;
-use crate::types::{Event, or_null};
+use crate::types::Event;
 
 /// A live subscription. Read it with `nextEvent`, and `close` it when done.
 ///
@@ -21,8 +22,30 @@ use crate::types::{Event, or_null};
 pub struct SubscriptionHandle {
     start_offset: Option<u64>,
     live_offset: Option<u64>,
+    queue_capacity: Option<u32>,
+    /// Copied from the subscription after each read. The subscription is held
+    /// by the read in flight, so a getter cannot ask it directly.
+    progress: Progress,
     inner: Arc<Mutex<Option<ClusterSubscription>>>,
     closed: watch::Sender<bool>,
+}
+
+/// What a subscription has done so far, readable while a read is in flight.
+#[derive(Default)]
+struct Progress {
+    moves: AtomicU64,
+    reconnects: AtomicU64,
+    stream_deleted: AtomicBool,
+}
+
+impl Progress {
+    fn record(&self, subscription: &ClusterSubscription) {
+        self.moves.store(subscription.moves(), Ordering::Relaxed);
+        self.reconnects
+            .store(subscription.reconnects(), Ordering::Relaxed);
+        self.stream_deleted
+            .store(subscription.stream_deleted(), Ordering::Relaxed);
+    }
 }
 
 impl SubscriptionHandle {
@@ -30,6 +53,8 @@ impl SubscriptionHandle {
         Self {
             start_offset: subscription.start_offset(),
             live_offset: subscription.live_offset(),
+            queue_capacity: subscription.queue_capacity(),
+            progress: Progress::default(),
             inner: Arc::new(Mutex::new(Some(subscription))),
             closed: watch::Sender::new(false),
         }
@@ -51,6 +76,35 @@ impl SubscriptionHandle {
     #[napi(getter)]
     pub fn live_offset(&self) -> Option<BigInt> {
         self.live_offset.map(BigInt::from)
+    }
+
+    /// The broker-side queue capacity the broker granted, in published
+    /// batches, when `brokerSubQueueCapacity` asked for one. `null` means the
+    /// stream's default.
+    #[napi(getter)]
+    pub fn queue_capacity(&self) -> Option<u32> {
+        self.queue_capacity
+    }
+
+    /// How many times the subscription followed its shard to another broker.
+    /// Updated as reads return.
+    #[napi(getter)]
+    pub fn moves(&self) -> BigInt {
+        BigInt::from(self.progress.moves.load(Ordering::Relaxed))
+    }
+
+    /// How many times the subscription resubscribed after losing its
+    /// connection. Updated as reads return.
+    #[napi(getter)]
+    pub fn reconnects(&self) -> BigInt {
+        BigInt::from(self.progress.reconnects.load(Ordering::Relaxed))
+    }
+
+    /// Whether the subscription ended because its stream was deleted. Check it
+    /// once `nextEvent` returns `null`; there is nothing to resubscribe to.
+    #[napi(getter)]
+    pub fn stream_deleted(&self) -> bool {
+        self.progress.stream_deleted.load(Ordering::Relaxed)
     }
 
     /// The next record, or `null` once the subscription has ended.
@@ -77,6 +131,12 @@ impl SubscriptionHandle {
             result = subscription.next_event() => Some(result),
             _ = closed.wait_for(|closed| *closed) => None,
         };
+        // Recorded on errors and the end too: that is where a delete shows.
+        if outcome.is_some()
+            && let Some(subscription) = guard.as_ref()
+        {
+            self.progress.record(subscription);
+        }
         match outcome {
             // Closed underneath this read, so this reader is the one holding
             // the subscription and the one that has to let it go.
@@ -84,14 +144,7 @@ impl SubscriptionHandle {
                 guard.take();
                 Ok(None)
             }
-            Some(Ok(Some(event))) => Ok(Some(Event {
-                tenant_id: event.tenant_id.to_string(),
-                namespace: event.namespace.to_string(),
-                stream: event.stream.to_string(),
-                payload: event.payload.to_vec().into(),
-                offset: or_null(event.offset.map(BigInt::from)),
-                skipped_before: BigInt::from(event.skipped_before),
-            })),
+            Some(Ok(Some(event))) => Ok(Some(event.into())),
             Some(Ok(None)) => Ok(None),
             Some(Err(err)) => Err(classify(err)),
         }

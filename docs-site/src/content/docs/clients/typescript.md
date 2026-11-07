@@ -231,6 +231,41 @@ await using client = await Client.connect(addrs, "t1", { token, caFile, offerAlp
 
 (`await using` closes the client when the scope ends. It needs Node 24; see [Disposal](#disposal) for the older form.)
 
+### Tuning the client
+
+The rest of the Rust client's `ClientConfig` goes in the same options object.
+Leave an option out to keep the default; a value that cannot be right (a pool of
+`0`, a fraction where a count belongs, an unknown name) rejects with
+`InvalidArgumentError` before anything connects.
+
+```ts
+const client = await Client.connect(addrs, "t1", {
+  token,
+  publishers: true,             // events and group records say who published them
+  timestamps: true,             // and when the broker appended them
+  clientSubQueuePolicy: "block", // a full subscription queue stops reading; the default drops
+  clientSubQueueCapacity: 4096,
+  brokerSubQueueCapacity: 64,    // batches the broker queues per subscription
+  maxFrameBytes: 8 * 1024 * 1024,
+  connectTimeout: 5_000,        // milliseconds
+});
+```
+
+| Option | What it sets |
+|---|---|
+| `publishers`, `timestamps` | Ask brokers for [`Event.publisher` and `timestampMicros`](#who-published-a-record-and-when). Off by default. |
+| `recordHeaders` | Offer [record headers](#record-headers). On by default. |
+| `clientSubQueuePolicy`, `clientSubQueueCapacity` | What each subscription's client-side queue does when full (`"block"`, `"drop_new"` the default, `"drop_old"`), and how many items it holds. |
+| `brokerSubQueueCapacity` | How many published batches the broker queues per subscription. `SubscriptionHandle.queueCapacity` reports what it granted. |
+| `publishConnPool`, `publishStreamsPerConn`, `publishQueueDepth`, `publishInflightBytes`, `publishSharding`, `publishShardStreams` | How publishes spread over connections and streams. `publishSharding` is `"hash_stream"` (default, keeps a stream's publishes in order) or `"round_robin"`. |
+| `cacheConnPool`, `cacheStreamsPerConn`, `eventConnPool`, `clusterConnPool`, `clusterStreamsPerConn` | Connection counts for cache calls, subscriptions and watches, and per broker. |
+| `eventConnRecvWindow`, `eventStreamRecvWindow`, `eventSendWindow`, `cacheConnRecvWindow`, `cacheStreamRecvWindow`, `cacheSendWindow` | QUIC flow-control windows, in bytes. |
+| `eventRouterMaxPending`, `maxFrameBytes` | Limits on unclaimed event streams per connection and on the largest frame the client reads. |
+| `ackOnCommit` | Ask brokers to answer acknowledged publishes after the write, with the offset. Slower per publish. |
+| `connectTimeout`, `finishTimeout` | The longest one broker connect, and one producer flush, may take, in milliseconds. |
+
+The defaults suit most programs; change one when a measurement tells you to.
+
 ### Acting for many users
 
 A gateway serving many users can hold one client and give each user a client
@@ -249,7 +284,7 @@ Every stream `alice` opens authenticates with her token, so the broker checks
 her requests against her grants, not the gateway's. She follows moved shards
 and failed brokers like any client, over the gateway's connection to each
 broker. Give `withIdentity` a fixed `token`, or a `tokenProvider` as above for a
-long-lived handle. Closing `alice` leaves the gateway's connections open. The limits and the
+long-lived handle. A token minted by [`cachePutIfLease`](#lease-tokens) works here too. Closing `alice` leaves the gateway's connections open. The limits and the
 certificate-bound token rules are the Rust client's; see
 [Acting for many users](/clients/rust/#acting-for-many-users).
 
@@ -520,9 +555,71 @@ try {
 }
 ```
 
+#### Handing batches over
+
+`publishBatch` resolves when the leader has answered. `handOffBatch` resolves as
+soon as the producer has the batch and returns a `Handed` to read the answer
+from, so a loop can queue many batches without waiting on each round trip. A
+batch takes its place in the stream's sequence when it is handed over, so they
+go out in the order you handed them.
+
+```ts
+const producer = await client.producer();
+try {
+  const handed = [];
+  for (const batch of [[Buffer.from("a"), Buffer.from("b")], [Buffer.from("c")]]) {
+    handed.push(await producer.handOffBatch("t1", "default", "orders", batch, Buffer.from("customer-7")));
+  }
+  for (const h of handed) console.log(`landed at ${await h.offset()}`);
+} finally {
+  await producer.close(10_000);
+}
+```
+
+Read a `Handed` once, with `offset()` (the first record's log offset, or `null`)
+or `done()`. A second read rejects with `InvalidArgumentError`. A failure leaves
+the batch in doubt exactly as `publishBatch` does, and dropping a `Handed` does
+not stop its batch. `handOffBatches` and `handOffAbandon` are the handed-over
+forms of `publishBatches` and `abandonInDoubt`; read them with `done()`.
+
 ### Record headers
 
-Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; an event it reads has no `headers`. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+A record can carry a key and named byte values next to its payload.
+`publishWithHeaders` sends one record; `publishBatchWithHeaders` sends a batch
+to shard 0, each record with its own headers. A subscriber reads them back on
+`Event.headers`.
+
+```ts
+await client.publishWithHeaders(
+  "t1", "default", "orders",
+  {
+    key: Buffer.from("order-42"),
+    headers: [
+      { name: "trace-id", value: Buffer.from("7f3a") },
+      { name: "content-type", value: Buffer.from("application/json") },
+    ],
+  },
+  Buffer.from('{"total": 19}'),
+);
+
+const events = await client.subscribe("t1", "default", "orders", "earliest");
+try {
+  const event = await events.nextEvent();
+  for (const { name, value } of event?.headers?.headers ?? []) {
+    console.log(`${name} = ${value.toString()}`);
+  }
+} finally {
+  await events.close();
+}
+```
+
+The `key` belongs to the record and **does not route** it: the record goes where
+`publish` sends it. A header name may repeat, and order is kept. `Event.headers`
+is `null` for a record published without either. Names must not be empty or
+start with `felix.`, which the broker reserves; a bad name, or a broker that did
+not accept headers, rejects with `InvalidArgumentError` and sends nothing. Keyed
+publishes and idempotent producers do not carry headers. `recordHeaders: false`
+on `connect` stops the client offering them.
 
 ## Subscribing
 
@@ -580,6 +677,30 @@ async function nextWithin(timeoutMs: number) {
 :::
 
 `subscribe` reads one shard: pass a shard number after `start` for any but shard 0, or use [`subscribeSharded`](#multi-shard-streams) for all of them. `startOffset` and `liveOffset` on the handle say where the subscription began and where live delivery began when it opened, or `null` for an in-memory stream.
+
+The handle also reports what happened to it. `moves` counts the times it followed its shard to another broker, `reconnects` the times it resubscribed after losing its connection, and `streamDeleted` is `true` when it ended because the stream was deleted (check it after `nextEvent` returns `null`; there is nothing to resubscribe to). `queueCapacity` is the broker-side queue the broker granted, or `null` for the stream's default. The counters update as reads return, so read them between `nextEvent` calls.
+
+### Who published a record and when
+
+Set `publishers` and `timestamps` on `connect` and each event says which
+principal the broker accepted the write from and when it appended the record:
+
+```ts
+await using client = await Client.connect(addrs, "t1", { token, publishers: true, timestamps: true });
+await using events = await client.subscribe("t1", "default", "orders");
+const event = await events.nextEvent();
+if (event?.timestampMicros != null) {
+  const appended = new Date(Number(event.timestampMicros / 1000n));
+  console.log(`${event.publisher ?? "unknown"} wrote it at ${appended.toISOString()}`);
+}
+```
+
+`publisher` is `null` unless you asked, and for a record the broker has no
+principal for. It names who the broker took the write from, not who wrote the
+payload's contents. `timestampMicros` is microseconds since the Unix epoch by
+the clock of the broker that led the shard, and `null` on an in-memory stream.
+Records from a consumer group (`GroupRecord`, `ShardedGroupRecord`) carry both
+fields the same way.
 
 ### Replay from an offset or a time
 
@@ -1010,6 +1131,38 @@ Abandoning the promise after the request went out leaves the write in doubt the
 same way, so read back before retrying.
 See [Conditional writes](/features/cache/#9-conditional-writes).
 
+### Lease tokens
+
+`cachePutIfLease` is `cachePutIf` that also asks the broker for a token for
+whoever holds the lease. A token grants what the lease templates the broker was
+configured with name for that key, so a worker that wins a lease can act under
+exactly that authority and no more.
+
+```ts
+import { CacheCondition } from "felix-client";
+
+const won = await client.cachePutIfLease(
+  "acme", "prod", "leases", "endpoint-7", Buffer.from("worker-1"),
+  CacheCondition.absent(), 30,
+);
+if (!won.result.applied) throw new Error("someone else holds it");
+if (won.token === null) {
+  // The write stands; the broker just minted no token.
+  throw new Error(`no token: ${won.tokenRefused ?? "not asked for"}`);
+}
+const worker = await client.withIdentity("acme", { token: won.token.token });
+try {
+  await worker.publish("acme", "prod", "endpoint-7-jobs", Buffer.from("started"));
+} finally {
+  worker.close();
+}
+```
+
+`token` is `null` when the put did not apply, or when it applied and the broker
+minted none; `tokenRefused` says why in the second case. Either way a put that
+applied stands. `expiresAt` is seconds since the Unix epoch. The token is a
+bearer secret: keep it out of logs.
+
 ## Cache watches
 
 Watches can resume by offset and report loss explicitly, which makes the cache
@@ -1340,6 +1493,48 @@ await client.subscribeSharded("t1", "default", "orders", "earliest", positions);
 ```
 :::
 
+## Asking the cluster
+
+`Client` answers a few questions about the cluster, from the broker it is using
+right now:
+
+```ts
+const supported = await client.supports();
+if (supported.streamShards) {
+  const { shards, routing } = await client.streamRouting("t1", "default", "orders");
+  console.log(`${shards} shards, keys mapped by ${routing}`);
+}
+if (supported.shardOwners) {
+  for (const owner of await client.shardOwners("stream", "t1", "default", "orders")) {
+    console.log(`shard ${owner.shard}: ${owner.nodeId ?? `unavailable (${owner.unavailable})`}`);
+  }
+}
+console.log(`${await client.cacheShards("t1", "default", "sessions")} cache shards`);
+for (const broker of await client.topology()) console.log(`${broker.nodeId} at ${broker.addr}`);
+```
+
+`supports()` says which questions the broker will answer. Asking one it did not
+advertise rejects without sending anything. Answers are snapshots and can be
+stale the way a redirect can; a request sent on one is still routed correctly.
+
+Two more are for operators and need the `node.view:cluster:*` permission. They
+are **not forwarded**: connect to a broker to ask it.
+
+```ts
+const view = await client.inspectShard("stream", "t1", "default", "orders", 0);
+console.log(`${view.nodeId}: ${view.role}, ${view.phase}, serving=${view.serving}`);
+for (const replica of view.replicas) console.log(`  ${replica.nodeId} ${replica.state} lag=${replica.lag}`);
+
+let cursor: SubscriptionCursor | undefined;
+do {
+  const page = await client.listSubscriptions({ stream: "orders", dropping: true }, 100, cursor);
+  for (const sub of page.subscriptions) {
+    console.log(`${sub.principal} shard ${sub.shard}: ${sub.dropped} dropped, depth ${sub.depth}/${sub.capacity}`);
+  }
+  cursor = page.nextCursor ?? undefined;
+} while (cursor);
+```
+
 ## Buffers are Buffers
 
 Payloads and cache values come back as real `Buffer`s, not wrappers. `equals`,
@@ -1356,23 +1551,15 @@ values are plain `number`s, exact up to `Number.MAX_SAFE_INTEGER`.
 
 ## What is not wrapped
 
-The [Rust client](/clients/rust/) has more than this binding wraps. What is
-left out, and why:
+The [Rust client](/clients/rust/) has two things this binding leaves out on
+purpose:
 
-- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
-  `stream_deleted` have no accessor on a subscription, sharded or not. A read
-  in flight holds the handle, so these need their own shared state. A
-  follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
-- **The single-connection `Connection` and `Publisher` layer** (`topology`,
-  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
-  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
-  `Client`, which owns those connections and runs the feature checks
-  itself.
-- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
-  futures; `publish_batches` is the iterator-shaped equivalent.
-- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
-  connection configuration, set once, not calls.
+- **`publish_json` and `publish_batch_json`.** JavaScript serializes JSON
+  itself: publish `Buffer.from(JSON.stringify(value))`.
+- **A custom `quinn` transport** (`connect_with_policy`,
+  `connect_any_with_transport`). It is Rust-only by design: it takes a Rust
+  transport object a Node program cannot build. TLS, ALPN and client
+  certificates are options on `connect`.
 
 ## Conformance
 

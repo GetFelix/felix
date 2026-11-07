@@ -211,3 +211,9 @@ fn a_cursor_error_carries_where_to_resume() {
     );
     assert!(encoded.contains("\nsubscribe to orders"), "{encoded}");
 }
+
+#[test]
+fn a_refused_header_is_an_invalid_argument() {
+    let err = anyhow::Error::new(felix_client::RecordHeadersError::EmptyName);
+    assert!(encode(&err).starts_with(KIND_INVALID));
+}

@@ -16,6 +16,54 @@ use tokio::sync::Mutex;
 
 use crate::errors::{classify, invalid};
 
+/// A batch the producer's task has taken and not yet answered, from the
+/// producer's `handOff*` methods. Read its outcome once, with `offset` or
+/// `done`; dropping it does not stop the batch.
+#[napi]
+pub struct Handed {
+    slot: Mutex<Option<felix_client::Handed>>,
+}
+
+#[napi]
+impl Handed {
+    /// Resolves to the log offset of the batch's first record, or `null` as
+    /// `publishBatch` does, once the leader has answered. Rejects when it
+    /// failed; the batch is then in doubt as for `publishBatch`. A `Handed`
+    /// can be read once.
+    #[napi]
+    pub async fn offset(&self) -> Result<Option<BigInt>> {
+        let handed = self.take().await?;
+        handed
+            .offset()
+            .await
+            .map(|offset| offset.map(BigInt::from))
+            .map_err(classify)
+    }
+
+    /// Resolves once the call has been answered, rejecting when it failed. A
+    /// `Handed` can be read once.
+    #[napi]
+    pub async fn done(&self) -> Result<()> {
+        self.take().await?.done().await.map_err(classify)
+    }
+}
+
+impl Handed {
+    fn new(handed: felix_client::Handed) -> Self {
+        Self {
+            slot: Mutex::new(Some(handed)),
+        }
+    }
+
+    async fn take(&self) -> Result<felix_client::Handed> {
+        self.slot
+            .lock()
+            .await
+            .take()
+            .ok_or_else(|| invalid("this Handed was already read"))
+    }
+}
+
 /// An idempotent producer, made by `client.producer()`.
 #[napi]
 pub struct Producer {
@@ -128,6 +176,77 @@ impl Producer {
                 .map_err(classify)?
         };
         handed.done().await.map_err(classify)
+    }
+
+    /// Like `publishBatch`, but resolves as soon as the producer's task has
+    /// the batch, with a `Handed` to read the answer from. The batch has then
+    /// taken its place in the stream's sequence, so a caller can queue many
+    /// batches without waiting on each leader's answer and still know they go
+    /// out in the order they were handed over. Refusals that come before the
+    /// hand-over reject here.
+    #[napi]
+    pub async fn hand_off_batch(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        payloads: Vec<Buffer>,
+        key: Option<Buffer>,
+    ) -> Result<Handed> {
+        let payloads = batch_of(payloads)?;
+        let key = key.map(|k| Bytes::copy_from_slice(&k));
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_batch(&tenant_id, &namespace, &stream, key, payloads)
+            .await
+            .map(Handed::new)
+            .map_err(classify)
+    }
+
+    /// `publishBatches` handed over: the batches go to shard 0 under
+    /// consecutive sequences, and the `Handed` settles when the last is
+    /// answered. Read it with `done`.
+    #[napi]
+    pub async fn hand_off_batches(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+        batches: Vec<Vec<Buffer>>,
+    ) -> Result<Handed> {
+        if batches.is_empty() {
+            return Err(invalid("handOffBatches needs at least one batch"));
+        }
+        let batches = batches
+            .into_iter()
+            .map(batch_of)
+            .collect::<Result<Vec<_>>>()?;
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_batches(&tenant_id, &namespace, &stream, batches)
+            .await
+            .map(Handed::new)
+            .map_err(classify)
+    }
+
+    /// `abandonInDoubt` handed over. **A batch given up may land twice.** Read
+    /// the `Handed` with `done`.
+    #[napi]
+    pub async fn hand_off_abandon(
+        &self,
+        tenant_id: String,
+        namespace: String,
+        stream: String,
+    ) -> Result<Handed> {
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_abandon(&tenant_id, &namespace, &stream)
+            .await
+            .map(Handed::new)
+            .map_err(classify)
     }
 
     /// Give up on the stream's batches in doubt and number the stream from 0
