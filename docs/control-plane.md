@@ -1064,6 +1064,12 @@ and placement treats it as one. With `joint_fence` finalized:
    generation (the `readmit` step, at most one member per shard per pass).
    Each is a new fenced term on the leader, so a pass re-admits into at most
    16 shards, and none while placement is paused. The write names the new id and puts the member in `learners`.
+   Re-admission needs a serving leader to report. A leader whose fence
+   leaves a set that still names the member's old copy does not wait for
+   that copy: it counts half of that set from the other voters, so it can
+   open and report even when the set has only two voters
+   (see "One fence rule for every change of leader" in
+   [replication-design.md](replication-design.md)).
 3. **The report lets it count.** The leader's report at that generation
    lists the member in `holds_start` once the member holds the generation's
    start record. For a cache shard its counter log must hold the counter

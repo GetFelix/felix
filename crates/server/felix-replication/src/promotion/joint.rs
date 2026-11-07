@@ -185,6 +185,10 @@ pub(super) type Answered<'n> = (
     Option<felix_wire::internal::FenceAttestation>,
 );
 
+/// A node that answered a fence, with the copy its handshake named, whatever
+/// it answered.
+pub(super) type Heard = (String, Option<StorageId>);
+
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
 /// that copy: another copy under the same node id holds nothing this set
@@ -210,6 +214,18 @@ impl OldVoters {
         self.copies
             .get(node_id)
             .is_none_or(|named| identity.as_ref() == Some(named))
+    }
+
+    /// Whether `voter` answered from another copy than the one this set
+    /// names: the named copy is gone and promises nothing again. Only an
+    /// answer shows it; a silent voter is never taken for replaced.
+    fn replaced(&self, voter: &str, heard: &[Heard]) -> bool {
+        let Some(named) = self.copies.get(voter) else {
+            return false;
+        };
+        heard
+            .iter()
+            .any(|(node, identity)| node == voter && identity.is_some_and(|id| id != *named))
     }
 }
 
@@ -266,11 +282,12 @@ impl JointSets {
     pub(super) fn has_majorities<'n>(
         &self,
         answered: impl Iterator<Item = Answered<'n>>,
+        heard: &[Heard],
         own: super::OwnCopy,
         continuing: bool,
     ) -> bool {
         let answered: Vec<_> = answered.collect();
-        self.tallies(&answered, own).iter().all(|tally| {
+        self.tallies(&answered, heard, own).iter().all(|tally| {
             tally.excludes(tally.promised) && (continuing || 2 * tally.covered >= tally.voters)
         })
     }
@@ -298,20 +315,33 @@ impl JointSets {
     }
 
     /// Each set being left, then the new set: its voters, how many of them
-    /// promised, and how many hold what they acknowledged.
-    fn tallies(&self, answered: &[Answered<'_>], own: super::OwnCopy) -> Vec<Tally> {
+    /// promised, how many hold what they acknowledged, and how many answered
+    /// from another copy than the set names.
+    fn tallies(
+        &self,
+        answered: &[Answered<'_>],
+        heard: &[Heard],
+        own: super::OwnCopy,
+    ) -> Vec<Tally> {
         let tally = |voters: &BTreeSet<String>,
                      generation: u64,
                      blocking: bool,
-                     legacy: &dyn Fn(&str, Option<StorageId>, bool) -> bool| {
+                     legacy: &dyn Fn(&str, Option<StorageId>, bool) -> bool,
+                     replaced: &dyn Fn(&str) -> bool| {
             let mut promised = 0;
             let mut covered = 0;
+            let mut gone = 0;
+            let mut rest = 0;
             for voter in voters {
                 if *voter == self.local {
-                    promised += usize::from(own.promises(generation));
+                    let promises = usize::from(own.promises(generation));
+                    promised += promises;
+                    rest += promises;
                     covered += usize::from(own.trusted);
                     continue;
                 }
+                let is_replaced = replaced(voter);
+                gone += usize::from(is_replaced);
                 let from = answered.iter().filter(|(node, ..)| *node == voter.as_str());
                 let mut promises = false;
                 let mut covers = false;
@@ -322,6 +352,7 @@ impl JointSets {
                     covers |= legacy && counted.covers();
                 }
                 promised += usize::from(promises);
+                rest += usize::from(promises && !is_replaced);
                 covered += usize::from(covers);
             }
             Tally {
@@ -329,6 +360,8 @@ impl JointSets {
                 promised,
                 covered,
                 blocking,
+                replaced: gone,
+                promised_rest: rest,
             }
         };
         self.old_voters
@@ -339,6 +372,7 @@ impl JointSets {
                     old.generation,
                     self.blocking(old),
                     &|node, identity, kept| kept || old.counts(node, identity),
+                    &|voter| old.replaced(voter, heard),
                 )
             })
             .chain(std::iter::once(tally(
@@ -346,6 +380,7 @@ impl JointSets {
                 self.new_generation,
                 false,
                 &|_, _, _| true,
+                &|_| false,
             )))
             .collect()
     }
@@ -354,12 +389,13 @@ impl JointSets {
     pub(super) fn shortfall<'n>(
         &self,
         answered: impl Iterator<Item = Answered<'n>>,
+        heard: &[Heard],
         own: super::OwnCopy,
     ) -> String {
         let answered: Vec<_> = answered.collect();
-        let tallies = self.tallies(&answered, own);
+        let tallies = self.tallies(&answered, heard, own);
         let (new, old) = tallies.split_last().expect("the new set is always tallied");
-        let old = old
+        let counts = old
             .iter()
             .map(|tally| {
                 let half = if tally.blocking {
@@ -372,10 +408,17 @@ impl JointSets {
             .collect::<Vec<_>>()
             .join(" and ");
         let mut why = format!(
-            "{old} voters of the set being left and {} of {} of the new set took the fence, \
+            "{counts} voters of the set being left and {} of {} of the new set took the fence, \
              a majority of each needed",
             new.promised, new.voters,
         );
+        for tally in old.iter().filter(|tally| tally.replaced > 0) {
+            why.push_str(&format!(
+                "; {} of {} voters of a set being left answered from a replaced copy, so {} \
+                 promises from the rest, half of the set, would do",
+                tally.replaced, tally.voters, tally.promised_rest,
+            ));
+        }
         if own.attested {
             let covered = tallies
                 .iter()
@@ -397,11 +440,21 @@ struct Tally {
     covered: usize,
     /// Half its voters' promises exclude, rather than a majority.
     blocking: bool,
+    /// Voters that answered from another copy than the set names. Their
+    /// named copy promises nothing again, so half of the set from the others
+    /// meets every majority of it and every other fence that counts the same
+    /// way: a 2-voter set with one copy replaced no longer stalls the fence.
+    /// Only a set being left. `ReplacedBlocking` in
+    /// `docs/formal/FelixShardUnified.tla`.
+    replaced: usize,
+    /// Promises from voters not replaced.
+    promised_rest: usize,
 }
 
 impl Tally {
     fn excludes(&self, promised: usize) -> bool {
         Self::needs(promised, self.voters, self.blocking)
+            || (self.replaced > 0 && Self::needs(self.promised_rest, self.voters, true))
     }
 
     fn needs(count: usize, voters: usize, blocking: bool) -> bool {

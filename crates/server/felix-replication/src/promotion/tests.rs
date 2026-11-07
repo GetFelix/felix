@@ -22,6 +22,7 @@ mod headers;
 mod identity;
 mod joint;
 mod joint_learner;
+mod joint_replaced;
 mod times;
 mod unified;
 

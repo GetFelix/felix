@@ -57,7 +57,7 @@ pub(super) async fn kept_before(leader: &Broker, members: &[&str], learners: &[&
 }
 
 /// [`kept_before`], naming the copy of each member in `copies`.
-async fn kept_naming(
+pub(super) async fn kept_naming(
     leader: &Broker,
     members: &[&str],
     learners: &[&str],

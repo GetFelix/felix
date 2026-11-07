@@ -69,6 +69,11 @@ FaultUntil == MaxGen
 \* crashes only while that fence is pending, and the control plane fails
 \* over only once it has, so a stall TLC finds goes through it.
 ReadmitFirst == FALSE
+\* `ReplacedFirst`: the two budgeted starts are set changes by the serving
+\* `First`: to a two-seat set, then, once the other seat lost its directory,
+\* to three seats, leaving the two-seat set. The control plane fails over
+\* only after both, so a stall TLC finds goes through that fence.
+ReplacedFirst == FALSE
 \* `DropEvidenced`: a set started between the anchor and the fence is not
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
@@ -91,6 +96,13 @@ OneLearner == {{}} \cup {{n} : n \in Nodes}
 TwoLearners == {{}} \cup {{m, n} : m, n \in Nodes}
 LearnerChoices == NoLearners
 LearnerBlocking == FALSE
+\* `ReplacedBlocking`: a set being left that names a seat whose copy was lost
+\* after the set was introduced, and that seat answered this fence with its
+\* new copy, is fenced with half of the set, counting no seat known replaced.
+\* The lost copy promises nothing again, so a fence that counts only the
+\* others meets every majority of the set and every other such fence (a
+\* 2-voter set left by a seat back on new storage no longer stalls).
+ReplacedBlocking == FALSE
 \* Shortcuts. Each must make TLC fail.
 LearnerDropped == FALSE    \* the whole set is not fenced, only its voters
 CountNonKept == FALSE      \* a promise counts whatever the copy kept
@@ -105,6 +117,7 @@ NamesByRegistration == FALSE \* a wiped copy is counted as the copy it replaced
 TrustsRegistered == FALSE  \* only its log is: coverage counts the empty copy
 VouchAtStart == FALSE      \* a batch reaching the leader's start record vouches
 VouchBelowStart == FALSE   \* a batch level through the mark vouches, short of the start record
+ReplacedCounted == FALSE   \* with `ReplacedBlocking`, the replaced seat's new copy counts as one of the half
 
 ASSUME First \in Nodes /\ NoNode \notin Nodes
 ASSUME OldPeers \subseteq Nodes
@@ -214,6 +227,8 @@ Start(f) ==
         LET opt == IF o.si = Len(starts) + 1 THEN [o EXCEPT !.sg = g] ELSE o
         IN /\ ReadmitFirst => /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
                         /\ \E m \in o.S \ {f} : rotAt[m] > 0
+           /\ ReplacedFirst => /\ f = First /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
+                             /\ Cardinality(o.S) = IF budget.wipes > 0 THEN 2 ELSE 3
            /\ BeginFence(f, g, [g |-> g, l |-> f, S |-> opt.S, L |-> opt.L, sg |-> opt.sg, si |-> opt.si])
     /\ budget' = [budget EXCEPT !.starts = @ - 1]
     /\ UNCHANGED <<log, trusted, keptFrom, lostAt, batchSince, opened, served, acked, ackedAt, rotAt, note, writes>>
@@ -223,6 +238,7 @@ Start(f) ==
 CpStart(f) ==
     /\ LiveCp /\ ~Serving /\ TopGen < MaxGen
     /\ ReadmitFirst => budget.starts = 0 /\ rotAt[First] > 0
+    /\ ReplacedFirst => budget.starts = 0
     /\ LET last == starts[Len(starts)]
        IN BeginFence(f, TopGen + 1, [g |-> TopGen + 1, l |-> f, S |-> last.S, L |-> last.L,
                                      sg |-> last.sg, si |-> last.si])
@@ -316,11 +332,23 @@ Required(f, anchor) ==
         /\ anchor <= st.g /\ st.g < fence[f].g
         /\ ~(st.g > anchor /\ (Evidenced(f, st) \/ Silent(f, st)))}
 
+\* Seats of `V` that answered this fence from a copy lost since `R` was
+\* introduced: the copy `R` names for them is gone. Evidence only: a silent
+\* seat is never taken for replaced.
+Replaced(f, R, V) ==
+    IF ReplacedBlocking /\ R.si /= StartOf(f).si
+    THEN {m \in V : Answered(f, m) /\ ans[f][m].lost >= R.si}
+    ELSE {}
+
 \* A set fenced as `V`: its voters, or its voters and learners together.
-\* Exclusion needs a majority of `V`, or with `blocking` half of it.
+\* Exclusion needs a majority of `V`, or with `blocking` half of it, or half
+\* of it without the seats known replaced when there are any.
 FencesAs(f, R, V, blocking) ==
     LET promised == {m \in V : Answered(f, m) /\ Promises(f, R, m)}
-    IN /\ IF blocking THEN MeetsQuorums(promised, V) ELSE Majority(promised, V)
+        replaced == Replaced(f, R, V)
+        counted == IF ReplacedCounted THEN promised \cup replaced ELSE promised \ replaced
+    IN /\ \/ IF blocking THEN MeetsQuorums(promised, V) ELSE Majority(promised, V)
+          \/ replaced /= {} /\ MeetsQuorums(counted, V)
        /\ Continues(f) \/ MeetsQuorums({m \in V : Answered(f, m) /\ Covers(f, m)}, V)
 
 OpenOK(f, anchor) ==
@@ -459,6 +487,7 @@ Lose(n) ==
 
 Wipe(n) ==
     /\ FaultsAllowed /\ budget.wipes > 0
+    /\ ReplacedFirst => n /= First /\ budget.starts = 1 /\ openAt[First] > 1
     /\ log' = [log EXCEPT ![n] = <<>>]
     /\ ballot' = [ballot EXCEPT ![n] = NoBallot]
     /\ setGen' = [setGen EXCEPT ![n] = 0]

@@ -896,6 +896,28 @@ both learners slips past a fence on the other two voters
 `promotion/tests/joint_learner.rs` the code. A leader that does not count by
 attestation still needs a majority of both.
 
+A set being left can also name a copy that is gone. A member that restarts on
+new storage, or after an unclean stop, comes back under a new storage identity
+and refuses as a non-voter until a set naming that identity readmits it. The
+set being left still names the old copy, which never promises again. In a set
+with two voters a majority is both of them, so the fence can never open. The
+leader does not serve, so it reports nothing, and the control plane never
+readmits the member. To get out of this, when a voter of a set being left
+answers from another copy than the set names, the fence needs only half of
+that set, counted from the other voters, and the replaced voter never counts.
+The old copy promises nothing again, so that half still meets every majority
+the set could acknowledge on, and every other fence of the set. A voter that
+does not answer at all is not taken for replaced: silence is no evidence. The
+fence's own set still needs a majority. While such a fence waits, the shard's
+status says how many voters answered from a replaced copy and how many
+promises the rest gave.
+`FelixShardUnifiedCpLiveReplacedLeaving.cfg` shows the fence opening where
+`FelixShardUnifiedCpLiveReplacedLeavingLegacy.cfg` stalls,
+`FelixShardUnifiedReplacedBlocking.cfg` checks safety, and
+`FelixShardUnifiedReplacedCounted.cfg` shows that counting the replaced
+member's new copy as one of the half breaks it. `promotion/tests/joint_replaced.rs`
+tests the code.
+
 In the code the replica answers this way only to a caller that offered
 `UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
 the shard's own log (`ReplicaHandler::fence_from`). A learner, or a copy the
@@ -5361,7 +5383,10 @@ acknowledgement is the one it was.
 > left. `a_fence_leaving_a_staged_learner_opens_on_half_the_set_with_it` and
 > `a_fence_leaving_two_learners_still_needs_half_of_the_whole_set`: half of
 > the set with its learners, for a leader that counts by attestation. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
-> copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
+> copy check. `a_fence_leaving_a_set_with_a_replaced_copy_opens_on_the_other_half`,
+> `a_replaced_copy_is_not_counted_toward_the_half` and
+> `a_silent_member_is_not_taken_for_replaced`: half of a set being left that
+> names a replaced copy. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
 > a voter of the set being left answers though its routing view no longer
 > names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
 > the set being left survives a ship pass before the fence.
