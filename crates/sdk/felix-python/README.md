@@ -65,7 +65,7 @@ async def main() -> None:
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are Rust only. A publish without `key=` puts every record on shard 0.
+Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish without `key=` puts every record on shard 0.
 
 ## Configuration
 
@@ -101,7 +101,7 @@ except felix.FelixError as err:
         ...  # nothing was applied
 ```
 
-The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedError`, `NotFoundError` and `CursorError`. The client already retries what is safe to retry. Do not match on the message text. [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps every code to the type each client raises.
+The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedError`, `NotFoundError`, `CursorError`, `CommitError` (with `NotOnOwningShardError` and `EventCountError`), `TrimError` and `PublishRefusedError`. The client already retries what is safe to retry. Do not match on the message text. [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps every code to the type each client raises.
 
 ## Supported platforms
 

@@ -48,16 +48,16 @@ Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`, s
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are Rust only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
+Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
 
 ## Configuration
 
-`Client.connect(addrs, tenantId, options)` takes the addresses and the tenant, then these options:
+`Client.connect(addrs, tenantId, options)` takes the addresses and the tenant as arguments, then an options object:
 
-| Option | Meaning |
+| Argument or option | Meaning |
 | --- | --- |
-| `addrs` | One `host:port` or an array. Any reachable broker is enough. |
-| `tenantId` | The tenant to authenticate as. |
+| `addrs` (argument) | One `host:port` or an array. Any reachable broker is enough. |
+| `tenantId` (argument) | The tenant to authenticate as. |
 | `token` | A Felix token. |
 | `tokenProvider` | A function that returns a fresh token, or a promise of one. It receives an `AbortSignal`. `token` is then optional. |
 | `caFile` | A PEM file of CAs to trust. The system store when omitted. |
@@ -90,7 +90,7 @@ try {
 }
 ```
 
-The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedError`, `NotFoundError`, `CursorError` and `InvalidArgumentError`. The client already retries what is safe to retry. Do not match on the message text. [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps every code to the type each client raises.
+The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedError`, `NotFoundError`, `CursorError`, `InvalidArgumentError`, `CommitError` (with `NotOnOwningShardError` and `EventCountError`), `TrimError` and `PublishRefusedError`. The client already retries what is safe to retry. Do not match on the message text. [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps every code to the type each client raises.
 
 ## Supported platforms
 

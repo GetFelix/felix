@@ -4,6 +4,16 @@
 
 It is not published to crates.io. It ships as a native library with its header.
 
+Each call returns at once and its result arrives in a callback. These are the calls, taken from the full program under [Quick start](#quick-start):
+
+```c
+felix_client_connect("127.0.0.1:5000", "t1", token, "localhost", NULL, NULL, on_connect, &w);
+felix_client_publish(client, "t1", "default", "events", payload, sizeof payload - 1,
+                     NULL, 0, FELIX_ACK_PER_MESSAGE, FELIX_DELIVERY_AT_MOST_ONCE,
+                     NULL, on_publish, &w);
+felix_subscription_next(sub, 5000 /* ms */, NULL, on_event, &w);
+```
+
 ## Install
 
 Every GitHub release attaches an archive per platform, with a `.sha256` file beside it. With the GitHub CLI, for Linux x64:
@@ -171,7 +181,7 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are Rust only. A publish with a null key puts every record on shard 0.
+Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish with a null key puts every record on shard 0.
 
 ## Configuration
 
@@ -185,7 +195,7 @@ Record headers and client certificates (mutual TLS) are Rust only. A publish wit
 | Token provider | `token_fetch`, `token_user_data` and `token_release` in `FelixConnectOptions`. `token` is then optional. |
 | CA file | `ca_file`: a PEM file of CAs to trust. The system store when null. |
 | Server name | `server_name`: the name the broker's certificate carries. `localhost` when null. |
-| Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Zero is the default. |
+| Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Times are in milliseconds. Zero is the default. |
 
 TLS is always on, and there is no switch to skip verification.
 

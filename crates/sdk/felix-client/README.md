@@ -61,7 +61,7 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) work in this client only.
+Record headers and client certificates (mutual TLS) are available in the Rust client only.
 
 ## Configuration
 
@@ -74,7 +74,7 @@ Record headers and client certificates (mutual TLS) work in this client only.
 | CA file | `root_store_from_pem_file`, passed to `quic_client_config` |
 | Server name | the `server_name` argument of `Client::connect` |
 | Client certificate | `ClientIdentity` with `quic_client_config_with_identity` |
-| Reconnect policy | `Client::connect_with_policy` and `ReconnectPolicy` |
+| Reconnect policy | `Client::connect_with_policy` and `ReconnectPolicy`. Times are `Duration`s. |
 
 TLS is always on, and there is no switch to skip verification. With no CA file the client trusts the operating system's roots. A development broker with a self-signed certificate needs its CA file:
 

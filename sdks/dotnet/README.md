@@ -52,7 +52,7 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Idempotent producers
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers and client certificates (mutual TLS) are Rust only. A publish without a `key` puts every record on shard 0.
+Record headers and client certificates (mutual TLS) are available in the Rust client only. A publish without a `key` puts every record on shard 0.
 
 ## Configuration
 
@@ -66,7 +66,7 @@ Record headers and client certificates (mutual TLS) are Rust only. A publish wit
 | `TokenProvider` | A `Func<CancellationToken, ValueTask<string>>` that returns a fresh token. `Token` is then optional. |
 | `CaFile` | A PEM file of CAs to trust. The system store when null. |
 | `ServerName` | The name the broker's certificate carries. Default `localhost`. |
-| `ReconnectAttempts`, `ReconnectDeadline`, `ReconnectBackoff`, `ReconnectMaxBackoff` | Retry policy. |
+| `ReconnectAttempts`, `ReconnectDeadline`, `ReconnectBackoff`, `ReconnectMaxBackoff` | Retry policy. `ReconnectAttempts` is an `int`; the others are `TimeSpan`. |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file.
 
@@ -99,23 +99,13 @@ catch (FelixException e) when (e.IsRetryable)
 
 ## Supported platforms
 
-net8.0 and net10.0 on Linux, macOS and Windows, each on x64 and arm64. The package carries the native library for all six, built for glibc, so Alpine and other musl systems need a library built by hand (set `FELIX_NATIVE_LIB`). The broker scenarios run in CI on Linux x64 only.
+net8.0 and net10.0 on Linux, macOS and Windows, each on x64 and arm64. The package carries the native library for all six, built for glibc, so Alpine and other musl systems need a library built by hand (see [Building the native library yourself](https://docs.getfelix.dev/clients/csharp/#building-the-native-library-yourself)). The broker scenarios run in CI on Linux x64 only.
 
 ## Documentation
 
 - [C# client guide](https://docs.getfelix.dev/clients/csharp/)
 - [Choosing a client](https://docs.getfelix.dev/clients/overview/)
 - [Delivery semantics](https://docs.getfelix.dev/architecture/semantics/)
-
-## Building from source
-
-```bash
-cargo build --release -p felix-capi
-export FELIX_NATIVE_LIB="$PWD/target/release/libfelix.so"   # .dylib on macOS, felix.dll on Windows
-dotnet test sdks/dotnet/Felix.sln
-```
-
-`FELIX_NATIVE_LIB` wins when set; otherwise the library is found next to `Felix.Client.dll`, then under `runtimes/<rid>/native/`. Scenario tests against a broker are skipped unless `FELIX_FIXTURE` names the file written by `felix-cluster client-fixture --out FILE --ca-file CA.PEM`. The version comes from the workspace `Cargo.toml`; pass `-p:Version=...` to override it.
 
 ## License
 
