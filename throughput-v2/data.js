@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794017838760,
+  "lastUpdate": 1794018462345,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48048,6 +48048,58 @@ window.BENCHMARK_DATA = {
             "range": "10824.44",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813627.57\nmean: 812643.27\nstdev: 10824.44\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6dcc8be1583b420f9014b4241278ab63c46c9c39",
+          "message": "fix(sim): the placement nemesis stops the broker the control plane promoted (#2066) (#2070)\n\n* fix(sim): the placement nemesis stops the broker the control plane promoted (#2066)\n\nThe abandon fault chose its shards from views read before waiting for the\nleader to be stoppable. By then the control plane could have failed the\nshards over, so it stopped the old leader while the promoted broker stayed\nup and abandon answered not_stranded. It now reads the leaders again once\nthe broker can be stopped and stops the one named then.\n\n* test(sim): pin seed 33 to the abandon the promoted broker's stop allows (#2066)",
+          "timestamp": "2026-11-06T18:11:11-08:00",
+          "tree_id": "081cede8e54f7f03cbb12859ceb570fb3fa7faac",
+          "url": "https://github.com/GetFelix/felix/commit/6dcc8be1583b420f9014b4241278ab63c46c9c39"
+        },
+        "date": 1794018461681,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 643830.65,
+            "range": "68337.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 643830.65\nmean: 607920.82\nstdev: 68337.37\ncv: 11.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 643830.65,
+            "range": "68337.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 643830.65\nmean: 607920.82\nstdev: 68337.37\ncv: 11.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158504.57,
+            "range": "14836.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158504.57\nmean: 152697.58\nstdev: 14836.00\ncv: 9.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1585045.7,
+            "range": "148359.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1585045.70\nmean: 1526975.81\nstdev: 148359.98\ncv: 9.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
