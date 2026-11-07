@@ -544,7 +544,7 @@ applied is reported, not re-sent. `AsyncClient.publish_on_shard` is a coroutine.
 
 ### Batches
 
-`publish_batch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It returns the first record's offset, or `None` as `publish` does:
+`publish_batch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It returns the first record's offset, or `None` as `publish` does. An empty list raises `ValueError`:
 
 ```python
 first = client.publish_batch("t1", "default", "orders", ticks, key=customer_id.encode())

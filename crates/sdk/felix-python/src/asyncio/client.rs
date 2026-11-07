@@ -1173,6 +1173,7 @@ impl AsyncClient {
         ack: &str,
         headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
+        check_payloads(&payloads)?;
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream) = (

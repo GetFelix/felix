@@ -31,7 +31,10 @@ def test_keyed_records_are_split_by_shard_and_reported(client, fixture, key):
 def test_a_keyed_batch_stays_on_one_shard(client, fixture, key):
     tenant, namespace, stream = fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"]
     payloads = [f"{key}-{i}".encode() for i in range(4)]
-    assert client.publish_batch(tenant, namespace, stream, [], ack="per_message") is None
+    with pytest.raises(ValueError, match="at least one"):
+        client.publish_batch(tenant, namespace, stream, [], ack="per_message")
+    with pytest.raises(ValueError, match="at least one"):
+        client.publish_batch(tenant, namespace, stream, [], headers=[])
     first = client.publish_batch(
         tenant, namespace, stream, payloads, key=key.encode(), ack="per_message"
     )

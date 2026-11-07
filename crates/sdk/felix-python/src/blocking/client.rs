@@ -1299,8 +1299,8 @@ impl Client {
     /// Publish `payloads` as one batch, all under `key` when given, else all
     /// to shard 0 as `publish` does. Records sharing a key share a shard, so
     /// the batch is one frame to its owner and keeps its order. Returns the
-    /// first record's log offset, or `None` as `publish` does. An empty list
-    /// sends nothing.
+    /// first record's log offset, or `None` as `publish` does. An empty list raises
+    /// `ValueError`.
     #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message", headers=None))]
     fn publish_batch(
         &self,
@@ -1313,6 +1313,7 @@ impl Client {
         ack: &str,
         headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<u64>> {
+        check_payloads(&payloads)?;
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream) = (
