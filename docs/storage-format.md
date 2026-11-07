@@ -60,6 +60,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
+  copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
@@ -1304,13 +1305,24 @@ JSON, in lowercase hex. Lines are sorted.
 A rotation keeps `doubted` and `unkept`. A file that does not decode reads as
 every mark on every copy, and the next write keeps that, so each copy clears
 only by the rules above. A directory that ran before without the file, such
-as one an older release ran on, starts with `untrusted all` only. It doubts
+as one an older release ran on, starts with `untrusted all` only, and only
+when `copy-trust-kept` is absent too. It doubts
 nothing, since nothing says which copy it led and doubting all of them would
 refuse an older caller's fence on every idle shard, and it marks nothing
 unkept, since an older release never gave a learner a ballot. When the file
 does not say since when a copy is unkept, the broker writes its current
 ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
 neither reads nor writes the file.
+
+## `copy-trust-kept`: a release that keeps `copy-trust` ran here
+
+One text file at the durable root holding `copy_trust` and a newline,
+written, synced, the first time a start writes `copy-trust`, before it does,
+and never removed. It is what tells a directory an older release ran on
+from one whose `copy-trust` was lost: with it, a missing `copy-trust` reads
+as every mark on every copy. It is a file of its own because `run-state` and
+`storage-id` decode strictly, and an older release would take a changed one
+for a crash or a new directory. An older release neither reads nor writes it.
 
 ## `run-token`: the run the witness names
 
