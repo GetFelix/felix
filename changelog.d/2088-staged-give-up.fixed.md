@@ -1,0 +1,1 @@
+- Placement no longer drops a follower from a shard's set when a move to that follower is given up because it went down or halted before the fence. The set goes back to what it was before the move, so a shard whose only full copy is on that follower can still open (#2088).

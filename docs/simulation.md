@@ -483,7 +483,7 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | --- | --- | --- |
 | `first` | The first seed. | 1 |
 | `seeds` | How many seeds per mode. | 2000 |
-| `shards` | Jobs per mode. | 50 |
+| `shards` | Jobs per mode, lowered to `seeds` when larger. | 50 |
 | `modes` | `off`, `clocks`, `placement`, `power-loss` (comma separated), or `all`. | `off` |
 | `parallel` | Jobs running at once, 1 to 20. | 4 |
 

@@ -376,6 +376,23 @@ async fn a_wiped_member_is_readmitted_then_counts_once_it_holds_the_start() {
 
         let holds: &[&str] = if admit { &["broker-c"] } else { &[] };
         b_reports(&store, readmitted.generation, holds).await;
+        // The leader of the set naming the new copy showed it caught up:
+        // that is the durable evidence a fence may trust it on. broker-a was
+        // never replaced and gets none.
+        let evidenced = store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("assignment");
+        assert_eq!(
+            evidenced.readmitted,
+            vec![crate::model::Readmitted {
+                node: "broker-c".to_string(),
+                storage_id: sid(33),
+                generation: readmitted.generation,
+                offset: 10,
+            }]
+        );
+        let readmitted = evidenced;
         let read = PlacementRead::load(&store, &Default::default())
             .await
             .expect("read");
