@@ -25,11 +25,11 @@ pub(crate) use std::fs::{
 };
 
 #[cfg(feature = "sim")]
-pub(crate) use mem::{claim, register, tree_at, unregister};
+pub(crate) use mem::{Tree, claim, register, tree_at, unregister};
 #[cfg(feature = "sim")]
 pub(crate) use routed::{
-    File, OpenOptions, create_dir_all, metadata, read, read_dir, read_to_string, remove_dir_all,
-    remove_file, rename, sync_simulated_dir, sync_simulated_filesystem, write,
+    File, OpenOptions, create_dir_all, metadata, note_torn_tail, read, read_dir, read_to_string,
+    remove_dir_all, remove_file, rename, sync_simulated_dir, sync_simulated_filesystem, write,
 };
 
 use std::path::Path;
@@ -46,6 +46,13 @@ pub(crate) fn from_os(file: std::fs::File) -> File {
         file
     }
 }
+
+/// Record that recovery repaired the torn tail of `segment` or removed it,
+/// so a simulation can see that a power cut it injected was dealt with.
+/// Nothing without the `sim` feature.
+#[cfg(not(feature = "sim"))]
+#[inline]
+pub(crate) fn note_torn_tail(_segment: &Path) {}
 
 /// Whether `path` exists. Any error counts as no, as with `Path::exists`.
 pub(crate) fn exists(path: impl AsRef<Path>) -> bool {
