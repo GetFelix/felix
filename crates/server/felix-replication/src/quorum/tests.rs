@@ -1151,3 +1151,29 @@ fn a_readmission_counts_only_while_the_fleet_rules_out_elections() {
         "finalized"
     );
 }
+
+/// A copy a leader shipped level this run is not untrusted for being
+/// unclean-started, even once its log is closed and only the set remembers.
+fn routed(stream: &str) -> felix_router::ShardKey {
+    felix_router::ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: stream.to_string(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    }
+}
+
+#[test]
+fn a_copy_shipped_level_after_an_unclean_start_is_not_surely_untrusted() {
+    let marks = QuorumMarks::new();
+    assert!(!marks.surely_untrusted(&routed("orders")), "clean start");
+
+    let unclean = Arc::new(crate::unclean::UncleanStart::new("n1"));
+    marks.set_unclean_start(Arc::clone(&unclean));
+    assert!(marks.surely_untrusted(&routed("orders")), "not shipped yet");
+
+    unclean.trust(&crate::driver::watch_key(&routed("orders")));
+    assert!(!marks.surely_untrusted(&routed("orders")), "shipped level");
+    assert!(marks.surely_untrusted(&routed("other")), "another shard");
+}

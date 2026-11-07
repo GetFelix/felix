@@ -186,14 +186,14 @@ async fn an_unopened_copy_on_disk_is_reported_without_opening_it() {
         .unwrap()
         .run(Arc::new(NoPeers));
     settle().await;
-    assert!(!broker.holds_unopened_copy(&key));
+    assert!(!broker.holds_copy_on_disk(&key));
 
     // Create the copy, then close it so it is on disk but not open.
     let storage = broker.broker().durable_storage().unwrap();
     storage.open_stream("t", "n", "s", 0).unwrap();
-    assert!(broker.holds_unopened_copy(&key));
+    assert!(broker.holds_copy_on_disk(&key));
     storage.close_stream("t", "n", "s", 0).await.unwrap();
-    assert!(broker.holds_unopened_copy(&key));
+    assert!(broker.holds_copy_on_disk(&key));
     assert!(broker.copy_attestation(&key).await.is_none());
     assert!(
         broker

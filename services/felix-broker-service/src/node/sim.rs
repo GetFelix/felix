@@ -619,15 +619,31 @@ impl SimBroker {
         )
     }
 
-    /// Whether `key` has a copy on disk this broker has not opened. A fence
-    /// would open it to answer; asking here does not.
-    pub fn holds_unopened_copy(&self, key: &ShardKey) -> bool {
+    /// Whether `key` has a copy on disk, open or not. A fence would open an
+    /// unopened one to answer; asking here does not.
+    pub fn holds_copy_on_disk(&self, key: &ShardKey) -> bool {
         let kind = match key.kind {
             ShardKind::Stream => LogKind::Stream,
             ShardKind::Cache => LogKind::Cache,
         };
         self.broker
             .copy_on_disk(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+    }
+
+    /// Whether a fence would find the copy of `key` untrusted without reading
+    /// its log. See [`QuorumMarks::surely_untrusted`].
+    pub fn copy_surely_untrusted(&self, key: &ShardKey) -> bool {
+        let route = felix_router::ShardKey {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            shard: key.shard,
+            kind: match key.kind {
+                ShardKind::Stream => felix_router::ShardKind::Stream,
+                ShardKind::Cache => felix_router::ShardKind::Cache,
+            },
+        };
+        self.quorum_marks.surely_untrusted(&route)
     }
 
     /// The membership task, `None` only if the config named no cluster.

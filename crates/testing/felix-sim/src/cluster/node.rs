@@ -380,11 +380,11 @@ impl Node {
             }
         };
         let Some(attested) = attested else {
-            // A fence would open this copy to answer. After an unclean start
-            // nothing is trusted until a leader vouches (`attest_copy`), so an
-            // unopened copy there is untrusted rather than absent.
-            let unopened = broker.holds_unopened_copy(key) && broker.started_unclean();
-            return unopened.then_some(kills::Copy::Untrusted);
+            // A fence would open this copy to answer. Untrusted only when it
+            // would be whatever the log holds (`attest_copy`); a copy a
+            // leader already shipped level stays trusted after its log closes.
+            let untrusted = broker.holds_copy_on_disk(key) && broker.copy_surely_untrusted(key);
+            return untrusted.then_some(kills::Copy::Untrusted);
         };
         let trusted = attested.trusted;
         Some(if trusted {
