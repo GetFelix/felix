@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794062645978,
+  "lastUpdate": 1794062939845,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62106,6 +62106,72 @@ window.BENCHMARK_DATA = {
             "range": "79.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 398.00\nmean: 442.40\nstdev: 79.08\ncv: 17.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3f578af1aad293f6a6f68d5e0a68a165d4dfa666",
+          "message": "spec(shard): cut FelixShardCpLiveReleased down so it finishes in CI (#2099)\n\n* spec(shard): cut FelixShardCpLiveReleased down so it finishes in CI\n\nThe released-leader liveness check never finished in six hours. The\nregistered configuration now allows two generations past the control\nplane, adoption up to 3, one stop, and fixes the first leader with a\nstate constraint (FirstLeaderFixed; brokers are interchangeable and\nopened only grows, so it drops whole renamed behaviours). It passes in\n15 min locally (5.7M distinct states). Its new twin without\nAboveReported violates CpLeaderServes in about a minute through the\nrelease. The old bound moves to the nightly job as\nFelixShardCpLiveReleasedFull.\n\nSpec-Unaffected: no code change; the spec's actions and properties are unchanged, only a state-constraint operator and configurations are added\n\n* ci(formal): leave FelixShardCpLiveReleasedFull out of the nightly job\n\nIt ran past the six-hour hosted-runner limit twice, so the nightly job could\nonly ever time out on it. Say it is unchecked instead.\n\nSpec-Unaffected: CI wiring and a comment only.",
+          "timestamp": "2026-11-07T06:39:55-08:00",
+          "tree_id": "b174cef5f541027532f786f39791c13108182912",
+          "url": "https://github.com/GetFelix/felix/commit/3f578af1aad293f6a6f68d5e0a68a165d4dfa666"
+        },
+        "date": 1794062930491,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.60\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "3.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 205.80\nstdev: 3.03\ncv: 1.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 265,
+            "range": "60.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 265.00\nmean: 291.20\nstdev: 60.89\ncv: 20.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "12.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 204.20\nstdev: 12.28\ncv: 6.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "292.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 520.20\nstdev: 292.32\ncv: 56.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 523,
+            "range": "986.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 523.00\nmean: 963.60\nstdev: 986.43\ncv: 102.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
