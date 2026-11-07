@@ -151,11 +151,13 @@ pub(super) enum Start {
 /// Asked until it answers, unless `FELIX_START_WITHOUT_CONTROLPLANE` is on:
 /// then for at most `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`, and a control plane
 /// found down (not refusing) on every attempt lets a directory that qualifies
-/// start from its view (`super::from_view::qualify`). Otherwise it is asked
-/// until it answers, as without the switch.
+/// start from its view (`super::from_view::qualify`), with run witnesses
+/// under `witnesses`. Otherwise it is asked until it answers, as without the
+/// switch.
 pub(super) async fn start(
     config: &BrokerConfig,
     durable_root: Option<&std::path::Path>,
+    witnesses: Option<&std::path::Path>,
     link: &Option<impl ControlPlaneLink>,
     credential: &Option<NodeCredential>,
 ) -> anyhow::Result<Start> {
@@ -173,7 +175,13 @@ pub(super) async fn start(
                  rather than starting from the control-plane view"
             ),
             membership::Bounded::Down => {
-                match super::from_view::qualify(root, &membership.node_id, &membership.features) {
+                match super::from_view::qualify(
+                    root,
+                    &membership.node_id,
+                    &membership.features,
+                    witnesses,
+                    super::storage::this_boot(),
+                ) {
                     Ok(view) => {
                         tracing::warn!(
                             storage_id = %view.storage_id,

@@ -515,8 +515,15 @@ hold:
    plane held when the broker found the replacement, and the view must match
    both. A marker written by an older release names
    neither, and refuses every view.
-4. The view's fleet had finalized `replica_election`.
-5. This build reports every feature the view's fleet finalized. That is the
+4. The run witness names the directory: a file in `/dev/shm` that every start
+   rewrites, naming the token the start wrote to `<root>/run-token` and the
+   machine's boot. A restore brings back an older token, and a reboot clears
+   `/dev/shm`, so only a restart on the same machine, in the same boot, with
+   the directory as its last start left it qualifies. Nothing in the
+   directory itself can rule out a restore. See `docs/durable-storage.md`,
+   "The run witness".
+5. The view's fleet had finalized `replica_election`.
+6. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
    or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
 
@@ -531,7 +538,7 @@ started this way votes only if it comes back at its registered address.
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
     A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
-    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, replica_election, every feature reported?"}
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, run witness,<br/>replica_election, every feature reported?"}
     Q -- "no" --> W
     Q -- "yes" --> O["Open storage"]
     O -- "the run rotated the storage id" --> W
@@ -582,10 +589,12 @@ and brokers that stayed up still hold them. Data is deleted only by a delete
 in the change feed or a tombstone. Client listeners and readiness open once
 the broker has registered.
 
-**The trade-off.** A directory restored from a snapshot without deleting
-`storage-id` is caught only when the control plane answers, after it may have
-voted on old ballots. With the switch off the check runs before anything is
-opened. A restore must delete `storage-id` or use `felix-broker restore-point`
+**The trade-off.** The run witness lives in memory, so a broker that restarts
+after a reboot, or on a new machine or pod, waits for the control plane even
+with the switch on. That is the price of never voting from a restored copy
+(#2071). A copy taken during the broker's last run and put back before its
+next start is the one restore neither the witness nor the control plane can
+see. A restore must delete `storage-id` or use `felix-broker restore-point`
 either way; see "Restoring to a backup point" in `docs/durable-storage.md`.
 
 ### Operator endpoints

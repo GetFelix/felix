@@ -10,8 +10,9 @@
 //!
 //! A new call into `std::fs` on a broker's data directory should come through
 //! here, or the simulator silently reads the disk instead of its own tree.
-//! The exceptions are `fault.rs`, `run_state/boot.rs` and `io/power_loss.rs`,
-//! which read the host itself, and the fuzzing entry points.
+//! The exceptions are `fault.rs`, `run_state/boot.rs`, the witness half of
+//! `run_state/witness.rs` and `io/power_loss.rs`, which read the host itself,
+//! and the fuzzing entry points.
 
 #[cfg(feature = "sim")]
 mod mem;
