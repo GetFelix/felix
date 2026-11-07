@@ -6,7 +6,7 @@
 //! phantom) by name. A key it finds nothing wrong with then goes to the
 //! [`linearizable`](super::linearizable) search, which is complete.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 use super::checker::{Rule, Violation};
@@ -125,6 +125,7 @@ pub(crate) fn check_with(
         if out.len() > before {
             continue;
         }
+        let indices = drop_unobserved_unknown_puts(ops, indices);
         match linearizable::check_key(ops, &indices, budget) {
             Linearizability::Ok => {}
             Linearizability::Violation(witness) => out.push(Violation {
@@ -145,6 +146,40 @@ pub(crate) fn check_with(
         }
     }
     unknown
+}
+
+/// Drop unknown-outcome puts whose value no get or delete reported. Such a
+/// put is optional, and any order that applied it can leave it out: nothing
+/// read its value, so no read sat in its window. Left in, each one doubles the
+/// search. A conditional put sees whether the key is present, so a key with
+/// one keeps every operation.
+fn drop_unobserved_unknown_puts(ops: &[RegisterOp], indices: Vec<usize>) -> Vec<usize> {
+    let conditional = indices
+        .iter()
+        .any(|&i| matches!(ops[i].action, RegisterAction::PutIf { .. }));
+    if conditional {
+        return indices;
+    }
+    let observed: HashSet<u64> = indices
+        .iter()
+        .filter_map(|&i| match ops[i].action {
+            RegisterAction::Get { value } => value,
+            RegisterAction::Delete {
+                removed: Some(Some(value)),
+            } => Some(value),
+            _ => None,
+        })
+        .collect();
+    indices
+        .into_iter()
+        .filter(|&i| match ops[i].action {
+            RegisterAction::Put {
+                value,
+                acknowledged: false,
+            } => observed.contains(&value),
+            _ => true,
+        })
+        .collect()
 }
 
 fn check_key(ops: &[RegisterOp], key: &str, indices: &[usize], out: &mut Vec<Violation>) {

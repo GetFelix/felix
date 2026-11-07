@@ -470,6 +470,26 @@ answered that leader came later and the report vouches for none of it
 (`FelixShardFencedCrashCountsUnnamed.cfg` finds the record lost when it
 counts).
 
+The control plane keeps these pins when it names the same leader again at a
+new generation (a refusal, a stuck rename, an undone move), until that leader
+reports serving at the generation it is named at. A rename that dropped them
+would let the next fence count the copy they rule out. A member's pin goes
+once it is readmitted, since its new copy is then the one the set names.
+
+A fence can also find its generation promised to another node, as a candidate
+that stood and withdrew leaves it. When the members that promised it away
+leave the old set or the new set short of a majority, the leader reports the
+generation refused rather than wait; an answer from a copy the pins rule out
+counts as one that cannot help. With no pins on the route that answer still
+keeps the fence pending, as before. Every refusal carries the newest ballot
+above the generation that the leader learned (from its own copy, a replica
+that answered ahead, or, when the set before the generation is unknown, from
+asking its set without taking a ballot), and placement names the leader again
+above it. Under `joint_fence` it does so only at metadata level 29, where the
+store records the generation a skip replaced; below that it renames one
+generation up, and a rename that lands on the promised generation is refused
+again and moves one more (#2046).
+
 Such a member is named by the identity the reporting leader's own promotion
 named it by, which the report carries for each follower the leader has not
 reached at its generation (`inherited_storage_ids`, #1574). A leader learns a
@@ -2952,7 +2972,10 @@ wrong with either broker.
 
 Finding it is the easy half and is done: a batch's overlap with what a follower
 already holds is compared byte for byte, and a mismatch is
-`Divergence::Conflict`. A follower answers with the end of the batch it was sent
+`Divergence::Conflict`. Every overlapping offset is compared. The follower's
+copy can be larger than the leader's, so it reads on until the whole overlap is
+covered, and a record it cannot read refuses the batch for a retry rather than
+counting as agreement (#2062). A follower answers with the end of the batch it was sent
 rather than its own tail, so the leader cannot resume past records neither side
 has compared (#406).
 

@@ -129,7 +129,9 @@ pub(crate) fn newest_held(
 /// newest generation known to any broker must hold everything acknowledged;
 /// a deposed one still serving is held to its own log (see
 /// [`missing_by_server`]; after the heal, see [`newest_held`]). A shard
-/// nobody serves is skipped here: `ElectionSettles` reports it. The records are read from each broker's log
+/// nobody serves is skipped here: `ElectionSettles` reports it. An append
+/// acknowledged before an operator abandoned the log is not held to it (the
+/// history marks it unknown). The records are read from each broker's log
 /// directly, whether a quorum has committed them or not.
 #[derive(Debug)]
 pub struct AckedHeldByLeader {

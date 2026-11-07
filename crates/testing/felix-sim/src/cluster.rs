@@ -56,7 +56,9 @@ use tokio_util::sync::CancellationToken;
 pub use self::census::{Census, NodeView};
 use self::kills::KillLog;
 use self::node::Node;
-use crate::controlplane::{CpConfig, SimControlPlane};
+use crate::clock::{self, Owner};
+use crate::controlplane::{Answer, CpConfig, SimControlPlane};
+use crate::nemesis::clocks::{ClockPlan, ClockSkew};
 use crate::net::{Link, SimNet};
 
 /// The tenant, namespace, stream and cache every run uses.
@@ -88,6 +90,11 @@ pub struct SimConfig {
     pub settle_within: Duration,
     /// Whether to inject faults at all.
     pub faults: bool,
+    /// Whether the nemesis also acts as an operator on placement: moves,
+    /// drains, seat replacement, node removal, abandoned logs and kills
+    /// between promotion and open. Off by default, so a seed's schedule stays
+    /// what it was; [`SimConfig::with_placement_faults`] turns it on.
+    pub placement_faults: bool,
     /// The most real time a run may take, startup included. A run past it
     /// stops and reports a stall. Separately, a run whose virtual time stands
     /// still for four minutes of real time stalls: a broker loop that never
@@ -98,6 +105,13 @@ pub struct SimConfig {
     /// for what a restart does to the storage id under it.
     pub fsync_mode: FsyncMode,
     pub controlplane: CpConfig,
+    /// Whether each node's clocks are skewed, and how far
+    /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
+    /// `--cfg tokio_unstable`.
+    pub clocks: ClockSkew,
+    /// A clock plan to use instead of drawing one from the seed under
+    /// `clocks`, to pin a particular skew.
+    pub clock_plan: Option<ClockPlan>,
 }
 
 impl SimConfig {
@@ -115,10 +129,33 @@ impl SimConfig {
             fault_window: Duration::from_secs(90),
             settle_within: Duration::from_secs(60),
             faults: true,
+            placement_faults: false,
             real_time_limit: Duration::from_secs(480),
             fsync_mode: FsyncMode::None,
             controlplane: CpConfig::default(),
+            clocks: ClockSkew::Off,
+            clock_plan: None,
         }
+    }
+
+    /// Whether any node's clock differs from the shared one.
+    pub fn skews_clocks(&self) -> bool {
+        self.clocks != ClockSkew::Off || self.clock_plan.is_some()
+    }
+}
+
+/// Copies placement may have in flight at once with placement faults on. The
+/// default of one would leave a drain moving a shard at a time, too slow for
+/// two promotions to land on a shard while its seat is being replaced.
+const PLACEMENT_FAULT_MOVES: usize = 4;
+
+impl SimConfig {
+    /// The same run with placement faults on (see
+    /// [`SimConfig::placement_faults`]).
+    pub fn with_placement_faults(mut self) -> Self {
+        self.placement_faults = true;
+        self.controlplane.moves.max_concurrent = PLACEMENT_FAULT_MOVES;
+        self
     }
 }
 
@@ -143,6 +180,8 @@ pub struct NodeHandles {
 pub struct SimCluster {
     pub config: SimConfig,
     pub seed: u64,
+    /// Each node's clocks at the start and the changes the run makes.
+    pub clock_plan: ClockPlan,
     cp: SimControlPlane,
     net: SimNet,
     nodes: Vec<Node>,
@@ -167,10 +206,17 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
-        crate::clock::install();
+        let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
+            ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
+        });
+        clock::install(clock_plan.initial.clone());
         // Election backoff draws its jitter on this thread.
         felix_common::jitter::sim::seed(seed);
-        let cp = SimControlPlane::new(config.controlplane.clone()).await?;
+        let cp = clock::on(
+            Owner::ControlPlane,
+            SimControlPlane::new(config.controlplane.clone()),
+        )
+        .await?;
         let net = SimNet::new(PeerTransportConfig::default(), seed);
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
@@ -179,6 +225,7 @@ impl SimCluster {
         let cluster = Arc::new(Self {
             config,
             seed,
+            clock_plan,
             cp,
             net,
             nodes,
@@ -240,19 +287,21 @@ impl SimCluster {
     /// for one. A paused or down control plane is not stepped.
     fn spawn_controlplane_driver(&self) {
         let cp = self.cp.clone();
-        tokio::spawn(async move {
-            let config = cp.config().clone();
-            let mut sweep = tokio::time::interval(config.sweep_interval());
-            let mut reconcile = tokio::time::interval(config.reconcile_interval());
-            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = sweep.tick() => { cp.sweep().await; }
-                    _ = reconcile.tick() => { cp.reconcile().await; }
-                    () = cp.pass_requested() => { cp.reconcile().await; }
+        clock::as_owner(Owner::ControlPlane, || {
+            tokio::spawn(async move {
+                let config = cp.config().clone();
+                let mut sweep = tokio::time::interval(config.sweep_interval());
+                let mut reconcile = tokio::time::interval(config.reconcile_interval());
+                sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = sweep.tick() => { cp.sweep().await; }
+                        _ = reconcile.tick() => { cp.reconcile().await; }
+                        () = cp.pass_requested() => { cp.reconcile().await; }
+                    }
                 }
-            }
+            })
         });
     }
 
@@ -346,7 +395,18 @@ impl SimCluster {
         let at = self.elapsed();
         // Read from the store before the stop, so the view is the one the
         // broker died under.
-        let view = self.cp.shard_views().await.unwrap_or_default();
+        let mut view = self.cp.shard_views().await.unwrap_or_default();
+        let node = &self.nodes[index];
+        let unopened: std::collections::BTreeSet<String> = self
+            .shard_keys()
+            .filter(|key| {
+                node.stand(key)
+                    .is_some_and(|stand| stand.opened_generation.is_none())
+            })
+            .map(|key| describe(&key))
+            .collect();
+        // Named leader but not open yet: it acknowledged nothing as leader.
+        kills::leave_out_unopened(&mut view, &node.id, &unopened);
         if self.nodes[index].crash(&self.net, true).await {
             self.kills.lock().kill(&self.nodes[index].id, at, view);
         }
@@ -357,6 +417,16 @@ impl SimCluster {
     /// served. See `kills.rs` for the rule.
     pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
         self.kills.lock().held()
+    }
+
+    /// Abandon `key`'s log through the operator API. On success the shard is
+    /// no longer held.
+    pub async fn abandon(&self, key: &ShardKey) -> Answer {
+        let answer = self.cp.abandon(key).await;
+        if answer.ok {
+            self.kills.lock().abandon(&describe(key), self.elapsed());
+        }
+        answer
     }
 
     /// Whether the broker at `index` is running and started after an unclean

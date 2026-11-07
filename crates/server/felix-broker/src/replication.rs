@@ -256,7 +256,10 @@ async fn apply_at_tail(
 /// Compare a batch's overlapping prefix against what is already stored.
 ///
 /// Reads only the overlap, which is bounded by the batch, so a retry costs a
-/// read proportional to the resend rather than to the log.
+/// read proportional to the resend rather than to the log. Every overlapping
+/// offset is compared, or the batch is refused with an error the leader
+/// retries: accepting an overlap that was only partly compared would append
+/// after a stored record nothing checked.
 async fn conflict_in(
     log: &StreamLog,
     first_offset: u64,
@@ -276,38 +279,56 @@ async fn conflict_in(
             payload.len() + block + 32
         })
         .sum();
-    let stored = match log.read_replicated_from(first_offset, wanted.max(1)).await {
-        Ok(stored) => stored,
-        // Retention discarded the records this batch overlaps. There is nothing
-        // left to compare against, and refusing on that basis would stall a
-        // follower for a reason that is not divergence. The suffix past the
-        // tail is still appended, which is the part that matters.
-        Err(BrokerError::CursorTooOld { .. }) => return Ok(None),
-        Err(err) => return Err(err),
-    };
-
-    for (index, payload) in overlapping.iter().enumerate() {
-        let offset = first_offset + index as u64;
-        let Some(record) = stored.iter().find(|record| record.offset == offset) else {
-            // A short read, not a disagreement: the comparison simply cannot be
-            // made for the rest of this batch.
-            break;
+    let end = first_offset + overlapping.len() as u64;
+    let mut next = first_offset;
+    // The budget is sized from the leader's records, and a stored record at
+    // the same offset can be larger (a dead leader's write the new leader
+    // filled with something smaller), so one read may stop short.
+    while next < end {
+        let stored = match log.read_replicated_from(next, wanted.max(1)).await {
+            Ok(stored) => stored,
+            // Retention discarded the records from here to `oldest`. There is
+            // nothing left to compare them against, and refusing on that basis
+            // would stall a follower for a reason that is not divergence. What
+            // survives past them is still compared.
+            Err(BrokerError::CursorTooOld { oldest, .. }) if oldest > next => {
+                next = oldest;
+                continue;
+            }
+            Err(err) => return Err(err),
         };
-        // A mark that differs is a different record even with the same
-        // bytes: it would leave this replica and the leader disagreeing about
-        // where a producer stands. So is a different publisher, or a
-        // different key-and-headers block.
-        let publisher = publishers.get(index).cloned().flatten();
-        let block = headers.and_then(|headers| headers[index].as_ref());
-        if record.payload != *payload
-            || record.mark != marks[index]
-            || record.publisher != publisher
-            || record.headers.as_deref() != block
-        {
-            return Ok(Some(Divergence::Conflict {
-                offset,
-                expected: tail,
-            }));
+        let read_from = next;
+        for record in stored.iter().take_while(|record| record.offset < end) {
+            if record.offset != next {
+                break;
+            }
+            let index = (next - first_offset) as usize;
+            // A mark that differs is a different record even with the same
+            // bytes: it would leave this replica and the leader disagreeing
+            // about where a producer stands. So is a different publisher, or
+            // a different key-and-headers block.
+            let publisher = publishers.get(index).cloned().flatten();
+            let block = headers.and_then(|headers| headers[index].as_ref());
+            if record.payload != overlapping[index]
+                || record.mark != marks[index]
+                || record.publisher != publisher
+                || record.headers.as_deref() != block
+            {
+                return Ok(Some(Divergence::Conflict {
+                    offset: next,
+                    expected: tail,
+                }));
+            }
+            next += 1;
+        }
+        if next == read_from {
+            // Below the tail every offset holds a record, so a read that does
+            // not return this one is a hole or a failing read. Neither says
+            // the logs agree.
+            return Err(BrokerError::Storage(format!(
+                "could not read the stored record at {next} to compare a \
+                 replication batch from {first_offset} against it"
+            )));
         }
     }
     Ok(None)

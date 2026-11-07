@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::census::NodeView;
 use super::{NodeHandles, SimConfig};
+use crate::clock::{self, Owner};
 use crate::controlplane::SimControlPlane;
 use crate::link::{Cut, NodeLink, REQUEST_TIMEOUT};
 use crate::net::{SimNet, SimNode};
@@ -100,6 +101,11 @@ impl Node {
         })
     }
 
+    /// Whose clocks this broker's code reads.
+    pub(crate) fn owner(&self) -> Owner {
+        Owner::Broker(self.index)
+    }
+
     pub(crate) fn handles(&self) -> Option<NodeHandles> {
         match &*self.state.lock() {
             State::Up(running) => Some(running.handles.clone()),
@@ -159,9 +165,12 @@ impl Node {
         broker_config.advertise_addr = self.advertise;
         broker_config.fsync_mode = config.fsync_mode;
         let link = NodeLink::new(cp.link(), self.cut.clone());
-        let opened = SimBroker::open(broker_config, link, self.catalog(cp))
-            .await
-            .with_context(|| format!("open {} (start {run})", self.id))?;
+        let opened = clock::on(
+            self.owner(),
+            SimBroker::open(broker_config, link, self.catalog(cp)),
+        )
+        .await
+        .with_context(|| format!("open {} (start {run})", self.id))?;
 
         // No await from here to the end: a crash lands between awaits, so it
         // finds either a starting broker or a running one, never half of one.
@@ -180,7 +189,11 @@ impl Node {
             },
             handler: opened.handler(),
         }));
-        let broker = Arc::new(opened.run(Arc::clone(&peer)));
+        // Everything the broker spawns from here on is its own, and reads
+        // its clocks.
+        let broker = Arc::new(clock::as_owner(self.owner(), || {
+            opened.run(Arc::clone(&peer))
+        }));
         let handles = NodeHandles {
             index: self.index,
             node_id: self.id.clone(),
@@ -241,7 +254,7 @@ impl Node {
             loop {
                 match Arc::try_unwrap(broker) {
                     Ok(broker) => {
-                        broker.crash();
+                        clock::as_owner(self.owner(), || broker.crash());
                         break;
                     }
                     Err(shared) => {
@@ -295,14 +308,14 @@ impl Node {
 
     /// What the running broker believes about `key`, read at one instant.
     pub(crate) fn stand(&self, key: &ShardKey) -> Option<ShardStand> {
-        Some(self.broker()?.shard_stand(key))
+        let broker = self.broker()?;
+        Some(clock::as_owner(self.owner(), || broker.shard_stand(key)))
     }
 
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {
         let broker = self.broker()?;
-        tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
-            .await
-            .ok()
+        let snapshot = clock::on(self.owner(), broker.shard_snapshot(key));
+        tokio::time::timeout(SNAPSHOT_WITHIN, snapshot).await.ok()
     }
 
     /// Everything a census prints about this broker for `key`.
@@ -326,10 +339,13 @@ impl Node {
             cut: self.cut.is_cut(),
             seeded: broker.seeded().is_cancelled(),
             incarnation,
-            lease_remaining: Some(broker.lease().remaining()),
-            snapshot: tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
-                .await
-                .ok(),
+            lease_remaining: Some(clock::as_owner(self.owner(), || broker.lease().remaining())),
+            snapshot: tokio::time::timeout(
+                SNAPSHOT_WITHIN,
+                clock::on(self.owner(), broker.shard_snapshot(key)),
+            )
+            .await
+            .ok(),
         }
     }
 }

@@ -199,7 +199,11 @@ would have left, with unsynced pages lost, torn or zeroed. The simulator can
 build that state, but its nemesis does not cut the power yet: today a crash is
 a process crash, half of them kills that leave the run state unclean so the
 restart runs the unclean-start handling, and the power-loss faults are in the
-[history checker](#the-history-checker) and the storage suite.
+[history checker](#the-history-checker) and the storage suite. With placement
+faults on (`FELIX_SIM_PLACEMENT=1`), the nemesis also acts as an operator
+through the control plane's API: it moves shards, drains and removes brokers so
+follower seats are replaced, abandons held shards' logs, and stops a broker
+between its promotion and its open.
 
 A run lasts 120 seconds of virtual time. Faults go in for the first 90, then
 everything heals and the cluster has 60 seconds to serve every shard again.
