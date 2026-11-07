@@ -36,7 +36,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use crate::cluster::kills::{ShardView, Views};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::Router;
 use axum::http::{Method, Request, header};
@@ -64,6 +63,9 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::sync::watch;
 use tower::ServiceExt;
+
+use crate::clock::{self, Owner};
+use crate::cluster::kills::{ShardView, Views};
 
 pub use self::operator::Answer;
 
@@ -303,16 +305,21 @@ impl SimControlPlane {
             None => axum::body::Body::empty(),
         };
         let request = request.body(body)?;
-        let response = self
-            .inner
-            .router
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|never| match never {})?;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
-        Ok(LinkResponse { status, body })
+        // The caller is often a broker; the handler is the control plane's
+        // code and reads its clocks.
+        clock::on(Owner::ControlPlane, async {
+            let response = self
+                .inner
+                .router
+                .clone()
+                .oneshot(request)
+                .await
+                .map_err(|never| match never {})?;
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+            Ok(LinkResponse { status, body })
+        })
+        .await
     }
 
     /// Waits out the current fault. `Paused` re-checks whenever the fault
@@ -339,6 +346,10 @@ impl SimControlPlane {
 
     /// One expiry sweep, as the real loop runs it. `None` while paused or down.
     pub async fn sweep(&self) -> Option<usize> {
+        clock::on(Owner::ControlPlane, self.sweep_now()).await
+    }
+
+    async fn sweep_now(&self) -> Option<usize> {
         if !self.steppable() {
             return None;
         }
@@ -355,7 +366,9 @@ impl SimControlPlane {
             };
         }
         let now = inner.store.now_millis().await.ok()?;
-        let at = tokio::time::Instant::now();
+        // The control plane's lease clock, so its rate skew reaches the
+        // watch. The real loop uses tokio's clock (`spawn_expiry_sweep`).
+        let at = felix_common::clock::boottime();
         let Sweep { watch, grace, .. } = &mut *sweep;
         if !grace.may_sweep(at) {
             // Watched from the first tick, so the window has been running
@@ -372,6 +385,10 @@ impl SimControlPlane {
     /// (fences, suspicions, pending sets, restores) carries to the next, so
     /// time-based decisions fire as in the real loop; going down forgets it.
     pub async fn reconcile(&self) -> Option<ReconcileOutcome> {
+        clock::on(Owner::ControlPlane, self.reconcile_now()).await
+    }
+
+    async fn reconcile_now(&self) -> Option<ReconcileOutcome> {
         if !self.steppable() {
             return None;
         }

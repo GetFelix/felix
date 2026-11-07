@@ -21,6 +21,14 @@ The nemesis (`src/nemesis.rs`, `Fault`) draws these from the seed:
 - `PausedThenCrash`: the control plane pauses, then a broker that leads shards
   crashes.
 
+Clock skew is a separate schedule, off by default. With
+`FELIX_SIM_CLOCKS=bounded`, each broker and the control plane gets its own
+lease clock (0.8x to 1.2x true speed) and wall clock (within 1 second), and the
+nemesis steps or re-skews one every few seconds. `unbounded` goes past those
+bounds (0.25x to 4x, 30 seconds) to show what breaks there. Skew needs the
+`tokio_unstable` build, so use it through `task sim:replay`. See "Clock skew"
+in `docs/simulation.md`.
+
 With placement faults on (`FELIX_SIM_PLACEMENT=1`, or
 `SimConfig::with_placement_faults`), the nemesis also acts as an operator. It
 calls the control plane's operator API, the one `felixctl` uses, so placement
@@ -91,13 +99,20 @@ FELIX_SIM_SEED_START=100 FELIX_SIM_SEEDS=10 \
   cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 ```
 
-Add `FELIX_SIM_PLACEMENT=1` to either command to turn placement faults on.
+Run one seed with skewed clocks:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
+```
+
+Add `FELIX_SIM_PLACEMENT=1` to any of these commands to turn placement faults on.
 A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`
 writes the run's history to a file so two runs can be diffed.
 
 `seeds` is `#[ignore]`, so `cargo test --workspace` skips it. It runs in the
 non-blocking `sim-seeds` job in CI, which does not gate merges while its known
-liveness stalls are open. One seed takes a few seconds in a debug build and the
+liveness stalls are open. That job builds with `--cfg tokio_unstable` and runs
+seeds 1 and 2 without clock skew and seeds 3 and 4 with `bounded` skew. One seed takes a few seconds in a debug build and the
 default batch of four takes a few minutes, so run batches one at a time on a
 busy machine.
 

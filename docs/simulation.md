@@ -75,6 +75,16 @@ timing-sensitive failure may need a few replays to show again. Such a build
 refuses `FELIX_SIM_HISTORY`, since two of its histories differ wherever two
 branches raced.
 
+To skew each node's clocks as well, set `FELIX_SIM_CLOCKS` to `bounded` or
+`unbounded` ([Clock skew](#clock-skew) says what each does). It needs the
+`tokio_unstable` build, so run it through `task sim:replay`:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
+```
+
+A seed that fails with skew prints a replay command that includes it.
+
 `task sim:determinism` checks that replay is exact. It runs each seed twice in
 one process and fails on the first event where the two traces differ, then
 replays seed 1 (`FELIX_SIM_REPLAY_SEED`) in two separate processes through
@@ -168,13 +178,15 @@ cargo test -p felix-cluster --lib history::
    election has to get right when nobody can say who leads. The step is drawn
    like any other, so about two seeds in three have it and the rest never do.
    The crash is skipped when half the brokers or more are already down, so
-   some runs keep a quorum. While the faults run, the checkers marked "every
-   second" below sample the cluster.
-   With placement faults on, the nemesis also acts as an operator; see
-   [Placement faults](#placement-faults).
+   some runs keep a quorum. With clock skew on, a second schedule steps and
+   re-skews each node's clocks over the same 90 seconds
+   ([Clock skew](#clock-skew)). With placement faults on, the nemesis also acts
+   as an operator; see [Placement faults](#placement-faults). While the faults
+   run, the checkers marked "every second" below sample the cluster.
 3. **Heal and settle.** Every link is healed, the control plane answers again,
-   drained brokers are put back to `live` and crashed brokers restart. The cluster then has 60 virtual seconds to get
-   every shard served again. The clients keep running until second 120.
+   drained brokers are put back to `live` and crashed brokers restart. Skewed
+   clocks stay skewed. The cluster then has 60 virtual seconds to get every
+   shard served again. The clients keep running until second 120.
 4. **Check.** Clients stop, work in flight drains for 20 seconds, a last read
    takes each shard and cache key, and the checkers below run on the clients'
    history and the brokers' state.
@@ -388,7 +400,7 @@ nothing:
 | --- | --- | --- |
 | Peer network | `PeerPool`, QUIC with mTLS | `SimNet`, in memory |
 | Timers and deadlines | tokio time | tokio time, paused and advanced by the test |
-| Lease and wall clocks | `felix_common::clock` | the same functions, reading virtual time |
+| Lease and wall clocks | `felix_common::clock` | the same functions, reading each node's own clock over virtual time |
 | Data directory | files on disk | `felix_storage::sim_fs`, in memory |
 | Control plane | its own process, over HTTP | its real router, called in-process through `ControlPlaneLink`, with faults |
 | Clients | QUIC connections | direct calls into the same publish and cache functions the handlers use |
@@ -544,3 +556,77 @@ From then on both read the simulation's elapsed time, with wall time counted
 from a fixed date so every run sees the same timestamps. The hook exists in
 debug builds and under the `felix-common/sim` feature. A plain release build
 does not have it.
+
+### Clock skew
+
+Each broker and the control plane has its own clocks over the shared virtual
+time (`crates/testing/felix-sim/src/clock.rs`):
+
+- a **lease clock** (what `boottime` reads), which runs at its own rate. It is
+  monotonic, as `CLOCK_BOOTTIME` is: a rate change keeps the drift already
+  built up, and it never steps.
+- a **wall clock** (what `wall_millis` and `system_time` read), which is the
+  shared time plus an offset. A step moves the offset either way, as an NTP
+  correction does. It does not drift with the lease clock.
+
+So every read through `felix_common::clock` is a per-node read: the lease and
+its fence checks, the control plane's heartbeat stamps and expiry, record and
+retention times, cache TTLs, lease-claim times and the broker's token-expiry
+checks. In the simulator the control plane's silence watch (the second check
+before a broker is marked down) also reads the control plane's lease clock.
+A real control plane times it on tokio's clock, because the cluster harness's
+clock faults step the lease clock and the watch is what keeps a stepped clock
+from expiring a live broker. So under skew a slow control plane waits longer
+to mark a silent broker down, and a fast one is still held back by the
+heartbeat stamps, which are on its wall clock.
+
+Timers and deadlines on tokio's clock are not skewed, as in the cluster
+harness. So the simulator cannot catch code that waits out a lease with a
+tokio sleep and acts without checking the lease clock afterwards: that sleep
+lasts the same everywhere. A validity decision has to read
+`felix_common::clock` to be tested here.
+
+`SimConfig::clock_plan` pins a skew instead of drawing one.
+`seed_8_slow_brokers_and_a_fast_control_plane_stay_safe` in `tests/seeds.rs`
+runs every broker's lease clock at 0.8x and the control plane's at 1.2x, the
+worst pair the bounded mode allows, and checks only the safety findings.
+
+`SimConfig::clocks` (or `FELIX_SIM_CLOCKS`) picks how far:
+
+| Mode | Lease clock rate | Wall clock offset | Why that bound |
+| --- | --- | --- | --- |
+| `off` (default) | 1x | 0 | |
+| `bounded` | 0.8x to 1.2x | within 1 s | Lease safety assumes a bound on drift rate, and its margins are checked against clocks that drift by a quarter ([replication-design.md](replication-design.md#the-clock-assumption-stated-precisely)). Lease-claim tokens allow 2 s of skew between two nodes ([auth.md](auth.md)). |
+| `unbounded` | 0.25x to 0.7x, or 1.3x to 4x | up to 30 s | Past the rate bound, with wall clocks drawn from a much wider range, to show what breaks there. |
+
+A run draws each node's starting rate and offset from the seed, then from 2 to
+10 seconds in, and every 3 to 12 seconds after that until the fault window
+ends, picks a node and either steps its wall clock
+to a new offset or changes its lease clock's rate, within the same bounds. Every
+change is in the trace (`clock: b2 wall clock steps to -420 ms`). The
+schedule has its own stream of the seed, so turning skew on moves no other
+fault. A `bounded` seed that breaks the history checker or a safety check
+(`AtMostOneServing`, `AckedHeldByLeader`) is a bug in Felix; an `unbounded`
+one is expected to. Liveness checks such as `ElectionSettles` also fail on
+some seeds with skew off, so compare against an `off` run of the same seed
+before blaming the clocks.
+
+The wall-clock bound matters only where two nodes compare wall times. The
+sim's clients claim no leases and set no cache TTLs yet, so today wall skew
+reaches the control plane's heartbeat stamps (stamped and judged on its own
+clock), record and retention times, and the broker's token-expiry check. No
+cross-node wall-time comparison is exercised yet.
+
+All nodes run in one process, so a clock read has to know whose code is
+asking. The harness marks the code it runs for a node: a broker's startup, a
+client's call into a broker, a peer message handled by its target, and every
+control plane request. Under `--cfg tokio_unstable` the runtime's task hooks
+carry that mark to each task the code spawns, and to the tasks those spawn.
+That is why skew needs the `tokio_unstable` build, and a run with skew in a
+plain build panics with the command to use instead. CI's non-blocking `sim-seeds`
+job builds that way and runs half its seeds with `bounded` skew. Clients and checkers
+belong to no node and read the shared time. The control plane mints and
+checks tokens on the host clock (`jsonwebtoken` validates expiry against it),
+so token expiry on the control plane is not skewed; the sim's tokens last ten
+years.
+

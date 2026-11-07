@@ -42,6 +42,7 @@ use tokio_util::sync::CancellationToken;
 use crate::check::{CheckContext, Checker, Finding, Point, Severity, default_checkers};
 use crate::client::{Recorder, SimClient};
 use crate::cluster::{SimCluster, SimConfig};
+use crate::nemesis::clocks::ClockSkew;
 use crate::nemesis::{Nemesis, Plan};
 
 /// How often the checkers are called at [`Point::Quiet`].
@@ -130,7 +131,14 @@ impl SimOutcome {
         } else {
             ""
         };
-        format!("{placement}FELIX_SIM_SEED={} task sim:replay", self.seed)
+        match self.config.clocks {
+            ClockSkew::Off => format!("{placement}FELIX_SIM_SEED={} task sim:replay", self.seed),
+            skew => format!(
+                "{placement}FELIX_SIM_SEED={} FELIX_SIM_CLOCKS={} task sim:replay",
+                self.seed,
+                skew.name()
+            ),
+        }
     }
 }
 
@@ -191,13 +199,25 @@ pub fn run_seed(seed: u64, config: SimConfig) -> SimOutcome {
 
 /// Run `seed` with `checkers`, which see the cluster at the points named in
 /// [`crate::check`]. The history checker always runs.
+///
+/// # Panics
+///
+/// If `config` skews clocks in a build without `--cfg tokio_unstable`: only
+/// the runtime's task hooks can tell whose clock a spawned task reads.
 pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
+    assert!(
+        !config.skews_clocks() || cfg!(tokio_unstable),
+        "clock skew needs a build with RUSTFLAGS=\"--cfg tokio_unstable\"; run it through \
+         task sim:replay"
+    );
     let mut builder = tokio::runtime::Builder::new_current_thread();
     builder.enable_all().start_paused(true);
     // `select!` picks among ready branches at random. Seeded, it picks the
     // same way every run; tokio offers the seed only under `tokio_unstable`.
     #[cfg(tokio_unstable)]
     builder.rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()));
+    #[cfg(tokio_unstable)]
+    crate::clock::attribute_tasks(&mut builder);
     let runtime = builder.build().expect("build the simulation runtime");
     runtime.block_on(run(seed, config, checkers))
 }
@@ -289,6 +309,14 @@ async fn drive(
         let nemesis = nemesis.clone();
         let plan = plan.clone();
         tokio::spawn(async move { nemesis.run(&plan).await });
+    }
+    if config.skews_clocks() {
+        let clocks = cluster.clock_plan.clone();
+        for line in clocks.describe_initial() {
+            recorder.fault(line);
+        }
+        let nemesis = nemesis.clone();
+        tokio::spawn(async move { nemesis.run_clocks(&clocks).await });
     }
     let context = {
         let (cluster, plan) = (cluster.clone(), plan.clone());

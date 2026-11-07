@@ -40,7 +40,8 @@ pub async fn expire_once(
 }
 
 /// [`expire_once`], sparing any node `watch` has not itself seen silent for
-/// the whole window on this process's monotonic clock.
+/// the whole window on this process's monotonic clock. `at` is a reading of
+/// that clock as time since some fixed origin.
 ///
 /// The store's clock alone is a wall clock, and after a Raft election or a
 /// database failover a different machine's: a step forward would expire a
@@ -51,7 +52,7 @@ pub async fn expire_observed(
     liveness: &NodeLivenessConfig,
     now_millis: u64,
     watch: &mut SilenceWatch,
-    at: tokio::time::Instant,
+    at: Duration,
 ) -> usize {
     let nodes = match list_clamped(store, now_millis).await {
         Ok(nodes) => nodes,
@@ -166,6 +167,11 @@ pub fn spawn_expiry_sweep(
     shutdown: CancellationToken,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // Silence, grace and stalls are timed on tokio's monotonic clock. Not
+        // the lease clock: the test-only clock fault seam steps that one, and
+        // the watch must not be steppable (see `expire_observed`).
+        let origin = tokio::time::Instant::now();
+        let clock = || origin.elapsed();
         let mut ticker = tokio::time::interval(Duration::from_millis(liveness.sweep_interval_ms));
         // A sweep that overruns its interval must not then run back-to-back
         // trying to catch up; the next tick is soon enough.
@@ -175,11 +181,11 @@ pub fn spawn_expiry_sweep(
         let mut stalls = StallWatch::new(Duration::from_millis(liveness.sweep_interval_ms));
         loop {
             // From the end of the last sweep, so a slow sweep is not a stall.
-            stalls.finished(tokio::time::Instant::now());
+            stalls.finished(clock());
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = ticker.tick() => {
-                    if let Some(stalled) = stalls.tick(tokio::time::Instant::now()) {
+                    if let Some(stalled) = stalls.tick(clock()) {
                         watch.discount(stalled);
                     }
                     if !gate.holds().await {
@@ -192,7 +198,7 @@ pub fn spawn_expiry_sweep(
                     // expiry depend on two processes' wall clocks agreeing.
                     match store.now_millis().await {
                         Ok(now) => {
-                            let at = tokio::time::Instant::now();
+                            let at = clock();
                             // Watched from the first tick, grace or not, so
                             // the window has been running when grace ends.
                             let swept = grace.may_sweep(at);
@@ -219,19 +225,19 @@ pub fn spawn_expiry_sweep(
 }
 
 /// When this process last saw each node's heartbeat stamp change, on its own
-/// monotonic clock.
+/// monotonic clock, read as time since a fixed origin.
 ///
 /// A node this instance has only just started watching counts as heard from
 /// now, so a fresh instance, a new Raft leader or one that lost the store
 /// waits a full window before expiring anything.
 #[derive(Debug, Default)]
 pub struct SilenceWatch {
-    seen: felix_common::random::HashMap<String, (u64, u64, tokio::time::Instant)>,
+    seen: felix_common::random::HashMap<String, (u64, u64, Duration)>,
 }
 
 impl SilenceWatch {
     /// Note each node's stamp as of `at`.
-    pub fn observe(&mut self, nodes: &[crate::model::Node], at: tokio::time::Instant) {
+    pub fn observe(&mut self, nodes: &[crate::model::Node], at: Duration) {
         self.seen
             .retain(|node_id, _| nodes.iter().any(|node| &node.node_id == node_id));
         for node in nodes {
@@ -255,7 +261,7 @@ impl SilenceWatch {
         &'a mut self,
         nodes: &'a [crate::model::Node],
         window: Duration,
-        at: tokio::time::Instant,
+        at: Duration,
     ) -> impl Iterator<Item = u64> + 'a {
         self.observe(nodes, at);
         nodes
@@ -268,7 +274,7 @@ impl SilenceWatch {
             })
             .filter_map(move |node| {
                 let (_, stamp, since) = self.seen.get(&node.node_id)?;
-                (at.saturating_duration_since(*since) < window).then_some(*stamp)
+                (at.saturating_sub(*since) < window).then_some(*stamp)
             })
     }
 
@@ -293,7 +299,8 @@ impl SilenceWatch {
 #[derive(Debug)]
 pub struct StallWatch {
     interval: Duration,
-    last: Option<tokio::time::Instant>,
+    /// A monotonic clock reading.
+    last: Option<Duration>,
 }
 
 impl StallWatch {
@@ -305,15 +312,15 @@ impl StallWatch {
     }
 
     /// The last sweep ended at `now`.
-    pub fn finished(&mut self, now: tokio::time::Instant) {
+    pub fn finished(&mut self, now: Duration) {
         self.last = Some(now);
     }
 
     /// A tick at `now`: how long the sweep stalled before it, if the time
     /// since the last sweep ended is more than twice the interval. Shorter
     /// gaps are scheduling noise.
-    pub fn tick(&mut self, now: tokio::time::Instant) -> Option<Duration> {
-        let gap = now.saturating_duration_since(self.last?);
+    pub fn tick(&mut self, now: Duration) -> Option<Duration> {
+        let gap = now.saturating_sub(self.last?);
         if gap <= self.interval * 2 {
             return None;
         }
@@ -340,7 +347,8 @@ impl StallWatch {
 #[derive(Debug)]
 pub struct SweepGrace {
     window: Duration,
-    watching_since: Option<tokio::time::Instant>,
+    /// A monotonic clock reading.
+    watching_since: Option<Duration>,
 }
 
 impl SweepGrace {
@@ -353,7 +361,7 @@ impl SweepGrace {
 
     /// Whether a sweep may run at `now`. The first call after a gap starts
     /// the window.
-    pub fn may_sweep(&mut self, now: tokio::time::Instant) -> bool {
+    pub fn may_sweep(&mut self, now: Duration) -> bool {
         let since = *self.watching_since.get_or_insert_with(|| {
             tracing::info!(
                 grace_ms = self.window.as_millis() as u64,
@@ -361,7 +369,7 @@ impl SweepGrace {
             );
             now
         });
-        now.saturating_duration_since(since) >= self.window
+        now.saturating_sub(since) >= self.window
     }
 
     /// This instance stopped watching, so the next sweep waits a full window.

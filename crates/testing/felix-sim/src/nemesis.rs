@@ -29,6 +29,11 @@
 //! | `KillBeforeOpen` | Kills the next broker placement names leader of a shard, before it opens the shard. |
 //! | `SeatRace` | Drains a broker so a follower seat is being replaced, kills that shard's leader, then kills the next leader named for it before it opens: seat replacement plus two promotions. |
 //!
+//! Clock skew has its own schedule ([`clocks::ClockPlan`]), played by
+//! [`Nemesis::run_clocks`]. It is off unless [`SimConfig::clocks`](crate::cluster::SimConfig::clocks)
+//! turns it on, and the heal leaves clocks as they are: a real clock is not
+//! put right when a partition ends.
+//!
 //! # Why `Freeze` is approximate
 //!
 //! A paused process (SIGSTOP, a long garbage collection, a VM freeze) runs
@@ -38,6 +43,8 @@
 //! running, so it notices its lease running out as soon as it does. The
 //! network and heartbeat half of a pause is real; the zombie that wakes up
 //! believing it still leads is not reproduced.
+
+pub mod clocks;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -49,6 +56,7 @@ use parking_lot::Mutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use self::clocks::ClockPlan;
 use crate::client::Recorder;
 use crate::cluster::SimCluster;
 use crate::controlplane::CpFault;
@@ -386,6 +394,19 @@ impl Nemesis {
             let this = Arc::clone(self);
             let fault = step.fault.clone();
             tokio::spawn(async move { this.inject(fault).await });
+        }
+    }
+
+    /// Make each change in `plan` at its time, counted from now.
+    pub async fn run_clocks(self: &Arc<Self>, plan: &ClockPlan) {
+        let begun = Instant::now();
+        for step in &plan.steps {
+            tokio::select! {
+                () = self.stopped.cancelled() => return,
+                () = tokio::time::sleep_until(begun + step.at) => {}
+            }
+            clocks::apply(step);
+            self.recorder.fault(format!("{step}"));
         }
     }
 

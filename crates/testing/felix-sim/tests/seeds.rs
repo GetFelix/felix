@@ -15,6 +15,7 @@
 //! | `FELIX_SIM_SEEDS` | how many seeds `seeds` and `each_seed_runs_the_same_twice` run | 4 |
 //! | `FELIX_SIM_SEED_START` | the first seed they run | 1 |
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
+//! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `FELIX_SIM_PLACEMENT` | `1` turns placement faults on for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
@@ -33,7 +34,9 @@
 //! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
 //! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
+use felix_sim::clock::{Clocks, NodeClock, PPM};
 use felix_sim::cluster::SimConfig;
+use felix_sim::nemesis::clocks::{BOUNDED_RATE_PPM, ClockPlan, ClockSkew};
 use felix_sim::run::{SimOutcome, first_difference, run_seed};
 
 fn log() {
@@ -67,9 +70,19 @@ fn env_u64(name: &str) -> Option<u64> {
     )
 }
 
-/// The run `seed` gives, with placement faults when `FELIX_SIM_PLACEMENT=1`.
+/// `seed`'s config, with the clock skew `FELIX_SIM_CLOCKS` asks for and
+/// placement faults when `FELIX_SIM_PLACEMENT=1`.
 fn config(seed: u64) -> SimConfig {
-    let config = SimConfig::for_seed(seed);
+    let clocks = match std::env::var("FELIX_SIM_CLOCKS") {
+        Ok(value) => ClockSkew::parse(&value).unwrap_or_else(|| {
+            panic!("FELIX_SIM_CLOCKS must be off, bounded or unbounded, got {value:?}")
+        }),
+        Err(_) => ClockSkew::Off,
+    };
+    let config = SimConfig {
+        clocks,
+        ..SimConfig::for_seed(seed)
+    };
     match std::env::var("FELIX_SIM_PLACEMENT").as_deref() {
         Ok("1") => config.with_placement_faults(),
         _ => config,
@@ -141,6 +154,68 @@ fn each_seed_runs_the_same_twice() {
         differed.len(),
         differed.join("\n")
     );
+}
+
+/// Skewed clocks are drawn from the seed and stepped at fixed virtual
+/// times, so a skewed seed is as repeatable as any other.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select! and the task hooks"
+)]
+fn a_skewed_seed_runs_the_same_twice() {
+    log();
+    let skewed = || SimConfig {
+        clocks: ClockSkew::Bounded,
+        ..SimConfig::for_seed(2)
+    };
+    let first = run_seed(2, skewed());
+    let second = run_seed(2, skewed());
+    assert!(
+        first.trace().iter().any(|line| line.contains("clock:")),
+        "the trace names no clock change:\n{first}"
+    );
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 2 with skewed clocks ran differently the second time: {difference}");
+    }
+}
+
+/// The pair the lease margins guard against, at the edge of the bounded
+/// drift: every broker's lease clock runs slow while the control plane's runs
+/// fast, so a broker counts its lease as longest while the control plane
+/// counts silence fastest. Only the safety checks are asserted; liveness
+/// findings are the known stalls.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for the task hooks"
+)]
+fn seed_8_slow_brokers_and_a_fast_control_plane_stay_safe() {
+    log();
+    let base = SimConfig::for_seed(8);
+    let plan = ClockPlan {
+        initial: Clocks {
+            controlplane: NodeClock::new(0, PPM + BOUNDED_RATE_PPM),
+            brokers: vec![NodeClock::new(0, PPM - BOUNDED_RATE_PPM); base.brokers],
+        },
+        steps: Vec::new(),
+    };
+    let outcome = run_seed(
+        8,
+        SimConfig {
+            clock_plan: Some(plan),
+            ..base
+        },
+    );
+    println!("{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
+    for unsafe_finding in [
+        "at-most-one-serving",
+        "one-leader-per-generation",
+        "acked-held-by-leader",
+    ] {
+        assert!(!found(&outcome, unsafe_finding), "{outcome}");
+    }
 }
 
 #[test]
