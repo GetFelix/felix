@@ -284,11 +284,9 @@ async fn a_crashed_leaders_copy_answers_untrusted_and_the_fence_waits_for_covera
     assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
 }
 
-/// **This broker's copy counts no promise while its kept set lists it as a
-/// learner.** broker-b's promise and this broker's would be a majority of
-/// three; without this broker's, broker-b alone is not, and the fence waits.
-#[tokio::test]
-async fn a_learner_own_copy_counts_no_promise() {
+/// Fences with broker-b attesting and broker-c down, over a kept set that
+/// lists this broker as a learner or as a voter.
+async fn fence_with_own_membership(learner: bool) -> Outcome {
     use felix_storage::disk_log::{Member, Membership, ReplicaSet};
     let mut replicas = Replicas::new();
     replicas.get_mut("broker-b").attests = Some(TRUSTED);
@@ -297,7 +295,7 @@ async fn a_learner_own_copy_counts_no_promise() {
     let member = |node: &str| Member {
         node: node.to_string(),
         storage: None,
-        learner: node == LEADER,
+        learner: learner && node == LEADER,
         wiped: false,
     };
     leader
@@ -315,10 +313,24 @@ async fn a_learner_own_copy_counts_no_promise() {
         .await
         .expect("keep the set");
 
-    let outcome = fence_unified(&replicas, &leader, &route(), None, &unified(true)).await;
+    fence_unified(&replicas, &leader, &route(), None, &unified(true)).await
+}
 
+/// **This broker's copy counts no promise while its kept set lists it as a
+/// learner.** broker-b's promise and this broker's would be a majority of
+/// three; without this broker's, broker-b alone is not, and the fence waits.
+/// The same set with this broker a voter opens, so the wait is the learner.
+#[tokio::test]
+async fn a_learner_own_copy_counts_no_promise() {
+    let outcome = fence_with_own_membership(true).await;
     assert!(
         matches!(outcome, Outcome::Pending { .. }),
         "counted a learner's promise: {outcome:?}"
+    );
+
+    let outcome = fence_with_own_membership(false).await;
+    assert!(
+        matches!(outcome, Outcome::Fenced { .. }),
+        "a voter's own copy did not count: {outcome:?}"
     );
 }
