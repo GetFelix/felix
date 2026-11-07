@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794055120157,
+  "lastUpdate": 1794059781547,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48828,6 +48828,58 @@ window.BENCHMARK_DATA = {
             "range": "18849.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1197441.36\nmean: 1191828.45\nstdev: 18849.07\ncv: 1.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "76d662e7a7e0f8791ea84fe4bb997452faed0699",
+          "message": "test(sim): pin the promotion-to-open kill shape to seed 7 (#2100)\n\n#2097 fixed the simulator's storage id read, so seed 3 no longer reaches the shape this test pins (an elected leader of stream/* killed before it opens). Seed 7 is the lowest seed that logs both marks.\n\nSpec-Unaffected: simulator test pin only.",
+          "timestamp": "2026-11-07T13:52:26Z",
+          "tree_id": "60f050b712b6d97f56b2170672c85a84d0506aaa",
+          "url": "https://github.com/GetFelix/felix/commit/76d662e7a7e0f8791ea84fe4bb997452faed0699"
+        },
+        "date": 1794059780891,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 597204.75,
+            "range": "66645.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 597204.75\nmean: 607726.03\nstdev: 66645.06\ncv: 10.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 597204.75,
+            "range": "66645.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 597204.75\nmean: 607726.03\nstdev: 66645.06\ncv: 10.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 151870.85,
+            "range": "3927.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 151870.85\nmean: 150739.79\nstdev: 3927.86\ncv: 2.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1518708.53,
+            "range": "39278.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1518708.53\nmean: 1507397.90\nstdev: 39278.65\ncv: 2.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
