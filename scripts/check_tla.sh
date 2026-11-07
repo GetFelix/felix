@@ -104,6 +104,7 @@ tlc() {
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixShardUnified*) module="FelixShardUnified" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
     -config "$cfg.cfg" "$module.tla")
@@ -420,6 +421,33 @@ expectations=(
   "FelixGroupsSplitSources pass"
   "FelixGroupsSplitSourcesLengthOnly violates NoSkip"
   "FelixGroupsShipUnsynced violates NoSkip"
+  "FelixShardUnified pass"
+  "FelixShardUnifiedSets pass"
+  "FelixShardUnifiedReadmit pass"
+  "FelixShardUnifiedRestore pass"
+  "FelixShardUnifiedMixed pass"
+  "FelixShardUnifiedDropEvidenced pass"
+  "FelixShardUnifiedVouch pass"
+  "FelixShardUnifiedCountNonKept violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCoverFromDoubted violates AckedHeldByLeader"
+  "FelixShardUnifiedDropUnopenedLeaving violates AckedHeldByLeader"
+  "FelixShardUnifiedSkipCoverage violates AckedHeldByLeader"
+  "FelixShardUnifiedCountsWiped violates OneLeaderPerGeneration"
+  "FelixShardUnifiedAnyCopy violates OneLeaderPerGeneration"
+  "FelixShardUnifiedBatchBallot violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCountsForgotten violates OneLeaderPerGeneration"
+  "FelixShardUnifiedNamesByRegistration violates OneLeaderPerGeneration"
+  "FelixShardUnifiedTrustsRegistered violates AckedHeldByLeader"
+  "FelixShardUnifiedStandInNoCatchUp violates AckedHeldByLeader"
+  "FelixShardUnifiedVouchBelowStart violates AckedHeldByLeader"
+  "FelixShardUnifiedVouchMark pass"
+  "FelixShardUnifiedContinuingDoubted violates NoContinuingOnForeignBallot"
+  "FelixShardUnifiedContinuingDoubtedLegacy pass"
+  "FelixShardUnifiedCpLiveElectedFailover pass"
+  "FelixShardUnifiedCpLiveElectedFailoverLegacy violates liveness"
+  "FelixShardUnifiedCpLiveReadmitUnopened pass"
+  "FelixShardUnifiedCpLiveReadmitUnopenedLegacy violates liveness"
+  "FelixShardUnifiedCpLiveMoveDoubted pass"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -510,6 +538,8 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
+# So are FelixShardUnifiedReadmitFull and FelixShardUnifiedDropEvidencedFull,
+# the registered Readmit and DropEvidenced with one client write.
 # So is FelixShardElectRename, which is checked in pieces
 # (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the twelve that fit a
 # pull request's shards are registered above.
@@ -573,6 +603,11 @@ weights=(
   "FelixShardReportFloor 10"
   "FelixShardAckWithoutLease 6"
   "FelixShardFigure8 7"
+  "FelixShardUnifiedRestore 9"
+  "FelixShardUnifiedDropEvidenced 14"
+  "FelixShardUnifiedReadmit 8"
+  "FelixShardUnified 7"
+  "FelixShardUnifiedMixed 5"
   "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"

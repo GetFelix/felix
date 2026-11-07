@@ -649,6 +649,60 @@ finalized, see [Acknowledging by the followers](#acknowledging-by-the-followers)
 A `Leader` stream acknowledges on the leader's own commit, which no follower
 sees, so its deposed leader is kept out by the lease alone either way.
 
+#### One fence rule for every change of leader
+
+This is the rule the broker is moving to. It is not in the code yet: today each
+kind of change (failover, election, rename, set change, readmission, a
+continuing leader) has its own counting, with special cases for copies doubted
+after an unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
+
+A fence has to prove two separate things before the new leader at generation G
+opens.
+
+- **Exclusion.** No leader below G can acknowledge anything after G opens, and
+  no second leader opens at G. Only ballots matter here. The fence needs a
+  majority of every set it must fence to promise G, and a promise counts only
+  from a copy that **kept** its ballots. Ballots are fsynced, so an unclean
+  crash keeps them. A wipe or a restore loses them. Such a copy counts again
+  only for a set introduced after the loss, once that set's leader has shipped
+  to it (it was readmitted).
+- **Coverage.** The new leader holds every acknowledged record. Only logs
+  matter here. A continuing leader (it opened G-1 in the same process and its
+  ballot still says so) has it already. Any other leader needs answers from
+  **trusted** copies that meet every majority of each set it must fence
+  (`2 * trusted >= members`), and takes the log furthest ahead by (last
+  generation, length).
+
+A copy is trusted when its process started clean and its ballots are kept, or
+when, since its last unclean start, a leader shipped it a batch that left it
+level through **max(the leader's start record, the batch's commit offset)**,
+with a commit offset above zero. Both halves matter. The commit offset is the
+quorum offset at the leader's generation, and right after an open it can sit
+below records an earlier generation acknowledged (`VouchBelowStart`). The
+start record alone is short of what the leader acknowledged since
+(`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
+readmits it may vouch for it. A broker that starts without the control plane
+attests neither kept nor trusted until the restore check has run, because a
+restored directory looks clean until then (`CountsForgotten`,
+`TrustsRegistered`).
+
+The sets a fence must cover are its own and the set of every start from an
+**anchor** up to G. The anchor is a generation with evidence it opened: its
+start record reached a majority, or a trusted answer holds a record of it. A set
+in between is never dropped because nobody mentions it (`DropUnopenedLeaving`).
+
+A replica answering a fence refuses only on ballots and sets: a newer ballot, the
+same ballot for another node, or a newer set than the fence carries. A copy that
+is doubted, led before or a learner answers, and says in the answer whether it
+kept its ballots and whether it is trusted. The leader decides what the answer
+counts for. An answer from a peer that predates the rule counts as it does
+today.
+
+What this replaces: the short-copy refusal, the two-member acknowledgement
+check, the learner's refusal, the continuing leader's ballot window and the
+storage-id pins on a fence. A lone trusted copy with every other member doubted
+or down still waits for the operator, as it does today.
+
 #### Group state at promotion
 
 A stream shard's consumer-group state is two logs: the dead letters and the

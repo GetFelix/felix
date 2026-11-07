@@ -193,6 +193,8 @@ jobs:
           - FelixShardFencedAckStagedMove
           - FelixShardFencedAckMoveCancel
           - FelixShardCpLiveSkippedGeneration
+          - FelixShardUnifiedReadmitFull
+          - FelixShardUnifiedDropEvidencedFull
     steps:
       - name: Checkout
         uses: actions/checkout@v7
