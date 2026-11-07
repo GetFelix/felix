@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794006506703,
+  "lastUpdate": 1794010953338,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -60786,6 +60786,72 @@ window.BENCHMARK_DATA = {
             "range": "17.32",
             "unit": "us",
             "extra": "trials: 5\nmedian: 365.00\nmean: 362.00\nstdev: 17.32\ncv: 4.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25e53cfb60379c0064c45d65ccf909a4f7686b4e",
+          "message": "spec: RetryContinuingFence leaves waits unchanged (#2068)\n\n* spec: RetryContinuingFence leaves waits unchanged\n\nThe action's UNCHANGED list omitted waits, added by the ack-wait model, so TLC\nrejected every config that enables ContinuingRetries.\n\n* ci(tla): expect FelixShardReplacedPendingLeftTwiceAllLog to violate AckedHeldByLeader\n\nSpec-Unaffected: only registers an existing configuration's documented violation.",
+          "timestamp": "2026-11-06T15:48:45-08:00",
+          "tree_id": "662686e8d680a9b20e7cad9c37aa07219ff86ff6",
+          "url": "https://github.com/GetFelix/felix/commit/25e53cfb60379c0064c45d65ccf909a4f7686b4e"
+        },
+        "date": 1794010947267,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.20\nstdev: 0.84\ncv: 1.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 92,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 91.60\nstdev: 1.14\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 118,
+            "range": "25.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 126.40\nstdev: 25.15\ncv: 19.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.20\nstdev: 1.30\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 194,
+            "range": "9.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 194.40\nstdev: 9.34\ncv: 4.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 320,
+            "range": "77.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 320.00\nmean: 335.60\nstdev: 77.03\ncv: 22.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
