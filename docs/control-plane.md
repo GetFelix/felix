@@ -462,8 +462,10 @@ regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
 over. Placement never names it leader again at a new generation, even
 when a move off it gives up after the fence or it refuses a generation: the
-shard waits for another caught-up copy or for the lease to run out. While a
-follower is being seated, only the lease running out ends the wait. It is
+shard waits for another caught-up copy or for the lease to run out. No new
+move starts off it and no staged move is fenced, because a fence is such a
+generation. While a follower is being seated, only the lease running out
+ends the wait. It is
 never promoted itself, as a draining follower can be. Only an operator's cancel
 hands it back. A node already silent for that long, such as one `down` before
 it was deregistered, is failed over straight away. An operator deregistering a
