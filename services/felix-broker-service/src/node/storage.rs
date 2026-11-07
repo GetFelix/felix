@@ -231,7 +231,12 @@ fn start_run(
         .is_some_and(|prior| before.as_deref() == Some(prior));
     let kept = Kept {
         promises: begun.rotated && !restored && own_id && !lost,
-        ballots: !restored && !lost && (!begun.rotated || own_id),
+        // A record from before storage ids cannot tell this directory from a
+        // wiped one, as for `promises` (#2047).
+        ballots: !restored
+            && !lost
+            && (!begun.rotated || own_id)
+            && registered.is_none_or(|r| r.storage_id.is_some()),
     };
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
@@ -245,8 +250,9 @@ pub(crate) struct Kept {
     pub(crate) promises: bool,
     /// The directory kept every ballot it ever took, at a clean start or an
     /// unclean one: never restored, never a replacement for a lost copy,
-    /// and after a rotation the control plane's record names the id it had
-    /// before. What a fence answer attests as kept.
+    /// not registered under a record without a storage id, and after a
+    /// rotation the control plane's record names the id it had before. What
+    /// a fence answer attests as kept.
     pub(crate) ballots: bool,
 }
 

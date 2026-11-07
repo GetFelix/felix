@@ -297,6 +297,15 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     let (_, kept) = crash(root.path(), None);
     assert!(!kept, "a crash without the control plane's record");
 
+    // Registered before storage ids, then wiped: nothing tells the new
+    // directory from the old one.
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, kept) = start_run(root.path(), &relaxed, Some(&registered_as(None)), None)
+        .expect("a record without a storage id");
+    assert!(!kept.ballots, "a record without a storage id");
+    let (_, kept) = clean(root.path(), id, Some(&registered_as(None)));
+    assert!(!kept, "nor at a later clean start");
+
     let other = StorageId::from_bytes([9; 16]);
     let root = tempfile::tempdir().expect("tempdir");
     let (id, _, _, kept) = start_run(
