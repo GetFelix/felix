@@ -85,8 +85,8 @@ impl Cluster {
 
     /// Claims leases in `cache` and holds the template for their outputs. See
     /// [`Credentials::lease_node_token`].
-    pub fn lease_node_token(&self, cache: &str) -> String {
-        self.credentials.lease_node_token(cache)
+    pub fn lease_node_token(&self, namespace: &str, cache: &str) -> String {
+        self.credentials.lease_node_token(namespace, cache)
     }
 
     /// Presented to the control plane's HTTP API for reads.

@@ -1189,8 +1189,13 @@ static void on_lease(void *user_data, FelixStatus status, const char *message,
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "lease write failed (%d): %s\n", (int)status, message ? message : "");
     } else if (applied && token) {
-        claim->token = strdup(token);
-        if (!claim->token) claim->status = FELIX_STATUS_ERROR;
+        size_t len = strlen(token) + 1;
+        claim->token = malloc(len);
+        if (claim->token) {
+            memcpy(claim->token, token, len);
+        } else {
+            claim->status = FELIX_STATUS_ERROR;
+        }
     } else if (applied) {
         fprintf(stderr, "no token: %s\n", token_refused ? token_refused : "");
     }

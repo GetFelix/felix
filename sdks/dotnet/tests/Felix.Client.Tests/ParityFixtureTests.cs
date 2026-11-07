@@ -12,6 +12,23 @@ public class ParityFixtureTests
 
     private static string Text(ReadOnlyMemory<byte> bytes) => Encoding.UTF8.GetString(bytes.Span);
 
+    /// <summary>The event carrying <paramref name="body"/>: other tests publish to the same stream.</summary>
+    private static async Task<FelixEvent> ReadBody(FelixSubscription sub, string body)
+    {
+        var deadline = DateTime.UtcNow + Wait;
+        while (DateTime.UtcNow < deadline)
+        {
+            var ev = await sub.ReadAsync(Wait);
+            Assert.NotNull(ev);
+            if (Text(ev!.Payload) == body)
+            {
+                return ev;
+            }
+        }
+
+        throw new TimeoutException($"no event carried {body}");
+    }
+
     [FixtureFact]
     public async Task ARecordKeepsItsKeyAndHeadersInOrder()
     {
@@ -27,9 +44,7 @@ public class ParityFixtureTests
                 "k-1"u8.ToArray(),
                 [new Header("trace", "t-1"u8.ToArray()), new Header("trace", ReadOnlyMemory<byte>.Empty), new Header("kind", "order"u8.ToArray())]));
 
-        var ev = await sub.ReadAsync(Wait);
-        Assert.NotNull(ev);
-        Assert.Equal(body, Text(ev!.Payload));
+        var ev = await ReadBody(sub, body);
         Assert.Equal(offset, ev.Offset);
         Assert.Equal("k-1", Text(ev.Key!.Value));
         Assert.NotNull(ev.Headers);
@@ -45,11 +60,11 @@ public class ParityFixtureTests
         var f = Fixture.Load();
         await using var client = await f.ConnectAsync();
         await using var sub = await client.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
-        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, "plain"u8.ToArray());
+        var body = $"cs-{Run()}-plain";
+        await client.PublishAsync(f.Tenant, f.Namespace, f.Stream, Encoding.UTF8.GetBytes(body));
 
-        var ev = await sub.ReadAsync(Wait);
-        Assert.NotNull(ev);
-        Assert.Null(ev!.Key);
+        var ev = await ReadBody(sub, body);
+        Assert.Null(ev.Key);
         Assert.True(ev.Headers is null || ev.Headers.Count == 0);
     }
 

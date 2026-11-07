@@ -215,7 +215,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         trimmer_token: Some(cluster.trimmer_token()),
         trim_stream: Some(TRIM_STREAM.to_string()),
         lease_cache: Some(LEASE_CACHE.to_string()),
-        lease_node_token: Some(cluster.lease_node_token(LEASE_CACHE)),
+        lease_node_token: Some(cluster.lease_node_token(&cluster.namespace, LEASE_CACHE)),
         lease_keys: LEASE_KEYS.iter().map(ToString::to_string).collect(),
         records_publishers: true,
         no_commit_addrs: vec![bare.addr.to_string()],
