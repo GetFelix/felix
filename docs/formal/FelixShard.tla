@@ -458,7 +458,7 @@ ASSUME (Elections > 0 \/ Suspicions > 0) => Quorum /\ ~Resends
 \* short-copy refusal below is the exception to the first two.
 ASSUME Wipes \in Nat /\ StorageIds \in BOOLEAN
 ASSUME Wipes > 0 => /\ ~Counters /\ ~Handoff /\ ~Cancel
-                   /\ Elections = 0 /\ Swaps = 0 /\ ~SetCheck
+                   /\ Elections = 0 /\ Swaps = 0
 
 \* How placement reads a registration, as definitions rather than constants so
 \* the configurations that leave them alone need not name them. One that
@@ -539,6 +539,15 @@ CrashLeader == FALSE
 GiveUpOnCrash == FALSE
 Reclaims == FALSE
 ReclaimBlind == FALSE
+\* `AdmitOnReport`: under `WipedNonVoter`, placement stops holding a learner
+\* only on a report from its generation's leader, as `start_held` in
+\* placement/replica_positions.rs reads it: a pass while that leader still
+\* leads there, or, with `ProbeHoldsStart`, the probe it runs once it gave
+\* its copy up (`holds_start` in `given_up_report`,
+\* crates/server/felix-replication/src/reclaim.rs). Off, `CpAdmit` reads the
+\* copy directly, which admits at least as much.
+AdmitOnReport == FALSE
+ProbeHoldsStart == FALSE
 \* `Renames`: under `Adopt`, the control plane names its leader again at the
 \* next generation when that leader reports it cannot serve the recorded one:
 \* an election the control plane recorded without adopting it moved past it,
@@ -1116,7 +1125,12 @@ ASSUME RefuseShortCopy => /\ CrashLeader /\ GiveUpOnCrash /\ CrashLoses /\ Fence
 \* The lost promise is checked on the fenced path, apart from the wipes of
 \* the report path. With elections the set file goes with it, so only with
 \* the set check.
-ASSUME LosePromises => /\ Wipes = 0 /\ AckByFollowers /\ FenceOnPromote
+\* A leader's crash, which shares the wipes' budget, may join them there:
+\* `Wipe` needs `~CrashLoses`, so only `Crash` takes it. The crash keeps the
+\* set file as it keeps the ballot, so it is the one use of the budget the
+\* set check is checked with.
+ASSUME Wipes > 0 /\ SetCheck => LosePromises /\ CrashLoses /\ CrashLeader
+ASSUME LosePromises => /\ (Wipes = 0 \/ (CrashLoses /\ CrashLeader)) /\ AckByFollowers /\ FenceOnPromote
                        /\ (Elections > 0 => SetCheck)
 ASSUME PromiseFromRoutes => LosePromises
 ASSUME WipedWaitsForAdopt => LosePromises /\ Elections > 0
@@ -1131,6 +1145,8 @@ ASSUME ReadmitCountsWiped \/ ReadmitBeforeCatchUp \/ PromoteNonVoter \/ WipeLead
        => WipedNonVoter
 ASSUME WipedLearnsSet => WipedWaitsForAdopt \/ WipedNonVoter
 ASSUME CreateCountsEmpty => WipedNonVoter
+ASSUME AdmitOnReport => WipedNonVoter
+ASSUME ProbeHoldsStart => AdmitOnReport /\ GiveUpOnCrash /\ Reclaims
 ASSUME GroupLogs => Counters /\ WipedNonVoter
 ASSUME KeepSetDropsMark => GroupLogs
 ASSUME IdlessCreation \/ GenOneExempt => WipedNonVoter
@@ -4382,6 +4398,9 @@ Crash(f) ==
     \* Under `RefuseShortCopy` only the assignment's leader, which keeps the
     \* state space to what the seat needs.
     /\ RefuseShortCopy => f = leader
+    \* Beside a wipe, only after it and once the wiped copy votes again:
+    \* earlier the two are two lost copies, past the failure budget.
+    /\ LosePromises => wipes >= Forgets /\ \A m \in Brokers : ~NonVoter(m)
     /\ Len(log[f]) > 0
     /\ \E machine \in (IF ProcessCrashes THEN BOOLEAN ELSE {TRUE}) :
        LET rotates == CrashRotates(machine)
@@ -4732,11 +4751,25 @@ CatchUpCounters(b, f) ==
 \* `ReplicateOk` in crates/server/felix-replication/src/replica.rs), so by
 \* the time the leader can report it `w` is no longer a non-voter: the
 \* `~NonVoter(w)` conjunct stands for that order.
-CpAdmit(w) ==
+AdmitDue(w) ==
     /\ w \in cpLearner
     /\ gen > wipedAt[w] /\ ~NonVoter(w)
     /\ \E k \in 1..Len(log[w]) : log[w][k] = Start(gen)
     /\ Counters /\ ReadmitChecksCounters => \E k \in 1..Len(clog[w]) : clog[w][k] = Start(gen)
+
+\* Under `AdmitOnReport` some report must say so: a pass of the leader still
+\* leading at `gen`, or the probe of one that gave its copy up there and
+\* came back.
+AdmitReported ==
+    \/ ~AdmitOnReport
+    \/ bgen[leader] = gen
+    \/ /\ ProbeHoldsStart
+       /\ bgen[leader] = 0 /\ registered[leader] /= 0
+       /\ leader \notin halted /\ leader \notin restarting
+
+CpAdmit(w) ==
+    /\ AdmitDue(w)
+    /\ AdmitReported
     /\ cpLearner' = cpLearner \ {w}
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit >>
@@ -5151,6 +5184,22 @@ CollisionSuperseded ==
     \A g \in 1..(Adopt + Suspicions + 1) :
         (gen = g /\ Collided) ~> (gen /= g \/ ~Collided)
 
+\* Placement's admission of a learner and its failover, each taken once it
+\* stays possible. With failover owed too, a learner left unadmitted is one
+\* no promotion moves past either.
+AdmitFairness ==
+    \A w \in Brokers :
+        /\ WF_vars(CpAdmit(w) /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt,
+                                              readmit, learner, marked, contAt, forgot, pinVars, cpGone >>)
+        /\ WF_vars(Promote(Now, w, cpView)
+                   /\ UNCHANGED << counterVars, heard, decideIdVars, contAt, named, refusalVars, cpGone >>)
+
+AdmitSpec == Spec /\ AdmitFairness
+
+\* A learner whose copy holds its generation's start record does not stay a
+\* learner while that generation lasts.
+LearnerAdmitted == \A w \in Brokers : AdmitDue(w) ~> ~AdmitDue(w)
+
 \* The control plane's leader does not stay open below its own ballot.
 OwnBallotCaughtUp == BelowOwnBallot ~> ~BelowOwnBallot
 
@@ -5475,7 +5524,7 @@ TypeOK ==
     /\ wipedAt \in [Brokers -> Nat] /\ learner \in [Brokers -> BOOLEAN] /\ cpLearner \subseteq Brokers
     /\ marked \in [Brokers -> BOOLEAN]
     /\ \A r \in readmit : r[1] \in Brokers /\ r[2] \in Nat /\ r[3] \in Brokers
-    /\ wipes \in 0..(IF LosePromises THEN Forgets ELSE Wipes)
+    /\ wipes \in 0..(IF LosePromises /\ Forgets > Wipes THEN Forgets ELSE Wipes)
     /\ contAt \in [Brokers -> Nat \X Nat \X (0..1)]
     /\ forgot \subseteq Brokers
     /\ pinned \subseteq Brokers /\ stalePin \in [Brokers -> SUBSET Brokers]

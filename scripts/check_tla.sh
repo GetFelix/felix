@@ -410,6 +410,8 @@ expectations=(
   "FelixShardElectWipeNonVoterGroupsKeepDropsMark violates CountersHeldByLeader"
   "FelixShardElectWipeNonVoterIdlessCreation pass"
   "FelixShardElectWipeNonVoterIdlessCreationExempt violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterReclaim pass"
+  "FelixShardElectWipeNonVoterReclaimPassOnly violates liveness"
   "FelixShardElectUncleanContinuing pass"
   "FelixShardElectUncleanContinuingBatchBallot violates OneLeaderPerGeneration"
   "FelixShardElectUncleanContinuingAnyCopy violates OneLeaderPerGeneration"

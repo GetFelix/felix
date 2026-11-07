@@ -95,6 +95,7 @@ pub async fn probe<R: PeerRequester>(
     let mut reclaimable = true;
     let mut report: Option<ShardReport> = None;
     let mut positions = Vec::with_capacity(logs.len());
+    let mut start_holders: Option<Vec<String>> = None;
     for &kind in logs {
         let Some(log) = broker
             .shard_log_for(
@@ -164,6 +165,11 @@ pub async fn probe<R: PeerRequester>(
             return None;
         }
         holds &= meets_every_majority(&counted, &sets);
+        start_holders = Some(still_holding_start(
+            start_holders,
+            &answers,
+            route.generation,
+        ));
         let furthest = answers
             .iter()
             .map(|(_, ok, _, _)| (ok.last_generation, ok.log_end))
@@ -192,6 +198,10 @@ pub async fn probe<R: PeerRequester>(
         }
     }
     let mut report = report?;
+    // A re-admitted learner counts again only once its leader reports it
+    // holding the start record. A leader that crashed before a pass said so
+    // can only say it here, or the learner stays one for good.
+    report.holds_start = start_holders.unwrap_or_default();
     // A refusing or silent member has no position. Unless the followers that
     // have one meet every majority, a record could sit only on those that do
     // not, so nobody is named and nothing is reclaimed: a held report.
@@ -212,6 +222,28 @@ fn meets_every_majority(trusted: &[&str], sets: &[Vec<&str>]) -> bool {
         let held = set.iter().filter(|node| trusted.contains(node)).count();
         2 * held >= set.len()
     })
+}
+
+/// The followers of `held`, the ones found holding `generation`'s start
+/// record on every log checked before this one (`None` before the first),
+/// whose answer on this log does too.
+///
+/// A copy whose last record is of `generation` holds its start record, the
+/// generation's first. One ahead of it would have refused the fence, and one
+/// that refused or was not heard from has no answer to judge.
+fn still_holding_start(
+    held: Option<Vec<String>>,
+    answers: &[Answer],
+    generation: u64,
+) -> Vec<String> {
+    let here = answers
+        .iter()
+        .filter(|(_, ok, _, _)| ok.last_generation == generation)
+        .map(|(node, ..)| node.clone());
+    match held {
+        None => here.collect(),
+        Some(held) => here.filter(|node| held.contains(node)).collect(),
+    }
 }
 
 /// Who the probe names caught up, from each of the shard's logs, the
@@ -269,7 +301,8 @@ pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport
     }
 }
 
-/// The report on a probe, naming nobody caught up; the caller fills that in.
+/// The report on a probe, naming nobody caught up or holding the start; the
+/// caller fills those in.
 fn given_up_report(
     key: &ShardKey,
     generation: u64,

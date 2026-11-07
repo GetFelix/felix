@@ -1481,7 +1481,10 @@ only the copy it named.
 
 A leader names a follower in `holds_start` only on an answer from that copy in
 the same pass (one round of shipping to every follower), so a wiped copy's old
-position is never reported. A learner can finish catching up on an exchange
+position is never reported. A leader that gave its copy up after a crash
+reports `holds_start` from its probe instead (see "The probe" under
+[A leader's own crash](#a-leaders-own-crash)): without it, a learner whose
+leader crashed before a pass named it would stay a learner for good. A learner can finish catching up on an exchange
 that outlives its pass. The next pass then finds it holding everything the
 leader has and would send it nothing, and on a shard with no further writes
 nothing would ever name it. So each pass sends such a learner its last record
@@ -4023,7 +4026,14 @@ follower is behind it:
   whatever any copy holds. For a cache, a follower furthest on both its logs
   is named first, and when the cache and counter logs are led by different
   followers, the furthest on the cache log. When every follower is behind on
-  the cache log nobody is named, whatever the counter log says. A `Quorum`
+  the cache log nobody is named, whatever the counter log says. The report
+  also lists in `holds_start` every follower whose answer shows a record of
+  the generation it gave up, on every one of the shard's logs. Such a copy
+  holds that generation's start record, its first. This is how placement
+  re-admits a learner whose leader crashed before a pass reported it holding
+  the start: otherwise the learner, often the one copy that holds
+  everything, is never promoted and the shard waits as `NoCaughtUpReplica`
+  for good. A `Quorum`
   cache is not fenced on promotion (`suspects` in
   `placement/replica_positions.rs` is for streams only), so a promoted
   follower behind on the counter log can lose counter records a majority
@@ -4157,7 +4167,11 @@ generation, and TLC finds the acknowledged record gone;
 replacement, and `FelixShardLeaderCrashReclaim.cfg` with the probe's
 promotion and the reclaim too.
 `FelixShardLeaderCrashReclaimBlind.cfg` reclaims without measuring the
-followers and loses the record. None models the fence: the configurations
+followers and loses the record.
+`FelixShardElectWipeNonVoterReclaim.cfg` adds a wiped follower re-admitted
+as a learner and checks that it is admitted on the probe's report and can be
+promoted without losing a record; `FelixShardElectWipeNonVoterReclaimPassOnly.cfg`
+admits only on a pass and finds the learner stranded. None models the fence: the configurations
 with a crash use the lease and the report.
 
 ### Conditional head trim
