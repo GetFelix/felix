@@ -1,0 +1,1 @@
+Reading a data directory's storage id and its replaced-storage marker now goes through the same filesystem seam as writing them, so the simulator no longer sees every restarted broker as having lost its copy.
