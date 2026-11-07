@@ -130,7 +130,7 @@ pub fn load_or_create(
 /// there is no file or it does not decode, either of which the next
 /// [`load_or_create`] answers with a new id.
 pub fn load(root: &Path) -> Result<Option<StorageId>> {
-    match std::fs::read(path_in(root)) {
+    match crate::fs::read(path_in(root)) {
         Ok(bytes) => Ok(StorageId::decode(&bytes)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(StorageError::Io(err)),
