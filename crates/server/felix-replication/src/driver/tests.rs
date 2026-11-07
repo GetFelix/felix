@@ -40,6 +40,7 @@ use felix_wire::internal::{InternalMessage, ReplicateOk, ReplicateRecords};
 use tempfile::TempDir;
 
 use super::shard::*;
+use super::shards::Queue;
 use super::*;
 use crate::peer::PeerError;
 use crate::reporter::ReportTo;
@@ -388,6 +389,7 @@ impl PeerRequester for DivergingFollower {
                 code: felix_wire::internal::ErrorCode::LogConflict,
                 expected_offset: 0,
                 detail: "diverged".to_string(),
+                reason: None,
             },
         ))
     }

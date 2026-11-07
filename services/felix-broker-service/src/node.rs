@@ -22,6 +22,7 @@
 
 mod cache_expiry;
 mod cluster;
+mod from_view;
 mod handoff;
 mod listeners;
 mod membership;
@@ -94,7 +95,10 @@ where
     // instance that reports ready before then invites an orchestrator to route
     // traffic at streams that are, from any client's point of view, missing.
     // An in-memory broker has nothing to recover and keeps the old behaviour.
-    let durable_storage_configured = DurableStorageConfig::from_env()?.is_some();
+    // Parsed once: what readiness gates on is what storage opens.
+    let durable_config = DurableStorageConfig::from_env()?;
+    let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
+    let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
     let readiness = if gate_readiness_on_sync {
         Readiness::starting()
@@ -114,6 +118,10 @@ where
     // it. Until then auth cannot tell an unknown tenant from one not yet
     // synced, so it lets both through to the JWKS fetch.
     let catalog_seeded = CancellationToken::new();
+    // Cancelled once every listener is bound. Readiness waits on it too: a
+    // bind that fails after `/ready` said yes looks like a crash, not a
+    // start-up to retry.
+    let listening = CancellationToken::new();
 
     let cluster = cluster::shard_state(&config);
     let ingress_router = cluster
@@ -128,29 +136,11 @@ where
         .membership
         .as_ref()
         .map(|_| Arc::new(membership::initial_lease()));
-    // Which cross-broker features the whole fleet has. Created here, like the
-    // lease, so anything built below that changes how brokers treat each
-    // other can hold it; membership keeps it current. A broker outside a
-    // cluster has no fleet and enables nothing.
-    let fleet = Arc::new(felix_common::fleet::FleetGate::new(
-        config
-            .membership
-            .as_ref()
-            .map(|membership| membership.features.clone())
-            .unwrap_or_default(),
-    ));
     // Every write path enters the shard fence, so that is where the lease is
     // enforced; see `shards::lifecycle::fence`.
     if let (Some(ingress), Some(lease)) = (&ingress_router, &lease) {
         ingress.fence().bind_lease(Arc::clone(lease));
     }
-
-    // Shared between the replication driver, which advances it, and the publish
-    // path, which waits on it for `Quorum` streams. The fleet decides how it
-    // counts: see `QuorumMarks::own_generation_only`.
-    let quorum_marks = Arc::new(replication::quorum::QuorumMarks::with_fleet(Arc::clone(
-        &fleet,
-    )));
     // What replication has stopped for. Read by the admin listing, because the
     // metric is a bare count: a label per shard is a label per stream per
     // tenant, and a halt is useless to act on without knowing which replica.
@@ -206,7 +196,8 @@ where
     // Before any store opens: a data directory restored from a snapshot is
     // older than the node's last registration and must not keep its id
     // (#1334). Nothing is open yet, so a stop while waiting leaves the
-    // directory as it was.
+    // directory as it was. A start from the view defers that check to when
+    // the control plane answers, and serves no client before it.
     let link = config.controlplane_url.as_deref().map(|base_url| {
         replication::controlplane_link::HttpControlPlaneLink::new(
             membership_client.clone(),
@@ -214,13 +205,13 @@ where
         )
     });
     let mut shutdown = Box::pin(shutdown);
-    let registered = tokio::select! {
-        registered = membership::registered(
+    let start = tokio::select! {
+        start = membership::start(
             &config,
-            durable_storage_configured,
+            durable_root.as_deref(),
             &link,
             &credential,
-        ) => registered?,
+        ) => start?,
         () = shutdown.as_mut() => {
             tracing::info!("stopped before the control plane answered; nothing was opened");
             sync_shutdown.cancel();
@@ -228,20 +219,66 @@ where
             return Ok(());
         }
     };
+    let (registered, view) = match start {
+        membership::Start::Asked(registered) => (registered, None),
+        membership::Start::FromView(view) => (None, Some(*view)),
+    };
+    let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
+    let storage_id = stored.storage_id;
+    // Beginning the run may have rotated the id the view was registered
+    // under, and a new id registers before it acts: wait for the control
+    // plane after all, before anything is bound or seeded.
+    let view = match (view, &durable_root) {
+        (Some(view), Some(root)) => tokio::select! {
+            kept = membership::keep_view_if_opened_under(
+                view,
+                root,
+                storage_id,
+                &config,
+                &link,
+                &credential,
+            ) => {
+                let (view, replaced) = kept?;
+                stored.replaced_storage |= replaced;
+                view
+            }
+            () = shutdown.as_mut() => {
+                // Nothing was acknowledged under the new id, so a stop here
+                // is as safe as a crash.
+                tracing::info!("stopped before the control plane answered");
+                sync_shutdown.cancel();
+                peer_shutdown.cancel();
+                return Ok(());
+            }
+        },
+        (view, _) => view,
+    };
+    // Which cross-broker features the whole fleet has, held by anything that
+    // changes how brokers treat each other; membership keeps it current. A
+    // broker outside a cluster has no fleet and enables nothing. A start
+    // from the view begins with the view's features enabled but not adopted,
+    // so a feature it lacks stays undecided until registration answers.
+    let reported = config
+        .membership
+        .as_ref()
+        .map(|membership| membership.features.clone())
+        .unwrap_or_default();
+    let fleet = Arc::new(match &view {
+        Some(view) => felix_common::fleet::FleetGate::seeded(reported, &view.fleet),
+        None => felix_common::fleet::FleetGate::new(reported),
+    });
+    // Shared between the replication driver, which advances it, and the publish
+    // path, which waits on it for `Quorum` streams. The fleet decides how it
+    // counts: see `QuorumMarks::own_generation_only`.
+    let quorum_marks = Arc::new(replication::quorum::QuorumMarks::with_fleet(Arc::clone(
+        &fleet,
+    )));
     let startup::Opened {
         broker,
         durable_storage,
         storage_id,
         unclean,
-    } = startup::open_broker(
-        &config,
-        DurableStorageConfig::from_env()?,
-        registered.as_ref(),
-        &cluster,
-        &fleet,
-        &quorum_marks,
-    )
-    .await?;
+    } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks).await?;
     tracing::info!("broker started");
     let controlplane_url = config
         .controlplane_url
@@ -250,6 +287,30 @@ where
 
     // Start the Prometheus metrics HTTP server. This is separate from QUIC traffic and
     // intentionally lightweight so metrics remain available even under load.
+    // A start from the view registers its streams and caches at the
+    // incarnations they had, so their logs open, and takes its routes, before
+    // any shard task or peer listener runs. Neither cancels `catalog_seeded`
+    // or `seeded`: auth and readiness wait for the control plane's own sync,
+    // whose snapshots then replace all of it.
+    let provisional = match (&view, &cluster) {
+        (Some(view), Some((_, _, _, ownership))) => {
+            let provisional =
+                crate::cluster::catalog_sync::seed_provisional(&broker, &view.catalog).await;
+            // Read by the routing feed's first tick, which comes at once.
+            ownership.write().await.reset(view.routes.clone());
+            provisional
+        }
+        _ => crate::cluster::catalog_sync::Provisional::default(),
+    };
+    // Client listeners and forwarded client requests wait on this. Without a
+    // view it is `seeded`; after a start from the view it is cancelled only
+    // once this process has registered too.
+    // The restore check a start from the view deferred: the catalog sync and
+    // the replica reports wait for it; membership runs it.
+    let membership::Gates {
+        clients,
+        restore_checked,
+    } = membership::Gates::new(view.is_some(), &seeded);
     startup::bind_read_check(
         &config,
         &cluster,
@@ -338,7 +399,7 @@ where
             auth: &auth,
             accept_shutdown: &accept_shutdown,
             connections: &connections,
-            seeded: &seeded,
+            seeded: &clients,
             gate_readiness_on_sync,
             ingress_router: &ingress_router,
             peers: &peers,
@@ -354,7 +415,7 @@ where
             kafka,
             &accept_shutdown,
             &connections,
-            &seeded,
+            &clients,
             gate_readiness_on_sync,
         ));
     }
@@ -363,7 +424,7 @@ where
             mqtt,
             &accept_shutdown,
             &connections,
-            &seeded,
+            &clients,
             gate_readiness_on_sync,
         ));
     }
@@ -374,6 +435,9 @@ where
         cache_expiry::INTERVAL,
         sync_shutdown.clone(),
     ));
+    // Set at each registration. The peer listener's handshake must tell "not
+    // registered yet" from incarnation 0 and learn when it changes.
+    let (registered, registered_watch) = tokio::sync::watch::channel(None);
     let (seeded_tx, seeded_rx) = tokio::sync::oneshot::channel();
     let controlplane_task = sync::spawn_catalog_sync(
         &config,
@@ -384,6 +448,8 @@ where
         seeded_tx,
         &catalog_seeded,
         &key_store,
+        &restore_checked,
+        provisional,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,
@@ -391,18 +457,38 @@ where
         &draining,
         &seeded,
         seeded_rx,
+        &listening,
+        view.as_ref()
+            .map(|_| (clients.clone(), registered_watch.clone())),
     );
 
     // Filled by the shard tasks, carried by the heartbeat.
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     // Set at each registration, read by the replica reports.
     let incarnation = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    // The same, for the peer listener's handshake, which must tell "not
-    // registered yet" from incarnation 0 and learn when it changes.
-    let (registered, registered_watch) = tokio::sync::watch::channel(None);
+    // Its own client: the heartbeat runs on a runtime of its own, and a pooled
+    // connection belongs to the runtime that opened it.
+    let heartbeat_link = config
+        .membership
+        .as_ref()
+        .and(config.controlplane_url.as_deref())
+        .map(|base_url| {
+            replication::controlplane_link::HttpControlPlaneLink::new(
+                crate::cluster::controlplane_client::build()
+                    .expect("the control-plane client built once already"),
+                base_url,
+            )
+        });
+    let view_registered = registered_watch.clone();
+    // Shared by membership and the view's writer, so a view membership forgets
+    // is not written back.
+    let view_file = durable_storage.as_ref().map(|storage| {
+        crate::cluster::controlplane_view::ViewFile::new(storage.root().to_path_buf())
+    });
     let membership = membership::spawn(
         &config,
-        &link,
+        heartbeat_link,
+        true,
         gate_readiness_on_sync,
         &seeded,
         &lease,
@@ -413,6 +499,8 @@ where
         registered,
         storage_id,
         durable_storage.as_ref().map(|storage| storage.root()),
+        view_file.clone(),
+        view.as_ref().map(|_| restore_checked.clone()),
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
@@ -433,6 +521,11 @@ where
             .controlplane_url
             .as_deref()
             .map(|base_url| (&membership_client, base_url, &credential)),
+        view.as_ref().map(|_| clients.clone()),
+        // Peers suspect a broker that cannot serve clients yet, so they stand
+        // for the shards it leads instead of waiting on it. After a start from
+        // the view that lasts until it has registered.
+        gate_readiness_on_sync.then_some(&clients),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -453,8 +546,36 @@ where
         storage_id: durable_storage.as_ref().map(|_| storage_id),
         unclean: &unclean,
         prefetch: peer_listener.prefetch,
+        nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
+        reports_held: view.as_ref().map(|_| restore_checked.clone()),
+        leads_after: view.as_ref().map(|_| clients.clone()),
         sync_shutdown: &sync_shutdown,
     });
+
+    // Only where a restart could start from it: a cluster member with a data
+    // directory whose routes come from the shard watch.
+    let controlplane_view = match (&config.membership, &cluster, &view_file, &shard_tasks) {
+        (Some(membership), Some((router, _, _, ownership)), Some(view_file), Some(_)) => {
+            Some(crate::cluster::controlplane_view::spawn(
+                crate::cluster::controlplane_view::Sources {
+                    node_id: membership.node_id.clone(),
+                    storage_id,
+                    registered: view_registered,
+                    fleet: Arc::clone(&fleet),
+                    catalog_seeded: catalog_seeded.clone(),
+                    ownership: Arc::clone(ownership),
+                    ownership_changes: ownership.read().await.changes(),
+                    router: Arc::clone(router),
+                    broker: Arc::clone(&broker),
+                },
+                view_file.clone(),
+            ))
+        }
+        _ => None,
+    };
+
+    // After the last bind: anything bound below here could fail after ready.
+    listening.cancel();
 
     // Only while the shard watch runs is there anything to hand off, and
     // anything to tell this broker when it is done.
@@ -481,6 +602,7 @@ where
         shard_tasks,
         sync_shutdown,
         controlplane_task,
+        controlplane_view,
         storage: shutdown::Storage {
             broker: Arc::clone(&broker),
             run: durable_storage

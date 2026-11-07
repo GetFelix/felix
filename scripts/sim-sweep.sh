@@ -4,32 +4,59 @@
 #   scripts/sim-sweep.sh <first seed> <count> [out dir]
 #
 # Each seed runs the `replay` test of crates/testing/felix-sim/tests/seeds.rs
-# with FELIX_SIM_SEED set, so its outcome lands in <out>/seed-<n>.log. A seed
-# that fails runs again up to FELIX_SIM_RETRIES more times (default 2): a run
-# is not bit-for-bit repeatable, and "failed 1 of 3" and "failed 3 of 3" point
-# at different kinds of bug. Every failing seed is listed in <out>/failed.txt
-# with how often it failed and the command that replays it. Logs of seeds that
-# passed are deleted. Exits 1 if any seed failed.
+# with FELIX_SIM_SEED set, so its outcome lands in <out>/seed-<n>.log.
+#
+# FELIX_SIM_MODE picks the nemeses beyond the default faults: `off` (default),
+# `clocks` (bounded clock skew), `placement` (placement faults) or
+# `power-loss` (power cuts in place of kills).
+#
+# A failing seed is sorted by what its log says:
+#
+#   real bug  a history violation, an undecided key, a safety finding (more
+#             than one serving broker, two leaders in a generation, an
+#             acknowledged write a leader does not hold), or a crash.
+#             Listed in <out>/failed.txt. The script exits 1.
+#   stall     only the liveness findings `stalled`, `election-settles` and
+#             `final-reads`, the tracked ones in docs/simulation.md. Listed
+#             in <out>/stalls.txt. The script still exits 0.
+#
+# A seed with a real bug runs again up to FELIX_SIM_RETRIES more times
+# (default 1) to say how often it fails. Each line names the categories and the
+# command that replays the seed. Logs of seeds that passed are deleted; the
+# list files exist only when they have lines.
 #
 # FELIX_SIM_JOBS sets how many seeds run at once (default 2). A seed holds one
 # core most of the time; running more than the machine has makes the stall
 # watchdog report a busy machine as a stuck run. FELIX_SIM_BIN names a test
-# binary built already; without it the script builds one.
+# binary built already; without it the script builds one the way
+# `task sim:replay` does.
 set -euo pipefail
 
 first=${1:?first seed}
 count=${2:?seed count}
 out=${3:-target/sim-sweep}
 jobs=${FELIX_SIM_JOBS:-2}
-retries=${FELIX_SIM_RETRIES:-2}
+retries=${FELIX_SIM_RETRIES:-1}
+mode=${FELIX_SIM_MODE:-off}
 
 for value in "$first" "$count" "$jobs" "$retries"; do
   [[ "$value" =~ ^[0-9]{1,9}$ ]] || { echo "not a number: $value" >&2; exit 2; }
 done
 
+# Mode flags go in the environment the test reads, and in the replay command
+# when a log does not print one.
+case "$mode" in
+  off) mode_env=() ; mode_prefix="" ;;
+  clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="" ;;
+  placement) mode_env=(FELIX_SIM_PLACEMENT=1); mode_prefix="FELIX_SIM_PLACEMENT=1 " ;;
+  power-loss) mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
+  *) echo "FELIX_SIM_MODE must be off, clocks, placement or power-loss, got $mode" >&2; exit 2 ;;
+esac
+
 bin=${FELIX_SIM_BIN:-}
 if [ -z "$bin" ]; then
-  bin=$(cargo test -p felix-sim --test seeds --no-run --message-format=json |
+  bin=$(RUSTFLAGS="--cfg tokio_unstable" CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+    cargo test -p felix-sim --release --test seeds --no-run --message-format=json |
     jq -r 'select(.profile.test == true and .target.name == "seeds") | .executable' |
     tail -1)
 fi
@@ -40,36 +67,85 @@ fi
 
 mkdir -p "$out"
 : > "$out/failed.txt"
+: > "$out/stalls.txt"
 
-# Runs one seed; prints "<seed> <failures> <runs>" when it failed at least once.
+# The categories a log shows, comma separated: `history` for violations or an
+# undecided key, otherwise each failing checker's name, `crash` when the log
+# names none.
+categories() {
+  local log=$1 found=""
+  grep -qE '^[0-9]+ violation\(s\)|undecided' "$log" && found="history"
+  found+=" $(grep -oE '^\[[a-z-]+\]' "$log" | tr -d '[]' | sort -u | tr '\n' ' ')"
+  found=$(echo $found | tr ' ' ',')
+  echo "${found:-crash}"
+}
+
+# Whether every category is a tracked liveness one.
+only_liveness() {
+  local category
+  for category in ${1//,/ }; do
+    case "$category" in
+      stalled|election-settles|final-reads) ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
+# The command the failed run printed, or one built from the mode.
+replay_command() {
+  local seed=$1 log=$2 line
+  line=$(grep -A1 'To run it again' "$log" | sed -n 2p | sed 's/^ *//' || true)
+  echo "${line:-${mode_prefix}FELIX_SIM_SEED=$seed task sim:replay}"
+}
+
+# Runs one seed; prints "<kind> <seed> <categories> <failures> <runs>" when it
+# failed, where kind is `bug` or `stall`.
 run_one() {
-  local seed=$1 failures=0 runs=0
+  local seed=$1 failures=0 runs=0 kind=bug cats=""
   local log="$out/seed-$seed.log"
   : > "$log"
   while [ "$runs" -le "$retries" ]; do
     runs=$((runs + 1))
     echo "=== run $runs of seed $seed" >> "$log"
-    if ! FELIX_SIM_SEED=$seed "$bin" replay --exact --nocapture >> "$log" 2>&1; then
+    if ! env "${mode_env[@]}" FELIX_SIM_SEED=$seed "$bin" replay --exact --nocapture >> "$log" 2>&1; then
       failures=$((failures + 1))
+      if [ "$failures" -eq 1 ]; then
+        cats=$(categories "$log")
+        # A tracked stall is not run again: it costs minutes and says the same.
+        if only_liveness "$cats"; then
+          kind=stall
+          break
+        fi
+      fi
     elif [ "$failures" -eq 0 ]; then
-      # Passed the first time: nothing to keep.
       rm -f "$log"
       return 0
     fi
   done
-  echo "$seed $failures $runs"
+  echo "$kind $seed $cats $failures $runs"
 }
-export -f run_one
-export bin out retries
+export -f run_one categories only_liveness
+export bin out retries mode
+export -f replay_command
+export mode_prefix
+# Arrays do not cross into the child shell; pass the mode's variables by name.
+export MODE_ENV="${mode_env[*]:-}"
 
 seq "$first" $((first + count - 1)) |
-  xargs -P "$jobs" -I{} bash -c 'run_one {}' |
-  sort -n |
-  while read -r seed failures runs; do
-    echo "seed $seed failed $failures of $runs: FELIX_SIM_SEED=$seed cargo test -p felix-sim --test seeds replay -- --nocapture" |
-      tee -a "$out/failed.txt"
+  xargs -P "$jobs" -I{} bash -c 'mode_env=($MODE_ENV); run_one {}' |
+  sort -k2,2n |
+  while read -r kind seed cats failures runs; do
+    line="seed $seed ($cats) failed $failures of $runs, mode $mode: $(replay_command "$seed" "$out/seed-$seed.log")"
+    if [ "$kind" = stall ]; then
+      echo "stall $line" | tee -a "$out/stalls.txt"
+    else
+      echo "BUG   $line" | tee -a "$out/failed.txt"
+    fi
   done
 
-failed=$(wc -l < "$out/failed.txt" | tr -d ' ')
-echo "$failed of $count seeds failed (seeds $first to $((first + count - 1)))"
-[ "$failed" -eq 0 ]
+bugs=$(wc -l < "$out/failed.txt" | tr -d ' ')
+stalls=$(wc -l < "$out/stalls.txt" | tr -d ' ')
+[ -s "$out/failed.txt" ] || rm -f "$out/failed.txt"
+[ -s "$out/stalls.txt" ] || rm -f "$out/stalls.txt"
+echo "$bugs real bugs and $stalls tracked stalls in $count seeds (seeds $first to $((first + count - 1)), mode $mode)"
+[ "$bugs" -eq 0 ]

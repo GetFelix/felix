@@ -2,6 +2,7 @@
 //! control plane, and whichever incarnation is running.
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +17,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::census::NodeView;
 use super::{NodeHandles, SimConfig};
+use crate::clock::{self, Owner};
 use crate::controlplane::SimControlPlane;
 use crate::link::{Cut, NodeLink, REQUEST_TIMEOUT};
+use crate::nemesis::Stop;
 use crate::net::{SimNet, SimNode};
 
 /// How long a crash waits for the dead incarnation's tasks to notice, so a
@@ -41,10 +44,47 @@ struct Running {
     broker: Arc<SimBroker>,
 }
 
+/// A broker's data directory. It lives in memory, so a run creates, renames
+/// and syncs files at no cost, and `felix_storage::sim_fs::crash` can say
+/// what a power loss would have left. The path is only a name: nothing is
+/// created on disk.
+struct DataDir {
+    path: PathBuf,
+}
+
+impl DataDir {
+    /// The same path every run when no other simulation in the process
+    /// holds it, so a replay hashes and orders paths as the first run did.
+    fn new(index: usize) -> Self {
+        let base = std::env::temp_dir().join("felix-sim");
+        for attempt in 0.. {
+            let name = match attempt {
+                0 => format!("b{}", index + 1),
+                n => format!("b{}-{n}", index + 1),
+            };
+            let path = base.join(name);
+            if felix_storage::sim_fs::claim_root(&path) {
+                return Self { path };
+            }
+        }
+        unreachable!("some attempt finds a free path")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DataDir {
+    fn drop(&mut self) {
+        felix_storage::sim_fs::unregister_root(&self.path);
+    }
+}
+
 pub(crate) struct Node {
     pub(crate) id: String,
     advertise: SocketAddr,
-    dir: tempfile::TempDir,
+    dir: DataDir,
     pub(crate) cut: Cut,
     state: Mutex<State>,
     index: usize,
@@ -55,11 +95,16 @@ impl Node {
         Ok(Self {
             id: format!("b{}", index + 1),
             advertise: SocketAddr::from(([10, 0, 0, (index + 1) as u8], 5001)),
-            dir: tempfile::tempdir().context("create a broker data directory")?,
+            dir: DataDir::new(index),
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,
         })
+    }
+
+    /// Whose clocks this broker's code reads.
+    pub(crate) fn owner(&self) -> Owner {
+        Owner::Broker(self.index)
     }
 
     pub(crate) fn handles(&self) -> Option<NodeHandles> {
@@ -121,9 +166,12 @@ impl Node {
         broker_config.advertise_addr = self.advertise;
         broker_config.fsync_mode = config.fsync_mode;
         let link = NodeLink::new(cp.link(), self.cut.clone());
-        let opened = SimBroker::open(broker_config, link, self.catalog(cp))
-            .await
-            .with_context(|| format!("open {} (start {run})", self.id))?;
+        let opened = clock::on(
+            self.owner(),
+            SimBroker::open(broker_config, link, self.catalog(cp)),
+        )
+        .await
+        .with_context(|| format!("open {} (start {run})", self.id))?;
 
         // No await from here to the end: a crash lands between awaits, so it
         // finds either a starting broker or a running one, never half of one.
@@ -135,13 +183,18 @@ impl Node {
         let peer = Arc::new(net.start(SimNode {
             node_id: self.id.clone(),
             capabilities: opened.capabilities(),
+            outgoing: opened.outgoing_capabilities(),
             identity: PeerIdentity {
                 storage: Some(opened.storage_id()),
                 incarnation: Incarnation::Unregistered,
             },
             handler: opened.handler(),
         }));
-        let broker = Arc::new(opened.run(Arc::clone(&peer)));
+        // Everything the broker spawns from here on is its own, and reads
+        // its clocks.
+        let broker = Arc::new(clock::as_owner(self.owner(), || {
+            opened.run(Arc::clone(&peer))
+        }));
         let handles = NodeHandles {
             index: self.index,
             node_id: self.id.clone(),
@@ -150,6 +203,7 @@ impl Node {
             lease: Arc::clone(broker.lease()),
             marks: Arc::clone(broker.quorum_marks()),
             crashed: token,
+            power_loss: config.power_loss,
         };
         // A peer's handshake carries the incarnation the broker registered
         // under, once it has.
@@ -172,11 +226,62 @@ impl Node {
         Ok(())
     }
 
-    /// Stop whatever is running or starting, as a crash does.
-    pub(crate) async fn crash(&self, net: &SimNet) {
+    /// Whether the running broker started with its unclean-start handling.
+    pub(crate) fn started_unclean(&self) -> Option<bool> {
+        Some(self.broker()?.started_unclean())
+    }
+
+    /// Stop the running broker in this instant, as a power cut does: clients
+    /// and peers lose it and its tasks are cancelled, but it stays in place
+    /// for [`Self::crash`] to take down. Touches no file, since a power cut
+    /// calls it from inside a write.
+    pub(crate) fn power_off(&self, net: &SimNet) {
+        if let State::Up(running) = &*self.state.lock() {
+            running.handles.crashed.cancel();
+            running.broker.halt();
+        }
+        net.crash(&self.id);
+    }
+
+    pub(crate) fn arm_power_cut(
+        &self,
+        seed: u64,
+        on_cut: impl FnOnce(&std::path::Path, u64) + Send + 'static,
+    ) {
+        felix_storage::sim_fs::arm_power_cut(self.dir.path(), seed, on_cut)
+            .expect("the data directory is simulated");
+    }
+
+    pub(crate) fn cut_power(&self, seed: u64) {
+        felix_storage::sim_fs::cut_power(self.dir.path(), seed)
+            .expect("the data directory is simulated");
+    }
+
+    /// Put what the device held at the cut in place of the directory.
+    pub(crate) fn reboot(&self) {
+        felix_storage::sim_fs::reboot(self.dir.path()).expect("the data directory is simulated");
+    }
+
+    /// The length of the file at `path` below the data directory, if any.
+    pub(crate) fn file_len(&self, path: &Path) -> Option<u64> {
+        felix_storage::sim_fs::file_len(self.dir.path(), path)
+            .expect("the data directory is simulated")
+    }
+
+    pub(crate) fn torn_tails_repaired(&self) -> Vec<std::path::PathBuf> {
+        felix_storage::sim_fs::torn_tails_repaired(self.dir.path())
+            .expect("the data directory is simulated")
+    }
+
+    /// Stop whatever is running or starting, as a crash does. A kill leaves
+    /// the run state unclean, so the next start rotates the storage id and
+    /// runs the unclean-start handling. A power loss leaves it as the broker
+    /// had it; the caller cut the power first. A clean stop is recorded
+    /// clean. Returns whether the run state was left unclean by a kill.
+    pub(crate) async fn crash(&self, net: &SimNet, stop: Stop) -> bool {
         let prior = std::mem::replace(&mut *self.state.lock(), State::Down);
         let broker = match prior {
-            State::Down => return,
+            State::Down => return false,
             State::Starting(token) => {
                 token.cancel();
                 None
@@ -194,7 +299,7 @@ impl Node {
             loop {
                 match Arc::try_unwrap(broker) {
                     Ok(broker) => {
-                        broker.crash();
+                        clock::as_owner(self.owner(), || broker.crash());
                         break;
                     }
                     Err(shared) => {
@@ -207,16 +312,27 @@ impl Node {
             }
         }
         tokio::time::sleep(CRASH_DRAIN).await;
-        // A crash of the process loses nothing the kernel accepted, so it is
-        // equivalent to a stop with everything synced. Say so in the run
-        // state: otherwise a restart takes a new storage id on a platform
-        // that cannot sync the filesystem after a crash (everything but
-        // Linux), and the broker refuses to lead what it led.
-        if let Some(id) = stopped_under
-            && let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id)
-        {
+        let Some(id) = stopped_under else {
+            return false;
+        };
+        if stop == Stop::PowerLoss {
+            return false;
+        }
+        if stop == Stop::Kill {
+            // A kill after a failed fsync: the process left the run state
+            // running, and the next start cannot trust what it acknowledged.
+            if let Err(err) = felix_storage::run_state::forget_boot(self.dir.path()) {
+                tracing::error!(node = %self.id, error = %err, "could not record the kill as unsafe");
+                return false;
+            }
+            return true;
+        }
+        if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
+            // A process crash loses nothing the kernel accepted, so it is
+            // equivalent to a stop with everything synced.
             tracing::error!(node = %self.id, error = %err, "could not record the crash as clean");
         }
+        false
     }
 
     /// The catalog sync's read of the control plane, behind this broker's
@@ -240,14 +356,14 @@ impl Node {
 
     /// What the running broker believes about `key`, read at one instant.
     pub(crate) fn stand(&self, key: &ShardKey) -> Option<ShardStand> {
-        Some(self.broker()?.shard_stand(key))
+        let broker = self.broker()?;
+        Some(clock::as_owner(self.owner(), || broker.shard_stand(key)))
     }
 
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {
         let broker = self.broker()?;
-        tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
-            .await
-            .ok()
+        let snapshot = clock::on(self.owner(), broker.shard_snapshot(key));
+        tokio::time::timeout(SNAPSHOT_WITHIN, snapshot).await.ok()
     }
 
     /// Everything a census prints about this broker for `key`.
@@ -271,10 +387,13 @@ impl Node {
             cut: self.cut.is_cut(),
             seeded: broker.seeded().is_cancelled(),
             incarnation,
-            lease_remaining: Some(broker.lease().remaining()),
-            snapshot: tokio::time::timeout(SNAPSHOT_WITHIN, broker.shard_snapshot(key))
-                .await
-                .ok(),
+            lease_remaining: Some(clock::as_owner(self.owner(), || broker.lease().remaining())),
+            snapshot: tokio::time::timeout(
+                SNAPSHOT_WITHIN,
+                clock::on(self.owner(), broker.shard_snapshot(key)),
+            )
+            .await
+            .ok(),
         }
     }
 }

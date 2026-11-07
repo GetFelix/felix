@@ -189,7 +189,8 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/v1/shard-assignments/confirmed",
-            axum::routing::get(api::shard_assignments::confirmed_shard_assignment),
+            axum::routing::get(api::shard_assignments::confirmed_shard_assignment)
+                .post(api::shard_assignments::confirmed_shard_assignments),
         )
         .route(
             "/v1/shard-assignments/changes",

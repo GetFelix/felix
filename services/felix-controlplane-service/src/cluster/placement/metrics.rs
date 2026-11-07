@@ -4,7 +4,7 @@
 //! assignment carries no timestamps. A move is observed only by the instance
 //! that wrote its fence and cut-over, and its full duration only if that
 //! instance staged it too.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::time::{Duration, Instant};
 
 use super::MoveStep;
@@ -126,7 +126,8 @@ impl MoveClock {
             | MoveStep::Trim { .. }
             | MoveStep::TakePendingSet
             | MoveStep::ElectionRefused
-            | MoveStep::SetUnknown
+            | MoveStep::SetUnknown { .. }
+            | MoveStep::Stuck { .. }
             | MoveStep::PendingSetTimedOut
             | MoveStep::PendingSetDropped
             | MoveStep::PendingSetCancelled

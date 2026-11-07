@@ -1,9 +1,9 @@
 //! One pass of placement over a metadata snapshot, as a pure function.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use super::leadership::{Leadership, Owner, Shares};
-use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, move_step};
+use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, move_step};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
 use super::zones;
@@ -253,7 +253,7 @@ fn plan_once(
 
     // Load counts every assignment we intend to exist after this pass, so a
     // cap is respected across kept and newly placed shards alike.
-    let mut load: HashMap<&str, u32> = HashMap::new();
+    let mut load: HashMap<&str, u32> = HashMap::default();
     // Leaders per live node as they will stand once every move in flight
     // completes: a staged successor already counts. Otherwise an over-share
     // node stages more moves than it needs and the destination ends up over.
@@ -336,6 +336,7 @@ fn plan_once(
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let joint_fence = policy.joint_fence;
     let election_hold = policy.election_hold_millis;
+    let departed = policy.departed.clone();
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
             .get(owner_of(&assignment.key).as_str())
@@ -457,7 +458,9 @@ fn plan_once(
             && !deposed
             && !replaced
         {
-            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up) {
+            if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up, &mut moves)
+            {
+                let decision = with_copy_pins(existing, decision, caught_up);
                 shards.push(ShardPlan { key, decision });
                 continue;
             }
@@ -478,6 +481,7 @@ fn plan_once(
                 &is_lost,
                 elects,
             );
+            let decision = with_copy_pins(existing, decision, caught_up);
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
@@ -509,6 +513,23 @@ fn plan_once(
                 .collect(),
             _ => eligible.clone(),
         };
+        // With the leader gone or replaced, a draining follower leads when no live one
+        // holds the log. It still serves, and the drain moves the shard off it
+        // afterwards. Passed over, the shard has no leader at all while the
+        // live followers wait to catch up from a leader that is gone (#1922).
+        // One that deregistered has stopped, so it is never chosen (#1977).
+        let draining: Vec<&Node> = match current.get(&key) {
+            Some(previous) if replaced || !is_serving(&previous.leader) => nodes
+                .iter()
+                .filter(|node| {
+                    node.status.lifecycle == NodeLifecycle::Draining
+                        && !departed.contains(&node.node_id)
+                        && allowed(&node.node_id)
+                        && !(fenced && previous.successor.as_deref() == Some(node.node_id.as_str()))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
         // Under `Leader` a previous leader's report predates what its
         // successor acknowledged on itself alone, so it promotes nobody. Under
         // `Quorum` the successor acknowledged nothing before its own first
@@ -522,6 +543,7 @@ fn plan_once(
         if let Some(previous) = current.get(&key)
             && !by_predecessor(previous)
             && let Some(promoted) = promote(&key, previous, &promotable, caught_up)
+                .or_else(|| promote(&key, previous, &draining, caught_up))
         {
             *load.entry(promoted).or_default() += 1;
             leaders.add(Owner::of(&previous.key), promoted);
@@ -672,12 +694,14 @@ fn plan_once(
 /// caught up under its new identity: the same set is written at the next
 /// generation, which names the new identity and holds the member as a
 /// learner until it shows that generation's start record. Only for a shard
-/// with a live leader and nothing else in progress, and one member per pass.
+/// with a live leader and nothing else in progress, one member per shard,
+/// and while the pass has a re-admission left.
 fn readmit(
     existing: &ShardAssignment,
     joint_fence: bool,
     is_live: &dyn Fn(&str) -> bool,
     caught_up: &dyn CaughtUp,
+    moves: &mut Moves,
 ) -> Option<Decision> {
     if !joint_fence
         || existing.state == ShardState::Draining
@@ -703,14 +727,28 @@ fn readmit(
     if live_rest < set.len() / 2 + 1 {
         return None;
     }
+    moves.begin_readmit()?;
     Some(Decision::Move(
         MoveStep::Readmit { node },
-        ShardAssignment {
-            generation: 0,
-            fence_storage_ids: Default::default(),
-            ..existing.clone()
-        },
+        existing.renamed(),
     ))
+}
+
+/// `decision` with the copy pins its rename keeps; see [`keep_copy_pins`].
+fn with_copy_pins(
+    existing: &ShardAssignment,
+    decision: Decision,
+    caught_up: &dyn CaughtUp,
+) -> Decision {
+    let Decision::Move(step, mut next) = decision else {
+        return decision;
+    };
+    let readmitted = match &step {
+        MoveStep::Readmit { node } => Some(node.as_str()),
+        _ => None,
+    };
+    keep_copy_pins(existing, &mut next, caught_up, readmitted);
+    Decision::Move(step, next)
 }
 
 /// Who leads `assignment` once the move in flight completes: a live staged
@@ -770,6 +808,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 

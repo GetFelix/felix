@@ -50,6 +50,7 @@ fn counting_control_plane(
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         sizes,
         server,
@@ -379,6 +380,7 @@ fn judging_control_plane(
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         server,
     )
@@ -393,7 +395,10 @@ async fn each_caller_hears_whether_its_own_report_was_stored() {
     let (to, server) = judging_control_plane(|answer| answer);
     let reports = [report("led-a"), report("orphan"), report("led-b")];
 
-    assert_eq!(send_reports(&to, &reports).await, vec![true, false, true]);
+    assert_eq!(
+        send_reports(&to, &reports, &[]).await,
+        vec![true, false, true]
+    );
 
     let shutdown = CancellationToken::new();
     let (reporter, task) = Reporter::spawn(to, shutdown.clone());
@@ -417,7 +422,7 @@ async fn an_answer_that_does_not_match_the_request_lands_nothing() {
         answer
     });
     assert_eq!(
-        send_reports(&short, &[report("led-a"), report("led-b")]).await,
+        send_reports(&short, &[report("led-a"), report("led-b")], &[]).await,
         vec![false, false]
     );
     server.abort();
@@ -427,7 +432,7 @@ async fn an_answer_that_does_not_match_the_request_lands_nothing() {
         answer
     });
     assert_eq!(
-        send_reports(&renamed, &[report("led-a"), report("led-b")]).await,
+        send_reports(&renamed, &[report("led-a"), report("led-b")], &[]).await,
         vec![false, true]
     );
     server.abort();
@@ -467,11 +472,12 @@ async fn a_report_names_the_leaders_own_storage_identity() {
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         storage_id: Some(own),
+        held: None,
     };
     let mut sent = report("s");
     sent.storage_ids = vec![("broker-b".to_string(), StorageId::from_bytes([9; 16]))];
 
-    assert_eq!(send_reports(&to, &[sent]).await, vec![true]);
+    assert_eq!(send_reports(&to, &[sent], &[]).await, vec![true]);
 
     let bodies = bodies.lock().clone();
     let ids = &bodies[0]["shards"][0]["replica_storage_ids"];
@@ -518,11 +524,12 @@ async fn a_report_names_the_pending_set_it_started() {
         token: None,
         incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
         storage_id: None,
+        held: None,
     };
     let started = report("s").with_joint_start(Some(5));
 
     assert_eq!(
-        send_reports(&to, &[started, report("t")]).await,
+        send_reports(&to, &[started, report("t")], &[]).await,
         vec![true, true]
     );
 
@@ -569,6 +576,73 @@ fn the_followers_holding_the_start_are_those_past_it_on_every_log() {
     assert!(names(4, Some((&counters, None))).is_empty());
 }
 
+/// **A held reporter announces nothing.** A broker that started from its
+/// control-plane view must not tell the control plane its storage id or
+/// offsets before the control plane has checked the directory is not a
+/// restored copy, so every report is refused unsent until it is released.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_held_reporter_sends_nothing_until_released() {
+    let (mut to, sizes, server) = counting_control_plane(
+        axum::http::StatusCode::NO_CONTENT,
+        std::time::Duration::ZERO,
+    );
+    let held = CancellationToken::new();
+    to.held = Some(held.clone());
+    let shutdown = CancellationToken::new();
+    let (reporter, task) = Reporter::spawn(to, shutdown.clone());
+
+    assert!(!reporter.send(report("s0")).await, "a held report landed");
+    assert!(
+        sizes.lock().is_empty(),
+        "a held report reached the control plane"
+    );
+
+    held.cancel();
+    assert!(
+        reporter.send(report("s0")).await,
+        "a released report did not land"
+    );
+    assert_eq!(*sizes.lock(), vec![1]);
+
+    shutdown.cancel();
+    let _ = task.await;
+    server.abort();
+}
+
+/// **A refusal is repeated at its generation and ends at the next.** A later
+/// generation means the control plane named the shard again, so the refusal
+/// has done its work.
+#[test]
+fn a_refusal_is_carried_until_a_later_generation() {
+    let mut refusals = super::Refusals::default();
+    let refused = RefusedGeneration::set_unknown(4);
+    let mut refusal = report("orders");
+    refusal.refused = Some(refused.clone());
+    assert_eq!(refusals.carry(&refusal), None, "it carries its own");
+    assert_eq!(refusals.carry(&report("orders")), Some(refused.clone()));
+    assert_eq!(refusals.carry(&report("other")), None, "another shard's");
+    let mut given_up = report("orders");
+    given_up.given_up = true;
+    assert_eq!(refusals.carry(&given_up), None, "a probe report");
+    let mut older = report("orders");
+    older.generation = 3;
+    assert_eq!(refusals.carry(&older), None, "an older pass");
+    assert_eq!(refusals.carry(&report("orders")), Some(refused.clone()));
+    let mut recreated = report("orders");
+    recreated.incarnation = 7;
+    assert_eq!(refusals.carry(&recreated), None, "a recreated stream");
+    assert_eq!(
+        refusals.carry(&report("orders")),
+        None,
+        "ended by the recreate"
+    );
+    refusals.carry(&refusal);
+    let mut renamed = report("orders");
+    renamed.generation = 5;
+    assert_eq!(refusals.carry(&renamed), None);
+    assert_eq!(refusals.carry(&report("orders")), None, "ended at 5");
+}
+
 /// A link that answers the report itself carries it to the flushing task, with
 /// no socket in between.
 #[tokio::test]
@@ -578,6 +652,22 @@ async fn a_fake_link_carries_a_report() {
     impl crate::controlplane_link::ControlPlaneLink for Takes {
         fn endpoint(&self) -> String {
             "fake".to_string()
+        }
+        async fn confirmed_assignment(
+            &self,
+            _: Option<&str>,
+            _: &felix_router::ShardKey,
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
+        async fn confirmed_assignments(
+            &self,
+            _: Option<&str>,
+            _: &[felix_router::ShardKey],
+            _: std::time::Duration,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
         }
         async fn register(
             &self,
@@ -657,6 +747,7 @@ async fn a_fake_link_carries_a_report() {
             token: None,
             incarnation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             storage_id: None,
+            held: None,
         },
         shutdown.clone(),
     );

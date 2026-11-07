@@ -54,7 +54,7 @@
 //!
 //! [`run_seed_with`]: crate::run::run_seed_with
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,10 +68,12 @@ use crate::nemesis::Plan;
 mod acked;
 mod burn;
 mod leadership;
+mod power;
 
 pub use self::acked::AckedHeldByLeader;
 pub use self::burn::GenerationBurn;
 pub use self::leadership::{AdoptedMatchesOpened, AtMostOneServing, OneLeaderPerGeneration};
+pub use self::power::TornTailRepaired;
 
 /// When a checker is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +177,7 @@ pub fn default_checkers() -> Vec<Box<dyn Checker>> {
         Box::new(AckedHeldByLeader::default()),
         Box::new(AdoptedMatchesOpened::default()),
         Box::new(GenerationBurn::default()),
+        Box::new(TornTailRepaired),
     ]
 }
 
@@ -205,7 +208,7 @@ pub fn seen_by_all(cluster: &SimCluster, key: &ShardKey) -> Vec<Seen> {
 #[derive(Debug)]
 pub(crate) struct Digest {
     show: usize,
-    seen: HashSet<String>,
+    seen: BTreeSet<String>,
     shown: usize,
     hidden: usize,
 }
@@ -214,7 +217,7 @@ impl Digest {
     pub(crate) fn new(show: usize) -> Self {
         Self {
             show,
-            seen: HashSet::new(),
+            seen: BTreeSet::new(),
             shown: 0,
             hidden: 0,
         }
@@ -248,6 +251,11 @@ impl Digest {
 /// the shard to itself, its fence is open at that generation and its lease is
 /// valid. A shard that has none, or more than one, for the whole window fails.
 /// The finding carries a census of the first few stuck shards.
+///
+/// A shard held after unclean kills is left out:
+/// the broker holds it on purpose until an operator abandons a member (see
+/// [`SimCluster::held_shards`]). Only this check skips it; the history checks
+/// and the other cluster checks still cover it.
 pub struct ElectionSettles {
     /// How many stuck shards to print a census for.
     pub show: usize,
@@ -271,8 +279,14 @@ impl Checker for ElectionSettles {
         }
         let cluster = &ctx.cluster;
         let deadline = ctx.healed_at + cluster.config.settle_within;
+        let held = cluster.held_shards().await;
+        println!(
+            "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
+            held.len(),
+            cluster.shard_keys().count(),
+        );
         loop {
-            let stuck = cluster.unserved().await;
+            let stuck = without_held(cluster.unserved().await, &held);
             if stuck.is_empty() {
                 return Vec::new();
             }
@@ -305,6 +319,15 @@ impl Checker for ElectionSettles {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     }
+}
+
+/// `stuck` without the shards the broker holds on purpose.
+fn without_held(
+    mut stuck: Vec<(ShardKey, Vec<usize>)>,
+    held: &BTreeSet<String>,
+) -> Vec<(ShardKey, Vec<usize>)> {
+    stuck.retain(|(key, _)| !held.contains(&describe(key)));
+    stuck
 }
 
 #[cfg(test)]

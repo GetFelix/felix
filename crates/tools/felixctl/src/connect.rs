@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use felix_client::{Client, ClientConfig, ClientIdentity, ReconnectPolicy, Seed};
 
-use crate::context::Settings;
+use crate::context::{Settings, read_file_message};
 use crate::error::{Exit, MarkExit, fail};
 
 /// A connection to the cluster, and the tenant and namespace to use it in.
@@ -103,9 +103,11 @@ fn quic_tls(settings: &Settings) -> anyhow::Result<quinn::ClientConfig> {
     let roots = settings
         .ca_file
         .as_deref()
-        .map(felix_client::root_store_from_pem_file)
-        .transpose()
-        .mark(Exit::Usage, "read the CA file")?
+        .map(|path| {
+            felix_client::root_store_from_pem_file(path)
+                .mark(Exit::Usage, read_file_message("--ca-file", path))
+        })
+        .transpose()?
         .map(Arc::new);
     match (&settings.client_cert_file, &settings.client_key_file) {
         (None, None) => felix_client::quic_client_config(roots, settings.alpn),

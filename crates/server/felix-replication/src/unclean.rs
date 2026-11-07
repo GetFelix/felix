@@ -7,7 +7,7 @@
 //! vote, and the records only the lost tail held can be overwritten. See
 //! "A leader's own crash" in `docs/replication-design.md` (#1295).
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 
 use crate::ShardKey;
@@ -22,15 +22,30 @@ pub struct UncleanStart {
     /// Shards a leader has shipped to this process: their copies have been
     /// compared with a leader's since the crash.
     vouched: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// The crash lost no ballot: the directory was neither restored nor one
+    /// that already replaced a lost copy, and ballots are always synced.
+    kept_promises: bool,
 }
 
 impl UncleanStart {
     pub fn new(node_id: impl Into<Arc<str>>) -> Self {
         Self {
             node_id: node_id.into(),
-            led: parking_lot::Mutex::new(HashMap::new()),
-            vouched: parking_lot::Mutex::new(HashSet::new()),
+            led: parking_lot::Mutex::new(HashMap::default()),
+            vouched: parking_lot::Mutex::new(HashSet::default()),
+            kept_promises: false,
         }
+    }
+
+    /// Note that the crash lost no ballot this directory took.
+    pub fn with_kept_promises(mut self, kept: bool) -> Self {
+        self.kept_promises = kept;
+        self
+    }
+
+    /// Whether every ballot this directory took survived the crash.
+    pub fn kept_promises(&self) -> bool {
+        self.kept_promises
     }
 
     /// A leader shipped `key` to this process, so its copy has been compared

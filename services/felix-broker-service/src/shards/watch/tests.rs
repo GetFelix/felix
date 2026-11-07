@@ -27,6 +27,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -248,6 +249,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -393,6 +395,7 @@ async fn an_answer_from_behind_the_checkpoint_rolls_nothing_back() {
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
         Duration::from_millis(10),
+        None,
         shutdown.clone(),
     ));
 
@@ -442,6 +445,84 @@ fn the_set_before_is_known_only_from_the_generation_right_before() {
     assert_eq!(prior_leader(&owned), None);
 }
 
+/// **A rename past a ballot keeps the set before when the control plane names
+/// the generation it replaced** (#2024). The control plane adopted broker-a
+/// at 23, a withdrawn standing left ballot 24, and placement named broker-a
+/// again at 25. Nothing was recorded at 24, so the set before 25 is the one
+/// at 23. Without the name the jump reads as an adoption and stays unknown,
+/// and a name that is not the held generation proves nothing.
+#[test]
+fn a_rename_past_a_ballot_keeps_the_set_it_replaced() {
+    let renamed = |previous: Option<u64>| ShardAssignment {
+        previous_generation: previous,
+        ..assignment(0, "broker-b", 25)
+    };
+    for (previous, expected) in [
+        (Some(23), Some(Some("broker-a".to_string()))),
+        (None, None),
+        (Some(22), None),
+    ] {
+        let mut owned = ShardOwnership::default();
+        owned.apply(&key(0), Some(assignment(0, "broker-a", 23)));
+        owned.apply(&key(0), Some(renamed(previous)));
+        assert_eq!(prior_leader(&owned), expected, "named {previous:?}");
+
+        let mut owned = ShardOwnership::default();
+        owned.apply(&key(0), Some(assignment(0, "broker-a", 23)));
+        owned.reset(vec![renamed(previous)]);
+        assert_eq!(
+            prior_leader(&owned),
+            expected,
+            "a snapshot, named {previous:?}"
+        );
+    }
+
+    let json = serde_json::json!({
+        "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-b", "generation": 25, "state": "active",
+        "previous_generation": 23,
+    });
+    let parsed: ShardAssignment = serde_json::from_value(json).expect("assignment");
+    assert_eq!(parsed.previous_generation, Some(23));
+}
+
+/// **A broker reseeded from a snapshot takes the set before from the item**
+/// (#2024). The control plane cut shard 0 over from broker-a at 1 to broker-b
+/// at 2, and broker-b restarted: its watch holds nothing, so only the
+/// snapshot can say what came before. An item without `previous`, from an
+/// older control plane or after the change left the log, leaves it unknown,
+/// and a `previous` that is not right before the item proves nothing.
+#[test]
+fn a_reseeded_watch_takes_the_set_before_from_the_snapshot() {
+    let item = |previous: Option<serde_json::Value>| {
+        let mut json = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "broker-b", "replicas": ["broker-a", "broker-c"],
+            "generation": 2, "state": "active",
+        });
+        if let Some(previous) = previous {
+            json["previous"] = previous;
+        }
+        serde_json::from_value::<super::SnapshotItem>(json).expect("item")
+    };
+    let before = |generation: u64| {
+        serde_json::json!({
+            "generation": generation, "leader": "broker-a",
+            "replicas": ["broker-b", "broker-c"],
+        })
+    };
+    for (previous, expected) in [
+        (Some(before(1)), Some(Some("broker-a".to_string()))),
+        (None, None),
+        (Some(before(0)), None),
+    ] {
+        let mut owned = ShardOwnership::default();
+        let (items, first, previous) = super::seed_of(vec![item(previous)]);
+        owned.reset_from_control_plane(items, &first, &previous);
+        assert_eq!(prior_leader(&owned), expected);
+    }
+}
+
 /// **A first assignment has nothing before it**, unless the same incarnation
 /// carries on from a deleted stream's logs.
 #[test]
@@ -473,7 +554,7 @@ fn an_incarnation_zero_assignment_is_never_first() {
 /// at an incarnation this broker already held (#1872).
 #[test]
 fn a_snapshot_marked_first_has_no_set_before() {
-    let marked = std::collections::HashSet::from([key(0)]);
+    let marked = felix_common::random::HashSet::from_iter([key(0)]);
     let mut first = assignment(0, "broker-a", 12);
     first.incarnation = 3;
 
@@ -556,6 +637,7 @@ async fn a_fake_link_drives_the_watch() {
         Arc::clone(&ownership),
         Arc::new(Notify::new()),
         Duration::from_millis(10),
+        None,
         shutdown.clone(),
     ));
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -567,4 +649,140 @@ async fn a_fake_link_drives_the_watch() {
         Some(2),
     );
     assert_eq!(link.calls()[0], "assignment_snapshot");
+}
+
+/// A renewal after a surrender waits for routes that reach the feed head it
+/// was accepted at (#1955). The watch is mid long-poll, which the control
+/// plane holds as one lost in a partition would be; it asks again at once
+/// without the hold. The first answers come from a member that has not
+/// applied the move: newer than the renewal, and short of its head, they
+/// confirm nothing. The caught-up answer moves the shard and confirms it.
+#[tokio::test]
+async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at() {
+    use axum::extract::Query;
+    use axum::{Json, Router, routing::get};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    let caught_up = Arc::new(AtomicBool::new(false));
+    let lagging_answers = Arc::new(AtomicUsize::new(0));
+    let (up, lagging) = (Arc::clone(&caught_up), Arc::clone(&lagging_answers));
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get(|| async {
+                Json(serde_json::json!({
+                    "items": [{
+                        "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                        "shard": 0, "leader": "b1", "generation": 2, "state": "active"
+                    }],
+                    "next_seq": 10
+                }))
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(move |Query(query): Query<HashMap<String, String>>| {
+                let (up, lagging) = (Arc::clone(&up), Arc::clone(&lagging));
+                async move {
+                    if query.get("wait_ms").map(String::as_str) != Some("0") {
+                        std::future::pending::<()>().await;
+                    }
+                    if !up.load(Ordering::Acquire) {
+                        lagging.fetch_add(1, Ordering::AcqRel);
+                        return Json(serde_json::json!({ "items": [], "next_seq": 10 }));
+                    }
+                    Json(serde_json::json!({
+                        "items": [{
+                            "seq": 10,
+                            "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+                            "assignment": {
+                                "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                                "shard": 0, "leader": "b2", "generation": 3, "state": "active"
+                            }
+                        }],
+                        "next_seq": 11
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        60,
+    )));
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_millis(10),
+        Some(Arc::clone(&lease)),
+        shutdown.clone(),
+    ));
+    let seeded = async {
+        while ownership.read().await.get(&key(0)).is_none() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), seeded)
+        .await
+        .expect("the watch never seeded");
+    // Let the watch settle into its held long-poll.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    lease.renew();
+    lease.surrender();
+    lease.renew_at(lease.now(), Some(11));
+    let current = |owned: &ShardOwnership| {
+        lease.routes_current(owned.as_of().expect("answered"), owned.checkpoint());
+    };
+    current(&*ownership.read().await);
+    assert!(
+        !lease.is_valid_now(),
+        "routes from before the renewal confirmed it"
+    );
+
+    let asked = async {
+        while lagging_answers.load(Ordering::Acquire) < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), asked)
+        .await
+        .expect("the watch kept waiting on its held poll");
+    current(&*ownership.read().await);
+    assert!(
+        !lease.is_valid_now(),
+        "a member that has not applied the move confirmed the renewal"
+    );
+
+    caught_up.store(true, Ordering::Release);
+    let moved = async {
+        while ownership.read().await.get(&key(0)).map(|a| a.generation) != Some(3) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), moved)
+        .await
+        .expect("the watch never caught up");
+    current(&*ownership.read().await);
+    assert!(
+        lease.is_valid_now(),
+        "the caught-up routes did not confirm the lease"
+    );
+
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
 }

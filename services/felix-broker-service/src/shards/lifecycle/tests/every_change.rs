@@ -8,7 +8,7 @@
 //! leader, so the replica is part of every majority the fence can get, and it
 //! refuses the batch. Without the fence it would still take it.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -166,7 +166,7 @@ impl Change {
         own.fence_promotions();
         Self {
             own,
-            assignments: HashMap::new(),
+            assignments: HashMap::default(),
             leader,
             replicas,
             _dirs: dirs,
@@ -437,6 +437,10 @@ async fn under_joint_fence_the_next_generation_is_refused_by_a_replica_that_prom
         ),
         "the next generation opened unfenced: {action:?}"
     );
+    assert!(
+        change.own.fence().continuing(&key, 3),
+        "the next generation of a shard this broker serves is not a continuing one"
+    );
     assert_eq!(change.own.opened(&key, 3), Opened::Fencing);
     let route = routing_table_from(&change.assignments, &nodes())
         .get(&to_router_key(&key))
@@ -462,6 +466,29 @@ async fn under_joint_fence_the_next_generation_is_refused_by_a_replica_that_prom
         "{outcome:?}"
     );
     assert!(!change.own.may_serve_at(&key, 3));
+}
+
+/// **Only the next generation of a shard this broker serves continues
+/// it.** A generation this broker was handed without serving the one before,
+/// as after a restart, is fenced as a failover (#2047).
+#[tokio::test]
+async fn a_generation_this_broker_did_not_serve_the_one_before_does_not_continue() {
+    let mut change = Change::new();
+    let fleet = Arc::new(felix_common::fleet::FleetGate::new([
+        felix_common::fleet::JOINT_FENCE.name(),
+    ]));
+    fleet.observe([felix_common::fleet::JOINT_FENCE.name()]);
+    change.own.fence_next_generations(fleet);
+
+    let first = led("broker-a", &["broker-b", "broker-c"], 3);
+    let key = first.key.clone();
+    let action = change.own.observe(&key, Some(&first));
+
+    assert!(
+        matches!(action, Action::Open { fence: true, .. }),
+        "{action:?}"
+    );
+    assert!(!change.own.fence().continuing(&key, 3));
 }
 
 /// **Without `joint_fence` the next generation still opens at once**, even

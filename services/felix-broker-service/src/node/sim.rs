@@ -161,6 +161,7 @@ pub struct OpenedBroker<L> {
     handler: Arc<dyn PeerRequestHandler>,
     prefetch: Option<replication::confirmed::Prefetch>,
     capabilities: PeerCapabilities,
+    outgoing: PeerCapabilities,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
 }
@@ -180,6 +181,7 @@ pub struct SimBroker {
     incarnation: Arc<AtomicU64>,
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
     storage_id: felix_storage::StorageId,
+    started_unclean: bool,
     membership: Option<MembershipTask>,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -259,7 +261,7 @@ impl SimBroker {
         let quorum_marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
         let credential = Some(NodeCredential::new("sim"));
         let link = Some(link);
-        let registered = membership::registered(&broker_config, true, &link, &credential).await?;
+        let registered = membership::await_registered(&broker_config, &link, &credential).await?;
         let startup::Opened {
             broker,
             durable_storage,
@@ -288,11 +290,20 @@ impl SimBroker {
             &auth,
             storage_id,
             unclean.clone(),
-            None,
+            // Through the same link as every other control-plane call, so a
+            // learner is backed here as in a broker.
+            link.clone().map(|link| {
+                Arc::new(crate::shards::ControlPlaneRoutes::new(
+                    link,
+                    credential.clone(),
+                )) as Arc<dyn replication::confirmed::ConfirmedRoutes>
+            }),
         );
+        let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {
             capabilities: peer.capabilities(),
+            outgoing: peer.outgoing_capabilities(),
             config: broker_config,
             link,
             credential,
@@ -323,6 +334,11 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
     /// election included.
     pub fn capabilities(&self) -> PeerCapabilities {
         self.capabilities
+    }
+
+    /// What this broker offers when it dials a peer.
+    pub fn outgoing_capabilities(&self) -> PeerCapabilities {
+        self.outgoing
     }
 
     /// The storage identity a peer handshake announces.
@@ -360,7 +376,9 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered_watch,
             handler: _,
             capabilities: _,
+            outgoing: _,
         } = self;
+        let started_unclean = unclean.is_some();
         let peers = Some(peers);
         let shutdown = CancellationToken::new();
         let seeded = CancellationToken::new();
@@ -390,7 +408,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
                 let source = FetcherSource(catalog);
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None) => {
+                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None, Default::default()) => {
                         if let Err(err) = result {
                             tracing::warn!(error = %err, "catalog sync exited");
                         }
@@ -417,7 +435,8 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
 
         let membership = membership::spawn(
             &config,
-            &link,
+            link.clone(),
+            false,
             true,
             &seeded,
             &Some(Arc::clone(&lease)),
@@ -428,6 +447,10 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered,
             storage_id,
             durable_storage.as_ref().map(DurableStorage::root),
+            durable_storage.as_ref().map(|storage| {
+                crate::cluster::controlplane_view::ViewFile::new(storage.root().to_path_buf())
+            }),
+            None,
             &shutdown,
         );
         let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -449,6 +472,9 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             unclean: &unclean,
             prefetch,
             sync_shutdown: &shutdown,
+            nodes: Default::default(),
+            reports_held: None,
+            leads_after: None,
         });
         if let Some(shard_tasks) = shard_tasks {
             tasks.push(shard_tasks.watch);
@@ -471,6 +497,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             incarnation,
             registered_watch,
             storage_id,
+            started_unclean,
             membership,
             shutdown,
             tasks,
@@ -529,6 +556,12 @@ impl SimBroker {
 
     pub fn storage_id(&self) -> felix_storage::StorageId {
         self.storage_id
+    }
+
+    /// Whether this start followed a stop that may have cost acknowledged
+    /// records, so the broker runs with its unclean-start handling.
+    pub fn started_unclean(&self) -> bool {
+        self.started_unclean
     }
 
     /// The membership task, `None` only if the config named no cluster.
@@ -619,6 +652,14 @@ impl SimBroker {
     /// token fires and may outlive this call by a poll; a requester that
     /// refuses their requests, as the simulated network does, is enough.
     pub fn crash(self) {
+        self.halt();
+    }
+
+    /// Stop every task as [`SimBroker::crash`] does, without giving up the
+    /// broker, for a caller that holds only a reference at the moment the
+    /// process dies, such as a power cut inside a write. A task that is
+    /// running finishes its current poll.
+    pub fn halt(&self) {
         self.shutdown.cancel();
         if let Some(membership) = &self.membership {
             membership.handle.abort();

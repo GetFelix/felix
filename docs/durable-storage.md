@@ -626,11 +626,17 @@ created with every new path component synced into its parent. Without that, a
 power loss on a fresh node could drop a whole root, and the acknowledged records
 in it, before anything else happened to sync the storage directory. Opening an
 existing root syncs its parent again, so a root that an earlier run created but
-never synced becomes durable then.
+never synced becomes durable then. Opening a log syncs the shard directory
+itself once, after its first segment, index and durable mark exist and before
+the open returns, so all three entries are durable before anything can append.
+If a new log's open crashes before that sync, nothing was acknowledged in it:
+the next open finds it fresh, or finds it already placed when it is placed at
+the same base again.
 
 > `a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss`,
 > `a_created_directory_survives_a_power_loss` and
-> `an_unflushed_directory_is_made_durable_when_opened` (Linux only).
+> `an_unflushed_directory_is_made_durable_when_opened` (Linux only);
+> `opening_a_log_flushes_its_directory_once`.
 
 **The power-loss suite checks all of this against simulated reboots.** A
 workload runs against a real log while a test layer records what each flush made
@@ -650,6 +656,15 @@ with `FELIX_POWER_LOSS_SEED=<seed> FELIX_POWER_LOSS_SEEDS=1`.
 > `periodic_with_background_roll_survives_any_writeback` and
 > `no_fsync_keeps_what_explicit_syncs_covered` in
 > `crates/server/felix-storage/src/disk_log/tests/power_loss.rs` (Linux only).
+
+The simulator's in-memory filesystem models the same crash, so the contract is
+also checked on any platform and without touching the disk. See
+[the simulated filesystem](simulation.md#the-filesystem).
+
+> `on_commit_acknowledged_records_survive_every_crash` and
+> `an_unsynced_tail_is_repaired_and_the_synced_prefix_survives` in
+> `crates/server/felix-storage/src/disk_log/tests/simulated_fs.rs` (`sim`
+> feature).
 
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,
@@ -689,7 +704,7 @@ Startup then makes the writes in order and opens the log. A refusal still
 makes the writes planned before the damage was found, as recovery always has.
 
 `felix_storage::inspect` runs only the plan, which is what lets
-`felix-broker inspect segments` report startup's verdict on a data directory
+`felixctl data inspect segments` report startup's verdict on a data directory
 without changing it. The plan never writes, and the `segment_recovery` fuzz
 target checks that the plan and the recovery that follows agree.
 
@@ -1028,7 +1043,7 @@ Once registration is required:
   so a fleet waiting on a slow or absent control plane does not hammer it; one
   that brings something resets the gap.
 
-**Restoring to a backup point.** `felix-broker restore-point` rewrites each
+**Restoring to a backup point.** `felixctl data restore-point` rewrites each
 stream's marker to the incarnation the point names, with no deletion floor,
 because the operator's restore is the evidence. The broker then takes the
 point's incarnation even if it registered, or saw deleted, a later one after
@@ -1165,7 +1180,7 @@ that loss is not detected; to give a broker an empty shard, empty its whole
 data directory. An upgrade from a build
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
-decode is replaced with a new id. `felix-broker restore-point` also writes a
+decode is replaced with a new id. `felixctl data restore-point` also writes a
 new one, because restored logs are an older copy of what peers last saw here.
 
 A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
@@ -1206,7 +1221,7 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   running may write after the flush; deregistering and heartbeats do not
   count), and no log was poisoned during the run: a failed fsync may already
   have dropped pages that run acknowledged. A
-  `felix-broker restore-point` that finishes records a clean stop under the
+  `felixctl data restore-point` that finishes records a clean stop under the
   id it wrote.
 - **Anything else is a crash**: `SIGKILL`, an OOM kill, a power loss, a panic
   that ends the process, or a drain that ran out of time. A panic inside a
@@ -1305,7 +1320,9 @@ gone or set aside, and the broker treats its copies of older shards as
 learners (`docs/replication-design.md`, "A copy that lost its storage does not
 vote"). It records that in a `replaced-storage` file under the data root
 before it registers the new id, and never removes it, so later starts know
-too once the control plane holds the new id.
+too once the control plane holds the new id. The file also names the new id
+and the incarnation the control plane held, so a start from the
+control-plane view can tell a view registered since from an older one.
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while
@@ -1314,7 +1331,12 @@ too once the control plane holds the new id.
   listener is bound before the wait: `/live` answers `200` and `/ready`
   answers `503` with the reason, so a liveness probe does not restart a
   broker that is waiting. The full server takes over the same socket once
-  the broker is built.
+  the broker is built. With `FELIX_START_WITHOUT_CONTROLPLANE` on, a
+  directory that qualifies starts from its control-plane view instead, and
+  this check runs once the control plane answers, before the broker
+  registers: a directory found behind is marked replaced, gets a new id and
+  the broker stops (`docs/control-plane.md`, "Starting while the control
+  plane is down").
 - **No evidence keeps the id:** no record (a new directory, or the first start
   on a release that writes one), a node the control plane has never
   registered, or a control plane behind the record, which was itself restored
@@ -1390,13 +1412,62 @@ the same report named for it, so a follower back under a new id after a crash
 or a wipe does not vote with the copy it has now (#1335; see
 `docs/replication-design.md`, "Fencing a promotion").
 
+### The control-plane view
+
+A cluster member also keeps `<root>/controlplane.view`: a copy of what the
+control plane last told it about its own shards. That is the fleet's
+finalized features, the assignment of every shard the node is in, the
+addresses of the nodes those assignments name, and the catalog entries those
+shards open at. It is there so that a broker restarted while the control
+plane is down can start from it
+([#1196](https://github.com/GetFelix/felix/issues/1196)).
+
+It is read at startup only with `FELIX_START_WITHOUT_CONTROLPLANE` on, and
+only when the startup lookup found the control plane down. A broker uses it
+only if it names this node, the storage id on disk is the one it was
+registered under, it was registered after any `replaced-storage` marker on
+the directory, its fleet
+finalized `replica_election`, and this build
+reports every feature it lists; otherwise the broker waits for the control
+plane. See `docs/control-plane.md`, "Starting while the control plane is
+down".
+
+A background task builds the view from what the broker holds in memory and
+rewrites the file when the view changed, at most once a second and once more
+at a clean stop. A second in which no route, node address, catalog entry,
+fleet feature or registration changed builds nothing. It writes nothing until the broker has registered in this
+process and taken a routes snapshot and a catalog snapshot from the control
+plane, so every part of a view on disk is an answer the control plane gave
+this broker. Routes a start seeded from the view do not count as that
+snapshot. The parts
+are read one after another, so they can differ by as much as the routes and
+catalog feeds differ at any moment on a running broker. The file is replaced
+whole by a synced rename, so a crash leaves the older view or the newer one.
+Losing the last second of changes leaves an older view.
+
+A broker that deregisters removes the view durably before the request goes
+out, and puts it back only when the request never connected. A node that has
+left may already have had its shards moved to sets without it, so a later
+start must not stand or vote from the old ones: with no view it waits for the
+control plane. A crash between the two steps leaves no view, which is the
+same wait.
+A broker that stops because the control plane refused it, or found its
+directory restored or registered under another storage id, removes the view
+too. A node an operator deregistered, or one expired while it was down, keeps
+its view; elections stay safe on any past view (`docs/replication-design.md`,
+"Rejoining without the control plane").
+
+A file that is damaged, cut short, from another format version, or another
+node's reads as absent, and the broker then waits for the control plane as
+before. The format is in `docs/storage-format.md`, "`controlplane.view`".
+
 ## Restoring to a backup point
 
 A backup point (see
 `docs-site/src/content/docs/deployment/backup-and-restore.md`) records one
 committed offset per shard log. The shard's directories are copied while its
 broker keeps writing, so the copy usually holds more than the point, and
-`felix-broker restore-point` cuts it back with `DiskLog::restore_to`.
+`felixctl data restore-point` cuts it back with `DiskLog::restore_to`.
 
 Copying a live shard is safe because **records are never rewritten**. Once a
 record below the point is in a segment, those bytes are final: later appends
@@ -1429,9 +1500,9 @@ one. A broker the restore skipped starts with an empty data directory.
 
 ## Tools
 
-`felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
+`felixctl data inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+with each one. `felixctl data inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
 decodes the records around one offset: read-only, seeking with the sparse index (checked, not
 trusted), and stopping at the first record that does not verify. It runs the same recovery plan
 to tell a torn tail from damage and to leave out a rollover's leftover segments. See "A broker

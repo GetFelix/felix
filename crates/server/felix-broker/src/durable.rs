@@ -172,7 +172,7 @@ impl DurableStorage {
         T: Send + 'static,
     {
         let provider = Arc::clone(&self.provider);
-        match tokio::task::spawn_blocking(move || work(&provider)).await {
+        match felix_common::blocking::spawn(move || work(&provider)).await {
             Ok(answer) => answer.map_err(BrokerError::from),
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
@@ -254,6 +254,38 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// [`DurableStorage::open_stream`], creating or recovering the log on the
+    /// blocking pool: that fsyncs files and directories, and on a runtime
+    /// worker a slow disk stalls every task queued behind it. A log already
+    /// open is returned without leaving the worker.
+    pub async fn open_stream_off_runtime(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<StreamLog> {
+        if let Some(log) = self.opened_stream_for(tenant, namespace, stream, shard, None) {
+            return Ok(log);
+        }
+        let storage = self.clone();
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let opened = felix_common::blocking::spawn(move || {
+            let (tenant, namespace, stream) = &scope;
+            storage.open_stream(tenant, namespace, stream, shard)
+        })
+        .await;
+        match opened {
+            Ok(log) => log,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
+    }
+
     /// One stream shard's log if this broker has it open, without opening it.
     pub fn opened_stream(
         &self,
@@ -269,6 +301,27 @@ impl DurableStorage {
             shard,
         };
         let log = self.provider.opened_shard(&key)?;
+        Some(StreamLog { log })
+    }
+
+    /// What [`DurableStorage::open_stream_for`] would return (or
+    /// [`DurableStorage::open_stream`] with `None`), when the log is open
+    /// already; `None` without creating or recovering anything otherwise.
+    pub fn opened_stream_for(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<StreamLog> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        let log = self.provider.opened_incarnation(&key, incarnation)?;
         Some(StreamLog { log })
     }
 
@@ -740,6 +793,26 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
+    /// [`StreamLog::record_generation`], with the write, when there is one,
+    /// on the blocking pool: it fsyncs a file and a directory.
+    pub async fn record_generation_off_runtime(
+        &self,
+        generation: u64,
+        start_offset: Offset,
+    ) -> Result<bool> {
+        if !self.log.records_generation(generation, start_offset) {
+            return self.record_generation(generation, start_offset);
+        }
+        let log = self.clone();
+        match felix_common::blocking::spawn(move || log.record_generation(generation, start_offset))
+            .await
+        {
+            Ok(recorded) => recorded,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
+    }
+
     /// Label the records from `from` on with the generations that wrote them.
     /// See `DiskLog::label_generations`.
     pub fn label_generations(
@@ -750,6 +823,25 @@ impl StreamLog {
         self.log
             .label_generations(from, generations)
             .map_err(BrokerError::from)
+    }
+
+    /// [`StreamLog::label_generations`], with the write, when there is one,
+    /// on the blocking pool: it fsyncs a file and a directory.
+    pub async fn label_generations_off_runtime(
+        &self,
+        from: Offset,
+        generations: Vec<felix_storage::log::Epoch>,
+    ) -> Result<()> {
+        if !self.log.relabels(from, &generations) {
+            return self.label_generations(from, &generations);
+        }
+        let log = self.clone();
+        match felix_common::blocking::spawn(move || log.label_generations(from, &generations)).await
+        {
+            Ok(labelled) => labelled,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
+        }
     }
 
     /// The highest generation a leader of this shard was accepted at here.
@@ -771,6 +863,21 @@ impl StreamLog {
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
             .accept_generation(generation, leader)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Accept `leader` at `generation` only while the kept set is still
+    /// `kept`; `None`, with nothing written, when it moved. See
+    /// `DiskLog::accept_generation_on_set`.
+    pub async fn accept_generation_on_set(
+        &self,
+        generation: u64,
+        leader: &str,
+        kept: felix_storage::disk_log::ReplicaSet,
+    ) -> Result<Option<felix_storage::disk_log::GenerationCheck>> {
+        self.log
+            .accept_generation_on_set(generation, leader, kept)
             .await
             .map_err(BrokerError::from)
     }
@@ -811,6 +918,27 @@ impl StreamLog {
     ) -> Result<felix_storage::disk_log::SetCheck> {
         self.log
             .accept_set_keeping_earlier(set)
+            .await
+            .map_err(BrokerError::from)
+    }
+
+    /// Count `set`, sent by `leader` at `generation`, unless this copy
+    /// accepted a newer generation or another leader at that one: then the
+    /// ballot's answer, and nothing written. See `DiskLog::accept_set_from`.
+    pub async fn accept_set_from(
+        &self,
+        set: felix_storage::disk_log::ReplicaSet,
+        keep_earlier: bool,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<
+        std::result::Result<
+            felix_storage::disk_log::SetCheck,
+            felix_storage::disk_log::GenerationCheck,
+        >,
+    > {
+        self.log
+            .accept_set_from(set, keep_earlier, generation, leader)
             .await
             .map_err(BrokerError::from)
     }
@@ -879,6 +1007,12 @@ impl StreamLog {
     /// Where each leadership generation began here, oldest first.
     pub fn generations(&self) -> Vec<felix_storage::log::Epoch> {
         self.log.generations()
+    }
+
+    /// Whether [`Self::generations`] labels every record in `first..=last`.
+    /// See `DiskLog::labels_known`.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.log.labels_known(first, last)
     }
 
     /// Where the oldest segment starts. Replication ships from here; a
@@ -988,7 +1122,7 @@ fn records(
 /// The time an append made now stores: microseconds since the Unix epoch on
 /// this broker's clock.
 pub fn append_time_now() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros() as u64)
         .unwrap_or(0)

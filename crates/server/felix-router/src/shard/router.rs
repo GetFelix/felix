@@ -1,6 +1,7 @@
 //! Resolving a shard against the current table: here, elsewhere, or not at all.
 
 use std::collections::HashMap;
+use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -28,7 +29,7 @@ pub struct Routes {
     /// Node ids this router has been told about, so an assignment naming one
     /// it has never seen is reported as unknown rather than not live, with
     /// where each is reached.
-    known_nodes: HashMap<String, SocketAddr>,
+    known_nodes: HashMap<String, NodeRef>,
 }
 
 impl Routes {
@@ -63,12 +64,16 @@ impl ShardRouter {
     ///
     /// Returns what was published, for a caller that pairs it with state of its
     /// own and needs both to change in one swap.
-    pub fn publish(&self, table: RoutingTable, nodes: &HashMap<String, NodeRef>) -> Arc<Routes> {
+    pub fn publish<S: BuildHasher>(
+        &self,
+        table: RoutingTable,
+        nodes: &HashMap<String, NodeRef, S>,
+    ) -> Arc<Routes> {
         let routes = Arc::new(Routes {
             table: Arc::new(table),
             known_nodes: nodes
                 .iter()
-                .map(|(id, node)| (id.clone(), node.advertise_addr))
+                .map(|(id, node)| (id.clone(), node.clone()))
                 .collect(),
         });
         self.routes.store(Arc::clone(&routes));
@@ -85,7 +90,17 @@ impl ShardRouter {
     /// any route names it: a set being left can name a broker that no longer
     /// holds anything.
     pub fn node_addr(&self, node_id: &str) -> Option<SocketAddr> {
-        self.routes.load().known_nodes.get(node_id).copied()
+        self.routes
+            .load()
+            .known_nodes
+            .get(node_id)
+            .map(|node| node.advertise_addr)
+    }
+
+    /// What the last publish knew about `node_id`, as [`Self::node_addr`]
+    /// but with its region and liveness.
+    pub fn node(&self, node_id: &str) -> Option<NodeRef> {
+        self.routes.load().known_nodes.get(node_id).cloned()
     }
 
     /// The control plane's set right before `key`'s current route, if this

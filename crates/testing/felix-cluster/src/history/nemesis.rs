@@ -16,7 +16,9 @@
 //! faults at once, a fault in the middle of a move, one broker restarted over
 //! and over, the power cut to every broker, or the control plane crashing
 //! with work in flight. They are what [`RandomNemesis::adversarial`] picks
-//! from.
+//! from. [`FaultKind::ElectWithoutControlPlane`] is compound too, but needs
+//! brokers that elect leaders themselves, so only
+//! [`RandomNemesis::election`] picks it.
 
 use std::fmt;
 use std::time::Duration;
@@ -76,6 +78,13 @@ pub trait Nemesis {
     /// must run under the power-loss model
     /// ([`ClusterConfig::power_loss`](crate::ClusterConfig::power_loss)).
     fn needs_power_loss(&self) -> bool {
+        false
+    }
+
+    /// Whether any fault this nemesis may pick relies on replicas electing a
+    /// leader while the control plane is down, so brokers must run with
+    /// `replica_election` finalized.
+    fn needs_election(&self) -> bool {
         false
     }
 }
@@ -169,6 +178,11 @@ pub enum FaultKind {
     /// plane before it can finish. Healing brings the control plane back over
     /// the same state and heals what was in flight.
     ControlPlaneCrash,
+    /// Crash the control plane, then kill a leader while it stays down, so
+    /// the leader's followers must elect one of themselves. Healing may start
+    /// the killed broker again before the control plane returns, then brings
+    /// the control plane back. Needs `replica_election`.
+    ElectWithoutControlPlane,
 }
 
 impl FaultKind {
@@ -191,7 +205,8 @@ impl FaultKind {
             | FaultKind::InterruptedMove
             | FaultKind::RestartLoop
             | FaultKind::PowerLoss
-            | FaultKind::ControlPlaneCrash => FaultFamily::Compound,
+            | FaultKind::ControlPlaneCrash
+            | FaultKind::ElectWithoutControlPlane => FaultFamily::Compound,
         }
     }
 
@@ -220,6 +235,11 @@ impl FaultKind {
     /// Whether a fault of this kind cuts the power.
     pub fn needs_power_loss(self) -> bool {
         self == FaultKind::PowerLoss
+    }
+
+    /// Whether a fault of this kind needs replicas to elect a leader.
+    pub fn needs_election(self) -> bool {
+        self == FaultKind::ElectWithoutControlPlane
     }
 }
 
@@ -325,6 +345,13 @@ pub enum Fault {
         /// What is in flight when the control plane goes down.
         during: Box<Fault>,
     },
+    ElectWithoutControlPlane {
+        /// The leader killed once the control plane is down.
+        node: String,
+        /// Start it again before the control plane returns. It should stay
+        /// out of the shard until then; nothing checks that it rejoins.
+        restart_while_down: bool,
+    },
 }
 
 impl Fault {
@@ -355,6 +382,7 @@ impl Fault {
             Fault::RestartLoop { .. } => FaultKind::RestartLoop,
             Fault::PowerLoss { .. } => FaultKind::PowerLoss,
             Fault::ControlPlaneCrash { .. } => FaultKind::ControlPlaneCrash,
+            Fault::ElectWithoutControlPlane { .. } => FaultKind::ElectWithoutControlPlane,
         }
     }
 
@@ -374,7 +402,8 @@ impl Fault {
             | Fault::Drain { node }
             | Fault::TornWrite { node }
             | Fault::Isolate { node }
-            | Fault::RestartLoop { node, .. } => vec![node.clone()],
+            | Fault::RestartLoop { node, .. }
+            | Fault::ElectWithoutControlPlane { node, .. } => vec![node.clone()],
             // Every broker, so nothing else can be aimed away from it.
             Fault::ControlPlaneClockStep { .. } | Fault::PowerLoss { .. } => Vec::new(),
             Fault::ControlPlaneCrash { during } => during.targets(),
@@ -417,6 +446,10 @@ impl Fault {
             Fault::ControlPlaneCrash { during } => {
                 compound::crash_control_plane(cluster, during).await
             }
+            Fault::ElectWithoutControlPlane { node, .. } => {
+                cluster.crash_control_plane().await?;
+                cluster.kill_node(node)
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.inject(&fault).await?;
@@ -450,6 +483,10 @@ impl Fault {
             Fault::ControlPlaneCrash { during } => {
                 compound::recover_control_plane(cluster, during).await
             }
+            Fault::ElectWithoutControlPlane {
+                node,
+                restart_while_down,
+            } => compound::return_control_plane(cluster, node, *restart_while_down).await,
             _ => {
                 for fault in self.harness_faults() {
                     cluster.heal(&fault).await?;
@@ -478,7 +515,8 @@ impl Fault {
             | Fault::Isolate { .. }
             | Fault::InterruptedMove { .. }
             | Fault::RestartLoop { .. }
-            | Fault::PowerLoss { .. } => Vec::new(),
+            | Fault::PowerLoss { .. }
+            | Fault::ElectWithoutControlPlane { .. } => Vec::new(),
             Fault::ControlPlaneCrash { during } => during.harness_faults(),
             Fault::Several { faults, .. } => {
                 faults.iter().flat_map(Fault::harness_faults).collect()
@@ -587,6 +625,16 @@ impl fmt::Display for Fault {
             Fault::ControlPlaneCrash { during } => {
                 write!(f, "crash the control plane during: {during}")
             }
+            Fault::ElectWithoutControlPlane {
+                node,
+                restart_while_down,
+            } => {
+                write!(f, "crash the control plane and kill leader {node}")?;
+                if *restart_while_down {
+                    write!(f, ", restarting it before the control plane returns")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -664,6 +712,13 @@ impl RandomNemesis {
             FaultKind::PowerLoss,
             FaultKind::ControlPlaneCrash,
         ])
+    }
+
+    /// Only [`FaultKind::ElectWithoutControlPlane`]: leaders killed while the
+    /// control plane is down, so every failover is an election among the
+    /// replicas.
+    pub fn election() -> Self {
+        Self::new(vec![FaultKind::ElectWithoutControlPlane])
     }
 }
 
@@ -754,6 +809,10 @@ impl Nemesis for RandomNemesis {
                 seed: rng.next_u64(),
             },
             FaultKind::ControlPlaneCrash => compound::pick_control_plane_crash(rng, view, node)?,
+            FaultKind::ElectWithoutControlPlane => Fault::ElectWithoutControlPlane {
+                node: compound::a_leader(rng, view, node),
+                restart_while_down: rng.percent(50),
+            },
         })
     }
 
@@ -767,6 +826,10 @@ impl Nemesis for RandomNemesis {
 
     fn needs_power_loss(&self) -> bool {
         self.kinds.iter().any(|kind| kind.needs_power_loss())
+    }
+
+    fn needs_election(&self) -> bool {
+        self.kinds.iter().any(|kind| kind.needs_election())
     }
 }
 

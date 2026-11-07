@@ -31,7 +31,7 @@ async fn a_connections_context_keeps_the_cluster_view() {
 #[tokio::test]
 async fn resolve_stream_cached_uses_cached_entry_until_cleared() {
     let broker = Broker::new(EphemeralCache::new().into());
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     let handle = resolve_route(
@@ -184,11 +184,12 @@ pub(super) fn ingress_with_routing(
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
                 pending_set: None,
+                previous_generation: None,
             };
             (key, assignment)
         })
         .collect();
-    let nodes = HashMap::new();
+    let nodes = HashMap::default();
     router.publish(
         crate::shards::routing::routing_table_from(&assignments, &nodes),
         &nodes,

@@ -77,6 +77,14 @@ tasks:
         else
           cargo test --workspace --exclude felix-cluster
         fi
+  # What `task coverage` does not run, for a pull request: doctests (llvm-cov
+  # skips them) and the tests behind `cfg(not(feature = ...))` in the crates
+  # that have a `telemetry` feature, which coverage's --all-features switches
+  # off. Everything else in `test:workspace` runs under `task coverage`.
+  test:residual:
+    cmds:
+      - "cargo test --workspace --exclude felix-cluster --doc"
+      - "cargo test -p felix-broker -p felix-client -p felix-broker-service --lib"
   test:cluster:
     vars:
       # The suites that each get a CI job of their own (ci.yml, `cluster`).
@@ -86,10 +94,11 @@ tasks:
     cmds:
       # The harness runs the prebuilt broker beside the test binary, which
       # `cargo test -p felix-cluster` does not rebuild; loadgen.rs shells out
-      # to felix-loadgen the same way. Two commands: a --bin filter would apply
-      # to both packages and skip felix-loadgen.
+      # to felix-loadgen and the backup tests to felixctl the same way. Separate
+      # commands: a --bin filter would apply to every package and skip the rest.
       - "cargo build -p felix-broker-service --bin felix-broker"
       - "cargo build -p felix-loadgen"
+      - "cargo build -p felixctl"
       - |
         suite="{{.SUITE}}"
         if [ "$suite" != rest ]; then
@@ -109,6 +118,45 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+  # Replays the seed in FELIX_SIM_SEED exactly. Tokio seeds `select!` only
+  # under `--cfg tokio_unstable`, which changes every crate's build, so this
+  # keeps its own target directory. A plain `cargo test` replay repeats the
+  # faults but not the interleaving under them.
+  sim:replay:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds replay -- --nocapture
+  # Runs each simulator seed twice in one process and fails on the first
+  # event that differs, then the seeds pinned to an issue (`seed_*`).
+  # FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds the first test
+  # runs. Then replays one seed (FELIX_SIM_REPLAY_SEED, default 1) in two
+  # processes through `sim:replay`, the command a failing seed prints, and
+  # compares the histories: two runs in one process share per-process state,
+  # so only this catches a replay that differs from process to process.
+  sim:determinism:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds seed_ -- --nocapture
+      - |
+        dir="$(mktemp -d)"
+        for run in a b; do
+          FELIX_SIM_SEED="${FELIX_SIM_REPLAY_SEED:-1}" FELIX_SIM_HISTORY="$dir/$run.txt" \
+            task sim:replay > "$dir/$run.log" 2>&1 || true
+          # A seed may fail its checks; only a missing history is an error here.
+          [ -s "$dir/$run.txt" ] || { cat "$dir/$run.log"; exit 1; }
+        done
+        if ! cmp -s "$dir/a.txt" "$dir/b.txt"; then
+          echo "seed ${FELIX_SIM_REPLAY_SEED:-1} replayed differently in two processes:"
+          diff "$dir/a.txt" "$dir/b.txt" | head -20
+          exit 1
+        fi
+        echo "seed ${FELIX_SIM_REPLAY_SEED:-1}: two replays, the same history"
 
   pg:up:
     cmds:
@@ -170,11 +218,11 @@ tasks:
         export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
         flags="--no-cfg-coverage --skip-functions --all-features --workspace"
         if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report $flags
+          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report --no-fail-fast $flags
         elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report $flags
+          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report --no-fail-fast $flags
         else
-          cargo llvm-cov --no-report $flags
+          cargo llvm-cov --no-report --no-fail-fast $flags
         fi
       # The C ABI is only exercised by its conformance harness, so the
       # workspace tests alone leave felix-capi mostly uncovered. This run adds
@@ -652,7 +700,7 @@ tasks:
     desc: Run the Node conformance suite against a fixture cluster it starts itself.
     dir: crates/sdk/felix-typescript
     cmds:
-      - node --test test/errors.test.mjs test/token.test.mjs test/reconnect.test.mjs
+      - node --test test/errors.test.mjs test/token.test.mjs test/reconnect.test.mjs test/client-certificate.test.mjs
       - node --test test/conformance.test.mjs {{.CLI_ARGS}}
   ts:conformance:
     desc: Build what the Node suite needs, run it, and check the verdict against the catalogue.

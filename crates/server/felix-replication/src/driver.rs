@@ -10,7 +10,7 @@
 mod shard;
 mod shards;
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -92,6 +92,15 @@ fn fence_backoff(failures: u32) -> Duration {
 /// shard's followers behind. Not at once: a follower that is unreachable would
 /// be redialled in a tight loop for the rest of the drain.
 const CATCH_UP_RETRY: Duration = Duration::from_millis(50);
+/// How long a leader's own ballot must stay past the generation it leads
+/// before it reports that generation refused. A promotion takes the new
+/// ballot before the routes name it, so a shorter gap is a route catching up.
+const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
+/// The same for a ballot naming another node, which this leader took by
+/// answering that node's fence. Longer than a candidate's stand timeout plus
+/// the control plane adopting it: a standing that opens moves the route on
+/// first, and one that was withdrawn leaves this leader stopped for good.
+const BALLOT_ELSEWHERE_FOR: Duration = Duration::from_secs(10);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {
@@ -299,8 +308,10 @@ pub trait WriteFence: Send + Sync {
     /// the two calls above, if they apply, came before this one.
     fn passed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
-    /// A follower refused `key`'s ships at `generation` because it accepted a
-    /// newer leader. Called on every pass while the refusal stands.
+    /// `key` has a newer leader than `generation`: a follower refused its
+    /// ships because the control plane assigned a newer generation, or this
+    /// broker itself took a newer generation or set. Called on every pass
+    /// while that holds.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
     /// This broker does not lead `key` at `generation`, though the route says
@@ -497,7 +508,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     // Bounded, because each shard in flight holds a peer request and may hold
     // an HTTP report: a broker leading thousands of shards must not open
     // thousands of those at once.
-    let no_one = HashSet::new();
+    let no_one = HashSet::default();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
             let prior = router.prior_set(&key);
@@ -577,11 +588,12 @@ async fn fence_one<'a, R: PeerRequester>(
     key: ShardKey,
     route: felix_router::Route,
     marks: &'a QuorumMarks,
+    continuing: bool,
 ) -> Fenced<'a> {
-    // Before registration answers, the fleet view is empty for want of an
-    // answer and every feature reads as off, so the lease would stand in for
-    // a fence the fleet may already require.
-    if !marks.serving().adopted {
+    // Before registration answers, a feature missing from the fleet view may
+    // still be on, so the lease would stand in for a fence the fleet may
+    // already require. A view seeded with every feature this reads decides.
+    if !marks.serving().decided(key.kind) {
         let why = "this broker has not yet learned which fleet features are enabled";
         return (
             key,
@@ -608,6 +620,7 @@ async fn fence_one<'a, R: PeerRequester>(
             promotion::Joint::new(&addr_of, router.prior_set(&key))
                 .with_local_storage(marks.local_storage())
                 .with_replaced_storage(marks.replaced_storage())
+                .with_continuing(continuing)
         });
     // This broker's own standing for election, if that is what the route is.
     let candidacy = marks
@@ -653,14 +666,14 @@ async fn open_promoted<R: PeerRequester>(
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<Fenced<'_>> = futures::stream::iter(
-        promoted
-            .into_iter()
-            .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
-    )
-    .buffer_unordered(FENCE_CONCURRENCY)
-    .collect()
-    .await;
+    let outcomes: Vec<Fenced<'_>> =
+        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
+            let continuing = gate.continuing(&watch_key(&key), route.generation);
+            fence_one(requester, broker, router, key, route, marks, continuing)
+        }))
+        .buffer_unordered(FENCE_CONCURRENCY)
+        .collect()
+        .await;
     let mut pending = false;
     for (key, generation, outcome, fencing) in outcomes {
         let opened = open_fenced(gate, &key, generation, outcome).await;
@@ -715,11 +728,12 @@ async fn open_fenced(
             );
             false
         }
-        Outcome::SetUnknown { why } => {
+        Outcome::SetUnknown { why, ballot } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
                 generation,
+                ballot,
                 why = %why,
                 "the set this generation leaves is not known here; reporting it refused",
             );
@@ -784,6 +798,12 @@ async fn opened(
     let opened = gate.open(&watch_key(key), generation).await;
     if opened {
         metrics::record_promotion_opened(path);
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            "the shard is open for writes",
+        );
     }
     opened
 }
@@ -795,7 +815,7 @@ fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
     {
         broker.cache().open_shards().into_iter().collect()
     } else {
-        HashSet::new()
+        HashSet::default()
     }
 }
 
@@ -866,7 +886,8 @@ fn take_work(
     let learner = shard::staged_learner(previous.as_ref(), route);
     let mut entry = match previous {
         Some(entry) if entry.generation == route.generation => entry,
-        _ => ShardCursors::at(route.generation),
+        Some(entry) => entry.next(route.generation),
+        None => ShardCursors::at(route.generation),
     };
     entry.learner = learner;
     // A draining shard reports even with nobody to ship to: its move lost

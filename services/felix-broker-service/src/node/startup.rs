@@ -23,10 +23,40 @@ pub(super) struct Opened {
     pub(super) unclean: Option<Arc<replication::unclean::UncleanStart>>,
 }
 
-/// Open storage and the broker, record this start in the quorum marks and the
-/// fence, and set the gates that depend on what the fleet has finalized.
-///
-/// The order is load-bearing; each step's comment says why.
+/// The broker over its opened storage, before it is wired to the fleet.
+pub(super) struct Stored {
+    pub(super) broker: Broker,
+    pub(super) durable_storage: Option<DurableStorage>,
+    pub(super) storage_id: felix_storage::StorageId,
+    /// Set after a start that may have cost acknowledged records.
+    pub(super) unclean: bool,
+    /// Set when this start found the data directory older than the node's
+    /// last registration.
+    pub(super) replaced_storage: bool,
+    /// Set after an unclean start whose directory kept every ballot it took.
+    pub(super) kept_promises: bool,
+}
+
+/// Open storage and the broker over it.
+pub(super) fn open_storage(
+    config: &BrokerConfig,
+    durable: Option<DurableStorageConfig>,
+    registered: Option<&Registered>,
+) -> Result<Stored> {
+    let (broker, durable_storage, storage_id, unclean, replaced_storage, kept_promises) =
+        storage::open_with(config, durable, registered)?;
+    Ok(Stored {
+        broker,
+        durable_storage,
+        storage_id,
+        unclean,
+        replaced_storage,
+        kept_promises,
+    })
+}
+
+/// [`open_storage`] then [`wire_broker`], for a start that has nothing to
+/// decide in between.
 pub(super) async fn open_broker(
     config: &BrokerConfig,
     durable: Option<DurableStorageConfig>,
@@ -35,20 +65,42 @@ pub(super) async fn open_broker(
     fleet: &Arc<felix_common::fleet::FleetGate>,
     quorum_marks: &Arc<QuorumMarks>,
 ) -> Result<Opened> {
+    let stored = open_storage(config, durable, registered)?;
+    wire_broker(config, stored, cluster, fleet, quorum_marks).await
+}
+
+/// Record this start in the quorum marks and the fence, and set the gates that
+/// depend on what the fleet has finalized.
+///
+/// The order is load-bearing; each step's comment says why.
+pub(super) async fn wire_broker(
+    config: &BrokerConfig,
+    stored: Stored,
+    cluster: &Option<ShardState>,
+    fleet: &Arc<felix_common::fleet::FleetGate>,
+    quorum_marks: &Arc<QuorumMarks>,
+) -> Result<Opened> {
+    let Stored {
+        broker,
+        durable_storage,
+        storage_id,
+        unclean,
+        replaced_storage,
+        kept_promises,
+    } = stored;
     let ingress_router = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
-    let (broker, durable_storage, storage_id, unclean, replaced_storage) =
-        storage::open_with(config, durable, registered)?;
     quorum_marks.set_local_storage(storage_id, replaced_storage);
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
     let unclean = match (&config.membership, cluster) {
         (Some(membership), Some((_, ingress, _, _))) if unclean => {
-            let unclean = Arc::new(felix_replication::unclean::UncleanStart::new(
-                membership.node_id.as_str(),
-            ));
+            let unclean = Arc::new(
+                felix_replication::unclean::UncleanStart::new(membership.node_id.as_str())
+                    .with_kept_promises(kept_promises),
+            );
             ingress.fence().bind_unclean_start(Arc::clone(&unclean));
             Some(unclean)
         }

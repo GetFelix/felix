@@ -1,6 +1,7 @@
 //! Frame-writing primitives and the two writer task loops (per-lane and per-connection).
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::VecDeque;
 use std::sync::Weak;
 use std::time::{Duration, Instant};
 
@@ -231,11 +232,11 @@ pub(super) async fn run_connection_writer(
     let mut debug_writes = 0u64;
     let mut debug_bytes = 0u64;
     let mut debug_dequeues = 0u64;
-    let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::new();
-    let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::new();
+    let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::default();
+    let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::default();
     // Unregistered, but still writing what was queued before the unregister.
-    let mut leaving: HashSet<u64> = HashSet::new();
-    let mut in_flight: HashSet<u64> = HashSet::new();
+    let mut leaving: HashSet<u64> = HashSet::default();
+    let mut in_flight: HashSet<u64> = HashSet::default();
     let mut writes = FuturesUnordered::new();
     let mut open = true;
     loop {

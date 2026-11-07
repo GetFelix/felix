@@ -38,18 +38,32 @@ pub(crate) mod log_thread;
 pub(crate) mod power_loss;
 #[cfg(target_os = "linux")]
 pub(crate) mod uring_fsync;
+#[cfg(any(
+    feature = "sim",
+    all(
+        target_os = "linux",
+        any(test, debug_assertions, feature = "fault-injection")
+    )
+))]
+pub(crate) mod writeback;
 
-use std::fs::File;
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
 #[cfg(windows)]
 use std::os::windows::fs::FileExt;
 
+use crate::fs::File;
+
 /// Read into `buf` starting at `offset` without touching the file cursor.
 ///
 /// Returns the number of bytes read, which is short only at end of file.
 pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+    #[cfg(feature = "sim")]
+    if let Some(mem) = file.as_mem() {
+        return mem.read_at(buf, offset);
+    }
+    let file = os(file);
     #[cfg(unix)]
     {
         let mut filled = 0;
@@ -96,6 +110,11 @@ pub(crate) fn read_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<us
 
 /// Write all of `buf` at `offset` without touching the file cursor.
 pub(crate) fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
+    #[cfg(feature = "sim")]
+    if let Some(mem) = file.as_mem() {
+        return mem.write_at(buf, offset);
+    }
+    let file = os(file);
     while !buf.is_empty() {
         #[cfg(unix)]
         let written = file.write_at(buf, offset);
@@ -130,6 +149,12 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
             return Err(err);
         }
     }
+    #[cfg(feature = "sim")]
+    if let Some(mem) = file.as_mem() {
+        mem.preallocate(offset, len);
+        return Ok(());
+    }
+    let file = os(file);
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;
@@ -215,6 +240,12 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::Data)?;
+    #[cfg(feature = "sim")]
+    if let Some(mem) = file.as_mem() {
+        mem.sync();
+        return Ok(());
+    }
+    let file = os(file);
     #[cfg(target_os = "macos")]
     {
         use std::os::unix::io::AsRawFd;
@@ -245,9 +276,13 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
     before_sync_dir(path)?;
+    #[cfg(feature = "sim")]
+    if let Some(flushed) = crate::fs::sync_simulated_dir(path) {
+        return flushed;
+    }
     #[cfg(unix)]
     {
-        File::open(path)?.sync_all()
+        std::fs::File::open(path)?.sync_all()
     }
     #[cfg(not(unix))]
     {
@@ -268,11 +303,12 @@ pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
 pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
     let mut created = Vec::new();
     let mut next = Some(path);
-    while let Some(dir) = next.filter(|dir| !dir.as_os_str().is_empty() && !dir.is_dir()) {
+    while let Some(dir) = next.filter(|dir| !dir.as_os_str().is_empty() && !crate::fs::is_dir(dir))
+    {
         created.push(dir);
         next = dir.parent();
     }
-    std::fs::create_dir_all(path)?;
+    crate::fs::create_dir_all(path)?;
     if created.is_empty() {
         created.push(path);
     }
@@ -296,11 +332,15 @@ pub(crate) fn create_dir_all_durable(path: &std::path::Path) -> io::Result<()> {
 /// Linux only. macOS's `sync` only queues the writes, so nothing there can
 /// say the page cache reached the device; elsewhere there is no such call.
 pub(crate) fn sync_filesystems(root: &std::path::Path) -> io::Result<()> {
+    #[cfg(feature = "sim")]
+    if let Some(flushed) = crate::fs::sync_simulated_filesystem(root) {
+        return flushed;
+    }
     #[cfg(target_os = "linux")]
     {
         use std::os::unix::io::AsRawFd;
         for dir in devices_under(root)?.into_values() {
-            let dir = File::open(dir)?;
+            let dir = std::fs::File::open(dir)?;
             // SAFETY: `dir` is a live descriptor for the duration of the call.
             if unsafe { libc::syncfs(dir.as_raw_fd()) } == -1 {
                 return Err(io::Error::last_os_error());
@@ -362,7 +402,29 @@ pub(crate) fn devices_under(
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::All)?;
-    file.sync_all()
+    #[cfg(feature = "sim")]
+    if let Some(mem) = file.as_mem() {
+        mem.sync();
+        return Ok(());
+    }
+    os(file).sync_all()
+}
+
+/// The OS file under `file`, or `None` for one a simulation keeps in memory.
+pub(crate) fn os_file(file: &File) -> Option<&std::fs::File> {
+    #[cfg(feature = "sim")]
+    {
+        file.os_file()
+    }
+    #[cfg(not(feature = "sim"))]
+    {
+        Some(file)
+    }
+}
+
+/// [`os_file`] for a caller that has already handled the in-memory case.
+fn os(file: &File) -> &std::fs::File {
+    os_file(file).expect("a file in memory has no descriptor")
 }
 
 /// Which flush a fault hook is looking at.
@@ -394,13 +456,34 @@ fn before_sync(file: &File, kind: SyncKind) -> io::Result<()> {
         target_os = "linux",
         any(test, debug_assertions, feature = "fault-injection")
     ))]
-    power_loss::observe_file(file, kind);
+    if let Some(file) = os_file(file) {
+        power_loss::observe_file(file, kind);
+    }
     let _ = (file, kind);
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Every directory this thread flushed, with the names in it at the
+    /// time, for tests that check what a flush covered.
+    pub(crate) static DIR_SYNCS: std::cell::RefCell<Vec<(std::path::PathBuf, Vec<String>)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// [`before_sync`] for a directory flush.
 fn before_sync_dir(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(test)]
+    DIR_SYNCS.with(|syncs| {
+        let mut names: Vec<String> = crate::fs::read_dir(path)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        syncs.borrow_mut().push((path.to_path_buf(), names));
+    });
     injected_fault()?;
     #[cfg(all(
         target_os = "linux",

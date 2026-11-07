@@ -12,8 +12,9 @@ use super::{
     InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
     MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES, MAX_INNER_BODY_BYTES,
     MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote,
-    PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError,
-    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
+    PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView, ReplicateBootstrap,
+    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember,
+    ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -213,6 +214,7 @@ impl InternalMessage {
                 body.put_u64(m.log_end);
                 body.put_u64(m.commit_offset);
                 body.put_u64(m.last_generation);
+                // `kept_ballot` is the kind, not the body.
             }
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
@@ -317,6 +319,9 @@ impl InternalMessage {
                 body.put_u16(m.code as u16);
                 body.put_u64(m.expected_offset);
                 put_str(&mut body, &m.detail)?;
+                if let Some(reason) = &m.reason {
+                    put_refusal_reason(&mut body, reason)?;
+                }
             }
             Self::ReplicateBootstrap(m)
             | Self::ReplicateCacheBootstrap(m)
@@ -783,12 +788,13 @@ impl InternalMessage {
                     Self::Pong(Pong { correlation_id })
                 })
             }
-            Kind::FenceOk => {
+            Kind::FenceOk | Kind::FenceKeptOk => {
                 let message = FenceOk {
                     correlation_id: take_u64(&mut body)?,
                     log_end: take_u64(&mut body)?,
                     commit_offset: take_u64(&mut body)?,
                     last_generation: take_u64(&mut body)?,
+                    kept_ballot: kind == Kind::FenceKeptOk,
                 };
                 expect_empty(&body)?;
                 Ok(Self::FenceOk(message))
@@ -955,6 +961,11 @@ impl InternalMessage {
                     code: ErrorCode::from_u16(take_u16(&mut body)?)?,
                     expected_offset: take_u64(&mut body)?,
                     detail: take_str(&mut body)?,
+                    reason: if body.has_remaining() {
+                        Some(take_refusal_reason(&mut body)?)
+                    } else {
+                        None
+                    },
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateError(message))
@@ -1127,6 +1138,60 @@ impl InternalMessage {
             }
         }
     }
+}
+
+fn put_refusal_reason(buf: &mut BytesMut, reason: &RefusalReason) -> Result<()> {
+    match reason {
+        RefusalReason::PromisedTo { generation, leader } => {
+            buf.put_u8(1);
+            buf.put_u64(*generation);
+            put_str(buf, leader)?;
+        }
+        RefusalReason::Accepted { accepted, sender } => {
+            buf.put_u8(2);
+            buf.put_u64(*accepted);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::View { have, sender } => {
+            buf.put_u8(3);
+            buf.put_u64(*have);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::Assigned { assigned, sender } => {
+            buf.put_u8(4);
+            buf.put_u64(*assigned);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::NotAReplica => buf.put_u8(5),
+        RefusalReason::NotVoter => buf.put_u8(6),
+    }
+    Ok(())
+}
+
+/// A reason this build does not know is refused, not skipped: it would be
+/// read as no reason, and the detail may not say the same.
+fn take_refusal_reason(buf: &mut Bytes) -> Result<RefusalReason> {
+    Ok(match take_u8(buf)? {
+        1 => RefusalReason::PromisedTo {
+            generation: take_u64(buf)?,
+            leader: take_str(buf)?,
+        },
+        2 => RefusalReason::Accepted {
+            accepted: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        3 => RefusalReason::View {
+            have: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        4 => RefusalReason::Assigned {
+            assigned: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        5 => RefusalReason::NotAReplica,
+        6 => RefusalReason::NotVoter,
+        _ => return Err(Error::Incomplete),
+    })
 }
 
 fn put_str(buf: &mut BytesMut, value: &str) -> Result<()> {

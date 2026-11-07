@@ -16,7 +16,7 @@
 //! that kept one file's tail and not the other's or a replica's log taken
 //! over by another's, no longer stands: [`ConsumerGroups::normalize`] puts the
 //! group back where something still does before the shard is served.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -72,7 +72,7 @@ impl ConsumerGroups {
     pub fn open(root: impl Into<std::path::PathBuf>, config: LogConfig) -> Result<Self> {
         Ok(Self {
             cursors: LogCache::open(root, config).map_err(BrokerError::from)?,
-            locks: SyncMutex::new(HashMap::new()),
+            locks: SyncMutex::new(HashMap::default()),
             dependencies: Dependencies(RwLock::new(Arc::new(|| true))),
         })
     }
@@ -317,7 +317,7 @@ impl ConsumerGroups {
         shard: u32,
         records: &[bytes::Bytes],
     ) -> Result<usize> {
-        let mut latest: HashMap<String, Option<Stored>> = HashMap::new();
+        let mut latest: HashMap<String, Option<Stored>> = HashMap::default();
         for record in records {
             match felix_storage::cache::CacheOp::decode(record) {
                 Ok(felix_storage::cache::CacheOp::Put { key, value, .. }) => {
@@ -365,7 +365,7 @@ impl ConsumerGroups {
         let log = StreamLog::from_log(self.shard_log(tenant_id, namespace, stream, shard).await?);
         let tail = log.tail_offset().await?;
         let mut next = log.readable_base();
-        let mut history: HashMap<String, Vec<Stored>> = HashMap::new();
+        let mut history: HashMap<String, Vec<Stored>> = HashMap::default();
         while next < tail {
             let page = log.read_log_from(next, 1 << 20).await?;
             if page.next <= next {
@@ -486,7 +486,7 @@ impl ConsumerGroups {
                 stream: stream.to_string(),
                 shard,
             };
-            if !felix_storage::disk_log::layout::shard_dir(self.cursors.root(), &key).is_dir() {
+            if !felix_storage::disk_log::layout::shard_dir_exists(self.cursors.root(), &key) {
                 continue;
             }
             for entry in self
@@ -580,6 +580,21 @@ impl ConsumerGroups {
             .shard_log(tenant_id, namespace, stream, shard)
             .await
             .map_err(BrokerError::from)
+    }
+
+    /// What [`ConsumerGroups::shard_log_for`] would return, when the log is open
+    /// already. See `LogCache::opened_shard_log`.
+    pub async fn opened_shard_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<felix_storage::disk_log::DiskLog> {
+        self.cursors
+            .opened_shard_log(tenant_id, namespace, stream, shard, incarnation)
+            .await
     }
 
     /// [`ConsumerGroups::shard_log`], created at `base_offset` if absent and given,

@@ -26,10 +26,10 @@ async fn a_fresh_cursor_starts_at_the_generation_boundary() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -57,10 +57,10 @@ async fn a_shard_with_no_generation_history_still_starts_at_zero() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -79,7 +79,7 @@ async fn a_replica_added_later_starts_at_the_boundary_too() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -88,9 +88,9 @@ async fn a_replica_added_later_starts_at_the_boundary_too() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     publish(&router, LOCAL, &["broker-b", "broker-c"], 4);
@@ -101,9 +101,9 @@ async fn a_replica_added_later_starts_at_the_boundary_too() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -160,7 +160,7 @@ async fn a_new_generation_starts_the_cursors_again() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -169,9 +169,9 @@ async fn a_new_generation_starts_the_cursors_again() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let after_first = follower.batches().len();
@@ -184,9 +184,9 @@ async fn a_new_generation_starts_the_cursors_again() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -210,7 +210,7 @@ async fn a_replica_added_later_starts_from_the_beginning() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -219,9 +219,9 @@ async fn a_replica_added_later_starts_from_the_beginning() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     publish(&router, LOCAL, &["broker-b", "broker-c"], 4);
@@ -232,9 +232,9 @@ async fn a_replica_added_later_starts_from_the_beginning() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -257,7 +257,7 @@ async fn a_replica_removed_from_the_set_is_dropped() {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -266,9 +266,9 @@ async fn a_replica_removed_from_the_set_is_dropped() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     publish(&router, LOCAL, &["broker-b"], 4);
@@ -289,9 +289,9 @@ async fn a_replica_removed_from_the_set_is_dropped() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -351,7 +351,7 @@ async fn a_follower_that_moved_address_is_shipped_to_at_the_new_one() {
         stored: AcceptingFollower::default(),
     };
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // The first pass reaches only the old address, which is gone.
     replicate_once(
@@ -361,9 +361,9 @@ async fn a_follower_that_moved_address_is_shipped_to_at_the_new_one() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     assert!(follower.stored.batches().is_empty());
@@ -383,9 +383,9 @@ async fn a_follower_that_moved_address_is_shipped_to_at_the_new_one() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 

@@ -19,7 +19,7 @@
 //! * **The staging buffer is never freed.** Steady-state appends do no
 //!   allocation at all beyond growing it once to the high-water batch size.
 
-use std::fs::{File, OpenOptions};
+use crate::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -107,16 +107,59 @@ impl SegmentWriter {
         index_spacing_bytes: u64,
         version: u16,
     ) -> Result<Self> {
-        let created = BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes)?
-            .activate(base_offset, created_at_micros, version)
-            .and_then(|mut writer| {
-                // The header must be durable before any record claims to live
-                // here. The directory entry already is: `BlankSegment::create`
-                // synced it.
-                sync_data(&writer.file)?;
-                writer.mark_synced(SEGMENT_HEADER_LEN);
-                Ok(writer)
-            });
+        Self::create_with(
+            dir,
+            id,
+            base_offset,
+            created_at_micros,
+            (reserve_limit_bytes, index_spacing_bytes),
+            version,
+            DirEntry::Sync,
+        )
+    }
+
+    /// [`Self::create`] for the first segment of a log being opened, leaving
+    /// its directory entry unsynced. The open syncs the directory once, after
+    /// its other files are created and before it returns, which covers this
+    /// entry too. Until then nothing can rely on the segment: a crash that
+    /// loses it leaves a log that recovers as fresh.
+    pub(crate) fn create_in_opening_log(
+        dir: &Path,
+        base_offset: Offset,
+        created_at_micros: u64,
+        reserve_limit_bytes: u64,
+        index_spacing_bytes: u64,
+    ) -> Result<Self> {
+        Self::create_with(
+            dir,
+            0,
+            base_offset,
+            created_at_micros,
+            (reserve_limit_bytes, index_spacing_bytes),
+            BASELINE_VERSION,
+            DirEntry::Deferred,
+        )
+    }
+
+    fn create_with(
+        dir: &Path,
+        id: SegmentId,
+        base_offset: Offset,
+        created_at_micros: u64,
+        (reserve_limit_bytes, index_spacing_bytes): (u64, u64),
+        version: u16,
+        entry: DirEntry,
+    ) -> Result<Self> {
+        let created =
+            BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes, entry)?
+                .activate(base_offset, created_at_micros, version)
+                .and_then(|mut writer| {
+                    // The header must be durable before any record claims to live
+                    // here.
+                    sync_data(&writer.file)?;
+                    writer.mark_synced(SEGMENT_HEADER_LEN);
+                    Ok(writer)
+                });
         if created.is_err() {
             remove_unused_segment(dir, id);
         }
@@ -317,7 +360,7 @@ impl SegmentWriter {
     }
 
     /// A second descriptor for the same file, for flushing off the write path.
-    pub fn sync_handle(&self) -> Arc<File> {
+    pub(crate) fn sync_handle(&self) -> Arc<File> {
         Arc::clone(&self.sync_handle)
     }
 
@@ -600,14 +643,23 @@ pub(crate) struct BlankSegment {
     reserve_limit_bytes: u64,
 }
 
+/// Whether creating a segment syncs its directory entry itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirEntry {
+    Sync,
+    /// The caller syncs the directory before anything relies on the segment.
+    Deferred,
+}
+
 impl BlankSegment {
     /// Create the file and its index, reserve the first blocks, and make the
-    /// directory entry durable.
+    /// directory entry durable unless `entry` leaves that to the caller.
     pub(crate) fn create(
         dir: &Path,
         id: SegmentId,
         reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
+        entry: DirEntry,
     ) -> Result<Self> {
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new()
@@ -615,7 +667,11 @@ impl BlankSegment {
             .create_new(true)
             .open(&path)?;
         let reserve = Reservation::initial_bytes(reserve_limit_bytes);
-        if let Err(err) = preallocate(&file, 0, reserve).and_then(|()| sync_dir(dir)) {
+        let created = preallocate(&file, 0, reserve).and_then(|()| match entry {
+            DirEntry::Sync => sync_dir(dir),
+            DirEntry::Deferred => Ok(()),
+        });
+        if let Err(err) = created {
             // On a full disk the reservation is what fails. A file left behind
             // would be a log's only segment with no header.
             drop(file);
@@ -694,7 +750,7 @@ impl BlankSegment {
         drop(file);
         let dir = path.parent().map(Path::to_path_buf);
         for path in [path, index_path] {
-            match std::fs::remove_file(&path) {
+            match crate::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(StorageError::Io(err)),
@@ -716,7 +772,7 @@ fn remove_unused_segment(dir: &Path, id: SegmentId) {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        let _ = std::fs::remove_file(path);
+        let _ = crate::fs::remove_file(path);
     }
 }
 

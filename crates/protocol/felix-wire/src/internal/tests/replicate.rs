@@ -775,3 +775,64 @@ fn a_headered_fetch_is_its_own_kind() {
     assert_eq!(plain[InternalHeader::LEN..], bytes[InternalHeader::LEN..]);
     assert_eq!(InternalMessage::decode(bytes).expect("decode"), headered);
 }
+
+/// **A refusal's reason travels after its detail, and only when set.** With
+/// no reason the body is the original one, which a peer that predates
+/// reasons decodes; with one, every reason comes back as sent.
+#[test]
+fn a_refusal_reason_round_trips_after_the_detail() {
+    let refusal = |reason| {
+        InternalMessage::ReplicateError(ReplicateError {
+            correlation_id: 42,
+            code: ErrorCode::FencedEpoch,
+            expected_offset: 0,
+            detail: "this broker accepted generation 4 from broker-d".to_string(),
+            reason,
+        })
+    };
+    let plain = refusal(None).encode().expect("encode");
+    for reason in [
+        RefusalReason::PromisedTo {
+            generation: 4,
+            leader: "broker-d".to_string(),
+        },
+        RefusalReason::Accepted {
+            accepted: 6,
+            sender: 4,
+        },
+        RefusalReason::View { have: 6, sender: 4 },
+        RefusalReason::Assigned {
+            assigned: 6,
+            sender: 4,
+        },
+        RefusalReason::NotAReplica,
+        RefusalReason::NotVoter,
+    ] {
+        let message = refusal(Some(reason));
+        let frame = message.encode().expect("encode");
+        assert!(frame.len() > plain.len());
+        assert_eq!(InternalMessage::decode(frame).expect("decode"), message);
+    }
+    assert_eq!(
+        InternalMessage::decode(plain).expect("decode"),
+        refusal(None)
+    );
+}
+
+/// **A reason this build does not know is refused**, not read as none: the
+/// detail may say something else.
+#[test]
+fn an_unknown_refusal_reason_is_refused() {
+    let frame = InternalMessage::ReplicateError(ReplicateError {
+        correlation_id: 42,
+        code: ErrorCode::Unauthorized,
+        expected_offset: 0,
+        detail: String::new(),
+        reason: Some(RefusalReason::NotAReplica),
+    })
+    .encode()
+    .expect("encode");
+    let mut tampered = frame.to_vec();
+    *tampered.last_mut().expect("a tag") = 99;
+    assert!(InternalMessage::decode(Bytes::from(tampered)).is_err());
+}

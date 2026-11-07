@@ -550,6 +550,46 @@ async fn a_node_change_seq_is_not_handed_out_until_the_holder_commits() -> anyho
     Ok(())
 }
 
+/// The schema refuses a mount on a stream that is not durable, whichever
+/// column a write changes, even a write that skips the store's own check.
+#[tokio::test]
+#[serial]
+async fn the_schema_refuses_a_mount_on_a_non_durable_stream() -> anyhow::Result<()> {
+    let Some(url) = pg_url().await else {
+        return Ok(());
+    };
+    let schema = ensure_schema(&url).await?;
+    let url = url_with_schema(&url, &schema);
+    run_migrations_once(&url).await?;
+    reset_db(&url, &schema).await?;
+
+    let store = feed_store(&url, config::DEFAULT_CHANGES_LIMIT).await?;
+    seed_catalog(&store).await?;
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await?;
+    let is_check_violation = |result: Result<_, sqlx::Error>| matches!(result, Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("23514"));
+
+    sqlx::query("UPDATE streams SET mount = 'a/' WHERE stream = 's'")
+        .execute(&pool)
+        .await?;
+    let unmounted = sqlx::query("UPDATE streams SET durable = false WHERE stream = 's'")
+        .execute(&pool)
+        .await;
+    assert!(is_check_violation(unmounted.map(|_| ())));
+
+    sqlx::query("UPDATE streams SET mount = NULL, durable = false WHERE stream = 's'")
+        .execute(&pool)
+        .await?;
+    let mounted = sqlx::query("UPDATE streams SET mount = 'b/' WHERE stream = 's'")
+        .execute(&pool)
+        .await;
+    assert!(is_check_violation(mounted.map(|_| ())));
+    pool.close().await;
+    Ok(())
+}
+
 /// A store on `url` with the given page size.
 async fn feed_store(url: &str, changes_limit: u64) -> anyhow::Result<PostgresStore> {
     Ok(PostgresStore::connect_without_migrations(
@@ -1585,6 +1625,7 @@ async fn an_instance_before_incarnations_assigns_the_live_incarnation() -> anyho
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     // Its write path: the row with no incarnation, then the change.
     let mut tx = pool.begin().await?;
@@ -1790,6 +1831,7 @@ async fn an_instance_before_cache_incarnations_assigns_the_live_incarnation() ->
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let mut tx = pool.begin().await?;
     sqlx::query(
@@ -1868,6 +1910,7 @@ async fn an_instance_before_cache_incarnations_keeps_the_incarnation_on_update()
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
     let held = store.put_shard_assignment(first.clone()).await?;
     assert_eq!(held.incarnation, created.incarnation);

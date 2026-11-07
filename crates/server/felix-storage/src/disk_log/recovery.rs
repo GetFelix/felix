@@ -118,9 +118,9 @@ fn apply(dir: &Path, label: &str, config: &LogConfig, plan: RecoveryPlan) -> Res
         End::Refuse(detail) => Err(StorageError::Corruption(detail)),
         End::Fresh => Ok(Recovered {
             sealed: Vec::new(),
-            active: SegmentWriter::create(
+            // `DiskLog::open_shared` syncs the directory before it returns.
+            active: SegmentWriter::create_in_opening_log(
                 dir,
-                0,
                 0,
                 now_micros(),
                 config.reserve_limit_bytes(),
@@ -168,6 +168,7 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                     "removing a segment below a gap the offload manifest covers"
                 ),
             }
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
             remove_segment_files(dir, id)
         }
         Step::SyncDir => Ok(sync_dir(dir)?),
@@ -193,11 +194,13 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 kept_next_segment = drop_next.is_none(),
                 "repairing the torn tail of a segment whose seal never finished",
             );
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
             if let Some(next) = drop_next {
+                crate::fs::note_torn_tail(&dir.join(segment_file_name(next)));
                 remove_segment_files(dir, next)?;
                 sync_dir(dir)?;
             }
-            let file = std::fs::OpenOptions::new()
+            let file = crate::fs::OpenOptions::new()
                 .write(true)
                 .open(dir.join(segment_file_name(id)))?;
             file.set_len(valid_bytes)?;
@@ -228,6 +231,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             cause = %tail.cause,
             "repaired a torn tail in the active segment"
         );
+        crate::fs::note_torn_tail(&dir.join(segment_file_name(active_id)));
     }
 
     let active_marks = std::mem::take(&mut outcome.marks);
@@ -288,15 +292,15 @@ pub(super) fn place_empty_shard(
     if !ids.is_empty() {
         return Ok(false);
     }
-    let mut writer = SegmentWriter::create(
+    let mut writer = SegmentWriter::create_in_opening_log(
         dir,
-        0,
         base_offset,
         now_micros(),
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
     )?;
-    // Flushed before anything can append to it: a base offset that did not
+    // The header is flushed before anything can append to it, and its name by
+    // `DiskLog::open_shared`'s directory sync: a base offset that did not
     // survive a crash would leave the shard reading back as one starting at
     // zero, which is a hole rather than a shorter log.
     writer.sync()?;
@@ -310,7 +314,7 @@ pub(super) fn place_empty_shard(
 /// make the log look shuffled.
 pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
+    for entry in crate::fs::read_dir(dir)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -336,7 +340,7 @@ fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(StorageError::Io(err)),

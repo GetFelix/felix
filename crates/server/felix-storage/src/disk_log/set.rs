@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::{DiskLog, LogInner, SetCheck};
+use super::{DiskLog, GenerationCheck, LogInner, SetCheck};
 use crate::io::sync_dir;
 use crate::{Result, StorageError, StorageId};
 
@@ -348,6 +348,24 @@ impl DiskLog {
         self.raise_set(set, true).await
     }
 
+    /// [`Self::accept_set`], or [`Self::accept_set_keeping_earlier`] with
+    /// `keep_earlier`, for a set `leader` sent at `generation`: refused with
+    /// the ballot's answer, and nothing written, once this log accepted a
+    /// newer generation or another leader at this one. Checked under the
+    /// writer's lock, so a set and a candidate's ballot
+    /// ([`Self::accept_generation_on_set`]) land in one order or the other:
+    /// a candidate never counts a set it did not stand on.
+    pub async fn accept_set_from(
+        &self,
+        set: ReplicaSet,
+        keep_earlier: bool,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
+        let from = (generation, leader.map(Arc::from));
+        self.raise_set_from(set, keep_earlier, Some(from)).await
+    }
+
     /// Whether this log holds a record written at `generation`. A leader
     /// writes one only once its fence opened, so this is the evidence that
     /// it did. The generation's epoch outlives a trim of its records. A
@@ -356,18 +374,38 @@ impl DiskLog {
         holds_records_in(&self.inner, generation)
     }
 
-    async fn raise_set(&self, mut set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
+    async fn raise_set(&self, set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
+        let raised = self.raise_set_from(set, keep_earlier, None).await?;
+        Ok(raised.expect("no sender to check"))
+    }
+
+    async fn raise_set_from(
+        &self,
+        mut set: ReplicaSet,
+        keep_earlier: bool,
+        from: Option<(u64, Option<Arc<str>>)>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
         if let Some(found) = check_set(self.set_generation(), set.current.generation) {
-            return Ok(found);
+            return Ok(Ok(found));
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            if let Some((generation, leader)) = &from
+                && let Some(refused) =
+                    super::ballot::check(&inner.ballot.read(), *generation, leader.as_deref())
+                && matches!(
+                    refused,
+                    GenerationCheck::Superseded { .. } | GenerationCheck::Promised { .. }
+                )
+            {
+                return Ok(Err(refused));
+            }
             let known = inner.set_generation.load(Ordering::Acquire);
             if let Some(found) = check_set(known, set.current.generation) {
-                return Ok(found);
+                return Ok(Ok(found));
             }
             if keep_earlier {
                 // In the file's order and without repeats, whatever the sender sent.
@@ -434,7 +472,7 @@ impl DiskLog {
             *inner.wiped.write() = wiped;
             *inner.replica_set.write() = Some(set);
             inner.set_generation.store(generation, Ordering::Release);
-            Ok(SetCheck::Raised)
+            Ok(Ok(SetCheck::Raised))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -487,7 +525,7 @@ impl DiskLog {
     pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
         let inner = Arc::clone(&self.inner);
         let node = node.to_string();
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
@@ -580,7 +618,7 @@ pub(super) fn reconcile(
     // A shard that never kept a set pays one stat, not a directory scan. A
     // temporary from a crash during the very first write waits for the next
     // open after a set exists; `load` ignores it meanwhile.
-    if path_in(dir).exists() {
+    if crate::fs::exists(path_in(dir)) {
         discard_leftovers(dir)?;
     }
     let set = load(dir)?;
@@ -678,8 +716,8 @@ impl Membership {
             return Err(invalid("a replica set past the size the file allows"));
         }
         // Counting a member twice would count a majority that isn't one.
-        let mut nodes = std::collections::HashSet::new();
-        let mut storage = std::collections::HashSet::new();
+        let mut nodes = felix_common::random::HashSet::default();
+        let mut storage = felix_common::random::HashSet::default();
         for member in &self.members {
             if !nodes.insert(member.node.as_str()) {
                 return Err(invalid("a node listed twice in a replica set"));
@@ -708,7 +746,7 @@ fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
 /// a set.
 pub(super) fn load(dir: &Path) -> Result<Option<Kept>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => ReplicaSet::decode(&bytes).map(Some).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -742,11 +780,11 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = dir.join(format!("{TEMPORARY_PREFIX}.{}.{n}", std::process::id()));
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&bytes).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }
@@ -755,14 +793,14 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
 /// runs: a sweep during a write would delete that write's temporary. `load`
 /// ignores them either way.
 pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
+    for entry in crate::fs::read_dir(dir).map_err(StorageError::Io)? {
         let entry = entry.map_err(StorageError::Io)?;
         if entry
             .file_name()
             .to_string_lossy()
             .starts_with(TEMPORARY_PREFIX)
         {
-            std::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
+            crate::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
         }
     }
     Ok(())

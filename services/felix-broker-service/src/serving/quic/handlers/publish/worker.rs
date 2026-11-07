@@ -1,7 +1,7 @@
 //! What a publish does once the scheduler hands it to an executor, and the
 //! publish context every connection derives its own from.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -347,6 +347,7 @@ impl LaneWork {
                 shard.as_ref(),
                 claimed,
                 fences,
+                generation,
                 marks.as_deref(),
                 ingress.as_deref(),
                 quorum_timeout,
@@ -502,11 +503,13 @@ impl LaneWork {
                 let marks = self.marks.clone();
                 let ingress = self.ingress.clone();
                 let quorum_timeout = self.quorum_timeout;
+                let generation = *generation;
                 self.work.spawn(async move {
                     let result = felix_replication::quorum::await_quorum(
                         &handle,
                         shard.as_ref(),
                         &outcome,
+                        generation,
                         marks.as_deref(),
                         ingress.as_deref(),
                         quorum_timeout,
@@ -589,6 +592,7 @@ impl LaneWork {
                 handle,
                 shard.as_ref(),
                 &idempotent.outcome,
+                *generation,
                 self.marks.as_deref(),
                 self.ingress.as_deref(),
                 self.quorum_timeout,

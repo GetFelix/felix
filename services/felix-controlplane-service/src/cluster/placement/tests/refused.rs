@@ -9,7 +9,7 @@ use super::pending_set::{fenced_move, pass};
 use super::readmit::cluster as joint_fence_cluster;
 use super::reconciler::shard_zero;
 use super::*;
-use crate::model::{ElectedLeader, ReplicaReport};
+use crate::model::{ElectedLeader, MoveReason, ReplicaReport};
 use crate::store::memory::InMemoryStore;
 use crate::store::{AssignmentWrite, ControlPlaneStore};
 
@@ -23,6 +23,7 @@ async fn refuses(store: &InMemoryStore, assignment: &ShardAssignment, refused: u
         RefusedGeneration {
             generation: refused,
             promised_to: "broker-d".to_string(),
+            ballot: 0,
         },
     )
     .await;
@@ -193,5 +194,105 @@ async fn a_set_unknown_refusal_names_the_leader_again_one_up() {
     assert_eq!(renamed.leader, placed.leader);
     assert_eq!(renamed.replicas, placed.replicas);
     assert_eq!(renamed.state, placed.state);
+    assert_eq!(pass(&store).await, renamed, "answered once");
+}
+
+/// **A leader whose own copy holds another node's newer ballot is named one
+/// past that ballot** (#1951). Its fence at the ballot's own generation would
+/// find it promised away and wait there (#1872), so one up from its
+/// generation is not enough once the ballot is two or more above it.
+#[tokio::test]
+async fn a_refusal_above_another_ballot_names_the_leader_past_it() {
+    let (store, placed) = joint_fence_cluster(true).await;
+    let ballot = placed.generation + 2;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(placed.generation, ballot),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, ballot + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+    assert_eq!(renamed.replicas, placed.replicas);
+    assert_eq!(pass(&store).await, renamed, "answered once");
+}
+
+/// A ballot at the edge of the election window, where a candidate may
+/// still stand, is passed like any other.
+#[tokio::test]
+async fn a_ballot_at_the_edge_of_the_window_names_the_leader_past_it() {
+    let (store, placed) = joint_fence_cluster(true).await;
+    let ballot = placed.generation + crate::model::ELECTION_GENERATION_WINDOW;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(placed.generation, ballot),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, ballot + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+}
+
+/// A ballot past the election window is a corrupt report, as it would be
+/// for an adoption: the leader is named one up, as for no ballot.
+#[tokio::test]
+async fn a_ballot_past_the_window_names_the_leader_one_up() {
+    let (store, placed) = joint_fence_cluster(true).await;
+
+    reports_refusal(
+        &store,
+        &placed,
+        RefusedGeneration::above(
+            placed.generation,
+            placed.generation + crate::model::ELECTION_GENERATION_WINDOW + 1,
+        ),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, placed.generation + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, placed.leader);
+}
+
+/// **A staged move whose leader refuses its generation is dropped** (#1965).
+/// The leader cannot open there, so the copy never catches up and the fence
+/// never comes: waiting would leave the shard unserved until the move times
+/// out. Named again one up without the destination, the leader opens.
+#[tokio::test]
+async fn a_staged_move_whose_leader_refuses_its_generation_is_dropped() {
+    let store =
+        super::pending_set::election_store(&["broker-a", "broker-b", "broker-c", "broker-d"], true)
+            .await;
+    let staged = store
+        .put_shard_assignment(ShardAssignment {
+            successor: Some("broker-d".to_string()),
+            move_started_at_millis: Some(store.now_millis().await.expect("clock")),
+            move_reason: Some(MoveReason::Balance),
+            generation: 0,
+            ..assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"])
+        })
+        .await
+        .expect("staged move");
+    assert_eq!(pass(&store).await, staged, "the copy is still catching up");
+
+    reports_refusal(
+        &store,
+        &staged,
+        RefusedGeneration::set_unknown(staged.generation),
+    )
+    .await;
+    let renamed = pass(&store).await;
+
+    assert_eq!(renamed.generation, staged.generation + 1, "{renamed:?}");
+    assert_eq!(renamed.leader, "broker-a");
+    assert_eq!(renamed.successor, None);
+    assert_eq!(renamed.replicas, ["broker-b", "broker-c"]);
+    assert_eq!(renamed.state, staged.state);
     assert_eq!(pass(&store).await, renamed, "answered once");
 }

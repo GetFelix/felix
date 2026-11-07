@@ -80,7 +80,8 @@ const PATCH_FENCE_LEVEL: u16 = 19;
 const INHERITED_STORAGE_LEVEL: u16 = 20;
 
 /// The metadata level whose members store a cut-over's pending set and the
-/// joint start a report names, and finalize `replica_election` (#1009).
+/// joint start a report names (#1009). Finalizing `replica_election` needs
+/// level 26.
 const PENDING_SET_LEVEL: u16 = 21;
 
 /// The metadata level whose members store the storage identity each member of
@@ -88,7 +89,8 @@ const PENDING_SET_LEVEL: u16 = 21;
 const MEMBER_STORAGE_LEVEL: u16 = 22;
 
 /// The metadata level whose members store an assignment's learners and the
-/// start holders a report names, and finalize `joint_fence` (#1737).
+/// start holders a report names (#1737). Finalizing `joint_fence` needs
+/// level 25.
 const LEARNER_LEVEL: u16 = 23;
 
 /// The metadata level whose members store a stream's MQTT mount (#1690).
@@ -102,6 +104,19 @@ const REFUSED_LEVEL: u16 = 25;
 /// that set when they adopt it, instead of taking only its generation
 /// (#1009).
 const ELECTED_SET_LEVEL: u16 = 26;
+
+/// The metadata level whose members also name the shard's own leader on the
+/// other set it was elected on, instead of taking only its generation
+/// (#1929).
+const OWN_LEADER_SET_LEVEL: u16 = 27;
+
+/// The metadata level whose members store the ballot a leader's refusal
+/// carries and name it past that ballot (#1951).
+const REFUSED_BALLOT_LEVEL: u16 = 28;
+
+/// The metadata level whose members record the generation a write past the
+/// next one replaced (#2024).
+const PREVIOUS_GENERATION_LEVEL: u16 = 29;
 
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
@@ -189,6 +204,18 @@ impl RaftStore {
         if !assignment.learners.is_empty() && self.group_level().await < LEARNER_LEVEL {
             assignment.learners.clear();
         }
+        // Store-owned: the apply decides it, and a value copied from the
+        // assignment being replaced would only raise the entry's level.
+        assignment.previous_generation = None;
+    }
+
+    /// Whether the fleet has finalized `joint_fence`.
+    async fn joint_fence(&self) -> StoreResult<bool> {
+        Ok(self
+            .local()
+            .enabled_fleet_features()
+            .await?
+            .contains(felix_common::fleet::JOINT_FENCE.name()))
     }
 
     /// Whether a delete takes the deleted resources' shard assignments and
@@ -867,17 +894,20 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         mut assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite> {
         // A pending set is never dropped, unlike the fence ids: without it a
         // cut-over takes the new set at once. Its level refuses the write
         // below 21 instead.
         self.drop_unstorable_fence_ids(&mut assignment).await;
         let level = self.group_level().await;
+        let joint_fence = at_least > 0 && self.joint_fence().await?;
+        let at_least = honoured_at_least(at_least, level, joint_fence);
         match self
             .propose_at(
                 level,
@@ -886,6 +916,10 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     fence,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
+                    at_least,
+                    // Only a floor can skip generations; other writes keep
+                    // the level they had.
+                    record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
                 },
             )
             .await?
@@ -908,7 +942,8 @@ impl ControlPlaneStore for RaftStore {
         // Refused below level 21, before it reaches the log: the generation
         // stays the one every member holds, and the election is not adopted.
         // Below 26 every member applies the older form, which takes only the
-        // generation of a leader elected on another set.
+        // generation of a leader elected on another set, and below 27 it
+        // still does for the shard's own leader.
         let level = self.group_level().await;
         match self
             .propose_at(
@@ -918,6 +953,7 @@ impl ControlPlaneStore for RaftStore {
                     expected_generation,
                     elected,
                     elected_set: level >= ELECTED_SET_LEVEL,
+                    own_leader_set: level >= OWN_LEADER_SET_LEVEL,
                 },
             )
             .await?
@@ -953,6 +989,45 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<crate::store::ConfirmedAssignment>> {
+        let asked = self
+            .ask_leader(LeaderRequest::ShardAssignments {
+                keys: keys.to_vec(),
+            })
+            .await?;
+        match asked {
+            Some(MetaResponse::Assignments { assignments }) if assignments.len() == keys.len() => {
+                Ok(assignments
+                    .into_iter()
+                    .map(|assignment| match assignment {
+                        Some(assignment) => crate::store::ConfirmedAssignment::Assigned(assignment),
+                        None => crate::store::ConfirmedAssignment::Unassigned,
+                    })
+                    .collect())
+            }
+            Some(_) => Err(unexpected_shape("assignments")),
+            // A leader that predates the batch: one read each.
+            None => {
+                let mut confirmed = Vec::with_capacity(keys.len());
+                for key in keys {
+                    confirmed.push(self.confirmed_shard_assignment(key).await?);
+                }
+                Ok(confirmed)
+            }
+        }
+    }
+
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        match self.ask_leader(LeaderRequest::ShardAssignmentHead).await? {
+            Some(MetaResponse::AssignmentHead { next_seq }) => Ok(Some(next_seq)),
+            Some(_) => Err(unexpected_shape("assignment head")),
+            None => Ok(None),
+        }
+    }
+
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         self.local().list_shard_assignments().await
     }
@@ -984,6 +1059,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         self.local().first_shard_assignments().await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        self.local().previous_shard_assignments().await
     }
 
     async fn shard_assignment_changes(
@@ -1038,6 +1117,13 @@ impl ControlPlaneStore for RaftStore {
         // Without it the shard waits on the leader's silence, as before.
         if report.refused.is_some() && self.group_level().await < REFUSED_LEVEL {
             report.refused = None;
+        }
+        // Without it the leader is named one up, as before.
+        if let Some(refused) = report.refused.as_mut()
+            && refused.ballot != 0
+            && self.group_level().await < REFUSED_BALLOT_LEVEL
+        {
+            refused.ballot = 0;
         }
         // The API's own check still stands for a group that cannot apply
         // the field.
@@ -1670,6 +1756,21 @@ impl AuthStore for RaftStore {
             }
         }
     }
+}
+
+/// The floor a rename past a refusal's ballot is written with at `level`; 0,
+/// the next generation, below the level a skip needs. Under `joint_fence` a
+/// broker that missed the generation a skip replaced has no set before the
+/// new one, and its joint fence waits forever, so the skip waits for members
+/// that record that generation. The constant is #2027's, which brings that
+/// level.
+fn honoured_at_least(at_least: u64, level: u16, joint_fence: bool) -> u64 {
+    let needed = if joint_fence {
+        PREVIOUS_GENERATION_LEVEL
+    } else {
+        REFUSED_BALLOT_LEVEL
+    };
+    if level >= needed { at_least } else { 0 }
 }
 
 /// The command answered with a payload its own definition rules out — a

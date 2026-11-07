@@ -277,7 +277,7 @@ impl ControlPlaneStore for PostgresStore {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
         streams::stream_routings(self, keys).await
     }
 
@@ -475,13 +475,15 @@ impl ControlPlaneStore for PostgresStore {
         shards::put_shard_assignment(self, assignment).await
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::put_shard_assignment_if(self, assignment, expected_generation, fence).await
+        shards::put_shard_assignment_if(self, assignment, expected_generation, fence, at_least)
+            .await
     }
 
     async fn adopt_elected_leader(
@@ -502,6 +504,10 @@ impl ControlPlaneStore for PostgresStore {
         key: &ShardKey,
     ) -> StoreResult<super::ConfirmedAssignment> {
         super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
+    }
+
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        shards::shard_assignment_head(self).await.map(Some)
     }
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
@@ -533,6 +539,10 @@ impl ControlPlaneStore for PostgresStore {
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
         shards::first_shard_assignments(self).await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        shards::previous_shard_assignments(self).await
     }
 
     async fn shard_assignment_changes(

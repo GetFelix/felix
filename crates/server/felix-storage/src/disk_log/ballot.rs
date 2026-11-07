@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use super::replica_state::{self, ReplicaState};
-use super::{DiskLog, GenerationCheck};
+use super::{DiskLog, GenerationCheck, ReplicaSet};
 use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
@@ -112,17 +112,50 @@ impl DiskLog {
         generation: u64,
         leader: Option<&str>,
     ) -> Result<GenerationCheck> {
-        if let Some(found) = check(&self.inner.ballot.read(), generation, leader) {
-            return Ok(found);
+        let raised = self.raise_ballot(generation, leader, None).await?;
+        Ok(raised.expect("no set to check"))
+    }
+
+    /// [`Self::accept_generation`] for a candidate that read `kept` before
+    /// standing: the ballot is raised only while the kept set is still
+    /// `kept`, checked under the writer's lock that every set raise takes,
+    /// so no set lands between the check and the ballot. `None`, with
+    /// nothing written, when the set moved. `Elect`'s guard on the kept set
+    /// in `docs/formal/FelixShard.tla` is atomic with its promise.
+    pub async fn accept_generation_on_set(
+        &self,
+        generation: u64,
+        leader: &str,
+        kept: ReplicaSet,
+    ) -> Result<Option<GenerationCheck>> {
+        self.raise_ballot(generation, Some(leader), Some(kept))
+            .await
+    }
+
+    async fn raise_ballot(
+        &self,
+        generation: u64,
+        leader: Option<&str>,
+        kept: Option<ReplicaSet>,
+    ) -> Result<Option<GenerationCheck>> {
+        if kept.is_none()
+            && let Some(found) = check(&self.inner.ballot.read(), generation, leader)
+        {
+            return Ok(Some(found));
         }
         let inner = Arc::clone(&self.inner);
         let leader: Option<Arc<str>> = leader.map(Arc::from);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
+            if let Some(kept) = &kept
+                && inner.replica_set.read().as_ref() != Some(kept)
+            {
+                return Ok(None);
+            }
             // Re-checked under the writer's lock: a concurrent request may
             // have raised it, or named its leader, while this waited.
             if let Some(found) = check(&inner.ballot.read(), generation, leader.as_deref()) {
-                return Ok(found);
+                return Ok(Some(found));
             }
             // Before `replica`, so a crash between the two leaves a ballot
             // the open takes the generation from, never a raised generation
@@ -147,17 +180,17 @@ impl DiskLog {
                 inner
                     .commit_persisted
                     .store(state.commit_offset, Ordering::Release);
-                *persisted = (state, Some(std::time::Instant::now()));
+                *persisted = (state, Some(tokio::time::Instant::now()));
             }
             *inner.ballot.write() = (generation, leader);
             inner
                 .accepted_generation
                 .store(generation, Ordering::Release);
-            Ok(if raised {
+            Ok(Some(if raised {
                 GenerationCheck::Raised
             } else {
                 GenerationCheck::Current
-            })
+            }))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -173,7 +206,7 @@ impl DiskLog {
     /// to lead the generation too.
     pub async fn give_up_generation(&self) -> Result<u64> {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();
@@ -241,7 +274,7 @@ pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<(u64, Opti
 /// Read a shard's ballot, or `None` if it has never kept one.
 pub(super) fn load(dir: &Path) -> Result<Option<Ballot>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => Ballot::decode(&bytes).map(Some).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -271,11 +304,11 @@ pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&ballot.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     Ok(())
 }

@@ -24,8 +24,16 @@
 //! the broker that serves it, which is what a subscriber replays from; since a
 //! read stops only at the log's tail, it cannot drop its newest records, and
 //! the history sets `exact_tails`.
+//!
+//! A leader that was replaced without knowing it still serves its readers up
+//! to its own committed mark, which by design stops short of what its
+//! successor has acknowledged ("Readers and group sessions without the
+//! lease" in `docs/replication-design.md`). Such a read is not the log's tail,
+//! so a read is recorded only once a round after it (or the lease, where the
+//! fleet reads by lease) confirms the broker still leads the shard at the
+//! generation it read at, as a state read is.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,6 +58,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::clock::{self, Owner};
 use crate::cluster::{CACHE, NAMESPACE, NodeHandles, STREAM, SimCluster, TENANT};
 
 /// How long a client keeps trying to find a broker that will take a request.
@@ -69,6 +78,8 @@ pub struct Recorder {
     started: Instant,
     history: Mutex<History>,
     values: AtomicU64,
+    /// When an operator abandoned each list's log, on the history's clock.
+    abandoned: Mutex<BTreeMap<String, u64>>,
 }
 
 impl Recorder {
@@ -94,6 +105,7 @@ impl Recorder {
                 ..History::default()
             }),
             values: AtomicU64::new(0),
+            abandoned: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -131,11 +143,49 @@ impl Recorder {
             .insert(list_name(shard), elements);
     }
 
-    /// The history so far. Lists with no final read are left declared; use
+    /// An operator abandoned `shard`'s log just now.
+    pub fn abandoned(&self, shard: u32) {
+        let at = self.now();
+        self.abandoned.lock().insert(list_name(shard), at);
+    }
+
+    /// The lists whose log an operator abandoned, with when.
+    pub fn abandoned_lists(&self) -> BTreeMap<String, u64> {
+        self.abandoned.lock().clone()
+    }
+
+    /// The history so far, with what each abandon gave up forgotten (see
+    /// [`forget_abandoned`]). Lists with no final read are left declared; use
     /// [`History::lists`] to drop them before checking.
     pub fn history(&self) -> History {
-        self.history.lock().clone()
+        let mut history = self.history.lock().clone();
+        forget_abandoned(&mut history, &self.abandoned.lock());
+        history
     }
+}
+
+/// An abandoned log loses what it acknowledged by design, so for each list in
+/// `abandoned` (list, when) an append acknowledged before the abandon becomes
+/// unknown (it may or may not be on the new log) and a read started before it
+/// is dropped (it may have read the log that was given up). An append still
+/// retrying at the abandon can only be acknowledged by the new leader, since
+/// the old one is stopped first, so it is held to the new log. Everything started after
+/// the abandon is checked as usual, so a write the new log loses still fails.
+pub fn forget_abandoned(history: &mut History, abandoned: &BTreeMap<String, u64>) {
+    history.ops.retain_mut(|op| {
+        let (invoke, complete) = (op.invoke, op.complete);
+        match &mut op.action {
+            Action::Append { list, outcome, .. } => {
+                if abandoned.get(list).is_some_and(|at| complete < *at)
+                    && matches!(outcome, AppendOutcome::Ok { .. })
+                {
+                    *outcome = AppendOutcome::Info;
+                }
+                true
+            }
+            Action::Read { list, .. } => abandoned.get(list).is_none_or(|at| invoke >= *at),
+        }
+    });
 }
 
 /// A seeded logical client.
@@ -145,7 +195,7 @@ pub struct SimClient {
     recorder: Arc<Recorder>,
     rng: Rng,
     /// The broker that last took a request for each shard, tried first.
-    hints: HashMap<u32, usize>,
+    hints: BTreeMap<u32, usize>,
 }
 
 /// What looking for a broker to take a request found out.
@@ -173,7 +223,7 @@ impl SimClient {
             cluster,
             recorder,
             rng,
-            hints: HashMap::new(),
+            hints: BTreeMap::new(),
         }
     }
 
@@ -270,9 +320,9 @@ impl SimClient {
         };
         self.hints.insert(shard, handles.index);
         tracing::debug!(client = self.id, shard, value, node = %handles.node_id, "append sent");
-        let payloads = [Bytes::copy_from_slice(&value.to_le_bytes())];
+        let payloads = [payload(value, self.cluster.config.power_loss)];
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 publish_direct(
@@ -389,7 +439,7 @@ impl SimClient {
         };
         let key = key.to_string();
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 apply_direct(
@@ -414,9 +464,10 @@ impl SimClient {
     }
 
     /// Read every committed record of `shard` from the broker that serves it.
-    /// `None` if no broker would, or the read did not finish.
+    /// `None` if no broker would, the read did not finish, or the broker could
+    /// not confirm afterwards that it still led the shard.
     pub async fn read_shard(&mut self, shard: u32) -> Option<Vec<Element>> {
-        let (handles, _) = self
+        let (handles, generation) = self
             .find(self.hints.get(&shard).copied(), |h| async move {
                 match resolve_publish(
                     &h.broker,
@@ -433,10 +484,10 @@ impl SimClient {
                     // Only the broker is wanted; the fence entry is released.
                     // A subscription is also refused by a broker that has
                     // seen a newer generation, so ask that too.
-                    Ok(Resolution::Local(_)) => {
+                    Ok(Resolution::Local(target)) => {
                         let key = crate::cluster::stream_key(shard);
                         match check_readable(Some(&h.ingress), &key) {
-                            Ok(()) => Step::Local(()),
+                            Ok(()) => Step::Local(target.generation),
                             Err(_) => Step::Refused,
                         }
                     }
@@ -446,9 +497,14 @@ impl SimClient {
             })
             .await?;
         self.hints.insert(shard, handles.index);
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
-            async move { read_all(&handles, shard).await }
+            async move {
+                let elements = read_all(&handles, shard).await?;
+                confirm_leader(&handles, shard, generation)
+                    .await
+                    .then_some(elements)
+            }
         });
         let result = tokio::time::timeout(READ_WITHIN, task).await;
         if tracing::enabled!(tracing::Level::DEBUG) {
@@ -488,7 +544,7 @@ impl SimClient {
                 continue;
             };
             let step = tokio::select! {
-                step = resolve(handles.clone()) => step,
+                step = clock::on(Owner::Broker(handles.index), resolve(handles.clone())) => step,
                 () = handles.crashed.cancelled() => Step::Refused,
             };
             match step {
@@ -521,18 +577,33 @@ impl SimClient {
 
 /// Spawn `work` as a task of its own, as the broker's request worker would
 /// run it: it finishes even if the client stops waiting, and ends only if the
-/// broker crashes, when it gives `None`.
+/// broker crashes, when it gives `None`. It runs as the broker's code, on its
+/// clocks.
 fn spawn_on<T: Send + 'static>(
-    crashed: &CancellationToken,
+    handles: &NodeHandles,
     work: impl Future<Output = T> + Send + 'static,
 ) -> JoinHandle<Option<T>> {
-    let crashed = crashed.clone();
-    tokio::spawn(async move {
-        tokio::select! {
-            out = work => Some(out),
-            () = crashed.cancelled() => None,
+    let crashed = handles.crashed.clone();
+    let power_loss = handles.power_loss;
+    let owner = Owner::Broker(handles.index);
+    tokio::spawn(clock::on(owner, async move {
+        if power_loss {
+            // A crash wins over an answer ready in the same poll: a power
+            // cut stops the broker inside a write, and what it would answer
+            // after that never reached a client. Only then, so a run without
+            // power cuts polls as it always has.
+            tokio::select! {
+                biased;
+                () = crashed.cancelled() => None,
+                out = work => Some(out),
+            }
+        } else {
+            tokio::select! {
+                out = work => Some(out),
+                () = crashed.cancelled() => None,
+            }
         }
-    })
+    }))
 }
 
 /// Read `shard` on this broker from its first record to its tail, the way a
@@ -541,11 +612,37 @@ async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
     read_pages(handles, shard, true).await
 }
 
+/// Whether this broker still leads `shard` at `generation`, confirmed by a
+/// round (or the lease, where the fleet reads by lease) after a read took its
+/// value. See the module docs for why.
+async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> bool {
+    let key = crate::cluster::stream_key(shard);
+    let confirmed = felix_replication::quorum::confirm_state_read(
+        &key,
+        Some(&handles.marks),
+        Some(&*handles.ingress),
+    )
+    .await;
+    let now = handles.ingress.generation(&key);
+    let led = confirmed.is_ok() && now == Some(generation);
+    if !led {
+        // A dropped read leaves no trace in the history, so say so here.
+        tracing::debug!(
+            shard,
+            generation,
+            ?now,
+            ?confirmed,
+            "read dropped: leadership not confirmed"
+        );
+    }
+    led
+}
+
 /// Every client record in this broker's copy of `shard`, committed or not, or
 /// `None` if the broker does not serve it, the read took over [`READ_WITHIN`]
 /// or the broker crashed meanwhile.
 pub(crate) async fn read_log(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
-    let task = spawn_on(&handles.crashed, {
+    let task = spawn_on(handles, {
         let handles = handles.clone();
         async move { read_pages(&handles, shard, false).await }
     });
@@ -583,10 +680,41 @@ async fn read_pages(handles: &NodeHandles, shard: u32, committed: bool) -> Optio
     }
 }
 
+/// The payload of an append of `value`: the value, and in a power-loss run
+/// padding to 1 to 4 KiB, so an append spans several sectors and a cut can
+/// lose one sector of it before another that arrived.
+fn payload(value: u64, padded: bool) -> Bytes {
+    let mut out = value.to_le_bytes().to_vec();
+    if padded {
+        out.extend(padding(value));
+    }
+    Bytes::from(out)
+}
+
+/// The padding after `value`, a function of the value alone, so a read can
+/// tell an intact record from one with damaged bytes.
+fn padding(value: u64) -> impl Iterator<Item = u8> {
+    let mut mix = value.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    mix = (mix ^ (mix >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    mix ^= mix >> 31;
+    let len = 1024 - 8 + (mix % 3073) as usize;
+    (0..len).map(move |i| (mix >> (8 * (i % 8))) as u8 ^ i as u8)
+}
+
 fn decode(payload: &[u8]) -> u64 {
-    payload
-        .try_into()
-        .map_or(FOREIGN_PAYLOAD, u64::from_le_bytes)
+    let Some(value) = payload
+        .get(..8)
+        .and_then(|head| head.try_into().ok())
+        .map(u64::from_le_bytes)
+    else {
+        return FOREIGN_PAYLOAD;
+    };
+    let rest = &payload[8..];
+    if rest.is_empty() || rest.iter().copied().eq(padding(value)) {
+        value
+    } else {
+        FOREIGN_PAYLOAD
+    }
 }
 
 fn quorum_timeout() -> Duration {

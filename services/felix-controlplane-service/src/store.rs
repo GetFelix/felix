@@ -67,8 +67,8 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
-        let mut routings = std::collections::HashMap::new();
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
+        let mut routings = felix_common::random::HashMap::default();
         for key in keys {
             match self.get_stream(key).await {
                 Ok(stream) if !stream.routing.is_modulo() => {
@@ -330,6 +330,25 @@ pub trait ControlPlaneStore: Send + Sync {
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.put_shard_assignment_at_least(assignment, expected_generation, fence, 0)
+            .await
+    }
+    /// [`ControlPlaneStore::put_shard_assignment_if`], written at `at_least`
+    /// when that is above the next generation. 0 is the next generation.
+    ///
+    /// Placement names a leader past a newer ballot its own copy holds this
+    /// way (`MoveStep::SetUnknown`). [`StoreError::Conflict`] when `at_least`
+    /// is more than the election window past the
+    /// shard's generation, as for an adoption. Under Raft it needs metadata
+    /// level 28 on every member, and below it the write takes the next
+    /// generation instead.
+    async fn put_shard_assignment_at_least(
+        &self,
+        assignment: ShardAssignment,
+        expected_generation: Option<u64>,
+        fence: u64,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite>;
     /// Adopt a leader that elected itself, if the shard is still at
     /// `expected_generation`: [`ShardAssignment::adopting_elected_set`],
@@ -358,6 +377,22 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// [`Self::confirmed_shard_assignment`] for every key, in order, all
+    /// read no earlier than every write acknowledged before the call.
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<ConfirmedAssignment>> {
+        let mut confirmed = Vec::with_capacity(keys.len());
+        for key in keys {
+            confirmed.push(self.confirmed_shard_assignment(key).await?);
+        }
+        Ok(confirmed)
+    }
+    /// The shard-assignment feed's `next_seq`, read no earlier than every
+    /// write acknowledged before the call, so every change committed by then
+    /// has a lower seq. `None` from a Raft leader that predates the read.
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one
@@ -383,6 +418,14 @@ pub trait ControlPlaneStore: Send + Sync {
     /// came before it, as the `assigned` change tells a watching one. One
     /// evicted from the log is not listed, and its item is not marked.
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>>;
+    /// For each shard, the assignment the retained change log shows right
+    /// before its current one: the payload of the change before the one that
+    /// wrote it, when both are assignments. A snapshot carries it so a broker
+    /// that learns the shard there can tell the set its generation leaves,
+    /// as a watching broker tells it from the change it saw before (#2024).
+    /// None for a shard whose earlier change was evicted, or was an
+    /// unassignment.
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     async fn shard_assignment_changes(
         &self,
         since: u64,

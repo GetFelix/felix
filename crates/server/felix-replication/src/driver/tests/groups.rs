@@ -356,7 +356,7 @@ async fn group_pass(
     follower: &GroupFollower,
     broker: &Arc<Broker>,
     router: &ShardRouter,
-    cursors: &mut [Map<ShardKey, ShardCursors>; 4],
+    cursors: &mut [HashMap<ShardKey, ShardCursors>; 4],
 ) -> Pass {
     let [main, group, dead_letters, counters] = cursors;
     replicate_once_with(

@@ -143,3 +143,52 @@ async fn the_stub_counts_commit_state_get_and_trim_frames() {
         assert_eq!(bare.requests.load(Ordering::SeqCst), expected);
     }
 }
+
+/// What the other languages' client tests rely on: the broker serves a client
+/// that presents the fixture's certificate and refuses one that does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mtls_stub_serves_only_a_client_with_its_certificate() {
+    let (broker, client) = BareBroker::start_requiring_client_cert().expect("start the broker");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (cert_file, key_file, ca_file) = (
+        dir.path().join("client.pem"),
+        dir.path().join("client.key"),
+        dir.path().join("ca.pem"),
+    );
+    std::fs::write(&cert_file, &client.cert_pem).expect("write cert");
+    std::fs::write(&key_file, &client.key_pem).expect("write key");
+    std::fs::write(&ca_file, &broker.cert_pem).expect("write ca");
+    let roots = Arc::new(felix_client::root_store_from_pem_file(&ca_file).expect("roots"));
+
+    let connect = |identity: Option<felix_client::ClientIdentity>| {
+        let roots = Arc::clone(&roots);
+        async move {
+            let quinn = match identity {
+                Some(identity) => {
+                    felix_client::quic_client_config_with_identity(Some(roots), identity, false)
+                }
+                None => felix_client::quic_client_config(Some(roots), false),
+            }
+            .expect("quic config");
+            let mut config = felix_client::ClientConfig::optimized_defaults(quinn);
+            config.auth_tenant_id = Some("t1".to_string());
+            config.auth_token = Some("token".to_string());
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                felix_client::Connection::connect(broker.addr, "localhost", config),
+            )
+            .await
+            .expect("connect timed out")
+        }
+    };
+
+    let identity =
+        felix_client::ClientIdentity::from_pem_files(&cert_file, &key_file).expect("identity");
+    connect(Some(identity))
+        .await
+        .expect("a client with the certificate connects");
+    connect(None)
+        .await
+        .err()
+        .expect("a client without a certificate is refused");
+}

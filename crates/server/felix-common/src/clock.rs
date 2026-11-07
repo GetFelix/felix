@@ -69,13 +69,22 @@ fn source_boottime() -> Duration {
 /// Time since the Unix epoch before any fault.
 #[cfg(any(debug_assertions, test, feature = "sim"))]
 fn source_wall() -> Duration {
-    sim::elapsed().map_or_else(raw_wall, |elapsed| sim::EPOCH + elapsed)
+    sim::elapsed().map_or_else(raw_wall, sim::wall)
 }
 
 #[cfg(not(any(debug_assertions, test, feature = "sim")))]
 #[inline]
 fn source_wall() -> Duration {
     raw_wall()
+}
+
+/// The wall clock as a `SystemTime`, for expiry stamps and deadlines.
+///
+/// Under a simulator this is virtual time counted from [`sim::EPOCH`], so
+/// every run of a seed stamps the same dates. It carries no clock fault, so
+/// outside a simulator it is exactly `SystemTime::now()`.
+pub fn system_time() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + source_wall()
 }
 
 fn raw_wall() -> Duration {

@@ -161,8 +161,10 @@ pub struct PeerTransportConfig {
     pub fence: bool,
     /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
     /// checks the replica set on fences and batches that carry one. Off by
-    /// default, and only takes effect with `fence`. A test switch until the
-    /// `replica_election` fleet feature ships.
+    /// default, and only takes effect with `fence`. On, the broker reports
+    /// `peer_election`, `joint_fence` and `replica_election`, so it is the
+    /// operator's opt-in to replica election: turn it on on every broker
+    /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
 }
 
@@ -280,6 +282,20 @@ impl PeerTransportConfig {
         } else {
             labels
         }
+    }
+
+    /// What an outgoing connection offers: [`Self::capabilities`] plus the
+    /// bits this side reads whatever it offers as a listener. The pool and the
+    /// simulated network both use it, so they cannot drift.
+    pub fn outgoing_capabilities(&self) -> felix_wire::internal::PeerCapabilities {
+        use felix_wire::internal::PeerCapabilities;
+        self.capabilities()
+            .union(PeerCapabilities::STORAGE_IDENTITY)
+            .union(PeerCapabilities::NODE_INCARNATION)
+            .union(PeerCapabilities::LANE_RENEWAL)
+            .union(PeerCapabilities::LEARNER_ACKS)
+            .union(PeerCapabilities::REFUSAL_REASONS)
+            .union(PeerCapabilities::KEPT_BALLOTS)
     }
 
     /// Read the internal transport settings, validated against the
@@ -434,7 +450,7 @@ impl PeerTransportConfig {
             .reconnect_base
             .saturating_mul(1u32 << attempt.min(16))
             .min(self.reconnect_max);
-        let jitter = fastrand_fraction();
+        let jitter = jitter_fraction();
         // Full jitter: uniform over [0, exponential]. Decorrelates redials even
         // when every broker starts its backoff in the same millisecond.
         exponential.mul_f64(jitter)
@@ -492,16 +508,6 @@ impl PeerTransportConfig {
 }
 
 /// A uniform fraction in [0, 1), without pulling in an RNG dependency.
-fn fastrand_fraction() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    // Mix so successive calls in the same microsecond do not correlate.
-    let mixed = nanos
-        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        .rotate_left(31)
-        .wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    (mixed >> 11) as f64 / (1u64 << 53) as f64
+fn jitter_fraction() -> f64 {
+    (felix_common::jitter::up_to(u64::MAX) >> 11) as f64 / (1u64 << 53) as f64
 }

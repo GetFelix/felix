@@ -17,13 +17,14 @@
 //! once, and the loop then waits out the interval as it always did.
 pub mod metrics;
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use felix_replication::controlplane_link::ControlPlaneLink;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Notify, RwLock};
 use tokio_util::sync::CancellationToken;
 
@@ -42,7 +43,7 @@ const LONG_POLL_WAIT: Duration = Duration::from_secs(20);
 /// Without a bound, a connection that died silently would stop the watch.
 const LONG_POLL_SLACK: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ShardAssignment {
     #[serde(flatten)]
     pub key: ShardKey,
@@ -80,10 +81,16 @@ pub struct ShardAssignment {
     /// other assignment, and from a control plane that predates it.
     #[serde(default)]
     pub pending_set: Option<PendingSet>,
+    /// The generation of the assignment this one replaced, when the control
+    /// plane wrote it more than one generation up without an election: the
+    /// set right before this generation is that assignment's. Absent from
+    /// every other assignment, and from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_generation: Option<u64>,
 }
 
 /// The set a cut-over is moving a shard to, and the generation that wrote it.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PendingSet {
     pub replicas: Vec<String>,
     pub generation: u64,
@@ -132,6 +139,46 @@ struct SnapshotItem {
     /// with no set before waiting instead of fencing the new set alone.
     #[serde(default)]
     first_assignment: bool,
+    /// The set of the assignment right before this one, from the control
+    /// plane's change log (#2024). Absent from a control plane that predates
+    /// it, or when the log no longer holds it.
+    #[serde(default)]
+    previous: Option<PreviousSet>,
+}
+
+/// The set of the assignment a snapshot item replaced.
+#[derive(Debug, Clone, Deserialize)]
+struct PreviousSet {
+    generation: u64,
+    leader: String,
+    #[serde(default)]
+    replicas: Vec<String>,
+    #[serde(default)]
+    successor: Option<String>,
+    #[serde(default)]
+    fence_storage_ids: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    member_storage_ids: std::collections::BTreeMap<String, String>,
+}
+
+impl PreviousSet {
+    /// As the assignment it was, for [`prior_of`] to check against `item`.
+    fn before(self, item: &ShardAssignment) -> ShardAssignment {
+        ShardAssignment {
+            key: item.key.clone(),
+            leader: self.leader,
+            replicas: self.replicas,
+            generation: self.generation,
+            state: String::new(),
+            successor: self.successor,
+            routing: Default::default(),
+            incarnation: item.incarnation,
+            fence_storage_ids: self.fence_storage_ids,
+            member_storage_ids: self.member_storage_ids,
+            pending_set: None,
+            previous_generation: None,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,9 +200,47 @@ pub struct ShardOwnership {
     /// The set each shard had right before its current assignment, where this
     /// broker saw that step. A joint fence takes the set it leaves from here.
     priors: HashMap<ShardKey, felix_router::PriorSet>,
+    /// A whole snapshot from the control plane has been taken in this
+    /// process, so `assignments` is every shard it holds and not just the
+    /// changes seen so far, or routes seeded from the control-plane view.
+    seeded: bool,
+    /// When the request behind the newest answer applied here started.
+    as_of: Option<tokio::time::Instant>,
+    /// The feed seq the newest answer applied here brought this view to.
+    checkpoint: Option<u64>,
+    /// Bumped after every change to `assignments` or `seeded`, so a reader
+    /// can tell nothing moved without taking the lock.
+    changes: Arc<AtomicU64>,
 }
 
 impl ShardOwnership {
+    /// A count that moves after every change to the assignments or to
+    /// [`Self::is_seeded`]. Read before reading the assignments: a change
+    /// made after the read then shows on the next one.
+    pub(crate) fn changes(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.changes)
+    }
+
+    fn changed(&self) {
+        self.changes.fetch_add(1, Ordering::Release);
+    }
+
+    /// When the request behind the newest answer applied here started: every
+    /// change the control plane committed before then is in this view.
+    pub(crate) fn as_of(&self) -> Option<tokio::time::Instant> {
+        self.as_of
+    }
+
+    /// The feed seq this view is caught up to, as of the same answer.
+    pub(crate) fn checkpoint(&self) -> Option<u64> {
+        self.checkpoint
+    }
+
+    pub(crate) fn answered(&mut self, started: tokio::time::Instant, seq: u64) {
+        self.as_of = Some(self.as_of.map_or(started, |was| was.max(started)));
+        self.checkpoint = Some(seq);
+    }
+
     /// Apply a change, ignoring one that would move a shard backwards.
     ///
     /// Returns whether anything changed. A duplicate delivery is therefore
@@ -179,11 +264,16 @@ impl ShardOwnership {
                 let prior = prior_of(self.assignments.get(key), &next);
                 self.set_prior(key, prior);
                 self.assignments.insert(key.clone(), next);
+                self.changed();
                 true
             }
             None => {
                 self.priors.remove(key);
-                self.assignments.remove(key).is_some()
+                let removed = self.assignments.remove(key).is_some();
+                if removed {
+                    self.changed();
+                }
+                removed
             }
         }
     }
@@ -222,6 +312,7 @@ impl ShardOwnership {
         });
         self.set_prior(key, prior);
         self.assignments.insert(key.clone(), next);
+        self.changed();
         true
     }
 
@@ -251,7 +342,7 @@ impl ShardOwnership {
     /// plane, and reopening on that would serve a generation a newer leader
     /// has written past.
     pub fn reset(&mut self, items: Vec<ShardAssignment>) {
-        self.reset_marked(items, &HashSet::new());
+        self.reset_marked(items, &HashSet::default());
     }
 
     /// [`Self::reset`], with the shards whose snapshot item the control plane
@@ -260,7 +351,20 @@ impl ShardOwnership {
     /// same terms: never at incarnation 0, and not at an incarnation this
     /// broker already held it at.
     pub(crate) fn reset_marked(&mut self, items: Vec<ShardAssignment>, first: &HashSet<ShardKey>) {
-        let mut priors = HashMap::new();
+        self.reset_seeded(items, first, &HashMap::default());
+    }
+
+    /// [`Self::reset_marked`], with the assignment the control plane's change
+    /// log holds right before each item (#2024). A shard this broker did not
+    /// hold right before takes its set before from there, as it would from
+    /// the change it watched.
+    pub(crate) fn reset_seeded(
+        &mut self,
+        items: Vec<ShardAssignment>,
+        first: &HashSet<ShardKey>,
+        previous: &HashMap<ShardKey, ShardAssignment>,
+    ) {
+        let mut priors = HashMap::default();
         for next in &items {
             let current = self.assignments.get(&next.key);
             let marked_first = first.contains(&next.key)
@@ -273,7 +377,7 @@ impl ShardOwnership {
                     generation: next.generation,
                     before: None,
                 }),
-                _ => prior_of(current, next),
+                _ => prior_of(current, next).or_else(|| prior_of(previous.get(&next.key), next)),
             };
             if let Some(prior) = prior {
                 priors.insert(next.key.clone(), prior);
@@ -284,6 +388,7 @@ impl ShardOwnership {
             .into_iter()
             .map(|assignment| (assignment.key.clone(), assignment))
             .collect();
+        self.changed();
     }
 
     /// The set each shard had right before its current assignment, where this
@@ -301,6 +406,25 @@ impl ShardOwnership {
     /// can tell a renewed shard from an old generation delivered late.
     pub(crate) fn renewals(&self) -> &HashMap<ShardKey, u64> {
         &self.renewals
+    }
+
+    /// [`Self::reset_marked`] with a snapshot the control plane answered in
+    /// this process. Only this counts as seeded: routes a start took from the
+    /// control-plane view are not an answer the control plane gave since.
+    pub(crate) fn reset_from_control_plane(
+        &mut self,
+        items: Vec<ShardAssignment>,
+        first: &HashSet<ShardKey>,
+        previous: &HashMap<ShardKey, ShardAssignment>,
+    ) {
+        self.seeded = true;
+        self.reset_seeded(items, first, previous);
+    }
+
+    /// Whether the control plane's snapshot has been taken. See
+    /// [`Self::reset_from_control_plane`].
+    pub(crate) fn is_seeded(&self) -> bool {
+        self.seeded
     }
 
     /// Everything this broker currently believes about ownership.
@@ -331,15 +455,18 @@ impl ShardOwnership {
 /// What came before `next`, when `current` is the assignment right before it:
 /// the same incarnation one generation down. A write raises the generation by
 /// one, except an adoption, which lands at the elected generation: the set
-/// before that one is left unknown here.
+/// before that one is left unknown here. A rename past a ballot also skips
+/// generations, and the control plane says so by naming the one it replaced
+/// (`previous_generation`, #2024): nothing was recorded in between.
 fn prior_of(
     current: Option<&ShardAssignment>,
     next: &ShardAssignment,
 ) -> Option<felix_router::PriorSet> {
     let current = current?;
-    (current.incarnation == next.incarnation
-        && current.generation.checked_add(1) == Some(next.generation))
-    .then(|| felix_router::PriorSet {
+    let follows = current.generation.checked_add(1) == Some(next.generation)
+        || (next.previous_generation == Some(current.generation)
+            && current.generation < next.generation);
+    (current.incarnation == next.incarnation && follows).then(|| felix_router::PriorSet {
         generation: next.generation,
         before: Some(std::sync::Arc::new(felix_router::PlacedSet {
             leader: current.leader.clone(),
@@ -392,6 +519,7 @@ pub fn check_continuity(since: u64, first_seq: Option<u64>, next_seq: u64) -> Op
 /// `changed` is notified after every snapshot and every batch of changes that
 /// moved something, so the routing feed acts on it now rather than at its
 /// next tick.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     link: impl ControlPlaneLink,
     // Held rather than copied: this task outlives many token lifetimes, and a
@@ -401,8 +529,12 @@ pub async fn run(
     ownership: Arc<RwLock<ShardOwnership>>,
     changed: Arc<Notify>,
     interval: Duration,
+    lease: Option<Arc<crate::cluster::lease::LeaseState>>,
     shutdown: CancellationToken,
 ) {
+    if let Some(lease) = &lease {
+        lease.follow_routes();
+    }
     // `None` means "no valid checkpoint": take a snapshot before polling.
     let mut checkpoint: Option<u64> = None;
     // The furthest this broker has applied. A snapshot older than that came
@@ -419,7 +551,16 @@ pub async fn run(
         tokio::select! {
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(delay) => {}
+            _ = wanted(&lease) => {}
         }
+        // A renewal waits on this answer, so it is asked for without the
+        // long-poll's hold.
+        let urgent = lease.as_ref().is_some_and(|lease| lease.wants_routes());
+        let wait = if urgent {
+            Duration::ZERO
+        } else {
+            LONG_POLL_WAIT
+        };
 
         // Read per poll, not once: a refreshed token has to reach this loop
         // without it knowing refresh exists.
@@ -430,10 +571,16 @@ pub async fn run(
         // and shutdown must not wait for it.
         let result = tokio::select! {
             _ = shutdown.cancelled() => return,
+            // A held poll, or one lost in a partition, would keep the renewal
+            // waiting until it times out. Asked again at once instead.
+            _ = wanted(&lease), if !urgent => {
+                delay = Duration::ZERO;
+                continue;
+            }
             result = async {
                 match checkpoint {
                     None => snapshot(&link, token, &ownership, floor).await,
-                    Some(since) => poll(&link, token, &ownership, since).await,
+                    Some(since) => poll(&link, token, &ownership, since, wait).await,
                 }
             } => result,
         };
@@ -448,7 +595,10 @@ pub async fn run(
                 checkpoint = Some(seq);
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
-                if moved {
+                ownership.write().await.answered(started, seq);
+                // Unmoved too when a renewal waits: the feed's publish is
+                // what confirms it.
+                if moved || urgent {
                     changed.notify_one();
                 }
                 next_delay(interval, moved, started.elapsed())
@@ -481,7 +631,7 @@ pub async fn run(
                 tracing::warn!(?reason, "shard watch must resnapshot");
                 mm::record_resync(reason);
                 checkpoint = None;
-                interval
+                if urgent { Duration::ZERO } else { interval }
             }
             Err(err) => {
                 failures = failures.saturating_add(1);
@@ -494,6 +644,14 @@ pub async fn run(
                 backoff(interval, failures)
             }
         };
+    }
+}
+
+/// Resolves when `lease` waits on the routes; never without one.
+async fn wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
+    match lease {
+        Some(lease) => lease.routes_wanted().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -523,6 +681,32 @@ enum Progress {
     Behind,
 }
 
+/// A snapshot's items, the shards it marks first, and the assignment right
+/// before each item that names one.
+type Seed = (
+    Vec<ShardAssignment>,
+    HashSet<ShardKey>,
+    HashMap<ShardKey, ShardAssignment>,
+);
+
+fn seed_of(items: Vec<SnapshotItem>) -> Seed {
+    let mut first = HashSet::default();
+    let mut previous = HashMap::default();
+    let items = items
+        .into_iter()
+        .map(|item| {
+            if item.first_assignment {
+                first.insert(item.assignment.key.clone());
+            }
+            if let Some(before) = item.previous {
+                previous.insert(item.assignment.key.clone(), before.before(&item.assignment));
+            }
+            item.assignment
+        })
+        .collect();
+    (items, first, previous)
+}
+
 async fn snapshot(
     link: &impl ControlPlaneLink,
     bearer: Option<&str>,
@@ -539,18 +723,11 @@ async fn snapshot(
     }
 
     let count = response.items.len();
-    let first: HashSet<ShardKey> = response
-        .items
-        .iter()
-        .filter(|item| item.first_assignment)
-        .map(|item| item.assignment.key.clone())
-        .collect();
-    let items = response
-        .items
-        .into_iter()
-        .map(|item| item.assignment)
-        .collect();
-    ownership.write().await.reset_marked(items, &first);
+    let (items, first, previous) = seed_of(response.items);
+    ownership
+        .write()
+        .await
+        .reset_from_control_plane(items, &first, &previous);
     mm::record_snapshot(count);
     tracing::info!(
         assignments = count,
@@ -568,15 +745,11 @@ async fn poll(
     bearer: Option<&str>,
     ownership: &Arc<RwLock<ShardOwnership>>,
     since: u64,
+    wait: Duration,
 ) -> Result<Progress> {
     let response: ChangesResponse = decode(
-        link.assignment_changes(
-            bearer,
-            since,
-            LONG_POLL_WAIT,
-            LONG_POLL_WAIT + LONG_POLL_SLACK,
-        )
-        .await,
+        link.assignment_changes(bearer, since, wait, LONG_POLL_WAIT + LONG_POLL_SLACK)
+            .await,
     )
     .context("shard assignment changes")?;
 

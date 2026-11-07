@@ -134,6 +134,10 @@ struct HeartbeatRequest {
     /// plane always read.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     suspects: BTreeSet<String>,
+    /// Set while the lease waits on the routes, which then have to reach the
+    /// answer's `assignment_seq`. Left out otherwise, as before.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    want_assignment_seq: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +159,10 @@ struct HeartbeatResponse {
     expiry_timeout_ms: Option<u64>,
     #[serde(default)]
     fleet_features: BTreeSet<String>,
+    /// The assignment feed's head as of the accept, when asked for. Absent
+    /// from a control plane that predates it.
+    #[serde(default)]
+    assignment_seq: Option<u64>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -289,36 +297,134 @@ pub async fn registered(
     node_id: &str,
     credential: &crate::cluster::credential::NodeCredential,
 ) -> std::result::Result<Option<Registered>, MembershipError> {
+    // A refreshed credential can still come in, so a 401 is waited out.
+    lookup(link, node_id, credential)
+        .await
+        .map_err(|failure| match failure {
+            LookupFailure::Down(err)
+            | LookupFailure::Unauthorized(err)
+            | LookupFailure::Undecodable(err) => MembershipError::Unavailable(err),
+            LookupFailure::Rejected(message) => MembershipError::Rejected(message),
+        })
+}
+
+/// Why one lookup of a node's registration got no answer.
+///
+/// A start without the control plane needs it down, not refusing: a 401
+/// means it is up and has not accepted this credential, which waiting can
+/// fix and starting from the view must not paper over.
+#[derive(Debug)]
+pub(crate) enum LookupFailure {
+    /// Nothing answered, or it answered with a 5xx.
+    Down(anyhow::Error),
+    /// It answered 401.
+    Unauthorized(anyhow::Error),
+    /// It answered 200 with a body this build cannot read: up, so not down.
+    Undecodable(anyhow::Error),
+    /// It answered with another 4xx. Final.
+    Rejected(String),
+}
+
+async fn lookup(
+    link: &impl ControlPlaneLink,
+    node_id: &str,
+    credential: &crate::cluster::credential::NodeCredential,
+) -> std::result::Result<Option<Registered>, LookupFailure> {
     let response = link
         .node(&credential.bearer(), node_id)
         .await
         .with_context(|| format!("look up node {node_id} at {}", link.endpoint()))
-        .map_err(MembershipError::Unavailable)?;
+        .map_err(LookupFailure::Down)?;
     let status = response.status;
     if status == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
     if !status.is_success() {
         let body = response.text();
-        // A refreshed credential can still come in, so a 401 is waited out.
         if status == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(MembershipError::Unavailable(anyhow!(
+            return Err(LookupFailure::Unauthorized(anyhow!(
                 "control plane did not accept the credential looking up {node_id} ({status}): {body}"
             )));
         }
-        return Err(MembershipError::from_status(
-            status,
-            format!("control plane refused to look up {node_id} ({status}): {body}"),
-        ));
+        let message = format!("control plane refused to look up {node_id} ({status}): {body}");
+        return Err(if status.is_client_error() {
+            LookupFailure::Rejected(message)
+        } else {
+            LookupFailure::Down(anyhow!(message))
+        });
     }
     let detail: NodeDetail = response
         .json()
         .context("decode node lookup response")
-        .map_err(MembershipError::Unavailable)?;
+        .map_err(LookupFailure::Undecodable)?;
     Ok(Some(Registered {
         incarnation: detail.node.status.incarnation,
         storage_id: detail.node.status.storage_id,
     }))
+}
+
+/// What the startup lookup got within its bound.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Bounded {
+    Answered(Option<Registered>),
+    /// Every attempt found the control plane down: no answer, a timeout or a
+    /// 5xx.
+    Down,
+    /// It answered and refused, did not accept the credential, or sent an
+    /// answer that does not decode, at least once.
+    Refusing,
+}
+
+/// [`registered`], asked for about `wait`, telling a control plane that is
+/// down from one that refuses. One attempt is made even with no wait.
+pub(crate) async fn registered_within(
+    link: &impl ControlPlaneLink,
+    node_id: &str,
+    credential: &crate::cluster::credential::NodeCredential,
+    wait: Duration,
+) -> Bounded {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut refused = false;
+    let mut attempt = 0u64;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        // An attempt that has not answered in time counts as down. Each gets
+        // at least a second, so a short wait still asks once properly.
+        let bound = remaining.max(Duration::from_secs(1));
+        match tokio::time::timeout(bound, lookup(link, node_id, credential)).await {
+            Ok(Ok(registered)) => return Bounded::Answered(registered),
+            Ok(Err(LookupFailure::Rejected(message))) => {
+                tracing::warn!(node_id, error = %message, "the control plane refused the startup lookup");
+                return Bounded::Refusing;
+            }
+            Ok(Err(LookupFailure::Unauthorized(err))) => {
+                refused = true;
+                tracing::warn!(node_id, error = %err, "the control plane did not accept this node's credential at startup");
+            }
+            Ok(Err(LookupFailure::Undecodable(err))) => {
+                refused = true;
+                tracing::warn!(node_id, error = %err, "the control plane's answer to the startup lookup does not decode");
+            }
+            Ok(Err(LookupFailure::Down(err))) => {
+                tracing::warn!(node_id, error = %err, "the control plane did not answer the startup lookup");
+            }
+            Err(_) => {
+                tracing::warn!(node_id, "the startup lookup timed out");
+            }
+        }
+        attempt += 1;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let delay = backoff(Duration::from_millis(500), attempt).min(STARTUP_RETRY_CAP);
+        tokio::time::sleep(jittered(delay).min(remaining)).await;
+    }
+    if refused {
+        Bounded::Refusing
+    } else {
+        Bounded::Down
+    }
 }
 
 /// [`registered`], asked until the control plane answers. Fails only when
@@ -380,6 +486,32 @@ pub async fn run_heartbeat(
     fleet: Arc<FleetGate>,
     suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> HeartbeatEnd {
+    run_heartbeat_checked(
+        link,
+        registration,
+        shutdown,
+        consecutive_failures,
+        lease,
+        fleet,
+        suspects,
+        None,
+    )
+    .await
+}
+
+/// [`run_heartbeat`], skipping every beat while `pulse` says the broker's
+/// main runtime has stopped.
+#[allow(clippy::too_many_arguments)]
+async fn run_heartbeat_checked(
+    link: impl ControlPlaneLink,
+    registration: Registration,
+    shutdown: CancellationToken,
+    consecutive_failures: Arc<AtomicU64>,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    pulse: Option<Arc<RuntimePulse>>,
+) -> HeartbeatEnd {
     let mut suspected = suspects.subscribe();
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
     let mut last_success = std::time::Instant::now();
@@ -400,6 +532,17 @@ pub async fn run_heartbeat(
             Ok(()) = suspected.changed(), if failures == 0 => {}
         }
         let suspects = suspected.borrow_and_update().clone();
+        if let Some(silent) = pulse.as_ref().and_then(|pulse| pulse.hung()) {
+            // Renewing here would keep the shards this broker leads on a
+            // process that serves nothing. Letting the lease run out hands
+            // them to a live copy.
+            tracing::error!(
+                node_id = %registration.node_id,
+                silent_ms = silent.as_millis() as u64,
+                "the broker's runtime has stopped; not renewing the lease",
+            );
+            continue;
+        }
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
         let sent = lease.now();
@@ -412,6 +555,7 @@ pub async fn run_heartbeat(
             HeartbeatRequest {
                 incarnation: registration.incarnation,
                 suspects,
+                want_assignment_seq: lease.awaits_routes(),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -427,7 +571,7 @@ pub async fn run_heartbeat(
                     if let Some(expiry) = response.expiry_timeout_ms {
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
-                    lease.renew_at(sent);
+                    lease.renew_at(sent, response.assignment_seq);
                 }
                 mm::record_heartbeat_success();
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {
@@ -529,15 +673,84 @@ pub fn spawn(
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
+    restore_check: Option<CancellationToken>,
+) -> MembershipTask {
+    spawn_with(
+        link,
+        config,
+        credential,
+        serving,
+        shutdown,
+        lease,
+        fleet,
+        suspects,
+        incarnation,
+        registered,
+        storage_id,
+        record_in.clone(),
+        record_in.map(crate::cluster::controlplane_view::ViewFile::new),
+        restore_check,
+        true,
+    )
+}
+
+/// [`spawn`], on a thread of its own when `own_thread`, else on the current
+/// runtime. The simulator wants the latter: its virtual clock and network live
+/// on one runtime, which a heartbeat on a real-time runtime could not reach.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_with(
+    link: impl ControlPlaneLink + Clone,
+    config: MembershipConfig,
+    credential: crate::cluster::credential::NodeCredential,
+    serving: CancellationToken,
+    shutdown: CancellationToken,
+    lease: Arc<crate::cluster::lease::LeaseState>,
+    fleet: Arc<FleetGate>,
+    suspects: Arc<felix_replication::suspicion::Suspects>,
+    incarnation: Arc<AtomicU64>,
+    registered: tokio::sync::watch::Sender<Option<u64>>,
+    storage_id: Option<StorageId>,
+    record_in: Option<std::path::PathBuf>,
+    view: Option<crate::cluster::controlplane_view::ViewFile>,
+    restore_check: Option<CancellationToken>,
+    own_thread: bool,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
     let consecutive_failures = Arc::new(AtomicU64::new(0));
-    let handle = tokio::spawn({
+    // On the current runtime the heartbeat cannot outlive a hung runtime, so
+    // there is nothing for the pulse to prove.
+    let pulse = own_thread.then(|| RuntimePulse::start(RUNTIME_HUNG_AFTER, shutdown.clone()));
+    let task = {
         let fatal = fatal.clone();
         let consecutive_failures = Arc::clone(&consecutive_failures);
         let lease = Arc::clone(&lease);
         let fleet = Arc::clone(&fleet);
         async move {
+            // A start from the control-plane view skipped the restore check
+            // (#1334), so it runs first, before anything else the control
+            // plane says is applied or this node registers.
+            if let Some(checked) = restore_check {
+                match deferred_restore_check(
+                    &link,
+                    &config.node_id,
+                    &credential,
+                    record_in.as_deref(),
+                    storage_id,
+                    view.as_ref(),
+                    &shutdown,
+                )
+                .await
+                {
+                    Some(true) => checked.cancel(),
+                    Some(false) => {
+                        mm::record_membership_live(false);
+                        forget_view(view.as_ref()).await;
+                        fatal.cancel();
+                        return;
+                    }
+                    None => return,
+                }
+            }
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = serving.cancelled() => {}
@@ -556,6 +769,7 @@ pub fn spawn(
                                 error = %message,
                                 "the control plane refused this identity; the broker is not a cluster member",
                             );
+                            forget_view(view.as_ref()).await;
                             fatal.cancel();
                             return;
                         }
@@ -594,6 +808,7 @@ pub fn spawn(
                     {
                         tracing::warn!(error = %err, "could not deregister after refusing to join");
                     }
+                    forget_view(view.as_ref()).await;
                     fatal.cancel();
                     return;
                 }
@@ -605,7 +820,7 @@ pub fn spawn(
                 incarnation.store(registration.incarnation, Ordering::Release);
                 registered.send_replace(Some(registration.incarnation));
 
-                match run_heartbeat(
+                match run_heartbeat_checked(
                     link.clone(),
                     registration,
                     shutdown.clone(),
@@ -613,6 +828,7 @@ pub fn spawn(
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
                     Arc::clone(&suspects),
+                    pulse.clone(),
                 )
                 .await
                 {
@@ -626,7 +842,12 @@ pub fn spawn(
                 }
             }
         }
-    });
+    };
+    let handle = if own_thread {
+        spawn_on_own_thread(task)
+    } else {
+        tokio::spawn(task)
+    };
 
     MembershipTask {
         handle,
@@ -637,13 +858,275 @@ pub fn spawn(
     }
 }
 
+/// Remove the control-plane view durably, before a broker stops because the
+/// control plane refused it or found its directory replaced, so a restart
+/// during an outage does not vote from it. Through the writer's own file, so
+/// the writer does not put it back before the stop.
+async fn forget_view(view: Option<&crate::cluster::controlplane_view::ViewFile>) {
+    if let Some(view) = view {
+        view.forget_now().await;
+    }
+}
+
+/// What the control plane's record of this node says about a data directory
+/// a start from the view opened without asking it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Directory {
+    /// The directory is the one the node last registered with.
+    Current,
+    /// The control plane registered the node at an incarnation the directory
+    /// never recorded: it is a restored or copied snapshot. Its storage id
+    /// was rotated to `rotated`, as a start that asked first would have.
+    Restored { rotated: StorageId },
+    /// The control plane last registered the node under another storage id.
+    Replaced,
+}
+
+/// Judge the directory at `root`, running under `id`, against `registered`,
+/// and record what a start that asked first would have recorded: the
+/// replaced-storage marker, and for a restored copy a new storage id.
+pub(crate) fn judge_directory(
+    root: &std::path::Path,
+    id: StorageId,
+    registered: Option<&Registered>,
+    view: Option<&crate::cluster::controlplane_view::ViewFile>,
+) -> Result<Directory> {
+    let recorded = felix_storage::run_state::read_registration(root)
+        .with_context(|| format!("read the registration record under {}", root.display()))?;
+    // The marker names the id the directory will register next and the
+    // control plane's incarnation now, so only a view from a registration
+    // after this one starts this directory again.
+    let after = registered.map_or(0, |registered| registered.incarnation);
+    // Under the view file's lock, so a stop putting a view back cannot
+    // interleave with it, and the writer records nothing after it.
+    let replaced = |under: StorageId| {
+        let record = || felix_storage::run_state::record_replaced(root, under, after);
+        match view {
+            Some(view) => view.forget_while_recording(record),
+            None => record(),
+        }
+        .with_context(|| format!("record a replaced storage id under {}", root.display()))
+    };
+    let restored = recorded.behind(registered.map(|registered| registered.incarnation));
+    // Before the replaced-storage marker below, which it reads on a
+    // directory an older build ran.
+    crate::node::storage::note_lost_copy(root, Some(&id.to_hex()), restored, registered)?;
+    if restored {
+        let rotated = crate::node::storage::rotate_storage_id_after(root, replaced)?;
+        return Ok(Directory::Restored { rotated });
+    }
+    if registered
+        .and_then(|registered| registered.storage_id.as_deref())
+        .is_some_and(|prior| prior != id.to_hex())
+    {
+        replaced(id)?;
+        return Ok(Directory::Replaced);
+    }
+    Ok(Directory::Current)
+}
+
+/// Ask for this node's registration until the control plane answers, then
+/// [`judge_directory`]. Returns whether the node may register, or `None` if
+/// the broker stopped first.
+async fn deferred_restore_check(
+    link: &impl ControlPlaneLink,
+    node_id: &str,
+    credential: &crate::cluster::credential::NodeCredential,
+    root: Option<&std::path::Path>,
+    storage_id: Option<StorageId>,
+    view: Option<&crate::cluster::controlplane_view::ViewFile>,
+    shutdown: &CancellationToken,
+) -> Option<bool> {
+    let mut attempt = 0u64;
+    let answer = loop {
+        let asked = tokio::select! {
+            _ = shutdown.cancelled() => return None,
+            asked = lookup(link, node_id, credential) => asked,
+        };
+        match asked {
+            Ok(answer) => break answer,
+            Err(LookupFailure::Rejected(message)) => {
+                tracing::error!(node_id, error = %message, "the control plane refused to look up this node");
+                return Some(false);
+            }
+            // Up but refusing is not an outage an operator can wait out
+            // unseen: a credential or version problem needs fixing.
+            Err(LookupFailure::Unauthorized(err)) => {
+                tracing::warn!(node_id, error = %err, "the control plane did not accept this node's credential for the restore check; retrying");
+            }
+            Err(LookupFailure::Undecodable(err)) => {
+                tracing::warn!(node_id, error = %err, "the control plane's answer to the restore check does not decode; retrying");
+            }
+            Err(LookupFailure::Down(err)) => {
+                tracing::debug!(node_id, error = %err, "the control plane is still down");
+            }
+        }
+        attempt += 1;
+        let delay = backoff(Duration::from_millis(500), attempt).min(STARTUP_RETRY_CAP);
+        tokio::select! {
+            _ = shutdown.cancelled() => return None,
+            _ = tokio::time::sleep(jittered(delay)) => {}
+        }
+    };
+    let (Some(root), Some(id)) = (root, storage_id) else {
+        return Some(true);
+    };
+    let root = root.to_path_buf();
+    let view = view.cloned();
+    let judged = felix_common::blocking::spawn(move || {
+        judge_directory(&root, id, answer.as_ref(), view.as_ref())
+    })
+    .await
+    .map_err(anyhow::Error::from)
+    .and_then(|judged| judged);
+    match judged {
+        Ok(Directory::Current) => {
+            tracing::info!(
+                node_id,
+                "the control plane answered; this data directory is the one it registered"
+            );
+            Some(true)
+        }
+        Ok(Directory::Restored { rotated }) => {
+            mm::record_restored_directory();
+            tracing::error!(
+                node_id,
+                previous = %id,
+                storage_id = %rotated,
+                "this data directory is older than the node's last registration, as a restored \
+                 snapshot or a copy is, and it ran from its control-plane view while the control \
+                 plane was down; gave it a new storage id and stopping, so it starts again as a \
+                 copy peers rebuild. A restore must delete storage-id or use \
+                 `felix-broker restore-point`"
+            );
+            Some(false)
+        }
+        Ok(Directory::Replaced) => {
+            tracing::error!(
+                node_id,
+                storage_id = %id,
+                "the control plane last registered this node under another storage id; \
+                 stopping so the next start joins as a replaced directory"
+            );
+            Some(false)
+        }
+        Err(err) => {
+            tracing::error!(node_id, error = %err, "could not check this data directory against the control plane; stopping");
+            Some(false)
+        }
+    }
+}
+
+/// Run `task` on a thread of its own, with a runtime of its own.
+///
+/// The heartbeat is the lease renewal, so it must not share workers with
+/// anything that can block on disk: a broker whose every runtime worker waits
+/// on a stalled filesystem journal would otherwise stop renewing and lose its
+/// lease while it is otherwise healthy. The returned handle joins the task.
+/// Aborting it stops the task at its next await; a request already in flight
+/// finishes first.
+fn spawn_on_own_thread<F>(task: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let stop = CancellationToken::new();
+    let (done, finished) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("felix-membership".to_string())
+        .spawn({
+            let stop = stop.clone();
+            move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build the membership runtime");
+                let ended = runtime.block_on(async move {
+                    let task = tokio::spawn(task);
+                    let abort = task.abort_handle();
+                    tokio::select! {
+                        ended = task => ended,
+                        _ = stop.cancelled() => {
+                            abort.abort();
+                            Ok(())
+                        }
+                    }
+                });
+                let _ = done.send(ended);
+            }
+        })
+        .expect("start the membership thread");
+    tokio::spawn(async move {
+        // Dropped with this task, so aborting the handle stops the heartbeat.
+        let _stop = stop.drop_guard();
+        match finished.await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Ok(Err(_)) => {}
+            Err(_) => panic!("the membership thread stopped without finishing"),
+        }
+    })
+}
+
+/// How long the broker's main runtime may go without running a task before
+/// the heartbeat stops renewing the lease. Well past a filesystem journal
+/// stall (seconds), so only a runtime that is stuck for good loses its shards.
+const RUNTIME_HUNG_AFTER: Duration = Duration::from_secs(10);
+
+/// Proof that the broker's main runtime still runs tasks, for the heartbeat on
+/// its own thread. Without it a deadlocked broker would keep renewing a lease
+/// it cannot serve under, and the shards it leads would never fail over.
+struct RuntimePulse {
+    started: std::time::Instant,
+    /// Milliseconds after `started` the main runtime last ran the ticker.
+    last: AtomicU64,
+    hung_after: Duration,
+}
+
+impl RuntimePulse {
+    /// Tick from the current runtime until `shutdown`.
+    fn start(hung_after: Duration, shutdown: CancellationToken) -> Arc<Self> {
+        let pulse = Arc::new(Self::new(hung_after));
+        let ticking = Arc::clone(&pulse);
+        tokio::spawn(async move {
+            loop {
+                ticking.tick();
+                tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+                }
+            }
+        });
+        pulse
+    }
+
+    fn new(hung_after: Duration) -> Self {
+        Self {
+            started: std::time::Instant::now(),
+            last: AtomicU64::new(0),
+            hung_after,
+        }
+    }
+
+    fn tick(&self) {
+        let now = self.started.elapsed().as_millis() as u64;
+        self.last.store(now, Ordering::Release);
+    }
+
+    /// How long the runtime has been silent, when that is past `hung_after`.
+    fn hung(&self) -> Option<Duration> {
+        let last = Duration::from_millis(self.last.load(Ordering::Acquire));
+        let silent = self.started.elapsed().saturating_sub(last);
+        (silent > self.hung_after).then_some(silent)
+    }
+}
+
 /// Note in the data directory under `root` that the node registered at
 /// `incarnation`, so a later start can tell this directory from an older
 /// copy of it. A failure is logged and not retried: the next start then reads
 /// the directory as older and rotates its id, which is safe.
 async fn record_registration(root: &std::path::Path, incarnation: u64) {
     let root = root.to_path_buf();
-    let written = tokio::task::spawn_blocking(move || {
+    let written = felix_common::blocking::spawn(move || {
         felix_storage::run_state::record_registration(&root, incarnation)
     })
     .await;
@@ -696,7 +1179,7 @@ pub(crate) async fn join_refusal(
         }
         let root = root.to_path_buf();
         let found =
-            tokio::task::spawn_blocking(move || marker(&root).map_err(|err| err.to_string()))
+            felix_common::blocking::spawn(move || marker(&root).map_err(|err| err.to_string()))
                 .await
                 .unwrap_or_else(|err| Err(err.to_string()));
         let name = feature.name();
@@ -746,19 +1229,36 @@ fn adopt_fleet(fleet: &FleetGate, answer: &BTreeSet<String>) {
 /// then deregister so this reads as intentional rather than as a crash.
 /// Neither failure is worth aborting a shutdown over: if the control plane
 /// cannot be told, heartbeat expiry reaches the same conclusion a timeout later.
-pub async fn shutdown_membership(link: &impl ControlPlaneLink, node_id: &str, token: &str) {
+///
+/// Returns whether the control plane may have deregistered the node: false
+/// only when the request never reached it.
+pub async fn shutdown_membership(link: &impl ControlPlaneLink, node_id: &str, token: &str) -> bool {
     if let Err(err) = drain(link, node_id, token).await {
         tracing::warn!(node_id, error = %err, "could not mark this broker draining");
     }
-    if let Err(err) = deregister(link, node_id, token).await {
-        tracing::warn!(
-            node_id,
-            error = %err,
-            "could not deregister; the control plane will expire this node instead",
-        );
-    } else {
-        tracing::info!(node_id, "deregistered from the control plane");
+    match deregister(link, node_id, token).await {
+        Ok(()) => {
+            tracing::info!(node_id, "deregistered from the control plane");
+            true
+        }
+        Err(err) => {
+            tracing::warn!(
+                node_id,
+                error = %err,
+                "could not deregister; the control plane will expire this node instead",
+            );
+            !never_sent(&err)
+        }
     }
+}
+
+/// Whether `err` is a request that failed before the connection was made,
+/// so the control plane cannot have acted on it. A timeout or an answer may
+/// follow a request it applied.
+fn never_sent(err: &anyhow::Error) -> bool {
+    err.chain()
+        .filter_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        .any(reqwest::Error::is_connect)
 }
 
 async fn send_heartbeat(
@@ -831,13 +1331,7 @@ fn jittered(delay: Duration) -> Duration {
     if spread <= 0.0 {
         return delay;
     }
-    // Cheap and adequate: this only needs to decorrelate brokers, not resist
-    // prediction, so it avoids pulling in an RNG on the shutdown path.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let fraction = f64::from(nanos) / f64::from(u32::MAX);
+    let fraction = felix_common::jitter::up_to(u64::from(u32::MAX)) as f64 / f64::from(u32::MAX);
     delay + Duration::from_secs_f64(spread * fraction)
 }
 

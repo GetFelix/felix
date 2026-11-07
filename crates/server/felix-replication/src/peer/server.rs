@@ -47,6 +47,30 @@ pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
 /// of records until it is written; the rest wait their turn off the stream.
 const MAX_CONCURRENT_FETCHES_PER_STREAM: usize = 16;
 
+/// Record batches one stream may have being stored at once. Stored one at a
+/// time, a batch waited behind every other batch on its stream, so a leader's
+/// round trip grew with how many shards it was shipping while the store itself
+/// stayed fast (#1968). Past this the stream stops reading until one finishes,
+/// so a stream holds at most this many batches plus the one it read.
+pub(super) const MAX_CONCURRENT_BATCHES_PER_STREAM: usize = 16;
+
+/// Record batches being stored at once across every connection. Without it
+/// the batches a follower holds grow with peers and streams; with it, at most
+/// this many, each about the leader's 1 MiB batch budget plus one record.
+pub(super) const MAX_SERVED_BATCHES: usize = 256;
+
+/// Record batches one peer node may have being stored at once, on any of its
+/// connections. A peer whose stores stall would otherwise take every
+/// broker-wide permit and stop all other peers' streams reading. 64 is four
+/// streams at their own limit, and about three times the depth a leader
+/// reached on one lane at failover scale (mean 16 to 23).
+pub(super) const MAX_SERVED_BATCHES_PER_PEER: usize = 64;
+
+/// Per-peer batch limits by the peer's node id, so a reconnect does not
+/// reset one. One entry per node that ever greeted this broker.
+pub(super) type PeerBatches =
+    Arc<parking_lot::Mutex<felix_common::random::HashMap<Arc<str>, Arc<Semaphore>>>>;
+
 /// What answers a peer's request.
 ///
 /// The broker implements it with `BrokerPeerHandler` (#106). A listener built
@@ -105,7 +129,7 @@ impl PeerRequestHandler for UnavailableHandler {
 #[derive(Debug, Default)]
 struct Admitted {
     total: usize,
-    per_source: std::collections::HashMap<std::net::IpAddr, usize>,
+    per_source: felix_common::random::HashMap<std::net::IpAddr, usize>,
 }
 
 /// Holds a connection's place in the count, and gives it back on drop.
@@ -168,6 +192,8 @@ pub struct PeerServer {
     max_inbound_per_source: usize,
     handler_timeout: std::time::Duration,
     served_forwards: Arc<Semaphore>,
+    served_batches: Arc<Semaphore>,
+    peer_batches: PeerBatches,
     /// `Some` when peers must present a certificate, and the name a peer
     /// claims in `Hello` is held to it.
     tls: Option<Arc<tls::PeerTls>>,
@@ -183,6 +209,8 @@ pub struct PeerServer {
     identity: Option<StorageId>,
     /// This process's node incarnation, `None` until it registers.
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
+    /// Cancelled once this broker serves clients. `None` serves from the start.
+    serving: Option<CancellationToken>,
 }
 
 impl PeerServer {
@@ -223,12 +251,15 @@ impl PeerServer {
             max_inbound_per_source: config.max_inbound_per_source,
             handler_timeout: config.request_timeout,
             served_forwards: Arc::new(Semaphore::new(config.max_served_forwards.max(1))),
+            served_batches: Arc::new(Semaphore::new(MAX_SERVED_BATCHES)),
+            peer_batches: PeerBatches::default(),
             tls,
             app,
             capabilities: config.capabilities(),
             known: KnownCapabilities::default(),
             identity: None,
             incarnation: None,
+            serving: None,
         })
     }
 
@@ -258,6 +289,16 @@ impl PeerServer {
         incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     ) -> Self {
         self.incarnation = Some(incarnation);
+        self
+    }
+
+    /// Refuse pings until `serving` is cancelled, so a broker that cannot serve
+    /// clients yet reads as down to the followers that watch it. A follower
+    /// stands for a shard only while it suspects the leader, and a restarted
+    /// leader that answered pings before it could serve would hold its shards
+    /// with nobody serving them.
+    pub fn with_serving(mut self, serving: CancellationToken) -> Self {
+        self.serving = Some(serving);
         self
     }
 
@@ -346,8 +387,11 @@ impl PeerServer {
                 known: self.known.clone(),
                 identity: self.identity,
                 incarnation: self.incarnation.clone(),
+                serving: self.serving.clone(),
                 handler_timeout: self.handler_timeout,
                 served_forwards: Arc::clone(&self.served_forwards),
+                served_batches: Arc::clone(&self.served_batches),
+                peer_batches: Arc::clone(&self.peer_batches),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -367,11 +411,16 @@ struct Offered {
     known: KnownCapabilities,
     identity: Option<StorageId>,
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
+    serving: Option<CancellationToken>,
     /// How long a request answered in turn may hold its stream: the
     /// requester's own timeout, after which no one is waiting for the answer.
     handler_timeout: std::time::Duration,
     /// Forwards being served across every connection.
     served_forwards: Arc<Semaphore>,
+    /// Record batches being stored across every connection.
+    served_batches: Arc<Semaphore>,
+    /// Record batches being stored, by the node that sent them.
+    peer_batches: PeerBatches,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -390,11 +439,12 @@ async fn serve_connection(
     // The pool waits for `HelloOk` before it sends anything else, so no
     // request on this connection arrives before this is set.
     let identity: Arc<parking_lot::Mutex<Option<Arc<str>>>> = Arc::default();
+    let connection_batches = Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER));
     // Whether the peer replaces a stream it gets no answer on, from its
     // `Hello`. Until it says so, a stream is never dropped under it.
     let renews = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Whether the peer reads a learner's answer, from its `Hello`.
-    let learner_acks = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // What the peer offered in its `Hello`, which shapes its answers.
+    let caller = Arc::new(std::sync::atomic::AtomicU64::new(0));
     loop {
         let stream = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -415,8 +465,9 @@ async fn serve_connection(
         let app = app.clone();
         let offered = offered.clone();
         let identity = Arc::clone(&identity);
+        let connection_batches = Arc::clone(&connection_batches);
         let renews = Arc::clone(&renews);
-        let learner_acks = Arc::clone(&learner_acks);
+        let caller = Arc::clone(&caller);
         connection.spawn_pump(async move {
             let connection = stream_connection;
             let (send, mut recv) = stream;
@@ -426,9 +477,14 @@ async fn serve_connection(
             let forwards = Arc::new(Semaphore::new(MAX_CONCURRENT_FORWARDS_PER_STREAM));
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
+            let batches = Arc::new(Semaphore::new(MAX_CONCURRENT_BATCHES_PER_STREAM));
+            // Cancelled when a batch's handler overran or panicked: the
+            // stream is given up as a request answered in turn would be.
+            let given_up = CancellationToken::new();
             loop {
                 let request = tokio::select! {
                     _ = shutdown.cancelled() => break,
+                    _ = given_up.cancelled() => break,
                     frame = read_frame(&mut recv) => match frame {
                         Ok(Incoming::Message(request)) => request,
                         // A kind from a later build. The body has been read, so
@@ -462,6 +518,10 @@ async fn serve_connection(
                     },
                 };
 
+                // Read per request: the `Hello` that sets it comes first.
+                let offered_by = PeerCapabilities::from_bits(
+                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                );
                 let response = match request {
                     // Answered here rather than by the handler: identity is the
                     // transport's to assert, and it must work before the broker
@@ -507,10 +567,8 @@ async fn serve_connection(
                                 .is_some_and(|c| c.contains(PeerCapabilities::LANE_RENEWAL)),
                             std::sync::atomic::Ordering::Relaxed,
                         );
-                        learner_acks.store(
-                            hello
-                                .capabilities
-                                .is_some_and(|c| c.contains(PeerCapabilities::LEARNER_ACKS)),
+                        caller.store(
+                            hello.capabilities.unwrap_or(PeerCapabilities::NONE).bits(),
                             std::sync::atomic::Ordering::Relaxed,
                         );
                         // A plain `Hello` is a peer that predates the bits, so
@@ -607,11 +665,25 @@ async fn serve_connection(
                     // behind a slow fence: that would read as a dead leader.
                     InternalMessage::Ping(ping) => {
                         let send = Arc::clone(&send);
+                        // Anything but a `Pong` is silence to a pinger, an
+                        // older one included.
+                        let serving = offered
+                            .serving
+                            .as_ref()
+                            .is_none_or(CancellationToken::is_cancelled);
                         app.spawn(async move {
-                            let pong = InternalMessage::Pong(Pong {
-                                correlation_id: ping.correlation_id,
-                            });
-                            answer_out_of_order(&send, async { pong }).await;
+                            let pong = if serving {
+                                InternalMessage::Pong(Pong {
+                                    correlation_id: ping.correlation_id,
+                                })
+                            } else {
+                                InternalMessage::ForwardPublishError(ForwardPublishError {
+                                    correlation_id: ping.correlation_id,
+                                    code: ErrorCode::Unavailable,
+                                    detail: "this broker is not serving yet".to_string(),
+                                })
+                            };
+                            answer_out_of_order(&send, offered_by, async { pong }).await;
                         });
                         continue;
                     }
@@ -634,12 +706,13 @@ async fn serve_connection(
                                 expected_offset: 0,
                                 detail: "this broker is serving as many control requests as it allows"
                                     .to_string(),
+                                reason: None,
                             });
                             // Off the loop, so a refusal never waits behind
                             // a large fetch answer and the pings after it.
                             let send = Arc::clone(&send);
                             app.spawn(async move {
-                                answer_out_of_order(&send, async { refusal }).await;
+                                answer_out_of_order(&send, offered_by, async { refusal }).await;
                             });
                             continue;
                         };
@@ -655,7 +728,7 @@ async fn serve_connection(
                                 Some(fetches) => fetches.acquire_owned().await.ok(),
                                 None => None,
                             };
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
                         });
                         continue;
                     }
@@ -689,7 +762,87 @@ async fn serve_connection(
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _permit = permit;
-                            answer_out_of_order(&send, handler.handle_from(peer, request)).await;
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, request)).await;
+                        });
+                        continue;
+                    }
+                    // Batches for different logs have nothing to wait on each
+                    // other for, so they are stored side by side and answered
+                    // as they finish. Stream order never kept a log's batches
+                    // in turn: a requester spreads its requests over several
+                    // streams, and a leader has one batch in flight per
+                    // follower and log. Bootstraps and rebuilds stay in turn
+                    // below, as before.
+                    request @ (InternalMessage::ReplicateRecords(_)
+                    | InternalMessage::ReplicateMarkedRecords(_)
+                    | InternalMessage::ReplicateGroupRecords(_)
+                    | InternalMessage::ReplicateDeadLetterRecords(_)
+                    | InternalMessage::ReplicateCounterRecords(_)
+                    | InternalMessage::ReplicateCacheRecords(_)) => {
+                        // The stream's permit first, so no stream takes more
+                        // of the broker-wide limit than its own.
+                        let permit = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        // Then the peer's, so a peer past its share waits here
+                        // without holding a broker-wide permit.
+                        let of_peer = peer_batch_limit(&offered, &identity, &connection_batches);
+                        let of_peer = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = of_peer.acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        let served = tokio::select! {
+                            _ = shutdown.cancelled() => break,
+                            _ = given_up.cancelled() => break,
+                            permit = Arc::clone(&offered.served_batches).acquire_owned() => {
+                                permit.expect("the batch semaphore is never closed")
+                            }
+                        };
+                        let handler = Arc::clone(&handler);
+                        let peer = ballot_identity(&offered, &identity);
+                        let send = Arc::clone(&send);
+                        let caller = Arc::clone(&caller);
+                        let given_up = given_up.clone();
+                        let bound = handler_bound(&renews, &offered);
+                        // The peer and broker-wide permits go with the handler,
+                        // which runs on after an overrun and still holds its batch.
+                        let handling = app.spawn(async move {
+                            let _served = (of_peer, served);
+                            handler.handle_from(peer, request).await
+                        });
+                        app.spawn(async move {
+                            let _permit = permit;
+                            let handled = tokio::time::timeout(bound, handling).await;
+                            let Ok(Ok(response)) = handled else {
+                                // As for a request answered in turn: the
+                                // requester has given up, and a panicked
+                                // handler may have stored the batch. The
+                                // handler finishes on its own.
+                                tracing::warn!(
+                                    timeout = ?bound,
+                                    "replication batch handler failed or overran; dropping its stream",
+                                );
+                                metrics::record_served(metrics::OUTCOME_ERROR);
+                                given_up.cancel();
+                                return;
+                            };
+                            let response = for_caller(
+                                response,
+                                PeerCapabilities::from_bits(
+                                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
+                            );
+                            match write_frame(&mut *send.lock().await, &response).await {
+                                Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
+                                Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+                            }
                         });
                         continue;
                     }
@@ -700,19 +853,14 @@ async fn serve_connection(
                         let peer = ballot_identity(&offered, &identity);
                         let handling =
                             app.spawn(async move { handler.handle_from(peer, request).await });
-                        // Only a requester that replaces streams may have this
-                        // one dropped under it; an older one would lose the
-                        // lane for the life of the connection, so it waits.
-                        let bound = if renews.load(std::sync::atomic::Ordering::Relaxed) {
-                            offered.handler_timeout
-                        } else {
-                            std::time::Duration::MAX
-                        };
+                        let bound = handler_bound(&renews, &offered);
                         let handled = tokio::time::timeout(bound, handling).await.ok();
                         match handled.and_then(|joined| joined.ok()).ok_or(()) {
                             Ok(response) => for_caller(
                                 response,
-                                learner_acks.load(std::sync::atomic::Ordering::Relaxed),
+                                PeerCapabilities::from_bits(
+                                    caller.load(std::sync::atomic::Ordering::Relaxed),
+                                ),
                             ),
                             // A handler that panicked may have applied the
                             // write, so no answer here is safe to retry on.
@@ -748,6 +896,7 @@ async fn serve_connection(
                     tokio::join!(
                         forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
                         controls.acquire_many(MAX_CONTROLS_PER_STREAM as u32),
+                        batches.acquire_many(MAX_CONCURRENT_BATCHES_PER_STREAM as u32),
                     )
                 } => {}
             }
@@ -756,27 +905,51 @@ async fn serve_connection(
     }
 }
 
-/// `response` as the caller reads it: a learner's answer to a caller that
-/// did not offer [`PeerCapabilities::LEARNER_ACKS`] goes as the original
-/// kind, which such a caller counts as it always has.
-pub fn for_caller(response: InternalMessage, learner_acks: bool) -> InternalMessage {
+/// `response` as a caller that offered `caller` reads it: a learner's answer
+/// to one that did not offer [`PeerCapabilities::LEARNER_ACKS`], or a
+/// kept-ballot fence answer to one that did not offer
+/// [`PeerCapabilities::KEPT_BALLOTS`], goes as the original kind, which such
+/// a caller reads as it always has; and a refusal to one that did not offer
+/// [`PeerCapabilities::REFUSAL_REASONS`] goes without its reason, a body such
+/// a caller would not decode.
+pub fn for_caller(response: InternalMessage, caller: PeerCapabilities) -> InternalMessage {
     match response {
-        InternalMessage::ReplicateOk(ok) if ok.learner && !learner_acks => {
+        InternalMessage::ReplicateOk(ok)
+            if ok.learner && !caller.contains(PeerCapabilities::LEARNER_ACKS) =>
+        {
             InternalMessage::ReplicateOk(felix_wire::internal::ReplicateOk {
                 learner: false,
                 ..ok
+            })
+        }
+        InternalMessage::FenceOk(ok)
+            if ok.kept_ballot && !caller.contains(PeerCapabilities::KEPT_BALLOTS) =>
+        {
+            InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+                kept_ballot: false,
+                ..ok
+            })
+        }
+        InternalMessage::ReplicateError(err)
+            if err.reason.is_some() && !caller.contains(PeerCapabilities::REFUSAL_REASONS) =>
+        {
+            InternalMessage::ReplicateError(felix_wire::internal::ReplicateError {
+                reason: None,
+                ..err
             })
         }
         response => response,
     }
 }
 
-/// Write the answer to a request handed off so its stream could read on.
+/// Write the answer to a request handed off so its stream could read on,
+/// shaped for a caller that offered `caller` ([`for_caller`]).
 ///
 /// A handler that panicked may have applied the write, so the stream is ended
 /// rather than answered, as a panic in a request answered in turn ends it.
 async fn answer_out_of_order(
     send: &tokio::sync::Mutex<quinn::SendStream>,
+    caller: PeerCapabilities,
     answering: impl std::future::Future<Output = InternalMessage>,
 ) {
     let answered = AssertUnwindSafe(answering).catch_unwind().await;
@@ -787,9 +960,21 @@ async fn answer_out_of_order(
         let _ = send.finish();
         return;
     };
-    match write_frame(&mut send, &response).await {
+    match write_frame(&mut send, &for_caller(response, caller)).await {
         Ok(()) => metrics::record_served(metrics::OUTCOME_OK),
         Err(_) => metrics::record_served(metrics::OUTCOME_ERROR),
+    }
+}
+
+/// How long a handler answered on a stream may run before the stream is given
+/// up. Only a requester that replaces streams may have one dropped under it;
+/// an older one would lose the lane for the life of the connection, so it
+/// waits.
+fn handler_bound(renews: &std::sync::atomic::AtomicBool, offered: &Offered) -> std::time::Duration {
+    if renews.load(std::sync::atomic::Ordering::Relaxed) {
+        offered.handler_timeout
+    } else {
+        std::time::Duration::MAX
     }
 }
 
@@ -811,6 +996,33 @@ fn overloaded(request: &InternalMessage) -> InternalMessage {
             detail,
         }),
     }
+}
+
+/// The limit for the peer a stream belongs to. A stream that has not said
+/// hello has no node id yet, so its connection gets a limit of its own.
+fn peer_batch_limit(
+    offered: &Offered,
+    identity: &parking_lot::Mutex<Option<Arc<str>>>,
+    connection_limit: &Arc<Semaphore>,
+) -> Arc<Semaphore> {
+    let Some(node) = identity.lock().clone() else {
+        return Arc::clone(connection_limit);
+    };
+    peer_limit(&offered.peer_batches, node)
+}
+
+/// The node's limit, made on first use. Entries nothing holds and that have
+/// every permit back are dropped here, so changing node ids do not grow the map.
+pub(super) fn peer_limit(peers: &PeerBatches, node: Arc<str>) -> Arc<Semaphore> {
+    let mut peers = peers.lock();
+    peers.retain(|_, limit| {
+        Arc::strong_count(limit) > 1 || limit.available_permits() < MAX_SERVED_BATCHES_PER_PEER
+    });
+    Arc::clone(
+        peers
+            .entry(node)
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_SERVED_BATCHES_PER_PEER))),
+    )
 }
 
 /// Who the peer said it is, for a handler that keeps ballots. Ballots name a

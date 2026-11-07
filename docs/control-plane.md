@@ -19,7 +19,7 @@ the data plane and does not carry user payloads.
 > control plane runs one of two production-shaped backends: a stateless REST
 > service over a highly available Postgres (what that database must provide
 > is [ha-postgres.md](ha-postgres.md)), or a Raft group embedded in the
-> instances themselves, with no external database. M13 is complete, chaos
+> instances themselves, with no external database. The embedded Raft backend is complete, chaos
 > pass included: three instances survive rolling restarts, a SIGKILLed
 > leader, a frozen leader, and a wiped volume without losing an
 > acknowledged write. The implemented design, which differs from the
@@ -72,6 +72,12 @@ one comes back every heartbeat stamp is as old as the outage, and sweeping at
 once would mark the whole fleet down. A broker that stays silent through the
 grace window is expired as usual.
 
+A control plane that was paused (a stopped process, a frozen VM) has the same
+problem without restarting: the heartbeats sent during the pause are still
+queued when it resumes, and the first sweep would run before it reads them. So
+when the sweep finds more than two sweep intervals have passed since its last
+tick, it does not count that gap as silence from any broker.
+
 Expiry needs two clocks to agree. The last heartbeat stamp has to be older
 than the timeout on the store's wall clock, and the instance running the sweep
 has to have seen the stamp stay unchanged for as long on its own monotonic
@@ -105,6 +111,14 @@ plus the cadence expected of it:
 
 `fleet_features` is the set of enabled features described in
 [Fleet features](#fleet-features).
+
+A broker that was marked down and registered again sends
+`"want_assignment_seq": true` until its routes catch up. The answer then
+carries `assignment_seq`, the shard-assignment feed's `next_seq` read after
+the heartbeat was accepted (on the Raft leader, after confirming it still
+leads). The broker serves again only on routes built from the feed at or past
+it, so its renewal cannot bring back shards that moved while it was away. A
+Raft leader that predates the field leaves it out.
 
 A broker that cannot reach the leader of a shard it follows also sends
 `"suspects": ["broker-2"]`, the leaders that have not answered its pings for
@@ -205,11 +219,12 @@ a broker opens a new stream's or cache's shard only once it knows the
 assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
-(`joint_fence_is_refused_until_incarnations_are_finalized`). No build reports
-either feature yet, so a finalize of either is refused
+(`joint_fence_is_refused_until_incarnations_are_finalized`). A broker reports
+both only with `FELIX_INTERNAL_ELECTION=true`, which is off by default, so a
+fleet that has not turned it on everywhere has a finalize of either refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION`
-peer capability reports it as `peer_election`, which no build does yet.
+peer capability reports it as `peer_election`, also only with that switch on.
 Every broker from #1737 on also reports `start_holders`: its leaders name, in
 each replica report, the followers holding the generation's start record
 (`holds_start`). Current brokers report `non_voting` too:
@@ -383,7 +398,7 @@ rather than a delay. It is tracked in
 [the replication design](replication-design.md): a broker without a valid lease
 refuses, rather than racing its watch. What holds today is convergence within the
 sync interval. See
-[the stale-ownership window](cluster-harness.md#a-gap-the-suite-does-not-paper-over-the-stale-ownership-window).
+[the stale-ownership window](cluster-harness.md#the-stale-ownership-window-and-what-closes-it).
 
 The internal transport is described in
 [the broker-internal forwarding protocol](internal-protocol.md); its remaining
@@ -418,6 +433,13 @@ The sequence:
    If the answer is `down`, the broker registers again, takes a new
    incarnation, and carries on heartbeating under it. `left` is not undone:
    that is a deregistration someone asked for.
+   Registration and heartbeats run on a thread of their own, with their own
+   runtime and HTTP client. A slow disk can block every worker of the broker's
+   main runtime at once (a filesystem journal stall under a burst of fsyncs,
+   for example), and the heartbeat is what renews the lease, so it must not
+   wait behind them. It still checks that the main runtime is running tasks: one
+   that has run nothing for 10 s is hung, not stalled, and the broker stops
+   renewing so its shards fail over to a live copy.
 3. **Drain, then deregister** on SIGTERM, before connections are drained, so
    nothing new is placed here while in-flight work finishes.
 
@@ -438,15 +460,133 @@ placement treats a `left` node as `draining` until the same window a silent
 node gets has passed since its last heartbeat: the expiry timeout plus the
 regrant margin, on the store's clock. Until then nothing it leads is promoted
 away, abandoned, or re-placed; a move it takes part in can still hand a shard
-over. A node already silent for that long, such as one `down` before it was
-deregistered, is failed over straight away. An operator deregistering a live
-broker should expect its shards to move about 19 s later with the default
+over. Placement never names it leader again at a new generation, even
+when a move off it gives up after the fence or it refuses a generation: the
+shard waits for another caught-up copy or for the lease to run out. While a
+follower is being seated, only the lease running out ends the wait. It is
+never promoted itself, as a draining follower can be. Only an operator's cancel
+hands it back. A node already silent for that long, such as one `down` before
+it was deregistered, is failed over straight away. An operator deregistering a
+live broker should expect its shards to move about 19 s later with the default
 settings. In-memory streams are the exception, as for a drain: they have no log
 to move and are re-placed at once.
 
 Under Raft the stamp placement waits from is the leader's: a new leader counts
 a departed node as heard from when it began judging, as expiry does, because
 the log's copy of a heartbeat can trail one the previous leader answered.
+
+#### Starting while the control plane is down
+
+By default a cluster member with durable storage asks the control plane for
+its node's last registration before it opens any data, and waits until it
+answers (see "Storage identity" in `docs/durable-storage.md`). A broker that
+restarts during a control-plane outage therefore takes no part in its shards'
+elections until the control plane is back.
+
+Set `FELIX_START_WITHOUT_CONTROLPLANE=true` to let it rejoin them instead:
+
+| Env | Default | Meaning |
+| --- | --- | --- |
+| `FELIX_START_WITHOUT_CONTROLPLANE` | `false` | Start from the control-plane view in the data directory when the control plane is down at startup. |
+| `FELIX_CONTROLPLANE_STARTUP_WAIT_MS` | `10000` | How long the startup lookup asks the control plane before a broker with the switch on starts from its view. Each attempt gets at least one second. |
+
+With the switch on, the broker asks for at most the wait. If the control plane
+answers, startup is as without the switch. If every attempt found it down (no
+answer, a timeout or a 5xx), the broker starts from its view when all of these
+hold:
+
+1. The data directory has a view (`controlplane.view`, see
+   `docs/durable-storage.md`) for this node. A new or wiped directory has
+   none. A broker removes its view before it deregisters itself, and puts
+   it back if the deregistration never reached the control plane, including
+   a view an earlier start wrote. It also removes it when it stops because
+   the control plane refused it or found its directory replaced. A node an operator deregistered, or one expired while it was
+   down, keeps its view: elections stay safe on any past view, because
+   every decision is checked against the ballots and sets a majority holds
+   (`docs/replication-design.md`, "Rejoining without the control plane").
+2. The storage id on disk is the one the view was registered under. A new or
+   rotated id has never been registered, and must register before it acts.
+3. The view was registered after any `replaced-storage` marker on the
+   directory. The marker says the control plane once registered the node
+   under another storage id, and only a registration under the current id
+   says which copies here the node still holds. Writing the marker removes
+   the view, so only a view from a later registration of the current id
+   qualifies. The marker also names that id and the incarnation the control
+   plane held when the broker found the replacement, and the view must match
+   both. A marker written by an older release names
+   neither, and refuses every view.
+4. The view's fleet had finalized `replica_election`.
+5. This build reports every feature the view's fleet finalized. That is the
+   check the control plane makes when a broker registers: a build rolled back,
+   or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
+
+Otherwise it waits for the control plane, as without the switch. A 401,
+another 4xx, or an answer that does not decode is a control plane that is
+up, so it never counts as down.
+
+Peers learn a broker's address only from the control plane, so a broker
+started this way votes only if it comes back at its registered address.
+
+```mermaid
+flowchart TD
+    A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
+    A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, replica_election, every feature reported?"}
+    Q -- "no" --> W
+    Q -- "yes" --> O["Open storage"]
+    O -- "the run rotated the storage id" --> W
+    O --> V["Seed gate, routes, node addresses, catalog from the view;<br/>vote and follow; no standing, no clients"]
+    V --> C["Control plane answers: restore check"]
+    C -- "directory behind the last registration" --> X["New storage id, forget the view, stop"]
+    C -- "node registered under another storage id" --> Y["Mark replaced, forget the view, stop"]
+    C -- "lookup refused (4xx)" --> Z["Forget the view, stop"]
+    C -- "current" --> R["Catalog sync, then register; stand for election, serve clients"]
+```
+
+**What it does before it registers.** It opens its storage, takes the view's
+fleet features as enabled but not yet answered by a registration, and seeds
+its routes, the node addresses those routes name and the streams and caches
+its shards open at. It then votes in its shards' elections and takes records
+from their leaders as a follower. It does not stand for election or restore a
+standing from before the restart until it has registered: until then it does
+not answer pings, so its peers would suspect it and take a shard it won
+straight back, burning a generation. A shard the view names it leader of is
+the exception: it may reopen that shard at the view's generation, as a broker
+that stayed up would, and its followers refuse it if they have since elected
+another leader. It serves no client: the QUIC, Kafka and MQTT listeners accept
+nothing, `/ready` reports not ready, and a client request another broker
+forwards to it is refused as `Unavailable`, which the forwarder retries. It
+holds no lease, so nothing that rests on one runs.
+
+**When the control plane answers.** The check a start without the switch makes
+before it opens anything runs first: if the control plane registered the node
+at an incarnation the directory never recorded, the directory is a restored
+snapshot or a copy. The broker records `replaced-storage`, gives the
+directory a new storage id, logs an error, counts
+`felix_restored_directory_total` and exits non-zero without registering.
+Its supervisor restarts it under the new id, and its copies are rebuilt by
+their leaders. If the control plane last registered the node under another
+storage id, the broker records `replaced-storage` and exits non-zero; the
+next start registers as a replaced directory. If the control plane refuses
+the lookup with a 4xx, the broker exits non-zero, as a start without the
+switch fails on a refusal. On each of these exits it first removes its view
+durably, so a restart during a later outage waits for the control plane
+rather than voting from it. Until the check passes the broker also sends no
+replica report, since a report announces this directory's storage id and
+offsets as current. Only after the check passes does the catalog sync start and
+the broker register. The routes and catalog snapshots then replace what the
+view seeded. A stream or cache from the view that the catalog snapshot does
+not list is unregistered and its logs closed, but its data is kept: a control
+plane restored from an older backup lacks streams created after the backup,
+and brokers that stayed up still hold them. Data is deleted only by a delete
+in the change feed or a tombstone. Client listeners and readiness open once
+the broker has registered.
+
+**The trade-off.** A directory restored from a snapshot without deleting
+`storage-id` is caught only when the control plane answers, after it may have
+voted on old ballots. With the switch off the check runs before anything is
+opened. A restore must delete `storage-id` or use `felix-broker restore-point`
+either way; see "Restoring to a backup point" in `docs/durable-storage.md`.
 
 ### Operator endpoints
 
@@ -875,6 +1015,21 @@ otherwise, so a write is what it was before. Postgres keeps it only for the
 generation that wrote it (migration 0040), and the Raft store writes it only
 at metadata level 23, which also carries a report's `holds_start`.
 
+A placement write that lands more than one generation up, which only a rename
+past a refusal's ballot does, also carries `previous_generation`: the
+generation of the assignment it replaced. Nothing was recorded in between, so a
+broker that watched that assignment takes its set as the one the new
+generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
+sets it; a caller's value is ignored. Postgres keeps it only
+for the generation that wrote it (migration 0045), and the Raft store writes it
+only at metadata level 29.
+
+A snapshot item also carries `previous`, the set of the assignment the change
+log holds right before it (the generation below, or the one
+`previous_generation` names). A broker that reseeds from the snapshot takes it
+as the set its fence leaves. It is read from the retained change log, so an
+item whose earlier change has been evicted carries none.
+
 ##### Re-admitting a replaced copy
 
 A broker whose disk was wiped registers again under a new storage id. The
@@ -896,7 +1051,8 @@ and placement treats it as one. With `joint_fence` finalized:
    assignment's generation shows the replaced member caught up under its
    new id, placement writes the same leader and replicas at the next
    generation (the `readmit` step, at most one member per shard per pass).
-   The write names the new id and puts the member in `learners`.
+   Each is a new fenced term on the leader, so a pass re-admits into at most
+   16 shards, and none while placement is paused. The write names the new id and puts the member in `learners`.
 3. **The report lets it count.** The leader's report at that generation
    lists the member in `holds_start` once the member holds the generation's
    start record. For a cache shard its counter log must hold the counter
@@ -921,8 +1077,8 @@ checks the first four itself.
    without `non_voting` would let a wiped copy vote and count its answers,
    so the check, not the order brokers and control planes are upgraded in,
    keeps a mixed fleet safe.
-2. Every serving broker reports `joint_fence` and `peer_election`. No release
-   does yet: they join a broker's report with the election driver.
+2. Every serving broker reports `joint_fence` and `peer_election`. A broker
+   reports them only with `FELIX_INTERNAL_ELECTION=true`, off by default.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created
@@ -968,8 +1124,11 @@ is in progress; it is always one of `replicas`, and absent otherwise. See
 `POST /v1/nodes/{node_id}/replica-status` is how a shard's leader tells the
 control plane which replicas hold its log and how far each has got. Promotion
 is gated on it: a lost leader is replaced only by a replica reported caught up,
-and among those by the one reported furthest ahead. A report may also carry
-`drained: true`, the leader's word that it has stopped serving the shard at
+and among those by the one reported furthest ahead. A replica on a draining
+broker is picked only when no live one is caught up; the drain then moves the
+shard off it as usual. A broker that has deregistered is never picked, even
+while placement still counts it as draining: it has stopped. A report may also
+carry `drained: true`, the leader's word that it has stopped serving the shard at
 that generation and its log will not grow: the fence of a planned move. For a
 cache, `replica_counter_offsets` says how far each replica has got with the
 counter log, which placement counts as a restore's progress; brokers that
@@ -1074,12 +1233,14 @@ missing while the marker no longer matches the row's `incarnation` or
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
-A leader promoted by a failover also reports, for each follower it has not
-reached yet, the identity that failover named it by
+A leader also reports, for each follower it has not reached yet at its
+generation, the identity it inherited for it: the one the failover that
+promoted it named, or after a set change that kept it as leader, the one it
+named the follower by at its previous generation
 (`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
 dropped). The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574). It never makes a follower caught up. Under Postgres its marker
+count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
 is `inherited_storage_at` (migration 0037); under Raft it needs metadata
 level 20 and is dropped below it, which names the follower by none, as
 before. See
@@ -1321,6 +1482,7 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `shard_election_hold_ms` | `FELIX_SHARD_ELECTION_HOLD_MS` | 10000 (10 s); `0` promotes on the followers' word without waiting under `replica_election` |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
+| `shard_stuck_leader_ms` | `FELIX_SHARD_STUCK_LEADER_MS` | 70000 (70 s), never under two report TTLs; `0` never renames a stuck leader |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
 
 #### Moving a shard
@@ -1423,6 +1585,12 @@ elected generation itself, not the next one:
   - one outside it leads at the elected generation on the elected set, and
     placement moves that set as it moves any other.
 
+  This holds when the elected broker is already the control plane's leader
+  too. A leader can open on a set the control plane has since changed, for
+  example on a stale route after refusing the assignment that changed it.
+  Keeping it as leader at the elected generation would leave the record on
+  the wrong set, so it is reissued like any other leader in the set.
+
   Otherwise only the generation is taken and the report is refused as
   `not_leader`: a leader elected on the old set while a change is pending is
   deposed by the new set's leader. The exception is the control plane's own
@@ -1434,7 +1602,10 @@ elected generation itself, not the next one:
   level 26 apply the older form, which takes only the generation of any
   other set. A group finalizes `replica_election` only with every member at
   26. The older form stays so a member that has not yet rolled to 26
-  applies the same entries the same way.
+  applies the same entries the same way. Members below level 27 likewise
+  take only the generation when the elected leader is the control plane's
+  own, elected on another set; the report handler then moves past it as
+  below.
 
   When only the generation was taken, the control plane's leader is now
   named at the generation the elected leader opened at, which ballots never
@@ -1462,7 +1633,8 @@ generation an election took, for example by promoting a follower when it
 returns before the elected leader's first report lands. Ballots let only one
 of the two open there. If the elected leader opened, it keeps leading and
 reporting, and the other never opens. A report at the assignment's own
-generation from a leader the control plane did not name then moves the shard
+generation from a leader the control plane did not name, or named on another
+set than the one it was elected on, then moves the shard
 to the next generation under that elected leader, with the same conditional,
 placement-fenced write placement uses. Only the elected leader is named: its
 log holds everything acknowledged up to the collision, on whichever set. The
@@ -1498,10 +1670,13 @@ candidate or one older than its ballot. That write costs the shard a
 promotion, or, when it carries a pending change, the pending timeout. If the elected leader did not open, its candidate withdraws the
 standing within 3 s and the named leader opens as usual.
 
-One gap remains: an elected leader that restarts before its first report
-reaches the control plane forgets its standing, so nothing reports the
-collision, and the shard serves nothing until the control plane writes it
-again.
+An elected leader that restarts before its first report reaches the
+control plane rebuilds its standing from its own log: its ballot names it at
+the elected generation, and its log records that it opened there. It
+fences at that generation again and reports as before, so a collision is
+resolved as above. If a replica of its set has promised a newer generation
+meanwhile, the fence is refused and the standing is withdrawn within 3 s (rule 11 of
+"Electing without the control plane" in `docs/replication-design.md`).
 
 A joining follower (a replacement in progress) elected leader is recorded
 only: the copy it replaces is not named in the assignment, so naming the
@@ -1557,11 +1732,17 @@ election: a refusal at the assignment's generation is enough. That also
 covers an election it never heard of, for example one that took a majority
 while placement was failing the shard over. Naming the same leader one
 generation up is a new fenced term either way. Placement ignores a refusal of
-an older generation and one that is no longer fresh. It also skips the step while the
-shard is in a move that ends through its own steps: one with a successor
-named, or one whose leader is draining. A follower replacement does not stop
-it: the new generation keeps the joining copy, and the replacement goes on
-under the same leader.
+an older generation and one that is no longer fresh. It skips the step while
+the move's leader is draining, since that fence ends through its own steps.
+A move still copying to its destination is dropped instead: the leader that
+refused cannot ship to it, so the move would only wait for its timeout. The
+next generation drops a destination that was staged on top of the set, as an
+abandoned move does, and a later pass can start the move again. A leader that
+has deregistered is not named again: placement waits for its lease to run
+out, and the same holds for a staged move that times out or loses its
+destination under it. A follower replacement does not stop
+the step: the new generation keeps the joining copy, and the replacement goes
+on under the same leader.
 
 **When a newer ballot holds the generation**, the leader reports the same
 refusal with an empty `promised_to`. An election that persists its ballot
@@ -1584,14 +1765,21 @@ and the fence needs the set at the generation before. A leader restarted at
 a generation it opened before `joint_fence` was finalized keeps that
 generation's set and its own ballot in its log, but not the set before, and
 its watch, started from a snapshot, did not see the step. That earlier open
-already fenced the set before. Placement answers the empty refusal
-the same way (`set_unknown`): the same leader and set at the next
-generation. The set that generation leaves is the one the broker kept and is
+already fenced the set before. A leader whose log keeps a set older than the
+one before reports the empty refusal too, once its own ballot and start record
+at the generation show it opened there, nothing is pending on the route, and
+its kept set names exactly the route's set on the same copies. That is a
+leader elected at a generation placement then adopted, restarted: it keeps
+the set it stood on, which is the set before.
+
+Placement answers the empty refusal the same way (`set_unknown`): the same
+leader and set at the next generation. The set that generation leaves is the one the broker kept and is
 named on now, so its fence can open there. Nothing in the control plane's
 state is new for this: the empty name is stored like any other.
 
 A broker reports it only from that evidence: this generation's set and a
-ballot naming itself, or generation 0, where a log never keeps a set and
+ballot naming itself, a ballot naming itself and a start record at this
+generation, or generation 0, where a log never keeps a set and
 nothing comes before it. A set kept from another node's fence or election
 request proves nothing was fenced from here, so that fence waits. So does
 one whose log keeps no set for the shard above generation 0. It may be a
@@ -1616,6 +1804,14 @@ from metadata level 25 and dropped below it; under Postgres it is migration
 0042 (`refused_generation`, `refused_to`), with `refused_at` as the marker
 that keeps what a member that predates the columns leaves behind from
 reading as a refusal.
+
+A refusal can carry the ballot the leader's own copy holds for another node
+above its generation. Placement then names the leader one past that ballot
+instead of one up, as long as the ballot is at most 16 generations (the
+election window) above the shard's. Under Raft the ballot needs metadata level 28 and is dropped
+below it, so the leader is named one up on every member. Under Postgres it
+is migration 0043 (`refused_ballot`), with `refused_ballot_at` as its
+marker.
 
 **Postgres: finish the control-plane upgrade before finalizing
 `replica_election`.** The finalize check runs on the instance that receives
@@ -1657,7 +1853,12 @@ A move stops safely at every step. A destination that stops being live is
 dropped from the move (`abandon`). After the fence, the old leader takes the
 shard back at once at a new generation, unless it has already reported
 drained; then the cut-over goes to another caught-up replica or the old
-leader itself. A leader that dies mid-move is a failover, where
+leader itself. A leader that has deregistered does not take the shard back
+unless an operator cancels the move: it is stopping, and a new generation
+would land on a broker about to stop serving it. The shard stays fenced until another caught-up replica can take
+it or the leader's lease runs out and it fails over (`placement plan` says the
+leader has deregistered). While a follower is being seated, only the lease ends
+the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica, except on a durable
 `Quorum` stream: there a broker from before every change of leader was
 fenced would open the shard as a cut-over, without the fence, so failover
@@ -1682,7 +1883,7 @@ destination's copy, so the next move of that shard waits: the fence timeout
 after one give-up, twice that after two in a row, and so on up to an hour.
 The count starts again once the shard has another leader. A draining leader
 whose shards cannot drain would otherwise fence and give up every few
-minutes; with the wait it does so ever more rarely. `admin plan` shows a move
+minutes; with the wait it does so ever more rarely. `placement plan` shows a move
 held by the wait and when it ends, and from the second give-up in a row
 the control plane logs a warning naming the shard and its leader. The
 count is kept by the instance running placement, like the fence clock.
@@ -1721,7 +1922,7 @@ totals, and not to spread a zone. A balance move already staged is dropped
 (`abandon`) before it fences, which also frees its move slot for a drain or a
 restore. A zone reseat already staged and caught up on a stream that
 fences its seats waits too, instead of fencing a leader that is busy; it
-stays a follower meanwhile. `admin plan` lists the held shards as waiting
+stays a follower meanwhile. `placement plan` lists the held shards as waiting
 for the recovery. Failover is not held: a dead
 broker's shards get new leaders in the same pass as always. Drains,
 restores and an operator's moves go on too. The reason is what a fence costs
@@ -1947,25 +2148,27 @@ first to keep a layout that is not even.
 The same controls from a shell, as a client of these endpoints:
 
 ```bash
-felix-controlplane admin --url http://cp:8443 --token "$TOKEN" moves
-felix-controlplane admin plan
-felix-controlplane admin move t1/ns/orders/0 broker-3
-felix-controlplane admin cancel t1/ns/orders/0        # --cache for a cache shard
-felix-controlplane admin abandon t1/ns/orders/0       # loses the shard's records
-felix-controlplane admin pause
-felix-controlplane admin resume
+felixctl shard moves
+felixctl placement plan
+felixctl placement replication
+felixctl shard move orders 0 --to broker-3
+felixctl shard move cancel orders 0        # --cache for a cache shard
+felixctl placement abandon orders 0 --yes  # loses the shard's records
+felixctl placement pause
+felixctl placement resume
 ```
 
 Fleet features have their own two commands (see [Fleet features](#fleet-features)):
 
 ```bash
-felix-controlplane admin features                              # supported and enabled
-felix-controlplane admin features finalize jump_hash_routing --dry-run
-felix-controlplane admin features finalize jump_hash_routing   # one-way
+felixctl features ls                                    # supported and enabled
+felixctl features finalize jump_hash_routing --dry-run
+felixctl features finalize jump_hash_routing --yes      # one-way
 ```
 
-`--url` defaults to `FELIX_CONTROLPLANE_URL` and `--token` to `FELIX_TOKEN`.
-Output is a plain table; `--json` prints the API's response.
+The connection comes from a felixctl context or `FELIX_CONTROLPLANE_URL` and
+`FELIX_CONTROLPLANE_TOKEN`; shards are named in the context's tenant and
+namespace. Output is a plain table; `--json` prints the API's response.
 
 #### How brokers follow ownership
 
@@ -1996,8 +2199,16 @@ write acknowledged before the request. 503 means no leader confirmed it in
 time, 501 that the Raft leader predates it. A broker asks here only for a
 copy with no election promise on disk, before it takes a leader
 ([#1332](https://github.com/GetFelix/felix/issues/1332)). It asks from a
-background task, one read per shard at a time and at most 16 at once, never
-while a peer request waits. A new shard's copy asks nothing once its
+background task, one read per shard at a time and at most 16 requests at
+once, never while a peer request waits. Reads that wait for a request go
+together: `POST /v1/shard-assignments/confirmed` with
+`{"keys": [{"tenant_id", "namespace", "stream", "shard", "kind"}, ...]}`
+answers `{"items": [{"assignment": ...}, ...]}` in the same order, read on
+the Raft leader after one read-index, for up to 256 shards (a 400 past that).
+Each answer is as fresh as a single read. A control plane without the form
+answers 404 or 405, and the broker reads one shard per request, asking for
+a batch again 10 s later. A Raft leader that predates the batch is asked
+one shard at a time by the member that took the request. A new shard's copy asks nothing once its
 routing view holds the creation set of the shard's incarnation naming it
 (a shard with no incarnation still reads); a learner under
 elections is refreshed about twice a second while it takes batches
@@ -2469,6 +2680,7 @@ Broker:
 | `felix_broker_membership_live` | 1 while the cluster considers this broker placeable |
 | `felix_broker_fleet_feature_enabled{feature}` | 1 once an operator has finalized the feature and this broker has enabled it; 0 for one it reported that is not finalized yet |
 | `felix_broker_membership_registrations_total{outcome}` | `registered`, `rejected`, or `unavailable` |
+| `felix_restored_directory_total` | data directories found older than the node's last registration after a start from the control-plane view; each one stopped the broker. Any increase is a restore that kept its `storage-id` |
 | `felix_broker_principal_revocations_total` | revocations this broker learned that moved a principal's cutoff; each one ends the principal's open streams here |
 | `felix_revocation_feed_last_success_seconds` | Unix time of this broker's last successful poll of the revocation feed, or of when it started following the feed until a poll succeeds. Alert on `time() - felix_revocation_feed_last_success_seconds`. While it is stale, revocations made meanwhile are not enforced here; see [auth.md](auth.md#while-a-broker-cannot-reach-the-feed) |
 | `felix_revocation_feed_poll_errors_total` | failed polls of the revocation feed. A run of failures is also a `warn` log line, repeated every minute while it lasts |
@@ -2488,6 +2700,7 @@ network.
 | `felix_broker_heartbeat_age_seconds > expiry_timeout_ms / 1000` | the earliest point a broker knows it is about to be declared down, and it fires even when the control plane is what is unreachable |
 | `increase(felix_node_transitions_total{to="down"}[5m]) > 0` | a broker failed; `to="left"` over the same window is a deploy and is not the same alert |
 | `increase(felix_broker_membership_registrations_total{outcome="rejected"}[15m]) > 0` | a broker is misconfigured and will never join; retrying will not clear it |
+| `increase(felix_restored_directory_total[1h]) > 0` | a data directory restored without deleting `storage-id` ran from its control-plane view during an outage; the broker stopped and comes back under a new id |
 | `felix_node_expiry_failures_total` rising | liveness is not being evaluated, so the census is stale in a way the census cannot show |
 | `sum(felix_node_count{lifecycle="live"}) < expected` | the fleet is smaller than intended, whatever the cause |
 

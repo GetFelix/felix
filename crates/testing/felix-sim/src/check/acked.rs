@@ -1,7 +1,7 @@
 //! `AckedHeldByLeader`: whoever serves a shard holds every record a client was
 //! told a quorum has.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use felix_cluster::history::model::{Action, AppendOutcome, Element, History};
@@ -22,9 +22,9 @@ pub(crate) struct Acked {
 }
 
 /// For each shard, the appends of `history` that were acknowledged.
-pub(crate) fn acked_by_shard(history: &History, shards: u32) -> HashMap<u32, Vec<Acked>> {
-    let lists: HashMap<String, u32> = (0..shards).map(|shard| (list_name(shard), shard)).collect();
-    let mut acked: HashMap<u32, Vec<Acked>> = HashMap::new();
+pub(crate) fn acked_by_shard(history: &History, shards: u32) -> BTreeMap<u32, Vec<Acked>> {
+    let lists: BTreeMap<String, u32> = (0..shards).map(|shard| (list_name(shard), shard)).collect();
+    let mut acked: BTreeMap<u32, Vec<Acked>> = BTreeMap::new();
     for op in &history.ops {
         if let Action::Append {
             list,
@@ -46,7 +46,7 @@ pub(crate) fn acked_by_shard(history: &History, shards: u32) -> HashMap<u32, Vec
 /// at the offset they were acknowledged at (or anywhere, if no offset was
 /// given).
 pub(crate) fn unheld(acked: &[Acked], held: &[Element]) -> Vec<Acked> {
-    let by_offset: HashMap<u64, u64> = held.iter().map(|e| (e.offset, e.value)).collect();
+    let by_offset: BTreeMap<u64, u64> = held.iter().map(|e| (e.offset, e.value)).collect();
     acked
         .iter()
         .filter(|a| match a.offset {
@@ -129,21 +129,23 @@ pub(crate) fn newest_held(
 /// newest generation known to any broker must hold everything acknowledged;
 /// a deposed one still serving is held to its own log (see
 /// [`missing_by_server`]; after the heal, see [`newest_held`]). A shard
-/// nobody serves is skipped here: `ElectionSettles` reports it. The records are read from each broker's log
+/// nobody serves is skipped here: `ElectionSettles` reports it. An append
+/// acknowledged before an operator abandoned the log is not held to it (the
+/// history marks it unknown). The records are read from each broker's log
 /// directly, whether a quorum has committed them or not.
 #[derive(Debug)]
 pub struct AckedHeldByLeader {
     digest: Digest,
     /// The newest generation seen for each shard, so a leader that stops
     /// serving between samples still counts as having superseded the rest.
-    newest: HashMap<u32, u64>,
+    newest: BTreeMap<u32, u64>,
 }
 
 impl Default for AckedHeldByLeader {
     fn default() -> Self {
         Self {
             digest: Digest::new(SHOW),
-            newest: HashMap::new(),
+            newest: BTreeMap::new(),
         }
     }
 }
@@ -245,7 +247,7 @@ impl Checker for AckedHeldByLeader {
         // After the heal, give the shards the time `ElectionSettles` does to
         // find a leader; at the end they either have one or are reported.
         loop {
-            let mut pending = HashMap::new();
+            let mut pending = BTreeMap::new();
             for (shard, acked) in waiting {
                 match self.look(cluster, ctx.point, shard, &acked).await {
                     Some(found) => findings.extend(found),

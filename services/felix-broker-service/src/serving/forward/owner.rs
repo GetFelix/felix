@@ -196,6 +196,7 @@ impl ForwardingHandler {
                     &handle,
                     Some(&key),
                     &outcome,
+                    publish.shard.generation,
                     self.marks.as_deref(),
                     Some(self.ingress.as_ref()),
                     self.quorum_timeout,
@@ -358,8 +359,9 @@ impl ForwardingHandler {
             None
         };
         // Taken before the write, as on the local path.
-        let entry_expires_at = (op.ttl_ms > 0)
-            .then(|| std::time::SystemTime::now() + std::time::Duration::from_millis(op.ttl_ms));
+        let entry_expires_at = (op.ttl_ms > 0).then(|| {
+            felix_common::clock::system_time() + std::time::Duration::from_millis(op.ttl_ms)
+        });
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet
@@ -396,6 +398,18 @@ impl ForwardingHandler {
                         .into_cache_answer(correlation_id);
                 }
             }
+        } else {
+            None
+        };
+        let at = if writes {
+            felix_replication::quorum::cache_write_at(
+                &self.broker,
+                &key,
+                op.shard.generation,
+                self.marks.as_deref(),
+                Some(self.ingress.as_ref()),
+            )
+            .await
         } else {
             None
         };
@@ -537,6 +551,7 @@ impl ForwardingHandler {
             } else {
                 felix_replication::quorum::Access::Read
             },
+            at,
         )
         .await
         {
@@ -845,7 +860,7 @@ impl ForwardingHandler {
                 drop(_fenced);
                 match added {
                     Ok((sum, offset)) => self
-                        .counter_quorum(key, Some(offset + 1), "counter add")
+                        .counter_quorum(key, Some(offset + 1), op.shard.generation, "counter add")
                         .await
                         .map(|()| Some(sum))
                         .map_err(|detail| (ErrorCode::StorageFailed, detail)),
@@ -865,7 +880,7 @@ impl ForwardingHandler {
                     .map_err(|err| (ErrorCode::Unavailable, err.to_string()));
                 match sum {
                     Ok(sum) => self
-                        .counter_quorum(key, None, "read")
+                        .counter_quorum(key, None, op.shard.generation, "read")
                         .await
                         .map(|()| sum)
                         .map_err(|detail| (ErrorCode::Unavailable, detail)),
@@ -896,6 +911,7 @@ impl ForwardingHandler {
         &self,
         key: &ShardKey,
         end: Option<u64>,
+        generation: u64,
         what: &'static str,
     ) -> Result<(), String> {
         felix_replication::quorum::await_counter_quorum(
@@ -905,6 +921,7 @@ impl ForwardingHandler {
             Some(self.ingress.as_ref()),
             self.quorum_timeout,
             end,
+            generation,
             what,
         )
         .await

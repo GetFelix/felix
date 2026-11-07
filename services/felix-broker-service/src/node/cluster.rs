@@ -135,6 +135,8 @@ pub(super) fn bind_peer_listener(
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
+    clients: Option<CancellationToken>,
+    serving: Option<&CancellationToken>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -150,17 +152,24 @@ pub(super) fn bind_peer_listener(
                     storage_id,
                     unclean,
                     controlplane.map(|(client, base_url, credential)| {
-                        crate::shards::ControlPlaneRoutes::new(
-                            client.clone(),
-                            base_url,
+                        Arc::new(crate::shards::ControlPlaneRoutes::new(
+                            replication::controlplane_link::HttpControlPlaneLink::new(
+                                client.clone(),
+                                base_url,
+                            ),
                             credential.clone(),
-                        )
+                        ))
+                            as Arc<dyn replication::confirmed::ConfirmedRoutes>
                     }),
                 );
+                let handler = match clients {
+                    Some(clients) => handler.serving_clients_after(clients),
+                    None => handler,
+                };
                 let server = peer::PeerServer::bind_with_tls(
                     membership_config.node_id.clone(),
                     peer_config,
-                    handler,
+                    Arc::new(handler),
                     peer_tls.clone(),
                 )
                 .context("bind broker-internal listener")?;
@@ -172,6 +181,10 @@ pub(super) fn bind_peer_listener(
                 }
                 .with_storage_identity(storage_id)
                 .with_node_incarnation(incarnation);
+                let server = match serving {
+                    Some(serving) => server.with_serving(serving.clone()),
+                    None => server,
+                };
                 match &peer_config.tls {
                     Some(tls) => tracing::info!(
                         addr = %server.local_addr()?,
@@ -213,9 +226,9 @@ pub(super) fn peer_handler(
     auth: &Arc<BrokerAuth>,
     storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
 ) -> (
-    Arc<peer_dispatch::BrokerPeerHandler>,
+    peer_dispatch::BrokerPeerHandler,
     Option<replication::confirmed::Prefetch>,
 ) {
     let replicas = replica_handler(broker, router, quorum_marks, storage_id, unclean, confirmed)
@@ -227,7 +240,7 @@ pub(super) fn peer_handler(
         .as_ref()
         .map(|membership| membership.advertise_addr.clone())
         .unwrap_or_default();
-    let handler = Arc::new(peer_dispatch::BrokerPeerHandler::new(
+    let handler = peer_dispatch::BrokerPeerHandler::new(
         crate::serving::forward::ForwardingHandler::new(
             Arc::clone(broker),
             Arc::clone(ingress),
@@ -238,7 +251,7 @@ pub(super) fn peer_handler(
             Arc::clone(auth),
         ),
         replicas,
-    ));
+    );
     (handler, prefetch)
 }
 
@@ -249,7 +262,7 @@ fn replica_handler(
     quorum_marks: &Arc<QuorumMarks>,
     storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<crate::shards::ControlPlaneRoutes>,
+    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
 ) -> replication::ReplicaHandler {
     // A replica refuses a candidate for as long as it would take to suspect
     // its leader, so the two windows agree.
@@ -263,7 +276,7 @@ fn replica_handler(
         None => handler,
     };
     match confirmed {
-        Some(confirmed) => handler.with_confirmed_routes(Arc::new(confirmed)),
+        Some(confirmed) => handler.with_confirmed_routes(confirmed),
         None => handler,
     }
 }
@@ -304,6 +317,15 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
     /// Starts a copy's confirmed read when the routes first name it.
     pub(super) prefetch: Option<replication::confirmed::Prefetch>,
+    /// Node addresses from the control-plane view, routed by until the
+    /// first node catalog read.
+    pub(super) nodes: felix_common::random::HashMap<String, felix_router::NodeRef>,
+    /// After a start from the view, replica reports wait for the restore
+    /// check: they announce this directory's storage id as current.
+    pub(super) reports_held: Option<CancellationToken>,
+    /// After a start from the view: this broker stands for election only once
+    /// cancelled, since peers suspect it until it has registered.
+    pub(super) leads_after: Option<CancellationToken>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -333,6 +355,9 @@ where
         storage_id,
         unclean,
         prefetch,
+        nodes,
+        reports_held,
+        leads_after,
         sync_shutdown,
     } = deps;
     match (cluster, link, durable_storage) {
@@ -415,10 +440,15 @@ where
                 .as_ref()
                 .filter(|pool| pool.offers_election())
                 .map(|_| {
-                    let elections = Arc::new(replication::election::Elections::new(
-                        router.local_node_id(),
-                        Arc::clone(&assignments_changed),
-                    ));
+                    let elections = Arc::new(
+                        replication::election::Elections::new(
+                            router.local_node_id(),
+                            Arc::clone(&assignments_changed),
+                        )
+                        .with_defer_for(
+                            replication::suspicion::SuspicionConfig::from_env().defer_for,
+                        ),
+                    );
                     quorum_marks.set_elections(Arc::clone(&elections));
                     elections
                 });
@@ -430,6 +460,7 @@ where
                 Arc::clone(ownership),
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
+                ingress.fence().lease().cloned(),
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(
@@ -444,6 +475,7 @@ where
                     joint_fence: Some(Arc::clone(fleet)),
                     prefetch,
                     elections,
+                    nodes,
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),
@@ -484,6 +516,7 @@ where
                                 }),
                                 incarnation: Arc::clone(incarnation),
                                 storage_id,
+                                held: reports_held.clone(),
                             },
                             sync_shutdown.clone(),
                         );
@@ -519,6 +552,7 @@ where
                     Arc::clone(quorum_marks),
                     Arc::clone(suspects),
                     replication::suspicion::SuspicionConfig::from_env(),
+                    leads_after.clone(),
                     sync_shutdown.clone(),
                 ));
             }

@@ -297,9 +297,124 @@ fn a_drained_report_is_believed_at_its_generation_while_fresh() {
     assert!(!not_drained.is_drained(&key("orders"), drained.generation));
 }
 
+/// A leader opened its generation when its own report there carries its tail
+/// and neither a refusal nor a give-up; a refusal or another node's report
+/// does not count, and a stale one still does.
+#[test]
+fn a_leader_opened_where_its_report_carries_its_tail() {
+    let serving = ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        leader_offset: Some(10),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let opened = |report: ReplicaReport, now: u64| {
+        at(vec![report], now).leader_opened(&key("orders"), 4, "broker-a")
+    };
+    assert!(opened(serving.clone(), 1_000));
+    assert!(opened(
+        serving.clone(),
+        1_000 + 10 * report_ttl_millis(&liveness())
+    ));
+    assert!(!at(vec![serving.clone()], 1_000).leader_opened(&key("orders"), 5, "broker-a"));
+    assert!(!at(vec![serving.clone()], 1_000).leader_opened(&key("orders"), 4, "broker-b"));
+    for not_open in [
+        ReplicaReport {
+            leader_offset: None,
+            ..serving.clone()
+        },
+        ReplicaReport {
+            refused: Some(felix_common::membership::RefusedGeneration {
+                generation: 4,
+                promised_to: "broker-d".to_string(),
+                ballot: 0,
+            }),
+            ..serving.clone()
+        },
+        ReplicaReport {
+            given_up: true,
+            ..serving.clone()
+        },
+        ReplicaReport {
+            leader: None,
+            ..serving.clone()
+        },
+    ] {
+        assert!(!opened(not_open.clone(), 1_000), "{not_open:?}");
+    }
+}
+
 /// How far behind a follower is, measured against the tail the leader
 /// reported beside it; nothing without that tail or once the report is
 /// stale.
+/// A leader that served at its generation, restarted, and had its fence
+/// there refused still opened at that generation, so the copy pins can go.
+#[test]
+fn a_leader_seen_serving_stays_opened_after_a_refusal_at_that_generation() {
+    use super::super::progress::CopyProgress;
+    let serving = ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        leader_offset: Some(10),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let refused = ReplicaReport {
+        leader_offset: None,
+        refused: Some(felix_common::membership::RefusedGeneration {
+            generation: 4,
+            promised_to: "broker-d".to_string(),
+            ballot: 0,
+        }),
+        ..serving.clone()
+    };
+    let mut progress = CopyProgress::default();
+    let pass = |progress: &mut CopyProgress, report: ReplicaReport, assignment: ShardAssignment| {
+        let mut view = at(vec![report], 1_000).with_nodes(&[], std::slice::from_ref(&assignment));
+        let opened = progress.observe_opened(std::slice::from_ref(&assignment), &view);
+        view.set_opened(opened);
+        view
+    };
+    assert!(pass(&mut progress, serving, led_by_a(4)).leader_opened(&key("orders"), 4, "broker-a"));
+    assert!(
+        pass(&mut progress, refused.clone(), led_by_a(4)).leader_opened(
+            &key("orders"),
+            4,
+            "broker-a"
+        )
+    );
+    // A new generation starts over.
+    assert!(!pass(&mut progress, refused, led_by_a(5)).leader_opened(
+        &key("orders"),
+        5,
+        "broker-a"
+    ));
+}
+
+/// A stream deleted and created again can reuse the generation and leader.
+/// Neither the old incarnation's report nor what this instance saw of it
+/// makes the new one opened.
+#[test]
+fn a_recreated_stream_is_not_opened_by_its_old_incarnation() {
+    use super::super::progress::CopyProgress;
+    let serving = ReplicaReport {
+        leader: Some("broker-a".to_string()),
+        leader_offset: Some(10),
+        stream_incarnation: Some(1),
+        ..report("orders", &["broker-b"], 1_000)
+    };
+    let at_incarnation = |incarnation| ShardAssignment {
+        incarnation,
+        ..led_by_a(4)
+    };
+    let mut progress = CopyProgress::default();
+    let pass = |progress: &mut CopyProgress, report: ReplicaReport, assignment: ShardAssignment| {
+        let mut view = at(vec![report], 1_000).with_nodes(&[], std::slice::from_ref(&assignment));
+        let opened = progress.observe_opened(std::slice::from_ref(&assignment), &view);
+        view.set_opened(opened);
+        view.leader_opened(&key("orders"), 4, "broker-a")
+    };
+    assert!(pass(&mut progress, serving.clone(), at_incarnation(1)));
+    assert!(!pass(&mut progress, serving, at_incarnation(2)));
+}
+
 #[test]
 fn lag_is_measured_against_the_reported_tail() {
     let mut with_tail = report("orders", &["broker-b"], 1_000);
@@ -330,7 +445,7 @@ fn suspicion(node_id: &str, leader: &str, reported_at_millis: u64) -> crate::mod
 
 /// The leader, `broker-a`, at the incarnation its reports came from.
 fn incarnations() -> HashMap<String, u64> {
-    HashMap::from([("broker-a".to_string(), 1)])
+    HashMap::from_iter([("broker-a".to_string(), 1)])
 }
 
 fn features(names: &[&str]) -> BTreeSet<String> {
@@ -489,8 +604,8 @@ fn a_suspicion_does_not_count_on_a_report_from_before_a_restart() {
             .suspects(&key("orders"), 4, "broker-b", "broker-a")
     };
     assert!(suspects(incarnations()));
-    assert!(!suspects(HashMap::from([("broker-a".to_string(), 2)])));
-    assert!(!suspects(HashMap::new()));
+    assert!(!suspects(HashMap::from_iter([("broker-a".to_string(), 2)])));
+    assert!(!suspects(HashMap::default()));
     // Nor one that says `by_round` without naming the incarnation.
     let unnamed = ReplicaReport {
         leader_incarnation: None,
@@ -579,6 +694,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -748,6 +864,7 @@ fn refusal(generation: u64, leader: &str, reported_at_millis: u64) -> ReplicaRep
         refused: Some(felix_common::membership::RefusedGeneration {
             generation,
             promised_to: "broker-b".to_string(),
+            ballot: 0,
         }),
         ..report("orders", &[], reported_at_millis)
     }

@@ -8,7 +8,7 @@
 //! Read with the same credential as the assignment feed: `/v1/nodes` requires
 //! `node.view:cluster:*`, which a broker already holds to read assignments at
 //! all.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use anyhow::{Context, Result, anyhow};
 use felix_replication::controlplane_link::ControlPlaneLink;
@@ -21,7 +21,7 @@ use serde::Deserialize;
 /// The same listing answers "where does this broker forward to" and "where may
 /// a client connect", and they are different addresses on different listeners.
 /// Fetching once and splitting here keeps them from drifting apart.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct NodeCatalog {
     pub nodes: HashMap<String, NodeRef>,
     /// Sorted by node id, so the answer a client gets does not reshuffle
@@ -122,7 +122,7 @@ pub(crate) async fn fetch(
 /// Separate from the request so the skipping rule above is testable without a
 /// server standing in for the control plane.
 fn into_catalog(response: NodeListResponse) -> NodeCatalog {
-    let mut catalog = HashMap::with_capacity(response.items.len());
+    let mut catalog = HashMap::with_capacity_and_hasher(response.items.len(), Default::default());
     let mut client_endpoints = Vec::new();
     let mut redirect_endpoints = Vec::new();
     let mut kafka_endpoints = Vec::new();

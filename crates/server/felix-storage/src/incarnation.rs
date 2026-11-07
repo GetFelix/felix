@@ -13,7 +13,7 @@
 //! leaves it where nothing opens it. A crash part-way through the delete
 //! leaves debris only `.deleted/` holds, cleared at the next start.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -224,8 +224,8 @@ impl DirIndex {
 }
 
 fn read_root(root: &Path) -> Result<HashMap<String, std::collections::BTreeSet<String>>> {
-    let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::new();
-    let entries = match std::fs::read_dir(root) {
+    let mut index: HashMap<String, std::collections::BTreeSet<String>> = HashMap::default();
+    let entries = match crate::fs::read_dir(root) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(index),
         Err(err) => return Err(StorageError::Io(err)),
@@ -247,7 +247,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     let Some(name) = dir.file_name() else {
         return Ok(false);
     };
-    if !dir.exists() {
+    if !crate::fs::exists(dir) {
         return Ok(false);
     }
     let deleted = root.join(DELETED_DIR);
@@ -255,7 +255,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     // Unique even when the same name is retired twice before the first copy
     // is gone.
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    let stamp = std::time::SystemTime::now()
+    let stamp = felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_nanos())
         .unwrap_or(0);
@@ -264,7 +264,7 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
         name.to_string_lossy(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    std::fs::rename(dir, &target).map_err(StorageError::Io)?;
+    crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
     sync_dir(root).map_err(StorageError::Io)?;
     sync_dir(&deleted).map_err(StorageError::Io)?;
     purge_in_background(root.to_path_buf());
@@ -273,7 +273,10 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
 
 /// Roots whose `.deleted/` has a purge worker, each with whether something
 /// was retired there since the worker last listed it.
-static PURGE_WORKERS: LazyLock<parking_lot::Mutex<HashMap<PathBuf, bool>>> =
+///
+/// std's map, not a seeded one: a static is built once per process, so a
+/// seeded map would draw its keys from whichever simulation ran first.
+static PURGE_WORKERS: LazyLock<parking_lot::Mutex<std::collections::HashMap<PathBuf, bool>>> =
     LazyLock::new(Default::default);
 
 /// Delete whatever `root`'s `.deleted/` holds, on a thread of its own so a
@@ -290,11 +293,16 @@ pub(crate) fn purge_in_background(root: PathBuf) {
         *again = true;
         return;
     }
-    if !deleted.exists() {
+    if !crate::fs::exists(&deleted) {
         return;
     }
     workers.insert(deleted.clone(), false);
     drop(workers);
+    if felix_common::blocking::on_runtime() {
+        // A simulator keeps every thread's work on its own runtime.
+        purge_until_idle(&deleted);
+        return;
+    }
     let dir = deleted.clone();
     let spawned = std::thread::Builder::new()
         .name("felix-purge-deleted".into())
@@ -339,12 +347,12 @@ impl Drop for WorkerSlot<'_> {
 }
 
 fn purge(deleted: &Path) {
-    let Ok(entries) = std::fs::read_dir(deleted) else {
+    let Ok(entries) = crate::fs::read_dir(deleted) else {
         return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        match std::fs::remove_dir_all(&path) {
+        match crate::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {

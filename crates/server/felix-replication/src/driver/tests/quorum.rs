@@ -62,10 +62,10 @@ async fn the_mark_advances_at_the_majority_not_at_the_slowest_follower() {
     };
 
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     let (_, reached) = tokio::join!(
         replicate_once(
@@ -108,10 +108,10 @@ async fn the_slower_follower_is_still_caught_up_by_the_end_of_the_pass() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -150,10 +150,10 @@ async fn a_quorum_mark_does_not_pass_a_record_the_follower_disagrees_with() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -233,10 +233,10 @@ async fn inherited_records_count_only_once_the_start_record_is_on_a_majority() {
     let marks = finalized_marks();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     replicate_once(
@@ -325,10 +325,10 @@ async fn a_promoted_leader_with_no_majority_yet_refuses_reads() {
             held: std::sync::atomic::AtomicU64::new(3),
         };
         let (mut cursors, mut group, mut dead, mut counters) = (
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
-            HashMap::new(),
+            HashMap::default(),
+            HashMap::default(),
+            HashMap::default(),
+            HashMap::default(),
         );
         let read = async || {
             broker
@@ -389,10 +389,10 @@ async fn a_finalized_leader_without_a_start_record_counts_only_its_own_records()
     let marks = finalized_marks();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     replicate_once(
@@ -450,10 +450,10 @@ async fn before_finalize_inherited_records_count_as_before() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     assert_eq!(marks.offset(&watch_key(&key()), 4), Some(3));
@@ -495,6 +495,7 @@ fn unreachable_reporter() -> (
             token: None,
             incarnation: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
             storage_id: None,
+            held: None,
         },
         shutdown.clone(),
     );
@@ -566,10 +567,10 @@ async fn pass_with_reporter<R: PeerRequester + Sync>(
     reporter: &crate::reporter::Reporter,
 ) {
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     replicate_once(
         followers,
@@ -709,10 +710,10 @@ async fn a_report_says_by_round_only_off_the_lease() {
             &router,
             &marks,
             Some(&reporter),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
         )
         .await;
         let report = pass.reports.last().expect("a report");
@@ -942,10 +943,10 @@ async fn a_recreate_at_the_same_generation_does_not_inherit_the_mark() {
     let router = router(LOCAL, &["broker-b"], 4);
     let marks = QuorumMarks::new();
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
     let pass = replicate_once(
         &AcceptingFollower::default(),
@@ -1015,7 +1016,8 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
         let dead = &dead;
         let router = &router;
         async move {
-            let (_, _, outcome, _) = fence_one(dead, &broker, router, key(), route, &marks).await;
+            let (_, _, outcome, _) =
+                fence_one(dead, &broker, router, key(), route, &marks, false).await;
             outcome
         }
     };
@@ -1038,6 +1040,70 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
     // No fleet at all (no control plane): the lease is still the fallback.
     let outcome = fence(QuorumMarks::new()).await;
     assert!(matches!(outcome, Outcome::Lease { .. }), "{outcome:?}");
+}
+
+/// **A gate seeded with `replica_election` and its prerequisites fences
+/// before registration; one missing any of them waits.** A broker starting from a
+/// persisted fleet view knows those features are on (finalizing is one-way),
+/// and a pass reads nothing else, so it need not wait for the control plane.
+/// Missing `joint_fence`, it would fence the new set alone while the fleet may
+/// require both.
+#[tokio::test(start_paused = true)]
+async fn a_seeded_gate_fences_before_registration_only_with_what_it_reads() {
+    use felix_common::fleet::{FleetGate, JOINT_FENCE, REPLICA_ELECTION, prerequisites};
+
+    let (broker, _dir) = leader_with(3).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let route = router
+        .snapshot()
+        .iter()
+        .find(|(shard, _)| **shard == key())
+        .map(|(_, route)| route.clone())
+        .expect("routed");
+    let dead = UnreachableFollowers {
+        handshake: Duration::from_millis(1),
+    };
+    let names: Vec<&str> = prerequisites(REPLICA_ELECTION.name())
+        .iter()
+        .map(|feature| feature.name())
+        .chain([REPLICA_ELECTION.name()])
+        .collect();
+    let waits_for_the_fleet = |persisted: &[&str]| {
+        let marks = QuorumMarks::with_fleet(Arc::new(FleetGate::seeded(
+            names.iter().copied(),
+            persisted,
+        )));
+        let broker = Arc::clone(&broker);
+        let route = route.clone();
+        let dead = &dead;
+        let router = &router;
+        async move {
+            let (_, _, outcome, _) =
+                fence_one(dead, &broker, router, key(), route, &marks, false).await;
+            match outcome {
+                Outcome::Pending { why, .. } => why.contains("fleet features"),
+                // Never the lease: follower acks are on.
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    assert!(
+        !waits_for_the_fleet(&names).await,
+        "a gate seeded with everything a pass reads still waited for registration",
+    );
+    let without_joint: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| *name != JOINT_FENCE.name())
+        .collect();
+    assert!(waits_for_the_fleet(&without_joint).await);
+    let without_election: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| *name != REPLICA_ELECTION.name())
+        .collect();
+    assert!(waits_for_the_fleet(&without_election).await);
 }
 
 /// Followers that already hold exactly `.0` and answer any request with it.
@@ -1086,10 +1152,10 @@ async fn a_leader_on_an_emptied_log_is_not_left_settling() {
         &router,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let page = broker
@@ -1146,10 +1212,10 @@ async fn a_learners_answer_does_not_move_the_mark_until_it_is_readmitted() {
     let marks = QuorumMarks::new();
     let watched = watch_key(&key());
     let (mut cursors, mut group, mut dead, mut counters) = (
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
-        HashMap::new(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
     );
 
     let pass = replicate_once(

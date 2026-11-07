@@ -114,10 +114,10 @@ async fn pass(
         router,
         marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let started = pass.reports.first().and_then(|report| {
@@ -206,10 +206,10 @@ async fn a_stream_not_acknowledging_at_quorum_reports_no_joint_start() {
         &router,
         &marks(true),
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -267,10 +267,10 @@ async fn a_report_lists_the_followers_holding_the_generations_start() {
                 &router,
                 &marks,
                 None,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
             )
             .await
         } else {
@@ -280,10 +280,10 @@ async fn a_report_lists_the_followers_holding_the_generations_start() {
                 &router,
                 &marks,
                 None,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
             )
             .await
         };
@@ -386,10 +386,10 @@ async fn cache_pass(
         router,
         marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let report = pass
@@ -636,10 +636,10 @@ async fn the_joint_start_waits_for_the_current_stints_start() {
             &router,
             &marks(true),
             None,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
         )
         .await;
 
@@ -722,10 +722,10 @@ async fn the_counter_logs_joint_start_waits_for_the_current_stints_start() {
                 &router,
                 &marks,
                 None,
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
-                &mut HashMap::new(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
+                &mut HashMap::default(),
             )
             .await;
 

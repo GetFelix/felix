@@ -107,6 +107,11 @@ pub struct ReportTo<L = crate::controlplane_link::HttpControlPlaneLink> {
     /// placement can tell when the leader's data directory is no longer the
     /// one it reported from. `None` without durable storage.
     pub storage_id: Option<StorageId>,
+    /// Until cancelled, every report is refused unsent. Set on a broker that
+    /// started from its control-plane view: until the control plane has
+    /// confirmed the data directory is not a restored copy, nothing may
+    /// announce its storage id or offsets as current.
+    pub held: Option<CancellationToken>,
 }
 
 /// The token a report is sent with.
@@ -155,9 +160,11 @@ pub struct ShardReport {
     pub node_incarnations: Vec<(String, Option<u64>)>,
     /// For each follower with no entry in `storage_ids`, the identity (32
     /// hex digits) the assignment that promoted this leader named for it,
-    /// where it named one. This leader has not reached such a follower at
-    /// its generation, so every acknowledgement the follower gave went to an
-    /// earlier leader, from the copy that assignment named or one before it.
+    /// where it named one, or after a set change that kept this leader, the
+    /// one it named the follower by at its previous generation. This leader
+    /// has not reached such a follower at its generation, so every
+    /// acknowledgement the follower gave went to an earlier generation, from
+    /// the copy named or one before it.
     /// Storage identities never repeat, so a fence answer under that
     /// identity comes from a copy that has kept all of it.
     pub inherited_storage: Vec<(String, String)>,
@@ -328,11 +335,42 @@ pub(super) fn moving(followers: &[FollowerCursor]) -> Vec<(String, u64)> {
         .collect()
 }
 
+/// The refusal last reported for each shard, repeated on every later report
+/// at its generation.
+///
+/// The control plane keeps one report per shard, the last, and an open
+/// leader's passes keep reporting after a refusal. Without the repeat a pass
+/// report would replace the refusal before placement read it, and the shard
+/// would never be named again. A report at a later generation means the
+/// control plane acted, and ends it.
+#[derive(Default)]
+struct Refusals(BTreeMap<ShardKey, (u64, RefusedGeneration)>);
+
+impl Refusals {
+    /// The refusal `report` should carry that it does not carry itself.
+    /// Only at the same stream incarnation: a stream recreated under the
+    /// name can come back at the old one's generation.
+    fn carry(&mut self, report: &ShardReport) -> Option<RefusedGeneration> {
+        if let Some(refused) = &report.refused {
+            self.0
+                .insert(report.key.clone(), (report.incarnation, refused.clone()));
+            return None;
+        }
+        let (incarnation, held) = self.0.get(&report.key)?;
+        if report.incarnation != *incarnation || report.generation > held.generation {
+            self.0.remove(&report.key);
+            return None;
+        }
+        (report.generation == held.generation && !report.given_up).then(|| held.clone())
+    }
+}
+
 async fn flush_loop<L: ControlPlaneLink>(
     to: ReportTo<L>,
     mut rx: mpsc::Receiver<Pending>,
     shutdown: CancellationToken,
 ) {
+    let mut refusals = Refusals::default();
     loop {
         let first = tokio::select! {
             _ = shutdown.cancelled() => break,
@@ -356,7 +394,11 @@ async fn flush_loop<L: ControlPlaneLink>(
         metrics::histogram!(super::metrics::REPORTS_PER_REQUEST).record(batch.len() as f64);
         let reports: Vec<ShardReport> =
             batch.iter().map(|pending| pending.report.clone()).collect();
-        let landed = send_reports(&to, &reports).await;
+        let carried: Vec<Option<RefusedGeneration>> = reports
+            .iter()
+            .map(|report| refusals.carry(report))
+            .collect();
+        let landed = send_reports(&to, &reports, &carried).await;
 
         // Each caller hears about its own shard: a report the control plane
         // refused must not move that shard's mark, whatever happened to the
@@ -381,11 +423,21 @@ async fn flush_loop<L: ControlPlaneLink>(
 /// reports is worse than none, since promotion is gated on *recent* positions.
 /// The answer instead gates the quorum mark, so "could not tell" reads as
 /// false — see the caller.
-async fn send_reports<L: ControlPlaneLink>(to: &ReportTo<L>, reports: &[ShardReport]) -> Vec<bool> {
+///
+/// `carried` holds, by position, a refusal sent earlier that a report without
+/// one repeats (see [`Refusals`]).
+async fn send_reports<L: ControlPlaneLink>(
+    to: &ReportTo<L>,
+    reports: &[ShardReport],
+    carried: &[Option<RefusedGeneration>],
+) -> Vec<bool> {
     if reports.is_empty() {
         return Vec::new();
     }
     let refused = || vec![false; reports.len()];
+    if to.held.as_ref().is_some_and(|held| !held.is_cancelled()) {
+        return refused();
+    }
     // The shared type, not a `json!` literal: the control plane parses this
     // same definition, so a field renamed on one side stops compiling instead
     // of quietly arriving as a missing one.
@@ -393,7 +445,8 @@ async fn send_reports<L: ControlPlaneLink>(to: &ReportTo<L>, reports: &[ShardRep
         incarnation: to.incarnation.load(std::sync::atomic::Ordering::Acquire),
         shards: reports
             .iter()
-            .map(|report| ShardReplicaStatus {
+            .enumerate()
+            .map(|(i, report)| ShardReplicaStatus {
                 tenant_id: report.key.tenant_id.clone(),
                 namespace: report.key.namespace.clone(),
                 stream: report.key.stream.clone(),
@@ -446,7 +499,10 @@ async fn send_reports<L: ControlPlaneLink>(to: &ReportTo<L>, reports: &[ShardRep
                 joint_start_acked: report.joint_start_acked,
                 holds_start: report.holds_start.iter().cloned().collect(),
                 elected: report.elected.clone(),
-                refused: report.refused.clone(),
+                refused: report
+                    .refused
+                    .clone()
+                    .or_else(|| carried.get(i).cloned().flatten()),
             })
             .collect(),
     };

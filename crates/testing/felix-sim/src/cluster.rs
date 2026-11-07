@@ -4,7 +4,7 @@
 //! data directory), one [`SimControlPlane`] and one [`SimNet`], all in one
 //! process on a paused, single-threaded tokio runtime. Nothing here touches a
 //! socket, and waiting costs no real time, but opening each shard's log does,
-//! so a run takes minutes of real time for two minutes of cluster time.
+//! so a run takes seconds of real time (release) for two minutes of cluster time.
 //!
 //! [`SimCluster::start`] builds the cluster and waits until it works:
 //!
@@ -26,11 +26,28 @@
 //! A crash stops every task of the broker at once and drops its in-memory
 //! state, with no drain, deregistration or handoff. The data directory keeps
 //! whatever the broker had written, which is what a process crash leaves: the
-//! kernel keeps its page cache. It is not a power cut, so no unsynced bytes
-//! are lost. A restart opens the same directory as a new incarnation.
+//! kernel keeps its page cache, so no unsynced bytes are lost. A restart opens
+//! the same directory as a new incarnation.
+//!
+//! [`SimCluster::crash`] records the stop as clean. [`SimCluster::kill`]
+//! leaves the run state as a kill after a failed fsync does, so the restart
+//! takes a new storage id and runs `UncleanStart`.
+//!
+//! # What a power loss is
+//!
+//! [`SimCluster::power_loss`] cuts the power under one broker's data
+//! directory, in a run that fsyncs on commit. The cut lands inside the next
+//! append to one of its logs, so that append comes back torn, and every
+//! unsynced byte elsewhere may be lost or torn (`felix_storage::sim_fs`). The
+//! broker stops in the same instant, and its directory comes back as the
+//! device held it. Recovery must repair the torn tail on the restart; the
+//! [`TornTailRepaired`](crate::check::TornTailRepaired) checker says whether
+//! it did.
 
 mod census;
+pub(crate) mod kills;
 mod node;
+pub(crate) mod power;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -49,8 +66,14 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub use self::census::{Census, NodeView};
+use self::kills::KillLog;
 use self::node::Node;
-use crate::controlplane::{CpConfig, SimControlPlane};
+use self::power::PowerLog;
+pub use self::power::PowerLoss;
+use crate::clock::{self, Owner};
+use crate::controlplane::{Answer, CpConfig, SimControlPlane};
+use crate::nemesis::Stop;
+use crate::nemesis::clocks::{ClockPlan, ClockSkew};
 use crate::net::{Link, SimNet};
 
 /// The tenant, namespace, stream and cache every run uses.
@@ -82,6 +105,11 @@ pub struct SimConfig {
     pub settle_within: Duration,
     /// Whether to inject faults at all.
     pub faults: bool,
+    /// Whether the nemesis also acts as an operator on placement: moves,
+    /// drains, seat replacement, node removal, abandoned logs and kills
+    /// between promotion and open. Off by default, so a seed's schedule stays
+    /// what it was; [`SimConfig::with_placement_faults`] turns it on.
+    pub placement_faults: bool,
     /// The most real time a run may take, startup included. A run past it
     /// stops and reports a stall. Separately, a run whose virtual time stands
     /// still for four minutes of real time stalls: a broker loop that never
@@ -91,7 +119,19 @@ pub struct SimConfig {
     /// [`SimBrokerConfig::fsync_mode`](felix_broker_service::sim::SimBrokerConfig::fsync_mode)
     /// for what a restart does to the storage id under it.
     pub fsync_mode: FsyncMode,
+    /// Crashes that would be kills cut the power instead. Needs
+    /// `FsyncMode::OnCommit`: under the others a broker acknowledges records
+    /// it has not synced, and the simulator cannot make the restart see a new
+    /// boot of the machine, which is how a real broker learns to doubt them.
+    pub power_loss: bool,
     pub controlplane: CpConfig,
+    /// Whether each node's clocks are skewed, and how far
+    /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
+    /// `--cfg tokio_unstable`.
+    pub clocks: ClockSkew,
+    /// A clock plan to use instead of drawing one from the seed under
+    /// `clocks`, to pin a particular skew.
+    pub clock_plan: Option<ClockPlan>,
 }
 
 impl SimConfig {
@@ -109,10 +149,42 @@ impl SimConfig {
             fault_window: Duration::from_secs(90),
             settle_within: Duration::from_secs(60),
             faults: true,
+            placement_faults: false,
             real_time_limit: Duration::from_secs(480),
             fsync_mode: FsyncMode::None,
+            power_loss: false,
             controlplane: CpConfig::default(),
+            clocks: ClockSkew::Off,
+            clock_plan: None,
         }
+    }
+
+    /// Whether any node's clock differs from the shared one.
+    pub fn skews_clocks(&self) -> bool {
+        self.clocks != ClockSkew::Off || self.clock_plan.is_some()
+    }
+}
+
+/// Copies placement may have in flight at once with placement faults on. The
+/// default of one would leave a drain moving a shard at a time, too slow for
+/// two promotions to land on a shard while its seat is being replaced.
+const PLACEMENT_FAULT_MOVES: usize = 4;
+
+impl SimConfig {
+    /// The same run with placement faults on (see
+    /// [`SimConfig::placement_faults`]).
+    pub fn with_placement_faults(mut self) -> Self {
+        self.placement_faults = true;
+        self.controlplane.moves.max_concurrent = PLACEMENT_FAULT_MOVES;
+        self
+    }
+
+    /// The same run with power cuts in place of kills (see
+    /// [`SimConfig::power_loss`]), on brokers that fsync on commit.
+    pub fn with_power_loss(mut self) -> Self {
+        self.power_loss = true;
+        self.fsync_mode = FsyncMode::OnCommit;
+        self
     }
 }
 
@@ -131,12 +203,16 @@ pub struct NodeHandles {
     pub marks: Arc<QuorumMarks>,
     /// Cancelled when this incarnation crashes.
     pub crashed: CancellationToken,
+    /// Whether the run cuts the power ([`SimConfig::power_loss`]).
+    pub power_loss: bool,
 }
 
 /// The cluster. Cloning the `Arc` is how tasks share it.
 pub struct SimCluster {
     pub config: SimConfig,
     pub seed: u64,
+    /// Each node's clocks at the start and the changes the run makes.
+    pub clock_plan: ClockPlan,
     cp: SimControlPlane,
     net: SimNet,
     nodes: Vec<Node>,
@@ -146,6 +222,8 @@ pub struct SimCluster {
     stalled: CancellationToken,
     /// Tells the stall watch to stop when the cluster is dropped.
     done: Arc<AtomicBool>,
+    kills: parking_lot::Mutex<KillLog>,
+    power: parking_lot::Mutex<PowerLog>,
 }
 
 impl Drop for SimCluster {
@@ -160,8 +238,23 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
-        crate::clock::install();
-        let cp = SimControlPlane::new(config.controlplane.clone()).await?;
+        if config.power_loss && config.fsync_mode != FsyncMode::OnCommit {
+            bail!(
+                "power loss needs FsyncMode::OnCommit, not {:?}",
+                config.fsync_mode
+            );
+        }
+        let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
+            ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
+        });
+        clock::install(clock_plan.initial.clone());
+        // Election backoff draws its jitter on this thread.
+        felix_common::jitter::sim::seed(seed);
+        let cp = clock::on(
+            Owner::ControlPlane,
+            SimControlPlane::new(config.controlplane.clone()),
+        )
+        .await?;
         let net = SimNet::new(PeerTransportConfig::default(), seed);
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
@@ -170,6 +263,7 @@ impl SimCluster {
         let cluster = Arc::new(Self {
             config,
             seed,
+            clock_plan,
             cp,
             net,
             nodes,
@@ -177,6 +271,8 @@ impl SimCluster {
             starts: AtomicU64::new(0),
             stalled,
             done,
+            kills: Default::default(),
+            power: Default::default(),
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -230,19 +326,21 @@ impl SimCluster {
     /// for one. A paused or down control plane is not stepped.
     fn spawn_controlplane_driver(&self) {
         let cp = self.cp.clone();
-        tokio::spawn(async move {
-            let config = cp.config().clone();
-            let mut sweep = tokio::time::interval(config.sweep_interval());
-            let mut reconcile = tokio::time::interval(config.reconcile_interval());
-            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = sweep.tick() => { cp.sweep().await; }
-                    _ = reconcile.tick() => { cp.reconcile().await; }
-                    () = cp.pass_requested() => { cp.reconcile().await; }
+        clock::as_owner(Owner::ControlPlane, || {
+            tokio::spawn(async move {
+                let config = cp.config().clone();
+                let mut sweep = tokio::time::interval(config.sweep_interval());
+                let mut reconcile = tokio::time::interval(config.reconcile_interval());
+                sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = sweep.tick() => { cp.sweep().await; }
+                        _ = reconcile.tick() => { cp.reconcile().await; }
+                        () = cp.pass_requested() => { cp.reconcile().await; }
+                    }
                 }
-            }
+            })
         });
     }
 
@@ -322,9 +420,124 @@ impl SimCluster {
     }
 
     /// Stop the broker at `index` as a crash does, whether it is running or
-    /// still starting. A no-op on one that is down.
+    /// still starting, and record the stop as clean. A no-op on one that is
+    /// down.
     pub async fn crash(&self, index: usize) {
-        self.nodes[index].crash(&self.net).await;
+        self.nodes[index].crash(&self.net, Stop::Clean).await;
+    }
+
+    /// Like [`Self::crash`], but the data directory is left as a kill does
+    /// when the run may have lost records it acknowledged: the next start
+    /// takes a new storage id and runs its unclean-start handling. Only a
+    /// run that does not fsync on commit (the default) can be left that way.
+    pub async fn kill(&self, index: usize) {
+        let at = self.elapsed();
+        // Read from the store before the stop, so the view is the one the
+        // broker died under.
+        let mut view = self.cp.shard_views().await.unwrap_or_default();
+        let node = &self.nodes[index];
+        let unopened: std::collections::BTreeSet<String> = self
+            .shard_keys()
+            .filter(|key| {
+                node.stand(key)
+                    .is_some_and(|stand| stand.opened_generation.is_none())
+            })
+            .map(|key| describe(&key))
+            .collect();
+        // Named leader but not open yet: it acknowledged nothing as leader.
+        kills::leave_out_unopened(&mut view, &node.id, &unopened);
+        if self.nodes[index].crash(&self.net, Stop::Kill).await {
+            self.kills.lock().kill(&self.nodes[index].id, at, view);
+        }
+    }
+
+    /// Cut the power under the broker at `index`, running or starting, and
+    /// leave it down with what its device held. The cut waits up to
+    /// [`power::APPEND_WITHIN`] for an append to land in, then goes without
+    /// one. Returns whether it landed in an append. A no-op that returns
+    /// `false` on a broker that is down.
+    pub async fn power_loss(self: &Arc<Self>, index: usize) -> bool {
+        if self.nodes[index].is_down() {
+            return false;
+        }
+        let at = self.elapsed();
+        let view = self.cp.shard_views().await.unwrap_or_default();
+        let node = &self.nodes[index];
+        let seed = self.seed ^ self.power.lock().next_seed();
+        let repaired_before = node.torn_tails_repaired().len();
+        let cut = CancellationToken::new();
+        let torn_slot = Arc::new(parking_lot::Mutex::new(None));
+        node.arm_power_cut(seed, {
+            let (cluster, cut, slot) = (Arc::downgrade(self), cut.clone(), Arc::clone(&torn_slot));
+            move |segment: &std::path::Path, from: u64| {
+                // Inside the broker's write: stop it before it runs on.
+                if let Some(cluster) = cluster.upgrade() {
+                    cluster.nodes[index].power_off(&cluster.net);
+                }
+                *slot.lock() = Some((segment.to_path_buf(), from));
+                cut.cancel();
+            }
+        });
+        let mid_append = tokio::select! {
+            biased;
+            () = cut.cancelled() => true,
+            () = tokio::time::sleep(power::APPEND_WITHIN) => false,
+        };
+        let torn = torn_slot.lock().take();
+        if !mid_append {
+            node.cut_power(seed);
+            node.power_off(&self.net);
+        }
+        node.crash(&self.net, Stop::PowerLoss).await;
+        node.reboot();
+        // A segment whose name did not survive, or that holds nothing past
+        // where the append began, leaves recovery nothing to repair.
+        let torn =
+            torn.filter(|(segment, from)| power::needs_repair(node.file_len(segment), *from));
+        let torn = torn.map(|(segment, _)| segment);
+        self.power.lock().record(PowerLoss {
+            node: index,
+            at,
+            torn,
+            repaired_before,
+            view,
+            restarted_at: None,
+        });
+        mid_append
+    }
+
+    /// Every power loss so far.
+    pub fn power_losses(&self) -> Vec<PowerLoss> {
+        self.power.lock().losses().to_vec()
+    }
+
+    /// The segments, below the data directory, whose torn tails recovery
+    /// repaired on the broker at `index`, in order over the whole run.
+    pub fn torn_tails_repaired(&self, index: usize) -> Vec<std::path::PathBuf> {
+        self.nodes[index].torn_tails_repaired()
+    }
+
+    /// Shards (`stream/3`) the broker holds on purpose after unclean kills,
+    /// until an operator abandons a member, so they are not expected to be
+    /// served. See `kills.rs` for the rule.
+    pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
+        self.kills.lock().held()
+    }
+
+    /// Abandon `key`'s log through the operator API. On success the shard is
+    /// no longer held.
+    pub async fn abandon(&self, key: &ShardKey) -> Answer {
+        let answer = self.cp.abandon(key).await;
+        if answer.ok {
+            self.kills.lock().abandon(&describe(key), self.elapsed());
+        }
+        answer
+    }
+
+    /// Whether the broker at `index` is running and started after an unclean
+    /// stop.
+    pub fn started_unclean(&self, index: usize) -> Option<bool> {
+        self.nodes[index].started_unclean()
     }
 
     /// Start the broker at `index` on its data directory, as a new
@@ -336,6 +549,9 @@ impl SimCluster {
         let Some(start) = self.nodes[index].begin_start() else {
             return;
         };
+        let now = self.elapsed();
+        self.kills.lock().restart(&self.nodes[index].id, now);
+        let lost_power = self.power.lock().restart(index, now);
         let cluster = Arc::clone(self);
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
         tokio::spawn(async move {
@@ -347,6 +563,17 @@ impl SimCluster {
             if let Err(err) = booted {
                 tracing::error!(node = %node.id, error = %format!("{err:#}"), "broker did not start");
                 node.start_failed(&start);
+                return;
+            }
+            // A broker that doubts what it acknowledged before the power went
+            // holds shards as it does after a kill, so the copy counts as one.
+            if let Some(loss) = lost_power
+                && node.started_unclean() == Some(true)
+            {
+                cluster
+                    .kills
+                    .lock()
+                    .doubted(&node.id, loss.at, now, loss.view);
             }
         });
     }

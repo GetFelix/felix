@@ -11,8 +11,9 @@
 //! before the route's, as the model's `Swap` takes it (`oldSet' = CpSet`).
 //! A cut-over the control plane holds as pending names it on the route.
 //! Otherwise it comes from the assignment this broker's watch saw at that
-//! generation, from the set the leader before shipped with at it, or from
-//! what this leader kept beside its own set. When none of those knows it, the fence
+//! generation (also after a rename past a ballot, which names the generation
+//! it replaced, #2024), from the set the leader before shipped with at it, or
+//! from what this leader kept beside its own set. When none of those knows it, the fence
 //! stays pending: fencing the new set alone could leave a majority of the old
 //! one that never heard of the change.
 //!
@@ -49,6 +50,7 @@ pub struct Joint<'a> {
     prior: Option<PriorSet>,
     local_storage: Option<StorageId>,
     replaced: bool,
+    continuing: bool,
 }
 
 impl<'a> Joint<'a> {
@@ -61,7 +63,28 @@ impl<'a> Joint<'a> {
             prior,
             local_storage: None,
             replaced: false,
+            continuing: false,
         }
+    }
+
+    /// Whether the generation fenced continues one this process served
+    /// itself ([`crate::promotion::PromotionGate::continuing`]). Its fence
+    /// then also counts a promise from a copy the sets do not name, when the
+    /// answer attests a kept ballot naming this broker at the generation
+    /// before: nothing it acknowledged can be missing here, and that copy
+    /// promised this generation to no one else.
+    pub fn with_continuing(mut self, continuing: bool) -> Self {
+        self.continuing = continuing;
+        self
+    }
+
+    pub(super) fn continuing(&self) -> bool {
+        self.continuing
+    }
+
+    /// Where to reach `node_id`, which the route may not name.
+    pub(super) fn addr_of(&self, node_id: &str) -> Option<SocketAddr> {
+        (self.addr_of)(node_id)
     }
 
     /// This broker's storage identity, so a promotion can tell a copy a set
@@ -144,6 +167,11 @@ pub(super) struct JointSets {
     local: String,
 }
 
+/// A fence answer: the node, the copy its handshake named, and whether it
+/// attested a kept ballot to a continuing leader, which then counts it from
+/// any copy.
+pub(super) type Answered<'n> = (&'n str, Option<StorageId>, bool);
+
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
 /// that copy: another copy under the same node id holds nothing this set
@@ -206,19 +234,17 @@ impl JointSets {
         self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, each with the copy its handshake named, is with
-    /// this broker a majority of the voters of every set. A learner is never
-    /// a voter, so it never counts.
-    pub(super) fn has_majorities<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> bool {
+    /// Whether `answered`, each with the copy its handshake named and
+    /// whether a continuing leader counts it from any copy, is with this
+    /// broker a majority of the voters of every set. A learner is never a
+    /// voter, so it never counts.
+    pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> bool {
         let answered: Vec<_> = answered.collect();
         self.old_voters
             .iter()
             .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
             && self.majority(&self.new_voters, |v| {
-                answered.iter().any(|(node, _)| *node == v)
+                answered.iter().any(|(node, _, _)| *node == v)
             })
     }
 
@@ -233,15 +259,10 @@ impl JointSets {
             .all(|voters| self.majority(voters, |v| nodes.contains(v)))
     }
 
-    fn answered_for(
-        &self,
-        old: &OldVoters,
-        answered: &[(&str, Option<StorageId>)],
-        voter: &str,
-    ) -> bool {
+    fn answered_for(&self, old: &OldVoters, answered: &[Answered<'_>], voter: &str) -> bool {
         answered
             .iter()
-            .any(|(node, identity)| *node == voter && old.counts(node, *identity))
+            .any(|(node, identity, kept)| *node == voter && (*kept || old.counts(node, *identity)))
     }
 
     fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
@@ -256,10 +277,7 @@ impl JointSets {
     }
 
     /// How far the answers got, for a fence that stays pending.
-    pub(super) fn shortfall<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> String {
+    pub(super) fn shortfall<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> String {
         let answered: Vec<_> = answered.collect();
         let old = self
             .old_voters
@@ -275,7 +293,7 @@ impl JointSets {
              a majority of each needed",
             self.count(&self.new_voters, |v| answered
                 .iter()
-                .any(|(node, _)| *node == v)),
+                .any(|(node, _, _)| *node == v)),
             self.new_voters.len(),
         )
     }
@@ -295,8 +313,11 @@ pub(crate) enum NoSetBefore {
     /// kept set: no log keeps one there, and no generation precedes it.
     Unknown(u64),
     /// As [`Self::Unknown`], but this log keeps the set of an older
-    /// generation than the one before: this broker never opened the
-    /// generation in between, whose set a rename would leave unfenced.
+    /// generation than the one before: this broker may never have opened
+    /// the generation in between, whose set a rename would leave unfenced.
+    /// [`sets`] returns [`Self::Unknown`] instead when this broker's own
+    /// ballot and start record at this generation show its election opened
+    /// it.
     Skipped(u64),
     /// As [`Self::Unknown`], but this log keeps no set and nothing says the
     /// route is the shard's first assignment. An earlier set may hold
@@ -569,6 +590,38 @@ pub(super) async fn sets<R: PeerRequester>(
         {
             return Err(NoSetBefore::NotOpened(generation));
         }
+        // A leader elected at a generation the control plane then adopted
+        // keeps the set it stood on, from an older generation, and after a
+        // restart nothing here names the set at the one before. A candidate
+        // stands only on the set the control plane records, and adoption
+        // keeps it, so that kept set is the one before, and the rename fences
+        // it beside the control plane's. The evidence: its own ballot and
+        // start record here (a ballot alone may be a withdrawn standing), and
+        // the kept set naming exactly the route's set on the same copies with
+        // nothing pending and nothing else kept beside it. These do not prove
+        // the open was fenced; the unfenced opens that also leave them are
+        // covered in docs/replication-design.md, "Planned handoff".
+        Err(NoSetBefore::Skipped(generation))
+            if log.accepted_generation() == generation
+                && log.accepted_leader().as_deref() == Some(local_node_id)
+                && log
+                    .generations()
+                    .iter()
+                    .any(|epoch| epoch.generation == generation)
+                && route.pending.is_none()
+                && stored.as_ref().is_some_and(|stored| {
+                    // A set left on the same copies is the one a plain bump
+                    // leaves, which the candidate stands on too.
+                    stored
+                        .leaving
+                        .as_ref()
+                        .is_none_or(|leaving| same_set(leaving, &stored.current))
+                        && stored.earlier.is_empty()
+                        && names_the_route_set(&stored.current, route)
+                }) =>
+        {
+            return Err(NoSetBefore::Unknown(generation));
+        }
         before => before?,
     };
     let before = match before {
@@ -593,6 +646,23 @@ pub(super) async fn sets<R: PeerRequester>(
         besides.extend(unopened);
     }
     Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
+}
+
+/// Whether `kept` names exactly `route`'s set: the same voters, none a learner
+/// or wiped, each on the copy the route names. A copy either side leaves
+/// unnamed may be another one, so it does not match.
+fn names_the_route_set(kept: &Membership, route: &Route) -> bool {
+    let routed = crate::replica_set::kept(route, None).current;
+    kept.members.len() == routed.members.len()
+        && kept.members.iter().all(|member| {
+            !member.learner
+                && !member.wiped
+                && member.storage.is_some()
+                && routed
+                    .members
+                    .iter()
+                    .any(|named| named.node == member.node && named.storage == member.storage)
+        })
 }
 
 /// The fence for `route` leaving `before`, and each of `besides` when more

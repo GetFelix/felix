@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::{DiskLog, layout};
 use crate::incarnation::{self, Incarnations};
@@ -67,8 +67,8 @@ impl DiskLogProvider {
             open_logs: ShardSlots::new(),
             incarnations: Incarnations::default(),
             dirs: Default::default(),
-            stream_retention: parking_lot::RwLock::new(HashMap::new()),
-            stream_hold: parking_lot::RwLock::new(HashMap::new()),
+            stream_retention: parking_lot::RwLock::new(HashMap::default()),
+            stream_hold: parking_lot::RwLock::new(HashMap::default()),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })
@@ -122,6 +122,20 @@ impl DiskLogProvider {
         incarnation: u64,
     ) -> Result<DiskLog> {
         self.open_with(shard, base_offset, Some(incarnation))
+    }
+
+    /// What [`Self::open_incarnation`] would return, when the log is open
+    /// already; `None` without creating, recovering or waiting otherwise.
+    /// `None` for `incarnation` checks nothing, as [`Self::open_shard`] does.
+    pub fn opened_incarnation(
+        &self,
+        shard: &ShardKey,
+        incarnation: Option<u64>,
+    ) -> Option<DiskLog> {
+        let held = self
+            .incarnation_of(shard)
+            .filter(|held| incarnation.is_none_or(|expected| expected == *held))?;
+        self.open_logs.get_open(&(shard.clone(), held))
     }
 
     /// Close `shard`'s log and forget it, for a shard this broker no longer

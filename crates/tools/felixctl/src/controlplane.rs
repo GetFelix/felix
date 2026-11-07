@@ -12,10 +12,11 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::cli::{NamespaceCommand, NodeCommand, ShardCommand, StreamCommand, TenantCommand};
-use crate::context::Settings;
+use crate::context::{Settings, read_file_message};
 use crate::error::{Exit, MarkExit, fail};
 use crate::manage;
 use crate::output::{Output, cell, fields, table};
+use crate::placement;
 
 /// Page size asked for when listing; the CLI follows `next_cursor` either way.
 const PAGE_LIMIT: &str = "1000";
@@ -92,7 +93,10 @@ impl Api {
             .to_string();
         let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(10));
         if let Some(path) = &settings.controlplane_ca_file {
-            let pem = std::fs::read(path).mark(Exit::Usage, format!("read {}", path.display()))?;
+            let pem = std::fs::read(path).mark(
+                Exit::Usage,
+                read_file_message("--controlplane-ca-file", path),
+            )?;
             for cert in reqwest::Certificate::from_pem_bundle(&pem)
                 .mark(Exit::Usage, format!("parse {}", path.display()))?
             {
@@ -389,6 +393,7 @@ pub(crate) async fn shard(
     let (leader, name) = match command {
         ShardCommand::Ls { leader, name } => (leader, name),
         ShardCommand::Move(args) => return manage::shard_move(&api, settings, args, out).await,
+        ShardCommand::Moves => return placement::moves(&api, out).await,
     };
     let assignments = assignments(&api, leader.as_deref()).await?;
     let assignments = assignments

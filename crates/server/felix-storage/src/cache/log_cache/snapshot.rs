@@ -55,7 +55,7 @@ impl CacheShard {
         // but costs a full replay; flushing them first avoids that.
         log.sync().await?;
         let dir = self.dir.clone();
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             index_snapshot::write_temporary(&dir, &header, &mut entries)
         })
         .await
@@ -82,7 +82,7 @@ impl CacheShard {
     pub(super) async fn restore(&self, state: &ShardState, stop: u64) -> Option<Index> {
         let base = state.log.base_offset();
         let dir = self.dir.clone();
-        let loaded = tokio::task::spawn_blocking(move || load(&dir, base, stop))
+        let loaded = felix_common::blocking::spawn(move || load(&dir, base, stop))
             .await
             .unwrap_or_else(|err| Err(Rejected(format!("the load failed: {err}"))));
         let checked = match loaded {

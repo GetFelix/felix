@@ -776,6 +776,7 @@ async fn shard_renewal_waits_for_every_member() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -862,6 +863,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
                 })
                 .await
                 .expect("assign");
@@ -1060,6 +1062,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1135,6 +1138,347 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
     }
 }
 
+/// A member before level 28 would drop a refusal's ballot and take the next
+/// generation where the others take one past the ballot (#1951). So while
+/// one is in the group the ballot is dropped from the report and the write
+/// takes the next generation on every member; once every member has the
+/// level, both are kept.
+#[tokio::test]
+async fn a_refused_ballot_waits_for_every_member() {
+    use crate::model::{ReplicaReport, ShardAssignment, ShardKey, ShardKind, ShardState};
+    use felix_common::membership::RefusedGeneration;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), REFUSED_BALLOT_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assignment = ShardAssignment {
+        key: key.clone(),
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let report = |generation: u64, reported_at_millis: u64| ReplicaReport {
+        inherited_storage: Default::default(),
+        given_up: false,
+        counter_offsets: Default::default(),
+        stream_incarnation: None,
+        by_round: false,
+        leader_incarnation: None,
+        key: key.clone(),
+        generation,
+        caught_up: Default::default(),
+        offsets: Default::default(),
+        reported_at_millis,
+        drained: false,
+        leader_offset: None,
+        halted: Default::default(),
+        leader: None,
+        node_incarnations: Default::default(),
+        follower_storage: Default::default(),
+        joint_start_acked: None,
+        refused: Some(RefusedGeneration::above(generation, generation + 3)),
+        holds_start: Default::default(),
+    };
+    let held_ballot = || async {
+        store
+            .list_replica_reports()
+            .await
+            .expect("reports")
+            .into_iter()
+            .find(|held| held.key == key)
+            .and_then(|held| held.refused)
+            .map(|refused| refused.ballot)
+    };
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written.generation,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    assert_eq!(
+        store
+            .record_replica_report(report(assigned.generation, 1), "broker-x")
+            .await
+            .expect("recorded without the ballot"),
+        crate::store::ReportWrite::Stored
+    );
+    assert_eq!(held_ballot().await, Some(0));
+    let one_up = rename(assigned.generation).await;
+    assert_eq!(
+        one_up,
+        assigned.generation + 1,
+        "named one up below its level"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut reported_at = 2;
+    loop {
+        store
+            .record_replica_report(report(one_up, reported_at), "broker-x")
+            .await
+            .expect("record");
+        reported_at += 1;
+        if held_ballot().await == Some(one_up + 3) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the ballot is still dropped after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(rename(one_up).await, one_up + 4);
+}
+
+/// A member before level 29 would not record the generation a rename past a
+/// ballot replaced, and its copy of the assignment would differ from the
+/// others' (#2024). So while one is in the group nothing is recorded; once
+/// every member has the level, the rename names it.
+#[tokio::test]
+async fn a_previous_generation_waits_for_every_member() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PREVIOUS_GENERATION_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    let below = rename(assigned.generation).await;
+    assert_eq!(below.generation, assigned.generation + 4);
+    assert_eq!(
+        below.previous_generation, None,
+        "not recorded below its level"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut at = below.generation;
+    loop {
+        let renamed = rename(at).await;
+        if renamed.previous_generation == Some(at) {
+            break;
+        }
+        assert_eq!(renamed.previous_generation, None);
+        at = renamed.generation;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still not recorded after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Under `joint_fence` a rename past a refusal's ballot skips generations, and
+/// a broker that missed the one before has no set to fence against. So while
+/// a member below level 29 is in the group, such a write takes the next
+/// generation; once every member has the level, the floor is carried and the
+/// generation it replaced recorded (#2046).
+#[tokio::test]
+async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let joint = felix_common::fleet::JOINT_FENCE.name();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PREVIOUS_GENERATION_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102)] {
+        store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, port),
+                &[joint],
+            ))
+            .await
+            .expect("register");
+    }
+    let assignment = ShardAssignment {
+        key: ShardKey {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            kind: ShardKind::Stream,
+        },
+        leader: "broker-x".to_string(),
+        replicas: vec!["broker-y".to_string()],
+        generation: 0,
+        state: ShardState::Active,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+    };
+    let assigned = store
+        .put_shard_assignment(assignment.clone())
+        .await
+        .expect("assign");
+    let rename = |expected: u64| {
+        let store = Arc::clone(&store);
+        let assignment = assignment.clone();
+        async move {
+            let fence = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_at_least(assignment, Some(expected), fence, expected + 4)
+                .await
+                .expect("rename")
+            {
+                AssignmentWrite::Written(written) => written,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+
+    assert!(
+        store
+            .finalize_fleet_feature(joint)
+            .await
+            .expect("finalize")
+            .contains(joint)
+    );
+    let below = rename(assigned.generation).await;
+    assert_eq!(
+        below.generation,
+        assigned.generation + 1,
+        "named one up below level {PREVIOUS_GENERATION_LEVEL}"
+    );
+    assert_eq!(below.previous_generation, None);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut at = below.generation;
+    loop {
+        let renamed = rename(at).await;
+        if renamed.generation == at + 4 {
+            assert_eq!(renamed.previous_generation, Some(at));
+            break;
+        }
+        assert_eq!(renamed.generation, at + 1);
+        at = renamed.generation;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the floor still not carried after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// At the level that records a skipped generation the floor is carried,
+/// with or without `joint_fence`; below it only without.
+#[test]
+fn a_ballot_floor_is_carried_from_the_level_its_fence_needs() {
+    use super::honoured_at_least;
+    assert_eq!(honoured_at_least(8, PREVIOUS_GENERATION_LEVEL, true), 8);
+    assert_eq!(honoured_at_least(8, PREVIOUS_GENERATION_LEVEL - 1, true), 0);
+    assert_eq!(honoured_at_least(8, REFUSED_BALLOT_LEVEL, false), 8);
+    assert_eq!(honoured_at_least(8, REFUSED_BALLOT_LEVEL - 1, false), 0);
+}
+
 /// A member before the fence identities would drop them from an assignment it
 /// applies and diverge from the others. So until every member has the level
 /// the assignment is written without them; once it does, they are kept.
@@ -1174,6 +1518,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     };
 
     let written = store
@@ -1251,6 +1596,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1379,6 +1725,7 @@ async fn pending_sets_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1546,6 +1893,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1599,6 +1947,111 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
     assert_eq!(pending.replicas, vec!["broker-x", "broker-z"]);
 }
 
+/// **Below level 27 the shard's own leader elected on another set has only
+/// its generation taken.** A member at 26 applies that form, so every member
+/// does while one is in the group. Once every member is at 27 the leader is
+/// named one past it, leaving the set it opened on for the recorded one
+/// (#1929).
+#[tokio::test]
+async fn its_own_leader_on_another_set_waits_for_every_member() {
+    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), 26).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (node_id, port) in [
+        ("broker-w", 7120),
+        ("broker-x", 7121),
+        ("broker-y", 7122),
+        ("broker-z", 7123),
+    ] {
+        store
+            .register_node(crate::store::contract::nodes::node(node_id, port))
+            .await
+            .expect("register");
+    }
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let assigned = store
+        .put_shard_assignment(ShardAssignment {
+            key: key.clone(),
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            generation: 0,
+            state: ShardState::Assigning,
+            successor: None,
+            joining: None,
+            move_started_at_millis: None,
+            move_reason: None,
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            learners: Default::default(),
+            pending_set: None,
+            previous_generation: None,
+        })
+        .await
+        .expect("assign");
+    // x elected on {w, x, y}, one past whatever the shard is at.
+    let adopt = |current: u64| {
+        store.adopt_elected_leader(
+            &key,
+            current,
+            ElectedLeader {
+                leader: "broker-x".to_string(),
+                generation: current + 1,
+                replicas: vec!["broker-w".to_string(), "broker-y".to_string()],
+                set_generation: assigned.generation,
+            },
+        )
+    };
+    let recorded = match adopt(assigned.generation).await {
+        Ok(crate::store::AssignmentWrite::Written(written)) => written,
+        other => panic!("not recorded: {other:?}"),
+    };
+    assert_eq!(
+        recorded,
+        ShardAssignment {
+            generation: assigned.generation + 1,
+            ..assigned.clone()
+        },
+        "a member at 26 would have applied the older form"
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let named = loop {
+        let current = store.get_shard_assignment(&key).await.expect("get");
+        match adopt(current.generation).await {
+            Ok(crate::store::AssignmentWrite::Written(written))
+                if written.pending_set.is_some() =>
+            {
+                break written;
+            }
+            other => assert!(
+                std::time::Instant::now() < deadline,
+                "still the older form after every member reported the level: {other:?}"
+            ),
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert_eq!(named.leader, "broker-x");
+    assert_eq!(named.replicas, vec!["broker-w", "broker-y"]);
+    let pending = named.pending_set.expect("the recorded set is pending");
+    assert_eq!(pending.generation, named.generation);
+    assert_eq!(pending.replicas, vec!["broker-y", "broker-z"]);
+}
+
 /// A member before level 20 would drop the identities a report inherits from
 /// its leader's promotion, and name a member by none where the rest name it
 /// by them. Until every member has the level they are dropped, which names
@@ -1645,6 +2098,7 @@ async fn inherited_storage_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1760,6 +2214,7 @@ async fn learners_wait_for_every_member() {
         member_storage_ids: [("broker-y".to_string(), id.clone())].into(),
         learners: ["broker-y".to_string()].into(),
         pending_set: None,
+        previous_generation: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -1905,6 +2360,7 @@ async fn a_refusal_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -1931,6 +2387,7 @@ async fn a_refusal_waits_for_every_member() {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: assigned.generation,
             promised_to: "broker-z".to_string(),
+            ballot: 0,
         }),
     };
     let held = || async {
@@ -2038,6 +2495,7 @@ async fn storage_ids_wait_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2304,10 +2762,10 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
     );
 }
 
-/// A confirmed shard assignment is read on the leader, so a member that has
-/// not applied the latest assignment still answers with it, and a shard with
-/// none answers unassigned. The lagging member is a second store over the
-/// same group whose own state is empty.
+/// A confirmed shard assignment, and the feed's head, are read on the
+/// leader, so a member that has not applied the latest assignment still
+/// answers with it, and a shard with none answers unassigned. The lagging
+/// member is a second store over the same group whose own state is empty.
 #[tokio::test]
 async fn confirmed_shard_assignments_are_read_on_the_leader() {
     use crate::model::{ShardKind, ShardState};
@@ -2362,6 +2820,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");
@@ -2378,15 +2837,54 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     ));
     assert_eq!(
         behind.confirmed_shard_assignment(&key).await.expect("read"),
-        ConfirmedAssignment::Assigned(assigned)
+        ConfirmedAssignment::Assigned(assigned.clone())
     );
-    let unplaced = ShardKey { shard: 1, ..key };
+    let unplaced = ShardKey {
+        shard: 1,
+        ..key.clone()
+    };
     assert_eq!(
         behind
             .confirmed_shard_assignment(&unplaced)
             .await
             .expect("read"),
         ConfirmedAssignment::Unassigned
+    );
+    // Several at once, in order, after one read on the leader.
+    assert_eq!(
+        behind
+            .confirmed_shard_assignments(&[unplaced, key])
+            .await
+            .expect("read"),
+        [
+            ConfirmedAssignment::Unassigned,
+            ConfirmedAssignment::Assigned(assigned)
+        ]
+    );
+
+    // The feed's head too: a broker marked down serves again only on routes
+    // that reach it, so a lagging member's head would bring back #1955.
+    let head = leader
+        .local()
+        .shard_assignment_changes(0)
+        .await
+        .expect("feed");
+    assert!(head.next_seq > 0);
+    assert_eq!(
+        behind
+            .local()
+            .shard_assignment_changes(0)
+            .await
+            .expect("feed")
+            .next_seq,
+        0
+    );
+    assert_eq!(
+        behind
+            .confirmed_shard_assignment_head()
+            .await
+            .expect("read"),
+        Some(head.next_seq)
     );
 }
 
@@ -3232,6 +3730,7 @@ async fn adoption_waits_for_every_member() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
         })
         .await
         .expect("assign");

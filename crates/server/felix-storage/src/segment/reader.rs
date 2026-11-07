@@ -1,7 +1,7 @@
 //! Range reads on a healthy segment: seek with the sparse index, then decode
 //! forward under a budget.
 
-use std::fs::File;
+use crate::fs::File;
 use std::path::Path;
 use std::sync::OnceLock;
 

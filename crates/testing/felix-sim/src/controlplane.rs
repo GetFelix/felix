@@ -64,6 +64,13 @@ use serde::Serialize;
 use tokio::sync::watch;
 use tower::ServiceExt;
 
+use crate::clock::{self, Owner};
+use crate::cluster::kills::{ShardView, Views};
+
+pub use self::operator::Answer;
+
+mod operator;
+
 /// The tenant the sim's own operator token belongs to.
 const OPERATOR_TENANT: &str = "sim-operator";
 /// Long enough that no run outlives it. Tokens are checked against the real
@@ -298,16 +305,21 @@ impl SimControlPlane {
             None => axum::body::Body::empty(),
         };
         let request = request.body(body)?;
-        let response = self
-            .inner
-            .router
-            .clone()
-            .oneshot(request)
-            .await
-            .map_err(|never| match never {})?;
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
-        Ok(LinkResponse { status, body })
+        // The caller is often a broker; the handler is the control plane's
+        // code and reads its clocks.
+        clock::on(Owner::ControlPlane, async {
+            let response = self
+                .inner
+                .router
+                .clone()
+                .oneshot(request)
+                .await
+                .map_err(|never| match never {})?;
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+            Ok(LinkResponse { status, body })
+        })
+        .await
     }
 
     /// Waits out the current fault. `Paused` re-checks whenever the fault
@@ -334,6 +346,10 @@ impl SimControlPlane {
 
     /// One expiry sweep, as the real loop runs it. `None` while paused or down.
     pub async fn sweep(&self) -> Option<usize> {
+        clock::on(Owner::ControlPlane, self.sweep_now()).await
+    }
+
+    async fn sweep_now(&self) -> Option<usize> {
         if !self.steppable() {
             return None;
         }
@@ -350,7 +366,9 @@ impl SimControlPlane {
             };
         }
         let now = inner.store.now_millis().await.ok()?;
-        let at = tokio::time::Instant::now();
+        // The control plane's lease clock, so its rate skew reaches the
+        // watch. The real loop uses tokio's clock (`spawn_expiry_sweep`).
+        let at = felix_common::clock::boottime();
         let Sweep { watch, grace, .. } = &mut *sweep;
         if !grace.may_sweep(at) {
             // Watched from the first tick, so the window has been running
@@ -367,6 +385,10 @@ impl SimControlPlane {
     /// (fences, suspicions, pending sets, restores) carries to the next, so
     /// time-based decisions fire as in the real loop; going down forgets it.
     pub async fn reconcile(&self) -> Option<ReconcileOutcome> {
+        clock::on(Owner::ControlPlane, self.reconcile_now()).await
+    }
+
+    async fn reconcile_now(&self) -> Option<ReconcileOutcome> {
         if !self.steppable() {
             return None;
         }
@@ -611,6 +633,26 @@ impl SimControlPlane {
         response.json()
     }
 
+    /// Each shard's leader, generation and replica set, read from the store so
+    /// a pause or outage does not hide them. Keyed like
+    /// [`crate::cluster::describe`].
+    pub(crate) async fn shard_views(&self) -> Result<Views> {
+        let snapshot = self.inner.store.shard_assignment_snapshot().await?;
+        Ok(snapshot
+            .items
+            .into_iter()
+            .map(|a| {
+                let kind = format!("{:?}", a.key.kind).to_lowercase();
+                let view = ShardView {
+                    leader: a.leader,
+                    generation: a.generation,
+                    members: a.replicas.into_iter().chain(a.joining).collect(),
+                };
+                (format!("{kind}/{}", a.key.shard), view)
+            })
+            .collect())
+    }
+
     /// Every shard's assignment as the control plane has it.
     pub async fn assignments(&self) -> Result<ShardAssignmentSnapshotResponse> {
         let response = self
@@ -799,6 +841,40 @@ impl ControlPlaneLink for SimLink {
             &format!("/v1/nodes/{node_id}/replica-status"),
             json(body)?,
             None,
+        )
+        .await
+    }
+
+    async fn confirmed_assignment(
+        &self,
+        _bearer: Option<&str>,
+        key: &felix_router::ShardKey,
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        let query: Vec<String> = felix_replication::controlplane_link::confirmed_query(key)
+            .iter()
+            .map(|(name, value)| format!("{name}={}", query_value(value)))
+            .collect();
+        self.call(
+            Method::GET,
+            &format!("/v1/shard-assignments/confirmed?{}", query.join("&")),
+            None,
+            Some(timeout),
+        )
+        .await
+    }
+
+    async fn confirmed_assignments(
+        &self,
+        _bearer: Option<&str>,
+        keys: &[felix_router::ShardKey],
+        timeout: Duration,
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            "/v1/shard-assignments/confirmed",
+            Some(felix_replication::controlplane_link::confirmed_body(keys)),
+            Some(timeout),
         )
         .await
     }

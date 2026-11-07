@@ -57,6 +57,8 @@ impl AsyncClient {
         token_provider=None,
         server_name="localhost",
         ca_file=None,
+        client_cert_file=None,
+        client_key_file=None,
         offer_alpn=false,
         reconnect_attempts=None,
         reconnect_deadline=None,
@@ -71,6 +73,8 @@ impl AsyncClient {
         token_provider: Option<Py<PyAny>>,
         server_name: &str,
         ca_file: Option<&str>,
+        client_cert_file: Option<&str>,
+        client_key_file: Option<&str>,
         offer_alpn: bool,
         reconnect_attempts: Option<Bound<'_, PyAny>>,
         reconnect_deadline: Option<f64>,
@@ -89,7 +93,8 @@ impl AsyncClient {
             reconnect_backoff,
             reconnect_max_backoff,
         )?;
-        let quinn = crate::tls::client_config(ca_file, offer_alpn)?;
+        let quinn =
+            crate::tls::client_config(ca_file, client_cert_file, client_key_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
         let flavor = Flavor::asyncio(py, token_provider.is_some())?;

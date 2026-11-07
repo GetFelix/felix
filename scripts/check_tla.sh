@@ -56,14 +56,29 @@ fetch_tools() {
   if [ -f "$JAR" ]; then return; fi
   mkdir -p "$(dirname "$JAR")"
   echo "fetching TLA+ tools ${TLA_VERSION}"
-  curl -sSL -o "$JAR.tmp" "$TLA_URL"
-  actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
-  if [ "$actual" != "$TLA_SHA256" ]; then
-    echo "tla2tools.jar checksum mismatch: $actual" >&2
+  # The release CDN has served a wrong body with a 200 now and then, so a
+  # mismatch is retried. Only a file that matches the pinned hash is kept.
+  local attempt actual delay
+  for attempt in 1 2 3 4; do
+    if curl -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+      actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
+      if [ "$actual" = "$TLA_SHA256" ]; then
+        mv "$JAR.tmp" "$JAR"
+        return
+      fi
+      echo "tla2tools.jar checksum mismatch (attempt $attempt/4): $actual," \
+        "$(wc -c <"$JAR.tmp" | tr -d ' ') bytes, starts: $(head -c 200 "$JAR.tmp" | LC_ALL=C tr -cd '[:print:]')" >&2
+    else
+      echo "tla2tools.jar download failed (attempt $attempt/4)" >&2
+    fi
     rm -f "$JAR.tmp"
-    exit 1
-  fi
-  mv "$JAR.tmp" "$JAR"
+    if [ "$attempt" -lt 4 ]; then
+      delay=$((attempt == 1 ? 5 : attempt == 2 ? 15 : 30))
+      sleep "$delay"
+    fi
+  done
+  echo "tla2tools.jar could not be fetched with the pinned checksum" >&2
+  exit 1
 }
 
 # Run TLC on one configuration, printing its output; the exit code is TLC's.
@@ -81,6 +96,8 @@ tlc() {
   local module="FelixShard"
   case "$cfg" in
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
+    FelixShardWalkElectStaleSetReplay) module="FelixShardWalkElectStaleSetReplay" ;;
+    FelixShardWalkSparesSeatEarlyReplay) module="FelixShardWalkSparesSeatEarlyReplay" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
@@ -114,7 +131,11 @@ tlc() {
 
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
 expectations=(
+  "FelixShardWalkElectStaleSetReplay violates AckedHeldByLeader"
+  "FelixShardWalkSparesSeatEarlyReplay violates AckedHeldByLeader"
   "FelixShardLease pass"
+  "FelixShardLeaseAnyHeartbeat violates AtMostOneServing"
+  "FelixShardLeaseRoutesHeartbeat pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
   "FelixShardRealMarginsLease pass"
@@ -128,9 +149,24 @@ expectations=(
   "FelixShardFigure8CutOverNoStartRecord violates AckedOnMajority"
   "FelixShardFigure8FollowerAcks pass"
   "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
+  "FelixShardFigure8AckWait pass"
+  "FelixShardFigure8AckWaitByOffset violates AckedHeldByLeader"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedAckAnyKept pass"
   "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeft violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownAny violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownRenames violates NeverRenameUnknownSet"
+  "FelixShardReplacedSetUnknownFirstRenames violates NeverRenameFirstUnknownSet"
+  "FelixShardReplacedSetUnknownMarkAny violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownMarkRenames violates NeverRenameUnknownSet"
+  "FelixShardReplacedPendingLeftKept violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftKeptLogBatchDrops violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwice violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAll violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLog violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLogBatchDrops violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor violates AckedHeldByLeader"
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
@@ -241,7 +277,8 @@ expectations=(
   "FelixShardElectAdoptPromote pass"
   "FelixShardElectReissue pass"
   "FelixShardElectReissueReplace pass"
-  "FelixShardElectReissueReplaceBatchSet violates AckedHeldByLeader"
+  "FelixShardElectReissueReplaceBatchSet violates AdoptedMatchesOpened"
+  "FelixShardElectAdoptAboveKeptSet violates AdoptedMatchesOpened"
   "FelixShardElectAdoptFailoverApart0Gen2 pass"
   "FelixShardElectAdoptFailoverApart1Gen2 pass"
   "FelixShardElectAdoptFailoverApart0StoodGen2 pass"
@@ -297,6 +334,30 @@ expectations=(
   "FelixShardElectLiveNoBackoff violates liveness"
   "FelixShardElectLiveReissue pass"
   "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardCpLiveMain violates liveness"
+  "FelixShardCpLiveNoOwnBallotRefused violates liveness"
+  "FelixShardCpLiveNoOverlayRefused violates liveness"
+  "FelixShardCpLiveNoHaltReported violates liveness"
+  "FelixShardCpLiveNoAboveReported violates liveness"
+  "FelixShardCpLiveRefusalsCopyExcluded violates liveness"
+  "FelixShardCpLiveRefusalsPinsForever violates liveness"
+  "FelixShardElectRefusals pass"
+  "FelixShardElectRefusalsPinsCleared violates AckedHeldByLeader"
+  "FelixShardElectRenameMinorityDrop violates OneLeaderPerGeneration"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior violates liveness"
+  "FelixShardCpDownNoSelfSuspicion violates liveness"
+  "FelixShardCpDownBrokerSuspicion violates liveness"
+  "FelixShardCpDownDegraded violates liveness"
+  "FelixShardElectRouteLag pass"
+  "FelixShardElectRouteLagNoFix violates liveness"
+  "FelixShardElectRouteLagReportOnly pass"
+  "FelixShardElectRouteLagFence pass"
+  "FelixShardElectRouteLagFenceNoFix violates liveness"
+  "FelixShardElectRouteLagReportStore pass"
+  "FelixShardElectRouteLagReportStoreNoRepeat violates liveness"
+  "FelixShardElectRouteLagFenceReportStore pass"
+  "FelixShardElectRenameKeep1StoodOneOtherReportStore pass"
+  "FelixShardElectRenameDrop1StoodOneOtherReportStore pass"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -337,6 +398,13 @@ expectations=(
   "FelixShardElectWipeNonVoterGroupsKeepDropsMark violates CountersHeldByLeader"
   "FelixShardElectWipeNonVoterIdlessCreation pass"
   "FelixShardElectWipeNonVoterIdlessCreationExempt violates AckedHeldByLeader"
+  "FelixShardElectUncleanContinuing pass"
+  "FelixShardElectUncleanContinuingBatchBallot violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingAnyCopy violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingCountsForgotten violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingRetry violates RetriedContinuingNeverOpens"
+  "FelixShardElectUncleanContinuingRetryBelowOnly pass"
+  "FelixShardElectUncleanContinuingRetrySafe pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -348,7 +416,10 @@ expectations=(
 
 # The long random walks, for `--simulate`: one pass configuration per family
 # of set changes, and its negative twin, which must reach its violation
-# within the budget to show the walks get that far at all. The inherited-name
+# within the budget to show the walks get that far at all. The election and
+# spares families' twins are fixed traces instead
+# (FelixShardWalkElectStaleSetReplay, FelixShardWalkSparesSeatEarlyReplay,
+# checked with the others above): the walks found them only by chance. The inherited-name
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
 # crashed leader's refusal beside a seat (with and without the fence ids'
@@ -357,13 +428,11 @@ expectations=(
 # ci.yml walks it per push, with its twin, which also stays an exhaustive check.
 walks=(
   "FelixShardWalkSpares pass"
-  "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
   "FelixShardWalkMoves pass"
   "FelixShardWalkMovesDestination violates AckedHeldByLeader"
   "FelixShardWalkHandoff pass"
   "FelixShardWalkHandoffNoWait violates AtMostOneServing"
   "FelixShardWalkElect pass"
-  "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
   "FelixShardWalkElectSwap pass"
   "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardWalkElectRename pass"
@@ -407,6 +476,17 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
+# FelixShardCpDown, FelixShardCpDownPreVoteUnbounded and
+# FelixShardCpDownStandBehindDeadOnly are not registered: none finishes in
+# five hours in CI (docs/formal/README.md has how far each got). Nor are
+# FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
+# pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
+# had not finished after seven minutes and 3.9M distinct states on a laptop.
+# FelixShardCpLiveRefusals does not finish on a laptop either, and its twin
+# FelixShardCpLiveRefusalsUnknownNoBallot has found no violation yet.
+# FelixShardCpLiveSkippedGeneration, FelixShardCpLive cut down to the #2024
+# scenario, runs past it too and is checked nightly (tla-walk.yml); its
+# violating twin stays registered.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -463,8 +543,8 @@ weights=(
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
   "FelixShardFigure8CutOver 14"
-  "FelixShard 11"
-  "FelixShardWipeFull 5"
+  "FelixShard 12"
+  "FelixShardWipeFull 7"
   "FelixShardLeaderCrashGivesUp 3"
   "FelixShardProcessCrashKeepsId 20"
   "FelixShardLeaderProcessCrash 25"
@@ -476,17 +556,18 @@ weights=(
   "FelixShardFencedPromotion 12"
   "FelixShardCancelResend 11"
   "FelixShardFigure8FollowerAcks 10"
+  "FelixShardFigure8AckWait 10"
   "FelixShardCancel 10"
   "FelixShardReportFloor 10"
-  "FelixShardAckWithoutLease 4"
+  "FelixShardAckWithoutLease 6"
   "FelixShardFigure8 7"
-  "FelixShardRealMargins 4"
+  "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"
   "FelixShardFencedAckSeatPair 12"
   "FelixShardFencedAckUndoPair 26"
-  "FelixShardFencedAckTrim 5"
-  "FelixShardFollowerLabels 5"
+  "FelixShardFencedAckTrim 10"
+  "FelixShardFollowerLabels 6"
   "FelixShardHandoff 3"
   "FelixShardIdempotentHandoff 5"
   "FelixShardStalePlannerCas 5"
@@ -496,9 +577,25 @@ weights=(
   "FelixShardElectAdopt 11"
   "FelixShardElectPreVote 1"
   "FelixShardElectAdoptPromote 10"
+  "FelixShardReplacedPendingLeft 2"
+  "FelixShardReplacedPendingLeftKept 3"
+  "FelixShardReplacedPendingLeftKeptLogBatchDrops 5"
+  "FelixShardReplacedPendingLeftTwice 20"
+  "FelixShardReplacedPendingLeftTwiceAll 11"
+  "FelixShardReplacedPendingLeftTwiceAllLogBatchDrops 19"
+  "FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor 42"
   "FelixShardElectReissue 1"
   "FelixShardElectReissueReplaceBatchSet 2"
-  "FelixShardElectLiveReissue 8"
+  "FelixShardElectLiveReissue 10"
+  "FelixShardElectRouteLag 12"
+  "FelixShardElectRouteLagReportOnly 18"
+  "FelixShardElectRouteLagNoFix 2"
+  "FelixShardElectRouteLagFence 20"
+  "FelixShardElectRouteLagFenceNoFix 1"
+  "FelixShardElectRouteLagReportStore 25"
+  "FelixShardElectRouteLagFenceReportStore 25"
+  "FelixShardElectRenameKeep1StoodOneOtherReportStore 4"
+  "FelixShardElectRenameDrop1StoodOneOtherReportStore 4"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
   "FelixShardElectAdoptFailoverApart0StoodGen2 5"
@@ -549,11 +646,20 @@ weights=(
   "FelixShardElectRenameDrop0 26"
   "FelixShardElectRenameDrop1 14"
   "FelixShardElectRenameKeep0StoodOneOther 11"
-  "FelixShardElectRenameKeep1StoodOneOther 3"
+  "FelixShardElectRenameKeep1StoodOneOther 14"
   "FelixShardElectRenameDrop1StoodOneOther 3"
   "FelixShardElectRenameDrop1StoodSeveralDest 36"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
+  "FelixShardCpLiveNoOwnBallotRefused 175"
+  "FelixShardCpLiveNoOverlayRefused 6"
+  "FelixShardCpLiveNoHaltReported 5"
+  "FelixShardCpLiveNoAboveReported 6"
+  "FelixShardCpLiveRefusalsCopyExcluded 2"
+  "FelixShardCpLiveRefusalsPinsForever 2"
+  "FelixShardElectRefusals 3"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior 20"
+  "FelixShardCpDownNoSelfSuspicion 15"
 )
 
 weight_of() {

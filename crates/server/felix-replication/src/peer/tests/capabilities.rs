@@ -168,7 +168,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
-    // streams it gets no answer on, and reads a learner's answer.
+    // streams it gets no answer on, and reads a learner's answer, a
+    // refusal's reason and a kept ballot.
     assert_eq!(
         noted.get("broker-a"),
         Some(
@@ -177,6 +178,8 @@ async fn two_current_brokers_learn_each_others_capabilities() {
                 .union(PeerCapabilities::NODE_INCARNATION)
                 .union(PeerCapabilities::LANE_RENEWAL)
                 .union(PeerCapabilities::LEARNER_ACKS)
+                .union(PeerCapabilities::REFUSAL_REASONS)
+                .union(PeerCapabilities::KEPT_BALLOTS)
         )
     );
 
@@ -549,6 +552,7 @@ impl PeerRequestHandler for SlowForwards {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
                 })
             }
             other => {
@@ -633,6 +637,7 @@ impl PeerRequestHandler for SlowPromotions {
             log_end: fence.shard.shard.into(),
             commit_offset: 0,
             last_generation: 0,
+            kept_ballot: false,
         })
     }
 }
@@ -850,6 +855,39 @@ async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
     );
     pool.shutdown().await;
     old.stop();
+}
+
+/// **A broker that cannot serve clients yet is silent to a pinger.** Its
+/// followers keep suspecting it, so they stand for the shards it leads
+/// instead of leaving them with a leader nobody can reach. Once it serves,
+/// the same connection answers.
+#[tokio::test]
+async fn a_broker_not_yet_serving_does_not_answer_a_ping() {
+    let serving = CancellationToken::new();
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_serving(serving.clone());
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let listener = Listener {
+        addr,
+        shutdown: shutdown.clone(),
+        task: tokio::spawn(server.serve(shutdown)),
+    };
+    let pool = pool(config());
+    let within = Duration::from_secs(2);
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Silent
+    );
+
+    serving.cancel();
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Pong
+    );
+    pool.shutdown().await;
+    listener.stop().await;
 }
 
 /// **A broker that never offered `ELECTION` refuses what needs it**, as a

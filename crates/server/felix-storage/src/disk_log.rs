@@ -38,8 +38,10 @@
 //!   reactor worker.
 //! * An `fsync` genuinely blocks, for milliseconds on slow hardware. It runs on
 //!   the log's own flush thread so it cannot stall a reactor thread, and does
-//!   not queue behind other work on the shared blocking pool. Flushes are
-//!   grouped, so one runs for many appends.
+//!   not queue behind other work on the shared blocking pool. The durable
+//!   mark write that follows it runs there too (inline after an io_uring
+//!   fsync): on a busy filesystem journal a write waits like a sync. Flushes
+//!   are grouped, so one runs for many appends.
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
@@ -513,7 +515,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -560,7 +562,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -583,7 +585,7 @@ impl DiskLog {
                     replica_state::store(&operation.dir, &state)?;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(std::time::Instant::now()));
+                    *persisted = (state, Some(tokio::time::Instant::now()));
                 }
             }
             if offset == tail {
@@ -618,6 +620,37 @@ impl DiskLog {
             epochs::store(&self.inner.dir, &epochs)?;
         }
         Ok(())
+    }
+
+    /// Whether the generation history labels every record in `first..=last`.
+    ///
+    /// False for any of them that arrived after a cut with no label, such as
+    /// records a promotion took from a replica that sent none: the entry
+    /// before the cut would otherwise claim them. Since this log was opened.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.inner.epochs.lock().labelled(first, last)
+    }
+
+    /// Whether [`DiskLog::label_generations`] with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn relabels(&self, from: Offset, generations: &[Epoch]) -> bool {
+        let epochs = self.inner.epochs.lock();
+        let mut labelled = epochs.clone();
+        labelled.truncate_from(from);
+        for epoch in generations {
+            labelled.record(epoch.generation, epoch.start_offset.max(from));
+        }
+        labelled.entries() != epochs.entries()
+    }
+
+    /// Whether `AppendOnlyLog::record_generation` with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn records_generation(&self, generation: u64, start_offset: Offset) -> bool {
+        self.inner
+            .epochs
+            .lock()
+            .clone()
+            .record(generation, start_offset)
     }
 
     /// Note that the leader wrote `generation`'s start record at `offset`.
@@ -758,7 +791,7 @@ impl DiskLog {
         // a log opened after this returns. Every file change checks it under
         // the lock taken here.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _appends = inner.append_lock.lock();
             inner.segments.write().close();
         })
@@ -779,7 +812,7 @@ impl DiskLog {
         // And under the replica-state writer's lock, so a write behind that
         // found the log open lands before this returns.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             inner
                 .closed
@@ -1057,7 +1090,7 @@ impl DiskLog {
                 return Err(StorageError::Closed(inner.label.clone()));
             }
             let started = std::time::Instant::now();
-            let (records, tail) = tokio::task::spawn_blocking(move || {
+            let (records, tail) = felix_common::blocking::spawn(move || {
                 loop {
                     // Planned under the lock, read without it: a cold `pread`
                     // must not hold up the appends queued on `segments`.
@@ -1197,7 +1230,7 @@ impl AppendOnlyLog for DiskLog {
             let fence = inner.fence_rolls().await?;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _fence = fence;
                 // Before the append lock: an offload pass takes it before
                 // the segment lock, and so must everything else.
@@ -1223,7 +1256,7 @@ impl AppendOnlyLog for DiskLog {
     fn seal(&self) -> BoxFuture<'_, Result<SealedSegment>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 inner.sync_pending_seal()?;
@@ -1368,7 +1401,8 @@ struct LogInner {
     #[cfg(test)]
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
-    replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
+    /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
@@ -1405,7 +1439,7 @@ struct LogInner {
     /// Cleared only after a *successful* seal. A failed one leaves it in place
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
-    pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    pending_seal: Mutex<Option<Arc<crate::fs::File>>>,
     /// Where this log's appends run.
     appender: LogThread,
     /// Where this log's device flushes run.
@@ -1606,6 +1640,7 @@ impl LogInner {
     /// the generation history and the producer table down with them. Called
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        let cuts_records = offset < segments.tail_offset();
         segments.truncate(offset)?;
         segments.active_mut().sync()?;
         self.note_rewound(segments)?;
@@ -1613,7 +1648,11 @@ impl LogInner {
         // The history cannot outlive the records it describes, or it would
         // answer with a start offset the log no longer holds.
         let mut epochs = self.epochs.lock();
-        epochs.truncate_from(offset);
+        if cuts_records {
+            epochs.cut_at(offset);
+        } else {
+            epochs.truncate_from(offset);
+        }
         epochs::store(&self.dir, &epochs)?;
         self.reset_producers(segments)
     }
@@ -1704,7 +1743,7 @@ impl LogInner {
 /// Write the replica state if memory is ahead of disk. A write is refused
 /// once the log is closed: its directory may already be another log's.
 async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
+    felix_common::blocking::spawn(move || {
         let mut persisted = inner.replica_persisted.lock();
         let state = replica_state::ReplicaState {
             accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
@@ -1726,7 +1765,7 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
-        *persisted = (state, Some(std::time::Instant::now()));
+        *persisted = (state, Some(tokio::time::Instant::now()));
         Ok(())
     })
     .await
@@ -1803,8 +1842,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
     });
 }
 
+/// Wall-clock microseconds for retention; virtual time under a simulator.
 fn now_micros() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)

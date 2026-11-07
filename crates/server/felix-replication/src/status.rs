@@ -5,7 +5,7 @@
 //! a metric label. The driver replaces a shard's entry after each of its passes
 //! and fence attempts and drops the shards it stops leading, so a read takes
 //! this board's lock and nothing the driver or the shard lifecycle holds.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use parking_lot::RwLock;
 

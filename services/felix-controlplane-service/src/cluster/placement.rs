@@ -50,7 +50,7 @@ mod restore;
 mod wakes;
 mod zones;
 
-pub use caught_up::{CaughtUp, NothingCaughtUp};
+pub use caught_up::{CaughtUp, NothingCaughtUp, StuckLeader, StuckReason};
 pub use decision::{Blocked, Decision, MoveStep, Unplaceable};
 pub(crate) use metrics::{MOVE_DURATION_BUCKETS, MOVE_FENCE_BUCKETS};
 pub use metrics::{SHARD_MOVE_DURATION_SECONDS, SHARD_MOVE_FENCE_SECONDS};

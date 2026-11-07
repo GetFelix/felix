@@ -170,7 +170,7 @@ fn check_minted_shape(claims: &FelixClaims, max_ttl: Duration) -> AuthzResult<()
     if claims.lease.is_none() {
         return refuse("no lease claim");
     }
-    let now = secs(SystemTime::now());
+    let now = secs(felix_common::clock::system_time());
     if claims.iat > now.saturating_add(LEEWAY_SECS) {
         return refuse("issued in the future");
     }
@@ -283,7 +283,7 @@ impl LeaseMint {
     /// The token lasts as long as the entry, but no longer than the caller's
     /// own token or the broker's maximum.
     pub(crate) fn mint(&self, version: u64, entry_expires_at: Option<SystemTime>) -> ForwardLease {
-        let now = secs(SystemTime::now());
+        let now = secs(felix_common::clock::system_time());
         let mut exp = self
             .caller_expires_at
             .min(now.saturating_add(secs_of(self.tokens.max_ttl)));
@@ -310,7 +310,7 @@ impl LeaseMint {
             // control-plane clock ahead of this one would otherwise mint a
             // token verification refuses as issued in the future.
             iat: self.issued_at.min(now),
-            jti: Some(uuid::Uuid::new_v4().simple().to_string()),
+            jti: Some(felix_common::random::uuid_v4().simple().to_string()),
             perms: self.perms.clone(),
             act: None,
             lease: Some(LeaseClaim {

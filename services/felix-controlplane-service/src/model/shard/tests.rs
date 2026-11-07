@@ -23,6 +23,7 @@ fn assignment() -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
     }
 }
 
@@ -629,6 +630,23 @@ fn elected_and_issued_generations_are_bounded() {
     assert!(check_elected_generation(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
 }
 
+/// A floor at or below the next generation changes nothing; one above it is
+/// taken within the window and refused past it.
+#[test]
+fn a_floor_above_the_next_generation_is_taken_within_the_window() {
+    assert_eq!(generation_at_least(7, 0), Ok(8));
+    assert_eq!(generation_at_least(7, 8), Ok(8));
+    assert_eq!(generation_at_least(7, 10), Ok(10));
+    // One past a ballot at the edge of the window.
+    assert_eq!(
+        generation_at_least(7, 8 + ELECTION_GENERATION_WINDOW),
+        Ok(8 + ELECTION_GENERATION_WINDOW)
+    );
+    assert!(generation_at_least(7, 9 + ELECTION_GENERATION_WINDOW).is_err());
+    assert!(generation_at_least(i64::MAX as u64 - 1, i64::MAX as u64 + 1).is_err());
+    assert!(generation_at_least(i64::MAX as u64, 0).is_err());
+}
+
 /// **A collided generation moves on under the elected leader, on the set it
 /// was elected on.** broker-b was elected at 7 on {b, c, d} while the control
 /// plane named broker-a there on {a, b, c}. A majority of {b, c, d} may hold
@@ -756,4 +774,66 @@ fn an_elected_set_at_the_window_edge_is_reissued_one_past_it() {
         ("broker-b", edge + 1)
     );
     assert!(next.pending_set.is_some(), "the recorded set is pending");
+}
+
+/// **This set's own leader elected on another set is named on that set, not
+/// recorded at its generation alone.** b stood at 2 and c answered. The
+/// control plane then named c at 2 on {b, c, d}, which c refused, and c, on a
+/// stale route, stood at 3 on {a, b, c} and opened. Taking only the generation
+/// would record c at 3 on {b, c, d}, and a failover could then promote from
+/// that set without the records a majority of {a, b, c} holds. c is named one
+/// past it, leaving {a, b, c} for {b, c, d} (#1929).
+#[test]
+fn its_own_leader_elected_on_another_set_is_reissued() {
+    let named_c = ShardAssignment {
+        leader: "broker-c".to_string(),
+        replicas: vec!["broker-b".to_string(), "broker-d".to_string()],
+        generation: 2,
+        ..assignment()
+    };
+    let next = named_c
+        .adopting_elected_set(
+            &elected("broker-c", &["broker-a", "broker-b"], 3, 1),
+            &|_| true,
+        )
+        .expect("adopted");
+    assert_eq!(
+        (next.leader.as_str(), next.generation),
+        ("broker-c", 4),
+        "{next:?}"
+    );
+    assert_eq!(
+        next.nodes().collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            &"broker-a".to_string(),
+            &"broker-b".to_string(),
+            &"broker-c".to_string()
+        ]),
+        "the set it opened on is the one being left"
+    );
+    let pending = next
+        .pending_set
+        .as_ref()
+        .expect("the recorded set is pending");
+    assert_eq!(pending.generation, 4);
+    assert_eq!(
+        pending.replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-b".to_string(), &"broker-d".to_string()])
+    );
+    assert_eq!(next.validate(), Ok(()));
+
+    // Elected on the recorded set, it is adopted at the elected generation.
+    let same = named_c
+        .adopting_elected_set(
+            &elected("broker-c", &["broker-d", "broker-b"], 3, 2),
+            &|_| true,
+        )
+        .expect("adopted");
+    assert_eq!(
+        same,
+        ShardAssignment {
+            generation: 3,
+            ..named_c.clone()
+        }
+    );
 }

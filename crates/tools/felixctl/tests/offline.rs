@@ -48,6 +48,10 @@ fn help_works_both_ways_for_every_command() {
         "shard",
         "placement",
         "inspect",
+        "features",
+        "backup-point",
+        "data",
+        "controlplane",
         "bench",
         "completions",
     ] {
@@ -255,4 +259,88 @@ fn inspect_subs_refuses_a_cursor_it_cannot_use() {
         let output = felixctl(home.path(), args);
         assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
     }
+}
+
+/// A stub that records its arguments and exits with the status in `$STUB_EXIT`.
+#[cfg(unix)]
+fn stub(dir: &Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("stub");
+    std::fs::write(
+        &path,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$STUB_OUT\"\necho from-stub\nexit \"${STUB_EXIT:-0}\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn server_tools_get_their_arguments_unchanged_and_their_exit_status_back() {
+    let home = tempfile::tempdir().unwrap();
+    let stub = stub(home.path());
+    let seen = home.path().join("seen");
+    let run = |program_flag: &[&str], env: Option<(&str, &Path)>, exit: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_felixctl"));
+        command
+            .args(program_flag)
+            .env_clear()
+            .env("HOME", home.path())
+            .env("FELIX_CLI_CONFIG", home.path().join("config.toml"))
+            .env("STUB_OUT", &seen)
+            .env("STUB_EXIT", exit);
+        if let Some((name, value)) = env {
+            command.env(name, value);
+        }
+        command.output().expect("run felixctl")
+    };
+    let stub_arg = stub.to_str().unwrap();
+
+    let output = run(
+        &[
+            "--broker-bin",
+            stub_arg,
+            "data",
+            "inspect",
+            "segments",
+            "--json",
+            "--help",
+            "/data",
+        ],
+        None,
+        "0",
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(stdout(&output), "from-stub\n");
+    assert_eq!(
+        std::fs::read_to_string(&seen).unwrap(),
+        "inspect\nsegments\n--json\n--help\n/data\n"
+    );
+
+    let output = run(
+        &["controlplane", "migrate", "import", "s.json"],
+        Some(("FELIX_CONTROLPLANE_BIN", &stub)),
+        "7",
+    );
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(
+        std::fs::read_to_string(&seen).unwrap(),
+        "migrate\nimport\ns.json\n"
+    );
+}
+
+#[test]
+fn a_missing_server_binary_is_a_usage_error_that_says_what_to_do() {
+    let home = tempfile::tempdir().unwrap();
+    let output = felixctl(home.path(), &["data", "restore-point", "--point", "p.json"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("felix-broker"), "{stderr}");
+    assert!(stderr.contains("--broker-bin"), "{stderr}");
+    assert!(stderr.contains("FELIX_BROKER_BIN"), "{stderr}");
 }

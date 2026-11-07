@@ -518,3 +518,73 @@ async fn a_first_set_past_the_cap_is_refused() {
     assert!(result.is_err(), "kept more sets than a later raise fits");
     assert!(log.replica_set().is_none());
 }
+
+/// **A candidate's ballot is taken only on the set it read** (#1970): once
+/// the copy keeps a newer set, the ballot is refused and nothing is written.
+#[tokio::test]
+async fn a_ballot_on_a_set_is_refused_once_the_set_moved() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(3, Some("a")).await.expect("ballot");
+    log.accept_set(set_at(3)).await.expect("set");
+    let read = log.replica_set().expect("kept");
+
+    log.accept_set(set_at(4)).await.expect("set");
+    assert_eq!(
+        log.accept_generation_on_set(6, "b", read)
+            .await
+            .expect("ballot"),
+        None
+    );
+    assert_eq!(log.accepted_generation(), 3);
+
+    let read = log.replica_set().expect("kept");
+    assert_eq!(
+        log.accept_generation_on_set(6, "b", read)
+            .await
+            .expect("ballot"),
+        Some(GenerationCheck::Raised)
+    );
+    assert_eq!(log.accepted_generation(), 6);
+}
+
+/// **A set from a sender this copy promised past is not kept** (#1970): a
+/// candidate's ballot landing between a fence's ballot and its set leaves
+/// the candidate's set alone. A set from the ballot's own leader, or from
+/// ahead of it, is kept.
+#[tokio::test]
+async fn a_set_from_a_sender_promised_past_is_refused() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(4, Some("d")).await.expect("ballot");
+    log.accept_generation(6, Some("b")).await.expect("ballot");
+
+    assert_eq!(
+        log.accept_set_from(set_at(4), false, 4, Some("d"))
+            .await
+            .expect("set"),
+        Err(GenerationCheck::Superseded { accepted: 6 })
+    );
+    assert_eq!(
+        log.accept_set_from(set_at(4), false, 6, Some("d"))
+            .await
+            .expect("set"),
+        Err(GenerationCheck::Promised {
+            leader: "b".to_string()
+        })
+    );
+    assert_eq!(log.replica_set(), None, "nothing written");
+
+    assert_eq!(
+        log.accept_set_from(set_at(4), true, 6, Some("b"))
+            .await
+            .expect("set"),
+        Ok(SetCheck::Raised)
+    );
+    assert_eq!(
+        log.accept_set_from(set_at(5), false, 7, Some("c"))
+            .await
+            .expect("set"),
+        Ok(SetCheck::Raised)
+    );
+}

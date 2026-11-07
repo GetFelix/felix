@@ -71,6 +71,8 @@ pub(crate) struct CommitHold {
     queue: Mutex<Queue>,
     /// Wakes a release waiting for the bound to cover the front batch.
     wake: tokio::sync::Notify,
+    /// Wakes [`Self::settled`]: a release ended or a batch was held.
+    settled: tokio::sync::Notify,
 }
 
 impl CommitHold {
@@ -121,7 +123,10 @@ impl CommitHold {
         let mut queue = self.queue.lock();
         queue.held.push_back(batch);
         self.busy.store(true, Ordering::SeqCst);
-        self.start(&mut queue)
+        let start = self.start(&mut queue);
+        drop(queue);
+        self.settled.notify_waiters();
+        start
     }
 
     /// Ask for another look at the bound. True when the caller must start a
@@ -176,7 +181,31 @@ impl CommitHold {
         }
         queue.releasing = false;
         self.busy.store(false, Ordering::SeqCst);
+        drop(queue);
+        self.settled.notify_waiters();
         Pass::Done
+    }
+
+    /// Resolves once the hold is idle or holds a batch, not while a release
+    /// runs over an empty queue.
+    ///
+    /// After [`Self::discard`] the hold stays busy until its release task
+    /// next runs and sees nothing left. A caller deciding on
+    /// [`Self::is_busy`] right after a discard would otherwise act on a
+    /// release that only has to be scheduled to end.
+    pub(crate) async fn settled(&self) {
+        loop {
+            let notified = self.settled.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let queue = self.queue.lock();
+                if !queue.releasing || !queue.held.is_empty() {
+                    return;
+                }
+            }
+            notified.await;
+        }
     }
 
     /// Drop everything held. For a shard this broker stopped leading: what

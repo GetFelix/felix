@@ -40,9 +40,9 @@ async fn drain_pass(
         &QuorumMarks::new(),
         None,
         cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )
@@ -59,7 +59,7 @@ async fn a_draining_shard_reports_drained_once_its_fence_is_quiet() {
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let fence = ClosedWithWriteInside::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // The tail is not moving, and that is not enough: a write is inside.
     for _ in 0..3 {
@@ -101,7 +101,14 @@ async fn a_draining_shard_never_served_here_drains_on_its_first_pass() {
     let router = draining_router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
 
-    let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut HashMap::new()).await;
+    let pass = drain_pass(
+        &follower,
+        &broker,
+        &router,
+        &Unfenced,
+        &mut HashMap::default(),
+    )
+    .await;
     let report = pass
         .reports
         .into_iter()
@@ -169,13 +176,24 @@ async fn aux_pass(
     router: &ShardRouter,
     cursors: &mut AllCursors,
 ) -> Vec<crate::reporter::ShardReport> {
+    aux_pass_with(follower, broker, router, cursors, &QuorumMarks::new()).await
+}
+
+/// [`aux_pass`] under `marks`.
+async fn aux_pass_with(
+    follower: &AuxRefusingFollower,
+    broker: &Arc<Broker>,
+    router: &ShardRouter,
+    cursors: &mut AllCursors,
+    marks: &QuorumMarks,
+) -> Vec<crate::reporter::ShardReport> {
     replicate_once_with(
         follower,
         broker,
         router,
         &Unfenced,
         &crate::promotion::NoGate,
-        &QuorumMarks::new(),
+        marks,
         None,
         &mut cursors.main,
         &mut cursors.group,
@@ -381,7 +399,7 @@ async fn a_draining_shard_with_no_replicas_reports_drained() {
     let (broker, _dir) = leader_with(3).await;
     let router = draining_router(LOCAL, &[], 4);
     let follower = AcceptingFollower::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let pass = drain_pass(&follower, &broker, &router, &Unfenced, &mut cursors).await;
     let report = pass
@@ -419,6 +437,7 @@ impl PeerRequester for BehindFollower {
                     code: felix_wire::internal::ErrorCode::StaleRoute,
                     expected_offset: 0,
                     detail: "behind".to_string(),
+                    reason: None,
                 },
             ));
         }
@@ -547,10 +566,31 @@ async fn the_catch_up_wait_does_not_end_while_every_follower_is_behind() {
 /// **A new `Quorum` cache leader names no follower missing the counter adds
 /// it inherited.** Its counter mark counts nothing at the new generation
 /// until a majority answers, and an earlier leader may have acknowledged any
-/// of those adds. Until the fleet fences caches, a follower promoted without
-/// them loses them from the sum.
+/// of those adds. A follower promoted without them loses them from the sum.
 #[tokio::test]
 async fn a_new_cache_leader_names_no_follower_missing_inherited_counters() {
+    names_no_follower_missing_inherited_counters(&QuorumMarks::new()).await;
+}
+
+/// The same where the followers decide the marks (#1922). Fencing does not
+/// cover it: a failover that swapped a member out can leave the fenced
+/// majority without the adds.
+#[tokio::test]
+async fn a_cache_leader_acknowledging_by_followers_names_none_missing_inherited_counters() {
+    use felix_common::fleet::{FENCED_CACHES, FleetGate, GENERATION_START, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        FENCED_CACHES.name(),
+    ];
+    let fleet = FleetGate::new(names);
+    fleet.observe(names);
+    let marks = QuorumMarks::with_fleet(Arc::new(fleet));
+    assert!(marks.serving().caches_by_followers);
+    names_no_follower_missing_inherited_counters(&marks).await;
+}
+
+async fn names_no_follower_missing_inherited_counters(marks: &QuorumMarks) {
     use std::sync::atomic::Ordering::SeqCst;
     let dir = tempfile::tempdir().expect("tempdir");
     let config = LogConfig {
@@ -641,7 +681,7 @@ async fn a_new_cache_leader_names_no_follower_missing_inherited_counters() {
     follower.refusing.store(true, SeqCst);
     let mut cursors = AllCursors::default();
 
-    let reports = aux_pass(&follower, &broker, &router, &mut cursors).await;
+    let reports = aux_pass_with(&follower, &broker, &router, &mut cursors, marks).await;
     let report = reports.last().expect("a report");
     assert!(
         report.caught_up.is_empty(),

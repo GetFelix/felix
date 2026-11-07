@@ -1,8 +1,10 @@
-# `felix-client-win32-x64-msvc`
+# felix-client-win32-x64-msvc
 
-The win32-x64-msvc binary for [`felix-client`](https://www.npmjs.com/package/felix-client).
+The native binary of [`felix-client`](https://www.npmjs.com/package/felix-client) for Windows on x86-64.
 
-Install `felix-client` instead — it declares this package as an optional
-dependency and npm fetches only the one matching your platform.
+Do not install this package directly. Install `felix-client`, which lists it as an optional dependency, and npm fetches only the one that matches your platform.
 
-Documentation: https://docs.getfelix.dev/clients/typescript/
+- [Node.js and TypeScript client guide](https://docs.getfelix.dev/clients/typescript/)
+- [Source](https://github.com/GetFelix/felix/tree/main/crates/sdk/felix-typescript)
+
+Apache-2.0.

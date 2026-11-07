@@ -159,6 +159,30 @@ pub struct ReplicateError {
     pub code: ErrorCode,
     pub expected_offset: u64,
     pub detail: String,
+    /// What `detail` says, as fields a leader reads instead of the text.
+    /// Sent only to a caller that offered
+    /// [`PeerCapabilities::REFUSAL_REASONS`](super::PeerCapabilities::REFUSAL_REASONS);
+    /// `None` encodes the original body, byte for byte, and a leader then
+    /// reads `detail` as it always has.
+    pub reason: Option<RefusalReason>,
+}
+
+/// Why a replica refused a sender at generation `sender`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefusalReason {
+    /// Its ballot holds `generation`, the sender's, for `leader`.
+    PromisedTo { generation: u64, leader: String },
+    /// Its ballot holds the newer `accepted`.
+    Accepted { accepted: u64, sender: u64 },
+    /// Its routing view is at `have`.
+    View { have: u64, sender: u64 },
+    /// The control plane's confirmed assignment is at `assigned`.
+    Assigned { assigned: u64, sender: u64 },
+    /// Its route does not name it a replica of the shard.
+    NotAReplica,
+    /// It answers a fence but does not vote: a learner, or a copy replaced
+    /// until a set change re-admits it. Its position counts for nothing.
+    NotVoter,
 }
 
 /// The leader has nothing older than `base_offset` left.

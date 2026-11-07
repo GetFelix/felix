@@ -8,13 +8,31 @@
 //!
 //! | Fault | What it does |
 //! |---|---|
-//! | `Crash` | Stops a broker as a power cut does not: a process crash, data kept. Restarts it after a while. |
+//! | `Crash` | Stops a broker, then restarts it after a while. How it stops is a [`Stop`]: a process crash that records a clean stop, a kill that leaves the run state unclean, or, in a run that fsyncs on commit, a power cut that loses what was not synced. |
 //! | `Freeze` | Cuts a broker off from every peer and from the control plane, without stopping it. |
 //! | `Isolate` | Cuts a broker off from its peers only; its heartbeats still reach the control plane. |
 //! | `Split` | Cuts a minority off from the rest. The control plane sits with the majority or with everyone. |
 //! | `OneWay` | Drops one direction of one link. |
 //! | `ControlPlane` | Slows, pauses or takes down the control plane. |
 //! | `PausedThenCrash` | Pauses the control plane, then crashes a broker that leads shards while it is paused. |
+//!
+//! With [`SimConfig::placement_faults`](crate::cluster::SimConfig::placement_faults)
+//! on, the nemesis also acts as an operator, through the control plane's
+//! operator API (see `placement.rs`):
+//!
+//! | Fault | What it does |
+//! |---|---|
+//! | `Move` | Moves a shard's leadership to another broker, and sometimes cancels the move. |
+//! | `Drain` | Drains a broker, then puts it back. Its leaderships move away and, with four or more brokers, the follower seats it holds are replaced. |
+//! | `Remove` | Takes a broker out: drains it, stops it, deregisters it and deletes its record once no shard names it. It comes back later as a new registration. |
+//! | `Abandon` | Stops the broker assigned the stream shards the broker holds after unclean kills, abandons their logs (`felixctl placement abandon`), and starts it again. |
+//! | `KillBeforeOpen` | Kills the next broker placement names leader of a shard, before it opens the shard. |
+//! | `SeatRace` | Drains a broker so a follower seat is being replaced, kills that shard's leader, then kills the next leader named for it before it opens: seat replacement plus two promotions. |
+//!
+//! Clock skew has its own schedule ([`clocks::ClockPlan`]), played by
+//! [`Nemesis::run_clocks`]. It is off unless [`SimConfig::clocks`](crate::cluster::SimConfig::clocks)
+//! turns it on, and the heal leaves clocks as they are: a real clock is not
+//! put right when a partition ends.
 //!
 //! # Why `Freeze` is approximate
 //!
@@ -26,7 +44,9 @@
 //! network and heartbeat half of a pause is real; the zombie that wakes up
 //! believing it still leads is not reproduced.
 
-use std::collections::{BTreeSet, HashMap};
+pub mod clocks;
+
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -36,10 +56,53 @@ use parking_lot::Mutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use self::clocks::ClockPlan;
 use crate::client::Recorder;
 use crate::cluster::SimCluster;
 use crate::controlplane::CpFault;
 use crate::net::Link;
+
+/// How a crash stops a broker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// A process crash. The kernel keeps every write, and the run state
+    /// records a clean stop.
+    Clean,
+    /// A process crash that leaves the run state as a kill after a failed
+    /// fsync does: the restart takes a new storage id and runs `UncleanStart`.
+    Kill,
+    /// The machine loses power: unsynced bytes are lost or torn, and the run
+    /// state stays as the running broker left it. Only in a run that fsyncs
+    /// on commit, where it replaces `Kill`.
+    PowerLoss,
+}
+
+impl Stop {
+    /// Half kills and half clean stops, with a power cut in place of each
+    /// kill when `power_loss`. One draw from `rng` either way, so turning
+    /// power loss on keeps every other draw of a seed.
+    pub fn draw(rng: &mut Rng, power_loss: bool) -> Self {
+        Self::of_kill(rng.percent(50), power_loss)
+    }
+
+    /// A kill, or a power cut in its place when `power_loss`, or else a
+    /// clean stop.
+    pub fn of_kill(kill: bool, power_loss: bool) -> Self {
+        match (kill, power_loss) {
+            (false, _) => Stop::Clean,
+            (true, false) => Stop::Kill,
+            (true, true) => Stop::PowerLoss,
+        }
+    }
+
+    fn verb(self) -> &'static str {
+        match self {
+            Stop::Clean => "crash",
+            Stop::Kill => "kill",
+            Stop::PowerLoss => "power-cut",
+        }
+    }
+}
 
 /// One fault, with how long it lasts.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +110,7 @@ pub enum Fault {
     Crash {
         node: usize,
         down_for: Duration,
+        stop: Stop,
     },
     Freeze {
         node: usize,
@@ -77,6 +141,40 @@ pub enum Fault {
         cp_lasts: Duration,
         after: Duration,
         down_for: Duration,
+        stop: Stop,
+    },
+    /// Move shard `shard` (an index into every shard, wrapped) to broker
+    /// `to`, or the next broker when `to` already leads it.
+    Move {
+        shard: u64,
+        to: usize,
+        cancel_after: Option<Duration>,
+    },
+    Drain {
+        node: usize,
+        lasts: Duration,
+    },
+    Remove {
+        node: usize,
+        /// How long the drain runs before the broker stops.
+        drain_for: Duration,
+        down_for: Duration,
+    },
+    /// Keep abandoning held stream shards for `within`.
+    Abandon {
+        within: Duration,
+    },
+    KillBeforeOpen {
+        /// How long to wait for a promotion.
+        watch_for: Duration,
+        down_for: Duration,
+        kill: bool,
+    },
+    SeatRace {
+        /// The broker drained, whose follower seats are replaced.
+        node: usize,
+        down_for: Duration,
+        kill: bool,
     },
 }
 
@@ -92,7 +190,13 @@ impl Fault {
             Fault::Split { minority, .. } => minority.iter().any(|node| leaders.contains(node)),
             Fault::OneWay { from, to, .. } => leaders.contains(from) || leaders.contains(to),
             Fault::ControlPlane { fault, .. } => !matches!(fault, CpFault::Slow(_)),
-            Fault::PausedThenCrash { .. } => true,
+            Fault::PausedThenCrash { .. }
+            | Fault::Move { .. }
+            | Fault::Drain { .. }
+            | Fault::Remove { .. }
+            | Fault::Abandon { .. }
+            | Fault::KillBeforeOpen { .. }
+            | Fault::SeatRace { .. } => true,
         }
     }
 }
@@ -100,7 +204,11 @@ impl Fault {
 impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Fault::Crash { node, down_for } => write!(f, "crash b{} for {down_for:?}", node + 1),
+            Fault::Crash {
+                node,
+                down_for,
+                stop,
+            } => write!(f, "{} b{} for {down_for:?}", stop.verb(), node + 1),
             Fault::Freeze { node, lasts } => write!(f, "freeze b{} for {lasts:?}", node + 1),
             Fault::Isolate { node, lasts } => write!(f, "isolate b{} for {lasts:?}", node + 1),
             Fault::Split {
@@ -130,9 +238,58 @@ impl fmt::Display for Fault {
                 cp_lasts,
                 after,
                 down_for,
+                stop,
             } => write!(
                 f,
-                "control plane paused for {cp_lasts:?}, a shard leader crashes {after:?} in for {down_for:?}"
+                "control plane paused for {cp_lasts:?}, a shard leader {} {after:?} in for {down_for:?}",
+                match stop {
+                    Stop::Clean => "crashes",
+                    Stop::Kill => "is killed",
+                    Stop::PowerLoss => "loses power",
+                }
+            ),
+            Fault::Move {
+                shard,
+                to,
+                cancel_after,
+            } => {
+                write!(f, "move shard #{shard} to b{}", to + 1)?;
+                match cancel_after {
+                    Some(after) => write!(f, ", cancelled {after:?} in"),
+                    None => Ok(()),
+                }
+            }
+            Fault::Drain { node, lasts } => write!(f, "drain b{} for {lasts:?}", node + 1),
+            Fault::Remove {
+                node,
+                drain_for,
+                down_for,
+            } => write!(
+                f,
+                "remove b{} after a {drain_for:?} drain, back as a new node in {down_for:?}",
+                node + 1
+            ),
+            Fault::Abandon { within } => {
+                write!(f, "abandon the logs of held shards for {within:?}")
+            }
+            Fault::KillBeforeOpen {
+                watch_for,
+                down_for,
+                kill,
+            } => write!(
+                f,
+                "{} the next promoted leader before it opens (watch {watch_for:?}, down {down_for:?})",
+                if *kill { "kill" } else { "crash" }
+            ),
+            Fault::SeatRace {
+                node,
+                down_for,
+                kill,
+            } => write!(
+                f,
+                "drain b{} and, while a seat it held is replaced, {} the shard's leader and then its next leader before it opens (down {down_for:?})",
+                node + 1,
+                if *kill { "kill" } else { "crash" }
             ),
         }
     }
@@ -153,11 +310,15 @@ pub struct Plan {
 
 impl Plan {
     /// A schedule for `brokers` brokers that starts nothing after `window`.
-    pub fn generate(seed: u64, brokers: usize, window: Duration) -> Self {
+    /// With `power_loss`, crashes that would be kills cut the power instead.
+    pub fn generate(seed: u64, brokers: usize, window: Duration, power_loss: bool) -> Self {
         let mut rng = Rng::new(seed ^ 0x4e45_4d45_5349_5300);
         let secs = |rng: &mut Rng, low: u64, high: u64| {
             rng.between(Duration::from_secs(low), Duration::from_secs(high))
         };
+        // Its own stream, so choosing clean or kill does not move any other
+        // draw: a seed keeps its schedule.
+        let mut kills = Rng::new(seed ^ 0x4b49_4c4c_4552_0001);
         let mut steps = Vec::new();
         let mut at = secs(&mut rng, 3, 8);
         while at < window {
@@ -166,6 +327,7 @@ impl Plan {
                 0..=24 => Fault::Crash {
                     node,
                     down_for: secs(&mut rng, 3, 20),
+                    stop: Stop::draw(&mut kills, power_loss),
                 },
                 25..=34 => Fault::Freeze {
                     node,
@@ -217,6 +379,7 @@ impl Plan {
                         cp_lasts,
                         after: secs(&mut rng, 1, 3),
                         down_for: secs(&mut rng, 5, 20),
+                        stop: Stop::draw(&mut kills, power_loss),
                     }
                 }
             };
@@ -232,11 +395,13 @@ impl Plan {
 #[derive(Default)]
 struct Holds {
     /// Directed `(from, to)` links that drop everything.
-    links: HashMap<(usize, usize), u32>,
+    links: BTreeMap<(usize, usize), u32>,
     /// Brokers cut off from the control plane.
-    controlplane: HashMap<usize, u32>,
+    controlplane: BTreeMap<usize, u32>,
     /// Which control plane fault is current, so only its own end clears it.
     cp_epoch: u64,
+    /// Brokers an operator fault has drained.
+    drains: BTreeMap<usize, u32>,
 }
 
 /// Plays a [`Plan`] against a cluster.
@@ -273,17 +438,38 @@ impl Nemesis {
         }
     }
 
+    /// Make each change in `plan` at its time, counted from now.
+    pub async fn run_clocks(self: &Arc<Self>, plan: &ClockPlan) {
+        let begun = Instant::now();
+        for step in &plan.steps {
+            tokio::select! {
+                () = self.stopped.cancelled() => return,
+                () = tokio::time::sleep_until(begun + step.at) => {}
+            }
+            clocks::apply(step);
+            self.recorder.fault(format!("{step}"));
+        }
+    }
+
     /// Undo every fault: links healed, control plane healthy, every broker
     /// running again.
     pub async fn heal(self: &Arc<Self>) {
         self.stopped.cancel();
-        {
+        let drained: Vec<usize> = {
             let mut holds = self.holds.lock();
             holds.links.clear();
             holds.controlplane.clear();
-        }
+            std::mem::take(&mut holds.drains).into_keys().collect()
+        };
         self.sync_links();
         self.cluster.cp().set_fault(CpFault::Healthy);
+        for node in drained {
+            let id = self.cluster.node_id(node);
+            if let Ok(answer) = self.cluster.cp().undrain(id).await {
+                self.recorder
+                    .fault(format!("heal: put {id} back to live: {}", answer.text));
+            }
+        }
         for index in 0..self.cluster.broker_count() {
             self.cluster.restart(index);
         }
@@ -296,12 +482,16 @@ impl Nemesis {
             return;
         }
         match &fault {
-            Fault::Crash { node, down_for } => {
+            Fault::Crash {
+                node,
+                down_for,
+                stop,
+            } => {
                 if !self.may_crash(*node) {
                     return;
                 }
                 self.recorder.fault(format!("{fault}"));
-                self.crash_for(*node, *down_for).await;
+                self.crash_for(*node, *down_for, *stop).await;
             }
             Fault::Freeze { node, lasts } => {
                 self.recorder.fault(format!("{fault}"));
@@ -363,6 +553,7 @@ impl Nemesis {
                 cp_lasts,
                 after,
                 down_for,
+                stop,
             } => {
                 self.recorder.fault(format!("{fault}"));
                 let epoch = self.set_controlplane(CpFault::Paused);
@@ -371,13 +562,14 @@ impl Nemesis {
                 if let Some(node) = self.busiest_leader().await
                     && self.may_crash(node)
                 {
+                    let (down_for, stop) = (*down_for, *stop);
                     self.recorder.fault(format!(
-                        "crash b{} (a shard leader) while the control plane is paused",
+                        "{} b{} (a shard leader) while the control plane is paused",
+                        stop.verb(),
                         node + 1
                     ));
                     let this = Arc::clone(&self);
-                    let down_for = *down_for;
-                    tokio::spawn(async move { this.crash_for(node, down_for).await });
+                    tokio::spawn(async move { this.crash_for(node, down_for, stop).await });
                 }
                 tokio::select! {
                     () = self.stopped.cancelled() => return,
@@ -386,6 +578,12 @@ impl Nemesis {
                 self.clear_controlplane(epoch);
                 self.recorder.fault(format!("end: {fault}"));
             }
+            Fault::Move { .. }
+            | Fault::Drain { .. }
+            | Fault::Remove { .. }
+            | Fault::Abandon { .. }
+            | Fault::KillBeforeOpen { .. }
+            | Fault::SeatRace { .. } => self.inject_placement(&fault).await,
         }
     }
 
@@ -396,11 +594,32 @@ impl Nemesis {
         self.cluster.is_running(node) && down < n / 2
     }
 
-    async fn crash_for(&self, node: usize, down_for: Duration) {
-        self.cluster.crash(node).await;
+    async fn crash_for(&self, node: usize, down_for: Duration, stop: Stop) {
+        match stop {
+            Stop::Clean => self.cluster.crash(node).await,
+            Stop::Kill => self.cluster.kill(node).await,
+            Stop::PowerLoss => {
+                let mid_append = self.cluster.power_loss(node).await;
+                self.recorder.fault(format!(
+                    "b{} lost power {}",
+                    node + 1,
+                    if mid_append {
+                        "during an append"
+                    } else {
+                        "with no append in flight"
+                    }
+                ));
+            }
+        }
         self.lapse(down_for).await;
         if !self.stopped.is_cancelled() {
             self.recorder.fault(format!("restart b{}", node + 1));
+            self.cluster.restart(node);
+        } else if stop == Stop::PowerLoss {
+            // A power cut stops the broker inside a write and finishes the
+            // stop later, so one under way when the heal restarted every
+            // broker can still take this one down, and nobody else would
+            // bring it back.
             self.cluster.restart(node);
         }
     }
@@ -514,6 +733,8 @@ impl Nemesis {
         }
     }
 }
+
+mod placement;
 
 #[cfg(test)]
 mod tests;

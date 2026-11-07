@@ -13,7 +13,8 @@
 pub mod metrics;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 /// How long a write may wait for a move to cut over, and how many may wait.
 #[derive(Debug)]

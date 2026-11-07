@@ -177,6 +177,11 @@ pub enum BrokerError {
     /// The shard's state cannot be read here yet, for the reason given.
     #[error("the shard's state is not readable here: {0}")]
     StateNotReadable(NotReadable),
+    /// Leading a shard again found a release of its held batches still
+    /// running, most likely a fanout waiting on a slow subscriber. Nothing
+    /// changed; retry.
+    #[error("the shard's held batches are still being released; retry")]
+    ReleaseInFlight,
 }
 
 /// Why [`BrokerError::NotReadable`].

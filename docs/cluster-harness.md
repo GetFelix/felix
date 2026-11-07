@@ -144,8 +144,10 @@ threads; dropping it instead stops the runtime without blocking.
 
 Nothing here sleeps for a fixed duration and hopes. Start-up returns only once:
 
-1. every broker answers `/ready`,
-2. the control plane considers every broker placeable,
+1. every broker answers `/ready` (a broker that exits first, for instance on a
+   port something else took, is started again with new ports),
+2. the control plane considers every broker placeable (a broker that exits
+   now fails start-up at once with its log, since it had reported ready),
 3. every shard has a leader (placement is *stepped*, not waited for, so it does
    not depend on a reconcile timer),
 4. **a publish succeeds**,
@@ -225,6 +227,19 @@ heartbeat stamps as old as the outage. `crash_control_plane` and
 `recover_control_plane` do the same in two steps, so a test can act while it
 is down. If `run_placement` was running, it runs again after either restart.
 `stop_control_plane` stops it for good.
+
+`start_node_unready` starts a stopped broker and returns at once, without
+waiting for it to be ready, and it works while the control plane is crashed.
+A broker started then waits for the control plane before it opens its
+storage. `await_node_ready` waits for it once the control plane is back.
+
+`pause_control_plane` and `resume_control_plane` freeze the control plane in
+place, the way `SIGSTOP` freezes a process. It runs in the test process, so
+the harness holds every worker thread of its runtime instead of sending a
+signal. Its port still takes connections and requests, and nothing answers
+them, so a broker's request waits out its own timeout rather than failing at
+once as it does against a crashed control plane. No sweep or placement runs
+until it resumes.
 
 `kill_node` kills without waiting for the control plane to react. A test
 measuring how long failover takes has to start its clock at the kill, not after
@@ -512,10 +527,10 @@ their pre-votes out together. A release build ignores it.
 > finalized and every gate opens; after that the old build is refused, and
 > the upgraded one rejoins with the gate open.
 
-`ClusterConfig::joint_fence` turns joint fences on, which no release can
-yet: every broker offers `ELECTION` and reports `joint_fence` with the rest of
-its features, and `Cluster::start` finalizes it, after `generation_start` and
-`majority_ack`, before it returns. It needs a debug-build broker, since a
+`ClusterConfig::joint_fence` turns joint fences on. A broker reports
+`joint_fence` once `FELIX_INTERNAL_ELECTION` is on, so every broker offers
+`ELECTION`, and `Cluster::start` finalizes the feature with the rest, after
+`generation_start` and `majority_ack`, before it returns. It needs a debug-build broker, since a
 release build ignores `FELIX_TEST_FLEET_FEATURES`.
 
 ## The failover demo
@@ -752,6 +767,20 @@ cache reads. The campaign has
 a `Fault` type of its own (`history::Fault`): a fault with its target chosen,
 built from this crate's `Fault` values. See
 [the history checker](history-checker.md).
+
+One of its faults, `ElectWithoutControlPlane`, tests leader election among
+replicas. It needs the `replica_election` feature, so only
+`RandomNemesis::election()` picks it, and the campaign then starts brokers
+with election on. The fault waits until the chosen leader's shards have a
+caught-up replica, calls `crash_control_plane`, then `kill_node`s the
+leader. While the control plane stays down, the campaign waits up to 20s for
+another broker to log opening each of those shards at a later generation and
+take a probe. Healing may `start_node_unready` the killed broker first, then
+calls `recover_control_plane` and waits for the broker. The campaign also
+reads every broker's log for the shards each one opened, so the checker can
+fail a run where two brokers opened one shard at the same generation. The
+whole sequence is in "Elections without the control plane" in the history
+checker doc.
 
 ## The conformance suite
 

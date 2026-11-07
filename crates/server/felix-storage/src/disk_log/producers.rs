@@ -19,7 +19,8 @@
 //! computed from the records as they are observed, so a leader can tell a
 //! re-send from a different batch reusing the sequence.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 use super::segments::SegmentSet;
@@ -372,7 +373,8 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
         }),
         _ => return None,
     };
-    let mut producers = HashMap::with_capacity(count.min(MAX_PRODUCERS));
+    let mut producers =
+        HashMap::with_capacity_and_hasher(count.min(MAX_PRODUCERS), Default::default());
     for _ in 0..count {
         let id = reader.u64()?;
         let last_sequence = reader.u64()?;
@@ -512,7 +514,7 @@ const REBUILD_READ_BYTES: usize = 1024 * 1024;
 /// The saved state and the offset it is as of, or `None` when there is no
 /// usable snapshot. Unreadable is the same as absent: the log has the answer.
 pub(super) fn load(dir: &Path) -> Option<(ProducerState, Offset)> {
-    let bytes = std::fs::read(path_in(dir)).ok()?;
+    let bytes = crate::fs::read(path_in(dir)).ok()?;
     let decoded = decode(&bytes);
     if decoded.is_none() {
         tracing::warn!(
@@ -531,13 +533,13 @@ pub(super) fn load(dir: &Path) -> Option<(ProducerState, Offset)> {
 pub(super) fn store(dir: &Path, state: &ProducerState, as_of: Offset) -> std::io::Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
-    std::fs::write(&temporary, encode(state, as_of))?;
-    std::fs::rename(&temporary, &path)
+    crate::fs::write(&temporary, encode(state, as_of))?;
+    crate::fs::rename(&temporary, &path)
 }
 
 /// Remove the snapshot, when the records it describes are no longer the log's.
 pub(super) fn discard(dir: &Path) -> std::io::Result<()> {
-    match std::fs::remove_file(path_in(dir)) {
+    match crate::fs::remove_file(path_in(dir)) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }

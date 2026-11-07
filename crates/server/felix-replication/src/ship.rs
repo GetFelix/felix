@@ -136,6 +136,8 @@ async fn ship_batch<R: PeerRequester>(
     end: Option<u64>,
     set_stamp: Option<u64>,
 ) -> Progress {
+    // Set again only by the follower's answer to this batch.
+    cursor.refused = false;
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -421,6 +423,9 @@ async fn ship_batch<R: PeerRequester>(
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
             cursor.stalled = true;
+            // Silence is no refusal. `route_behind` stays: the refence it
+            // drives is only an attempt and fails by itself while unreachable.
+            cursor.refuses_leader = false;
             return Progress::Retry;
         }
     };
@@ -431,6 +436,14 @@ async fn ship_batch<R: PeerRequester>(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
     );
+    cursor.refuses_leader = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err)
+            if crate::replica::refuses_leader(err, shard.generation)
+    );
+    // Not a refusal such as a full disk or a credential: passes on every
+    // append could not move those, and would take slots from other shards.
+    cursor.refused = cursor.route_behind;
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.
@@ -461,6 +474,20 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            // Fixed at the halt, since nothing more is shipped to it. A
+            // candidate that stands again higher is met by the rename's fence.
+            cursor.fenced_by = fenced_by(&answer, shard.generation);
+            cursor.superseded_by = match &answer {
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+                    crate::replica::superseded_by(err, shard.generation)
+                }
+                _ => None,
+            };
+            cursor.assigned_newer = matches!(
+                &answer,
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::assigned_newer(err, shard.generation)
+            );
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,
@@ -522,6 +549,19 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // is harmless and the alternative -- treating it as divergence -- would
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
+    }
+}
+
+/// The ballot a follower's `FencedEpoch` refusal names: the newer
+/// generation it accepted, or `generation` when it promised that to another
+/// node.
+fn fenced_by(answer: &InternalMessage, generation: u64) -> Option<u64> {
+    match answer {
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+            crate::replica::superseded_by(err, generation)
+                .or_else(|| crate::replica::promised_to(err, generation).map(|_| generation))
+        }
+        _ => None,
     }
 }
 
@@ -666,7 +706,7 @@ const LOG_LIMIT_KEYS: usize = 1024;
 /// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
 pub(crate) struct LogLimit {
     every: std::time::Duration,
-    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
+    last: std::sync::Mutex<Option<felix_common::random::HashMap<String, std::time::Instant>>>,
 }
 
 impl LogLimit {

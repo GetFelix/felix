@@ -6,10 +6,13 @@
 //! are resolved by that same task.
 
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 #[cfg(feature = "telemetry")]
 use std::sync::atomic::Ordering;
+use std::task::{Context as TaskContext, Poll};
 
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -94,11 +97,12 @@ struct PendingAck {
 
 pub(crate) async fn run_publisher_writer_with_limit(
     mut send: SendStream,
-    mut recv: RecvStream,
+    recv: RecvStream,
     mut rx: mpsc::Receiver<PublishRequest>,
     _chunk_bytes: usize,
     max_frame_bytes: usize,
     window: Option<Arc<Semaphore>>,
+    answers_on_completion: bool,
 ) -> Result<()> {
     // Single writer: serialize publish requests over one bi-directional
     // stream. Acked publishes pipeline — written back to back, their acks
@@ -116,7 +120,15 @@ pub(crate) async fn run_publisher_writer_with_limit(
     // (`publish_inflight_bytes`), since each entry holds its admission permit
     // until the broker answers, and by the publish window when the broker
     // granted one.
-    let mut ack_scratch = BytesMut::with_capacity(64 * 1024);
+    //
+    // A broker that answers plain publishes as they complete
+    // (`answers_on_completion`) lets one stalled answer sit while the rest
+    // flow, so this task must not stop writing to wait for it. With answers
+    // outstanding and nothing queued, it waits for whichever comes first: an
+    // answer or a new request. `read_ack` is not cancel-safe, so the read in
+    // progress owns the stream and lives in `reading` across those waits.
+    let mut idle = Some((recv, BytesMut::with_capacity(64 * 1024)));
+    let mut reading = std::pin::pin!(None);
     let mut json_scratch = BytesMut::with_capacity(64 * 1024);
     let mut pending: VecDeque<PendingAck> = VecDeque::new();
     // The `publish_width` the broker holds for this stream. One width's
@@ -150,52 +162,67 @@ pub(crate) async fn run_publisher_writer_with_limit(
             return Err(anyhow::anyhow!(message));
         }};
     }
-    // Resolve every outstanding ack. The broker answers each publish as it
-    // completes, not in the order they were written, so an answer goes to the
-    // request it names. One naming no outstanding request means the stream
-    // cannot be trusted, and neither can anything waiting on it.
+    // Start reading the next answer unless a read is already under way.
+    macro_rules! start_read {
+        () => {{
+            if let Some((recv, scratch)) = idle.take() {
+                reading.set(Some(read_answer(recv, scratch, max_frame_bytes)));
+            }
+        }};
+    }
+    // Settle one answer. The broker may answer in completion order, so an
+    // answer goes to the request it names. One naming no outstanding request
+    // means the stream cannot be trusted, and neither can anything waiting
+    // on it.
+    macro_rules! settle {
+        ($read:expr) => {{
+            let (recv, scratch, answer) = $read;
+            reading.set(None);
+            idle = Some((recv, scratch));
+            match answer {
+                Ok((answered, answer)) => {
+                    let Some(entry) = pending
+                        .iter()
+                        .position(|entry| entry.request_id == answered)
+                        .and_then(|index| pending.remove(index))
+                    else {
+                        fail_worker!(format!(
+                            "publish failed: ack for request {answered}, which is not outstanding"
+                        ));
+                    };
+                    #[cfg(feature = "telemetry")]
+                    {
+                        let counters = frame_counters();
+                        let (frames, batches, items) = if answer.is_ok() {
+                            (
+                                &counters.pub_frames_out_ok,
+                                &counters.pub_batches_out_ok,
+                                &counters.pub_items_out_ok,
+                            )
+                        } else {
+                            (
+                                &counters.pub_frames_out_err,
+                                &counters.pub_batches_out_err,
+                                &counters.pub_items_out_err,
+                            )
+                        };
+                        frames.fetch_add(1, Ordering::Relaxed);
+                        batches.fetch_add(entry.batch_count, Ordering::Relaxed);
+                        items.fetch_add(entry.item_count, Ordering::Relaxed);
+                    }
+                    // A refusal answers this request only; the broker keeps
+                    // serving the stream, so the others still get their own
+                    // answers.
+                    let _ = entry.response.send(answer);
+                }
+                Err(err) => fail_worker!(err.to_string()),
+            }
+        }};
+    }
     macro_rules! resolve_one {
         () => {{
-            {
-                match read_ack(&mut recv, &mut ack_scratch, max_frame_bytes).await {
-                    Ok((answered, answer)) => {
-                        let Some(entry) = pending
-                            .iter()
-                            .position(|entry| entry.request_id == answered)
-                            .and_then(|index| pending.remove(index))
-                        else {
-                            fail_worker!(format!(
-                                "publish failed: ack for request {answered}, which is not outstanding"
-                            ));
-                        };
-                        #[cfg(feature = "telemetry")]
-                        {
-                            let counters = frame_counters();
-                            let (frames, batches, items) = if answer.is_ok() {
-                                (
-                                    &counters.pub_frames_out_ok,
-                                    &counters.pub_batches_out_ok,
-                                    &counters.pub_items_out_ok,
-                                )
-                            } else {
-                                (
-                                    &counters.pub_frames_out_err,
-                                    &counters.pub_batches_out_err,
-                                    &counters.pub_items_out_err,
-                                )
-                            };
-                            frames.fetch_add(1, Ordering::Relaxed);
-                            batches.fetch_add(entry.batch_count, Ordering::Relaxed);
-                            items.fetch_add(entry.item_count, Ordering::Relaxed);
-                        }
-                        // A refusal answers this request only; the broker keeps
-                        // serving the stream, so the others still get their own
-                        // answers.
-                        let _ = entry.response.send(answer);
-                    }
-                    Err(err) => fail_worker!(err.to_string()),
-                }
-            }
+            start_read!();
+            settle!(std::future::poll_fn(|cx| poll_read(reading.as_mut(), cx)).await);
         }};
     }
     macro_rules! resolve_pending {
@@ -223,6 +250,23 @@ pub(crate) async fn run_publisher_writer_with_limit(
             // before parking.
             match rx.try_recv() {
                 Ok(request) => request,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) if answers_on_completion => {
+                    start_read!();
+                    tokio::select! {
+                        biased;
+                        read = std::future::poll_fn(|cx| poll_read(reading.as_mut(), cx)) => {
+                            settle!(read);
+                            continue;
+                        }
+                        request = rx.recv() => match request {
+                            Some(request) => request,
+                            None => {
+                                resolve_pending!();
+                                break;
+                            }
+                        },
+                    }
+                }
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                     resolve_pending!();
                     continue;
@@ -599,6 +643,10 @@ pub(crate) async fn run_publisher_writer_with_limit(
             }
         }
     }
+    // Every answer is settled by now, so no read holds the stream.
+    let Some((mut recv, _)) = idle.take() else {
+        anyhow::bail!("publish stream closed with an answer still being read");
+    };
     // Graceful shutdown: close our send side, then drain the peer's side to
     // EOF — the same close protocol `finish_publisher_stream` implements.
     let finish_result = send.finish().map_err(anyhow::Error::from);
@@ -626,6 +674,25 @@ pub(crate) async fn run_publisher_writer_with_limit(
     result
 }
 
+/// Read one answer, owning the stream for the length of the read so it can
+/// be left half done and resumed: see `reading` above.
+async fn read_answer(
+    mut recv: RecvStream,
+    mut scratch: BytesMut,
+    max_frame_bytes: usize,
+) -> (RecvStream, BytesMut, Result<(u64, AckOutcome)>) {
+    let answer = read_ack(&mut recv, &mut scratch, max_frame_bytes).await;
+    (recv, scratch, answer)
+}
+
+/// Poll the read under way. Pending when there is none.
+fn poll_read<F: Future>(reading: Pin<&mut Option<F>>, cx: &mut TaskContext<'_>) -> Poll<F::Output> {
+    match reading.as_pin_mut() {
+        Some(read) => read.poll(cx),
+        None => Poll::Pending,
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn run_publisher_writer(
     send: SendStream,
@@ -640,6 +707,7 @@ pub(crate) async fn run_publisher_writer(
         _chunk_bytes,
         crate::config::DEFAULT_MAX_FRAME_BYTES,
         None,
+        false,
     )
     .await
 }

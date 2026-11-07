@@ -27,6 +27,10 @@ pub struct History {
     /// What each list held once every fault was healed. Must start at the
     /// list's base offset and have no holes, or lost-write checks are unsound.
     pub final_reads: BTreeMap<String, Vec<Element>>,
+    /// Lists whose final read could not be taken. The rules that need the
+    /// whole log (lost writes, delivery against the final log) skip them; the
+    /// rules about what reads saw still run, against what the reads saw.
+    pub unread_lists: BTreeSet<String>,
     /// Puts and gets on `Quorum` cache keys, in completion order.
     pub registers: Vec<RegisterOp>,
     /// The values atomic commits wrote, each both an append and its list's
@@ -46,6 +50,21 @@ pub struct History {
     /// means an empty read saw an empty list, so reads must start at the
     /// list's base.
     pub exact_tails: bool,
+
+    /// Every time a broker opened a shard for writes, read from the broker
+    /// logs. Only collected when the brokers elect leaders among themselves.
+    pub opens: BTreeSet<Opened>,
+}
+
+/// One broker opening one shard for writes at a generation, once a majority
+/// took its fence.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Opened {
+    /// The stream or cache name.
+    pub name: String,
+    pub shard: u32,
+    pub generation: u64,
+    pub node: String,
 }
 
 /// What the checker may assume of one list.

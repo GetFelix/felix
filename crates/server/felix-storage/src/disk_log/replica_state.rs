@@ -89,7 +89,7 @@ impl ReplicaState {
 /// been replicated to, or one written before this file existed.
 pub(super) fn load(dir: &Path) -> Result<ReplicaState> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => ReplicaState::decode(&bytes).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -115,11 +115,11 @@ pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&state.encode()).map_err(StorageError::Io)?;
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     sync_dir(dir).map_err(StorageError::Io)?;
     metrics::counter!(crate::metrics_names::REPLICA_STATE_WRITES_TOTAL).increment(1);
     metrics::histogram!(crate::metrics_names::REPLICA_STATE_WRITE_DURATION_SECONDS)
