@@ -1367,12 +1367,13 @@ impl ReplicaHandler {
         }
         let voter = if attested {
             match self.fences_as_non_voter(correlation_id, &key, &log, &request) {
-                // A learner whose crash kept its ballot, continuing from the
-                // leader that ballot names, promises as it does to an older
-                // caller: its directory never lost a ballot, so its promise is
-                // kept, and only its log is doubted (design-unified-fence.md
-                // section 1, "kept").
-                Ok(non_voter) => !non_voter || self.continues_from(&log, generation, sender),
+                // Even a learner continuing from its leader keeps no promise
+                // here: unlike an older caller's, a unified fence gives a
+                // learner a ballot, so a ballot it holds may be one taken
+                // while its promises counted for nothing, and a later crash
+                // that keeps it does not make it kept (design-unified-fence.md
+                // section 1, "kept": never lost, or readmitted).
+                Ok(non_voter) => !non_voter,
                 Err(refusal) => return *refusal,
             }
         } else {

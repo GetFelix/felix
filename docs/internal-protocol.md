@@ -895,9 +895,10 @@ To a caller that offered `UNIFIED_FENCE`, the shard's own log answers
 `FenceAttestedOk` where it would refuse a learner (`Unauthorized`), or the copy
 it led before a crash (`Unavailable`, the set-of-two check included). The
 attestation says what the answer counts for: a learner's `kept_from` is
-`u64::MAX`, and a crashed leader's copy is not trusted. A learner whose crash
-kept its ballot, and whose ballot names the fencing leader at the generation
-before, promises as it does to an older caller: `kept_from` 0, not trusted. A
+`u64::MAX`, and a crashed leader's copy is not trusted. That includes a
+learner whose ballot names the fencing leader at the generation before, which
+an older caller counts: a unified fence gives a learner a ballot, so its
+ballot may be one taken while its promises counted for nothing. A
 learner's answer that counts for no set does not make this replica route the
 shard to a candidate. Three cases still refuse:
 

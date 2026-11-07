@@ -1537,14 +1537,16 @@ async fn a_copy_listed_as_a_learner_answers_a_unified_fence_with_no_promise() {
     assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
 }
 
-/// **A learner continuing from its leader promises a unified caller, as it
-/// does an older one.** Its crash kept its ballot, which names broker-a at
-/// generation 5, so its directory never lost a promise and the promise to
-/// broker-a's next generation counts. Only its log is doubted, so it is not
-/// trusted. Without the ballot it keeps no promise.
+/// **A learner continuing from its leader keeps no promise to a unified
+/// caller**, though it promises an older one
+/// (`a_learner_whose_ballot_names_the_leader_promises_its_next_generation`).
+/// A unified fence hands a
+/// learner a ballot, so the ballot it holds may be one it took while its
+/// promises counted for nothing: a crash that kept that ballot does not make
+/// it a kept promise.
 #[tokio::test]
-async fn a_continuing_learner_promises_a_unified_fence_untrusted() {
-    for (ballot, kept_from) in [("broker-a", 0), ("broker-c", u64::MAX)] {
+async fn a_continuing_learner_keeps_no_promise_to_a_unified_fence() {
+    for ballot in ["broker-a", "broker-c"] {
         let (broker, _dir) = broker_with_storage().await;
         let handler = handler(&broker, 6, OWN)
             .with_fleet(kept_marks())
@@ -1562,14 +1564,7 @@ async fn a_continuing_learner_promises_a_unified_fence_untrusted() {
         let InternalMessage::FenceOk(ok) = answer else {
             panic!("expected the fence to be taken, got {answer:?}");
         };
-        assert_eq!(
-            ok.attestation,
-            Some(felix_wire::internal::FenceAttestation {
-                kept_from,
-                trusted: false,
-            }),
-            "{ballot}"
-        );
+        assert_eq!(ok.attestation, no_promise(), "{ballot}");
     }
 }
 
