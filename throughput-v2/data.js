@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794090888341,
+  "lastUpdate": 1794092914877,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49660,6 +49660,58 @@ window.BENCHMARK_DATA = {
             "range": "18981.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1655432.07\nmean: 1665106.16\nstdev: 18981.62\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac8f8b751ac8b0e61ac4ee3d57bd6a6b459bb18d",
+          "message": "ci(tla): weight the heavy configs and split PR TLA into 12 shards (#2121)\n\n* ci(tla): weight the heavy configs so no PR shard overruns\n\nReweights the configurations whose measured time was far from their\nweight, and adds weights for ones that had none. The PR shard that\ntimed out in run 42417069529 held an unweighted 24 minute configuration.\n\nSpec-Unaffected: only scripts/check_tla.sh weights changed; no spec or config.\n\n* ci(tla): split the pull request TLA run into 12 shards\n\nSpec-Unaffected: only the CI shard count and its doc line changed; no spec or config.\n\n* docs(formal): the PR split is twelve jobs\n\nSpec-Unaffected: documentation of the CI shard count only.",
+          "timestamp": "2026-11-07T15:02:46-08:00",
+          "tree_id": "82cab5a7758267baa16f4f0925d41f7b893b44c8",
+          "url": "https://github.com/GetFelix/felix/commit/ac8f8b751ac8b0e61ac4ee3d57bd6a6b459bb18d"
+        },
+        "date": 1794092914253,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359178.81,
+            "range": "13782.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359178.81\nmean: 358914.17\nstdev: 13782.04\ncv: 3.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359178.81,
+            "range": "13782.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359178.81\nmean: 358914.17\nstdev: 13782.04\ncv: 3.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82373.95,
+            "range": "3778.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82373.95\nmean: 80564.86\nstdev: 3778.38\ncv: 4.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 823739.52,
+            "range": "37783.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 823739.52\nmean: 805648.59\nstdev: 37783.75\ncv: 4.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
