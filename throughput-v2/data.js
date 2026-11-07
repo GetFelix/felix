@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794041557597,
+  "lastUpdate": 1794045455092,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48620,6 +48620,58 @@ window.BENCHMARK_DATA = {
             "range": "69781.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 962867.38\nmean: 933900.54\nstdev: 69781.48\ncv: 7.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59371a4c1dd6c293789956aedf28e22908897cd4",
+          "message": "feat(replication): a replica attests whether its copy kept its ballots and is trusted (#2089)\n\n* feat(replication): a replica attests whether its copy kept its ballots and is trusted\n\nThe fence answer now carries FenceOk::attestation for a shard's own log:\nkept_from (0 when the directory kept every ballot, u64::MAX otherwise) and\ntrusted (kept, no poisoned log, and a clean start or, after an unclean one, a\nbatch that left the copy level through both the sender's generation start and\nits commit offset above zero). A start from the view attests nothing. No\nbroker offers UNIFIED_FENCE, so the attestation never reaches the wire and no\nfence decision reads it. Today's vouch is unchanged.\n\nSpec: FelixShardUnifiedVouch, FelixShardUnifiedVouchMark, FelixShardUnifiedVouchBelowStart, FelixShardUnifiedStandInNoCatchUp, FelixShardUnifiedCountsForgotten, FelixShardUnifiedTrustsRegistered, FelixShardUnifiedCountNonKept\n\n* fix(replication): a record without a storage id attests no kept ballot\n\nA node registered before storage ids whose directory is then wiped would\nattest kept ballots and a trusted empty copy. The control plane's record\ncannot tell that directory from the old one, as the continuing window's\nkept_promises already says (#2047).\n\nSpec: FelixShardUnifiedVouch, FelixShardUnifiedVouchMark, FelixShardUnifiedVouchBelowStart, FelixShardUnifiedStandInNoCatchUp, FelixShardUnifiedCountsForgotten, FelixShardUnifiedTrustsRegistered, FelixShardUnifiedCountNonKept, FelixShardUnifiedCountsWiped, FelixShardUnifiedNamesByRegistration\nSpec-Unaffected: the model already has these rules (FelixShardUnified.tla, #2084); this implements the replica's side of them, and the cfg edits only cite the new tests.",
+          "timestamp": "2026-11-07T09:50:25Z",
+          "tree_id": "d2eac823ff15e72e231ea1dd08212afe996e41ed",
+          "url": "https://github.com/GetFelix/felix/commit/59371a4c1dd6c293789956aedf28e22908897cd4"
+        },
+        "date": 1794045454505,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 357368.04,
+            "range": "8017.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357368.04\nmean: 359042.40\nstdev: 8017.74\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 357368.04,
+            "range": "8017.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 357368.04\nmean: 359042.40\nstdev: 8017.74\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81995.18,
+            "range": "539.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81995.18\nmean: 81965.66\nstdev: 539.80\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819951.75,
+            "range": "5397.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819951.75\nmean: 819656.54\nstdev: 5397.98\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
