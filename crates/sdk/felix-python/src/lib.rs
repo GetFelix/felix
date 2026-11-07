@@ -30,6 +30,7 @@ mod commit;
 mod conditional;
 mod errors;
 mod group_admin;
+mod headers;
 mod producer;
 mod runtime;
 mod sharded_cache_watch;
@@ -37,6 +38,7 @@ mod sharded_group;
 mod stream_page;
 mod tls;
 mod token;
+mod tuning;
 mod types;
 mod watch_progress;
 
@@ -62,6 +64,8 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<asyncio::AsyncShardedGroup>()?;
     module.add_class::<asyncio::AsyncProducer>()?;
 
+    module.add_class::<headers::RecordHeaders>()?;
+    module.add_class::<tuning::ClientTuning>()?;
     module.add_class::<types::Event>()?;
     module.add_class::<types::GroupRecord>()?;
     module.add_class::<types::CacheChange>()?;

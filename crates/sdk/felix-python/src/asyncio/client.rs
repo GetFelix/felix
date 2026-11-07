@@ -64,6 +64,10 @@ impl AsyncClient {
         reconnect_deadline=None,
         reconnect_backoff=None,
         reconnect_max_backoff=None,
+        publishers=None,
+        timestamps=None,
+        record_headers=None,
+        tuning=None,
     ))]
     fn connect<'py>(
         py: Python<'py>,
@@ -80,6 +84,10 @@ impl AsyncClient {
         reconnect_deadline: Option<f64>,
         reconnect_backoff: Option<f64>,
         reconnect_max_backoff: Option<f64>,
+        publishers: Option<bool>,
+        timestamps: Option<bool>,
+        record_headers: Option<bool>,
+        tuning: Option<PyRef<'_, crate::tuning::ClientTuning>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -97,6 +105,7 @@ impl AsyncClient {
             crate::tls::client_config(ca_file, client_cert_file, client_key_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
+        crate::tuning::apply_options(&mut config, publishers, timestamps, record_headers, tuning.as_deref());
         let flavor = Flavor::asyncio(py, token_provider.is_some())?;
         match resolve(py, token, token_provider, flavor)? {
             Tokens::Fixed(token) => config.auth_token = Some(token),
@@ -152,6 +161,7 @@ impl AsyncClient {
         key=None,
         ack="per_message",
         at_least_once=false,
+        headers=None,
     ))]
     fn publish<'py>(
         &self,
@@ -163,6 +173,7 @@ impl AsyncClient {
         key: Option<&[u8]>,
         ack: &str,
         at_least_once: bool,
+        headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
@@ -173,7 +184,25 @@ impl AsyncClient {
         );
         let payload = payload.to_vec();
         let key = key.map(Bytes::copy_from_slice);
+        let headers = headers
+            .filter(|h| !h.is_none())
+            .map(|h| {
+                if key.is_some() || at_least_once {
+                    return Err(PyValueError::new_err(
+                        "headers cannot be combined with key or at_least_once: put the \
+                         record's own key in RecordHeaders(key=...)",
+                    ));
+                }
+                crate::headers::extract(h)
+            })
+            .transpose()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(headers) = headers {
+                return inner
+                    .publish_with_headers(&tenant_id, &namespace, &stream, headers, payload, ack)
+                    .await
+                    .map_err(to_py_err);
+            }
             match (key, at_least_once) {
                 (Some(key), false) => {
                     inner
@@ -1094,7 +1123,7 @@ impl AsyncClient {
 
     /// Publish `payloads` as one batch. See the synchronous
     /// `Client.publish_batch`.
-    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message"))]
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message", headers=None))]
     fn publish_batch<'py>(
         &self,
         py: Python<'py>,
@@ -1104,6 +1133,7 @@ impl AsyncClient {
         payloads: Vec<Vec<u8>>,
         key: Option<&[u8]>,
         ack: &str,
+        headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
@@ -1113,7 +1143,26 @@ impl AsyncClient {
             stream.to_string(),
         );
         let key = key.map(Bytes::copy_from_slice);
+        let records = headers
+            .filter(|h| !h.is_none())
+            .map(|h| {
+                if key.is_some() {
+                    return Err(PyValueError::new_err(
+                        "headers cannot be combined with key on a batch: the batch's key routes it, \
+                         and a record's own key goes in RecordHeaders(key=...)",
+                    ));
+                }
+                crate::headers::extract_batch(h, payloads.len())
+            })
+            .transpose()?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            if let Some(blocks) = records {
+                let records = blocks.into_iter().zip(payloads).collect();
+                return inner
+                    .publish_batch_with_headers(&tenant_id, &namespace, &stream, records, ack)
+                    .await
+                    .map_err(to_py_err);
+            }
             match key {
                 Some(key) => {
                     inner

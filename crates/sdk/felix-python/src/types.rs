@@ -5,6 +5,7 @@
 //! Python type — an application that switches surfaces should not have to
 //! switch its `isinstance` checks too.
 
+use crate::headers::RecordHeaders;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
@@ -26,6 +27,18 @@ pub struct Event {
     /// the first event after a leader change, whose generation-start record
     /// took an offset; always zero from a broker that predates it.
     pub skipped_before: u64,
+    /// The principal that published the record. `None` unless the client was
+    /// created with `publishers=True`, and for a record the broker did not
+    /// attribute.
+    pub publisher: Option<String>,
+    /// When the broker appended the record, in microseconds since the Unix
+    /// epoch. `None` unless the client was created with `timestamps=True`, and
+    /// for an in-memory stream.
+    pub timestamp_micros: Option<u64>,
+    /// The key and headers the publisher gave the record; `None` for a record
+    /// without either, and when the client was created with
+    /// `record_headers=False`.
+    pub headers: Option<Py<RecordHeaders>>,
 }
 
 #[pymethods]
@@ -62,6 +75,12 @@ pub struct GroupRecord {
     /// delivered (generation starts, records retention removed), so a hole
     /// with this count will not fill. `0` from a broker that predates it.
     pub skipped_before: u64,
+    /// The principal that published the record, as for `Event.publisher`.
+    /// Needs `publishers=True`.
+    pub publisher: Option<String>,
+    /// When the record was appended, as for `Event.timestamp_micros`. Needs
+    /// `timestamps=True`.
+    pub timestamp_micros: Option<u64>,
 }
 
 impl GroupRecord {
@@ -73,8 +92,8 @@ impl GroupRecord {
             payload: bytes::Bytes::new(),
             attempts: self.attempts,
             skipped_before: self.skipped_before,
-            publisher: None,
-            timestamp_micros: None,
+            publisher: self.publisher.clone(),
+            timestamp_micros: self.timestamp_micros,
         }
     }
 }
@@ -314,6 +333,9 @@ pub(crate) struct OwnedEvent {
     payload: Vec<u8>,
     offset: Option<u64>,
     skipped_before: u64,
+    publisher: Option<String>,
+    timestamp_micros: Option<u64>,
+    headers: Option<felix_client::RecordHeaders>,
 }
 
 impl From<felix_client::Event> for OwnedEvent {
@@ -325,6 +347,9 @@ impl From<felix_client::Event> for OwnedEvent {
             payload: event.payload.to_vec(),
             offset: event.offset,
             skipped_before: event.skipped_before,
+            publisher: event.publisher.as_deref().map(str::to_owned),
+            timestamp_micros: event.timestamp_micros,
+            headers: event.headers,
         }
     }
 }
@@ -335,6 +360,10 @@ impl<'py> IntoPyObject<'py> for OwnedEvent {
     type Error = PyErr;
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let headers = self
+            .headers
+            .map(|block| Bound::new(py, RecordHeaders::from(block)).map(Bound::unbind))
+            .transpose()?;
         Bound::new(
             py,
             Event {
@@ -344,6 +373,9 @@ impl<'py> IntoPyObject<'py> for OwnedEvent {
                 payload: PyBytes::new(py, &self.payload).unbind(),
                 offset: self.offset,
                 skipped_before: self.skipped_before,
+                publisher: self.publisher,
+                timestamp_micros: self.timestamp_micros,
+                headers,
             },
         )
     }
@@ -356,6 +388,8 @@ pub(crate) struct OwnedGroupRecord {
     pub payload: Vec<u8>,
     pub attempts: u32,
     pub skipped_before: u64,
+    pub publisher: Option<String>,
+    pub timestamp_micros: Option<u64>,
 }
 
 impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
@@ -365,6 +399,8 @@ impl From<felix_wire::GroupRecord> for OwnedGroupRecord {
             payload: record.payload.to_vec(),
             attempts: record.attempts,
             skipped_before: record.skipped_before,
+            publisher: record.publisher,
+            timestamp_micros: record.timestamp_micros,
         }
     }
 }
@@ -382,6 +418,8 @@ impl<'py> IntoPyObject<'py> for OwnedGroupRecord {
                 payload: PyBytes::new(py, &self.payload).unbind(),
                 attempts: self.attempts,
                 skipped_before: self.skipped_before,
+                publisher: self.publisher,
+                timestamp_micros: self.timestamp_micros,
             },
         )
     }
@@ -457,12 +495,7 @@ impl<'py> IntoPyObject<'py> for OwnedWatchItem {
 pub(crate) enum OwnedShardEvent {
     Record {
         shard: u32,
-        tenant_id: String,
-        namespace: String,
-        stream: String,
-        payload: Vec<u8>,
-        offset: Option<u64>,
-        skipped_before: u64,
+        event: OwnedEvent,
     },
     Lost {
         shard: u32,
@@ -497,12 +530,7 @@ impl OwnedShardEvent {
         Some(match event {
             felix_client::ShardEvent::Record { shard, event } => Self::Record {
                 shard,
-                tenant_id: event.tenant_id.to_string(),
-                namespace: event.namespace.to_string(),
-                stream: event.stream.to_string(),
-                payload: event.payload.to_vec(),
-                offset: event.offset,
-                skipped_before: event.skipped_before,
+                event: event.into(),
             },
             felix_client::ShardEvent::ShardLost { shard, error } => Self::Lost { shard, error },
             felix_client::ShardEvent::ShardRecovered { shard } => Self::Recovered { shard },
@@ -520,26 +548,8 @@ impl<'py> IntoPyObject<'py> for OwnedShardEvent {
 
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         match self {
-            Self::Record {
-                shard,
-                tenant_id,
-                namespace,
-                stream,
-                payload,
-                offset,
-                skipped_before,
-            } => {
-                let event = Bound::new(
-                    py,
-                    Event {
-                        tenant_id,
-                        namespace,
-                        stream,
-                        payload: PyBytes::new(py, &payload).unbind(),
-                        offset,
-                        skipped_before,
-                    },
-                )?;
+            Self::Record { shard, event } => {
+                let event = event.into_pyobject(py)?;
                 Ok(Bound::new(
                     py,
                     ShardRecord {
