@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794041553584,
+  "lastUpdate": 1794045451380,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -61710,6 +61710,72 @@ window.BENCHMARK_DATA = {
             "range": "208.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 398.00\nmean: 506.00\nstdev: 208.83\ncv: 41.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "59371a4c1dd6c293789956aedf28e22908897cd4",
+          "message": "feat(replication): a replica attests whether its copy kept its ballots and is trusted (#2089)\n\n* feat(replication): a replica attests whether its copy kept its ballots and is trusted\n\nThe fence answer now carries FenceOk::attestation for a shard's own log:\nkept_from (0 when the directory kept every ballot, u64::MAX otherwise) and\ntrusted (kept, no poisoned log, and a clean start or, after an unclean one, a\nbatch that left the copy level through both the sender's generation start and\nits commit offset above zero). A start from the view attests nothing. No\nbroker offers UNIFIED_FENCE, so the attestation never reaches the wire and no\nfence decision reads it. Today's vouch is unchanged.\n\nSpec: FelixShardUnifiedVouch, FelixShardUnifiedVouchMark, FelixShardUnifiedVouchBelowStart, FelixShardUnifiedStandInNoCatchUp, FelixShardUnifiedCountsForgotten, FelixShardUnifiedTrustsRegistered, FelixShardUnifiedCountNonKept\n\n* fix(replication): a record without a storage id attests no kept ballot\n\nA node registered before storage ids whose directory is then wiped would\nattest kept ballots and a trusted empty copy. The control plane's record\ncannot tell that directory from the old one, as the continuing window's\nkept_promises already says (#2047).\n\nSpec: FelixShardUnifiedVouch, FelixShardUnifiedVouchMark, FelixShardUnifiedVouchBelowStart, FelixShardUnifiedStandInNoCatchUp, FelixShardUnifiedCountsForgotten, FelixShardUnifiedTrustsRegistered, FelixShardUnifiedCountNonKept, FelixShardUnifiedCountsWiped, FelixShardUnifiedNamesByRegistration\nSpec-Unaffected: the model already has these rules (FelixShardUnified.tla, #2084); this implements the replica's side of them, and the cfg edits only cite the new tests.",
+          "timestamp": "2026-11-07T09:50:25Z",
+          "tree_id": "d2eac823ff15e72e231ea1dd08212afe996e41ed",
+          "url": "https://github.com/GetFelix/felix/commit/59371a4c1dd6c293789956aedf28e22908897cd4"
+        },
+        "date": 1794045443391,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 210.80\nstdev: 5.81\ncv: 2.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 328,
+            "range": "77.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 328.00\nmean: 341.20\nstdev: 77.47\ncv: 22.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 197.00\nstdev: 1.00\ncv: 0.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "9.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 396.20\nstdev: 9.52\ncv: 2.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 730,
+            "range": "128.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 730.00\nmean: 707.00\nstdev: 128.55\ncv: 18.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
