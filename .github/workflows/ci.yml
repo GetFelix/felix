@@ -1125,7 +1125,7 @@ jobs:
   formal:
     needs: changes
     if: needs.changes.outputs.formal == 'true'
-    name: TLA+ model (${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 10 || 16 }})
+    name: TLA+ model (${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 16 }})
     # Only main's full set is heavy (a shard can run for hours). One run per
     # shard at a time on main; a newer pending one replaces an older one.
     # Pull requests and manual runs get a group of their own.
@@ -1143,7 +1143,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0,1,2,3,4,5,6,7,8,9]' || '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0,1,2,3,4,5,6,7,8,9,10,11]' || '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1174,7 +1174,7 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 10 || 16 }}
+          TLA_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 16 }}
           TLA_CONFIGS: ${{ inputs.tla_configs }}
           TLA_COVERAGE: ${{ inputs.tla_coverage }}
           TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}
