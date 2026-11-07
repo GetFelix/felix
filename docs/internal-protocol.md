@@ -121,6 +121,7 @@ never have dialled the one that shipped to it.
 | `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
 | `1 << 19` | `REFUSAL_REASONS` | offered by a caller: it reads a `ReplicateError`'s reason fields, so a refusal to it carries them after the detail (see "Refusal reasons" under "Errors") |
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
+| `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). No broker offers it yet |
 
 #### Storage identity
 
@@ -862,6 +863,22 @@ counts an answer from a copy it does not expect only with this attestation.
 Only a caller that offered `KEPT_BALLOTS` gets kind 53. To any other the
 replica sends `FenceOk`, byte for byte as before.
 
+`FenceAttestedOk` (kind 54) is the `FenceOk` body followed by the replica's
+attestation of its copy:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kept_from` | u64 | the set generation from which the copy's promises count: zero when its data directory never lost a ballot, otherwise the generation of the set that readmitted it |
+| flags | u8 | bit 0 `trusted`: the copy holds every record its seat acknowledged (a clean start, or a batch since that left it level through the shipping leader's acknowledged mark). Bit 1: the kept ballot `FenceKeptOk` would carry. Any other bit is refused |
+
+It is for a leader that counts a fence's promises and its coverage of
+acknowledged records separately: promises from copies that kept their
+ballots, coverage from trusted copies. Only a caller that offered
+`UNIFIED_FENCE` gets kind 54. To any other the replica drops the attestation
+and answers with `FenceKeptOk` or `FenceOk` as before. No broker offers
+`UNIFIED_FENCE` or attests yet, so every fence answer on the wire is still kind
+30 or 53.
+
 | The replica | Answer |
 | --- | --- |
 | has accepted this generation or an older one, and its routing view is not past it | persists it, `FenceOk` |
@@ -1111,7 +1128,8 @@ back to the detail whenever the fields are absent.
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
 `ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
 `ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
-`SequencedForwardPublish` 52 and `FenceKeptOk` 53. A peer
+`SequencedForwardPublish` 52, `FenceKeptOk` 53 and
+`FenceAttestedOk` 54. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

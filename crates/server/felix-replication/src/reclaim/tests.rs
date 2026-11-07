@@ -43,6 +43,7 @@ impl PeerRequester for Followers {
                 commit_offset: 0,
                 last_generation: 0,
                 kept_ballot: false,
+                attestation: None,
             })),
             None => Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),

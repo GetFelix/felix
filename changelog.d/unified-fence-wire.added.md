@@ -1,0 +1,1 @@
+- The broker-internal protocol has a fence answer that carries the replica's account of its copy (`FenceAttestedOk`, kind 54): the set generation its promises count from and whether it holds every record its seat acknowledged. It is negotiated with a new `UNIFIED_FENCE` capability, which no broker offers yet, so peers still exchange the same frames.

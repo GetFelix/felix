@@ -536,6 +536,7 @@ impl PeerRequester for BehindFollower {
                     commit_offset: 0,
                     last_generation: 0,
                     kept_ballot: false,
+                    attestation: None,
                 }));
             }
             other => panic!("unexpected {other:?}"),
@@ -728,6 +729,7 @@ impl PeerRequester for FenceTaker {
             commit_offset: 0,
             last_generation: 0,
             kept_ballot: false,
+            attestation: None,
         }))
     }
 

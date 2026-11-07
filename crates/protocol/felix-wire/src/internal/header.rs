@@ -235,6 +235,11 @@ pub enum Kind {
     /// generation before. Same body; a separate kind so an answer without
     /// the attestation stays byte for byte what an older leader reads.
     FenceKeptOk = 53,
+    /// `FenceOk` followed by the replica's attestation: the set generation
+    /// its promises count from and a flags byte (trusted, kept ballot). An
+    /// older leader refuses the kind rather than reading the answer without
+    /// it.
+    FenceAttestedOk = 54,
 }
 
 impl Kind {
@@ -295,6 +300,7 @@ impl Kind {
             51 => Ok(Kind::HeaderedForwardPublish),
             52 => Ok(Kind::SequencedForwardPublish),
             53 => Ok(Kind::FenceKeptOk),
+            54 => Ok(Kind::FenceAttestedOk),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

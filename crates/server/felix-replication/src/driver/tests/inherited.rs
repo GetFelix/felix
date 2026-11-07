@@ -92,6 +92,7 @@ impl PeerRequester for PromotedFollowers {
                 commit_offset: 0,
                 last_generation: 0,
                 kept_ballot: false,
+                attestation: None,
             })),
             InternalMessage::ReplicateRecords(batch) => {
                 Ok(InternalMessage::ReplicateOk(ReplicateOk {

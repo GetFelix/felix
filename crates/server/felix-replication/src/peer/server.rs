@@ -908,7 +908,8 @@ async fn serve_connection(
 /// `response` as a caller that offered `caller` reads it: a learner's answer
 /// to one that did not offer [`PeerCapabilities::LEARNER_ACKS`], or a
 /// kept-ballot fence answer to one that did not offer
-/// [`PeerCapabilities::KEPT_BALLOTS`], goes as the original kind, which such
+/// [`PeerCapabilities::KEPT_BALLOTS`], or an attested one to one that did not
+/// offer [`PeerCapabilities::UNIFIED_FENCE`], goes as the original kind, which such
 /// a caller reads as it always has; and a refusal to one that did not offer
 /// [`PeerCapabilities::REFUSAL_REASONS`] goes without its reason, a body such
 /// a caller would not decode.
@@ -922,13 +923,14 @@ pub fn for_caller(response: InternalMessage, caller: PeerCapabilities) -> Intern
                 ..ok
             })
         }
-        InternalMessage::FenceOk(ok)
-            if ok.kept_ballot && !caller.contains(PeerCapabilities::KEPT_BALLOTS) =>
-        {
-            InternalMessage::FenceOk(felix_wire::internal::FenceOk {
-                kept_ballot: false,
-                ..ok
-            })
+        InternalMessage::FenceOk(mut ok) => {
+            if !caller.contains(PeerCapabilities::UNIFIED_FENCE) {
+                ok.attestation = None;
+            }
+            if !caller.contains(PeerCapabilities::KEPT_BALLOTS) {
+                ok.kept_ballot = false;
+            }
+            InternalMessage::FenceOk(ok)
         }
         InternalMessage::ReplicateError(err)
             if err.reason.is_some() && !caller.contains(PeerCapabilities::REFUSAL_REASONS) =>

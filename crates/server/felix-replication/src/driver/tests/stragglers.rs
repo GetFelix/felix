@@ -429,6 +429,7 @@ impl PeerRequester for FencingFollowers {
                     commit_offset: 0,
                     last_generation: 0,
                     kept_ballot: false,
+                    attestation: None,
                 }))
             }
             InternalMessage::ReplicateRecords(batch) => {

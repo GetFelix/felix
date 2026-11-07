@@ -553,6 +553,7 @@ impl PeerRequestHandler for SlowForwards {
                     commit_offset: 0,
                     last_generation: 0,
                     kept_ballot: false,
+                    attestation: None,
                 })
             }
             other => {
@@ -638,6 +639,7 @@ impl PeerRequestHandler for SlowPromotions {
             commit_offset: 0,
             last_generation: 0,
             kept_ballot: false,
+            attestation: None,
         })
     }
 }

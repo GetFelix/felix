@@ -75,6 +75,7 @@ fn a_kept_ballot_reaches_only_a_caller_that_reads_it() {
         commit_offset: 2,
         last_generation: 4,
         kept_ballot: true,
+        attestation: None,
     });
     let kept = |offered| match crate::peer::server::for_caller(answer.clone(), offered) {
         InternalMessage::FenceOk(ok) => ok.kept_ballot,
@@ -84,6 +85,52 @@ fn a_kept_ballot_reaches_only_a_caller_that_reads_it() {
     assert!(!kept(PeerCapabilities::NONE));
     assert!(!kept(PeerCapabilities::LEARNER_ACKS));
     assert!(kept(PeerCapabilities::KEPT_BALLOTS));
+}
+
+/// **An attested fence answer reaches only a caller that offered
+/// `UNIFIED_FENCE`.** An older leader refuses `FenceAttestedOk` as an unknown
+/// kind, so to it the answer goes as the kind it has always read, with the
+/// kept ballot kept only for a caller that offered `KEPT_BALLOTS`.
+#[test]
+fn an_attestation_reaches_only_a_caller_that_reads_it() {
+    use felix_wire::internal::{FenceAttestation, InternalHeader, Kind};
+
+    let answer = InternalMessage::FenceOk(felix_wire::internal::FenceOk {
+        correlation_id: 7,
+        log_end: 3,
+        commit_offset: 2,
+        last_generation: 4,
+        kept_ballot: true,
+        attestation: Some(FenceAttestation {
+            kept_from: 2,
+            trusted: true,
+        }),
+    });
+    let kind = |offered| {
+        let shaped = crate::peer::server::for_caller(answer.clone(), offered);
+        let bytes = shaped.encode().expect("encode");
+        InternalHeader::decode(&bytes).expect("header").kind
+    };
+
+    assert_eq!(kind(PeerCapabilities::NONE), Kind::FenceOk);
+    assert_eq!(kind(PeerCapabilities::KEPT_BALLOTS), Kind::FenceKeptOk);
+    assert_eq!(
+        kind(PeerCapabilities::KEPT_BALLOTS.union(PeerCapabilities::UNIFIED_FENCE)),
+        Kind::FenceAttestedOk
+    );
+    match crate::peer::server::for_caller(answer.clone(), PeerCapabilities::UNIFIED_FENCE) {
+        InternalMessage::FenceOk(ok) => {
+            assert!(!ok.kept_ballot, "no KEPT_BALLOTS, no kept ballot");
+            assert_eq!(
+                ok.attestation,
+                Some(FenceAttestation {
+                    kept_from: 2,
+                    trusted: true,
+                })
+            );
+        }
+        other => panic!("expected FenceOk, got {other:?}"),
+    }
 }
 
 /// **A refusal's reason goes only to a caller that offered

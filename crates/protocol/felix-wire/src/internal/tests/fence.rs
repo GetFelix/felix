@@ -291,6 +291,7 @@ fn a_fence_answer_carries_where_the_replica_stands() {
         commit_offset: 100,
         last_generation: 6,
         kept_ballot: false,
+        attestation: None,
     });
     let encoded = ok.encode().expect("encode");
     assert_eq!(encoded.len(), InternalHeader::LEN + 32);
@@ -308,9 +309,11 @@ fn a_kept_ballot_answer_is_its_own_kind_and_a_plain_one_is_unchanged() {
         commit_offset: 100,
         last_generation: 6,
         kept_ballot: false,
+        attestation: None,
     };
     let kept = FenceOk {
         kept_ballot: true,
+        attestation: None,
         ..plain
     };
     let plain_bytes = InternalMessage::FenceOk(plain).encode().expect("encode");
@@ -342,6 +345,91 @@ fn a_kept_ballot_answer_is_its_own_kind_and_a_plain_one_is_unchanged() {
         InternalMessage::decode(kept_bytes).expect("decode"),
         InternalMessage::FenceOk(kept)
     );
+}
+
+/// **An attested answer is its own kind, with the attestation after the
+/// original body.** An older leader refuses kind 54 rather than reading an
+/// answer whose meaning it does not know; the answer it can read is
+/// unchanged.
+#[test]
+fn an_attested_answer_is_its_own_kind_after_the_original_body() {
+    let plain = FenceOk {
+        correlation_id: 42,
+        log_end: 120,
+        commit_offset: 100,
+        last_generation: 6,
+        kept_ballot: false,
+        attestation: None,
+    };
+    let plain_bytes = InternalMessage::FenceOk(plain).encode().expect("encode");
+    let header = InternalHeader::LEN;
+    assert_eq!(Kind::FenceAttestedOk as u16, 54);
+
+    for (kept_ballot, trusted, flags) in [
+        (false, false, 0u8),
+        (false, true, 1),
+        (true, false, 2),
+        (true, true, 3),
+    ] {
+        let attested = FenceOk {
+            kept_ballot,
+            attestation: Some(FenceAttestation {
+                kept_from: 9,
+                trusted,
+            }),
+            ..plain
+        };
+        let bytes = InternalMessage::FenceOk(attested).encode().expect("encode");
+        assert_eq!(
+            InternalHeader::decode(&bytes).expect("header").kind,
+            Kind::FenceAttestedOk
+        );
+        assert_eq!(bytes[header..header + 32], plain_bytes[header..]);
+        let mut tail = BytesMut::new();
+        tail.put_u64(9);
+        tail.put_u8(flags);
+        assert_eq!(&bytes[header + 32..], &tail[..]);
+        assert_eq!(
+            InternalMessage::decode(bytes).expect("decode"),
+            InternalMessage::FenceOk(attested)
+        );
+    }
+}
+
+fn attested_frame(tail: &[u8]) -> Bytes {
+    let mut body = BytesMut::new();
+    for value in [42u64, 120, 100, 6] {
+        body.put_u64(value);
+    }
+    body.put_slice(tail);
+    let mut frame = BytesMut::new();
+    InternalHeader {
+        kind: Kind::FenceAttestedOk,
+        length: body.len() as u32,
+    }
+    .encode(&mut frame);
+    frame.extend_from_slice(&body);
+    frame.freeze()
+}
+
+/// **An attestation flag this build does not know is refused, not dropped.**
+/// A later bit could narrow what `trusted` means; reading past it would
+/// count a copy the sender did not vouch for.
+#[test]
+fn an_unknown_attestation_flag_is_refused() {
+    let mut tail = 9u64.to_be_bytes().to_vec();
+    tail.push(3);
+    assert!(InternalMessage::decode(attested_frame(&tail)).is_ok());
+    for flags in [4u8, 0x80] {
+        let mut tail = 9u64.to_be_bytes().to_vec();
+        tail.push(flags);
+        assert!(InternalMessage::decode(attested_frame(&tail)).is_err());
+    }
+    // Short or long, the body is refused.
+    assert!(InternalMessage::decode(attested_frame(&9u64.to_be_bytes())).is_err());
+    let mut long = 9u64.to_be_bytes().to_vec();
+    long.extend_from_slice(&[1, 0]);
+    assert!(InternalMessage::decode(attested_frame(&long)).is_err());
 }
 
 fn fence(incarnation: Option<u64>) -> InternalMessage {

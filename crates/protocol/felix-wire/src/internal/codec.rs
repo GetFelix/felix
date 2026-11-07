@@ -6,15 +6,15 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use super::replicate::GenerationStart;
 use super::replicate::{ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks};
 use super::{
-    AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
-    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease,
-    ForwardProducer, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
-    InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
-    MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES, MAX_INNER_BODY_BYTES,
-    MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote,
-    PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember,
-    ShardRef,
+    AckMode, CacheOpKind, ErrorCode, Fence, FenceAttestation, FenceElection, FenceOk,
+    ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome,
+    ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello,
+    HelloOk, InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS,
+    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
+    MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
+    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords, SetMember, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -214,7 +214,11 @@ impl InternalMessage {
                 body.put_u64(m.log_end);
                 body.put_u64(m.commit_offset);
                 body.put_u64(m.last_generation);
-                // `kept_ballot` is the kind, not the body.
+                // Without an attestation, `kept_ballot` is the kind, not the body.
+                if let Some(attestation) = m.attestation {
+                    body.put_u64(attestation.kept_from);
+                    body.put_u8(u8::from(attestation.trusted) | (u8::from(m.kept_ballot) << 1));
+                }
             }
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
@@ -788,14 +792,29 @@ impl InternalMessage {
                     Self::Pong(Pong { correlation_id })
                 })
             }
-            Kind::FenceOk | Kind::FenceKeptOk => {
-                let message = FenceOk {
+            Kind::FenceOk | Kind::FenceKeptOk | Kind::FenceAttestedOk => {
+                let mut message = FenceOk {
                     correlation_id: take_u64(&mut body)?,
                     log_end: take_u64(&mut body)?,
                     commit_offset: take_u64(&mut body)?,
                     last_generation: take_u64(&mut body)?,
                     kept_ballot: kind == Kind::FenceKeptOk,
+                    attestation: None,
                 };
+                if kind == Kind::FenceAttestedOk {
+                    let kept_from = take_u64(&mut body)?;
+                    let flags = take_u8(&mut body)?;
+                    // A bit this build does not know may change what the
+                    // answer means, so it is refused rather than dropped.
+                    if flags & !3 != 0 {
+                        return Err(Error::Incomplete);
+                    }
+                    message.kept_ballot = flags & 2 != 0;
+                    message.attestation = Some(FenceAttestation {
+                        kept_from,
+                        trusted: flags & 1 != 0,
+                    });
+                }
                 expect_empty(&body)?;
                 Ok(Self::FenceOk(message))
             }
