@@ -17,8 +17,9 @@ A stream with four shards is four logs that share a name. Each shard has:
 
 - its own offsets, starting at 0,
 - its own leader, the broker that accepts its writes,
-- its own replicas, the brokers that hold copies of it,
-- its own generation, a number that goes up each time its leadership changes.
+- its own replicas, other brokers that keep a copy of it,
+- its own generation, a counter that goes up each time its leader changes, so
+  brokers and clients can tell an old leader from the current one.
 
 Shards exist for two reasons. They spread load, because four shards can be led
 by four different brokers, so one busy stream is not limited to one machine.
@@ -60,17 +61,19 @@ Take a stream with 4 shards. These are the real answers for a few keys:
 | `user-7` | 3 | 2 |
 | `user-8` | 1 | 0 |
 
-> `the_sharding_page_examples_hold` -- every number in this table and in the
-> growth example below is checked against the routing function.
+> `the_sharding_page_examples_hold` checks every number in this table and in
+> the growth example below against the routing function.
 
-Two things to notice. The two mappings give different answers for the same
-key, so a stream's mapping is part of its identity and never changes. And a
-handful of keys can cluster: under modulo, three of these five keys land on
+The two mappings give different answers for the same key, which is why a
+stream's mapping is fixed when the stream is created. Also, a handful of keys
+can cluster: under modulo, three of these five keys land on
 shard 3. Spread evens out over many keys, not over five.
 
 ### Publishing with a key
 
-In Rust, the cluster `Client` takes the key as a `Bytes` argument:
+In Rust, the cluster `Client` takes the key as a `Bytes` argument. Here
+`client` is a connected `Client` and `payload` is a `Vec<u8>`; see
+[Clusters](/clients/rust/operations/#clusters) for setting one up.
 
 ```rust
 use bytes::Bytes;
@@ -102,7 +105,7 @@ sends the record straight to that shard's leader. See
 ## Publishing without a key
 
 **A publish without a key always goes to shard 0.** There is nothing to hash,
-so there is nothing to spread. This is by design, not a fallback.
+so there is nothing to spread. This is by design.
 
 That is fine when the stream has one shard, or when you want a single total
 order for the whole stream and the load fits on one broker.
@@ -151,16 +154,15 @@ Choose the key by what must stay in order. If an order's events must be
 processed in sequence, key by order id. If a user's events must be, key by user
 id.
 
-The shard count is set when the stream is created and cannot be changed
-afterwards. Felix does not reshard a live stream today. Pick the count with
-that in mind:
+The shard count is set when the stream is created. Felix cannot reshard a
+live stream today, so pick the count with that in mind:
 
 - One shard if you need total order or the stream is small.
 - Otherwise, at least as many shards as brokers you expect to lead the stream,
   so each broker can lead some. A few times that leaves room for more brokers
   later, since a shard is the unit that moves.
-- More shards than you will ever have readers or brokers mostly adds
-  bookkeeping. Each shard has its own leader, replicas and log.
+- Far more shards than brokers you will ever run mostly adds bookkeeping.
+  Each shard has its own leader, replicas and log.
 
 ```bash
 felixctl stream create orders --shards 8 --replication 3
@@ -212,13 +214,14 @@ Over 10,000 keys the same growth moves 1,941 keys under jump hash (about one in
 five) and 7,993 under modulo (about four in five).
 
 Streams created once the cluster has finalized the `jump_hash_routing` fleet
-feature get jump hash unless they ask for modulo. Streams created before keep
+feature (an upgrade step an operator takes once every broker runs a version
+that knows it) get jump hash unless they ask for modulo. Streams created before keep
 modulo, and nothing about them moves. See
 [Upgrades](/deployment/upgrades/). A stream's mapping is recorded with it and
 never changes.
 
-The shard count cannot grow today, so no stream moves keys yet. Jump hash
-keeps most keys in place should a stream's shard count ever grow. Caches always
+Since shard counts are fixed today, no stream moves keys yet. Jump hash keeps
+most keys in place should a stream's shard count ever grow. Caches always
 use modulo.
 
 ## Where shards live
@@ -255,9 +258,10 @@ flowchart TB
 ```
 
 Each shard replicates on its own. Its leader sends records to that shard's
-followers, and a `quorum` stream acknowledges a publish once a majority of that
+followers. A stream created with `--consistency quorum` acknowledges a publish once a majority of that
 shard's copies hold it. When a leader fails, only that shard's leadership
-changes, and its generation goes up. The other shards carry on. See
+changes, and its generation goes up. The other shards carry on. (The default,
+`leader`, acknowledges once the leader alone has the record.) See
 [System design](/architecture/system-design/#clustered) and
 [Failover without the control plane](/deployment/failover-without-control-plane/).
 
@@ -269,8 +273,9 @@ as a replica, catches it up, and only then hands over leadership. See
 
 ### A request sent to the wrong broker
 
-Clients do not need to know where every shard lives. Every broker holds a
-routing snapshot of the cluster, so any broker can answer for any shard.
+Clients do not need to know where every shard lives. Every broker keeps a
+local copy of which broker leads each shard, refreshed in the background, so
+any broker can answer for any shard.
 
 A **publish** sent to a broker that does not lead the shard is forwarded. That
 broker hashes the key, finds the leader, and passes the publish on. The client
@@ -278,8 +283,9 @@ gets its acknowledgement as usual. A conditional publish (`publish_if`) is never
 forwarded.
 
 A **subscribe** (and a consumer-group or cache-watch request) sent to the wrong
-broker is answered with `not_leader`, naming the broker that leads the shard.
-The client reconnects there. The Rust cluster `Client` does this for you, and
+broker is answered with `not_leader`, naming the broker that leads the shard,
+and the client reconnects there. A client too old to understand `not_leader`
+gets an ordinary error instead. The Rust cluster `Client` does this for you, and
 follows a shard again when it moves; see
 [Building resilient clients](/clients/resilient-clients/) for the other
 languages.
@@ -298,7 +304,9 @@ sequenceDiagram
     C->>B2: subscribe(shard 3)
 ```
 
-See [Cross-broker routing](/architecture/system-design/#cross-broker-routing)
+To see where a stream's shards live and which broker leads each, run
+`felixctl topology` (see [felixctl commands](/reference/felixctl/#felixctl-topology)).
+See also [Cross-broker routing](/architecture/system-design/#cross-broker-routing)
 and [Redirects](/api/broker-api/#redirects).
 
 ## How readers see shards
@@ -306,7 +314,8 @@ and [Redirects](/api/broker-api/#redirects).
 **A subscription reads one shard.** A plain `subscribe` reads shard 0.
 `subscribe_shard` reads one shard you name. `subscribe_sharded` opens one
 subscription per shard and merges them into one stream of events, so you can
-read the whole stream from one place:
+read the whole stream from one place. As above, `client` is the cluster
+`Client` (held in an `Arc`), and `handle` is your own function:
 
 ```rust
 use felix_client::{ShardEvent, StartPosition};
