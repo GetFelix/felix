@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794074094533,
+  "lastUpdate": 1794074975109,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49192,6 +49192,58 @@ window.BENCHMARK_DATA = {
             "range": "13832.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1213401.76\nmean: 1208780.79\nstdev: 13832.50\ncv: 1.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6e355b44f2245b394bc6af2957c13c5b04574c93",
+          "message": "fix(replication): a joint fence needs only half of a set with its learners (#2108)\n\n* fix(replication): a joint fence needs only half of a set with its learners\n\nA joint fence counts each set it leaves with its learners and without, and\nneeded a majority of both. A staged learner the route no longer names always\nrefuses, so one voter that cannot answer stalled the fence for good (seed 2\nevents/3). A leader that counts by attestation now needs a majority of the\nvoters and half of the set with its learners, which still meets every\nmajority an acknowledgement on that set could use, and it no longer asks\nsuch a learner. With FELIX_UNIFIED_FENCE=0 the fence counts as before.\n\nSpec: FelixShardUnified.tla models staged learners (LearnerChoices,\nLearnerBlocking, LearnerDropped), with FelixShardUnifiedLearnerBlocking,\nFelixShardUnifiedLearnerBlockingTwo (pass) and\nFelixShardUnifiedLearnerVariantDropped (violates AckedHeldByLeader).\n\n* spec(shard): size the one-learner blocking config to fit the checker and fill in its weight\n\nSpec-Unaffected: the model is unchanged; only a config constant, its evidence line and the weight table move.",
+          "timestamp": "2026-11-07T10:05:57-08:00",
+          "tree_id": "a3be30d757fcf9f6a952dc783aa43f1682c59103",
+          "url": "https://github.com/GetFelix/felix/commit/6e355b44f2245b394bc6af2957c13c5b04574c93"
+        },
+        "date": 1794074974478,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 661330.78,
+            "range": "67965.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 661330.78\nmean: 691587.41\nstdev: 67965.18\ncv: 9.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 661330.78,
+            "range": "67965.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 661330.78\nmean: 691587.41\nstdev: 67965.18\ncv: 9.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 164454.03,
+            "range": "4352.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 164454.03\nmean: 162129.38\nstdev: 4352.33\ncv: 2.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1644540.29,
+            "range": "43523.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1644540.29\nmean: 1621293.83\nstdev: 43523.31\ncv: 2.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
