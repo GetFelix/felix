@@ -348,6 +348,7 @@ expectations=(
   "FelixShardCpLiveNoHaltReported violates liveness"
   "FelixShardCpLiveNoAboveReported violates liveness"
   "FelixShardCpLiveReleased pass"
+  "FelixShardCpLiveReleasedNoAboveReported violates liveness"
   "FelixShardCpLiveRefusalsCopyExcluded violates liveness"
   "FelixShardCpLiveRefusalsPinsForever violates liveness"
   "FelixShardElectRefusals pass"
@@ -539,6 +540,8 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
+# So is FelixShardCpLiveReleasedFull, the registered FelixShardCpLiveReleased
+# with every first leader, any number of stops and adoption up to 2.
 # So are FelixShardUnifiedReadmitFull and FelixShardUnifiedDropEvidencedFull,
 # the registered Readmit and DropEvidenced with one client write.
 # So is FelixShardElectRename, which is checked in pieces
@@ -704,7 +707,7 @@ weights=(
   "FelixShardCpLiveNoOverlayRefused 6"
   "FelixShardCpLiveNoHaltReported 5"
   "FelixShardCpLiveNoAboveReported 6"
-  "FelixShardCpLiveReleased 120"
+  "FelixShardCpLiveReleased 15"
   "FelixShardCpLiveRefusalsCopyExcluded 2"
   "FelixShardCpLiveRefusalsPinsForever 2"
   "FelixShardElectRefusals 3"

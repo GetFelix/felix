@@ -193,6 +193,7 @@ jobs:
           - FelixShardFencedAckStagedMove
           - FelixShardFencedAckMoveCancel
           - FelixShardCpLiveSkippedGeneration
+          - FelixShardCpLiveReleasedFull
           - FelixShardUnifiedReadmitFull
           - FelixShardUnifiedDropEvidencedFull
     steps:
