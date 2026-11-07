@@ -220,6 +220,37 @@ fn a_rotation_while_running_distrusts_every_copy_at_once() {
     assert!(reopened.trusted(B), "written under the new id");
 }
 
+/// **A readmission outlives clean restarts, stands at its first set, and ends
+/// with a rotation.** It untrusts the copy until a later vouch, and counts
+/// only under the storage id it was recorded under: a restore rotates the id.
+#[test]
+fn a_readmission_lasts_until_the_storage_id_rotates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let begun = start(root, 1, &mut counter());
+    let trust = CopyTrust::open_live(root).expect("open");
+    assert!(trust.trusted(A));
+    assert_eq!(trust.readmitted(A), None);
+
+    trust.readmit(A, 5, begun.id).expect("readmit");
+    assert_eq!(trust.readmitted(A), Some(5));
+    assert!(!trust.trusted(A), "a vouch from before the readmission");
+    trust.vouch(A, true).expect("vouch");
+    trust.readmit(A, 9, begun.id).expect("readmit again");
+    assert_eq!(trust.readmitted(A), Some(5), "the first set stands");
+    assert!(trust.trusted(A), "and keeps the vouch since");
+    assert_eq!(CopyTrust::open(root).expect("open").readmitted(A), Some(5));
+
+    trust
+        .readmit(B, 6, StorageId::from_bytes([77; 16]))
+        .expect("readmit");
+    assert_eq!(trust.readmitted(B), None, "under another id");
+
+    rotate_storage_id(root, [42; 16]).expect("rotate");
+    assert_eq!(trust.readmitted(A), None);
+    assert_eq!(CopyTrust::open(root).expect("open").readmitted(A), None);
+}
+
 /// **An unkept copy whose generation the record lost is pinned at the first
 /// ballot it holds.** Only a set newer than that readmits it.
 #[test]
@@ -275,6 +306,9 @@ fn records_round_trip() {
         },
         unkept: Marks::everyone(),
         unkept_since: [(B.to_vec(), 7)].into_iter().collect(),
+        readmitted: [(A.to_vec(), (9, StorageId::from_bytes([3; 16])))]
+            .into_iter()
+            .collect(),
     };
     let id = Some(crate::storage_identity::StorageId::from_bytes([5; 16]));
     assert_eq!(decode(&encode(&state, id)), Some((state.clone(), id)));
@@ -286,6 +320,8 @@ fn records_round_trip() {
         b"copy_trust\ndoubted except 00\n",
         b"copy_trust\nuntrusted all\nuntrusted 00\n",
         b"copy_trust\nstorage_id 00\n",
+        b"copy_trust\nreadmitted 00 7\n",
+        b"copy_trust\nreadmitted 00 7 0303 extra\n",
         b"junk",
     ] {
         assert_eq!(decode(damaged), None, "{damaged:?}");

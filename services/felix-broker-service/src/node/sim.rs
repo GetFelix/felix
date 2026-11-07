@@ -597,7 +597,17 @@ impl SimBroker {
                 ShardKind::Cache => felix_router::ShardKind::Cache,
             },
         };
-        Some(self.quorum_marks.attest(&route, &log, &self.node_id))
+        let readmitted = self
+            .router
+            .snapshot()
+            .get(&route)
+            .and_then(|route| route.readmitted.clone())
+            .unwrap_or_default();
+        Some(
+            self.quorum_marks
+                .attest(&route, &log, &self.node_id, readmitted.as_slice())
+                .await,
+        )
     }
 
     /// The membership task, `None` only if the config named no cluster.

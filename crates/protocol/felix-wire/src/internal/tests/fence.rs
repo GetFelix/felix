@@ -365,17 +365,20 @@ fn an_attested_answer_is_its_own_kind_after_the_original_body() {
     let header = InternalHeader::LEN;
     assert_eq!(Kind::FenceAttestedOk as u16, 54);
 
-    for (kept_ballot, trusted, flags) in [
-        (false, false, 0u8),
-        (false, true, 1),
-        (true, false, 2),
-        (true, true, 3),
+    for (kept_ballot, trusted, by_record, flags) in [
+        (false, false, false, 0u8),
+        (false, true, false, 1),
+        (true, false, false, 2),
+        (true, true, false, 3),
+        (false, true, true, 5),
+        (true, true, true, 7),
     ] {
         let attested = FenceOk {
             kept_ballot,
             attestation: Some(FenceAttestation {
                 kept_from: 9,
                 trusted,
+                by_record,
             }),
             ..plain
         };
@@ -418,9 +421,9 @@ fn attested_frame(tail: &[u8]) -> Bytes {
 #[test]
 fn an_unknown_attestation_flag_is_refused() {
     let mut tail = 9u64.to_be_bytes().to_vec();
-    tail.push(3);
+    tail.push(7);
     assert!(InternalMessage::decode(attested_frame(&tail)).is_ok());
-    for flags in [4u8, 0x80] {
+    for flags in [8u8, 0x80] {
         let mut tail = 9u64.to_be_bytes().to_vec();
         tail.push(flags);
         assert!(InternalMessage::decode(attested_frame(&tail)).is_err());

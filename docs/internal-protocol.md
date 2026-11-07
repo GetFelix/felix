@@ -869,7 +869,7 @@ attestation of its copy:
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `kept_from` | u64 | the set generation from which the copy's promises count: zero when its data directory never lost a ballot, otherwise the generation of the set that readmitted it |
-| flags | u8 | bit 0 `trusted`: the copy holds every record its seat acknowledged (a clean start, or a batch since that left it level through the shipping leader's acknowledged mark). Bit 1: the kept ballot `FenceKeptOk` would carry. Any other bit is refused |
+| flags | u8 | bit 0 `trusted`: the copy holds every record its seat acknowledged (a clean start, or a batch since that left it level through the shipping leader's acknowledged mark). Bit 1: the kept ballot `FenceKeptOk` would carry. Bit 2: `trusted` rests only on the control plane's `readmitted` record, which a leader that does not count readmissions ignores. Any other bit is refused |
 
 It is for a leader that counts a fence's promises and its coverage of
 acknowledged records separately: promises from copies that kept their
@@ -878,8 +878,10 @@ ballots, coverage from trusted copies. Only a caller that offered
 and answers with `FenceKeptOk` or `FenceOk` as before. A replica attests on
 every answer for a shard's own log (never a group or counter log). A broker
 with `FELIX_UNIFIED_FENCE=0`, or a memory-only one, neither offers
-`UNIFIED_FENCE` nor attests, and answers as before. `kept_from` is 0 or `u64::MAX` (counts for no set) for now:
-the set generation a readmission counts from is not yet tracked.
+`UNIFIED_FENCE` nor attests, and answers as before. `kept_from` is `u64::MAX`
+(counts for no set) for a learner, a copy with an unkept ballot, and a copy
+that lost its ballots and was not readmitted (`docs/replication-design.md`,
+"Readmission and elections").
 
 | The replica | Answer |
 | --- | --- |

@@ -338,9 +338,13 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             // stays pending rather than fence the new set alone. A candidate
             // fences the set it keeps, and jointly the one kept beside it.
             let leaving = candidacy.and_then(|candidacy| candidacy.leaving.as_ref());
+            // The counter log carries no attestation, so it counts as before.
+            let attested = unified.is_some() && kind != LogKind::Counters;
             let under_joint = match (joint, set, candidacy) {
                 (Some(joint), Some(set), None) => {
-                    match joint::sets(requester, &log, local_node_id, route, set, joint).await {
+                    match joint::sets(requester, &log, local_node_id, route, set, joint, attested)
+                        .await
+                    {
                         Ok(fenced) => Some(fenced),
                         Err(why @ joint::NoSetBefore::Unknown(_)) => {
                             return Err(Outcome::SetUnknown {
@@ -381,6 +385,7 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                             leaving.clone(),
                             Vec::new(),
                             joint,
+                            attested,
                         )
                         .await,
                     ),
@@ -399,10 +404,13 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
             let joint = under_joint
                 .as_ref()
                 .and_then(|fenced| fenced.joint.as_ref());
-            // The counter log carries no attestation, so it counts as before.
-            let own = unified
-                .filter(|_| kind != LogKind::Counters)
-                .map(|marks| own_copy(marks, key, &log, local_node_id));
+            // Read after the round trip above, so a flush that failed during
+            // it is seen. The counter log carries no attestation, so it
+            // counts as before.
+            let own = match unified.filter(|_| kind != LogKind::Counters) {
+                Some(marks) => Some(own_copy(marks, key, &log, local_node_id, route).await),
+                None => None,
+            };
             // Under the unified rule, continuing only while this copy's
             // ballot is still this leader's at the generation before or this
             // one: any other means another leader reached it in between. And
@@ -702,7 +710,7 @@ async fn fence_log<R: PeerRequester>(
     let mut seen: Vec<Seen> = Vec::new();
     let settled = |seen: &[Seen]| match joint {
         None => {
-            let promised = usize::from(own.kept)
+            let promised = usize::from(own.promises(set_generation))
                 + seen
                     .iter()
                     .filter(|(.., attested)| Counted::of(*attested).promises(set_generation))
@@ -833,11 +841,12 @@ async fn fence_log<R: PeerRequester>(
                 // leader that counts by attestation; to any other it is
                 // neither a promise nor coverage.
                 let attested = if own.attested {
-                    ok.attestation
+                    ok.attestation.map(|attested| own.counting(attested))
                 } else {
                     Some(FenceAttestation {
                         kept_from: u64::MAX,
                         trusted: false,
+                        by_record: false,
                     })
                 };
                 // Its ballot still refuses an older leader, and its log may
@@ -1002,34 +1011,90 @@ fn as_answered(seen: &Seen) -> joint::Answered<'_> {
 pub(crate) struct OwnCopy {
     /// Counted by attestation, rather than as a fence counted without one.
     pub(crate) attested: bool,
-    /// Its promises count: its directory kept every ballot it took.
-    pub(crate) kept: bool,
+    /// Its promises count for sets introduced at this generation or later:
+    /// 0 when its directory kept every ballot it took, the readmitting set's
+    /// after a loss, `u64::MAX` for none.
+    pub(crate) kept_from: u64,
     /// It holds everything its seat acknowledged.
     pub(crate) trusted: bool,
+    /// A promise counted from a readmitting set counts here
+    /// ([`crate::quorum::QuorumMarks::readmission_counts`]), in this copy's
+    /// attestation and in the answers.
+    pub(crate) readmission_counts: bool,
 }
 
 impl OwnCopy {
     /// A leader that counts without attestations counts itself.
     pub(crate) const UNATTESTED: Self = Self {
         attested: false,
-        kept: true,
+        kept_from: 0,
         trusted: true,
+        readmission_counts: false,
     };
+
+    pub(crate) fn promises(self, set_generation: u64) -> bool {
+        self.kept_from <= set_generation
+    }
+
+    /// `attested` as this leader counts it: once this broker cannot rule out
+    /// elections, whatever the replica's own view of the fleet, promises
+    /// kept only from a readmitting set (neither 0 nor none) count for no
+    /// set and such a copy covers nothing, as a copy that was never
+    /// readmitted; and a copy trusted only on the control plane's record
+    /// covers nothing.
+    pub(crate) fn counting(self, attested: FenceAttestation) -> FenceAttestation {
+        if self.readmission_counts {
+            return attested;
+        }
+        let readmitted = attested.kept_from != 0 && attested.kept_from != u64::MAX;
+        if readmitted {
+            FenceAttestation {
+                kept_from: u64::MAX,
+                trusted: false,
+                by_record: false,
+            }
+        } else if attested.by_record {
+            FenceAttestation {
+                trusted: false,
+                by_record: false,
+                ..attested
+            }
+        } else {
+            attested
+        }
+    }
 }
 
 /// What this broker attests of its copy `log` of `key`, as it would answer
 /// a fence from another leader.
-fn own_copy(
+async fn own_copy(
     marks: &crate::quorum::QuorumMarks,
     key: &ShardKey,
     log: &felix_broker::StreamLog,
     local_node_id: &str,
+    route: &Route,
 ) -> OwnCopy {
-    let attested = marks.attest(key, log, local_node_id);
+    let attested = marks
+        .attest(
+            key,
+            log,
+            local_node_id,
+            route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+        )
+        .await;
+    // Held to the same read of the fleet `readmission_counts` gives the
+    // answers, which a heartbeat may change after `attest` read it.
+    let readmission_counts = marks.readmission_counts();
+    let attested = OwnCopy {
+        readmission_counts,
+        ..OwnCopy::UNATTESTED
+    }
+    .counting(attested);
     OwnCopy {
         attested: true,
-        kept: attested.kept_from == 0,
+        kept_from: attested.kept_from,
         trusted: attested.trusted,
+        readmission_counts,
     }
 }
 

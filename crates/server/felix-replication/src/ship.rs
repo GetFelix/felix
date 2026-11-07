@@ -332,6 +332,7 @@ async fn ship_batch<R: PeerRequester>(
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
+    let history = log.generations();
     let mut batch = ReplicateRecords {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,
@@ -352,7 +353,7 @@ async fn ship_batch<R: PeerRequester>(
         // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
             && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
-        .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
+        .then(|| crate::replica::generations_over(&history, first_offset, batch_end)),
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
@@ -365,6 +366,23 @@ async fn ship_batch<R: PeerRequester>(
         ),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
+    // What the follower checks before it trusts its copy again (replica.rs,
+    // the vouch). A follower that does not take labels, or a leader with no
+    // start recorded for its own generation, can never send a batch that
+    // vouches, so such a follower is not owed another one.
+    let carries_mark = match batch.generations.as_deref() {
+        Some(starts) => {
+            batch
+                .commit_offset
+                .is_some_and(|mark| mark > 0 && mark <= batch_end)
+                && starts.iter().any(|start| {
+                    start.generation == shard.generation && start.start_offset <= batch_end
+                })
+        }
+        None => offered.is_some_and(|offered| !offered.contains(labels_needed(log_kind))),
+    } || !history
+        .iter()
+        .any(|epoch| epoch.generation == shard.generation);
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.
@@ -464,6 +482,9 @@ async fn ship_batch<R: PeerRequester>(
             // means resuming past records neither side has checked.
             cursor.next_offset = durable_offset.min(batch_end);
             cursor.confirmed = cursor.next_offset;
+            if durable_offset == batch_end && (carries_mark || cursor.legacy_frames) {
+                cursor.mark_carried = true;
+            }
             cursor.shipped_bytes += batch_bytes as u64;
             metrics::record_shipped(metrics::OUTCOME_OK);
             // A rebuild is a full transfer, and the policy may say how fast.

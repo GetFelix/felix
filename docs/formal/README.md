@@ -535,6 +535,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardUnifiedCpLiveReadmitUnopened.cfg` | a readmission whose leader crashes uncleanly before it opens | pass `EventuallyServes` |
 | `FelixShardUnifiedCpLiveReadmitUnopenedLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
 | `FelixShardUnifiedCpLiveMoveDoubted.cfg` | a move to two voters, one back from an unclean crash | pass `EventuallyServes` |
+| `FelixShardUnifiedLearnerBlocking.cfg` | four seats, a set change staging one learner, an unclean crash; a fence needs a majority of the voters and half of the set with its learner | pass (6.4M distinct states, 4 min with four workers) |
+| `FelixShardUnifiedLearnerBlockingTwo.cfg` | five seats and two learners, where a majority of the voters is short of half the whole set | pass (41.3M distinct states, 41 min with four workers) |
+| `FelixShardUnifiedLearnerVariantDropped.cfg` | the same with only the voters fenced: an acknowledgement on one voter and both learners slips past | violate `AckedHeldByLeader` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2059,7 +2062,8 @@ let a lost promise make a second leader. `CoverFromDoubted`, `TrustsRegistered` 
 `CountsForgotten` and `TrustsRegistered` are why a broker started without the control plane attests nothing. Until
 the restore check against the control plane has run, a restored directory looks like one that kept its ballots
 and its log. Counted as kept, its forgotten promise makes a second leader (`CountsForgotten`). Counted as trusted,
-its short log loses an acknowledged write (`TrustsRegistered`).
+its short log loses an acknowledged write (`TrustsRegistered`). Once the check has passed, the broker attests as a
+start that asked the control plane first would.
 
 A batch vouches for a copy only when it leaves it level through both the leader's start record and the mark it
 carries. The mark is the code's quorum offset, which right after an open can sit below the start record:

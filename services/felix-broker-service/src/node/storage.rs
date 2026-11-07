@@ -237,6 +237,11 @@ fn start_run(
             && !lost
             && (!begun.rotated || own_id)
             && registered.is_none_or(|r| r.storage_id.is_some()),
+        // A set names a copy by the id the control plane registered, so
+        // without one no set can readmit it.
+        readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+        minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
+        deferred: false,
     };
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
@@ -254,15 +259,49 @@ pub(crate) struct Kept {
     /// rotation the control plane's record names the id it had before. What
     /// a fence answer attests as kept.
     pub(crate) ballots: bool,
+    /// When `ballots` is false, a copy here counts again once a set
+    /// introduced after the loss readmits it: the start was checked against
+    /// a control plane record with a storage id.
+    pub(crate) readmits: bool,
+    /// This start minted the storage id, by rotating it or writing a new one, so
+    /// no set written before it names the id. A lost copy with no recorded
+    /// floor is readmitted only then.
+    pub(crate) minted: bool,
+    /// A start from the view that kept it: what a fence answer attests is
+    /// decided by the deferred restore check ([`Self::checked`]), and is
+    /// nothing until then.
+    pub(crate) deferred: bool,
 }
 
 impl Kept {
-    /// What a fence answer may attest as kept. A start from the view has not
+    /// What a fence answer may attest as kept, or readmitted. A start from the view has not
     /// checked the directory against the control plane, and a restored one
     /// reads as kept until it has (`CountsForgotten`, `TrustsRegistered` in
     /// `docs/formal/FelixShardUnified.tla`), so such a run attests nothing.
-    pub(crate) fn attested(self, from_view: bool) -> bool {
-        self.ballots && !from_view
+    pub(crate) fn attested(self, from_view: bool) -> Self {
+        Self {
+            promises: self.promises,
+            ballots: self.ballots && !from_view,
+            readmits: self.readmits && !from_view,
+            ..self
+        }
+    }
+
+    /// What a start from the view attests as kept once its deferred restore
+    /// check found the directory current against `registered`: what a start
+    /// that asked first would have. `self` is the run's own, not
+    /// [`Self::attested`]. The check stops the broker on a restored or
+    /// replaced directory, and the view is kept only by a run that did not
+    /// rotate the id, so of [`start_run`]'s conditions only the record's
+    /// storage id is left to apply. Readmission then follows the asked
+    /// start's rule too: the run itself had no record to check it against.
+    pub(crate) fn checked(self, registered: Option<&Registered>) -> Self {
+        Self {
+            ballots: self.ballots && registered.is_none_or(|r| r.storage_id.is_some()),
+            readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+            deferred: false,
+            ..self
+        }
     }
 }
 

@@ -1096,10 +1096,11 @@ impl ControlPlaneStore for RaftStore {
         self.local().shard_assignment_changes(since).await
     }
 
-    async fn record_replica_report(
+    async fn record_replica_report_with(
         &self,
         report: ReplicaReport,
         leader: &str,
+        readmits: bool,
     ) -> StoreResult<ReportWrite> {
         let mut report = report;
         // Without it the leader is replaced only on its storage identity, and
@@ -1223,6 +1224,7 @@ impl ControlPlaneStore for RaftStore {
             leader: Some(_),
             readmit,
         } = &mut command
+            && readmits
             && self.may_readmit(report).await
             && self.group_level().await >= READMITTED_LEVEL
         {
@@ -1238,6 +1240,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
         self.local().list_replica_reports().await
+    }
+
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        self.local().get_replica_report(key).await
     }
 
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {

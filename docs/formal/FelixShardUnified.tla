@@ -73,7 +73,26 @@ ReadmitFirst == FALSE
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
 DropEvidenced == FALSE
+\* `IdleVouch`: a leader sends a follower level with it a batch anyway, its
+\* last record again with the mark, so an idle shard's untrusted follower is
+\* vouched without a write. FALSE is a leader that ships only what a
+\* follower lacks: nothing on an idle shard.
+IdleVouch == TRUE
+
+\* Learners: a set change may stage members that are not voters yet (a move's
+\* successor). `LearnerChoices` is the learner sets a set change may name.
+\* An acknowledgement counts a majority of the voters, or of the voters and
+\* learners together (a leader that counts the learners as voters). So a
+\* fence needs a majority of the voters and, by default, a majority of the
+\* whole set too. `LearnerBlocking` asks only half of the whole set:
+\* that still meets every majority of it, and two fences meet in the voters.
+NoLearners == {{}}
+OneLearner == {{}} \cup {{n} : n \in Nodes}
+TwoLearners == {{}} \cup {{m, n} : m, n \in Nodes}
+LearnerChoices == NoLearners
+LearnerBlocking == FALSE
 \* Shortcuts. Each must make TLC fail.
+LearnerDropped == FALSE    \* the whole set is not fenced, only its voters
 CountNonKept == FALSE      \* a promise counts whatever the copy kept
 CoverFromDoubted == FALSE  \* any answer counts for coverage
 DropUnevidenced == FALSE   \* drop a set no answer shows a record of
@@ -121,7 +140,7 @@ VARIABLES
     openIdx,    \* the start it leads
     fence,      \* [g, i, cont]: the fence this process runs; g = 0 if none
     ans,        \* answers to that fence
-    starts,     \* every start: [g, l, S, sg, si]
+    starts,     \* every start: [g, l, S, L, sg, si]; L the learners
     opened,     \* [g, l] that opened
     served,     \* generations whose start record reached a majority
     acked,      \* acknowledged records
@@ -156,7 +175,7 @@ Init ==
     /\ openIdx = [n \in Nodes |-> IF n = First THEN 1 ELSE 0]
     /\ fence = [n \in Nodes |-> NoFence]
     /\ ans = [n \in Nodes |-> NoAns]
-    /\ starts = <<[g |-> 1, l |-> First, S |-> Nodes, sg |-> 1, si |-> 1]>>
+    /\ starts = <<[g |-> 1, l |-> First, S |-> Nodes, L |-> {}, sg |-> 1, si |-> 1]>>
     /\ opened = {[g |-> 1, l |-> First]}
     /\ served = {1}
     /\ acked = {StartRec(1)}
@@ -185,8 +204,9 @@ BeginFence(f, g, st) ==
 \* The set a start names: one an earlier start named (a candidate on the set
 \* it knows, a failover, a rename), or a new one (a set change).
 SetOptions(f, g) ==
-    {[S |-> starts[j].S, sg |-> starts[j].sg, si |-> starts[j].si] : j \in DOMAIN starts}
-    \cup {[S |-> S, sg |-> g, si |-> Len(starts) + 1] : S \in {X \in SetChoices : f \in X}}
+    {[S |-> starts[j].S, L |-> starts[j].L, sg |-> starts[j].sg, si |-> starts[j].si] : j \in DOMAIN starts}
+    \cup UNION {{[S |-> S, L |-> L, sg |-> g, si |-> Len(starts) + 1] :
+                   L \in {Y \in LearnerChoices : Y \cap S = {}}} : S \in {X \in SetChoices : f \in X}}
 
 Start(f) ==
     /\ FaultsAllowed /\ budget.starts > 0
@@ -194,7 +214,7 @@ Start(f) ==
         LET opt == IF o.si = Len(starts) + 1 THEN [o EXCEPT !.sg = g] ELSE o
         IN /\ ReadmitFirst => /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
                         /\ \E m \in o.S \ {f} : rotAt[m] > 0
-           /\ BeginFence(f, g, [g |-> g, l |-> f, S |-> opt.S, sg |-> opt.sg, si |-> opt.si])
+           /\ BeginFence(f, g, [g |-> g, l |-> f, S |-> opt.S, L |-> opt.L, sg |-> opt.sg, si |-> opt.si])
     /\ budget' = [budget EXCEPT !.starts = @ - 1]
     /\ UNCHANGED <<log, trusted, keptFrom, lostAt, batchSince, opened, served, acked, ackedAt, rotAt, note, writes>>
 
@@ -204,7 +224,7 @@ CpStart(f) ==
     /\ LiveCp /\ ~Serving /\ TopGen < MaxGen
     /\ ReadmitFirst => budget.starts = 0 /\ rotAt[First] > 0
     /\ LET last == starts[Len(starts)]
-       IN BeginFence(f, TopGen + 1, [g |-> TopGen + 1, l |-> f, S |-> last.S,
+       IN BeginFence(f, TopGen + 1, [g |-> TopGen + 1, l |-> f, S |-> last.S, L |-> last.L,
                                      sg |-> last.sg, si |-> last.si])
     /\ UNCHANGED <<log, trusted, keptFrom, lostAt, batchSince, opened, served, acked, ackedAt, rotAt, note,
                    writes, budget>>
@@ -296,10 +316,17 @@ Required(f, anchor) ==
         /\ anchor <= st.g /\ st.g < fence[f].g
         /\ ~(st.g > anchor /\ (Evidenced(f, st) \/ Silent(f, st)))}
 
+\* A set fenced as `V`: its voters, or its voters and learners together.
+\* Exclusion needs a majority of `V`, or with `blocking` half of it.
+FencesAs(f, R, V, blocking) ==
+    LET promised == {m \in V : Answered(f, m) /\ Promises(f, R, m)}
+    IN /\ IF blocking THEN MeetsQuorums(promised, V) ELSE Majority(promised, V)
+       /\ Continues(f) \/ MeetsQuorums({m \in V : Answered(f, m) /\ Covers(f, m)}, V)
+
 OpenOK(f, anchor) ==
     \A R \in Required(f, anchor) :
-        /\ Majority({m \in R.S : Answered(f, m) /\ Promises(f, R, m)}, R.S)
-        /\ Continues(f) \/ MeetsQuorums({m \in R.S : Answered(f, m) /\ Covers(f, m)}, R.S)
+        /\ FencesAs(f, R, R.S, FALSE)
+        /\ R.L = {} \/ LearnerDropped \/ FencesAs(f, R, R.S \cup R.L, LearnerBlocking)
 
 Furthest(f) ==
     LET logs == {ans[f][m].log : m \in {x \in Nodes : Answered(f, x)}} \cup {log[f]}
@@ -337,9 +364,12 @@ StartPos(l) == CHOOSE i \in DOMAIN log[l] : log[l][i] = StartRec(openAt[l])
 \* acknowledged at its generation. It is not clamped to the start record. The
 \* code's mark only grows, so it is never below this one, and a lower mark
 \* only vouches more.
-QuorumMark(l) == Max({0} \cup {j \in 0..Len(log[l]) :
-    Majority({l} \cup {m \in LeadStart(l).S : ballot[m] = ballot[l] /\ keptFrom[m] <= LeadStart(l).sg
-                        /\ Len(log[m]) >= j /\ Prefix(log[m], j) = Prefix(log[l], j)}, LeadStart(l).S)})
+\* A leader that counts its learners as voters takes the mark over them too,
+\* which a lagging learner holds lower, so the lower of the two is taken.
+MarkOver(l, V) == Max({0} \cup {j \in 0..Len(log[l]) :
+    Majority({l} \cup {m \in V : ballot[m] = ballot[l] /\ keptFrom[m] <= LeadStart(l).sg
+                        /\ Len(log[m]) >= j /\ Prefix(log[m], j) = Prefix(log[l], j)}, V)})
+QuorumMark(l) == Min2(MarkOver(l, LeadStart(l).S), MarkOver(l, LeadStart(l).S \cup LeadStart(l).L))
 AckedMark(l) == Max({0} \cup {j \in 1..Len(log[l]) : [r |-> log[l][j], at |-> openAt[l]] \in ackedAt})
 CarriedMark(l) == LET q == QuorumMark(l) IN IF q > AckedMark(l) THEN q ELSE AckedMark(l)
 
@@ -365,14 +395,15 @@ Vouches(l, k) ==
     \/ VouchAtStart /\ k >= StartPos(l)
 
 \* A batch: the leader's log from where the two agree to some later point,
-\* or to its end. It readmits a copy that lost its ballots when the leader's
+\* or to its end, even when the follower already holds it all (`IdleVouch`).
+\* It readmits a copy that lost its ballots when the leader's
 \* set was introduced after the loss and names it.
 Ship(l, m) ==
     /\ Leads(l) /\ m /= l
     /\ ballot[m].g < openAt[l] \/ ballot[m] = ballot[l]
     /\ setGen[m] <= LeadStart(l).sg
     /\ \E k \in Common(log[m], log[l])..Len(log[l]) :
-        /\ k > Common(log[m], log[l]) \/ k = Len(log[l])
+        /\ k > Common(log[m], log[l]) \/ (IdleVouch /\ k = Len(log[l]))
         /\ log' = [log EXCEPT ![m] = Prefix(log[l], k)]
         /\ trusted' = [trusted EXCEPT ![m] =
                          @ \/ (Vouches(l, k) /\ (Readmits(l, m) \/ keptFrom[m] < Inf))]
@@ -387,10 +418,11 @@ Ship(l, m) ==
 
 \* Acknowledge a prefix held by a majority of the generation's set, each a
 \* copy whose promises count for that set and that took this leader's ballot.
+\* The majority is of the voters, or of voters and learners together.
 Ack(l) ==
     /\ Leads(l)
-    /\ \E j \in StartPos(l)..Len(log[l]), M \in SUBSET LeadStart(l).S :
-        /\ Majority(M, LeadStart(l).S)
+    /\ \E j \in StartPos(l)..Len(log[l]), M \in SUBSET (LeadStart(l).S \cup LeadStart(l).L) :
+        /\ Majority(M, LeadStart(l).S) \/ Majority(M, LeadStart(l).S \cup LeadStart(l).L)
         /\ \A m \in M : /\ m = l \/ ballot[m] = ballot[l]
                         /\ Len(log[m]) >= j /\ Prefix(log[m], j) = Prefix(log[l], j)
                         /\ keptFrom[m] <= LeadStart(l).sg
@@ -463,6 +495,13 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* A leader keeps shipping and acknowledging. No fairness on starts, faults
+\* or writes, so a run ends idle once the budgets are spent.
+ShipSpec ==
+    /\ Spec
+    /\ \A l \in Nodes : WF_vars(Ack(l))
+    /\ \A l, m \in Nodes : WF_vars(Ship(l, m))
+
 LiveSpec ==
     /\ Spec
     /\ WF_vars(\E f \in Nodes : CpStart(f))
@@ -485,6 +524,14 @@ AckedHeldByLeader ==
 CoverLost == 2 * Cardinality({n \in Nodes : trusted[n]}) <= Cardinality(Nodes)
 Settled == Serving \/ CoverLost
 EventuallyServes == <>[]Settled
+
+\* Liveness: a follower of a serving leader that has not lost its ballots
+\* is trusted again, writes or none, while that leader serves it.
+FollowerTrusted ==
+    \A l, m \in Nodes :
+        (/\ Leads(l) /\ m /= l /\ m \in LeadStart(l).S /\ ~trusted[m]
+         /\ ballot[m] = ballot[l] /\ keptFrom[m] < Inf)
+            ~> (trusted[m] \/ ~Leads(l) \/ ballot[m] /= ballot[l])
 
 \* Reachability probe: TLC reports a "violation" when a continuing fence
 \* opens counting a doubted copy whose ballot names another leader, or one

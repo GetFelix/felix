@@ -1043,6 +1043,13 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 && cursor.halted.is_none()
                 && cursor.storage_id.is_some()
                 && cursor.confirmed > inherited;
+            // A follower back from an unclean restart is trusted again only
+            // by a batch that carries the mark through which it is level
+            // ([`FollowerCursor::mark_carried`]). A level one is sent nothing
+            // on an idle shard, and one missing trust there stalls the next
+            // fence that needs it. Its last record goes again after the
+            // exchange.
+            let owes_mark = quorum_shard && leading && mark_now > 0 && !cursor.mark_carried;
             let ping = successor
                 || unnamed_learner
                 || would_raise(
@@ -1223,7 +1230,8 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // vouches for a position the mark still has to count. Its
                 // last record goes again for an answer; once the mark has
                 // caught up this costs nothing.
-                if requester.answered().is_empty() {
+                let quiet = requester.answered().is_empty();
+                if quiet {
                     if ping {
                         reship_last(
                             requester,
@@ -1251,6 +1259,27 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                         )
                         .await;
                     }
+                }
+                // Apart from the pings above, so a resend that can never land
+                // (a log trimmed to its tail) holds no counter ping back. Only
+                // at the tail: a follower still catching up is sent the mark
+                // by its next batch, paced like the rest.
+                if owes_mark
+                    && !cursor.mark_carried
+                    && !(quiet && ping)
+                    && cursor.next_offset >= tail
+                {
+                    reship_last(
+                        requester,
+                        &log,
+                        &shard,
+                        log_kind,
+                        &mut cursor,
+                        rebuilds,
+                        Some(mark_now),
+                        set_stamp,
+                    )
+                    .await;
                 }
                 // A batch on one log can re-admit the copy while another log
                 // still holds the learner answer it gave before, here or in
@@ -2778,6 +2807,10 @@ pub(super) fn follow_storage(
     rebuilds: &Rebuilds,
 ) {
     if same_copy(cursor.identity(), seen) {
+        // Another process may have started without the trust this one had.
+        if cursor.incarnation != seen.incarnation {
+            cursor.mark_carried = false;
+        }
         cursor.incarnation = seen.incarnation;
         return;
     }

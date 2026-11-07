@@ -450,6 +450,11 @@ expectations=(
   "FelixShardUnifiedCpLiveReadmitUnopened pass"
   "FelixShardUnifiedCpLiveReadmitUnopenedLegacy violates liveness"
   "FelixShardUnifiedCpLiveMoveDoubted pass"
+  "FelixShardUnifiedIdleVouch pass"
+  "FelixShardUnifiedIdleVouchLegacy violates liveness"
+  "FelixShardUnifiedLearnerBlocking pass"
+  "FelixShardUnifiedLearnerBlockingTwo pass"
+  "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -615,6 +620,9 @@ weights=(
   "FelixShardUnified 16"
   "FelixShardUnifiedMixed 11"
   "FelixShardUnifiedCpLiveReadmitUnopened 10"
+  "FelixShardUnifiedLearnerBlockingTwo 70"
+  "FelixShardUnifiedLearnerBlocking 8"
+  "FelixShardUnifiedLearnerVariantDropped 2"
   "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"

@@ -251,5 +251,6 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }

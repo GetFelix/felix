@@ -9,6 +9,7 @@ use super::*;
 pub(super) const TRUSTED: FenceAttestation = FenceAttestation {
     kept_from: 0,
     trusted: true,
+    by_record: false,
 };
 
 /// A copy that kept its ballots but may have lost acknowledged records, as
@@ -16,6 +17,7 @@ pub(super) const TRUSTED: FenceAttestation = FenceAttestation {
 pub(super) const DOUBTED: FenceAttestation = FenceAttestation {
     kept_from: 0,
     trusted: false,
+    by_record: false,
 };
 
 /// The marks of a leader counting by attestation, whose own directory kept
@@ -176,6 +178,7 @@ async fn an_unkept_copy_never_counts_as_a_promise() {
             replicas.get_mut(id).attests = Some(FenceAttestation {
                 kept_from: u64::MAX,
                 trusted: true,
+                by_record: false,
             });
         }
         replicas
@@ -333,4 +336,164 @@ async fn a_learner_own_copy_counts_no_promise() {
         matches!(outcome, Outcome::Fenced { .. }),
         "a voter's own copy did not count: {outcome:?}"
     );
+}
+
+/// **A leader never trusts an answer on the control plane's record.** The
+/// record stands in for a lost vouch only on the replica, which alone knows
+/// whether its copy is also doubted, poisoned, given up or unclean. Here
+/// broker-b attests a doubted copy, broker-c is down, and the route holds a
+/// record matching broker-b's copy: nothing covers but this broker.
+#[tokio::test]
+async fn a_record_does_not_cover_an_untrusted_answer() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").attests = Some(DOUBTED);
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = route();
+    route.readmitted = Some(Arc::new(vec![felix_router::Readmitted {
+        node: "broker-b".to_string(),
+        storage_id: storage_of("broker-b").to_hex(),
+        generation: 4,
+        offset: 1,
+    }]));
+    let marks = unified(true);
+
+    let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// [`unified`] for a broker that knows the fleet finalized
+/// `replica_election`.
+fn electing(kept: bool) -> crate::quorum::QuorumMarks {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+    let fleet = FleetGate::new([REPLICA_ELECTION.name()]);
+    fleet.restart([REPLICA_ELECTION.name()]);
+    let marks = crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet));
+    marks.set_unified_fence(true);
+    marks.set_kept_ballots(kept);
+    marks
+}
+
+/// **A promise kept only from a readmitting set counts while the fleet has
+/// not finalized `replica_election`, and not once it has**, whatever the
+/// replica attests: an adopted elected leader may have opened that set's
+/// generation before the copy's loss. broker-b attests promises from the set
+/// of 1, trusted; broker-c is down. A copy whose directory kept its ballots
+/// counts either way, but its trust counts only while elections are off when
+/// it rests on the control plane's record: a replica that has not yet heard
+/// the fleet finalized `replica_election` still takes the record.
+#[tokio::test]
+async fn a_readmitted_answer_counts_only_while_elections_are_off() {
+    let readmitted = FenceAttestation {
+        kept_from: 1,
+        trusted: true,
+        by_record: false,
+    };
+    let kept = FenceAttestation {
+        kept_from: 0,
+        trusted: true,
+        by_record: false,
+    };
+    let recorded = FenceAttestation {
+        by_record: true,
+        ..kept
+    };
+    for (attests, electing_fleet, opens) in [
+        (readmitted, false, true),
+        (readmitted, true, false),
+        (kept, true, true),
+        (recorded, false, true),
+        (recorded, true, false),
+    ] {
+        let mut replicas = Replicas::new();
+        replicas.get_mut("broker-c").reachable = false;
+        replicas.get_mut("broker-b").attests = Some(attests);
+        replicas
+            .get("broker-b")
+            .holds("broker-b", 4, 0, &["a"])
+            .await;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        let marks = if electing_fleet {
+            electing(true)
+        } else {
+            unified(true)
+        };
+
+        let outcome = fence_unified(&replicas, &leader, &route(), None, &marks).await;
+
+        assert_eq!(
+            matches!(outcome, Outcome::Fenced { .. }),
+            opens,
+            "{attests:?} electing {electing_fleet}: {outcome:?}"
+        );
+    }
+}
+
+/// **The leader's own copy takes the control plane's record as its vouch,
+/// and only while elections are off.** This broker's directory lost its
+/// ballots and a set of 4 readmitted its copy, which left it untrusted.
+/// broker-b promises and covers, broker-c is down, so the fence opens only if
+/// this broker's own copy covers: with a matching record and no elections.
+#[tokio::test]
+async fn the_leaders_own_readmitted_copy_takes_the_records_vouch() {
+    let own_id = storage_of(LEADER);
+    let entry = felix_router::Readmitted {
+        node: LEADER.to_string(),
+        storage_id: own_id.to_hex(),
+        generation: 4,
+        offset: 1,
+    };
+    for (recorded, electing_fleet, opens) in [
+        (true, false, true),
+        (false, false, false),
+        (true, true, false),
+    ] {
+        let mut replicas = Replicas::new();
+        replicas.get_mut("broker-c").reachable = false;
+        replicas.get_mut("broker-b").attests = Some(FenceAttestation {
+            kept_from: 0,
+            trusted: true,
+            by_record: false,
+        });
+        replicas
+            .get("broker-b")
+            .holds("broker-b", 4, 0, &["a"])
+            .await;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        felix_storage::storage_identity::replace(trust_dir.path(), own_id.to_bytes())
+            .expect("storage id");
+        let trust =
+            felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open");
+        trust
+            .readmit(
+                &crate::unclean::copy_key(&crate::driver::watch_key(&key())),
+                4,
+                own_id,
+            )
+            .expect("readmit");
+        let marks = if electing_fleet {
+            electing(false)
+        } else {
+            unified(false)
+        };
+        marks.set_readmits(true);
+        marks.set_local_storage(own_id, false);
+        marks.set_copy_trust(Arc::new(trust));
+        let mut route = route();
+        route.readmitted = recorded.then(|| Arc::new(vec![entry.clone()]));
+
+        let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+
+        assert_eq!(
+            matches!(outcome, Outcome::Fenced { .. }),
+            opens,
+            "recorded {recorded} electing {electing_fleet}: {outcome:?}"
+        );
+    }
 }

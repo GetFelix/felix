@@ -660,6 +660,16 @@ pub fn routing_table_from<A: std::hash::BuildHasher, N: std::hash::BuildHasher>(
                         .cloned()
                         .collect(),
                 }),
+            readmitted: assignment
+                .readmitted
+                .iter()
+                .map(|entry| felix_router::Readmitted {
+                    node: entry.node.clone(),
+                    storage_id: entry.storage_id.clone(),
+                    generation: entry.generation,
+                    offset: entry.offset,
+                })
+                .collect(),
         }),
         nodes,
     )

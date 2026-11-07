@@ -104,7 +104,13 @@ pub(super) async fn wire_broker(
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
     quorum_marks.set_local_storage(storage_id, replaced_storage);
-    quorum_marks.set_kept_ballots(kept.ballots);
+    // Left unset, which attests nothing, until a deferred restore check sets
+    // them.
+    if !kept.deferred {
+        quorum_marks.set_readmits(kept.readmits);
+        quorum_marks.set_kept_ballots(kept.ballots);
+    }
+    quorum_marks.set_minted_storage(kept.minted);
     if let Some(trust) = &copy_trust {
         quorum_marks.set_copy_trust(Arc::clone(trust));
     }

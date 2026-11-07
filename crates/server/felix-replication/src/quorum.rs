@@ -53,6 +53,8 @@ pub struct QuorumMarks {
     /// Whether this broker's directory kept every ballot it took, as the
     /// fence answer attests it. Unset reads as not kept.
     kept_ballots: std::sync::OnceLock<bool>,
+    readmits: std::sync::OnceLock<bool>,
+    minted_storage: std::sync::OnceLock<bool>,
     /// The directory's record of which copies are trusted and doubted
     /// across restarts. Unset on a broker without a durable directory.
     copy_trust: std::sync::OnceLock<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
@@ -297,6 +299,46 @@ impl QuorumMarks {
         self.kept_ballots.get().copied().unwrap_or(false)
     }
 
+    /// Whether the start has said what its directory kept yet. A start from
+    /// the control-plane view says nothing until its restore check passes.
+    pub(crate) fn knows_kept_ballots(&self) -> bool {
+        self.kept_ballots.get().is_some()
+    }
+
+    /// Record whether a copy on this broker's directory, when it did not keep
+    /// every ballot, counts again once readmitted: the start checked the
+    /// directory against a control plane record with a storage id. Only the
+    /// first call counts.
+    pub fn set_readmits(&self, readmits: bool) {
+        let _ = self.readmits.set(readmits);
+    }
+
+    pub(crate) fn readmits(&self) -> bool {
+        self.readmits.get().copied().unwrap_or(false)
+    }
+
+    /// Record whether this start minted the directory's storage id, by
+    /// rotating it or creating it. Only the first call counts.
+    pub fn set_minted_storage(&self, minted: bool) {
+        let _ = self.minted_storage.set(minted);
+    }
+
+    pub(crate) fn minted_storage(&self) -> bool {
+        self.minted_storage.get().copied().unwrap_or(false)
+    }
+
+    /// Whether a readmission counts here: a copy's promises from the set
+    /// that readmitted it, and the control plane's `readmitted` record as a
+    /// vouch. Only while this broker knows the fleet has not finalized
+    /// `replica_election`. An adopted elected leader may have opened its
+    /// generation before a copy's loss, which neither rule can tell, so once
+    /// elections can happen (or before a registration says they cannot) a
+    /// readmitted copy counts as it would without a record. See "Readmission
+    /// and elections" in `docs/replication-design.md`.
+    pub(crate) fn readmission_counts(&self) -> bool {
+        self.fleet_decides(felix_common::fleet::REPLICA_ELECTION) == Some(false)
+    }
+
     /// Bind the durable directory's record of trusted and doubted copies.
     /// Call before this broker answers anything. Only the first call counts.
     pub fn set_copy_trust(&self, trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>) {
@@ -342,14 +384,27 @@ impl QuorumMarks {
     }
 
     /// What this broker attests of its copy `log` of `key`, as it answers a
-    /// unified fence and as its own fence counts it as a promoted leader.
-    pub fn attest(
+    /// unified fence, before the caller counts it. `readmitted` is the
+    /// route's control-plane readmission record.
+    pub async fn attest(
         &self,
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         local_node_id: &str,
+        readmitted: &[felix_router::Readmitted],
     ) -> felix_wire::internal::FenceAttestation {
         let voter = log.member_is_learner(local_node_id) != Some(true);
+        // An unreadable tail vouches for nothing; the fence reads it again.
+        let recorded = match log.tail_offset().await {
+            Ok(log_end) => crate::replica::vouched_by_record(
+                readmitted,
+                local_node_id,
+                self.local_storage(),
+                crate::replica::last_generation(&log.generations(), log_end),
+                log_end,
+            ),
+            Err(_) => false,
+        };
         crate::replica::attest_copy(
             Some(self),
             self.unclean_start().map(|unclean| &**unclean),
@@ -357,6 +412,7 @@ impl QuorumMarks {
             key,
             voter,
             log.gave_up(),
+            recorded,
         )
     }
 

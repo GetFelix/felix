@@ -39,6 +39,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         member_storage_ids: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 

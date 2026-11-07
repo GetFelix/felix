@@ -260,7 +260,13 @@ internal static unsafe partial class Callbacks
         byte* keyData;
         nuint keyLength;
         Check(NativeMethods.felix_event_key(ev, &keyData, &keyLength));
-        ReadOnlyMemory<byte>? key = keyData is null || keyLength == 0 ? null : CopyBytes(keyData, keyLength);
+        // An if, not `cond ? null : bytes`: that has type byte[], and a null byte[] converts to an
+        // empty (non-null) ReadOnlyMemory<byte>?, which would turn "no key" into "empty key".
+        ReadOnlyMemory<byte>? key = null;
+        if (keyData is not null && keyLength != 0)
+        {
+            key = CopyBytes(keyData, keyLength);
+        }
 
         nuint headerCount;
         Check(NativeMethods.felix_event_header_count(ev, &headerCount));

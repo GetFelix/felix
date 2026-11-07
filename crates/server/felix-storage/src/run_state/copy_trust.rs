@@ -46,6 +46,7 @@ const DOUBTED: &str = "doubted";
 const UNKEPT: &str = "unkept";
 const STORAGE_ID: &str = "storage_id";
 const UNKEPT_SINCE: &str = "unkept_since";
+const READMITTED: &str = "readmitted";
 
 /// Which copies carry one mark: every copy but `except`, or only `except`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,6 +88,9 @@ struct State {
     /// For an unkept copy, the newest generation it took a ballot at while
     /// unkept: only a set newer than that readmits it. 0 when not known.
     unkept_since: HashMap<Vec<u8>, u64>,
+    /// For a copy on a directory that lost its ballots, the set generation
+    /// that readmitted it and the storage id it was readmitted under.
+    readmitted: HashMap<Vec<u8>, (u64, StorageId)>,
 }
 
 impl State {
@@ -98,6 +102,7 @@ impl State {
             doubted: Marks::everyone(),
             unkept: Marks::everyone(),
             unkept_since: HashMap::default(),
+            readmitted: HashMap::default(),
         }
     }
 }
@@ -271,6 +276,42 @@ impl CopyTrust {
             })
     }
 
+    /// The set generation that readmitted the copy named `key` after its
+    /// directory lost its ballots ([`Self::readmit`]), when that was under
+    /// the directory's storage id now. A rotation since, a restore among
+    /// them, ends it.
+    pub fn readmitted(&self, key: &[u8]) -> Option<u64> {
+        let id = (*self.id.lock())?;
+        self.durable
+            .lock()
+            .readmitted
+            .get(key)
+            .filter(|(_, under)| *under == id)
+            .map(|(generation, _)| *generation)
+    }
+
+    /// Record, durably, that the copy named `key`, on a directory that lost
+    /// its ballots, was readmitted by a set introduced at `generation` that
+    /// names it under `id`: its promises count for that set and later ones.
+    /// The first readmission under an id stands, and a later one changes
+    /// nothing. The copy is untrusted until
+    /// a leader vouches for it again, so a vouch from before, which any
+    /// leader could give, does not count. Blocks on the sync.
+    pub fn readmit(&self, key: &[u8], generation: u64, id: StorageId) -> Result<()> {
+        self.update(|state| {
+            if state
+                .readmitted
+                .get(key)
+                .is_some_and(|(_, under)| *under == id)
+            {
+                return false;
+            }
+            state.untrusted.set(key, true);
+            state.readmitted.insert(key.to_vec(), (generation, id));
+            true
+        })
+    }
+
     /// Record, durably, that a newer leader shipped the copy named `key`
     /// level through its generation's start, which ends any doubt, and, when
     /// `trusts`, through the mark it acknowledged too, which trusts it. The
@@ -434,6 +475,16 @@ fn encode(state: &State, id: Option<StorageId>) -> Vec<u8> {
         }
         let _ = writeln!(out, " {generation}");
     }
+    let mut readmitted: Vec<_> = state.readmitted.iter().collect();
+    readmitted.sort_unstable_by(|a, b| a.0.cmp(b.0));
+    for (key, (generation, id)) in readmitted {
+        out.push_str(READMITTED);
+        out.push(' ');
+        for byte in key {
+            let _ = write!(out, "{byte:02x}");
+        }
+        let _ = writeln!(out, " {generation} {}", id.to_hex());
+    }
     out.into_bytes()
 }
 
@@ -453,6 +504,17 @@ fn decode(bytes: &[u8]) -> Option<(State, Option<StorageId>)> {
             state
                 .unkept_since
                 .insert(unhex(hex)?, generation.parse().ok()?);
+            continue;
+        }
+        if name == READMITTED {
+            let mut parts = rest.split(' ');
+            let key = unhex(parts.next()?)?;
+            let generation = parts.next()?.parse().ok()?;
+            let id = StorageId::from_bytes(unhex(parts.next()?)?.try_into().ok()?);
+            if parts.next().is_some() {
+                return None;
+            }
+            state.readmitted.insert(key, (generation, id));
             continue;
         }
         let marks = marks_of(&mut state, name)?;

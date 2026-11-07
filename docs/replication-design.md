@@ -528,9 +528,17 @@ inherited one. Otherwise a follower cut off from the leader across the change
 is named with an empty identity, and a failover whose majority needs it can
 never open (#1922). A leader sends no report while it still
 fences, so a copy whose fence answer it did not count is named in its
-reports only once it has opened and ships to that copy. Without an inherited identity, from a leader nobody promoted or one that
-predates the field, the member is named with an empty identity, which
-nothing matches. `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg`
+reports only once it has opened and ships to that copy. A leader that stood
+for election inherits no identities, since its route names none. For a member
+its report names no identity for and inherits none for, the control plane
+takes the one the shard's previous report named it by, as its own identity or
+an inherited one, when it stores the report. The argument is the same: the
+new leader has not reached that member, so its acknowledgements all went to
+earlier leaders, from that copy or one before it. Without it, a failover after
+an elected leader crashes names every member that leader had not reached with
+an empty identity and can wait for good. Without any identity, from a broker
+or control plane that predates the field, the member is named with an empty
+identity, which nothing matches. `FelixShardFencedLeaderCrashTwiceNamesByInheritance.cfg`
 checks two leader replacements in a row with inherited names, and its witness
 shows the second one counting an inherited name. With promotions on suspicion
 (`FelixShardFencedCrashNamesByInheritance.cfg`,
@@ -557,9 +565,10 @@ coming back ends the wait. There are two ways to get there:
   the leader gone too, that is two faults, and the records the follower lost
   may be on no copy at all.
 - A follower the report named no identity for, because its leader had not
-  asked it yet when it reported, and for which the report inherits none: the
-  leader was not promoted by a failover that named one, or it predates the
-  field. It may hold everything; nothing vouches for it. Naming it by the
+  asked it yet when it reported, and for which the report inherits none:
+  neither the leader's promotion, its previous generation nor the shard's
+  previous report named one, or it predates the field. It may hold
+  everything; nothing vouches for it. Naming it by the
   identity it is registered under would not do: the report's incarnation for
   such a follower is the control plane's stamp as the report arrives, which
   can come after a crash the report predates
@@ -582,6 +591,17 @@ until then a report carries none and the member is named with an empty one. `Fel
 `FelixShardFencedWipe.cfg` and `FelixShardFencedLeaderCrash.cfg` check it on
 the fenced, follower-acked path, and `FelixShardFencedCrashCountsRotated.cfg`
 finds the lost record when the rotated copy counts.
+
+A joint fence that leaves a set with a staged learner can stall the same way
+on a leader that does not count by attestation (`FELIX_UNIFIED_FENCE=0`, or an
+older broker). It needs a majority of the set with its learner, the learner
+refuses as not a replica, and one voter that cannot answer, down or refusing
+until a set change readmits it, leaves the fence one short. The shard's status
+then reads like `2 of 4 and 2 of 3 voters of the set being left`. The way out
+is the same: stop the promoted broker, run
+`felixctl placement abandon <name> <shard> --yes`, and start it again. A
+leader that counts by attestation needs only half of the set with its learner
+and does not stall here (see "One fence rule for every change of leader").
 
 The identity is the evidence because it is what changes on every loss: a
 wipe, a crash under a relaxed fsync mode and a restore all give a new one
@@ -706,28 +726,107 @@ start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
 readmits it may vouch for it.
 
-A vouch is held in the broker's process, so a clean restart loses it. The
-control plane keeps a durable form: when the leader of a set that names a
-replaced copy by its new storage id reports it caught up, the assignment
-records `readmitted {node, storage_id, generation, offset}` (see
-`docs/control-plane.md`, "Re-admitting a replaced copy"). An answer from that
-same copy is trusted when it shows a last generation of at least `generation`
-and a log end of at least `offset`. The generation clause is the commit-offset
-half above for this source: without it the offset alone could vouch for a copy
-missing records an earlier generation acknowledged. The control plane records
-this from metadata level 30; no fence reads it yet. A broker that starts without the control plane
+On an idle shard nothing would vouch. The batch that brings a follower level
+goes out before the follower's own answer raises the mark, so it carries a
+commit offset of zero, and a level follower is sent nothing else. The copy
+would stay untrusted until the next client write, and one more failure could
+then leave a fence that never covers, although a caught-up copy exists. So a
+leader of a `Quorum` shard sends a level follower its last record again, with
+the current mark, until the follower has stored one batch that left it level
+through the leader's start record and a commit offset above zero
+(`FollowerCursor::mark_carried`). A new process on the follower is owed one
+again, since it may not have the old process's trust. A follower that does
+not take generation labels is never owed one: without labels no batch can
+vouch for it. The batch holds only records the follower already has, so
+the vouch is the same as for any other batch: level through the start record
+and through the mark. `FelixShardUnifiedIdleVouch` checks that such a
+follower is trusted again while its leader serves, with no writes. Its
+`Legacy` twin, a leader that sends a level follower nothing, leaves it
+untrusted.
+
+The control plane keeps a durable form of a readmitting leader's vouch:
+when the leader of a set that names a replaced copy by its new storage id
+reports it caught up, the assignment records `readmitted {node, storage_id,
+generation, offset}` (see `docs/control-plane.md`, "Re-admitting a replaced
+copy"). The route carries these records to every broker, and the copy checks
+them itself when it answers a fence. A record stands in for the directory's
+vouch when it names this broker and its current storage id, and the copy's
+log shows a last generation of at least `generation` and ends at or past
+`offset`. It replaces only that vouch: a copy whose promises do not count,
+that was given up, is doubted, is on a poisoned process, or started
+uncleanly with no leader vouching since still attests untrusted. The leader
+reads no records; it counts what each copy attests, its own included. The
+generation clause is the commit-offset half above for this source: without
+it the offset alone could vouch for a copy missing records an earlier
+generation acknowledged. The record never makes a copy's promises count.
+The control plane records it from metadata level 30, and not from a
+leader that elected itself: that leader may have opened before the copy was
+replaced, at a generation the control plane adopted later for a set naming
+the new id, so it does not hold what the old copy acknowledged at that
+generation. A control plane below level 30 sends no records, and the fence
+then trusts on the answer alone. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
-`TrustsRegistered`). For now that is the whole run. A failed flush poisons the
+`TrustsRegistered`). Once the check passes, it attests kept ballots and
+readmissions as a start that asked first would. A failed flush poisons the
 log and may have dropped acknowledged pages, so from then on the process
 attests no trusted copy, without waiting for the next start.
 
 In the code a directory **kept** its ballots when it was never restored and
 never replaced a lost copy, and, after an unclean start, the control plane's
 record names the storage id it had before (`Kept` in
-`services/felix-broker-service/src/node/storage.rs`). Trust after an unclean
+`services/felix-broker-service/src/node/storage.rs`). A directory that lost
+them keeps that mark for good, so each of its copies counts again only once
+readmitted: the copy's log counts a set newer than any ballot it took
+unkept that names it under its storage id now, as a voter, and holds that
+set's generation start, shipped by that set's leader or a later one. With no
+unkept ballot to count from, that needs a start that minted the storage id
+(a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it. A
+directory that lost its copies under an older id, as one swapped back after
+the node ran under another, may be named by sets from before the loss, so
+its copies get no readmission. So does a copy not yet readmitted when the
+broker restarts cleanly, until a later rotation. The broker records the set's
+generation in the directory's `copy-trust` file (`docs/storage-format.md`)
+before the copy's promises count for that set and later ones, and marks the
+copy untrusted until a vouch after the readmission. The record holds until
+the storage id rotates. Trust after an unclean
 start is `UncleanStart::trust`, set where a replicated batch is applied, and the
 answer is `ReplicaHandler::attestation`.
+
+#### Readmission and elections
+
+Both readmission rules, the readmitting set's promises and the control
+plane's record, assume the leader of the readmitting set opened its
+generation after the copy was lost. A leader the control plane named always
+did: a set naming the new storage id is written after the broker registered
+it. An elected leader the control plane adopted may not have. It can open at
+G before the loss, and the control plane can later adopt G for a set naming
+the new id. That leader's generation start then comes before records the old
+copy acknowledged at G. The control plane already records no `readmitted`
+entry from a report that says the leader elected itself, but an elected
+leader that restarts and is named again at the same generation reports
+without saying so, and a copy readmitted at an adopted generation looks like
+any other.
+
+Elections run only once the fleet finalized `replica_election`, and the
+control plane adopts an elected leader only then. So a readmission counts
+only while the broker knows the fleet has not finalized it
+(`QuorumMarks::readmission_counts`): on the copy, for what it attests, and on
+the leader, which counts no promise kept only from a readmitting set and no
+trust the answer says rests on the record alone. A copy can take a new
+record from the watch before it hears the fleet finalized
+`replica_election`, so the leader's view decides. A
+broker that has not yet had a registration answer cannot rule elections out
+and gives no credit. Once `replica_election` is finalized a copy on a
+directory that lost its ballots counts as it did before readmission was
+recorded: for no set, and untrusted. That costs
+liveness for fleets that opt into internal election, which is off by default
+(`FELIX_INTERNAL_ELECTION`), and nothing for the rest.
+
+The full fix is planned for after 0.7. A leader would report whether its
+epoch was fenced over a set of its own generation, the control plane would
+record readmissions only from such a leader (a new report field and metadata
+level), and the gate above would go.
 
 Trust has to outlive the process. A copy that crashed uncleanly, answered a
 fence and then restarted cleanly looks like any clean copy: the ballot it took
@@ -776,6 +875,26 @@ counts by the attestation it would give another leader (`OwnCopy`). A joint
 fence counts both per set. An attested answer that promises nothing still
 takes the ballot, and its log may still be the one taken, but the fence
 waits rather than report a refusal, since a later generation might count it.
+
+A joint fence counts each set it leaves twice: its voters alone, and its
+voters with its learners, because a leader that counted a staged learner as a
+voter may have acknowledged on a majority of the larger set. A learner the new
+route does not name refuses every fence as not a replica. With a majority of
+the larger set needed, a set with one staged successor then needs every voter
+but one, and one voter that cannot answer stalls the fence for good. So a
+leader that counts by attestation needs only half of the set with its
+learners (`2 * promised >= members`), beside a majority of its voters, and
+does not ask a learner the route no longer names. Half of a set meets every
+majority of it, so no acknowledgement on the larger set is missed, and two
+fences that both know the learners meet in the voters. With one learner a
+majority of the voters is already half of the whole set. With two it is not,
+and the half still matters: without it, an acknowledgement on one voter and
+both learners slips past a fence on the other two voters
+(`FelixShardUnifiedLearnerVariantDropped.cfg`).
+`FelixShardUnifiedLearnerBlocking.cfg` and
+`FelixShardUnifiedLearnerBlockingTwo.cfg` check the rule, and
+`promotion/tests/joint_learner.rs` the code. A leader that does not count by
+attestation still needs a majority of both.
 
 In the code the replica answers this way only to a caller that offered
 `UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
@@ -1495,7 +1614,10 @@ on it starts from what the control plane last told it and takes part again;
 see [Rejoining without the control plane](#rejoining-without-the-control-plane).
 With the unified fence on, the default, that broker does not vote or count
 toward a promotion until it reaches the control plane, so a failover that
-needs its vote waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores
+needs its vote waits for the control plane. Once the control plane answers
+and the restore check finds the directory is the one it registered, the
+broker attests its copies, readmissions included, as a start that asked
+first would. `FELIX_UNIFIED_FENCE=0` restores
 the pin-based rule, under which its vote counts.
 
 **Which shards.** The ones failover on the followers' word already covers: a
@@ -3100,7 +3222,8 @@ when empty). For a follower it has not reached yet at its generation, a
 leader reports the identity it inherited for it, from the failover that
 promoted it or from its own previous generation
 (`inherited_storage_ids`, omitted when empty, kept as `inherited_storage`).
-Placement reads it only to name that follower in the next failover's fence
+The control plane adds to it, for a member the report names no identity for,
+the one the shard's previous report named it by. Placement reads it only to name that follower in the next failover's fence
 (see "Fencing a promotion"), never to decide who is caught up.
 `FelixShardWipe.cfg` checks the design with the identity
 comparison in place, and `FelixShardWipeNoIds.cfg` finds the lost record
@@ -5235,7 +5358,9 @@ acknowledgement is the one it was.
 
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
-> left. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
+> left. `a_fence_leaving_a_staged_learner_opens_on_half_the_set_with_it` and
+> `a_fence_leaving_two_learners_still_needs_half_of_the_whole_set`: half of
+> the set with its learners, for a leader that counts by attestation. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
 > copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
 > a voter of the set being left answers though its routing view no longer
 > names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
