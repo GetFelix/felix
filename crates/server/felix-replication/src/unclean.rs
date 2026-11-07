@@ -142,7 +142,7 @@ impl UncleanStart {
             return Ok(());
         }
         let trust = Arc::clone(trust);
-        tokio::task::spawn_blocking(move || trust.doubt(&name))
+        felix_common::blocking::spawn(move || trust.doubt(&name))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }

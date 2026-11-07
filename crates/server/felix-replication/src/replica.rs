@@ -1599,7 +1599,7 @@ impl ReplicaHandler {
             return Ok(());
         }
         let trust = Arc::clone(trust);
-        tokio::task::spawn_blocking(move || trust.doubt(&name))
+        felix_common::blocking::spawn(move || trust.doubt(&name))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
@@ -1622,7 +1622,7 @@ impl ReplicaHandler {
         }
         let trust = Arc::clone(trust);
         let floor = log.accepted_generation();
-        tokio::task::spawn_blocking(move || trust.unkeep(&name, floor))
+        felix_common::blocking::spawn(move || trust.unkeep(&name, floor))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
@@ -1657,7 +1657,7 @@ impl ReplicaHandler {
             return Ok(());
         }
         let trust = Arc::clone(trust);
-        tokio::task::spawn_blocking(move || trust.unkeep(&name, generation))
+        felix_common::blocking::spawn(move || trust.unkeep(&name, generation))
             .await
             .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
@@ -1686,7 +1686,8 @@ impl ReplicaHandler {
             return;
         }
         let trust = Arc::clone(trust);
-        if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.clear_unkept(&name)).await {
+        if let Ok(Err(err)) = felix_common::blocking::spawn(move || trust.clear_unkept(&name)).await
+        {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -1710,7 +1711,7 @@ impl ReplicaHandler {
             return;
         }
         let trust = Arc::clone(trust);
-        let recorded = tokio::task::spawn_blocking(move || trust.vouch(&name, trusts)).await;
+        let recorded = felix_common::blocking::spawn(move || trust.vouch(&name, trusts)).await;
         if let Ok(Err(err)) = recorded {
             tracing::warn!(
                 stream = %shard.stream,
@@ -2003,7 +2004,8 @@ impl ReplicaHandler {
             if !doubted && let Some(trust) = self.copy_trust() {
                 let trust = Arc::clone(trust);
                 let name = crate::unclean::copy_key(&shard);
-                if let Ok(Err(err)) = tokio::task::spawn_blocking(move || trust.doubt(&name)).await
+                if let Ok(Err(err)) =
+                    felix_common::blocking::spawn(move || trust.doubt(&name)).await
                 {
                     tracing::error!(
                         stream = %key.stream,
