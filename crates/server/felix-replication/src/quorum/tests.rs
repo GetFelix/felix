@@ -1152,8 +1152,6 @@ fn a_readmission_counts_only_while_the_fleet_rules_out_elections() {
     );
 }
 
-/// A copy a leader shipped level this run is not untrusted for being
-/// unclean-started, even once its log is closed and only the set remembers.
 fn routed(stream: &str) -> felix_router::ShardKey {
     felix_router::ShardKey {
         tenant_id: "t1".to_string(),
@@ -1164,6 +1162,8 @@ fn routed(stream: &str) -> felix_router::ShardKey {
     }
 }
 
+/// A copy a leader shipped level this run is not untrusted for being
+/// unclean-started, even once its log is closed and only the set remembers.
 #[test]
 fn a_copy_shipped_level_after_an_unclean_start_is_not_surely_untrusted() {
     let marks = QuorumMarks::new();
