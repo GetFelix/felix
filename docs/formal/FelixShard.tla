@@ -4434,7 +4434,7 @@ Vouch(b, f) ==
              THEN [doubt EXCEPT ![f] = "vouched"]
              ELSE doubt
 ShipStep(b, f) ==
-    Ship(b, f) /\ Vouch(b, f) /\ UNCHANGED << counterVars, heard, idVarsButDoubt, named, refusalVars, wipeVars >>
+    Ship(b, f) /\ Vouch(b, f) /\ UNCHANGED << counterVars, heard, idVarsButDoubt, named, refusalVars, wipeVars, pinVars >>
 
 \* `f`, back from a process crash that kept its identity, stops cleanly and
 \* starts again in the same boot. The stop syncs what this run wrote and
@@ -4874,7 +4874,7 @@ Steps ==
         \/ ForgetSet(b) /\ UNCHANGED quietVars
         \/ RetryContinuingFence(b)
            /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner,
-                           marked, cpLearner, forgot >>
+                           marked, cpLearner, forgot, pinVars >>
         \/ \E f \in Brokers :
             \/ ShipStep(b, f)
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars
