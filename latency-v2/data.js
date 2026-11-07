@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794018459696,
+  "lastUpdate": 1794020330127,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -61050,6 +61050,72 @@ window.BENCHMARK_DATA = {
             "range": "80.07",
             "unit": "us",
             "extra": "trials: 5\nmedian: 265.00\nmean: 298.20\nstdev: 80.07\ncv: 26.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3bcb99e765faab09ad10a48e9994217a43d5b99f",
+          "message": "feat(sim): power-loss nemesis under FsyncMode::OnCommit (#2038) (#2060)\n\n* feat(sim): cut the power to a broker under FsyncMode::OnCommit (#2038)\n\nOne seed in three runs its brokers with FsyncMode::OnCommit, and there a\ncrash that would be a kill cuts the power instead. The cut lands inside the\nnext clean append to a log segment, which comes back torn on a sector\nboundary with its length on the disk; every other unsynced byte follows the\nin-memory filesystem's crash model. The broker stops in the same instant and\nrestarts on what the device held. A new TornTailRepaired checker fails a seed\nunless recovery repaired each torn append, read from a repair count the\nsimulated filesystem keeps. A restart that doubts its copy after a power loss\ncounts towards the double-crash exemption like a kill.\n\n* test(sim): keep the power-cut seed test out of the replay filter; record seed results\n\n* fix(sim): widen the power cut, tear by sectors, match repairs to the torn segment (#2038)\n\nThe cut now lands on any append to a segment past what the device holds,\nso group-commit batches and a new segment's unsynced header are covered.\nThe file follows crash_contents, and the append in flight comes back short\nor with any subset of its sectors missing, at least one, so a lost sector\ncan precede one that arrived. Recovery records which segment it repaired,\nthe power loss records which segment it tore, and TornTailRepaired matches\nthe two. The snapshot reads each file's durable bytes once; under the\nsimulator every sync runs on the run's runtime, so it is deterministic.\n\n* fix(sim): no false misses in TornTailRepaired; pad power-seed payloads to 1-4 KiB (#2038)\n\nA torn append now always keeps at least one byte past where it began.\nRecovery also records a segment it removes as unfinished, and a cut whose\nsegment came back without its name or with nothing past the append is not\nheld to a repair. Power seeds pad each record to 1-4 KiB, checked on read,\nso appends span sectors and a lost sector can precede one that arrived.\n\n* refactor(storage): name the power-cut callback type for clippy\n\n* docs(sim): state the power-loss seed results as replayed\n\n* fix(sim): placement cuts the power with power loss on; restart after a heal only for power cuts\n\nPlacement faults killed OnCommit brokers under FELIX_SIM_POWER_LOSS=1,\nwhich made them forget a boot whose records were synced; they now cut the\npower as the planned faults do. A crash task that wakes after the heal\nrestarts its broker only when it was a power cut, so runs without power\nloss replay as on main. Drop the docs' unpinned seed results.",
+          "timestamp": "2026-11-07T02:49:50Z",
+          "tree_id": "bca770451e07d8804c25c515f80415b9457a2eac",
+          "url": "https://github.com/GetFelix/felix/commit/3bcb99e765faab09ad10a48e9994217a43d5b99f"
+        },
+        "date": 1794020322009,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.20\nstdev: 1.92\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 210,
+            "range": "4.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 207.80\nstdev: 4.92\ncv: 2.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "13.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 257.80\nstdev: 13.48\ncv: 5.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "9.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 203.20\nstdev: 9.01\ncv: 4.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 395,
+            "range": "172.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 468.20\nstdev: 172.78\ncv: 36.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 543,
+            "range": "936.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 543.00\nmean: 967.20\nstdev: 936.38\ncv: 96.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
