@@ -278,3 +278,33 @@ async fn a_start_whose_run_rotated_the_id_waits_and_notes_a_replacement() {
     let _ = stop.send(());
     let _ = handle.await;
 }
+
+/// **A start from the view attests its kept ballots once the restore check
+/// passes, and not before** (`CountsForgotten`, `TrustsRegistered`). Without
+/// this a copy that started while the control plane was down never counts
+/// toward an election, and with the leader gone nothing promotes.
+#[test]
+fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
+    let attested = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let checked = CancellationToken::new();
+    let own_kept = super::super::storage::Kept {
+        promises: false,
+        ballots: true,
+        deferred: true,
+    };
+    let check = deferred_check(&checked, own_kept, {
+        let attested = Arc::clone(&attested);
+        move |kept| attested.lock().expect("lock").push(kept)
+    });
+    assert!(attested.lock().expect("lock").is_empty());
+    let record = membership::Registered {
+        incarnation: 5,
+        storage_id: Some("00ff".to_owned()),
+    };
+    (check.passed)(Some(&record));
+    assert_eq!(*attested.lock().expect("lock"), vec![true]);
+    assert!(
+        !checked.is_cancelled(),
+        "membership cancels it after the pass"
+    );
+}

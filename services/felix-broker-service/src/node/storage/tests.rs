@@ -345,10 +345,37 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
     let kept = Kept {
         promises: true,
         ballots: true,
+        deferred: false,
     };
     assert!(kept.attested(false));
     assert!(!kept.attested(true));
     assert!(!Kept::default().attested(false));
+}
+
+/// **A start from the view attests what an asked start would once its
+/// restore check passes**: kept per its own run, except under a record from
+/// before storage ids, which cannot tell the directory from a wiped one.
+#[test]
+fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
+    let kept = Kept {
+        promises: false,
+        ballots: true,
+        deferred: true,
+    };
+    let record = |storage_id: Option<&str>| Registered {
+        incarnation: 5,
+        storage_id: storage_id.map(str::to_owned),
+    };
+    assert!(
+        kept.checked(None),
+        "a node the control plane never registered"
+    );
+    assert!(kept.checked(Some(&record(Some("00ff")))));
+    assert!(
+        !kept.checked(Some(&record(None))),
+        "a record without a storage id"
+    );
+    assert!(!Kept::default().checked(None), "a run that lost a copy");
 }
 
 /// **Every run witnesses its directory anew**, with the control plane's
