@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794011549112,
+  "lastUpdate": 1794017835527,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -60918,6 +60918,72 @@ window.BENCHMARK_DATA = {
             "range": "49.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 377.00\nmean: 392.20\nstdev: 49.47\ncv: 12.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3e8b88b77eb3a7ed7d08c97c65da4b612d23c483",
+          "message": "feat(clients): present a client certificate from Python, TypeScript, C# and C (#2075)\n\n* feat(clients): present a client certificate from Python, TypeScript, C# and C\n\nThe bindings take a certificate PEM file and a key PEM file next to the CA\nfile and hand them to ClientIdentity. The client fixture gains a broker that\nserves only a client with a certificate, and each language tests against it.\n\n* fix(clients): one behaviour for a lone certificate or key, a runnable C example\n\nEvery client refuses a certificate without its key at connect as an invalid\nargument, after the CA file is loaded. The Python and TypeScript fallback\nerror no longer blames the certificate for a trust store failure.",
+          "timestamp": "2026-11-06T18:02:19-08:00",
+          "tree_id": "22c039b97ef71ebccd11b161a737907b0e85431a",
+          "url": "https://github.com/GetFelix/felix/commit/3e8b88b77eb3a7ed7d08c97c65da4b612d23c483"
+        },
+        "date": 1794017827546,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.80\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "3.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.20\nstdev: 3.96\ncv: 1.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 258,
+            "range": "89.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 293.40\nstdev: 89.71\ncv: 30.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 197.80\nstdev: 1.30\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 387,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 387.80\nstdev: 2.17\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 535,
+            "range": "72.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 535.00\nmean: 565.40\nstdev: 72.00\ncv: 12.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
