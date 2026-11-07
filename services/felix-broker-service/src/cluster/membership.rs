@@ -658,8 +658,11 @@ pub struct DeferredCheck {
     pub checked: CancellationToken,
     /// Called once, when the check passes and before `checked` is cancelled,
     /// with the control plane's record of this node.
-    pub passed: Box<dyn FnOnce(Option<&Registered>) + Send>,
+    pub passed: OnPassed,
 }
+
+/// What [`DeferredCheck::passed`] runs, given the control plane's record.
+pub type OnPassed = Box<dyn FnOnce(Option<&Registered>) + Send>;
 
 impl DeferredCheck {
     /// A check that releases only `checked`.
