@@ -2470,6 +2470,8 @@ Promote(v, f, views) ==
     \* cluster/placement/plan.rs).
     \* `PromoteFencedDestination` names a member destination whose broker
     \* fences the promotion (`promotable_destination` in placement/plan.rs).
+    \* The code asks that of the destination's broker alone, which is all
+    \* that matters here: the others only answer its fence.
     /\ Quorum /\ ~PromoteDestination =>
            \/ ~Incoming(f)
            \/ PromoteFencedDestination /\ FenceEveryChange /\ f \notin staged

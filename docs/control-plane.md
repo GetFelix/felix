@@ -1901,10 +1901,9 @@ the wait. A leader that dies mid-move is a failover, where
 the successor is a candidate like any other replica. On a durable `Quorum`
 stream or cache there are two conditions. The successor's broker must report
 `fences_every_change`: it fences a majority and takes their tails before it
-serves, as any promoted follower does. A broker from before every change of
-leader was fenced would open the shard as a cut-over, without the fence, and
-its last report can predate a record the old leader acknowledged on its
-followers. And the successor must already be a member of the set: a copy
+serves, as any promoted follower does. An older broker would open the shard
+as the cut-over it expected, without fencing, and its last report can predate
+a record the old leader acknowledged on its followers. And the successor must already be a member of the set: a copy
 staged on top of it never counted toward an acknowledgement. Otherwise
 failover passes the successor over, and if no other replica holds the log the
 shard stays unplaced (`placement plan` says no caught-up replica). Every
