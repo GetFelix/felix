@@ -73,11 +73,23 @@ async fn kept_marked(
     copies: &[(&str, StorageId)],
     wiped: &[&str],
 ) {
+    kept_under(leader, "broker-x", members, learners, copies, wiped).await;
+}
+
+/// [`kept_marked`], with the leader's own ballot at 4 naming `holder`.
+async fn kept_under(
+    leader: &Broker,
+    holder: &str,
+    members: &[&str],
+    learners: &[&str],
+    copies: &[(&str, StorageId)],
+    wiped: &[&str],
+) {
     let log = leader
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("log");
-    log.accept_generation(4, Some("broker-x"))
+    log.accept_generation(4, Some(holder))
         .await
         .expect("ballot");
     let current = Membership {
@@ -2023,14 +2035,17 @@ async fn fence_followers_promised_at(
         }
     }
     let (leader, dir) = leader_holding(4, &["a"]).await;
-    kept_naming(
+    // It served 4 itself, so its own ballot names it there.
+    kept_under(
         &leader,
+        LEADER,
         &[LEADER, "broker-b", "broker-c"],
         &[],
         &[
             ("broker-b", storage_of("broker-b")),
             ("broker-c", storage_of("broker-c")),
         ],
+        &[],
     )
     .await;
     let named = |id_of: &dyn Fn(&str) -> StorageId| {
@@ -2122,4 +2137,184 @@ async fn a_retried_continuing_fence_counts_copies_whose_ballot_names_it_already(
             caught_up_from: None
         }
     );
+}
+
+/// broker-a's joint fence at `PROMOTED` on {broker-a, broker-x, broker-z},
+/// leaving {broker-x, broker-b, broker-c}, counted by attestation. broker-x
+/// led that set and crashed uncleanly, so its copy is doubted; every other
+/// copy holds what it acknowledged. The ones in `down` do not answer.
+async fn fence_readmitting(down: &[&str]) -> Outcome {
+    use super::unified::{DOUBTED, TRUSTED, fence_unified, unified};
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    for id in ["broker-x", "broker-z", "broker-b", "broker-c"] {
+        let replica = replicas.get_mut(id);
+        replica.attests = Some(if id == "broker-x" { DOUBTED } else { TRUSTED });
+        replica.reachable = !down.contains(&id);
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    kept_before(&leader, &["broker-x", "broker-b", "broker-c"], &[]).await;
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None);
+    fence_unified(&replicas, &leader, &swapped(), Some(&joint), &unified(true)).await
+}
+
+/// **A joint fence needs covering copies to meet every majority of each
+/// set.** With broker-c down, the set being left has two promises but only
+/// broker-b covers, one of three; with broker-z down, the new set has only
+/// this broker. Each waits. With everyone answering, both sets are covered
+/// and the fence opens, though broker-x is doubted in both.
+#[tokio::test]
+async fn a_joint_fence_waits_for_coverage_in_every_set() {
+    let outcome = fence_readmitting(&["broker-c"]).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened with the set being left uncovered: {outcome:?}");
+    };
+    assert!(why.contains("1 of 3 and 2 of 3 attest"), "{why}");
+
+    let outcome = fence_readmitting(&["broker-z"]).await;
+    let Outcome::Pending { why, .. } = &outcome else {
+        panic!("opened with the new set uncovered: {outcome:?}");
+    };
+    assert!(why.contains("2 of 3 and 1 of 3 attest"), "{why}");
+
+    let outcome = fence_readmitting(&[]).await;
+    assert!(matches!(outcome, Outcome::Fenced { .. }), "{outcome:?}");
+}
+
+/// **A move off a 2-voter set needs one covering copy of it.** broker-a
+/// leaves {broker-a, broker-b} for {broker-a, broker-x, broker-z}, and
+/// broker-b is doubted: its promise and this broker's make the old majority,
+/// and this broker's trusted copy meets every majority of two. Doubted here
+/// too, nothing covers the set being left and the fence waits.
+#[tokio::test]
+async fn a_move_off_two_voters_opens_on_one_trusted_copy() {
+    use super::unified::{DOUBTED, TRUSTED, doubting_own, fence_unified, unified};
+    for own_doubted in [false, true] {
+        let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+        for id in ["broker-x", "broker-z"] {
+            replicas.get_mut(id).attests = Some(TRUSTED);
+        }
+        replicas.get_mut("broker-b").attests = Some(DOUBTED);
+        replicas.get_mut("broker-c").reachable = false;
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        kept_before(&leader, &[LEADER, "broker-b"], &[]).await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = if own_doubted {
+            doubting_own(trust_dir.path())
+        } else {
+            unified(true)
+        };
+        let addr_of = addr_of;
+        let joint = Joint::new(&addr_of, None);
+
+        let outcome = fence_unified(&replicas, &leader, &swapped(), Some(&joint), &marks).await;
+
+        match (&outcome, own_doubted) {
+            (Outcome::Fenced { .. }, false) => {}
+            (Outcome::Pending { why, .. }, true) => {
+                assert!(why.contains("0 of 2 and 2 of 3 attest"), "{why}");
+            }
+            _ => panic!("own doubted {own_doubted}: {outcome:?}"),
+        }
+    }
+}
+
+/// broker-a's fence at `PROMOTED` after serving 4 on {broker-a, broker-b,
+/// broker-c}, counted by attestation. Both followers are doubted, as after
+/// a crash that may have cost them acknowledged records. broker-a's own
+/// ballot names `holder` at 4.
+async fn fence_past_doubted(continuing: bool, holder: &str) -> Outcome {
+    use super::unified::{DOUBTED, fence_unified, unified};
+    let mut replicas = replicas_with(&[]);
+    for id in ["broker-b", "broker-c"] {
+        replicas.get_mut(id).attests = Some(DOUBTED);
+    }
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(4, Some(holder))
+        .await
+        .expect("ballot");
+    log.accept_set(ReplicaSet {
+        current: named(4, [LEADER, "broker-b", "broker-c"]),
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("keep the set");
+    let addr_of = addr_of;
+    let joint = Joint::new(&addr_of, None).with_continuing(continuing);
+    fence_unified(&replicas, &leader, &route(), Some(&joint), &unified(true)).await
+}
+
+/// **A continuing leader opens past two doubted copies.** broker-a served
+/// generation 4 itself and its ballot still names it there, so it holds
+/// everything acknowledged before 5 and needs only promises. A failover
+/// with the same answers has one covering copy of three and waits, and so
+/// does a continuing leader whose ballot another leader took in between.
+#[tokio::test]
+async fn a_continuing_leader_opens_past_two_doubted_copies() {
+    assert_eq!(
+        fence_past_doubted(true, LEADER).await,
+        Outcome::Fenced {
+            caught_up_from: None
+        }
+    );
+    for (continuing, holder) in [(false, LEADER), (true, "broker-x")] {
+        let outcome = fence_past_doubted(continuing, holder).await;
+        assert!(
+            matches!(&outcome, Outcome::Pending { why, .. } if why.contains("1 of 3 copies attest")),
+            "continuing {continuing}, ballot for {holder}: {outcome:?}"
+        );
+    }
+}
+
+/// **The sets a failover fences are the chain of unopened starts its log
+/// kept.** The log keeps {broker-x, broker-b, broker-c} at 4, which left
+/// {broker-a, broker-y, broker-w} at 3, which left {broker-a, broker-u,
+/// broker-v} at 2, and holds no record written at 3 or 4. The fence at 5
+/// leaves all three. Once the log holds a record of 4, that fence opened,
+/// and only the set at 4 is left.
+#[tokio::test]
+async fn the_sets_a_failover_fences_are_the_unopened_chain() {
+    for opened in [false, true] {
+        let replicas = replicas_with(&[
+            "broker-x", "broker-z", "broker-y", "broker-w", "broker-u", "broker-v",
+        ]);
+        let (leader, _dir) = leader_holding(if opened { 4 } else { 1 }, &["a"]).await;
+        kept_two_unopened(&leader).await;
+        let log = leader
+            .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+            .await
+            .expect("log");
+        let route = swapped();
+        let set = crate::replica_set::view(&route, None);
+        let addr_of = addr_of;
+        let joint = Joint::new(&addr_of, Some(prior_xbc()));
+
+        let fenced = crate::promotion::joint::sets(&replicas, &log, LEADER, &route, &set, &joint)
+            .await
+            .expect("sets");
+
+        let sets = fenced.joint.expect("a joint fence");
+        let outside = "broker-q";
+        let mut required: Vec<u64> = std::iter::once(sets.leaving_for(outside))
+            .cloned()
+            .chain(sets.earlier_for(outside))
+            .map(|left| left.generation)
+            .collect();
+        required.sort_unstable();
+        let kept = log.replica_set().expect("kept");
+        let mut chain: Vec<u64> = std::iter::once(&kept.current)
+            .chain(&kept.leaving)
+            .chain(&kept.earlier)
+            .map(|set| set.generation)
+            .collect();
+        chain.sort_unstable();
+        assert_eq!(chain, vec![2, 3, 4]);
+        let expected = if opened { vec![4] } else { chain };
+        assert_eq!(required, expected, "opened {opened}");
+    }
 }

@@ -22,6 +22,7 @@ mod headers;
 mod identity;
 mod joint;
 mod times;
+mod unified;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
@@ -178,6 +179,9 @@ struct Replica {
     /// Whether the pool has recorded its capabilities, as it has once
     /// connected; otherwise they are learned by asking.
     recorded: bool,
+    /// What its fence answers attest, as a replica answering a leader that
+    /// offered `UNIFIED_FENCE` does.
+    attests: Option<FenceAttestation>,
     _dir: TempDir,
 }
 
@@ -197,6 +201,7 @@ impl Replica {
             refuses: None,
             refuses_with: ErrorCode::Unavailable,
             recorded: true,
+            attests: None,
             _dir: dir,
         }
     }
@@ -337,10 +342,21 @@ impl PeerRequester for Replicas {
             ));
         }
         match message {
-            InternalMessage::Fence(fence) => Ok(replica
-                .handler
-                .fence(self.ballots.then_some(LEADER), fence)
-                .await),
+            InternalMessage::Fence(fence) => {
+                let answer = replica
+                    .handler
+                    .fence(self.ballots.then_some(LEADER), fence)
+                    .await;
+                Ok(match answer {
+                    InternalMessage::FenceOk(ok) if replica.attests.is_some() => {
+                        InternalMessage::FenceOk(FenceOk {
+                            attestation: replica.attests,
+                            ..ok
+                        })
+                    }
+                    other => other,
+                })
+            }
             InternalMessage::ReplicateFetch(fetch) => Ok(replica.handler.fetch(None, fetch).await),
             other => panic!("the promoted leader sent {:?}", other.kind()),
         }

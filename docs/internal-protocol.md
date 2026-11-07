@@ -121,7 +121,7 @@ never have dialled the one that shipped to it.
 | `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
 | `1 << 19` | `REFUSAL_REASONS` | offered by a caller: it reads a `ReplicateError`'s reason fields, so a refusal to it carries them after the detail (see "Refusal reasons" under "Errors") |
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
-| `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). No broker offers it yet |
+| `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 
 #### Storage identity
 
@@ -876,9 +876,9 @@ acknowledged records separately: promises from copies that kept their
 ballots, coverage from trusted copies. Only a caller that offered
 `UNIFIED_FENCE` gets kind 54. To any other the replica drops the attestation
 and answers with `FenceKeptOk` or `FenceOk` as before. A replica attests on
-every answer for a shard's own log (never a group or counter log), but no
-broker offers `UNIFIED_FENCE` yet, so every fence answer on the wire is still
-kind 30 or 53. `kept_from` is 0 or `u64::MAX` (counts for no set) for now:
+every answer for a shard's own log (never a group or counter log). A broker
+with `FELIX_UNIFIED_FENCE=0`, or a memory-only one, neither offers
+`UNIFIED_FENCE` nor attests, and answers as before. `kept_from` is 0 or `u64::MAX` (counts for no set) for now:
 the set generation a readmission counts from is not yet tracked.
 
 | The replica | Answer |

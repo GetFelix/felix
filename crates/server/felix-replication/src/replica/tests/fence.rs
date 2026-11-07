@@ -2381,14 +2381,14 @@ async fn a_fence_answer_attests_what_the_directory_kept() {
     kept.apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(
-        taken(&kept.fence(SENDER, fence(5)).await).attestation,
+        taken(&unified_fence(&kept, SENDER, fence(5)).await).attestation,
         attested(0, true)
     );
 
     let lost = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
         .with_fleet(Arc::new(crate::quorum::QuorumMarks::new()));
     assert_eq!(
-        taken(&lost.fence(SENDER, fence(6)).await).attestation,
+        taken(&unified_fence(&lost, SENDER, fence(6)).await).attestation,
         attested(u64::MAX, false)
     );
 }
@@ -2408,7 +2408,7 @@ async fn a_poisoned_log_attests_no_trusted_copy() {
         .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
         .await;
     assert_eq!(
-        taken(&handler.fence(SENDER, fence(5)).await).attestation,
+        taken(&unified_fence(&handler, SENDER, fence(5)).await).attestation,
         attested(0, false)
     );
 }
@@ -2623,9 +2623,10 @@ async fn a_given_up_copy_of_a_set_of_two_answers_untrusted() {
     assert_eq!(ok.attestation, attested(0, false));
 }
 
-/// **No broker offers `UNIFIED_FENCE` yet, so over the wire a crashed
-/// leader's copy refuses as before.** Its answer in place of a refusal is
-/// safe only facing a leader that counts by the attestation.
+/// **Over the wire, a crashed leader's copy refuses a caller that does not
+/// offer `UNIFIED_FENCE`**, as `FELIX_UNIFIED_FENCE=0` leaves it. Its answer
+/// in place of a refusal is safe only facing a leader that counts by the
+/// attestation.
 #[tokio::test]
 async fn over_the_wire_a_crashed_leaders_copy_still_refuses() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -2636,6 +2637,7 @@ async fn over_the_wire_a_crashed_leaders_copy_still_refuses() {
         .with_unclean_start(unclean());
     let config = crate::peer::PeerTransportConfig {
         bind: "127.0.0.1:0".parse().expect("addr"),
+        unified_fence: false,
         ..Default::default()
     };
     let server =
