@@ -1074,29 +1074,16 @@ async fn own_copy(
     local_node_id: &str,
     route: &Route,
 ) -> OwnCopy {
-    let voter = log.member_is_learner(local_node_id) != Some(true);
-    // An unreadable tail vouches for nothing; the fence reads it again.
-    let recorded = match log.tail_offset().await {
-        Ok(log_end) => crate::replica::vouched_by_record(
-            route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+    let attested = marks
+        .attest(
+            key,
+            log,
             local_node_id,
-            marks.local_storage(),
-            crate::replica::last_generation(&log.generations(), log_end),
-            log_end,
-        ),
-        Err(_) => false,
-    };
-    let attested = crate::replica::attest_copy(
-        Some(marks),
-        marks.unclean_start().map(|unclean| &**unclean),
-        felix_storage::disk_log::any_log_poisoned(),
-        key,
-        voter,
-        log.gave_up(),
-        recorded,
-    );
+            route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+        )
+        .await;
     // Held to the same read of the fleet `readmission_counts` gives the
-    // answers, which a heartbeat may change after `attest_copy` read it.
+    // answers, which a heartbeat may change after `attest` read it.
     let readmission_counts = marks.readmission_counts();
     let attested = OwnCopy {
         readmission_counts,

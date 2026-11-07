@@ -4,8 +4,6 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::kills::Views;
-
 /// How long a power cut waits for an append to land in before it goes
 /// without one. Under load a broker appends every few milliseconds; one that
 /// is cut off may not append at all.
@@ -23,8 +21,6 @@ pub struct PowerLoss {
     pub torn: Option<PathBuf>,
     /// How many torn tails the broker's recovery had repaired before the cut.
     pub repaired_before: usize,
-    /// The shards as the control plane held them just before.
-    pub(crate) view: Views,
     /// When the broker was started again.
     pub restarted_at: Option<Duration>,
 }

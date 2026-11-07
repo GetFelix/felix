@@ -70,15 +70,18 @@ A seed fails when any check reports a problem, except a warning.
   while the run goes: `ElectionSettles`, `OneLeaderPerGeneration`,
   `AtMostOneServing`, `AckedHeldByLeader`, `AdoptedMatchesOpened`,
   `TornTailRepaired` and `GenerationBurn`.
-- `ElectionSettles` skips a shard the broker holds on purpose: its leader was
-  killed uncleanly, and killed members that were already down then make up a
-  majority of the set with it. The broker waits for `felixctl placement
-  abandon`. Every other check still covers the shard. If its final read cannot
-  be taken, only the lost-write rule is skipped and a warning names it. The run
-  prints how many shards were exempt. A kill counts against the set and term
-  the shard had at that instant: a broker killed before it opened a shard it
-  was named to lead is not counted as its leader, a follower being copied in
-  counts in the set, and an abandoned log ends the hold.
+- `ElectionSettles` skips a shard the broker holds on purpose: nobody serves
+  it and a majority of its copies attest untrusted, as each broker would
+  answer a fence, where no leader could have vouched them. A copy counts if
+  its broker is down after an unclean kill, or is up and no broker served the
+  shard while it was up since its last unclean start. A copy still untrusted
+  after a broker served beside it is vouchable: its shard fails, marked
+  `vouchable`. The broker waits for `felixctl placement abandon`. A shard with a trusted
+  majority and no leader still fails. Every other check still covers an
+  exempt shard. If its final read cannot be taken, only the lost-write rule
+  is skipped and a warning names it. The run prints how many shards were
+  exempt. An abandoned log ends the hold until a member is stopped uncleanly
+  again.
 - A shard whose log an operator abandoned loses what it acknowledged by
   design. Appends acknowledged before the abandon count as unknown and reads
   started before it are dropped; everything after it is checked as usual. A

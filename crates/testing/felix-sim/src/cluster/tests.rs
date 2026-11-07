@@ -79,7 +79,8 @@ async fn a_clean_stop_beside_a_kill_holds_nothing() {
 }
 
 /// A follower killed, then the leader: the shard is held, a shard led by the
-/// other broker is not, and after both restart the shard stays unserved.
+/// broker still up is not, and after both restart the shard stays unserved
+/// and held: neither restarted copy is trusted.
 #[tokio::test(start_paused = true)]
 async fn a_held_shard_stays_unserved_after_both_copies_return() {
     log();
@@ -90,13 +91,12 @@ async fn a_held_shard_stays_unserved_after_both_copies_return() {
     cluster.kill(leader).await;
     let held = cluster.held_shards().await;
     assert!(held.contains(&shard), "{held:?}");
-    let leader_id = cluster.node_id(leader);
+    let killed = [cluster.node_id(follower), cluster.node_id(leader)];
     for other in &held {
-        assert_eq!(
-            before[other].leader,
-            leader_id,
-            "{other} was not led by b{}",
-            leader + 1
+        assert!(
+            killed.contains(&before[other].leader.as_str()),
+            "{other} was led by {}, which is still up",
+            before[other].leader
         );
     }
     restarted(&cluster, follower).await;
@@ -112,6 +112,8 @@ async fn a_held_shard_stays_unserved_after_both_copies_return() {
         unserved.contains(&shard),
         "{shard} was served again: {unserved:?}"
     );
+    let held = cluster.held_shards().await;
+    assert!(held.contains(&shard), "{shard} is no longer held: {held:?}");
 }
 
 /// A leader dials with the pool's offer, so a refusal reaches it with its
