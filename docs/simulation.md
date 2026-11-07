@@ -307,7 +307,7 @@ only when no leader had the chance to vouch it:
 - its broker is up, and no broker served the shard while it was up since its
   last unclean start.
 
-The sim notes every second, and before each stop, which brokers are up while
+The sim notes every second, and before each fault, which brokers are up while
 some broker serves each shard. A copy still untrusted after a broker served
 beside it is vouchable. Its shard is not exempt and fails the check, marked
 `vouchable` in the stuck list, and the run prints those shards on their own

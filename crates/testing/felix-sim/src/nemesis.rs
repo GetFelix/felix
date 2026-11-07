@@ -481,6 +481,9 @@ impl Nemesis {
         if self.stopped.is_cancelled() {
             return;
         }
+        // A partition or placement move can end a serving window without a
+        // stop; note who was up beside it first, for the hold rule.
+        self.cluster.note_serving();
         match &fault {
             Fault::Crash {
                 node,
