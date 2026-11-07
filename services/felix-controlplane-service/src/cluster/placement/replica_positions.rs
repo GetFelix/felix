@@ -65,7 +65,7 @@
 //! report would otherwise still look caught up.
 //!
 //! [`ControlPlaneStore`]: crate::store::ControlPlaneStore
-use felix_common::random::HashMap;
+use felix_common::random::{HashMap, HashSet};
 use std::collections::{BTreeMap, BTreeSet};
 
 use felix_common::membership::RefusedGeneration;
@@ -150,6 +150,12 @@ pub struct ReplicaPositions {
     nodes: HashMap<String, NodeView>,
     /// Each shard's assignment: its generation and leader.
     assignments: HashMap<ShardKey, (u64, String)>,
+    /// Shards this instance has seen their leader serving at the
+    /// assignment's generation; see `CopyProgress::observe_opened`.
+    opened: HashSet<ShardKey>,
+    /// Each assignment's stream incarnation, which a report of its leader
+    /// serving must be from.
+    incarnations_of: HashMap<ShardKey, u64>,
     /// What each assignment names its members by, for telling a replaced
     /// copy from the one it names.
     members: HashMap<ShardKey, NamedMembers>,
@@ -210,6 +216,8 @@ impl ReplicaPositions {
             stuck: HashMap::default(),
             nodes: HashMap::default(),
             assignments: HashMap::default(),
+            opened: HashSet::default(),
+            incarnations_of: HashMap::default(),
             members: HashMap::default(),
             joint_fence: false,
         }
@@ -250,6 +258,10 @@ impl ReplicaPositions {
                     (assignment.generation, assignment.leader.clone()),
                 )
             })
+            .collect();
+        self.incarnations_of = assignments
+            .iter()
+            .map(|assignment| (assignment.key.clone(), assignment.incarnation))
             .collect();
         self.members = assignments
             .iter()
@@ -306,6 +318,11 @@ impl ReplicaPositions {
     /// With when this instance last saw each restore's new copy move.
     pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
         self.progressed = progressed;
+    }
+
+    /// The shards this instance has seen serving at their generation.
+    pub(super) fn set_opened(&mut self, opened: HashSet<ShardKey>) {
+        self.opened = opened;
     }
 
     /// Note when this instance first saw each shard fenced.
@@ -785,6 +802,24 @@ impl CaughtUp for ReplicaPositions {
 
     fn holds_start(&self, key: &ShardKey, generation: u64, leader: &str, node: &str) -> bool {
         self.start_held(key, generation, leader, node)
+    }
+
+    fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        let named = |at: &(u64, String)| at.0 == generation && at.1 == leader;
+        if self.opened.contains(key) && self.assignments.get(key).is_some_and(named) {
+            return true;
+        }
+        // A report from before a delete and recreate can name the same
+        // generation and leader, and would drop the pins too soon.
+        let incarnation = self.incarnations_of.get(key).copied().unwrap_or(0);
+        self.reports.get(key).is_some_and(|report| {
+            report.stream_incarnation.unwrap_or(0) == incarnation
+                && report.generation == generation
+                && report.leader.as_deref() == Some(leader)
+                && report.leader_offset.is_some()
+                && report.refused.is_none()
+                && !report.given_up
+        })
     }
 
     fn readmittable(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<String> {

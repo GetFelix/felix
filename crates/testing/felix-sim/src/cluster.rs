@@ -70,8 +70,10 @@ use self::kills::KillLog;
 use self::node::Node;
 use self::power::PowerLog;
 pub use self::power::PowerLoss;
+use crate::clock::{self, Owner};
 use crate::controlplane::{Answer, CpConfig, SimControlPlane};
 use crate::nemesis::Stop;
+use crate::nemesis::clocks::{ClockPlan, ClockSkew};
 use crate::net::{Link, SimNet};
 
 /// The tenant, namespace, stream and cache every run uses.
@@ -123,15 +125,19 @@ pub struct SimConfig {
     /// boot of the machine, which is how a real broker learns to doubt them.
     pub power_loss: bool,
     pub controlplane: CpConfig,
+    /// Whether each node's clocks are skewed, and how far
+    /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
+    /// `--cfg tokio_unstable`.
+    pub clocks: ClockSkew,
+    /// A clock plan to use instead of drawing one from the seed under
+    /// `clocks`, to pin a particular skew.
+    pub clock_plan: Option<ClockPlan>,
 }
 
 impl SimConfig {
-    /// A run's shape from its seed: 3 to 5 brokers, 50 to 200 shards. One
-    /// seed in three fsyncs on commit and cuts the power.
+    /// A run's shape from its seed: 3 to 5 brokers, 50 to 200 shards.
     pub fn for_seed(seed: u64) -> Self {
         let mut rng = Rng::new(seed ^ 0x5348_4150_4553);
-        // Its own stream, so the shape of a seed does not move.
-        let power_loss = Rng::new(seed ^ 0x504f_5745_524c_4f53).percent(POWER_LOSS_PERCENT);
         Self {
             brokers: 3 + rng.below(3) as usize,
             shards: 50 + rng.below(151) as u32,
@@ -145,19 +151,19 @@ impl SimConfig {
             faults: true,
             placement_faults: false,
             real_time_limit: Duration::from_secs(480),
-            fsync_mode: if power_loss {
-                FsyncMode::OnCommit
-            } else {
-                FsyncMode::None
-            },
-            power_loss,
+            fsync_mode: FsyncMode::None,
+            power_loss: false,
             controlplane: CpConfig::default(),
+            clocks: ClockSkew::Off,
+            clock_plan: None,
         }
     }
-}
 
-/// How many seeds in a hundred cut the power.
-const POWER_LOSS_PERCENT: u64 = 34;
+    /// Whether any node's clock differs from the shared one.
+    pub fn skews_clocks(&self) -> bool {
+        self.clocks != ClockSkew::Off || self.clock_plan.is_some()
+    }
+}
 
 /// Copies placement may have in flight at once with placement faults on. The
 /// default of one would leave a drain moving a shard at a time, too slow for
@@ -170,6 +176,14 @@ impl SimConfig {
     pub fn with_placement_faults(mut self) -> Self {
         self.placement_faults = true;
         self.controlplane.moves.max_concurrent = PLACEMENT_FAULT_MOVES;
+        self
+    }
+
+    /// The same run with power cuts in place of kills (see
+    /// [`SimConfig::power_loss`]), on brokers that fsync on commit.
+    pub fn with_power_loss(mut self) -> Self {
+        self.power_loss = true;
+        self.fsync_mode = FsyncMode::OnCommit;
         self
     }
 }
@@ -189,12 +203,16 @@ pub struct NodeHandles {
     pub marks: Arc<QuorumMarks>,
     /// Cancelled when this incarnation crashes.
     pub crashed: CancellationToken,
+    /// Whether the run cuts the power ([`SimConfig::power_loss`]).
+    pub power_loss: bool,
 }
 
 /// The cluster. Cloning the `Arc` is how tasks share it.
 pub struct SimCluster {
     pub config: SimConfig,
     pub seed: u64,
+    /// Each node's clocks at the start and the changes the run makes.
+    pub clock_plan: ClockPlan,
     cp: SimControlPlane,
     net: SimNet,
     nodes: Vec<Node>,
@@ -226,10 +244,17 @@ impl SimCluster {
                 config.fsync_mode
             );
         }
-        crate::clock::install();
+        let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
+            ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
+        });
+        clock::install(clock_plan.initial.clone());
         // Election backoff draws its jitter on this thread.
         felix_common::jitter::sim::seed(seed);
-        let cp = SimControlPlane::new(config.controlplane.clone()).await?;
+        let cp = clock::on(
+            Owner::ControlPlane,
+            SimControlPlane::new(config.controlplane.clone()),
+        )
+        .await?;
         let net = SimNet::new(PeerTransportConfig::default(), seed);
         let nodes = (0..config.brokers)
             .map(|index| Node::new(index, &config))
@@ -238,6 +263,7 @@ impl SimCluster {
         let cluster = Arc::new(Self {
             config,
             seed,
+            clock_plan,
             cp,
             net,
             nodes,
@@ -300,19 +326,21 @@ impl SimCluster {
     /// for one. A paused or down control plane is not stepped.
     fn spawn_controlplane_driver(&self) {
         let cp = self.cp.clone();
-        tokio::spawn(async move {
-            let config = cp.config().clone();
-            let mut sweep = tokio::time::interval(config.sweep_interval());
-            let mut reconcile = tokio::time::interval(config.reconcile_interval());
-            sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            loop {
-                tokio::select! {
-                    _ = sweep.tick() => { cp.sweep().await; }
-                    _ = reconcile.tick() => { cp.reconcile().await; }
-                    () = cp.pass_requested() => { cp.reconcile().await; }
+        clock::as_owner(Owner::ControlPlane, || {
+            tokio::spawn(async move {
+                let config = cp.config().clone();
+                let mut sweep = tokio::time::interval(config.sweep_interval());
+                let mut reconcile = tokio::time::interval(config.reconcile_interval());
+                sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        _ = sweep.tick() => { cp.sweep().await; }
+                        _ = reconcile.tick() => { cp.reconcile().await; }
+                        () = cp.pass_requested() => { cp.reconcile().await; }
+                    }
                 }
-            }
+            })
         });
     }
 

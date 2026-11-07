@@ -15,7 +15,9 @@
 //! | `FELIX_SIM_SEEDS` | how many seeds `seeds` and `each_seed_runs_the_same_twice` run | 4 |
 //! | `FELIX_SIM_SEED_START` | the first seed they run | 1 |
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
+//! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `FELIX_SIM_PLACEMENT` | `1` turns placement faults on for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
+//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
@@ -33,9 +35,10 @@
 //! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
 //! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
+use felix_sim::clock::{Clocks, NodeClock, PPM};
 use felix_sim::cluster::SimConfig;
+use felix_sim::nemesis::clocks::{BOUNDED_RATE_PPM, ClockPlan, ClockSkew};
 use felix_sim::run::{SimOutcome, first_difference, run_seed};
-use felix_storage::log::FsyncMode;
 
 fn log() {
     let _ = tracing_subscriber::fmt()
@@ -68,11 +71,26 @@ fn env_u64(name: &str) -> Option<u64> {
     )
 }
 
-/// The run `seed` gives, with placement faults when `FELIX_SIM_PLACEMENT=1`.
+/// `seed`'s config, with the clock skew `FELIX_SIM_CLOCKS` asks for,
+/// placement faults when `FELIX_SIM_PLACEMENT=1` and power cuts when
+/// `FELIX_SIM_POWER_LOSS=1`.
 fn config(seed: u64) -> SimConfig {
-    let config = SimConfig::for_seed(seed);
-    match std::env::var("FELIX_SIM_PLACEMENT").as_deref() {
+    let clocks = match std::env::var("FELIX_SIM_CLOCKS") {
+        Ok(value) => ClockSkew::parse(&value).unwrap_or_else(|| {
+            panic!("FELIX_SIM_CLOCKS must be off, bounded or unbounded, got {value:?}")
+        }),
+        Err(_) => ClockSkew::Off,
+    };
+    let config = SimConfig {
+        clocks,
+        ..SimConfig::for_seed(seed)
+    };
+    let config = match std::env::var("FELIX_SIM_PLACEMENT").as_deref() {
         Ok("1") => config.with_placement_faults(),
+        _ => config,
+    };
+    match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
+        Ok("1") => config.with_power_loss(),
         _ => config,
     }
 }
@@ -142,6 +160,68 @@ fn each_seed_runs_the_same_twice() {
         differed.len(),
         differed.join("\n")
     );
+}
+
+/// Skewed clocks are drawn from the seed and stepped at fixed virtual
+/// times, so a skewed seed is as repeatable as any other.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select! and the task hooks"
+)]
+fn a_skewed_seed_runs_the_same_twice() {
+    log();
+    let skewed = || SimConfig {
+        clocks: ClockSkew::Bounded,
+        ..SimConfig::for_seed(2)
+    };
+    let first = run_seed(2, skewed());
+    let second = run_seed(2, skewed());
+    assert!(
+        first.trace().iter().any(|line| line.contains("clock:")),
+        "the trace names no clock change:\n{first}"
+    );
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 2 with skewed clocks ran differently the second time: {difference}");
+    }
+}
+
+/// The pair the lease margins guard against, at the edge of the bounded
+/// drift: every broker's lease clock runs slow while the control plane's runs
+/// fast, so a broker counts its lease as longest while the control plane
+/// counts silence fastest. Only the safety checks are asserted; liveness
+/// findings are the known stalls.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for the task hooks"
+)]
+fn seed_8_slow_brokers_and_a_fast_control_plane_stay_safe() {
+    log();
+    let base = SimConfig::for_seed(8);
+    let plan = ClockPlan {
+        initial: Clocks {
+            controlplane: NodeClock::new(0, PPM + BOUNDED_RATE_PPM),
+            brokers: vec![NodeClock::new(0, PPM - BOUNDED_RATE_PPM); base.brokers],
+        },
+        steps: Vec::new(),
+    };
+    let outcome = run_seed(
+        8,
+        SimConfig {
+            clock_plan: Some(plan),
+            ..base
+        },
+    );
+    println!("{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
+    for unsafe_finding in [
+        "at-most-one-serving",
+        "one-leader-per-generation",
+        "acked-held-by-leader",
+    ] {
+        assert!(!found(&outcome, unsafe_finding), "{outcome}");
+    }
 }
 
 #[test]
@@ -304,8 +384,7 @@ fn seed_5_cache_keeps_acknowledged_puts_across_a_failover() {
 )]
 fn seed_1_power_cuts_run_the_same_twice_and_are_repaired() {
     log();
-    let config = SimConfig::for_seed(1);
-    assert!(config.power_loss, "seed 1 no longer cuts the power");
+    let config = SimConfig::for_seed(1).with_power_loss();
     let first = run_seed(1, config.clone());
     let second = run_seed(1, config);
     if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
@@ -329,11 +408,7 @@ fn seed_1_power_cuts_run_the_same_twice_and_are_repaired() {
 /// every one of `marks` and are the same event for event.
 fn placement_shape_runs_the_same_twice(seed: u64, marks: &[&str]) {
     log();
-    let mut config = SimConfig::for_seed(seed).with_placement_faults();
-    // These seeds were picked from runs without power cuts, which change the
-    // whole run of a seed that draws them.
-    config.power_loss = false;
-    config.fsync_mode = FsyncMode::None;
+    let config = SimConfig::for_seed(seed).with_placement_faults();
     let first = run_seed(seed, config.clone());
     for mark in marks {
         assert!(
@@ -379,8 +454,8 @@ fn seed_12_a_node_removal_replays_the_same_twice() {
     not(tokio_unstable),
     ignore = "replays this seed's run only under --cfg tokio_unstable"
 )]
-fn seed_122_abandoning_held_shards_replays_the_same_twice() {
-    placement_shape_runs_the_same_twice(122, &["abandoned the log of stream/2: 200"]);
+fn seed_33_abandoning_held_shards_replays_the_same_twice() {
+    placement_shape_runs_the_same_twice(33, &["abandoned the log of stream/14: 200"]);
 }
 
 #[test]

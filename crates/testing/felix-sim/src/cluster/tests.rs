@@ -193,18 +193,13 @@ async fn a_copy_that_missed_the_first_fence_takes_its_leader_once_confirmed() {
 }
 
 #[test]
-fn power_loss_seeds_fsync_on_commit() {
-    let mut power = 0;
-    for seed in 0..60 {
-        let config = SimConfig::for_seed(seed);
-        assert_eq!(
-            config.power_loss,
-            config.fsync_mode == FsyncMode::OnCommit,
-            "seed {seed}"
-        );
-        power += usize::from(config.power_loss);
-    }
-    assert!((10..=35).contains(&power), "{power} of 60 seeds");
+fn power_loss_is_off_by_default_and_fsyncs_on_commit_when_on() {
+    let config = SimConfig::for_seed(1);
+    assert!(!config.power_loss);
+    assert_eq!(config.fsync_mode, FsyncMode::None);
+    let config = config.with_power_loss();
+    assert!(config.power_loss);
+    assert_eq!(config.fsync_mode, FsyncMode::OnCommit);
 }
 
 #[tokio::test(start_paused = true)]

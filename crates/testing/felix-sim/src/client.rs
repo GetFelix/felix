@@ -58,6 +58,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use crate::clock::{self, Owner};
 use crate::cluster::{CACHE, NAMESPACE, NodeHandles, STREAM, SimCluster, TENANT};
 
 /// How long a client keeps trying to find a broker that will take a request.
@@ -321,7 +322,7 @@ impl SimClient {
         tracing::debug!(client = self.id, shard, value, node = %handles.node_id, "append sent");
         let payloads = [payload(value, self.cluster.config.power_loss)];
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 publish_direct(
@@ -438,7 +439,7 @@ impl SimClient {
         };
         let key = key.to_string();
         let quorum_timeout = quorum_timeout();
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 apply_direct(
@@ -496,7 +497,7 @@ impl SimClient {
             })
             .await?;
         self.hints.insert(shard, handles.index);
-        let task = spawn_on(&handles.crashed, {
+        let task = spawn_on(&handles, {
             let handles = handles.clone();
             async move {
                 let elements = read_all(&handles, shard).await?;
@@ -543,7 +544,7 @@ impl SimClient {
                 continue;
             };
             let step = tokio::select! {
-                step = resolve(handles.clone()) => step,
+                step = clock::on(Owner::Broker(handles.index), resolve(handles.clone())) => step,
                 () = handles.crashed.cancelled() => Step::Refused,
             };
             match step {
@@ -576,22 +577,33 @@ impl SimClient {
 
 /// Spawn `work` as a task of its own, as the broker's request worker would
 /// run it: it finishes even if the client stops waiting, and ends only if the
-/// broker crashes, when it gives `None`.
+/// broker crashes, when it gives `None`. It runs as the broker's code, on its
+/// clocks.
 fn spawn_on<T: Send + 'static>(
-    crashed: &CancellationToken,
+    handles: &NodeHandles,
     work: impl Future<Output = T> + Send + 'static,
 ) -> JoinHandle<Option<T>> {
-    let crashed = crashed.clone();
-    tokio::spawn(async move {
-        // A crash wins over an answer ready in the same poll: a power cut
-        // stops the broker inside a write, and what it would answer after
-        // that never reached a client.
-        tokio::select! {
-            biased;
-            () = crashed.cancelled() => None,
-            out = work => Some(out),
+    let crashed = handles.crashed.clone();
+    let power_loss = handles.power_loss;
+    let owner = Owner::Broker(handles.index);
+    tokio::spawn(clock::on(owner, async move {
+        if power_loss {
+            // A crash wins over an answer ready in the same poll: a power
+            // cut stops the broker inside a write, and what it would answer
+            // after that never reached a client. Only then, so a run without
+            // power cuts polls as it always has.
+            tokio::select! {
+                biased;
+                () = crashed.cancelled() => None,
+                out = work => Some(out),
+            }
+        } else {
+            tokio::select! {
+                out = work => Some(out),
+                () = crashed.cancelled() => None,
+            }
         }
-    })
+    }))
 }
 
 /// Read `shard` on this broker from its first record to its tail, the way a
@@ -630,7 +642,7 @@ async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> b
 /// `None` if the broker does not serve it, the read took over [`READ_WITHIN`]
 /// or the broker crashed meanwhile.
 pub(crate) async fn read_log(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
-    let task = spawn_on(&handles.crashed, {
+    let task = spawn_on(handles, {
         let handles = handles.clone();
         async move { read_pages(&handles, shard, false).await }
     });

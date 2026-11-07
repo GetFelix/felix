@@ -229,6 +229,15 @@ pub trait CaughtUp {
         false
     }
 
+    /// Whether `leader` reported serving `key` at `generation`: a report it
+    /// made there with its tail, no refusal and nothing given up. A leader
+    /// reports at a generation only once its fence there has settled, so this
+    /// is the open a failover's copy pins wait for. Not held to freshness: an
+    /// open once made stays made.
+    fn leader_opened(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
+        false
+    }
+
     /// A member of `key`'s set at `generation` whose storage was replaced
     /// since the assignment named it, and that `leader`'s fresh report shows
     /// caught up under its new identity. Its name is a write away from being

@@ -211,6 +211,64 @@ async fn a_joint_fence_the_set_being_left_promised_away_is_refused() {
     assert_eq!(promised_to, "broker-d");
 }
 
+/// **A joint fence the set being left promised away is refused when an
+/// answer the route pins rule out makes it short** (#2046). broker-b promised
+/// the generation to broker-d and broker-c answered from another copy than
+/// the route pins. Placement keeps the pins across renames until a fenced
+/// open, so broker-c counts no more one generation up, and only broker-x is
+/// left of the set being left. Without pins on the route a rename may count
+/// broker-c's answer, so the single promise waits.
+#[tokio::test]
+async fn a_joint_fence_short_on_a_promise_and_a_pinned_out_copy_is_refused() {
+    for pinned in [true, false] {
+        let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+        replicas.ballots = true;
+        for id in ["broker-b", "broker-c"] {
+            replicas.get(id).holds(id, 4, 0, &["a"]).await;
+        }
+        promised_to(&replicas, "broker-b", "broker-d").await;
+        replicas.get_mut("broker-c").storage = Some(StorageId::from_bytes([0xee; 16]));
+        let (leader, _dir) = leader_holding(4, &["a"]).await;
+        kept_naming(
+            &leader,
+            &["broker-x", "broker-b", "broker-c"],
+            &[],
+            &[("broker-c", storage_of("broker-c"))],
+        )
+        .await;
+        let route = Route {
+            fence_storage_ids: pinned.then(|| {
+                Arc::new(
+                    ["broker-x", "broker-z", "broker-b", "broker-c"]
+                        .into_iter()
+                        .map(|id| (id.to_string(), storage_of(id).to_hex()))
+                        .collect(),
+                )
+            }),
+            ..swapped()
+        };
+        let addr_of = addr_of;
+        let joint = Joint::new(&addr_of, None);
+
+        let outcome = fence_shard(
+            &replicas,
+            &leader,
+            LEADER,
+            &key(),
+            &route,
+            false,
+            Some(&joint),
+        )
+        .await;
+
+        match (&outcome, pinned) {
+            (Outcome::Refused { promised_to, .. }, true) => assert_eq!(promised_to, "broker-d"),
+            (Outcome::Pending { .. }, false) => {}
+            _ => panic!("pinned {pinned}: {outcome:?}"),
+        }
+    }
+}
+
 /// **A joint fence never counts a learner.** The set being left is
 /// {broker-x, broker-b} with this broker as a learner. Counting it, broker-x's
 /// answer would make two of three; only the voters count, and one of two is
@@ -752,7 +810,7 @@ async fn a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change() {
         // kept before `joint_fence` was on: only a later generation can tell
         // it the set before (#1872).
         let why = match (&outcome, prior.is_some()) {
-            (Outcome::Pending { why, .. }, true) | (Outcome::SetUnknown { why }, false) => why,
+            (Outcome::Pending { why, .. }, true) | (Outcome::SetUnknown { why, .. }, false) => why,
             _ => panic!("read a set kept alone as no change: {outcome:?}"),
         };
         let expected = if prior.is_some() {
@@ -762,6 +820,51 @@ async fn a_set_kept_without_the_one_it_leaves_is_not_read_as_no_change() {
         };
         assert!(why.contains(expected), "{why}");
     }
+}
+
+/// **A set unknown is reported with the newest ballot a replica holds past
+/// the generation** (#2046). A standing broker-x gave up left broker-z's ballot
+/// at a generation past this one; named only one up, this broker would find
+/// that generation promised away and wait. With no ballot past it, none is
+/// reported.
+#[tokio::test]
+async fn a_set_unknown_carries_the_newest_ballot_past_the_generation() {
+    let mut replicas = replicas_with(&["broker-x", "broker-z"]);
+    replicas.get_mut("broker-b").reachable = false;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.accept_generation(PROMOTED, Some(LEADER))
+        .await
+        .expect("ballot");
+    log.accept_set(crate::replica_set::kept(&swapped(), None))
+        .await
+        .expect("keep the new set alone");
+
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+    let Outcome::SetUnknown { ballot, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(ballot, 0, "no replica holds a ballot past the generation");
+
+    replicas
+        .get("broker-z")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(PROMOTED + 2, Some("broker-x"))
+        .await
+        .expect("the withdrawn standing's ballot");
+
+    let outcome = fence_after(&replicas, &leader, true, None).await;
+    let Outcome::SetUnknown { ballot, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(ballot, PROMOTED + 2);
 }
 
 /// **An answer counts toward the set being left only from the copy that set

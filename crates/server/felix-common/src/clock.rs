@@ -69,7 +69,7 @@ fn source_boottime() -> Duration {
 /// Time since the Unix epoch before any fault.
 #[cfg(any(debug_assertions, test, feature = "sim"))]
 fn source_wall() -> Duration {
-    sim::elapsed().map_or_else(raw_wall, |elapsed| sim::EPOCH + elapsed)
+    sim::elapsed().map_or_else(raw_wall, sim::wall)
 }
 
 #[cfg(not(any(debug_assertions, test, feature = "sim")))]
