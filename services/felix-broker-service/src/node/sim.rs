@@ -228,7 +228,8 @@ pub struct ShardSnapshot {
     pub opened_generation: Option<u64>,
     /// See [`ShardStand::acks_by_followers`].
     pub acks_by_followers: bool,
-    /// One past the last record in this broker's copy of the log, if it has one.
+    /// One past the last record in this broker's copy of the log, `None` when
+    /// it holds no copy or the copy is not open.
     pub log_tail: Option<u64>,
     /// How far a majority of the replica set has the log, when this broker
     /// tracks it (a leader does).
@@ -574,7 +575,8 @@ impl SimBroker {
     }
 
     /// What this broker attests of its copy of `key` to a unified fence, the
-    /// answer a promotion counts. `None` when it holds no copy.
+    /// answer a promotion counts. `None` when it holds no copy open; it never
+    /// opens one, so asking cannot change what is being checked.
     pub async fn copy_attestation(
         &self,
         key: &ShardKey,
@@ -585,7 +587,14 @@ impl SimBroker {
         };
         let log = self
             .broker
-            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .opened_log(
+                kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+            )
             .await?;
         let route = felix_router::ShardKey {
             tenant_id: key.tenant_id.clone(),
@@ -608,6 +617,33 @@ impl SimBroker {
                 .attest(&route, &log, &self.node_id, readmitted.as_slice())
                 .await,
         )
+    }
+
+    /// Whether `key` has a copy on disk, open or not. A fence would open an
+    /// unopened one to answer; asking here does not.
+    pub fn holds_copy_on_disk(&self, key: &ShardKey) -> bool {
+        let kind = match key.kind {
+            ShardKind::Stream => LogKind::Stream,
+            ShardKind::Cache => LogKind::Cache,
+        };
+        self.broker
+            .copy_on_disk(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+    }
+
+    /// Whether a fence would find the copy of `key` untrusted without reading
+    /// its log. See [`QuorumMarks::surely_untrusted`].
+    pub fn copy_surely_untrusted(&self, key: &ShardKey) -> bool {
+        let route = felix_router::ShardKey {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            shard: key.shard,
+            kind: match key.kind {
+                ShardKind::Stream => felix_router::ShardKind::Stream,
+                ShardKind::Cache => felix_router::ShardKind::Cache,
+            },
+        };
+        self.quorum_marks.surely_untrusted(&route)
     }
 
     /// The membership task, `None` only if the config named no cluster.
@@ -663,9 +699,17 @@ impl SimBroker {
             ShardKind::Stream => LogKind::Stream,
             ShardKind::Cache => LogKind::Cache,
         };
+        // Read-only: a census must not open or recover a log it is observing.
         let log_tail = match self
             .broker
-            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .opened_log(
+                kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+            )
             .await
         {
             Some(log) => log.tail_offset().await.ok(),

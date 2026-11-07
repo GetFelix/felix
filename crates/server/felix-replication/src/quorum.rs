@@ -383,6 +383,22 @@ impl QuorumMarks {
         self.unclean.get()
     }
 
+    /// Whether a fence would find this broker's copy of `key` untrusted
+    /// whatever its log holds: the process started unclean and no leader has
+    /// shipped the copy level, the copy is doubted, or a log is poisoned.
+    /// Reads in-memory state only, so a copy that is not open can be asked
+    /// about. `false` means the answer depends on the log, not that it is
+    /// trusted.
+    pub fn surely_untrusted(&self, key: &felix_router::ShardKey) -> bool {
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        felix_storage::disk_log::any_log_poisoned()
+            || self
+                .unclean_start()
+                .is_some_and(|unclean| !unclean.trusted(&shard))
+            || self.copy_trust().is_some_and(|trust| trust.doubted(&name))
+    }
+
     /// What this broker attests of its copy `log` of `key`, as it answers a
     /// unified fence, before the caller counts it. `readmitted` is the
     /// route's control-plane readmission record.
