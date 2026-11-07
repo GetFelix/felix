@@ -372,6 +372,15 @@ pub fn lost_copy(root: &Path) -> Result<Option<bool>> {
     }
 }
 
+/// The replaced-storage marker's raw bytes under `root`, or `None` without one.
+pub fn read_replaced_bytes(root: &Path) -> Result<Option<Vec<u8>>> {
+    match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 /// What the replaced-storage marker under `root` says, or `None` without one.
 pub fn read_replaced(root: &Path) -> Result<Option<ReplacedMark>> {
     let bytes = match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
