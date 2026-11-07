@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794010956080,
+  "lastUpdate": 1794011553042,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47944,6 +47944,58 @@ window.BENCHMARK_DATA = {
             "range": "17416.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1577027.21\nmean: 1568351.25\nstdev: 17416.57\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d80938cf4f7c8d5aabe7a7eb8c83f8cf5bfd0dd",
+          "message": "sim: per-broker clock skew nemesis (#2061)\n\n* sim: per-node clock skew nemesis (#2037)\n\nEach broker and the control plane reads its own lease clock (seeded rate)\nand wall clock (seeded offset) over the shared virtual time; the nemesis\nsteps a wall clock or changes a lease clock's rate mid-run. Bounded mode\nstays within the documented drift and skew bounds, unbounded goes past\nthem. Off by default; needs --cfg tokio_unstable for the task hooks that\nattribute spawned tasks to their node.\n\nSpec-Unaffected: test harness only; production clock reads unchanged\n\n* sim: clock skew review fixes: say what wall skew reaches, liveness baseline, wording\n\n* ci(sim): build sim-seeds with tokio_unstable and run half its seeds with bounded clock skew\n\n* sim: the control plane's silence watch reads its lease clock in the sim; one clock plan per run\n\nThe watch, grace and stall watch take a monotonic reading as a Duration, so the\nsim can feed the control plane's skewed lease clock. The real sweep still\ntimes them on tokio's clock. Adds a pinned slow-brokers, fast-control-plane\nseed and states that tokio timers are not skewed.\n\n* ci(sim): build sim-seeds in the plain target dir its cache saves",
+          "timestamp": "2026-11-06T16:11:41-08:00",
+          "tree_id": "b04b83b043ee2876d8ec22586275e4316945a5aa",
+          "url": "https://github.com/GetFelix/felix/commit/2d80938cf4f7c8d5aabe7a7eb8c83f8cf5bfd0dd"
+        },
+        "date": 1794011552256,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 487790.57,
+            "range": "41333.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487790.57\nmean: 499385.32\nstdev: 41333.72\ncv: 8.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 487790.57,
+            "range": "41333.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487790.57\nmean: 499385.32\nstdev: 41333.72\ncv: 8.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118153.44,
+            "range": "2005.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118153.44\nmean: 118359.88\nstdev: 2005.52\ncv: 1.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1181534.41,
+            "range": "20055.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1181534.41\nmean: 1183598.85\nstdev: 20055.17\ncv: 1.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
