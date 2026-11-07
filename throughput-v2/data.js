@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794086681372,
+  "lastUpdate": 1794087056527,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49452,6 +49452,58 @@ window.BENCHMARK_DATA = {
             "range": "48705.37",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 969111.09\nmean: 949845.24\nstdev: 48705.37\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12bb7dea735e2cb18e0c45a1aebe98f9dd10f230",
+          "message": "fix(replication): keep a confirmed answer fresh after an answered request (#2113)\n\n* fix(replication): keep a confirmed answer fresh after an answered request\n\nA copy with no promise kept the control plane's confirmed answer fresh for\nthe leader's retry only after it refused one. An answered request cleared\nthat, so under elections a leader retrying every 2 s found every other\nanswer stale and was refused StaleRoute every other round.\n\nSpec-Unaffected: only how long the background read keeps refreshing an\nanswer changes; the freshness an answer must have to be used does not.\n\n* fix(replication): grow the confirmed read's wait only while a retry is owed\n\nReview: a late retry once seen would otherwise keep every later answered\nrequest's shard reading for up to 60 s.",
+          "timestamp": "2026-11-07T21:25:27Z",
+          "tree_id": "ec1cbfd675f3bc1094d418b97e1677f389c2a90b",
+          "url": "https://github.com/GetFelix/felix/commit/12bb7dea735e2cb18e0c45a1aebe98f9dd10f230"
+        },
+        "date": 1794087055614,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354857.41,
+            "range": "27079.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354857.41\nmean: 347597.39\nstdev: 27079.91\ncv: 7.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354857.41,
+            "range": "27079.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354857.41\nmean: 347597.39\nstdev: 27079.91\ncv: 7.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81818.06,
+            "range": "458.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81818.06\nmean: 81834.96\nstdev: 458.70\ncv: 0.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 818180.63,
+            "range": "4587.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 818180.63\nmean: 818349.63\nstdev: 4587.00\ncv: 0.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
