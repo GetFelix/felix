@@ -91,6 +91,17 @@ public sealed class FelixClientOptions
     public string? CaFile { get; init; }
 
     /// <summary>
+    /// A PEM file holding the client certificate (leaf first, then any intermediates) to present
+    /// to a broker started with <c>FELIX_TLS_CLIENT_CA</c>, which refuses a client without one.
+    /// Needs <see cref="ClientKeyFile"/>; a missing or malformed file fails the connect with
+    /// <see cref="FelixStatus.InvalidArgument"/>.
+    /// </summary>
+    public string? ClientCertFile { get; init; }
+
+    /// <summary>A PEM file holding the private key of <see cref="ClientCertFile"/>: PKCS#8, PKCS#1 or SEC1.</summary>
+    public string? ClientKeyFile { get; init; }
+
+    /// <summary>
     /// Ask brokers to say who published each record, for <see cref="FelixEvent.Publisher"/>
     /// and <see cref="GroupRecord.Publisher"/>. Adds the principal to every event batch.
     /// A broker that does not record it leaves it null.

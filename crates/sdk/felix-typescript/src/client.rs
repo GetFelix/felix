@@ -68,6 +68,12 @@ impl Client {
     /// the JS thread, lazily and one call at a time, and `token` is what the
     /// client starts with.
     ///
+    /// `clientCertFile` and `clientKeyFile` are PEM files holding a client
+    /// certificate (leaf first, then any intermediates) and its private key.
+    /// Give both to connect to a broker started with `FELIX_TLS_CLIENT_CA`,
+    /// which refuses a client without one. Either alone, an unreadable or
+    /// non-PEM file, or a key that does not match is an `InvalidArg` error.
+    ///
     /// `reconnectAttempts` (default 5, a whole number of at least 1) is how
     /// many times a call tries to reach a broker before it gives up.
     /// `reconnectDeadline` (milliseconds, default none) bounds one call across
@@ -78,7 +84,7 @@ impl Client {
     /// be below it. Each wait is a random fraction of its ceiling. All apply to
     /// `withIdentity` clients too.
     #[napi(
-        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number, reconnectBackoff?: number, reconnectMaxBackoff?: number",
+        ts_args_type = "addrs: string | string[], tenantId: string, token?: string | null, serverName?: string, caFile?: string, offerAlpn?: boolean, tokenProvider?: (signal: AbortSignal) => Promise<string>, reconnectAttempts?: number, reconnectDeadline?: number, reconnectBackoff?: number, reconnectMaxBackoff?: number, clientCertFile?: string, clientKeyFile?: string",
         ts_return_type = "Promise<Client>"
     )]
     pub fn connect(
@@ -94,6 +100,8 @@ impl Client {
         reconnect_deadline: Option<f64>,
         reconnect_backoff: Option<f64>,
         reconnect_max_backoff: Option<f64>,
+        client_cert_file: Option<String>,
+        client_key_file: Option<String>,
     ) -> Result<JsObject> {
         let policy = reconnect_policy(
             reconnect_attempts,
@@ -109,7 +117,12 @@ impl Client {
         if seeds.is_empty() {
             return Err(invalid("at least one broker address is required"));
         }
-        let quinn = tls::client_config(ca_file.as_deref(), offer_alpn.unwrap_or(false))?;
+        let quinn = tls::client_config(
+            ca_file.as_deref(),
+            client_cert_file.as_deref(),
+            client_key_file.as_deref(),
+            offer_alpn.unwrap_or(false),
+        )?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id);
         match token_provider {

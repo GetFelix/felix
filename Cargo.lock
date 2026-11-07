@@ -1157,6 +1157,8 @@ dependencies = [
  "bytes",
  "cbindgen",
  "felix-client",
+ "rcgen",
+ "tempfile",
  "tokio",
  "tokio-util",
 ]

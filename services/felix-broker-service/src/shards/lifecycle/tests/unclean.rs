@@ -255,6 +255,32 @@ async fn a_given_up_copy_no_follower_is_ahead_of_is_reclaimed() {
     assert_eq!(log(&storage).accepted_leader().as_deref(), Some("broker-a"));
 }
 
+/// **A probe at a generation past the one the copy accepted still reclaims**
+/// (#2066). Placement can name the broker at a generation its copy never
+/// accepted, so the probe runs there; the reclaim is the generation after it.
+#[tokio::test]
+async fn a_probe_past_the_accepted_generation_reclaims_at_the_next() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = storage(dir.path());
+    led_before_the_crash(&storage, 14).await;
+    let (lifecycle, store) = node(&storage, true);
+    reconcile(&lifecycle, &store, &led_with_followers(14)).await;
+    reconcile(&lifecycle, &store, &led_with_followers(16)).await;
+    assert_eq!(lifecycle.lock().await.phase(&key(0)), Phase::Failed);
+    assert_eq!(log(&storage).accepted_generation(), 14);
+
+    lifecycle.lock().await.fence().probed(&key(0), 16, true);
+    reconcile(&lifecycle, &store, &led_with_followers(16)).await;
+    assert_eq!(
+        lifecycle.lock().await.phase(&key(0)),
+        Phase::Failed,
+        "not at the generation probed"
+    );
+    reconcile(&lifecycle, &store, &led_with_followers(17)).await;
+    assert_eq!(lifecycle.lock().await.phase(&key(0)), Phase::Active);
+    assert!(!log(&storage).gave_up());
+}
+
 /// A probe proves nothing about the generation given up itself, which stays
 /// given up.
 #[tokio::test]

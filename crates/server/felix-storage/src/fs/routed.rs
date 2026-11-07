@@ -381,3 +381,11 @@ pub(crate) fn sync_simulated_filesystem(root: &Path) -> Option<io::Result<()>> {
     routed.tree.sync_all();
     Some(Ok(()))
 }
+
+/// Record that recovery repaired the torn tail of `segment`, if it is
+/// simulated.
+pub(crate) fn note_torn_tail(segment: &Path) {
+    if let Some(routed) = mem::route(segment) {
+        routed.tree.note_torn_tail(&routed.rel);
+    }
+}
