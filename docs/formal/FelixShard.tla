@@ -999,6 +999,8 @@ MaxStandings == 0
 JointMinorityRefused == FALSE
 RenameDropsChange == FALSE
 JointRenamesAbove == TRUE
+\* `DropsChange`: placement may drop a pending change (`CpDropChange`).
+DropsChange == FALSE
 \* Copy pins (`fence_storage_ids`), under `CopyPins`. A failover's fence
 \* counts each member only from the copy its report named. A copy may change
 \* (`ChangeCopy`), losing what it had not synced, and a pin naming the old
@@ -4261,6 +4263,51 @@ CpRename(v, views) ==
        ELSE UNCHANGED << pinned, stalePin >>
     /\ UNCHANGED << changed, changes, admitting >>
 
+\* Under `DropsChange`, the control plane drops a pending change: its own set
+\* is written again at the next generation, naming the leader, with nothing
+\* pending (`PendingSetTimedOut` and `PendingSetMemberReplaced` in placement/
+\* moves.rs). The leader fences there on the control plane's set, jointly with
+\* the pending set its log holds. Placement drops on a timeout or a member
+\* back on new storage; the model drops at any time, which covers both.
+CpDropChange(v, views) ==
+    /\ DropsChange
+    /\ cpNext /= {}
+    /\ ~v.draining
+    /\ Cas(v)
+    /\ ver' = ver + 1
+    /\ cpView' = views
+    /\ gen' = gen + 1
+    /\ cpExpiry' = now + L
+    /\ report' = NoReport
+    /\ cpNext' = {} /\ cpNextGen' = 0
+    /\ stopped' = [stopped EXCEPT ![leader] = IF MayPromise(leader, leader, gen + 1) THEN FALSE ELSE @]
+    /\ IF MayPromise(leader, leader, gen + 1)
+       THEN /\ bgen' = [bgen EXCEPT ![leader] = gen + 1]
+            /\ bexpiry' = [bexpiry EXCEPT ![leader] = clock[leader] + L]
+            /\ queued' = [queued EXCEPT ![leader] = 0]
+            /\ pending' = [pending EXCEPT ![leader] = 0]
+            /\ Promise(leader, leader, gen + 1)
+            /\ confirmed' = [confirmed EXCEPT ![leader] = [m \in Brokers |-> 0]]
+            /\ IF SetCheck
+               THEN /\ mine' = [mine EXCEPT ![leader] = CpSet]
+                    /\ setGen' = [setGen EXCEPT ![leader] = gen + 1]
+                    /\ oldSet' = [oldSet EXCEPT ![leader] = {mine[leader]} \ {CpSet}]
+               ELSE UNCHANGED << mine, setGen, oldSet >>
+            /\ fencing' = [fencing EXCEPT ![leader] = TRUE]
+            /\ answered' = [answered EXCEPT ![leader] = {}]
+            /\ UNCHANGED << log, opened >>
+       ELSE UNCHANGED << bgen, bexpiry, queued, pending, promised, ballot, confirmed, mine, setGen,
+                         oldSet, log, opened, fencing, answered >>
+    /\ UNCHANGED << now, clock, leader, inflight, hbOut, hbAt, hwm, halted,
+                    acked, writes, staleCommit >>
+    /\ UNCHANGED << draining, successor, moves, staged, out, joining, leaving, joinedAt >>
+    /\ UNCHANGED << installed, cutOver, splits, stands, cpLeft, ackGen, waits >>
+    /\ IF CopyPins /\ ~PinsKeptOnRename
+       THEN /\ pinned' = pinned \ {leader}
+            /\ stalePin' = [stalePin EXCEPT ![leader] = {}]
+       ELSE UNCHANGED << pinned, stalePin >>
+    /\ UNCHANGED << changed, changes, admitting >>
+
 \* A placement write, from a read taken in the same step or from one a
 \* planner has held since.
 Decide(v, f, views) ==
@@ -4270,6 +4317,7 @@ Decide(v, f, views) ==
                 \/ CpAdopt(v, f, views) \/ Reclaim(v, views) \/ CpReissue(v, f, views)
              /\ UNCHANGED << contAt, pinVars >>
           \/ CpRename(v, views) /\ UNCHANGED contAt
+          \/ CpDropChange(v, views) /\ UNCHANGED contAt
           \* These move the serving leader on through `RegenerateSet`.
           \/ /\ \/ Reseat(v, f, views) \/ GrowSet(v, f, views) \/ Seat(v, f, views)
                 \/ TrimSet(v, f, views) \/ Undo(v, f, views)

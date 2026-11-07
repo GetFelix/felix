@@ -103,6 +103,11 @@ pub enum MoveStep {
     /// `MovePolicy::pending_set_timeout_millis`: the change is dropped and
     /// the control plane's own set stays, at a new generation.
     PendingSetTimedOut,
+    /// The leader reported `node`, a member of the set being left, caught up
+    /// under a new storage identity before the joint start: the change is
+    /// dropped and the control plane's own set stays, at a new generation,
+    /// which names `node` by its new storage and holds it as a learner.
+    PendingSetMemberReplaced { node: String },
     /// The leader reported that it refused to open its generation, having
     /// promised it to a node whose election the control plane recorded
     /// without adopting. It is named again at a new generation, above the
@@ -166,6 +171,7 @@ impl MoveStep {
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
+            Self::PendingSetMemberReplaced { .. } => "pending_set_member_replaced",
             Self::ElectionRefused => "election_refused",
             Self::SetUnknown { .. } => "set_unknown",
             Self::Stuck { .. } => "stuck",

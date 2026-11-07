@@ -593,6 +593,19 @@ pub(super) fn move_step<'a>(
         }
         if caught_up.joint_start_acked(key, existing.generation, leader) != Some(pending.generation)
         {
+            // A member whose storage was replaced counts toward neither set
+            // until it is re-admitted, and no re-admission is written while a
+            // change is pending. After a move the new set is the old one less
+            // a copy, so the old set's majority needs every member of the new
+            // one: the change could only wait out its timeout, with the shard
+            // taking no acknowledged writes meanwhile. The drop's write names
+            // the new storage and holds the member as a learner, as `readmit`
+            // does, so it takes one of the pass's re-admissions.
+            if let Some(node) = caught_up.readmittable(key, existing.generation, leader)
+                && moves.begin_readmit().is_some()
+            {
+                return dropped(MoveStep::PendingSetMemberReplaced { node });
+            }
             if moves.pending_timed_out(caught_up, key, pending.generation) {
                 return dropped(MoveStep::PendingSetTimedOut);
             }
@@ -2113,5 +2126,9 @@ impl CaughtUp for AtGeneration<'_> {
     // identity the assignment named, not against a report.
     fn is_learner(&self, key: &ShardKey, node_id: &str) -> bool {
         self.inner.is_learner(key, node_id)
+    }
+
+    fn readmittable(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
+        self.inner.readmittable(key, generation, leader)
     }
 }
