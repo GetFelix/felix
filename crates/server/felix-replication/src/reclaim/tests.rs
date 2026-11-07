@@ -17,6 +17,10 @@ const LOCAL: &str = "broker-a";
 /// What a follower that does not vote answers with, in place of a log end.
 const NOT_A_VOTER: u64 = u64::MAX;
 
+/// For `ByLog`: a log end of 3 from a learner that answers the unified fence
+/// rather than refusing it, attesting it keeps no promise.
+const UNIFIED_LEARNER: u64 = u64::MAX - 1;
+
 /// Followers answering a fence with where their copies end, refusing it as a
 /// non-voter (`NOT_A_VOTER`), or not at all.
 struct Followers(HashMap<&'static str, Option<u64>>);
@@ -382,13 +386,18 @@ impl PeerRequester for ByLog {
                 .request("refuser", addr, InternalMessage::Fence(fence))
                 .await;
         }
+        let learner = log_end == UNIFIED_LEARNER;
         Ok(InternalMessage::FenceOk(FenceOk {
             correlation_id: 0,
-            log_end,
+            log_end: if learner { 3 } else { log_end },
             commit_offset: 0,
             last_generation,
             kept_ballot: false,
-            attestation: None,
+            attestation: learner.then_some(felix_wire::internal::FenceAttestation {
+                kept_from: u64::MAX,
+                trusted: false,
+                by_record: false,
+            }),
         }))
     }
 
@@ -468,7 +477,24 @@ async fn a_refusing_follower_is_not_named_holding_the_start() {
     let (broker, _dir) = holding(5).await;
     let followers = ByLog(vec![
         ("broker-b", ReplicaLog::Stream, 5, 4),
-        ("broker-c", ReplicaLog::Stream, NOT_A_VOTER, 0),
+        ("broker-c", ReplicaLog::Stream, NOT_A_VOTER, 4),
+    ]);
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("both followers answered");
+
+    assert_eq!(probe.report.holds_start, vec!["broker-b".to_string()]);
+}
+
+/// **A learner that answers the unified fence is not named.** It attests it
+/// keeps no promise: it has not admitted itself, however far its copy goes.
+#[tokio::test]
+async fn a_learner_answering_the_unified_fence_is_not_named_holding_the_start() {
+    let (broker, _dir) = holding(5).await;
+    let followers = ByLog(vec![
+        ("broker-b", ReplicaLog::Stream, 5, 4),
+        ("broker-c", ReplicaLog::Stream, UNIFIED_LEARNER, 4),
     ]);
 
     let probe = probe(&followers, &broker, LOCAL, &key(), &route())
@@ -479,8 +505,8 @@ async fn a_refusing_follower_is_not_named_holding_the_start() {
 }
 
 /// **A cache needs the generation on every log.** broker-c holds it on the
-/// cache log but its counter log ends at an older generation, so only
-/// broker-b, which holds it on both, is named.
+/// counter log but its cache log ends at an older generation, and broker-d
+/// the other way round, so only broker-b, which holds it on both, is named.
 #[tokio::test]
 async fn a_follower_behind_the_generation_on_one_log_is_not_named_holding_it() {
     let (broker, _dir) = holding_a_cache().await;
@@ -491,11 +517,15 @@ async fn a_follower_behind_the_generation_on_one_log_is_not_named_holding_it() {
     let followers = ByLog(vec![
         ("broker-b", ReplicaLog::Cache, 3, 4),
         ("broker-b", ReplicaLog::Counters, 1, 4),
-        ("broker-c", ReplicaLog::Cache, 3, 4),
-        ("broker-c", ReplicaLog::Counters, 2, 3),
+        ("broker-c", ReplicaLog::Cache, 2, 3),
+        ("broker-c", ReplicaLog::Counters, 1, 4),
+        ("broker-d", ReplicaLog::Cache, 3, 4),
+        ("broker-d", ReplicaLog::Counters, 2, 3),
     ]);
+    let mut four = route();
+    four.replicas.push(node("broker-d", 7004));
 
-    let probe = probe(&followers, &broker, LOCAL, &cache, &route())
+    let probe = probe(&followers, &broker, LOCAL, &cache, &four)
         .await
         .expect("every follower answered");
 

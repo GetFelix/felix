@@ -230,7 +230,9 @@ fn meets_every_majority(trusted: &[&str], sets: &[Vec<&str>]) -> bool {
 ///
 /// A copy whose last record is of `generation` holds its start record, the
 /// generation's first. One ahead of it would have refused the fence, and one
-/// that refused or was not heard from has no answer to judge.
+/// that refused or was not heard from has no answer to judge. Under the
+/// unified fence a learner answers instead of refusing, attesting it keeps
+/// no promise; it is left out, as it has not admitted itself yet.
 fn still_holding_start(
     held: Option<Vec<String>>,
     answers: &[Answer],
@@ -239,6 +241,7 @@ fn still_holding_start(
     let here = answers
         .iter()
         .filter(|(_, ok, _, _)| ok.last_generation == generation)
+        .filter(|(_, ok, _, _)| ok.attestation.is_none_or(|a| a.kept_from != u64::MAX))
         .map(|(node, ..)| node.clone());
     match held {
         None => here.collect(),
