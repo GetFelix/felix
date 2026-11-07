@@ -138,15 +138,37 @@ async fn a_retry_that_came_late_is_waited_for_longer() {
         !refused(&reads),
         "a retry as late as the last one was refused again"
     );
-    // The leader went quiet long enough for the answer to lapse. Its next
-    // refused request is still waited for as long.
-    tokio::time::sleep(Duration::from_secs(8)).await;
+    // The leader went quiet for longer than the 16 s window, so the answer
+    // lapsed. Its next refused request is still waited for as long.
+    tokio::time::sleep(Duration::from_secs(20)).await;
     assert!(refused(&reads), "the answer outlived its window");
     tokio::time::sleep(Duration::from_secs(8)).await;
     assert!(
         !refused(&reads),
         "the longer wait was lost once a request was answered"
     );
+}
+
+/// **A leader that keeps retrying is answered every time, not every other
+/// time.** A copy that took the fence is asked again when the round failed
+/// on another copy, and a learner checks every batch. When only a refused
+/// request kept the answer fresh, an answered retry let it lapse, so under
+/// elections a leader retrying every 2 s was refused every other round, and
+/// two such copies out of step never took one fence together.
+#[tokio::test(start_paused = true)]
+async fn an_answered_retry_keeps_the_answer_fresh() {
+    let (_, routes) = counted();
+    let reads = Arc::new(ConfirmedReads::new(Duration::from_secs(2)));
+    let refused = || {
+        reads
+            .decide(&routes, &key(), 0, FRESH_UNDER_ELECTIONS, |_| ())
+            .is_none()
+    };
+    assert!(refused(), "nothing read yet");
+    for retry in 1..=10 {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert!(!refused(), "retry {retry} was refused");
+    }
 }
 
 /// **A routing change naming a copy keeps a refused retry's longer

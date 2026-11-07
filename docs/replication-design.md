@@ -1178,12 +1178,17 @@ A failed read or an unassigned shard
 clears the answer and is not retried on its own: the next request starts
 another read.
 
-After a refusal the task keeps the answer fresh until the leader's retry
-comes. A leader retries a copy that refused it on its driver tick, the
-control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
+After each request the task keeps the answer fresh until the leader's
+next one comes. A leader retries a copy that refused it on its driver tick,
+the control-plane sync interval (`FELIX_CONTROLPLANE_SYNC_INTERVAL_MS`), so
 the answer is kept for twice that interval, and at least 5 s. Kept any
 shorter, a retry would find a stale answer, be refused again and start
-another read, every time, and a move onto the copy would never finish.
+another read, every time, and a move onto the copy would never finish. An
+answered request counts the same as a refused one: a leader also comes
+back when its fence round failed on another copy, and a learner checks
+every batch. If only refusals kept the answer, a leader retrying every 2 s
+under elections would be refused every other round, and two copies refused
+in alternate rounds would never take one fence together.
 A retry can still come later than that, for example when the leader's
 fences queue behind others during a bulk failover. If a refused retry is
 refused again, later waits for that shard grow to twice the longest such
@@ -1229,6 +1234,7 @@ Evidence (`replica/tests/fence.rs`):
 `a_shorter_freshness_wakes_the_refresh`,
 `a_retry_a_driver_tick_later_is_answered`,
 `a_retry_that_came_late_is_waited_for_longer`,
+`an_answered_retry_keeps_the_answer_fresh`,
 `a_prefetch_keeps_a_refused_retrys_window`,
 `a_prefetched_copy_answers_the_first_request`,
 `early_reads_are_bounded_per_change`, `an_unasked_early_read_stops` and

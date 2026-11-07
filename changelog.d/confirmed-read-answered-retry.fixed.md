@@ -1,0 +1,1 @@
+A copy with no promise on disk keeps the control plane's confirmed answer fresh after it answers a leader, not only after it refuses one. Under elections a leader retrying every 2 s was refused `StaleRoute` ("reading the control plane's assignment") every other round, and two such copies refused in alternate rounds never took one fence together.
