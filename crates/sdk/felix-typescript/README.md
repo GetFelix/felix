@@ -45,10 +45,21 @@ Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`, s
 - Consumer groups: poll, acknowledge, retry later, dead letters
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
-- Idempotent producers
+- Record headers, and who published a record and when
+- Idempotent producers, including handing batches over without waiting
+- Lease tokens, and cluster inspection (`inspectShard`, `listSubscriptions`, `topology`)
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers are available in the Rust client only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
+Headers travel next to the payload and come back on the event:
+
+```ts
+await client.publishWithHeaders("t1", "default", "orders",
+  { key: Buffer.from("order-42"), headers: [{ name: "trace-id", value: Buffer.from("7f3a") }] },
+  Buffer.from("{}"));
+// later: event.headers?.headers[0].name === "trace-id"
+```
+
+A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
 
 ## Configuration
 
@@ -64,6 +75,9 @@ Record headers are available in the Rust client only. A publish without a key pu
 | `serverName` | The name the broker's certificate carries. Default `localhost`. |
 | `clientCertFile`, `clientKeyFile` | The client certificate and its key, as PEM files. |
 | `reconnectAttempts`, `reconnectDeadline`, `reconnectBackoff`, `reconnectMaxBackoff` | Retry policy. Times are in milliseconds. |
+| `publishers`, `timestamps` | Fill `Event.publisher` and `Event.timestampMicros`. Off by default. |
+| `clientSubQueuePolicy`, `clientSubQueueCapacity`, `brokerSubQueueCapacity` | What a subscription queue does when full, and how large it is. |
+| `publishConnPool`, `maxFrameBytes`, `connectTimeout`, and the other transport options | Connection pools, QUIC windows, frame and timeout limits. The full list is on the [TypeScript page](https://docs.getfelix.dev/clients/typescript/#tuning-the-client). |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 
@@ -96,6 +110,13 @@ The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedErr
 ## Supported platforms
 
 Node 18 or newer. The native binary comes in a per-platform package that npm installs on its own, so nothing is compiled at install time. Linux (x86-64 and arm64, glibc 2.28 or newer), macOS (Intel and Apple silicon) and Windows (x86-64). Alpine and other musl systems are not supported.
+
+## What is not wrapped
+
+The Rust client has two things this binding leaves out on purpose:
+
+- `publish_json` and `publish_batch_json`. Publish `Buffer.from(JSON.stringify(value))`.
+- A custom `quinn` transport (`connect_with_policy`, `connect_any_with_transport`). It takes a Rust transport object a Node program cannot build.
 
 ## Documentation
 
