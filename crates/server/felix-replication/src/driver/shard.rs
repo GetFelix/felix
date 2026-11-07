@@ -1261,8 +1261,14 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     }
                 }
                 // Apart from the pings above, so a resend that can never land
-                // (a log trimmed to its tail) holds no counter ping back.
-                if owes_mark && !cursor.mark_carried && !(quiet && ping) {
+                // (a log trimmed to its tail) holds no counter ping back. Only
+                // at the tail: a follower still catching up is sent the mark
+                // by its next batch, paced like the rest.
+                if owes_mark
+                    && !cursor.mark_carried
+                    && !(quiet && ping)
+                    && cursor.next_offset >= tail
+                {
                     reship_last(
                         requester,
                         &log,

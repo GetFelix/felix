@@ -332,6 +332,7 @@ async fn ship_batch<R: PeerRequester>(
     let payloads: Vec<Bytes> = records.into_iter().map(|record| record.payload).collect();
     let batch_end = first_offset + payloads.len() as u64;
     let batch_bytes: usize = payloads.iter().map(Bytes::len).sum();
+    let history = log.generations();
     let mut batch = ReplicateRecords {
         // The pool assigns the real id; it owns the connection this lands on.
         correlation_id: 0,
@@ -352,7 +353,7 @@ async fn ship_batch<R: PeerRequester>(
         // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
             && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
-        .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
+        .then(|| crate::replica::generations_over(&history, first_offset, batch_end)),
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
@@ -379,8 +380,7 @@ async fn ship_batch<R: PeerRequester>(
                 })
         }
         None => offered.is_some_and(|offered| !offered.contains(labels_needed(log_kind))),
-    } || !log
-        .generations()
+    } || !history
         .iter()
         .any(|epoch| epoch.generation == shard.generation);
     // Which log this is belongs in the message kind, not in the shard
