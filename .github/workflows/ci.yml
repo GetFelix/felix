@@ -1125,7 +1125,7 @@ jobs:
   formal:
     needs: changes
     if: needs.changes.outputs.formal == 'true'
-    name: TLA+ model (${{ matrix.shard }}/10)
+    name: TLA+ model (${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 16 }})
     # Only main's full set is heavy (a shard can run for hours). One run per
     # shard at a time on main; a newer pending one replaces an older one.
     # Pull requests and manual runs get a group of their own.
@@ -1137,12 +1137,13 @@ jobs:
     # A full run on main takes 55-75 min per shard; the rest is headroom for a
     # slow hosted runner, which can take twice that.
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '200')) }}
-    # Ten shards, filled by each configuration's measured time
+    # Ten shards on a pull request, sixteen for main's full set (about 2200
+    # minutes of weight, too much for ten 200-minute jobs), filled by each configuration's measured time
     # (scripts/check_tla.sh).
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0,1,2,3,4,5,6,7,8,9,10,11]' || '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1173,7 +1174,7 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/10
+          TLA_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 16 }}
           TLA_CONFIGS: ${{ inputs.tla_configs }}
           TLA_COVERAGE: ${{ inputs.tla_coverage }}
           TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}

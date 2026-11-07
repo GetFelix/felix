@@ -257,3 +257,54 @@ async fn a_power_cut_during_an_append_is_repaired_on_the_restart() {
     assert_eq!(losses.len(), 1);
     assert!(losses[0].restarted_at.is_some());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
+    log();
+    let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
+    cluster.kill(0).await;
+    // Cut off from its peers, no leader can ship a copy back open or trust it.
+    for other in 1..cluster.broker_count() {
+        cluster
+            .net()
+            .partition(cluster.node_id(0), cluster.node_id(other));
+    }
+    cluster.restart(0);
+    while !cluster.is_running(0) {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(cluster.started_unclean(0), Some(true));
+
+    let broker = cluster.handles(0).expect("running").broker;
+    let storage = broker.durable_storage().expect("durable storage");
+    // Whatever start-up opened, leave every copy on disk and closed.
+    for key in cluster.shard_keys() {
+        if key.kind == ShardKind::Stream {
+            storage
+                .close_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await
+                .unwrap();
+        }
+    }
+    let mut unopened = 0;
+    for key in cluster.shard_keys() {
+        let on_disk = key.kind == ShardKind::Stream
+            && storage.stream_on_disk(&key.tenant_id, &key.namespace, &key.stream, key.shard);
+        let open = on_disk
+            && storage
+                .opened_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .is_some();
+        if on_disk && !open {
+            unopened += 1;
+            assert!(
+                matches!(
+                    cluster.nodes[0].copy_trust(&key).await,
+                    Some(kills::Copy::Untrusted)
+                ),
+                "{} is on disk but not open, and a fence would find it untrusted",
+                describe(&key),
+            );
+        }
+    }
+    assert!(unopened > 0, "no copy was on disk and closed");
+}

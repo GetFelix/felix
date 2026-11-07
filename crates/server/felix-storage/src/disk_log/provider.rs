@@ -98,6 +98,14 @@ impl DiskLogProvider {
         self.open_logs.get_open(&(shard.clone(), incarnation))
     }
 
+    /// Whether `shard` has a directory on disk at its current incarnation,
+    /// open or not. Reads the directory only; nothing is created or recovered.
+    pub fn on_disk(&self, shard: &ShardKey) -> bool {
+        self.incarnation_of(shard).is_some_and(|incarnation| {
+            crate::fs::is_dir(layout::incarnation_dir(&self.root, shard, incarnation))
+        })
+    }
+
     /// Open or return the cached log for `shard`, creating it to begin at
     /// `base_offset` if it does not exist yet.
     ///

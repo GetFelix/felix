@@ -111,3 +111,96 @@ async fn registers_only_after_the_catalog_is_applied_and_reopens_after_a_crash()
     assert!(reopened.seeded().is_cancelled());
     reopened.crash();
 }
+
+#[tokio::test(start_paused = true)]
+async fn attesting_a_copy_does_not_open_a_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = SimBrokerConfig::new("sim-a", dir.path());
+    let up = Arc::new(AtomicBool::new(true));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let broker = SimBroker::open(config, link(), catalog(up, paths))
+        .await
+        .unwrap()
+        .run(Arc::new(NoPeers));
+    settle().await;
+
+    let key = ShardKey {
+        tenant_id: "t".into(),
+        namespace: "n".into(),
+        stream: "s".into(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    assert!(broker.copy_attestation(&key).await.is_none());
+    let open = broker
+        .broker()
+        .opened_log(LogKind::Stream, "t", "n", "s", 0, None)
+        .await;
+    assert!(open.is_none(), "the attestation opened the log");
+    broker.crash();
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_snapshot_does_not_open_a_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = SimBrokerConfig::new("sim-a", dir.path());
+    let up = Arc::new(AtomicBool::new(true));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let broker = SimBroker::open(config, link(), catalog(up, paths))
+        .await
+        .unwrap()
+        .run(Arc::new(NoPeers));
+    settle().await;
+
+    let key = ShardKey {
+        tenant_id: "t".into(),
+        namespace: "n".into(),
+        stream: "s".into(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    assert_eq!(broker.shard_snapshot(&key).await.log_tail, None);
+    let open = broker
+        .broker()
+        .opened_log(LogKind::Stream, "t", "n", "s", 0, None)
+        .await;
+    assert!(open.is_none(), "the snapshot opened the log");
+    broker.crash();
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_unopened_copy_on_disk_is_reported_without_opening_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = SimBrokerConfig::new("sim-a", dir.path());
+    let up = Arc::new(AtomicBool::new(true));
+    let paths = Arc::new(Mutex::new(Vec::new()));
+    let key = ShardKey {
+        tenant_id: "t".into(),
+        namespace: "n".into(),
+        stream: "s".into(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let broker = SimBroker::open(config, link(), catalog(up, paths))
+        .await
+        .unwrap()
+        .run(Arc::new(NoPeers));
+    settle().await;
+    assert!(!broker.holds_copy_on_disk(&key));
+
+    // Create the copy, then close it so it is on disk but not open.
+    let storage = broker.broker().durable_storage().unwrap();
+    storage.open_stream("t", "n", "s", 0).unwrap();
+    assert!(broker.holds_copy_on_disk(&key));
+    storage.close_stream("t", "n", "s", 0).await.unwrap();
+    assert!(broker.holds_copy_on_disk(&key));
+    assert!(broker.copy_attestation(&key).await.is_none());
+    assert!(
+        broker
+            .broker()
+            .opened_log(LogKind::Stream, "t", "n", "s", 0, None)
+            .await
+            .is_none()
+    );
+    broker.crash();
+}
