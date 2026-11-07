@@ -84,7 +84,20 @@ fn qualifying_directory() -> tempfile::TempDir {
         &serde_json::to_vec(&view).expect("encode"),
     )
     .expect("record");
+    std::fs::create_dir_all(witnesses(dir.path())).expect("witness dir");
+    felix_storage::run_state::witness::witness(
+        dir.path(),
+        Some(&witnesses(dir.path())),
+        crate::node::storage::this_boot(),
+        [1; 16],
+    )
+    .expect("witness the run that left it");
     dir
+}
+
+/// Where these tests keep run witnesses.
+fn witnesses(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("witnesses")
 }
 
 /// An address nothing listens on.
@@ -115,6 +128,7 @@ async fn with_the_switch_on_a_down_control_plane_starts_from_the_view() {
         start(
             &config,
             Some(dir.path()),
+            Some(&witnesses(dir.path())),
             &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),
@@ -137,6 +151,7 @@ async fn with_the_switch_off_a_down_control_plane_is_waited_for() {
         start(
             &config,
             Some(dir.path()),
+            Some(&witnesses(dir.path())),
             &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),
@@ -171,6 +186,7 @@ async fn a_control_plane_refusing_the_credential_is_waited_for() {
         start(
             &config,
             Some(dir.path()),
+            Some(&witnesses(dir.path())),
             &link_to(&config),
             &Some(NodeCredential::new("a-node-token".to_string())),
         ),

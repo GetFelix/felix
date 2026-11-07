@@ -1,0 +1,301 @@
+name: Simulation sweep (nightly)
+
+# Runs 2000 simulator seeds (crates/testing/felix-sim, docs/simulation.md) a
+# night. Pull requests run four seeds as part of the workspace tests; that
+# catches a regression that shows on most seeds, not one that needs a rare
+# fault schedule. The sweep is split into shards that each run a range of
+# seeds, two at a time, on a release build with `--cfg tokio_unstable` so a
+# failing seed replays exactly with `task sim:replay`.
+#
+# Besides the default faults, each night also runs a window of 250 seeds with
+# each opt-in nemesis: clock skew (FELIX_SIM_CLOCKS=bounded), placement faults
+# (FELIX_SIM_PLACEMENT=1) and power cuts (FELIX_SIM_POWER_LOSS=1). The window
+# moves 250 seeds a night, so eight nights cover seeds 1 to 2000 in every mode.
+#
+# A failing seed is sorted by its log. A history violation, an undecided key,
+# a safety finding or a crash is a real bug: it fails the shard, and a
+# scheduled run opens an issue labelled `dst-nightly` (or comments on the open
+# one; a green night closes it). A run whose only findings are the tracked
+# liveness ones (`stalled`, `election-settles`, `final-reads`) is listed
+# apart, as a stall, and does not fail anything. Both lists give the command
+# that replays each seed and are in the run's summary.
+#
+# For the release gate, start a run by hand ("Run workflow") with modes `all`
+# and 2000 seeds; docs/simulation.md ("The nightly sweep") has the inputs.
+
+on:
+  schedule:
+    # 09:13 UTC is 01:13 Pacific, off the runners daytime merges need.
+    - cron: "13 9 * * *"
+  workflow_dispatch:
+    inputs:
+      first:
+        description: "First seed"
+        required: false
+        default: "1"
+      seeds:
+        description: "How many seeds per mode"
+        required: false
+        default: "2000"
+      shards:
+        description: "How many jobs to split each mode's seeds across"
+        required: false
+        default: "50"
+      modes:
+        description: "Which nemeses: off, clocks, placement, power-loss (comma separated), or all"
+        required: false
+        default: "off"
+      parallel:
+        description: "How many jobs run at once (1 to 20)"
+        required: false
+        default: "4"
+
+permissions:
+  contents: read
+
+# Dispatched sweeps share one group and queue, so they never stack, and none
+# cancels the night's.
+concurrency:
+  group: dst-nightly-${{ github.ref }}-${{ github.event_name == 'schedule' && 'schedule' || 'dispatch' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Plan the shards
+        id: plan
+        # Inputs reach the script through the environment, never pasted into it.
+        env:
+          EVENT: ${{ github.event_name }}
+          FIRST: ${{ inputs.first || '1' }}
+          SEEDS: ${{ inputs.seeds || '2000' }}
+          SHARDS: ${{ inputs.shards || '50' }}
+          MODES: ${{ inputs.modes || 'off' }}
+          PARALLEL: ${{ inputs.parallel || '4' }}
+        run: |
+          for value in "$FIRST" "$SEEDS" "$SHARDS"; do
+            if ! [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]]; then
+              echo "not a positive number: $value"; exit 1
+            fi
+          done
+          if [ "$SHARDS" -gt "$SEEDS" ]; then
+            echo "shards must be at most the seed count"; exit 1
+          fi
+          if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [ "$PARALLEL" -lt 1 ] || [ "$PARALLEL" -gt 20 ]; then
+            echo "parallel must be a number from 1 to 20"; exit 1
+          fi
+          # A shard runs two seeds at a time and a stalled seed takes up to 8
+          # minutes, so 50 seeds a shard is 200 minutes, under the 240 limit.
+          if [ $(( (SEEDS + SHARDS - 1) / SHARDS )) -gt 50 ]; then
+            echo "at most 50 seeds per job: raise shards or lower seeds"; exit 1
+          fi
+          # A run is the default faults over the whole range, plus the opt-in
+          # nemeses on a 250 seed window that moves a night at a time. A
+          # dispatched run gives every chosen mode the same range.
+          if [ "$EVENT" = schedule ]; then
+            window=$(( (10#$(date -u +%j) % 8) * 250 + 1 ))
+            plan=$(jq -cn --argjson w "$window" '
+              [{mode: "off", first: 1, seeds: 2000, shards: 50}]
+              + [("clocks", "placement", "power-loss")
+                  | {mode: ., first: $w, seeds: 250, shards: 5}]')
+          else
+            [ "$MODES" = all ] && MODES="off,clocks,placement,power-loss"
+            plan=$(jq -cn --arg modes "$MODES" --argjson first "$FIRST" \
+              --argjson seeds "$SEEDS" --argjson shards "$SHARDS" '
+              [($modes | split(",") | unique[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
+            if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss") | not)) | length' <<<"$plan")" != 0 ]; then
+              echo "modes must be from off, clocks, placement, power-loss, or all"; exit 1
+            fi
+          fi
+          if [ "$(jq 'map(.shards) | add' <<<"$plan")" -gt 256 ]; then
+            echo "at most 256 jobs in all (modes times shards)"; exit 1
+          fi
+          # Seeds split as evenly as they go; the first shards take one more.
+          shards=$(jq -c '
+            [.[] | . as $p
+              | ($p.seeds / $p.shards | floor) as $base
+              | ($p.seeds % $p.shards) as $extra
+              | range($p.shards) as $i
+              | { mode: $p.mode, index: $i,
+                  first: ($p.first + $i * $base + ([$i, $extra] | min)),
+                  count: ($base + (if $i < $extra then 1 else 0 end)) }]' <<<"$plan")
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          {
+            echo "| Mode | First seed | Seeds | Jobs |"
+            echo "|---|---|---|---|"
+            jq -r '.[] | "| \(.mode) | \(.first) | \(.seeds) | \(.shards) |"' <<<"$plan"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sim-sweep-tokio-unstable
+
+      # Built once and handed to every shard, so the jobs do not each compile
+      # the workspace. The build matches `task sim:replay`, so a failing seed
+      # replays the run the sweep saw.
+      - name: Build the seeds test
+        env:
+          RUSTFLAGS: "--cfg tokio_unstable"
+        run: |
+          bin=$(cargo test -p felix-sim --release --test seeds --no-run --message-format=json |
+            jq -r 'select(.profile.test == true and .target.name == "seeds") | .executable' |
+            tail -1)
+          mkdir -p sim-bin
+          cp "$bin" sim-bin/seeds
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sim-seeds-bin
+          path: sim-bin/seeds
+          retention-days: 2
+
+  sweep:
+    needs: build
+    runs-on: ubuntu-latest
+    # A nightly shard is 40 to 50 seeds, two at a time. A seed that passes
+    # takes a few seconds to a minute on a release build. One that stalls
+    # waits out the watchdog, 4 minutes without progress and 8 in all, so a
+    # shard of 50 seeds that all stalled would take 200 minutes, well under
+    # the 6 hour limit.
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      # At most four shards at once by default, so the sweep never takes every
+      # runner.
+      max-parallel: ${{ fromJSON(inputs.parallel || '4') }}
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+    name: sweep ${{ matrix.shard.mode }} ${{ matrix.shard.first }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: sim-seeds-bin
+          path: sim-bin
+
+      - name: Run the seeds
+        env:
+          FELIX_SIM_BIN: ${{ github.workspace }}/sim-bin/seeds
+          FELIX_SIM_JOBS: "2"
+          FELIX_SIM_MODE: ${{ matrix.shard.mode }}
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          chmod +x "$FELIX_SIM_BIN"
+          scripts/sim-sweep.sh "$FIRST" "$COUNT" sweep-out
+
+      - name: Report the failing seeds
+        if: always()
+        env:
+          MODE: ${{ matrix.shard.mode }}
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          [ -d sweep-out ] || exit 0
+          [ -f sweep-out/failed.txt ] || [ -f sweep-out/stalls.txt ] || exit 0
+          {
+            echo "## Mode $MODE, seeds $FIRST to $((FIRST + COUNT - 1))"
+            echo
+            for kind in failed:Real\ bugs stalls:Tracked\ stalls; do
+              file=sweep-out/${kind%%:*}.txt
+              [ -f "$file" ] || continue
+              echo "### ${kind#*:}"
+              echo
+              echo '```'
+              cat "$file"
+              echo '```'
+              echo
+            done
+            echo "Logs are in the \`sim-sweep-$MODE-$FIRST\` artifact."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the failing seeds' logs
+        if: always() && (hashFiles('sweep-out/failed.txt') != '' || hashFiles('sweep-out/stalls.txt') != '')
+        uses: actions/upload-artifact@v7
+        with:
+          name: sim-sweep-${{ matrix.shard.mode }}-${{ matrix.shard.first }}
+          path: sweep-out
+          retention-days: 30
+
+  report:
+    needs: [build, sweep]
+    if: ${{ always() && needs.sweep.result != 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: sim-sweep-*
+          path: sweeps
+        continue-on-error: true
+
+      - name: Summarise the run
+        run: |
+          bugs=$(cat sweeps/*/failed.txt 2>/dev/null | sort -k3,3n || true)
+          stalls=$(cat sweeps/*/stalls.txt 2>/dev/null | sort -k3,3n || true)
+          {
+            echo "## Whole run"
+            echo
+            echo "Real bugs (history violations, safety findings, crashes): $(grep -c . <<<"$bugs" || true)"
+            echo
+            echo "Tracked liveness stalls: $(grep -c . <<<"$stalls" || true)"
+            echo
+            echo "The lists, with a replay command per seed, are in the shard summaries above."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the issue
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RESULT: ${{ needs.sweep.result }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh label create dst-nightly --repo "$REPO" --color d93f0b \
+            --description "The nightly simulator sweep found a bug" 2>/dev/null || true
+          open=$(gh issue list --repo "$REPO" --label dst-nightly --state open --json number --jq '.[0].number // empty')
+          if [ "$RESULT" = success ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --repo "$REPO" --body "Green again at $SHA: $RUN_URL"
+              gh issue close "$open" --repo "$REPO"
+            fi
+            exit 0
+          fi
+          bugs=$(cat sweeps/*/failed.txt 2>/dev/null | sort -k3,3n | head -100 || true)
+          [ -n "$bugs" ] || bugs="(no seed results; a job failed before its sweep finished)"
+          stalls=$(cat sweeps/*/stalls.txt 2>/dev/null | sort -k3,3n | head -50 || true)
+          [ -n "$stalls" ] || stalls="(none)"
+          body=$(printf 'Run: %s\nCommit: %s\n\n## Real bugs\n\nHistory violations, safety findings and crashes. Each line gives the command that replays the seed.\n\n```\n%s\n```\n\n## Tracked liveness stalls\n\nOnly the tracked findings (stalled, election-settles, final-reads); these do not fail the run.\n\n```\n%s\n```\n\nThe logs of each seed are in the run artifacts named sim-sweep-<mode>-<first seed>. docs/simulation.md ("The nightly sweep") says how to replay one. This issue closes itself when a nightly run passes.\n' \
+            "$RUN_URL" "$SHA" "$bugs" "$stalls")
+          if [ -n "$open" ]; then
+            gh issue comment "$open" --repo "$REPO" --body "$body"
+          else
+            gh issue create --repo "$REPO" --label dst-nightly \
+              --title "Nightly simulator sweep found a bug" --body "$body"
+          fi

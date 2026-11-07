@@ -47,7 +47,12 @@ pub(crate) fn open_with(
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
     let (storage_id, unclean, replaced, kept_promises) = match &durable_config {
-        Some(durable) => start_run(&durable.root, &durable.log, registered)?,
+        Some(durable) => start_run(
+            &durable.root,
+            &durable.log,
+            registered,
+            witness_dir().as_deref(),
+        )?,
         None => (storage_id(None)?, false, false, false),
     };
     let hold = retention_hold(config);
@@ -203,16 +208,23 @@ pub(crate) fn open_with(
 /// lost others, so neither keeps every promise it made. Without the control
 /// plane's record of this node, or one without a storage id, nothing shows
 /// the rotation was not a lost copy, so the flag is false (#2047).
+///
+/// Every run also writes a new run witness under `witness`, whether or not
+/// the control plane answered, so a later start from the view never takes a
+/// copy from before this run for the directory.
 fn start_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
     registered: Option<&Registered>,
+    witness: Option<&Path>,
 ) -> Result<(StorageId, bool, bool, bool)> {
     // The id before this run rotates it: the control plane naming that one
     // is what tells a crash of this directory from a lost copy.
     let before = felix_storage::storage_identity::load(root)
         .with_context(|| format!("read the storage id under {}", root.display()))?;
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
+    felix_storage::run_state::witness::witness(root, witness, this_boot(), fresh_storage_id())
+        .with_context(|| format!("write the run witness for {}", root.display()))?;
     let restored = begun.origin == felix_storage::storage_identity::Origin::Loaded
         && begun.recorded.behind(registered.map(|r| r.incarnation));
     let before = before
@@ -328,10 +340,15 @@ fn begin_run(
     Ok(begun)
 }
 
+/// Where run witnesses are kept. See `felix_storage::run_state::witness`.
+pub(crate) fn witness_dir() -> Option<std::path::PathBuf> {
+    felix_storage::run_state::witness::default_dir()
+}
+
 /// The machine's boot id. Debug builds take it from the file
 /// `FELIX_STORAGE_BOOT_ID_FILE` names when it exists, which is how the
 /// cluster harness restarts a broker as if its machine had rebooted.
-fn this_boot() -> Option<felix_storage::run_state::BootId> {
+pub(crate) fn this_boot() -> Option<felix_storage::run_state::BootId> {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("FELIX_STORAGE_BOOT_ID_FILE")
         && let Ok(text) = std::fs::read_to_string(path)

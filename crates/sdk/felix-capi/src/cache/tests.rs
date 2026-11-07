@@ -327,3 +327,98 @@ fn a_missing_counter_has_no_value_and_zero_is_a_value() {
         ]
     );
 }
+
+type LeaseSeen = Mutex<Vec<(bool, Option<u64>, Option<String>, u64, Option<String>)>>;
+
+unsafe extern "C" fn on_lease(
+    user_data: *mut c_void,
+    _status: FelixStatus,
+    _message: *const c_char,
+    applied: bool,
+    has_version: bool,
+    version: u64,
+    token: *const c_char,
+    expires_at: u64,
+    token_refused: *const c_char,
+) {
+    // SAFETY: the test passes a live `LeaseSeen`; the strings are the callback's own.
+    let (seen, token, refused) = unsafe {
+        (
+            &*user_data.cast::<LeaseSeen>(),
+            text(token),
+            text(token_refused),
+        )
+    };
+    seen.lock().unwrap().push((
+        applied,
+        has_version.then_some(version),
+        token,
+        expires_at,
+        refused,
+    ));
+}
+
+fn lease(applied: bool, token: Option<&str>, refused: Option<&str>) -> Lease {
+    Lease(LeaseWrite {
+        result: CacheConditionResult {
+            applied,
+            version: Some(5),
+        },
+        token: token.map(|t| felix_client::LeaseToken {
+            token: t.to_string(),
+            expires_at: 99,
+        }),
+        token_refused: refused.map(str::to_string),
+    })
+}
+
+#[test]
+fn a_lease_write_reaches_c_with_its_token_or_the_reason_for_none() {
+    let seen: LeaseSeen = Mutex::new(Vec::new());
+    let user = ptr::from_ref(&seen).cast_mut().cast();
+    for write in [
+        lease(true, Some("tok"), None),
+        lease(true, None, Some("no template")),
+    ] {
+        // SAFETY: the callback's contract; `seen` outlives the call.
+        unsafe {
+            Lease::deliver(
+                Some(on_lease),
+                user,
+                FELIX_STATUS_OK,
+                ptr::null(),
+                Some(write),
+            )
+        };
+    }
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen[0], (true, Some(5), Some("tok".into()), 99, None));
+    assert_eq!(
+        seen[1],
+        (true, Some(5), None, 0, Some("no template".into()))
+    );
+}
+
+#[test]
+fn a_lease_write_without_a_client_is_refused() {
+    let s = c"k";
+    // SAFETY: NUL-terminated strings; the null client is the case.
+    let status = unsafe {
+        felix_client_cache_put_if_lease(
+            ptr::null(),
+            s.as_ptr(),
+            s.as_ptr(),
+            s.as_ptr(),
+            s.as_ptr(),
+            ptr::null(),
+            0,
+            0,
+            FELIX_IF_ABSENT,
+            0,
+            ptr::null(),
+            None,
+            ptr::null_mut(),
+        )
+    };
+    assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
+}

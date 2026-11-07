@@ -234,6 +234,13 @@ is CPU work no virtual clock skips, so run them one at a time on a busy
 machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
+A nightly workflow, `dst-nightly.yml`, runs 2000 seeds, and 250 more with each of
+clock skew, placement faults and power loss. It lists history violations and
+safety findings, which are bugs, apart from the tracked liveness stalls, and
+prints the command that replays each failing seed. It can also be started by
+hand with 2000 seeds in every mode, which is how the release gate runs it.
+`docs/simulation.md` has the inputs.
+
 A replay injects the same faults at the same virtual times and sends the same
 client operations. `task sim:replay` builds with
 `RUSTFLAGS="--cfg tokio_unstable"`, which lets tokio seed `select!`, so the

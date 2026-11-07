@@ -33,6 +33,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         ReconnectDeadlineMs = options.ReconnectDeadline is { } window ? (ulong)window.TotalMilliseconds : 0,
         ReconnectBackoffMs = options.ReconnectBackoff is { } first ? (ulong)first.TotalMilliseconds : 0,
         ReconnectMaxBackoffMs = options.ReconnectMaxBackoff is { } longest ? (ulong)longest.TotalMilliseconds : 0,
+        DisableRecordHeaders = options.DisableRecordHeaders ? (byte)1 : (byte)0,
     };
 
     /// <summary>Connects to a cluster.</summary>
@@ -120,6 +121,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 options.Publishers || options.Timestamps || tokens is not null
                     || options.ReconnectAttempts is not null || options.ReconnectDeadline is not null
                     || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null
+                    || options.DisableRecordHeaders
                     || certFile != 0 || keyFile != 0 ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,

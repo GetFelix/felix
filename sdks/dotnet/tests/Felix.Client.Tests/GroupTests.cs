@@ -20,7 +20,7 @@ public class GroupTests
             return;
         }
 
-        Assert.Equal(88, sizeof(NativeConnectOptions));
+        Assert.Equal(96, sizeof(NativeConnectOptions));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.Publishers)));
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenFetch)));
         Assert.Equal(24, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.TokenUserData)));
@@ -31,6 +31,7 @@ public class GroupTests
         Assert.Equal(64, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.ReconnectMaxBackoffMs)));
         Assert.Equal(72, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.ClientCertFile)));
         Assert.Equal(80, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.ClientKeyFile)));
+        Assert.Equal(88, (int)Marshal.OffsetOf<NativeConnectOptions>(nameof(NativeConnectOptions.DisableRecordHeaders)));
         Assert.Equal(72, sizeof(NativeGroupRecord));
         Assert.Equal(8, (int)Marshal.OffsetOf<NativeGroupRecord>(nameof(NativeGroupRecord.Attempts)));
         Assert.Equal(16, (int)Marshal.OffsetOf<NativeGroupRecord>(nameof(NativeGroupRecord.SkippedBefore)));

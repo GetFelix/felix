@@ -144,11 +144,11 @@ fn registered_as(id: Option<StorageId>) -> Registered {
 fn a_new_node_does_not_start_replaced() {
     let log = felix_storage::log::LogConfig::default();
     let root = tempfile::tempdir().expect("tempdir");
-    let (_, _, replaced, _) = start_run(root.path(), &log, None).expect("new node");
+    let (_, _, replaced, _) = start_run(root.path(), &log, None, None).expect("new node");
     assert!(!replaced);
     let root = tempfile::tempdir().expect("tempdir");
     let (_, _, replaced, _) =
-        start_run(root.path(), &log, Some(&registered_as(None))).expect("older registration");
+        start_run(root.path(), &log, Some(&registered_as(None)), None).expect("older registration");
     assert!(!replaced);
 }
 
@@ -163,12 +163,12 @@ fn a_node_registered_under_another_id_starts_replaced() {
     let root = tempfile::tempdir().expect("tempdir");
     let other = StorageId::from_bytes([9; 16]);
     let (id, _, replaced, _) =
-        start_run(root.path(), &log, Some(&registered_as(Some(other)))).expect("wiped");
+        start_run(root.path(), &log, Some(&registered_as(Some(other))), None).expect("wiped");
     assert!(replaced);
     assert_ne!(id, other);
     mark_clean_stop(root.path(), id).expect("clean stop");
     let (again, _, replaced, _) =
-        start_run(root.path(), &log, Some(&registered_as(Some(id)))).expect("restart");
+        start_run(root.path(), &log, Some(&registered_as(Some(id))), None).expect("restart");
     assert_eq!(again, id);
     assert!(replaced, "the registration of the new id ends nothing");
 }
@@ -188,13 +188,14 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     };
     let crash = |root: &Path, registered: Option<&Registered>| {
         forget_boot(root).expect("forget the boot");
-        let (id, rotated, _, kept) = start_run(root, &relaxed, registered).expect("after a crash");
+        let (id, rotated, _, kept) =
+            start_run(root, &relaxed, registered, None).expect("after a crash");
         assert!(rotated, "a relaxed crash rotates the id");
         (id, kept)
     };
 
     let root = tempfile::tempdir().expect("tempdir");
-    let (id, rotated, _, kept) = start_run(root.path(), &relaxed, None).expect("first run");
+    let (id, rotated, _, kept) = start_run(root.path(), &relaxed, None, None).expect("first run");
     assert!(!rotated && !kept, "a first run kept nothing");
     let (id, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(kept, "a crash keeps every ballot");
@@ -204,7 +205,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     assert!(!kept, "without the control plane's record");
 
     let root = tempfile::tempdir().expect("tempdir");
-    let (id, _, _, _) = start_run(root.path(), &relaxed, None).expect("first run");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
     let (_, kept) = crash(root.path(), Some(&registered_as(None)));
     assert!(!kept, "with a record that names no storage id");
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
@@ -212,14 +213,19 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
 
     let other = StorageId::from_bytes([9; 16]);
     let root = tempfile::tempdir().expect("tempdir");
-    let (id, _, _, kept) =
-        start_run(root.path(), &relaxed, Some(&registered_as(Some(other)))).expect("wiped");
+    let (id, _, _, kept) = start_run(
+        root.path(),
+        &relaxed,
+        Some(&registered_as(Some(other))),
+        None,
+    )
+    .expect("wiped");
     assert!(!kept);
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(!kept, "a wiped directory's later crash");
 
     let root = tempfile::tempdir().expect("tempdir");
-    let (id, _, _, _) = start_run(root.path(), &relaxed, None).expect("first run");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     mark_clean_stop(root.path(), id).expect("clean stop");
     let restored = |id: StorageId| Registered {
@@ -227,7 +233,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
         storage_id: Some(id.to_hex()),
     };
     let (id, rotated, _, kept) =
-        start_run(root.path(), &relaxed, Some(&restored(id))).expect("restored");
+        start_run(root.path(), &relaxed, Some(&restored(id)), None).expect("restored");
     assert!(rotated);
     assert!(!kept, "a restored directory");
     felix_storage::run_state::record_registration(root.path(), 5).expect("record");
@@ -236,7 +242,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
 
     // An older build wrote the replaced-storage marker after a crash too.
     let root = tempfile::tempdir().expect("tempdir");
-    let (id, _, _, _) = start_run(root.path(), &relaxed, None).expect("first run");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
     std::fs::remove_file(
         root.path()
             .join(felix_storage::run_state::LOST_COPY_FILE_NAME),
@@ -245,4 +251,39 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     felix_storage::run_state::record_replaced(root.path(), id, 0).expect("marker");
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(!kept, "an older build's replaced directory");
+}
+
+/// **Every run witnesses its directory anew**, with the control plane's
+/// answer or without it, so a copy from before the run is never the
+/// directory a later start from the view finds witnessed (#2071).
+#[test]
+fn every_run_witnesses_the_directory_anew() {
+    use felix_storage::run_state::witness::{TOKEN_FILE_NAME, witnessed};
+
+    let log = felix_storage::log::LogConfig::default();
+    let root = tempfile::tempdir().expect("tempdir");
+    let shm = tempfile::tempdir().expect("witnesses");
+    let token = root.path().join(TOKEN_FILE_NAME);
+
+    let (id, _, _, _) = start_run(root.path(), &log, None, Some(shm.path())).expect("first run");
+    let first = std::fs::read(&token).expect("the first run's token");
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    start_run(
+        root.path(),
+        &log,
+        Some(&registered_as(Some(id))),
+        Some(shm.path()),
+    )
+    .expect("a run the control plane answered");
+    assert_ne!(std::fs::read(&token).expect("token"), first);
+    // Where the platform has a boot id, the directory as the run left it is
+    // witnessed.
+    let boot = this_boot();
+    assert_eq!(
+        witnessed(root.path(), Some(shm.path()), boot),
+        boot.is_some()
+    );
+    // A restore of what the first run left is not.
+    std::fs::write(&token, &first).expect("restore");
+    assert!(!witnessed(root.path(), Some(shm.path()), boot));
 }

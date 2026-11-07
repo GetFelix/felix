@@ -34,6 +34,10 @@ pub(super) enum Refusal {
     /// so its copies here may be ones the node no longer holds, and only a
     /// registration under the current id says which.
     Replaced,
+    /// No run witness outside the directory names it as the last run on
+    /// this machine left it: it may be a restored copy, which nothing inside
+    /// it can rule out, or the machine restarted since.
+    Unwitnessed,
     /// The fleet had not finalized `replica_election`, so nothing could
     /// elect without the control plane anyway.
     NoElection,
@@ -58,6 +62,10 @@ impl std::fmt::Display for Refusal {
             Self::Replaced => {
                 f.write_str("the control plane last registered this node under another storage id")
             }
+            Self::Unwitnessed => f.write_str(
+                "no run witness shows this is the data directory the last run on this machine \
+                 left; it may be restored from a copy, or the machine restarted",
+            ),
             Self::NoElection => f.write_str("the view's fleet has not finalized replica_election"),
             Self::Unreported(missing) => write!(
                 f,
@@ -70,14 +78,17 @@ impl std::fmt::Display for Refusal {
 
 /// The view under `root` for `node_id`, if this directory may start from it:
 /// it is present and this node's, the storage id on disk is the one it was
-/// registered under, it was written after any replaced-storage marker, its fleet
-/// finalized `replica_election`, and `reported`
-/// has every feature its fleet finalized. Reads only; call before the run
-/// begins, since beginning one may rotate the id.
+/// registered under, it was written after any replaced-storage marker, the
+/// run witness in `witness` names it in `boot`, its fleet finalized
+/// `replica_election`, and `reported` has every feature its fleet finalized.
+/// Reads only; call before the run begins, since beginning one may rotate the
+/// id and writes a new witness.
 pub(super) fn qualify(
     root: &Path,
     node_id: &str,
     reported: &BTreeSet<String>,
+    witness: Option<&Path>,
+    boot: Option<felix_storage::run_state::BootId>,
 ) -> Result<View, Refusal> {
     let view = controlplane_view::read(root, node_id).ok_or(Refusal::NoView)?;
     // Unreadable reads as no id: a start that cannot tell waits.
@@ -93,6 +104,11 @@ pub(super) fn qualify(
     }
     if !registered_since_replaced(root, &view) {
         return Err(Refusal::Replaced);
+    }
+    // A restored copy keeps its storage id and its view, and without the
+    // control plane nothing else shows it is behind (#2071).
+    if !felix_storage::run_state::witness::witnessed(root, witness, boot) {
+        return Err(Refusal::Unwitnessed);
     }
     let election = felix_common::fleet::REPLICA_ELECTION.name();
     if !view.fleet.iter().any(|feature| feature == election) {

@@ -450,6 +450,54 @@ Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
 on. Rerun the seeds rather than trusting this table.
 
+## The nightly sweep
+
+`.github/workflows/dst-nightly.yml` runs 2000 seeds every night at 01:13
+Pacific, the same seeds each night, so a red night replays as it is. It builds
+the seeds test once, in release with `--cfg tokio_unstable` as `task sim:replay`
+does, and hands it to shards that each run a range of seeds two at a time
+through `scripts/sim-sweep.sh`.
+
+The opt-in nemeses run too. Each night also runs 250 seeds with each of clock
+skew (`bounded`), placement faults and power loss, a window that moves 250
+seeds a night, so eight nights cover seeds 1 to 2000 in every mode.
+
+A failing seed is sorted by its log:
+
+| Kind | What it is | Effect |
+| --- | --- | --- |
+| Real bug | A history violation, an undecided cache key, a safety finding (`at-most-one-serving`, `one-leader-per-generation`, `acked-held-by-leader`, ...) or a crash. | Fails the shard. A scheduled run opens an issue labelled `dst-nightly`, which a green night closes. |
+| Tracked stall | Only the liveness findings `stalled`, `election-settles` and `final-reads`, listed above under known failing seeds. | Listed apart in the summary. Fails nothing. |
+
+Each line in the run summary gives the seed, its categories and the exact
+command that replays it, for example
+`FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=412 task sim:replay`. A real bug runs
+once more to say whether it repeats; a stall does not, because the run is
+exact and a stall takes minutes. The logs of failing seeds are in the
+`sim-sweep-<mode>-<first seed>` artifacts.
+
+For the release gate, start the workflow by hand (Actions, "Simulation sweep
+(nightly)", Run workflow). The inputs are:
+
+| Input | Meaning | Default |
+| --- | --- | --- |
+| `first` | The first seed. | 1 |
+| `seeds` | How many seeds per mode. | 2000 |
+| `shards` | Jobs per mode. | 50 |
+| `modes` | `off`, `clocks`, `placement`, `power-loss` (comma separated), or `all`. | `off` |
+| `parallel` | Jobs running at once, 1 to 20. | 4 |
+
+`modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no
+real bugs in any mode; tracked stalls are expected until their issues are fixed.
+
+Timing: a seed that passes takes a few seconds to a minute in a release build,
+and one that stalls waits out the watchdog, up to eight minutes. A shard of
+40 seeds (a nightly default-mode shard) or 50 (an opt-in one) therefore takes
+minutes when the seeds pass, and at worst 160 or 200 minutes if every seed
+stalls. Each job has a 240 minute limit, under the runners' 6 hours. These
+figures come from the numbers above, not from a measured run; the first
+dispatched run replaces them.
+
 ## What runs for real and what is simulated
 
 The code under test is the real replication, election, promotion and routing
