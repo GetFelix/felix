@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794010953338,
+  "lastUpdate": 1794011549112,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -60852,6 +60852,72 @@ window.BENCHMARK_DATA = {
             "range": "77.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 320.00\nmean: 335.60\nstdev: 77.03\ncv: 22.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2d80938cf4f7c8d5aabe7a7eb8c83f8cf5bfd0dd",
+          "message": "sim: per-broker clock skew nemesis (#2061)\n\n* sim: per-node clock skew nemesis (#2037)\n\nEach broker and the control plane reads its own lease clock (seeded rate)\nand wall clock (seeded offset) over the shared virtual time; the nemesis\nsteps a wall clock or changes a lease clock's rate mid-run. Bounded mode\nstays within the documented drift and skew bounds, unbounded goes past\nthem. Off by default; needs --cfg tokio_unstable for the task hooks that\nattribute spawned tasks to their node.\n\nSpec-Unaffected: test harness only; production clock reads unchanged\n\n* sim: clock skew review fixes: say what wall skew reaches, liveness baseline, wording\n\n* ci(sim): build sim-seeds with tokio_unstable and run half its seeds with bounded clock skew\n\n* sim: the control plane's silence watch reads its lease clock in the sim; one clock plan per run\n\nThe watch, grace and stall watch take a monotonic reading as a Duration, so the\nsim can feed the control plane's skewed lease clock. The real sweep still\ntimes them on tokio's clock. Adds a pinned slow-brokers, fast-control-plane\nseed and states that tokio timers are not skewed.\n\n* ci(sim): build sim-seeds in the plain target dir its cache saves",
+          "timestamp": "2026-11-06T16:11:41-08:00",
+          "tree_id": "b04b83b043ee2876d8ec22586275e4316945a5aa",
+          "url": "https://github.com/GetFelix/felix/commit/2d80938cf4f7c8d5aabe7a7eb8c83f8cf5bfd0dd"
+        },
+        "date": 1794011541241,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 133,
+            "range": "3.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 134.00\nstdev: 3.74\ncv: 2.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 167,
+            "range": "3.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 167.00\nmean: 168.00\nstdev: 3.54\ncv: 2.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.40\nstdev: 1.14\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 259.80\nstdev: 3.27\ncv: 1.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 377,
+            "range": "49.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 377.00\nmean: 392.20\nstdev: 49.47\ncv: 12.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
