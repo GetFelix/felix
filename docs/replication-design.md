@@ -706,6 +706,22 @@ start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
 readmits it may vouch for it.
 
+On an idle shard nothing would vouch. The batch that brings a follower level
+goes out before the follower's own answer raises the mark, so it carries a
+commit offset of zero, and a level follower is sent nothing else. The copy
+would stay untrusted until the next client write, and one more failure could
+then leave a fence that never covers, although a caught-up copy exists. So a
+leader of a `Quorum` shard sends a level follower its last record again, with
+the current mark, until the follower has stored one batch that left it level
+through a commit offset above zero (`FollowerCursor::mark_carried`). A new
+process on the follower is owed one again, since it may not have the old
+process's trust. The batch holds only records the follower already has, so
+the vouch is the same as for any other batch: level through the start record
+and through the mark. `FelixShardUnifiedIdleVouch` checks that such a
+follower is trusted again while its leader serves, with no writes. Its
+`Legacy` twin, a leader that sends a level follower nothing, leaves it
+untrusted.
+
 A vouch is held in the broker's process, so a clean restart loses it. The
 control plane keeps a durable form: when the leader of a set that names a
 replaced copy by its new storage id reports it caught up, the assignment

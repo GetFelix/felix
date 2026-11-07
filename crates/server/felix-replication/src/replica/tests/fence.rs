@@ -2491,6 +2491,65 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
     );
 }
 
+/// **An unclean copy level with an idle leader is trusted by its last record
+/// sent again with the mark.** The batch that brought the start record went
+/// before any follower's answer raised the mark, so it carried zero. The
+/// leader sends the copy its last record again once the mark covers it, and
+/// that batch, wholly a record the copy holds, vouches for it
+/// (`FelixShardUnifiedIdleVouch`). Below the start record it would not: see
+/// [`an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark`].
+#[tokio::test]
+async fn an_unclean_copy_level_with_an_idle_leader_is_trusted_by_its_last_record_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    let shard = crate::driver::watch_key(&key());
+    let start_record = |commit: u64| ReplicateRecords {
+        commit_offset: Some(commit),
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: 6,
+            start_offset: 1,
+        }]),
+        ..batch(6, 1, &["start"])
+    };
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 4, 0, &["a"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    for (commit, trusted) in [(0, false), (2, true)] {
+        let answer = leader
+            .apply(
+                Some("broker-c"),
+                start_record(commit),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.durable_offset == 2),
+            "{answer:?}"
+        );
+        assert_eq!(start.trusted(&shard), trusted, "a mark of {commit}");
+    }
+    assert_eq!(
+        leader.attestation(&key(), true, false),
+        attested(0, true).expect("some")
+    );
+}
+
 /// A fence from a caller that offered `UNIFIED_FENCE`.
 async fn unified_fence(
     handler: &ReplicaHandler,

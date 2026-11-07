@@ -1043,8 +1043,15 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 && cursor.halted.is_none()
                 && cursor.storage_id.is_some()
                 && cursor.confirmed > inherited;
+            // A follower back from an unclean restart is trusted again only
+            // by a batch that carries the mark through which it is level
+            // ([`FollowerCursor::mark_carried`]). A level one is sent nothing
+            // on an idle shard, and one missing trust there stalls the next
+            // fence that needs it.
+            let owes_mark = quorum_shard && leading && mark_now > 0 && !cursor.mark_carried;
             let ping = successor
                 || unnamed_learner
+                || owes_mark
                 || would_raise(
                     &cursor.node_id,
                     &entry.followers,
@@ -2778,6 +2785,10 @@ pub(super) fn follow_storage(
     rebuilds: &Rebuilds,
 ) {
     if same_copy(cursor.identity(), seen) {
+        // Another process may have started without the trust this one had.
+        if cursor.incarnation != seen.incarnation {
+            cursor.mark_carried = false;
+        }
         cursor.incarnation = seen.incarnation;
         return;
     }

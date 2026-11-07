@@ -450,6 +450,8 @@ expectations=(
   "FelixShardUnifiedCpLiveReadmitUnopened pass"
   "FelixShardUnifiedCpLiveReadmitUnopenedLegacy violates liveness"
   "FelixShardUnifiedCpLiveMoveDoubted pass"
+  "FelixShardUnifiedIdleVouch pass"
+  "FelixShardUnifiedIdleVouchLegacy violates liveness"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family

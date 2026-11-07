@@ -365,6 +365,17 @@ async fn ship_batch<R: PeerRequester>(
         ),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
+    // What the follower checks before it trusts its copy again (replica.rs,
+    // the vouch). An unlabelled batch cannot vouch, so a follower sent one is
+    // not owed another for it.
+    let carries_mark = batch.generations.as_deref().is_none_or(|starts| {
+        batch
+            .commit_offset
+            .is_some_and(|mark| mark > 0 && mark <= batch_end)
+            && starts.iter().any(|start| {
+                start.generation == shard.generation && start.start_offset <= batch_end
+            })
+    });
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.
@@ -464,6 +475,9 @@ async fn ship_batch<R: PeerRequester>(
             // means resuming past records neither side has checked.
             cursor.next_offset = durable_offset.min(batch_end);
             cursor.confirmed = cursor.next_offset;
+            if durable_offset == batch_end && (carries_mark || cursor.legacy_frames) {
+                cursor.mark_carried = true;
+            }
             cursor.shipped_bytes += batch_bytes as u64;
             metrics::record_shipped(metrics::OUTCOME_OK);
             // A rebuild is a full transfer, and the policy may say how fast.

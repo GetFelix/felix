@@ -93,6 +93,12 @@ pub struct FollowerCursor {
     /// The follower's last answer said its copy does not follow this leader
     /// at this generation. See [`crate::replica::refuses_leader`].
     pub(crate) refuses_leader: bool,
+    /// This copy stored a batch that left it level through the batch's end,
+    /// this leader's start and a commit offset above zero: what a follower
+    /// back from an unclean restart needs to be trusted again. Until then a
+    /// level follower is sent its last record again with the mark, since on
+    /// an idle shard nothing else would reach it.
+    pub(crate) mark_carried: bool,
 }
 
 /// A follower's answer that came from the copy its cursor describes.
@@ -126,6 +132,7 @@ impl FollowerCursor {
             superseded_by: None,
             assigned_newer: false,
             refuses_leader: false,
+            mark_carried: false,
         }
     }
 
