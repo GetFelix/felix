@@ -59,6 +59,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   controlplane.view                          ← what the control plane last said about this node's shards
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
+  copy-trust                                 ← which copies a leader vouched for since the id last rotated
+  copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
@@ -1251,6 +1253,76 @@ After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash.
 An older release neither reads nor writes the file.
+
+## `copy-trust`: which copies hold what they acknowledged
+
+One text file at the durable root, kept apart from every copy's ballot so
+that taking a ballot never changes it. Every start writes it if it is
+missing, before anything reads it. Every write goes through `copy-trust.tmp`,
+synced, renamed and the directory synced.
+
+```text
+copy_trust
+storage_id <the directory's storage id, 32 hex digits>
+untrusted all
+untrusted except <key>
+doubted <key>
+unkept <key>
+unkept_since <key> <generation>
+```
+
+The first line is fixed. `storage_id` names the id the file was written
+under. A file that names another id than `storage-id` holds, or none, reads
+as every mark on every copy: an older release may have rotated the id after
+a crash without touching this file, so after a downgrade and an upgrade its
+vouches say nothing. A rotation writes the file under the id it is about to
+take, before it takes it. Each later line names one of three marks and either
+`all`, or a key. After `<mark> all`, `<mark> except <key>` names a copy
+without the mark. Without `all`, `<mark> <key>` names a copy with it. A key
+is the shard's replication key (tenant, namespace, stream, shard and kind) as
+JSON, in lowercase hex. Lines are sorted.
+
+- **untrusted**: the copy may lack records its seat acknowledged. A start
+  that rotates the storage id (`run-state`) writes `untrusted all` before it
+  writes the new id, so a crash in between still distrusts every copy. A copy
+  loses the mark when a leader ships it a batch that leaves it level through
+  the leader's generation start and the batch's commit offset, above zero
+  (`docs/replication-design.md`, "One fence rule for every change of
+  leader"). The next rotation marks every copy again.
+- **doubted**: a copy this broker led before such a crash. Written before the
+  copy takes a newer leader's ballot, and a batch that cannot write it is
+  refused. Cleared when a newer leader ships the copy level with its
+  generation start.
+- **unkept**: a copy that took a ballot while its promises counted for
+  nothing, as a learner answering a unified fence does. Written before that
+  ballot, with `unkept_since` naming the newest generation such a ballot was
+  taken at (absent reads as 0). Cleared only by a readmission: the copy's log
+  counts a set newer than that generation naming it, under its own storage
+  id, as a voter, and holds that set's generation start, shipped by that
+  set's leader or a later one. A batch alone does not clear it. Such a ballot is no
+  kept promise, even after a crash that keeps it.
+
+A rotation keeps `doubted` and `unkept`. A file that does not decode reads as
+every mark on every copy, and the next write keeps that, so each copy clears
+only by the rules above. A directory that ran before without the file, such
+as one an older release ran on, starts with `untrusted all` only, and only
+when `copy-trust-kept` is absent too. It doubts
+nothing, since nothing says which copy it led and doubting all of them would
+refuse an older caller's fence on every idle shard, and it marks nothing
+unkept, since an older release never gave a learner a ballot. When the file
+does not say since when a copy is unkept, the broker writes its current
+ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
+neither reads nor writes the file.
+
+## `copy-trust-kept`: a release that keeps `copy-trust` ran here
+
+One text file at the durable root holding `copy_trust` and a newline,
+written, synced, the first time a start writes `copy-trust`, before it does,
+and never removed. It is what tells a directory an older release ran on
+from one whose `copy-trust` was lost: with it, a missing `copy-trust` reads
+as every mark on every copy. It is a file of its own because `run-state` and
+`storage-id` decode strictly, and an older release would take a changed one
+for a crash or a new directory. An older release neither reads nor writes it.
 
 ## `run-token`: the run the witness names
 

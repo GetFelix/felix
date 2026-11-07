@@ -276,13 +276,16 @@ impl InMemoryStore {
     }
 
     /// [`ControlPlaneStore::record_replica_report`], with the leadership
-    /// check optional for the Raft apply of entries that predate it.
+    /// check optional for the Raft apply of entries that predate it, and
+    /// `readmit` false for entries proposed below the level that records
+    /// [`crate::model::Readmitted`] evidence.
     pub(crate) async fn apply_replica_report(
         &self,
         report: ReplicaReport,
         leader: Option<&str>,
+        readmit: bool,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, leader).await
+        shards::record_replica_report(self, report, leader, readmit).await
     }
 
     /// [`ControlPlaneStore::register_node`], with the fleet check optional
@@ -753,7 +756,7 @@ impl ControlPlaneStore for InMemoryStore {
         report: ReplicaReport,
         leader: &str,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, Some(leader)).await
+        shards::record_replica_report(self, report, Some(leader), true).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {

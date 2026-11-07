@@ -191,12 +191,12 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
         let (id, rotated, _, kept) =
             start_run(root, &relaxed, registered, None).expect("after a crash");
         assert!(rotated, "a relaxed crash rotates the id");
-        (id, kept)
+        (id, kept.promises)
     };
 
     let root = tempfile::tempdir().expect("tempdir");
     let (id, rotated, _, kept) = start_run(root.path(), &relaxed, None, None).expect("first run");
-    assert!(!rotated && !kept, "a first run kept nothing");
+    assert!(!rotated && !kept.promises, "a first run kept nothing");
     let (id, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(kept, "a crash keeps every ballot");
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
@@ -220,7 +220,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
         None,
     )
     .expect("wiped");
-    assert!(!kept);
+    assert!(!kept.promises);
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(!kept, "a wiped directory's later crash");
 
@@ -235,7 +235,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     let (id, rotated, _, kept) =
         start_run(root.path(), &relaxed, Some(&restored(id)), None).expect("restored");
     assert!(rotated);
-    assert!(!kept, "a restored directory");
+    assert!(!kept.promises, "a restored directory");
     felix_storage::run_state::record_registration(root.path(), 5).expect("record");
     let (_, kept) = crash(root.path(), Some(&restored(id)));
     assert!(!kept, "a restored directory's later crash");
@@ -251,6 +251,104 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     felix_storage::run_state::record_replaced(root.path(), id, 0).expect("marker");
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(!kept, "an older build's replaced directory");
+}
+
+/// **A fence answer attests kept ballots only from a directory that never
+/// lost one.** A clean start and a crash of the directory the control plane
+/// names keep every ballot; a wiped directory, a restored one, and a crash
+/// with no record that names the old id do not, now or at a later start.
+/// A restore that went unnoticed would let a forgotten promise count
+/// (`CountsForgotten` in `docs/formal/FelixShardUnified.tla`); a wiped
+/// directory counted as kept is `CountNonKept`.
+#[test]
+fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
+    let relaxed = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..Default::default()
+    };
+    let clean = |root: &Path, id: StorageId, registered: Option<&Registered>| {
+        mark_clean_stop(root, id).expect("clean stop");
+        let (id, rotated, _, kept) = start_run(root, &relaxed, registered, None).expect("clean");
+        assert!(!rotated);
+        (id, kept.ballots)
+    };
+    let crash = |root: &Path, registered: Option<&Registered>| {
+        forget_boot(root).expect("forget the boot");
+        let (id, rotated, _, kept) = start_run(root, &relaxed, registered, None).expect("crash");
+        assert!(rotated);
+        (id, kept.ballots)
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, kept) = start_run(root.path(), &relaxed, None, None).expect("first run");
+    assert!(kept.ballots, "a new directory has lost nothing");
+    let (id, kept) = clean(root.path(), id, Some(&registered_as(Some(id))));
+    assert!(kept, "a clean restart");
+    let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
+    assert!(kept, "a crash of the directory the control plane names");
+    let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
+    assert!(
+        !kept,
+        "a crash with a record of an id this start did not rotate"
+    );
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (_, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
+    let (_, kept) = crash(root.path(), None);
+    assert!(!kept, "a crash without the control plane's record");
+
+    // Registered before storage ids, then wiped: nothing tells the new
+    // directory from the old one.
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, kept) = start_run(root.path(), &relaxed, Some(&registered_as(None)), None)
+        .expect("a record without a storage id");
+    assert!(!kept.ballots, "a record without a storage id");
+    let (_, kept) = clean(root.path(), id, Some(&registered_as(None)));
+    assert!(!kept, "nor at a later clean start");
+
+    let other = StorageId::from_bytes([9; 16]);
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, kept) = start_run(
+        root.path(),
+        &relaxed,
+        Some(&registered_as(Some(other))),
+        None,
+    )
+    .expect("wiped");
+    assert!(!kept.ballots, "a directory that replaced a lost copy");
+    let (id, kept) = clean(root.path(), id, Some(&registered_as(Some(id))));
+    assert!(!kept, "nor at its later clean start");
+    let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
+    assert!(!kept, "nor at its later crash");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
+    felix_storage::run_state::record_registration(root.path(), 2).expect("record");
+    let restored = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    let (_, kept) = {
+        mark_clean_stop(root.path(), id).expect("clean stop");
+        let (id, _, _, kept) =
+            start_run(root.path(), &relaxed, Some(&restored), None).expect("restored");
+        (id, kept.ballots)
+    };
+    assert!(!kept, "a restored directory");
+}
+
+/// **A start from the view attests no kept ballot**, whatever the directory
+/// says. Its restore check waits for the control plane, and until then a
+/// restored directory reads as one that kept everything.
+#[test]
+fn a_start_from_the_view_attests_no_kept_ballot() {
+    let kept = Kept {
+        promises: true,
+        ballots: true,
+    };
+    assert!(kept.attested(false));
+    assert!(!kept.attested(true));
+    assert!(!Kept::default().attested(false));
 }
 
 /// **Every run witnesses its directory anew**, with the control plane's

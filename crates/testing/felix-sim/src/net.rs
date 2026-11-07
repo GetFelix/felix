@@ -486,7 +486,7 @@ async fn deliver(
             // A crash ends the handler with its process; the caller sees the
             // connection drop rather than waiting on an answer.
             let handled = tokio::select! {
-                answer = handle_as(&to, handler.handle_from(peer, request)) => Some(answer),
+                answer = handle_as(&to, handler.handle_from(peer, from_offer, request)) => Some(answer),
                 _ = died.wait_for(|died| *died) => None,
             };
             let Some(answer) = handled else {

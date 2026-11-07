@@ -875,9 +875,11 @@ It is for a leader that counts a fence's promises and its coverage of
 acknowledged records separately: promises from copies that kept their
 ballots, coverage from trusted copies. Only a caller that offered
 `UNIFIED_FENCE` gets kind 54. To any other the replica drops the attestation
-and answers with `FenceKeptOk` or `FenceOk` as before. No broker offers
-`UNIFIED_FENCE` or attests yet, so every fence answer on the wire is still kind
-30 or 53.
+and answers with `FenceKeptOk` or `FenceOk` as before. A replica attests on
+every answer for a shard's own log (never a group or counter log), but no
+broker offers `UNIFIED_FENCE` yet, so every fence answer on the wire is still
+kind 30 or 53. `kept_from` is 0 or `u64::MAX` (counts for no set) for now:
+the set generation a readmission counts from is not yet tracked.
 
 | The replica | Answer |
 | --- | --- |
@@ -888,6 +890,29 @@ and answers with `FenceKeptOk` or `FenceOk` as before. No broker offers
 | has no copy of the named log to keep the promise in | `Unauthorized` |
 | led the shard before a crash that may have cost it acknowledged records, no newer leader has shipped to it since, and a set of two did not acknowledge what it may have lost: its last record is from an earlier generation than the one it accepted, or the route is not the failover straight after it with the same two members that failover's `fence_storage_ids` names, or the fence is not at the route's generation from the route's leader | `Unavailable`; retried, and the leader waits for a majority without it (`docs/replication-design.md`, "A leader's own crash") |
 | predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
+
+To a caller that offered `UNIFIED_FENCE`, the shard's own log answers
+`FenceAttestedOk` where it would refuse a learner (`Unauthorized`), or the copy
+it led before a crash (`Unavailable`, the set-of-two check included). The
+attestation says what the answer counts for: a learner's `kept_from` is
+`u64::MAX`, and a crashed leader's copy is not trusted. That includes a
+learner whose ballot names the fencing leader at the generation before, which
+an older caller counts: a unified fence gives a learner a ballot, so its
+ballot may be one taken while its promises counted for nothing; the
+replica records the copy as unkept before writing it, so an older caller
+does not count it after a crash either. A crashed leader's copy is recorded
+as doubted before its ballot, so it stays untrusted after a clean restart;
+if that record cannot be written the fence is refused `StorageFailed`. A
+learner's answer that counts for no set does not make this replica route the
+shard to a candidate. Three cases still refuse:
+
+- a copy given up on disk before a clean restart (`Unavailable`);
+- a copy with evidence of a wipe while the `joint_fence` gate is unread
+  (`Unavailable`, retried until the gate is read);
+- every group or counter log.
+
+The ballot and set refusals hold for every caller. No broker offers the bit
+yet, so every fence on the wire is still answered as the table says.
 
 The fence comes with a promotion, usually before the replica's routing view
 has the new generation, so a replica that is behind takes it rather than

@@ -30,10 +30,15 @@
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
 //!
+//! `<durable root>/copy-trust` names the copies a leader has vouched for
+//! since the last rotation, and the copies this broker led before a crash.
+//! See [`copy_trust`].
+//!
 //! `<durable root>/run-token` pairs the directory with a witness outside it,
 //! which a restore cannot bring back. See [`witness`].
 
 mod boot;
+pub mod copy_trust;
 pub mod witness;
 
 use std::path::{Path, PathBuf};
@@ -166,6 +171,7 @@ pub fn begin(
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
+    copy_trust::ensure(root, origin == Origin::Created)?;
     let last_run = read(root, loaded)?;
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
@@ -183,7 +189,9 @@ pub fn begin(
         };
     let rotate = restored || crashed;
     let id = if rotate {
-        let id = storage_identity::replace(root, fresh())?;
+        // Before the new id: a crash in between must not leave a rotated
+        // directory whose copies a later clean start still trusts.
+        let id = copy_trust::rotate_storage_id(root, fresh())?;
         if restored {
             tracing::warn!(
                 previous = %loaded,
@@ -359,6 +367,15 @@ pub fn record_lost_copy(root: &Path, lost: bool) -> Result<()> {
 pub fn lost_copy(root: &Path) -> Result<Option<bool>> {
     match crate::fs::read(root.join(LOST_COPY_FILE_NAME)) {
         Ok(bytes) => Ok(Some(bytes != b"kept\n")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
+/// The replaced-storage marker's raw bytes under `root`, or `None` without one.
+pub fn read_replaced_bytes(root: &Path) -> Result<Option<Vec<u8>>> {
+    match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
+        Ok(bytes) => Ok(Some(bytes)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(StorageError::Io(err)),
     }

@@ -651,10 +651,12 @@ sees, so its deposed leader is kept out by the lease alone either way.
 
 #### One fence rule for every change of leader
 
-This is the rule the broker is moving to. It is not in the code yet: today each
-kind of change (failover, election, rename, set change, readmission, a
-continuing leader) has its own counting, with special cases for copies doubted
-after an unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
+This is the rule the broker is moving to. Only the replica's side is in the
+code so far: the attestation, and the answer in place of a refusal described
+below. No leader offers `UNIFIED_FENCE` or reads the attestation yet, so today
+each kind of change (failover, election, rename, set change, readmission, a continuing
+leader) has its own counting, with special cases for copies doubted after an
+unclean crash. `docs/formal/FelixShardUnified.tla` checks the rule.
 
 A fence has to prove two separate things before the new leader at generation G
 opens.
@@ -681,10 +683,55 @@ quorum offset at the leader's generation, and right after an open it can sit
 below records an earlier generation acknowledged (`VouchBelowStart`). The
 start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
-readmits it may vouch for it. A broker that starts without the control plane
+readmits it may vouch for it.
+
+A vouch is held in the broker's process, so a clean restart loses it. The
+control plane keeps a durable form: when the leader of a set that names a
+replaced copy by its new storage id reports it caught up, the assignment
+records `readmitted {node, storage_id, generation, offset}` (see
+`docs/control-plane.md`, "Re-admitting a replaced copy"). An answer from that
+same copy is trusted when it shows a last generation of at least `generation`
+and a log end of at least `offset`. The generation clause is the commit-offset
+half above for this source: without it the offset alone could vouch for a copy
+missing records an earlier generation acknowledged. The control plane records
+this from metadata level 30; no fence reads it yet. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
-`TrustsRegistered`).
+`TrustsRegistered`). For now that is the whole run. A failed flush poisons the
+log and may have dropped acknowledged pages, so from then on the process
+attests no trusted copy, without waiting for the next start.
+
+In the code a directory **kept** its ballots when it was never restored and
+never replaced a lost copy, and, after an unclean start, the control plane's
+record names the storage id it had before (`Kept` in
+`services/felix-broker-service/src/node/storage.rs`). Trust after an unclean
+start is `UncleanStart::trust`, set where a replicated batch is applied, and the
+answer is `ReplicaHandler::attestation`.
+
+Trust has to outlive the process. A copy that crashed uncleanly, answered a
+fence and then restarted cleanly looks like any clean copy: the ballot it took
+replaced whatever said it was short, and a clean start has no unclean record.
+So a start that rotates the storage id first writes `copy-trust` at the
+durable root saying no copy is trusted, and each vouch adds the copy to it,
+synced, before the copy attests trusted (`docs/storage-format.md`). A later
+clean start reads the file, and only the next rotation clears it again. The
+same file names the copies this broker led before the crash, written before
+such a copy takes a newer leader's ballot, so the refusal in "A leader's own
+crash" also survives that ballot and a clean restart. It also names a copy that took a
+ballot while its promises counted for nothing, such as a learner answering a
+unified fence. Until a set newer than that ballot readmits it, that copy
+attests no kept ballot, and an
+older caller continuing from that ballot is refused as before, even after a
+crash that kept the ballot. A record that does not decode, or names
+another storage id than the directory's (an older release may have rotated
+it), marks every copy all three ways. Only a leader's batch clears a doubt,
+so while such a copy's leader is down an older caller's fence passes only by
+the set-of-two exception (`acknowledged_by_two`) or a continuing leader.
+Every rotation of the storage id, at startup, by a restore, or by the
+deferred restore check while the broker runs, goes through
+`copy_trust::rotate_storage_id`, which distrusts every copy, the running
+broker's record included, before the new id is written. A memory-only broker has
+no file and attests no kept ballot, so it never attests trusted.
 
 The sets a fence must cover are its own and the set of every start from an
 **anchor** up to G. The anchor is a generation with evidence it opened: its
@@ -697,6 +744,24 @@ is doubted, led before or a learner answers, and says in the answer whether it
 kept its ballots and whether it is trusted. The leader decides what the answer
 counts for. An answer from a peer that predates the rule counts as it does
 today.
+
+In the code the replica answers this way only to a caller that offered
+`UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
+the shard's own log (`ReplicaHandler::fence_from`). A learner, or a copy the
+fence's set lists only as a learner, answers with `kept_from` = `u64::MAX`, so
+its promise counts for nothing, even when its ballot names the fencing leader
+at the generation before: that ballot may be one a unified fence gave it while
+its promises counted for nothing. Before it takes such a ballot the replica
+records the copy as unkept in the directory's copy-trust record, so after a
+crash that keeps the ballot an older caller still does not count it, until a
+batch readmits the copy. A copy this broker led before an unclean crash
+answers untrusted. Before it takes the new ballot the replica records the copy
+as doubted, in the process and in the copy-trust record (refusing the fence
+if it cannot write it), so after a clean
+restart the copy still attests untrusted and an older leader's fence is still
+refused. A copy given up on disk before a clean restart still refuses, as it
+does an older caller. Group and counter logs carry no
+attestation and refuse as before. Every other caller gets today's refusals.
 
 What this replaces: the short-copy refusal, the two-member acknowledgement
 check, the learner's refusal, the continuing leader's ballot window and the

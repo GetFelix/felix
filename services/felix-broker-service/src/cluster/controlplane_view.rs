@@ -324,11 +324,7 @@ impl ViewFile {
     /// The replaced-storage marker's bytes, `Some(None)` without one, or
     /// `None` when it cannot be read.
     fn marker(&self) -> Option<Option<Vec<u8>>> {
-        match std::fs::read(self.root.join(felix_storage::run_state::REPLACED_FILE_NAME)) {
-            Ok(bytes) => Some(Some(bytes)),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Some(None),
-            Err(_) => None,
-        }
+        felix_storage::run_state::read_replaced_bytes(&self.root).ok()
     }
 
     /// Put `body` back after [`Self::forget`], unless the directory was

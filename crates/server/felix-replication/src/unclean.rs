@@ -22,6 +22,10 @@ pub struct UncleanStart {
     /// Shards a leader has shipped to this process: their copies have been
     /// compared with a leader's since the crash.
     vouched: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose copy a leader has shipped level through both its
+    /// generation's start and the commit offset it carried: the copy holds
+    /// everything that leader acknowledged ([`Self::trust`]).
+    trusted: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Copies this broker led before the crash that took a newer leader's
     /// ballot from a batch, which has not yet brought them a record of that
     /// leader's generation: the ballot no longer says what they lost.
@@ -32,6 +36,9 @@ pub struct UncleanStart {
     /// The crash lost no ballot: the directory was neither restored nor one
     /// that already replaced a lost copy, and ballots are always synced.
     kept_promises: bool,
+    /// Where a doubt is recorded so a clean restart still has it: the copy's
+    /// ballot stops saying so once it takes a newer leader's.
+    copy_trust: Option<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
 }
 
 /// A ballot this process wrote for its own candidacy. It replaced the ballot
@@ -53,10 +60,22 @@ impl UncleanStart {
             node_id: node_id.into(),
             led: parking_lot::Mutex::new(HashMap::default()),
             vouched: parking_lot::Mutex::new(HashSet::default()),
+            trusted: parking_lot::Mutex::new(HashSet::default()),
             stood: parking_lot::Mutex::new(HashMap::default()),
             doubted: parking_lot::Mutex::new(HashSet::default()),
             kept_promises: false,
+            copy_trust: None,
         }
+    }
+
+    /// Record every doubt in `trust` too, before the ballot that would end
+    /// it is written ([`Self::accepting`]).
+    pub fn with_copy_trust(
+        mut self,
+        trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+    ) -> Self {
+        self.copy_trust = Some(trust);
+        self
     }
 
     /// Note that the crash lost no ballot this directory took.
@@ -81,16 +100,51 @@ impl UncleanStart {
         self.vouched.lock().insert(key.clone());
     }
 
+    /// A leader shipped `key` a batch that left this copy level through both
+    /// the start of the leader's generation and the batch's commit offset,
+    /// which is above zero. Stricter than [`Self::vouch`]: right after an open
+    /// the commit offset can sit below records an earlier generation
+    /// acknowledged, and the start alone is short of what the leader
+    /// acknowledged since (`VouchBelowStart`, `StandInNoCatchUp` in
+    /// `docs/formal/FelixShardUnified.tla`).
+    pub(crate) fn trust(&self, key: &ShardKey) {
+        self.trusted.lock().insert(key.clone());
+    }
+
+    /// Whether [`Self::trust`] has been called for `key` in this process.
+    pub(crate) fn trusted(&self, key: &ShardKey) -> bool {
+        self.trusted.lock().contains(key)
+    }
+
     /// `log`, `key`'s copy, is about to take a leader's ballot at
     /// `generation` from a batch. A copy this broker led before the crash
     /// stays one until [`Self::vouch`], though the new ballot names another
-    /// leader.
-    pub(crate) fn accepting(&self, key: &ShardKey, log: &felix_broker::StreamLog, generation: u64) {
+    /// leader. The directory's copy-trust record keeps that too, synced off
+    /// the runtime; on an error the ballot must not be taken, since a clean
+    /// restart after it would forget the copy was led here.
+    pub(crate) async fn accepting(
+        &self,
+        key: &ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
         let accepted = log.accepted_generation();
         let raises = generation > accepted || (generation == accepted && log.gave_up());
-        if raises && self.led_before(key, log, generation) {
-            self.doubted.lock().insert(key.clone());
+        if !raises || !self.led_before(key, log, generation) {
+            return Ok(());
         }
+        self.doubted.lock().insert(key.clone());
+        let Some(trust) = &self.copy_trust else {
+            return Ok(());
+        };
+        let name = copy_key(key);
+        if trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        felix_common::blocking::spawn(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
     }
 
     /// Whether `log`, `key`'s copy, may be short of what this broker
@@ -203,6 +257,11 @@ impl UncleanStart {
     pub fn node_id(&self) -> &str {
         &self.node_id
     }
+}
+
+/// The name `key`'s copy goes by in the directory's copy-trust record.
+pub(crate) fn copy_key(key: &ShardKey) -> Vec<u8> {
+    serde_json::to_vec(key).expect("a shard key always serializes")
 }
 
 /// Whether `log` ever took a generation: a ballot, a recorded generation, or

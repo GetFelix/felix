@@ -29,6 +29,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("fenced move");

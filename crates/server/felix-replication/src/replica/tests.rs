@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 use super::*;
 
+mod copy_trust;
 mod election;
 mod fence;
 mod groups;
