@@ -145,17 +145,48 @@ export default function register(ctx) {
   });
 
   describe("lease tokens", () => {
-    it("a broker with no lease key refuses the token request with a typed error", async () => {
-      // The fixture's brokers have no lease token key, so this is the refusal
-      // path; minting needs a key file and lease templates the fixture lacks.
-      const { client, fixture, felix } = ctx;
-      const key = unique("lease-key");
-      await assert.rejects(
-        client.cachePutIfLease(
-          fixture.tenant_id, fixture.namespace, fixture.cache, key, Buffer.from("v"), { kind: "absent" }, 30,
-        ),
-        (err) => err instanceof felix.FelixError && /lease token/.test(err.message),
-      );
+    it("a minted token publishes to its own output only, a lost claim gets none, and a stale token is refused", async () => {
+      const { fixture, felix } = ctx;
+      const { tenant_id: tenant, namespace, lease_cache: cache } = fixture;
+      assert.ok(cache && fixture.lease_node_token && fixture.lease_keys.includes("ts"), "the fixture has no lease cache");
+      const claim = (client, key, ttlSeconds = 30) =>
+        client.cachePutIfLease(tenant, namespace, cache, key, Buffer.from("node"), { kind: "absent" }, ttlSeconds);
+      await withClient(fixture, { token: fixture.lease_node_token }, async (node) => {
+        // The node's own token names no output stream, so it cannot publish to one.
+        await assert.rejects(node.publish(tenant, namespace, "wl.ts.out", Buffer.from("denied")), felix.FelixError);
+
+        const won = await claim(node, "ts", 2);
+        assert.equal(won.result.applied, true);
+        assert.equal(won.tokenRefused, null);
+        assert.equal(typeof won.token.token, "string");
+        assert.equal(typeof won.token.expiresAt, "bigint");
+
+        const holder = await node.withIdentity(tenant, { token: won.token.token });
+        try {
+          await holder.publish(tenant, namespace, "wl.ts.out", Buffer.from("held"));
+          // The token names its key's output and no other.
+          await assert.rejects(holder.publish(tenant, namespace, "wl.ts2.out", Buffer.from("other")), felix.FelixError);
+
+          // The key is taken, so a second claim loses the write and gets no token.
+          const lost = await claim(node, "ts");
+          assert.equal(lost.result.applied, false);
+          assert.equal(lost.token, null);
+
+          // Past its expiry the holder's publishes end and no new identity opens.
+          let ended = false;
+          for (let i = 0; i < 80 && !ended; i++) {
+            ended = await holder.publish(tenant, namespace, "wl.ts.out", Buffer.from("late")).then(
+              () => false,
+              () => true,
+            );
+            if (!ended) await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+          assert.equal(ended, true, "a stale lease token kept publishing");
+        } finally {
+          holder.close();
+        }
+        await assert.rejects(node.withIdentity(tenant, { token: won.token.token }), felix.FelixError);
+      });
     });
   });
 

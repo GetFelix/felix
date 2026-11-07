@@ -119,6 +119,36 @@ public sealed class FelixCache
         });
     }
 
+    /// <summary>
+    /// <see cref="PutIfAbsentAsync"/> that also asks for a <see cref="LeaseToken"/> for the writer. Winning
+    /// the write makes the caller the lease's holder; the token grants what the caller's lease templates name for
+    /// the key. A broker that mints none still applies the write and says why in <see cref="LeaseWrite.TokenRefused"/>.
+    /// </summary>
+    public Task<LeaseWrite> PutIfAbsentLeaseAsync(string key, ReadOnlyMemory<byte> value, TimeSpan? ttl = null, CancellationToken cancellationToken = default) =>
+        PutIfLease(key, value, ttl, Absent, 0, cancellationToken);
+
+    /// <summary>
+    /// <see cref="PutIfVersionAsync"/> that also asks for a <see cref="LeaseToken"/>. A renewal (a put at the
+    /// held version) gets a fresh token.
+    /// </summary>
+    public Task<LeaseWrite> PutIfVersionLeaseAsync(string key, ReadOnlyMemory<byte> value, long version, TimeSpan? ttl = null, CancellationToken cancellationToken = default) =>
+        PutIfLease(key, value, ttl, AtVersion, version, cancellationToken);
+
+    private unsafe Task<LeaseWrite> PutIfLease(string key, ReadOnlyMemory<byte> value, TimeSpan? ttl, int kind, long version, CancellationToken cancellationToken)
+    {
+        Arg.Text(key);
+        var ttlMs = TtlMillis(ttl);
+        return client.Call<LeaseWrite>(cancellationToken, (handle, cancel, userData) =>
+        {
+            fixed (byte* data = value.Span)
+            {
+                return NativeMethods.felix_client_cache_put_if_lease(
+                    handle, Tenant, Namespace, Name, key, data, (nuint)value.Length, ttlMs, kind, unchecked((ulong)version),
+                    cancel, &Callbacks.OnLease, userData);
+            }
+        });
+    }
+
     /// <summary>Removes <paramref name="key"/> only if its entry has exactly <paramref name="version"/>.</summary>
     public unsafe Task<ConditionalResult> DeleteIfVersionAsync(string key, long version, CancellationToken cancellationToken = default)
     {

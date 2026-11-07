@@ -198,10 +198,11 @@ pub unsafe extern "C" fn felix_client_idempotent_producer(
         // The producer keeps the runtime alive, so this task holds the shared
         // state rather than only the client.
         let shared = Arc::clone(&client.shared);
+        let cluster = Arc::clone(client.cluster());
         let handle = client.cancel.clone();
         let done = Completion::<Box<FelixProducer>>::new(callback, user_data)?;
         client.shared.spawn(done, move |done| async move {
-            let created = shared.client().idempotent_producer();
+            let created = cluster.idempotent_producer();
             let outcome = tokio::select! {
                 biased;
                 () = cancelled(&handle, user.as_ref()) => None,

@@ -66,7 +66,10 @@ internal sealed record Fixture(
     string Cache,
     string SingleShardCache,
     string? TrimmerToken,
-    string? TrimStream)
+    string? TrimStream,
+    string? LeaseCache,
+    string? LeaseNodeToken,
+    string[] LeaseKeys)
 {
     internal static Fixture Load()
     {
@@ -87,7 +90,12 @@ internal sealed record Fixture(
             Text("cache"),
             Text("single_shard_cache"),
             root.TryGetProperty("trimmer_token", out var tt) && tt.ValueKind == JsonValueKind.String ? tt.GetString() : null,
-            root.TryGetProperty("trim_stream", out var ts) && ts.ValueKind == JsonValueKind.String ? ts.GetString() : null);
+            root.TryGetProperty("trim_stream", out var ts) && ts.ValueKind == JsonValueKind.String ? ts.GetString() : null,
+            root.TryGetProperty("lease_cache", out var lc) && lc.ValueKind == JsonValueKind.String ? lc.GetString() : null,
+            root.TryGetProperty("lease_node_token", out var ln) && ln.ValueKind == JsonValueKind.String ? ln.GetString() : null,
+            root.TryGetProperty("lease_keys", out var lk) && lk.ValueKind == JsonValueKind.Array
+                ? lk.EnumerateArray().Select(k => k.GetString()!).ToArray()
+                : []);
     }
 
     internal Task<FelixClient> ConnectAsync(string? token = null, CancellationToken ct = default) =>

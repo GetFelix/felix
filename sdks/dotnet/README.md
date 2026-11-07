@@ -50,9 +50,10 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
 - Idempotent producers
+- Record headers, page reads by offset range, lease-token writes and per-principal identities
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers are available in the Rust client only. A publish without a `key` puts every record on shard 0.
+A publish without a `key` puts every record on shard 0. A record's own key and headers (`PublishWithHeadersAsync`) do not route.
 
 ## Configuration
 
@@ -67,6 +68,7 @@ Record headers are available in the Rust client only. A publish without a `key` 
 | `CaFile` | A PEM file of CAs to trust. The system store when null. |
 | `ServerName` | The name the broker's certificate carries. Default `localhost`. |
 | `ClientCertFile`, `ClientKeyFile` | The client certificate and its key, as PEM files. |
+| `DisableRecordHeaders` | Stop offering record headers to brokers. Off by default. |
 | `ReconnectAttempts`, `ReconnectDeadline`, `ReconnectBackoff`, `ReconnectMaxBackoff` | Retry policy. `ReconnectAttempts` is an `int`; the others are `TimeSpan`. |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.

@@ -195,11 +195,12 @@ crashed and restarted, which reopens its data directory, or frozen, which cuts
 it off from every peer and from the control plane while it keeps running. Each
 broker's data directory lives in an in-memory filesystem that keeps a second,
 durable copy of every file and directory, so it can rebuild what a power loss
-would have left, with unsynced pages lost, torn or zeroed. The simulator can
-build that state, but its nemesis does not cut the power yet: today a crash is
-a process crash, half of them kills that leave the run state unclean so the
-restart runs the unclean-start handling, and the power-loss faults are in the
-[history checker](#the-history-checker) and the storage suite. With placement
+would have left, with unsynced pages lost, torn or zeroed. A crash is a
+process crash, half of them kills that leave the run state unclean so the
+restart runs the unclean-start handling. With power loss on
+(`FELIX_SIM_POWER_LOSS=1`), brokers fsync on commit and those kills become
+power cuts that land inside an append, and the run fails unless recovery
+repairs the torn tail. With placement
 faults on (`FELIX_SIM_PLACEMENT=1`), the nemesis also acts as an operator
 through the control plane's API: it moves shards, drains and removes brokers so
 follower seats are replaced, abandons held shards' logs, and stops a broker
