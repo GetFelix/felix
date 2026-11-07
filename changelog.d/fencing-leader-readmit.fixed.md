@@ -1,1 +1,0 @@
-A leader's fence no longer stalls for good when the set it leaves has two voters and one of them came back on new storage. The replaced copy never promises again, so the fence now counts half of that set from the other voters, opens, and reports, and the control plane can re-admit the member.

@@ -708,10 +708,7 @@ async fn fence_log<R: PeerRequester>(
     // fence counts per set being left, whether a continuing leader may count
     // it from any copy, and what it attested.
     let mut seen: Vec<Seen> = Vec::new();
-    // Every answer's node and copy, refusals too: one from another copy than
-    // a set being left names shows that copy is gone.
-    let mut heard: Vec<joint::Heard> = Vec::new();
-    let settled = |seen: &[Seen], heard: &[joint::Heard]| match joint {
+    let settled = |seen: &[Seen]| match joint {
         None => {
             let promised = usize::from(own.promises(set_generation))
                 + seen
@@ -725,7 +722,7 @@ async fn fence_log<R: PeerRequester>(
                     .count();
             promised >= needed && (continuing || 2 * covered >= voters)
         }
-        Some(joint) => joint.has_majorities(seen.iter().map(as_answered), heard, own, continuing),
+        Some(joint) => joint.has_majorities(seen.iter().map(as_answered), own, continuing),
     };
     // Answers from a copy the report did not name: they took the promise,
     // which still refuses the old leader, but count for nothing here.
@@ -802,13 +799,10 @@ async fn fence_log<R: PeerRequester>(
             .await
         });
     }
-    while !settled(&seen, &heard) {
+    while !settled(&seen) {
         let Some((node_id, addr, answer, identity)) = asks.next().await else {
             break;
         };
-        if answer.is_ok() && identity.is_some() {
-            heard.push((node_id.clone(), identity));
-        }
         match refusal(&node_id, &answer, shard.generation) {
             Some(Refusal::PromisedTo { leader, why }) => {
                 refusals.push(why);
@@ -922,7 +916,7 @@ async fn fence_log<R: PeerRequester>(
         }
     }
     drop(asks);
-    if !settled(&seen, &heard) {
+    if !settled(&seen) {
         let mut why = match joint {
             None => format!(
                 "{} of {} replicas took the fence on the {kind:?} log, {} needed with this broker",
@@ -932,7 +926,7 @@ async fn fence_log<R: PeerRequester>(
             ),
             Some(joint) => format!(
                 "on the {kind:?} log, {}",
-                joint.shortfall(seen.iter().map(as_answered), &heard, own)
+                joint.shortfall(seen.iter().map(as_answered), own)
             ),
         };
         if own.attested && joint.is_none() {
