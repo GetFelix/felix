@@ -325,10 +325,10 @@ unsafe fn open(
     // The new subscription keeps the runtime alive, so this task holds the
     // shared state rather than only the client.
     let shared = Arc::clone(&client.shared);
+    let cluster = Arc::clone(client.cluster());
     let handle = client.cancel.clone();
     let done = Completion::<Box<FelixShardedSubscription>>::new(callback, user_data)?;
     client.shared.spawn(done, move |done| async move {
-        let cluster = shared.client();
         let opened = async {
             match resume {
                 Some(offsets) => {

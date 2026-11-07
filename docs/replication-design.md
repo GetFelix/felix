@@ -1901,13 +1901,20 @@ view was registered under: a wiped directory, or one whose id rotated after a
 crash that may have lost acknowledged records, waits for the control plane
 and registers first, as the model's `Wipe` and rotating `Crash` assume.
 
-**What it does not protect against.** A directory restored from a snapshot
-without deleting `storage-id` votes on its old ballots until the control
-plane answers, and could then help elect two leaders at one generation. The
-broker checks for a restore as soon as the control plane answers, and stops
-before it registers, but that is after the fact. With the switch off the
-check runs before anything opens. A restore must delete `storage-id` or use
-`felix-broker restore-point` either way.
+A restored directory keeps its id and its view, so the id alone does not
+catch it. A copy that voted on its old ballots could help elect two leaders
+at one generation, and the model assumes a copy that lost its promises is
+never the copy a leader expects (`ContinuingCountsForgotten`, which TLC finds
+unsafe). So the start also needs the run witness, a file in `/dev/shm` that
+every start rewrites and a restore cannot bring back
+(`docs/durable-storage.md`, "The run witness"). Without it, after a reboot or
+on a restored directory, the broker waits for the control plane. The restore
+check still runs when the control plane answers.
+
+**What it does not protect against.** A copy taken during the broker's last
+run and put back before its next start holds the current witness token. The
+control plane's check cannot see that either. A restore must delete
+`storage-id` or use `felix-broker restore-point`.
 
 **The model.** `docs/formal/FelixShard.tla` has no restart that runs before
 the broker registers again: its `Crash` registers a rotated id at once. Such a

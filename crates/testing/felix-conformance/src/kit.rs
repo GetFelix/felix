@@ -379,6 +379,19 @@ pub struct Fixture {
     /// scenarios of one suite must not run at the same time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trim_stream: Option<String>,
+    /// A cache the brokers mint lease tokens for: a conditional write to a key
+    /// of it returns a token for the output stream `wl.<key>.out`. The lease
+    /// token slot in the node token's templates is this cache's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_cache: Option<String>,
+    /// A token that may write `lease_cache` and holds the template for the
+    /// output streams, but may not publish to them itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_node_token: Option<String>,
+    /// The keys of `lease_cache` whose output streams exist, so each client
+    /// suite takes its own and runs do not collide.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lease_keys: Vec<String>,
     /// True when the brokers store each record's publisher, so a client that
     /// asks for it (`ClientConfig::publishers`) gets one back. Absent from a
     /// fixture whose brokers do not, and a suite then expects none.

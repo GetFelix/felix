@@ -29,8 +29,12 @@
 //! `<durable root>/replaced-storage` says the control plane once registered
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
+//!
+//! `<durable root>/run-token` pairs the directory with a witness outside it,
+//! which a restore cannot bring back. See [`witness`].
 
 mod boot;
+pub mod witness;
 
 use std::path::{Path, PathBuf};
 

@@ -46,19 +46,43 @@ fn record(root: &Path, view: &View) {
         .expect("record the view");
 }
 
-/// A directory with a storage id and a view registered under it.
+const BOOT: Option<BootId> = Some(BootId::from_bytes([3; 16]));
+
+/// Where these tests keep run witnesses: inside the data directory, so it
+/// goes with it. A copy of the directory in a test leaves it out.
+fn witnesses(root: &Path) -> std::path::PathBuf {
+    root.join("witnesses")
+}
+
+/// The run that last ran on `root`, as far as its witness goes.
+fn run(root: &Path, token: u8) {
+    std::fs::create_dir_all(witnesses(root)).expect("witness dir");
+    assert!(
+        felix_storage::run_state::witness::witness(root, Some(&witnesses(root)), BOOT, [token; 16])
+            .expect("witness")
+    );
+}
+
+/// [`qualify`] in [`BOOT`], with the witnesses [`run`] writes.
+fn ask(root: &Path, node_id: &str, reported: &BTreeSet<String>) -> Result<View, Refusal> {
+    qualify(root, node_id, reported, Some(&witnesses(root)), BOOT)
+}
+
+/// A directory with a storage id, a view registered under it, and the
+/// witness of the run that left it.
 fn qualifying() -> (tempfile::TempDir, StorageId) {
     let dir = tempfile::tempdir().expect("dir");
     let (id, _) =
         felix_storage::storage_identity::load_or_create(dir.path(), || [7; 16]).expect("id");
     record(dir.path(), &view(id, election_fleet()));
+    run(dir.path(), 1);
     (dir, id)
 }
 
 #[test]
 fn a_directory_that_meets_every_rule_starts_from_its_view() {
     let (dir, id) = qualifying();
-    let started = qualify(dir.path(), ME, &reported()).expect("qualifies");
+    let started = ask(dir.path(), ME, &reported()).expect("qualifies");
     assert_eq!(started, view(id, election_fleet()));
     assert!(opened_under(&started, id));
 }
@@ -69,14 +93,14 @@ fn a_directory_that_meets_every_rule_starts_from_its_view() {
 fn no_view_waits() {
     let (dir, _) = qualifying();
     felix_storage::controlplane_view::forget(dir.path()).expect("forget");
-    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::NoView));
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::NoView));
 }
 
 #[test]
 fn another_nodes_view_waits() {
     let (dir, _) = qualifying();
     assert_eq!(
-        qualify(dir.path(), "broker-z", &reported()),
+        ask(dir.path(), "broker-z", &reported()),
         Err(Refusal::NoView)
     );
 }
@@ -88,7 +112,7 @@ fn a_directory_without_its_storage_id_waits() {
     let (dir, id) = qualifying();
     std::fs::remove_file(dir.path().join("storage-id")).expect("remove");
     assert_eq!(
-        qualify(dir.path(), ME, &reported()),
+        ask(dir.path(), ME, &reported()),
         Err(Refusal::OtherDirectory {
             on_disk: None,
             registered: id.to_hex(),
@@ -160,7 +184,7 @@ fn an_id_rotated_on_an_earlier_start_that_never_registered_waits() {
     assert!(rotated.rotated);
     // Killed: nothing recorded a stop. The next start asks first.
     assert_eq!(
-        qualify(dir.path(), ME, &reported()),
+        ask(dir.path(), ME, &reported()),
         Err(Refusal::OtherDirectory {
             on_disk: Some(rotated.id.to_hex()),
             registered: id.to_hex(),
@@ -176,10 +200,7 @@ fn a_fleet_without_replica_election_waits() {
         .filter(|feature| feature != felix_common::fleet::REPLICA_ELECTION.name())
         .collect();
     record(dir.path(), &view(id, fleet));
-    assert_eq!(
-        qualify(dir.path(), ME, &reported()),
-        Err(Refusal::NoElection)
-    );
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::NoElection));
 }
 
 /// A rolled-back build, or one started with elections off, lacks a feature
@@ -190,7 +211,7 @@ fn a_finalized_feature_this_build_does_not_report_waits() {
     let mut reported = reported();
     reported.remove(felix_common::fleet::REPLICA_ELECTION.name());
     assert_eq!(
-        qualify(dir.path(), ME, &reported),
+        ask(dir.path(), ME, &reported),
         Err(Refusal::Unreported(vec![
             felix_common::fleet::REPLICA_ELECTION.name().to_owned()
         ]))
@@ -217,7 +238,7 @@ fn a_directory_marked_replaced_waits() {
     // still not from a registration after the replacement.
     felix_storage::run_state::record_replaced(dir.path(), id, 4).expect("mark");
     record(dir.path(), &view(id, election_fleet()));
-    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::Replaced));
 }
 
 /// The node was deleted, registered from another disk at incarnations 0 and
@@ -228,7 +249,7 @@ fn a_directory_marked_replaced_waits() {
 fn a_view_from_before_a_replacement_waits_whatever_its_incarnation() {
     let (dir, id) = qualifying();
     felix_storage::run_state::record_replaced(dir.path(), id, 1).expect("mark");
-    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::NoView));
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::NoView));
 }
 
 /// Once the replaced directory registered its current id, the view written
@@ -241,7 +262,7 @@ fn a_view_registered_after_the_replacement_starts() {
     // Written by the registration that followed.
     record(dir.path(), &view(id, election_fleet()));
     assert_eq!(
-        qualify(dir.path(), ME, &reported()),
+        ask(dir.path(), ME, &reported()),
         Ok(view(id, election_fleet()))
     );
 }
@@ -254,12 +275,79 @@ fn a_marker_that_does_not_date_the_view_waits() {
     felix_storage::run_state::record_replaced(dir.path(), StorageId::from_bytes([9; 16]), 1)
         .expect("mark");
     record(dir.path(), &view(id, election_fleet()));
-    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::Replaced));
     std::fs::write(
         dir.path()
             .join(felix_storage::run_state::REPLACED_FILE_NAME),
         b"replaced\n",
     )
     .expect("an older build's marker");
-    assert_eq!(qualify(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::Replaced));
+}
+
+/// A copy of the directory taken before its last run began, put back while
+/// the control plane is down: it has the same storage id and view, and
+/// nothing in it shows it is older, so only the witness can refuse it (#2071).
+#[test]
+fn a_directory_restored_from_before_the_last_run_waits() {
+    let (dir, id) = qualifying();
+    let copy = tempfile::tempdir().expect("copy");
+    copy_files(dir.path(), copy.path());
+    // The next run, which the copy missed.
+    run(dir.path(), 2);
+    assert_eq!(
+        ask(dir.path(), ME, &reported()),
+        Ok(view(id, election_fleet()))
+    );
+    copy_files(copy.path(), dir.path());
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::Unwitnessed));
+}
+
+/// After a reboot nothing outside the directory can vouch for it.
+#[test]
+fn a_directory_after_a_reboot_waits() {
+    let (dir, _) = qualifying();
+    let rebooted = Some(BootId::from_bytes([4; 16]));
+    assert_eq!(
+        qualify(
+            dir.path(),
+            ME,
+            &reported(),
+            Some(&witnesses(dir.path())),
+            rebooted
+        ),
+        Err(Refusal::Unwitnessed)
+    );
+    assert_eq!(
+        qualify(
+            dir.path(),
+            ME,
+            &reported(),
+            Some(&witnesses(dir.path())),
+            None
+        ),
+        Err(Refusal::Unwitnessed)
+    );
+}
+
+/// A platform without a place for witnesses never starts from the view.
+#[test]
+fn a_directory_without_a_witness_waits() {
+    let (dir, _) = qualifying();
+    assert_eq!(
+        qualify(dir.path(), ME, &reported(), None, BOOT),
+        Err(Refusal::Unwitnessed)
+    );
+    std::fs::remove_dir_all(witnesses(dir.path())).expect("clear the witnesses");
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::Unwitnessed));
+}
+
+/// The top-level files of `from` into `to`, as a restore puts them back.
+fn copy_files(from: &Path, to: &Path) {
+    for entry in std::fs::read_dir(from).expect("read") {
+        let entry = entry.expect("entry");
+        if entry.file_type().expect("type").is_file() {
+            std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copy");
+        }
+    }
 }

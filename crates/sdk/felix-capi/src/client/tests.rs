@@ -137,6 +137,7 @@ fn a_field_is_read_only_when_size_covers_it() {
         reconnect_max_backoff_ms: 0,
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
+        disable_record_headers: false,
     };
     let options = read(&full);
     assert!(options.publishers && options.timestamps);
@@ -172,6 +173,7 @@ fn reconnect_options_default_and_apply() {
         reconnect_max_backoff_ms: 0,
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
+        disable_record_headers: false,
     };
     let policy = read(&full).reconnect_policy().unwrap();
     let default = felix_client::ReconnectPolicy::default();
@@ -231,6 +233,7 @@ fn a_max_backoff_below_the_backoff_is_allowed_and_a_year_caps_both() {
         reconnect_max_backoff_ms: 100,
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
+        disable_record_headers: false,
     };
     let policy = read(&base).reconnect_policy().unwrap();
     assert_eq!(policy.backoff, std::time::Duration::from_millis(500));
@@ -275,6 +278,7 @@ fn a_size_smaller_than_the_size_field_is_refused() {
         reconnect_max_backoff_ms: 0,
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
+        disable_record_headers: false,
     };
     // SAFETY: a live struct.
     let failure = unsafe { ConnectOptions::read(&bad) }.unwrap_err();
@@ -300,6 +304,7 @@ fn the_certificate_fields_are_read_only_when_size_covers_them() {
         reconnect_max_backoff_ms: 0,
         client_cert_file: cert,
         client_key_file: key,
+        disable_record_headers: false,
     };
     let got = read(&full);
     assert_eq!((got.client_cert_file, got.client_key_file), (cert, key));
@@ -441,6 +446,7 @@ mod tokens {
             reconnect_max_backoff_ms: 0,
             client_cert_file: std::ptr::null(),
             client_key_file: std::ptr::null(),
+            disable_record_headers: false,
         }
     }
 
@@ -647,4 +653,29 @@ mod tokens {
         assert_eq!(status, FELIX_STATUS_OK);
         assert_eq!(probe.released.load(Ordering::SeqCst), 1);
     }
+}
+
+#[test]
+fn record_headers_are_on_unless_the_caller_turns_them_off() {
+    let mut options = FelixConnectOptions {
+        size: size_of::<FelixConnectOptions>(),
+        publishers: false,
+        timestamps: false,
+        token_fetch: None,
+        token_user_data: std::ptr::null_mut(),
+        token_release: None,
+        reconnect_attempts: 0,
+        reconnect_deadline_ms: 0,
+        reconnect_backoff_ms: 0,
+        reconnect_max_backoff_ms: 0,
+        client_cert_file: std::ptr::null(),
+        client_key_file: std::ptr::null(),
+        disable_record_headers: false,
+    };
+    assert!(!read(&options).disable_record_headers);
+    options.disable_record_headers = true;
+    assert!(read(&options).disable_record_headers);
+    // A caller built before the field existed leaves headers on.
+    options.size = std::mem::offset_of!(FelixConnectOptions, disable_record_headers);
+    assert!(!read(&options).disable_record_headers);
 }

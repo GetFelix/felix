@@ -146,7 +146,7 @@ const NO_OUTCOME: &std::ffi::CStr = c"felix reported no outcome for this record"
 
 impl Recorded {
     /// A batch sent as one piece.
-    fn whole(count: usize, outcome: Result<Option<u64>, Failure>) -> Self {
+    pub(crate) fn whole(count: usize, outcome: Result<Option<u64>, Failure>) -> Self {
         let pieces = if count == 0 {
             Vec::new()
         } else {
@@ -194,7 +194,7 @@ impl Recorded {
         (FELIX_STATUS_OK, None)
     }
 
-    fn report(self, done: Completion<Self>) {
+    pub(crate) fn report(self, done: Completion<Self>) {
         let (status, message) = self.summary();
         done.with_status(status, message, self);
     }
@@ -541,17 +541,17 @@ pub unsafe extern "C" fn felix_client_publish_records(
 }
 
 /// The client and stream a publish goes to, owned so the task can hold them.
-struct Target {
-    inner: Arc<Client>,
-    tenant_id: String,
-    ns: String,
-    stream: String,
+pub(crate) struct Target {
+    pub(crate) inner: Arc<Client>,
+    pub(crate) tenant_id: String,
+    pub(crate) ns: String,
+    pub(crate) stream: String,
 }
 
 /// # Safety
 ///
 /// `client` is null or live, and each string null or NUL-terminated.
-unsafe fn target<'a>(
+pub(crate) unsafe fn target<'a>(
     client: *const FelixClient,
     tenant_id: *const c_char,
     ns: *const c_char,
@@ -567,7 +567,7 @@ unsafe fn target<'a>(
             required_str(stream, "stream")?.to_string(),
         )
     };
-    let inner = Arc::clone(client.shared.client());
+    let inner = Arc::clone(client.cluster());
     Ok((
         client,
         Target {
@@ -726,7 +726,7 @@ pub(crate) unsafe fn laid_end_to_end(
         .collect())
 }
 
-fn parse_ack(ack: FelixAckMode) -> Result<AckMode, Failure> {
+pub(crate) fn parse_ack(ack: FelixAckMode) -> Result<AckMode, Failure> {
     match ack {
         FELIX_ACK_NONE => Ok(AckMode::None),
         FELIX_ACK_PER_MESSAGE => Ok(AckMode::PerMessage),

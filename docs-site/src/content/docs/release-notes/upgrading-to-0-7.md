@@ -192,10 +192,17 @@ Later control-plane changes are on `main`:
   level 28. Below it the leader is named one generation up, as before, each
   rename waits the same 10 s, and it can take several renames to get past
   the ballot.
+- A placement write that lands more than one generation up records the
+  generation it replaced (`previous_generation`, #2024), so a leader renamed
+  past a withdrawn candidate's ballot does not leave its joint fence pending
+  for minutes: migration `0045`, level 29. Below it the broker learns no set
+  for the skipped generation, as before.
+- Postgres refuses a mount on a non-durable stream in the schema itself:
+  migration `0044`, with no Raft level.
 
-In short, Postgres runs migrations `0037` to `0043` on start (`0039` to
-`0043` are on `main` only), and under Raft these features wait for metadata
-levels 20 to 28. Upgrade every control-plane member before the brokers.
+In short, Postgres runs migrations `0037` to `0045` on start (`0039` to
+`0045` are on `main` only), and under Raft these features wait for metadata
+levels 20 to 29. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
 

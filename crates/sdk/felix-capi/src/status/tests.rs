@@ -103,3 +103,21 @@ fn a_trim_the_client_would_not_send_is_unsupported() {
     let unsupported = anyhow::Error::from(felix_client::TrimError::Unsupported).context("trim");
     assert_eq!(classify(&unsupported), FELIX_STATUS_UNSUPPORTED);
 }
+
+#[test]
+fn record_header_refusals_are_classified() {
+    use felix_client::RecordHeadersError;
+    let unsupported = anyhow::Error::from(RecordHeadersError::Unsupported).context("publish");
+    assert_eq!(classify(&unsupported), FELIX_STATUS_UNSUPPORTED);
+    for refusal in [
+        RecordHeadersError::EmptyName,
+        RecordHeadersError::ReservedName {
+            name: "felix.x".into(),
+        },
+    ] {
+        assert_eq!(
+            classify(&anyhow::Error::from(refusal)),
+            FELIX_STATUS_INVALID_ARGUMENT
+        );
+    }
+}

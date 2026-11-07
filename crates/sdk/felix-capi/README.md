@@ -179,9 +179,10 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
 - Idempotent producers
+- Record headers, page reads by offset range, lease-token writes and per-principal identities
 - Token refresh, cluster discovery, failover and following a shard that moves
 
-Record headers are available in the Rust client only. A publish with a null key puts every record on shard 0.
+A publish with a null key puts every record on shard 0. A record's own key and headers (`felix_client_publish_with_headers`) do not route.
 
 ## Configuration
 
@@ -196,6 +197,7 @@ Record headers are available in the Rust client only. A publish with a null key 
 | CA file | `ca_file`: a PEM file of CAs to trust. The system store when null. |
 | Server name | `server_name`: the name the broker's certificate carries. `localhost` when null. |
 | Client certificate | `client_cert_file` and `client_key_file` in `FelixConnectOptions`: PEM files. |
+| Record headers | `disable_record_headers` in `FelixConnectOptions`: stop offering them to brokers. Off by default. |
 | Reconnect policy | `reconnect_attempts`, `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms` in `FelixConnectOptions`. Times are in milliseconds. Zero is the default. |
 
 TLS is always on, and there is no switch to skip verification. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.

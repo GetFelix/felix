@@ -59,6 +59,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   controlplane.view                          ← what the control plane last said about this node's shards
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
+  run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
@@ -1250,6 +1251,29 @@ After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash.
 An older release neither reads nor writes the file.
+
+## `run-token`: the run the witness names
+
+One text file at the durable root: 32 lowercase hex digits, a random token
+each start writes, through `run-token.tmp`, synced, renamed and the directory
+synced, before any store opens. No newline.
+
+The token pairs the directory with the **run witness**, a file outside the
+directory in `/dev/shm` named `felix-run-<effective uid>-<crc32 of the
+directory's absolute path, 8 hex digits>`:
+
+```text
+felix-run
+boot=<the boot id, 32 hex digits>
+token=<the token>
+root=<the directory's absolute path>
+```
+
+The start removes the old witness before it writes the token and the new
+witness after, so a crash at any step leaves no witness or one naming the new
+token. A start from the control-plane view uses the directory only when the
+witness matches byte for byte. See `docs/durable-storage.md`, "The run
+witness". An older release neither reads nor writes either file.
 
 ## Consumer-group cursor values
 

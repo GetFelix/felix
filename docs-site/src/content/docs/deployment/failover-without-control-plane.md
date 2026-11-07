@@ -198,9 +198,17 @@ control plane is back and it registers, it serves no client and does not stand
 for election. It does not answer pings either, so followers of a shard it led
 treat it as down and elect one of themselves. It starts this way only if the
 control plane is down rather than refusing it, and only from the data
-directory the control plane last registered. The switch is off by default
-because a data directory restored from a backup is caught only once the
-control plane answers. Peers learn a broker's address only from the control
+directory the control plane last registered.
+
+It also starts this way only after a restart that keeps `/dev/shm`: the broker
+process restarting on the same Linux machine without a reboot, or its
+container restarting inside a live Kubernetes pod. A fresh container
+(`docker restart`, a Compose restart, a new pod), a reboot, and macOS all wait
+for the control plane. Each start leaves a small file in
+`/dev/shm` naming the data directory as that start left it. A directory put
+back from a backup does not match it, and a reboot clears it. Without a match
+the broker cannot rule out that its data was restored and has lost ballots it
+gave, so it waits for the control plane. Peers learn a broker's address only from the control
 plane, so a broker restarted while it is down votes only if it comes back at
 its registered address. See
 [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).

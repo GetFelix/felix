@@ -968,7 +968,7 @@ unsafe fn stream_target<'a>(
     Ok((
         client,
         Target {
-            inner: Arc::clone(client.shared.client()),
+            inner: Arc::clone(client.cluster()),
             tenant_id,
             ns,
             stream,

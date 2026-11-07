@@ -8,8 +8,8 @@
 //! caller does next: retry, give up, or resend only if idempotent.
 
 use felix_client::{
-    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, RetryClass, SubscribeCursorError,
-    SubscriptionLost, TrimError,
+    AckLost, AuthError, BrokerError, CommitError, NotLeaderError, RecordHeadersError, RetryClass,
+    SubscribeCursorError, SubscriptionLost, TrimError,
 };
 
 /// The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
@@ -72,6 +72,17 @@ pub(crate) fn classify(err: &anyhow::Error) -> FelixStatus {
             // The call checks these before it starts; one that gets here is
             // still the caller's argument.
             CommitError::NotOnOwningShard { .. } | CommitError::EventCount(_) => {
+                FELIX_STATUS_INVALID_ARGUMENT
+            }
+        };
+    }
+    if let Some(refusal) = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<RecordHeadersError>())
+    {
+        return match refusal {
+            RecordHeadersError::Unsupported => FELIX_STATUS_UNSUPPORTED,
+            RecordHeadersError::EmptyName | RecordHeadersError::ReservedName { .. } => {
                 FELIX_STATUS_INVALID_ARGUMENT
             }
         };
