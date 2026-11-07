@@ -1,249 +1,107 @@
-# felix-client for Node.js and TypeScript
+# felix-client for Node.js
 
-Node bindings for Felix, built as a wrapper over the Rust client rather than a
-reimplementation of the protocol.
+The Node.js and TypeScript client for [Felix](https://github.com/GetFelix/felix). It publishes to and reads from streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. It is a binding over the Rust client, so reconnection, redirects, retry classification and offsets behave as they do there.
 
-That distinction is the point. Reconnection, redirect-following, retry
-classification and offset bookkeeping are hard to get right and expensive to
-get wrong — a second implementation is a second set of subtle bugs in exactly
-the places that matter. Here they exist once, in `felix-client`, and every
-language binds to them. The Python binding is built on the same reasoning and
-exposes the same surface.
+## Install
 
 ```bash
 npm install felix-client
 ```
 
-The binary ships as one package per platform, declared as optional
-dependencies, so npm fetches only the one your machine needs. Nothing is
-compiled at install time. Linux (x86-64 and arm64, glibc 2.28 or newer, so
-Debian bookworm, RHEL 8 and Amazon Linux 2023), macOS (Intel and Apple silicon)
-and Windows x86-64 are covered. Alpine and other musl systems are not. Node 18
-or newer.
+## Quick start
 
-Full documentation: https://docs.getfelix.dev/clients/typescript/
-
-## One surface, and it is asynchronous
-
-Python offers two surfaces because its sync one is the older idiom. Node has no
-such split: blocking the event loop is not something a library may do, so every
-call here returns a `Promise`. napi-rs runs the future on its own Tokio runtime
-and settles the promise from there, which keeps the event loop free while a
-publish is in flight.
+Connect, subscribe, publish one record and read it back. Every call returns a `Promise`:
 
 ```ts
 import { Client } from "felix-client";
 
-const client = await Client.connect("127.0.0.1:5000", "t1", { token, caFile });
+const token = process.env.FELIX_TOKEN;
+if (!token) throw new Error("set FELIX_TOKEN");
 
-await client.publish("t1", "default", "events", Buffer.from("hello"));
-
-const events = await client.subscribe("t1", "default", "events");
-for (;;) {
-  const event = await events.nextEvent();
-  if (event === null) break;
-  console.log(event.payload.toString(), event.offset);
-}
-await events.close();
-```
-
-## Tokens that expire
-
-A token lasts 15 minutes by default. Give `connect` a `tokenProvider` and the
-client asks it for a fresh one when it needs one, never in the background, one
-call at a time:
-
-```ts
-const client = await Client.connect(addr, "t1", {
-  token: firstToken,
-  caFile,
-  tokenProvider: async (signal) => (await refresh(signal)).felix_token,
-});
-```
-
-The `signal` aborts at the 30 s fetch timeout, and once the last handle using the token (the client, its
-`withIdentity` clients, open subscriptions) is released; pass it to
-`fetch`. A failure keeps the held token while it is valid and otherwise reaches you as an
-`AuthError` with your message. `withIdentity` takes one too. See
-https://docs.getfelix.dev/clients/typescript/#getting-and-refreshing-a-token.
-
-## What it wraps
-
-Everything the Python binding wraps.
-
-| | |
-|---|---|
-| Publish | `publish(tenant, ns, stream, payload, key?, ack?, atLeastOnce?)` → the record's offset, or `null` when the broker acked before writing it |
-| Named shard | `publishOnShard(tenant, ns, stream, shard, payloads, ack?)` → the first record's offset; a shard the stream lacks is refused and nothing is written |
-| Idempotent producer | `producer()` → a `Producer`: `publish`, `publishBatch(..., key?)`, `publishBatches`, `abandonInDoubt`, `idFor`, `close(timeoutMs?)`. A batch that got no answer is sent again with the same call and lands once; `PublishRefusedError` (`reason`, `expected`, `tail`) ends the producer on that stream |
-| Publish batches | `publishBatch(tenant, ns, stream, payloads, key?, ack?)`; `publishRecords(tenant, ns, stream, records, ack?, atLeastOnce?)` splits keyed records by shard and resolves with a per-shard `BatchReport` |
-| Subscribe | `subscribe(tenant, ns, stream, start?, shard?)` → `nextEvent()`, `close()`, `closed`, `startOffset`, `liveOffset` |
-| Time and reads | `offsetForTime(tenant, ns, stream, shard, atMicros)` → the first offset at or after a time, or `null`; `read(tenant, ns, stream, shard, from, end?, maxRecords?)` → a `StreamPage` of committed records |
-| Sharded subscribe | `subscribeSharded(..., start?, resume?)` → `nextEvent()`, `positions()`, `shards` |
-| Stream shape | `streamShards(...)`, `endpoints()`, `refreshTopology()`, `connectionsPerNode()` |
-| Cache | `cachePut` (with TTL), `cacheGet`, `cacheDelete` |
-| Counters | `counterAdd`, `counterGet` |
-| Cache watches | `watchCache(..., key?, prefix?, start?, retained?)` → `recv()`, `retainedCount`; `watchCacheSharded(tenant, ns, cache, prefix, resume?, retained?)` merges a prefix across every shard → `recv()`, `resumeOffsets()`, `shards`, `retainedCount` |
-| Consumer groups | `groupPoll` (with `visibilityMs`), `groupAck`, `groupNack`, `groupNackAfter`, `groupDeadLetter`, `groupDeadLetters`, `groupDiscard`, `groupRedrive`, `groupExtend`, `groupSeek`, `groupCreate`, `groupDescribe`, `groupDelete` (each follows the broker's redirect to the shard's leader), the stream-wide `groupSeekStream`, `groupCreateStream`, `groupDescribeStream` and `groupDeleteStream`, and `groupSharded` → a `ShardedGroupHandle` that polls and settles across every shard |
-| Atomic commits | `commit(tenant, ns, entityKey, [CommitOp.publish \| enqueue, put, delete])` → `{ offset }`, `stateGet(tenant, ns, stream, entityKey, key)` → `{ value, version, asOf }`; `NotOnOwningShardError` and `EventCountError` refuse a commit that is not one record. See [atomic commits](../../../docs/atomic-commit.md) |
-| Head trims | `trimBefore(tenant, ns, stream, shard, before, expectedOffset, headers?)` → `{ trimmed, offset, oldest, tail }`; a stale tail is a result, and `TrimError` means the broker has no head trims |
-
-Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`,
-so on Node 24 and newer a `throw` releases it on the way out:
-
-```ts
-await using events = await client.subscribe("t1", "default", "events");
-```
-
-The package itself asks only for Node 18 — `await using` is the syntax that
-needs the newer runtime, not the disposal.
-
-### Routing keys decide the shard
-
-`publish` takes an optional key. Without one every record lands on shard 0, so
-a multi-shard stream behaves like a single-shard one:
-
-```ts
-await client.publish("t1", "default", "orders", payload, Buffer.from(customerId));
-```
-
-Records sharing a key share a shard and stay ordered with respect to each
-other. Records with different keys do not, once a stream has more than one
-shard.
-
-### Offsets are how you notice a drop
-
-Subscriber queues shed under the default policy rather than blocking the
-publisher, so a subscriber can silently miss records. On a durable stream each
-delivered event carries its log offset, and a jump in them is a drop —
-which is why `event.offset` is worth reading even when you do not resume from
-it. The one gap that is not a drop is a new leader's generation-start
-record, and the event after it says so: `offset - previous - 1n - skippedBefore`
-records were dropped.
-
-### A sharded subscription surfaces shard trouble rather than hiding it
-
-`subscribeSharded` merges every shard, and each item says which shard it came
-from. A lost shard arrives as an item of its own and does not disturb the
-others: they keep delivering, and the lost one resumes from its own last offset
-so nothing is skipped. Per-shard ordering is all a sharded stream has, and the
-handle does not pretend otherwise.
-
-### TLS is not optional
-
-QUIC has no unencrypted mode, so there are two trust choices and no third: the
-platform trust store (omit `caFile`) or an explicit CA file (what a self-signed
-development broker needs). There is deliberately no "skip verification" switch
-— it is the one setting that silently turns a secure deployment insecure, and a
-CA file covers the development case without it.
-
-### At-least-once publishing duplicates, and says so
-
-By default a publish whose outcome was ambiguous — the broker may or may not
-have written it before the connection went — is **reported, not re-sent**.
-Nothing downstream can tell two copies apart, so re-sending silently changes
-the delivery guarantee.
-
-```ts
-await client.publish("t1", "default", "events", payload, undefined, "per_message", true);
-```
-
-That is the opt-in. The record is then certain to land and **may land twice**.
-With a routing key it is re-sent to the key's shard. For at-least-once without
-the duplicate, use an idempotent producer:
-
-```ts
-await using producer = await client.producer();
-await producer.publish("t1", "default", "events", payload);
-```
-
-A rejection other than `PublishRefusedError` leaves the batch in doubt: call
-again with the same payloads and key and it lands once. A promise you stop
-waiting for does not cancel the send, so that batch is in doubt too. A
-refusal ends the producer on that stream.
-
-### Errors carry an identity, not just a message
-
-```ts
+const client = await Client.connect("127.0.0.1:5000", "t1", { token });
 try {
-  await client.publish("t1", "default", "events", payload);
-} catch (err) {
-  if (err instanceof OutcomeUnknownError) reconcile(); // it may have been written
-  else if (err.retryable) retry();                     // nothing was written
-  else if (err instanceof AuthError) giveUp();         // no amount of retrying grants a permission
+  // Subscribe before publishing: a subscription starts at the stream's tail.
+  const events = await client.subscribe("t1", "default", "events");
+  try {
+    await client.publish("t1", "default", "events", Buffer.from("hello"));
+    const event = await events.nextEvent();
+    if (event !== null) console.log(event.payload.toString(), event.offset);
+  } finally {
+    await events.close();
+  }
+} finally {
+  client.close();
 }
 ```
 
-`FelixError` is the base; `ConnectionError`, `ShardUnavailableError`,
-`OverloadedError`, `OutcomeUnknownError`, `AuthError`, `NotFoundError`,
-`CursorError` and `InvalidArgumentError` are the branches, mirroring the Python
-binding's exceptions. A broker that sends error codes picks the class, and the
-error carries its `code`, `retry` class and `detail`, as the Python exceptions
-do; from an older broker they are `undefined` and the class comes from the
-message. Each also carries a stable `kind` (`FELIX_AUTH`, …) for code that
-would rather switch than test `instanceof`. Never match on the message — it is prose, and it will be
-reworded.
+The stream has to exist first; create it with [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/).
 
-## What is not wrapped
+Every handle has an idempotent `close()` and implements `Symbol.asyncDispose`, so on Node 24 and newer `await using events = await client.subscribe(...)` releases it for you.
 
-The Rust client has more than this binding wraps. What is left out, and why:
+## What it covers
 
-- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
-  `stream_deleted` have no accessor on a subscription, sharded or not. A read
-  in flight holds the handle, so these need their own shared state. A
-  follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
-- **The single-connection `Connection` and `Publisher` layer** (`topology`,
-  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
-  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
-  `Client`, which owns those connections and runs the feature checks
-  itself.
-- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
-  futures; `publish_batches` is the iterator-shaped equivalent.
-- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
-  connection configuration, set once, not calls.
+- Publish and subscribe, with a log offset on every event of a durable stream
+- Sharded streams: routing keys, named shards, and subscribing to every shard
+- Consumer groups: poll, acknowledge, retry later, dead letters
+- Cache, counters and cache watches
+- Atomic commits, conditional writes and head trims
+- Idempotent producers
+- Token refresh, cluster discovery, failover and following a shard that moves
 
-## Conformance
+Record headers and client certificates (mutual TLS) are Rust only. A publish without a key puts every record on shard 0. `atLeastOnce` publishing resends after an ambiguous failure and can write a record twice; an idempotent producer (`client.producer()`) resends without the duplicate.
 
-This binding runs the client conformance suite and passes every required
-scenario in the catalogue, which is what makes "the Node client behaves like
-the Rust one" a checked claim rather than an intention.
+## Configuration
 
-The suite is not a mock. `felix-cluster client-fixture` starts a real
-three-node cluster, and the tests drive it: a redirect needs a broker that does
-not own the shard, and `reconnect.survives_broker_loss` kills the broker its
-client is connected to. Each test names the scenarios it demonstrates; the run
-writes a results document, and `felix-conformance verify` checks it against the
-catalogue. A test that fails, errors, or never runs becomes a non-passing
-outcome, so a green run that quietly skipped a required scenario is still
-reported as non-conformant.
+`Client.connect(addrs, tenantId, options)` takes the addresses and the tenant, then these options:
 
-```bash
-task ts:conformance          # build what it needs, run it, verify the verdict
-task conformance:scenarios   # the catalogue itself
+| Option | Meaning |
+| --- | --- |
+| `addrs` | One `host:port` or an array. Any reachable broker is enough. |
+| `tenantId` | The tenant to authenticate as. |
+| `token` | A Felix token. |
+| `tokenProvider` | A function that returns a fresh token, or a promise of one. It receives an `AbortSignal`. `token` is then optional. |
+| `caFile` | A PEM file of CAs to trust. The system store when omitted. |
+| `serverName` | The name the broker's certificate carries. Default `localhost`. |
+| `reconnectAttempts`, `reconnectDeadline`, `reconnectBackoff`, `reconnectMaxBackoff` | Retry policy. Times are in milliseconds. |
+
+TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file.
+
+A token lasts 15 minutes by default. A process that runs longer passes `tokenProvider` so the client can fetch a new one. [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) lists the same options for every client.
+
+## Errors
+
+Every error is a `FelixError`, with `kind`, `code`, `retry`, `detail` and `retryable`:
+
+```ts
+import { AuthError, FelixError, OutcomeUnknownError } from "felix-client";
+
+try {
+  await client.publish("t1", "default", "events", Buffer.from("hello"));
+} catch (err) {
+  if (err instanceof OutcomeUnknownError) {
+    // The record may have been written. Reconcile before sending it again.
+  } else if (err instanceof AuthError) {
+    // The token was refused. Retrying will not help.
+  } else if (err instanceof FelixError && err.retryable) {
+    // Nothing was written. Send it again.
+  } else {
+    throw err;
+  }
+}
 ```
 
-One optional scenario is recorded as skipped with its reason:
-`error.bad_offset_is_typed`, which needs a trimmed log that a client has no way
-to produce.
+The other classes are `ConnectionError`, `ShardUnavailableError`, `OverloadedError`, `NotFoundError`, `CursorError` and `InvalidArgumentError`. The client already retries what is safe to retry. Do not match on the message text. [Errors across clients](https://docs.getfelix.dev/clients/errors/) maps every code to the type each client raises.
 
-## Building
+## Supported platforms
 
-The crate lives outside the workspace, like `felix-python` and the crates under
-`demos/`: a Node addon is a `cdylib` whose Node symbols the host process
-resolves at load time, which is correct for an addon and fatal for a test
-binary linked by `cargo test --workspace`.
+Node 18 or newer. The native binary comes in a per-platform package that npm installs on its own, so nothing is compiled at install time. Linux (x86-64 and arm64, glibc 2.28 or newer), macOS (Intel and Apple silicon) and Windows (x86-64). Alpine and other musl systems are not supported.
 
-```bash
-task ts:check     # fmt, clippy, build — what CI runs
-task ts:build     # napi build --release (needs `npm i -g @napi-rs/cli@2`)
-```
+## Documentation
 
-Without the napi CLI you can still load the addon, because `napi build` is
-mostly a rename: build the `cdylib` and point Node at it directly.
+- [Node.js and TypeScript client guide](https://docs.getfelix.dev/clients/typescript/)
+- [Choosing a client](https://docs.getfelix.dev/clients/overview/)
+- [Delivery semantics](https://docs.getfelix.dev/architecture/semantics/)
 
-```bash
-cargo build --release
-cp ../../target/release/libfelix_typescript.dylib ./felix.node   # .so on Linux
-node -e "console.log(Object.keys(require('./felix.node')))"
-```
+## License
+
+Apache-2.0.
