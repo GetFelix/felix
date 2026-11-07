@@ -2460,7 +2460,7 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
         ..batch(6, first_offset, values)
     };
     assert_eq!(
-        leader.attestation(&key(), true, false),
+        leader.attestation(&key(), true, false, false),
         attested(0, false).expect("some")
     );
 
@@ -2488,7 +2488,7 @@ async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() 
     ship(from_six(3, &["x"], Some(4))).await;
     assert!(start.trusted(&shard));
     assert_eq!(
-        leader.attestation(&key(), true, false),
+        leader.attestation(&key(), true, false, false),
         attested(0, true).expect("some")
     );
 }

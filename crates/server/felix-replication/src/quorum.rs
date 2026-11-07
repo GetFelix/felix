@@ -310,6 +310,18 @@ impl QuorumMarks {
         self.readmits.get().copied().unwrap_or(false)
     }
 
+    /// Whether a readmission counts here: a copy's promises from the set
+    /// that readmitted it, and the control plane's `readmitted` record as a
+    /// vouch. Only while this broker knows the fleet has not finalized
+    /// `replica_election`. An adopted elected leader may have opened its
+    /// generation before a copy's loss, which neither rule can tell, so once
+    /// elections can happen (or before a registration says they cannot) a
+    /// readmitted copy counts as it would without a record. See "Readmission
+    /// and elections" in `docs/replication-design.md`.
+    pub(crate) fn readmission_counts(&self) -> bool {
+        self.fleet_decides(felix_common::fleet::REPLICA_ELECTION) == Some(false)
+    }
+
     /// Bind the durable directory's record of trusted and doubted copies.
     /// Call before this broker answers anything. Only the first call counts.
     pub fn set_copy_trust(&self, trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>) {

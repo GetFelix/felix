@@ -1312,11 +1312,14 @@ copy's promises count for that set and later ones. It counts only while the
 directory still has that storage id, so any rotation since, a restore among
 them, ends it. The first readmission under an id stands. Writing the line
 also marks the copy untrusted, so only a vouch from after the readmission
-trusts it.
+trusts it. The line counts only while the broker knows the fleet has not
+finalized `replica_election` (`docs/replication-design.md`, "Readmission and
+elections").
 
-A rotation keeps `doubted`, `unkept` and the `readmitted` lines, which then no longer match the id. A file that does not decode reads as
-every mark on every copy, and the next write keeps that, so each copy clears
-only by the rules above. A directory that ran before without the file, such
+A rotation keeps `doubted`, `unkept` and the `readmitted` lines, which then
+no longer match the id. A file that does not decode reads as every mark on
+every copy, and the next write keeps that, so each copy clears only by the
+rules above. A directory that ran before without the file, such
 as one an older release ran on, starts with `untrusted all` only, and only
 when `copy-trust-kept` is absent too. It doubts
 nothing, since nothing says which copy it led and doubting all of them would

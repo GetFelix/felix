@@ -710,13 +710,17 @@ The control plane keeps a durable form of a readmitting leader's vouch:
 when the leader of a set that names a replaced copy by its new storage id
 reports it caught up, the assignment records `readmitted {node, storage_id,
 generation, offset}` (see `docs/control-plane.md`, "Re-admitting a replaced
-copy"). A fence counts an answer from that same copy as trusted when the
-copy's promises count for the fenced set, its handshake names that storage
-id, and it shows a last generation of at least `generation` and a log end of
-at least `offset`. The generation clause is the commit-offset half above for
-this source: without it the offset alone could vouch for a copy missing
-records an earlier generation acknowledged. The record never makes a copy's
-promises count. The control plane records it from metadata level 30, and not
+copy"). The route carries these records to every broker, and the copy checks
+them itself when it answers a fence. A record stands in for the directory's
+vouch when it names this broker and its current storage id, and the copy's
+log shows a last generation of at least `generation` and ends at or past
+`offset`. It replaces only that vouch: a copy whose promises do not count,
+that was given up, is doubted, is on a poisoned process, or started
+uncleanly with no leader vouching since still attests untrusted. The leader
+reads no records; it counts what each copy attests, its own included. The
+generation clause is the commit-offset half above for this source: without
+it the offset alone could vouch for a copy missing records an earlier
+generation acknowledged. The record never makes a copy's promises count. The control plane records it from metadata level 30, and not
 from a leader that elected itself: that leader may have opened before the
 copy was replaced, at a generation the control plane adopted later for a set
 naming the new id, so it does not hold what the old copy acknowledged at that
@@ -743,6 +747,38 @@ copy untrusted until a vouch after the readmission. The record holds until
 the storage id rotates. Trust after an unclean
 start is `UncleanStart::trust`, set where a replicated batch is applied, and the
 answer is `ReplicaHandler::attestation`.
+
+#### Readmission and elections
+
+Both readmission rules, the readmitting set's promises and the control
+plane's record, assume the leader of the readmitting set opened its
+generation after the copy was lost. A leader the control plane named always
+did: a set naming the new storage id is written after the broker registered
+it. An elected leader the control plane adopted may not have. It can open at
+G before the loss, and the control plane can later adopt G for a set naming
+the new id. That leader's generation start then comes before records the old
+copy acknowledged at G. The control plane already records no `readmitted`
+entry from a report that says the leader elected itself, but an elected
+leader that restarts and is named again at the same generation reports
+without saying so, and a copy readmitted at an adopted generation looks like
+any other.
+
+Elections run only once the fleet finalized `replica_election`, and the
+control plane adopts an elected leader only then. So a readmission counts
+only while the broker knows the fleet has not finalized it
+(`QuorumMarks::readmission_counts`): on the copy, for what it attests, and on
+the leader, which counts no promise kept only from a readmitting set. A
+broker that has not yet had a registration answer cannot rule elections out
+and gives no credit. Once `replica_election` is finalized a copy on a
+directory that lost its ballots counts as it did before readmission was
+recorded: for no set, and untrusted. That costs
+liveness for fleets that opt into internal election, which is off by default
+(`FELIX_INTERNAL_ELECTION`), and nothing for the rest.
+
+The full fix is planned for after 0.7. A leader would report whether its
+epoch was fenced over a set of its own generation, the control plane would
+record readmissions only from such a leader (a new report field and metadata
+level), and the gate above would go.
 
 Trust has to outlive the process. A copy that crashed uncleanly, answered a
 fence and then restarted cleanly looks like any clean copy: the ballot it took

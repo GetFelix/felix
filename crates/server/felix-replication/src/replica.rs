@@ -1510,13 +1510,28 @@ impl ReplicaHandler {
         if request.election.as_ref().is_some_and(|e| !e.candidate) {
             self.heard_leader(&key);
         }
+        let answered_generation = last_generation(&log.generations(), log_end);
+        let recorded = attested
+            && matches!(
+                log_kind,
+                felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+            )
+            && self.router.snapshot().get(&key).is_some_and(|route| {
+                vouched_by_record(
+                    route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+                    self.router.local_node_id(),
+                    self.local_storage,
+                    answered_generation,
+                    log_end,
+                )
+            });
         InternalMessage::FenceOk(FenceOk {
             correlation_id,
             log_end,
             commit_offset: log.commit_offset(),
-            last_generation: last_generation(&log.generations(), log_end),
+            last_generation: answered_generation,
             kept_ballot,
-            attestation: attested.then(|| self.attestation(&key, voter, given_up)),
+            attestation: attested.then(|| self.attestation(&key, voter, given_up, recorded)),
         })
     }
 
@@ -1525,16 +1540,20 @@ impl ReplicaHandler {
     /// [`PeerCapabilities::UNIFIED_FENCE`].
     ///
     /// Its promises count from set generation 0 when the directory kept every
-    /// ballot and the copy votes, and for no set otherwise; a readmission's
-    /// lower bound is not tracked yet. The copy is trusted when its promises
-    /// count, it was not `given_up` and is not recorded as the copy this
-    /// broker led before a crash (marked on disk), no log in this process is
-    /// poisoned (a failed flush may have dropped acknowledged pages), and the
-    /// process started clean or a leader has since shipped it level through
-    /// that leader's mark ([`crate::unclean::UncleanStart::trust`]). The
-    /// directory's copy-trust record keeps that last part across restarts:
-    /// after any start that rotated the storage id, a later clean start still
-    /// waits for the vouch.
+    /// ballot and the copy votes, from the readmitting set's after a loss
+    /// ([`QuorumMarks::readmission_counts`]), and for no set otherwise. The
+    /// copy is trusted when its promises count, it was not `given_up` and is
+    /// not recorded as the copy this broker led before a crash (marked on
+    /// disk), no log in this process is poisoned (a failed flush may have
+    /// dropped acknowledged pages), and the process started clean or a leader
+    /// has since shipped it level through that leader's mark
+    /// ([`crate::unclean::UncleanStart::trust`]). The directory's copy-trust
+    /// record keeps that last part across restarts: after any start that
+    /// rotated the storage id, a later clean start still waits for the vouch,
+    /// unless the control plane's record vouches for the copy (`recorded`,
+    /// [`vouched_by_record`]).
+    ///
+    /// [`QuorumMarks::readmission_counts`]: crate::quorum::QuorumMarks::readmission_counts
     ///
     /// [`PeerCapabilities::UNIFIED_FENCE`]: felix_wire::internal::PeerCapabilities::UNIFIED_FENCE
     fn attestation(
@@ -1542,6 +1561,7 @@ impl ReplicaHandler {
         key: &felix_router::ShardKey,
         voter: bool,
         given_up: bool,
+        recorded: bool,
     ) -> felix_wire::internal::FenceAttestation {
         attest_copy(
             self.fleet.as_deref(),
@@ -1550,6 +1570,7 @@ impl ReplicaHandler {
             key,
             voter,
             given_up,
+            recorded,
         )
     }
 
@@ -2939,6 +2960,32 @@ pub(crate) fn generations_over(
         .collect()
 }
 
+/// Whether the control plane's `readmitted` record (`entries`, from the
+/// route) vouches for `node`'s copy: the leader of an entry's generation
+/// caught the copy with storage id `storage`, never rotated since, up to the
+/// entry's offset, and the log still ends at or past it with a last
+/// generation at least the entry's. The generation clause keeps a copy
+/// missing records an earlier generation acknowledged from passing on its
+/// length alone. Only for the shard's own log, whose offsets the entries
+/// are. See "Fencing a promotion" in `docs/replication-design.md`.
+pub(crate) fn vouched_by_record(
+    entries: &[felix_router::Readmitted],
+    node: &str,
+    storage: Option<felix_storage::StorageId>,
+    last_generation: u64,
+    log_end: u64,
+) -> bool {
+    let Some(storage) = storage.map(|id| id.to_hex()) else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry.node == node
+            && entry.storage_id == storage
+            && last_generation >= entry.generation
+            && log_end >= entry.offset
+    })
+}
+
 /// The generation the record just below `log_end` was written at, from the
 /// log's generation history; zero for an empty log.
 pub(crate) fn last_generation(generations: &[felix_storage::log::Epoch], log_end: u64) -> u64 {
@@ -2987,27 +3034,31 @@ pub(crate) fn attest_copy(
     key: &felix_router::ShardKey,
     voter: bool,
     given_up: bool,
+    recorded: bool,
 ) -> felix_wire::internal::FenceAttestation {
     let shard = crate::driver::watch_key(key);
     let name = crate::unclean::copy_key(&shard);
     let trust = fleet.and_then(crate::quorum::QuorumMarks::copy_trust);
+    let readmission_counts = fleet.is_some_and(crate::quorum::QuorumMarks::readmission_counts);
     // A directory that lost ballots keeps this copy's promises again only
     // from the set that readmitted it ([`ReplicaHandler::record_readmitted`]).
     let kept_from = if fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots) {
         Some(0)
-    } else if fleet.is_some_and(crate::quorum::QuorumMarks::readmits) {
+    } else if readmission_counts && fleet.is_some_and(crate::quorum::QuorumMarks::readmits) {
         trust.and_then(|trust| trust.readmitted(&name))
     } else {
         None
     };
     let kept =
         voter && kept_from.is_some() && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
+    // The control plane's record stands in only for the copy-trust vouch a
+    // clean restart can lose, never for any other reason to distrust.
     let trusted = kept
         && !given_up
         && !trust.is_some_and(|trust| trust.doubted(&name))
         && !poisoned
         && unclean.is_none_or(|unclean| unclean.trusted(&shard))
-        && trust.is_none_or(|trust| trust.trusted(&name));
+        && (trust.is_none_or(|trust| trust.trusted(&name)) || (recorded && readmission_counts));
     felix_wire::internal::FenceAttestation {
         kept_from: kept_from.filter(|_| kept).unwrap_or(u64::MAX),
         trusted,

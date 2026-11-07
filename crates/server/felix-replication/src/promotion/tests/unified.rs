@@ -335,41 +335,68 @@ async fn a_learner_own_copy_counts_no_promise() {
     );
 }
 
-/// **The control plane's `readmitted` record restores trust a clean restart
-/// lost**, for the copy it names and only on an answer that reaches it.
-/// broker-b's promises count but it attests no trusted copy, as after a
-/// restart that dropped the vouch a readmitting leader gave it; broker-c is
-/// down. With an entry from the leader of 4 caught up to offset 1, its
-/// answer at generation 4 covers, and this broker opens. An entry from a
-/// later generation (the answer's log could be missing what that
-/// generation acknowledged), past the answer's end, for another copy, or
-/// for a copy whose promises count for nothing does not.
+/// **A leader never trusts an answer on the control plane's record.** The
+/// record stands in for a lost vouch only on the replica, which alone knows
+/// whether its copy is also doubted, poisoned, given up or unclean. Here
+/// broker-b attests a doubted copy, broker-c is down, and the route holds a
+/// record matching broker-b's copy: nothing covers but this broker.
 #[tokio::test]
-async fn a_readmitted_record_covers_a_matching_answer() {
-    let entry = |generation, offset, storage_id: String| felix_router::Readmitted {
+async fn a_record_does_not_cover_an_untrusted_answer() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-c").reachable = false;
+    replicas.get_mut("broker-b").attests = Some(DOUBTED);
+    replicas
+        .get("broker-b")
+        .holds("broker-b", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = route();
+    route.readmitted = Some(Arc::new(vec![felix_router::Readmitted {
         node: "broker-b".to_string(),
-        storage_id,
-        generation,
-        offset,
+        storage_id: storage_of("broker-b").to_hex(),
+        generation: 4,
+        offset: 1,
+    }]));
+    let marks = unified(true);
+
+    let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
+
+/// [`unified`] for a broker that knows the fleet finalized
+/// `replica_election`.
+fn electing(kept: bool) -> crate::quorum::QuorumMarks {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+    let fleet = FleetGate::new([REPLICA_ELECTION.name()]);
+    fleet.restart([REPLICA_ELECTION.name()]);
+    let marks = crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet));
+    marks.set_unified_fence(true);
+    marks.set_kept_ballots(kept);
+    marks
+}
+
+/// **A promise kept only from a readmitting set counts while the fleet has
+/// not finalized `replica_election`, and not once it has**, whatever the
+/// replica attests: an adopted elected leader may have opened that set's
+/// generation before the copy's loss. broker-b attests promises from the set
+/// of 1, trusted; broker-c is down. A copy whose directory kept its ballots
+/// counts either way.
+#[tokio::test]
+async fn a_readmitted_answer_counts_only_while_elections_are_off() {
+    let readmitted = FenceAttestation {
+        kept_from: 1,
+        trusted: true,
     };
-    let own = storage_of("broker-b").to_hex();
-    let other = storage_of("broker-c").to_hex();
-    let cases = [
-        (None, DOUBTED, false),
-        (Some(entry(4, 1, own.clone())), DOUBTED, true),
-        (Some(entry(5, 1, own.clone())), DOUBTED, false),
-        (Some(entry(4, 100, own.clone())), DOUBTED, false),
-        (Some(entry(4, 1, other)), DOUBTED, false),
-        (
-            Some(entry(4, 1, own)),
-            FenceAttestation {
-                kept_from: u64::MAX,
-                trusted: false,
-            },
-            false,
-        ),
-    ];
-    for (readmitted, attests, opens) in cases {
+    let kept = FenceAttestation {
+        kept_from: 0,
+        trusted: true,
+    };
+    for (attests, electing_fleet, opens) in [
+        (readmitted, false, true),
+        (readmitted, true, false),
+        (kept, true, true),
+    ] {
         let mut replicas = Replicas::new();
         replicas.get_mut("broker-c").reachable = false;
         replicas.get_mut("broker-b").attests = Some(attests);
@@ -378,16 +405,18 @@ async fn a_readmitted_record_covers_a_matching_answer() {
             .holds("broker-b", 4, 0, &["a"])
             .await;
         let (leader, _dir) = leader_holding(4, &["a"]).await;
-        let mut route = route();
-        route.readmitted = readmitted.clone().map(|entry| Arc::new(vec![entry]));
-        let marks = unified(true);
+        let marks = if electing_fleet {
+            electing(true)
+        } else {
+            unified(true)
+        };
 
-        let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+        let outcome = fence_unified(&replicas, &leader, &route(), None, &marks).await;
 
         assert_eq!(
             matches!(outcome, Outcome::Fenced { .. }),
             opens,
-            "{readmitted:?} {attests:?}: {outcome:?}"
+            "{attests:?} electing {electing_fleet}: {outcome:?}"
         );
     }
 }
