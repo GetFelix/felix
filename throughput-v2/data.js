@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794029725526,
+  "lastUpdate": 1794033236833,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48360,6 +48360,58 @@ window.BENCHMARK_DATA = {
             "range": "4035.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814401.46\nmean: 814223.43\nstdev: 4035.67\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16ab2653c7c5d653278429fad90a35822c173563",
+          "message": "fix(capi): keep the C docs example to standard C and gate open_broker on the sim feature (#2093)\n\nstrdup is not declared under -std=c11 on glibc, so the doc-example compile failed and the C conformance run never wrote its results file.",
+          "timestamp": "2026-11-06T22:26:33-08:00",
+          "tree_id": "cfa0c805d332ff060feeea872f81424ef8ed03f4",
+          "url": "https://github.com/GetFelix/felix/commit/16ab2653c7c5d653278429fad90a35822c173563"
+        },
+        "date": 1794033236074,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347739.3,
+            "range": "21828.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347739.30\nmean: 342642.07\nstdev: 21828.04\ncv: 6.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347739.3,
+            "range": "21828.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347739.30\nmean: 342642.07\nstdev: 21828.04\ncv: 6.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81054.41,
+            "range": "906.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81054.41\nmean: 80986.71\nstdev: 906.51\ncv: 1.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810544.1,
+            "range": "9065.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810544.10\nmean: 809867.06\nstdev: 9065.10\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
