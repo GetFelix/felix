@@ -592,6 +592,17 @@ until then a report carries none and the member is named with an empty one. `Fel
 the fenced, follower-acked path, and `FelixShardFencedCrashCountsRotated.cfg`
 finds the lost record when the rotated copy counts.
 
+A joint fence that leaves a set with a staged learner can stall the same way
+on a leader that does not count by attestation (`FELIX_UNIFIED_FENCE=0`, or an
+older broker). It needs a majority of the set with its learner, the learner
+refuses as not a replica, and one voter that cannot answer, down or refusing
+until a set change readmits it, leaves the fence one short. The shard's status
+then reads like `2 of 4 and 2 of 3 voters of the set being left`. The way out
+is the same: stop the promoted broker, run
+`felixctl placement abandon <name> <shard> --yes`, and start it again. A
+leader that counts by attestation needs only half of the set with its learner
+and does not stall here (see "One fence rule for every change of leader").
+
 The identity is the evidence because it is what changes on every loss: a
 wipe, a crash under a relaxed fsync mode and a restore all give a new one
 (see [Storage identities](#storage-identities)). The same identity as the
@@ -846,6 +857,26 @@ counts by the attestation it would give another leader (`OwnCopy`). A joint
 fence counts both per set. An attested answer that promises nothing still
 takes the ballot, and its log may still be the one taken, but the fence
 waits rather than report a refusal, since a later generation might count it.
+
+A joint fence counts each set it leaves twice: its voters alone, and its
+voters with its learners, because a leader that counted a staged learner as a
+voter may have acknowledged on a majority of the larger set. A learner the new
+route does not name refuses every fence as not a replica. With a majority of
+the larger set needed, a set with one staged successor then needs every voter
+but one, and one voter that cannot answer stalls the fence for good. So a
+leader that counts by attestation needs only half of the set with its
+learners (`2 * promised >= members`), beside a majority of its voters, and
+does not ask a learner the route no longer names. Half of a set meets every
+majority of it, so no acknowledgement on the larger set is missed, and two
+fences that both know the learners meet in the voters. With one learner a
+majority of the voters is already half of the whole set. With two it is not,
+and the half still matters: without it, an acknowledgement on one voter and
+both learners slips past a fence on the other two voters
+(`FelixShardUnifiedLearnerVariantDropped.cfg`).
+`FelixShardUnifiedLearnerBlocking.cfg` and
+`FelixShardUnifiedLearnerBlockingTwo.cfg` check the rule, and
+`promotion/tests/joint_learner.rs` the code. A leader that does not count by
+attestation still needs a majority of both.
 
 In the code the replica answers this way only to a caller that offered
 `UNIFIED_FENCE`, since only such a caller gets the attestation, and only for
@@ -5309,7 +5340,9 @@ acknowledgement is the one it was.
 
 > `a_cut_over_swapping_two_members_waits_for_the_old_majority`: the joint
 > fence. `a_joint_fence_never_counts_a_learner`: learners in the set being
-> left. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
+> left. `a_fence_leaving_a_staged_learner_opens_on_half_the_set_with_it` and
+> `a_fence_leaving_two_learners_still_needs_half_of_the_whole_set`: half of
+> the set with its learners, for a leader that counts by attestation. `a_joint_fence_counts_the_old_set_only_from_the_copies_it_names`: the
 > copy check. `a_member_the_new_route_leaves_out_still_answers_a_joint_fence`:
 > a voter of the set being left answers though its routing view no longer
 > names it. `under_joint_fence_a_shipping_leader_keeps_the_set_it_leaves`:
