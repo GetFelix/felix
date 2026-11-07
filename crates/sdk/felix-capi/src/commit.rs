@@ -227,7 +227,7 @@ pub(crate) unsafe fn scope<'a>(
             required_str(ns, "ns")?.to_string(),
         )
     };
-    let inner = Arc::clone(client.shared.client());
+    let inner = Arc::clone(client.cluster());
     Ok((
         client,
         Scope {

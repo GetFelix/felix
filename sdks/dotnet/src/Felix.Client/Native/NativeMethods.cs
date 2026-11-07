@@ -28,6 +28,7 @@ internal struct NativeConnectOptions
     public ulong ReconnectMaxBackoffMs;
     public nint ClientCertFile;
     public nint ClientKeyFile;
+    public byte DisableRecordHeaders;
 }
 
 /// <summary><c>FelixGroupRecord</c>, borrowed for the length of a callback.</summary>

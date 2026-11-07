@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::Event;
+use felix_client::{Event, RecordHeaders};
 
 use crate::boundary::{Failure, guard, guard_void, write_optional};
 use crate::status::{FELIX_STATUS_OK, FelixStatus};
@@ -16,6 +16,7 @@ pub struct FelixEvent {
     skipped_before: u64,
     publisher: Option<Arc<str>>,
     timestamp_micros: Option<u64>,
+    headers: Option<RecordHeaders>,
 }
 
 impl From<Event> for FelixEvent {
@@ -26,6 +27,7 @@ impl From<Event> for FelixEvent {
             skipped_before: event.skipped_before,
             publisher: event.publisher,
             timestamp_micros: event.timestamp_micros,
+            headers: event.headers,
         }
     }
 }
@@ -171,6 +173,119 @@ pub unsafe extern "C" fn felix_event_timestamp(
         unsafe {
             write_optional(out_has, event.timestamp_micros.is_some());
             write_optional(out_micros, event.timestamp_micros.unwrap_or(0));
+        }
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// The record's key, as the publisher gave it in `FelixRecord.key`. This is
+/// the key stored with the record, which does not route.
+///
+/// Absent (`*out_data` null, `*out_len` zero) unless the publisher set one
+/// and the client kept record headers on (`FelixConnectOptions.disable_record_headers`
+/// off). An empty key is also reported as absent. `*out_data` stays valid until
+/// the event is freed.
+///
+/// # Safety
+///
+/// `event` is a live event, and both out-pointers are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_event_key(
+    event: *const FelixEvent,
+    out_data: *mut *const u8,
+    out_len: *mut usize,
+) -> FelixStatus {
+    guard(|| {
+        if out_data.is_null() || out_len.is_null() {
+            return Err(Failure::invalid("out_data and out_len must not be null"));
+        }
+        // SAFETY: null or a live event, per the contract above.
+        let event = unsafe { live(event) }?;
+        let (data, len) = event
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.key.as_deref())
+            .filter(|key| !key.is_empty())
+            .map_or((std::ptr::null(), 0), |key| (key.as_ptr(), key.len()));
+        // SAFETY: both checked non-null; the caller promises they are
+        // writable.
+        unsafe {
+            out_data.write(data);
+            out_len.write(len);
+        }
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// How many headers the record carries, in the order the publisher sent them.
+/// Zero for a plain record, and when record headers were not negotiated.
+///
+/// # Safety
+///
+/// `event` is a live event, and `out_count` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_event_header_count(
+    event: *const FelixEvent,
+    out_count: *mut usize,
+) -> FelixStatus {
+    guard(|| {
+        if out_count.is_null() {
+            return Err(Failure::invalid("out_count is null"));
+        }
+        // SAFETY: null or a live event, per the contract above.
+        let event = unsafe { live(event) }?;
+        let count = event.headers.as_ref().map_or(0, |h| h.headers.len());
+        // SAFETY: checked non-null; the caller promises it is writable.
+        unsafe { out_count.write(count) };
+        Ok(FELIX_STATUS_OK)
+    })
+}
+
+/// One header of the record: its name (UTF-8, not NUL terminated) and value.
+///
+/// `index` is below `felix_event_header_count`. A name may repeat. A value may
+/// be empty, which reads as null with length zero. The pointers stay valid
+/// until the event is freed.
+///
+/// # Safety
+///
+/// `event` is a live event, and the out-pointers are writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn felix_event_header(
+    event: *const FelixEvent,
+    index: usize,
+    out_name: *mut *const u8,
+    out_name_len: *mut usize,
+    out_value: *mut *const u8,
+    out_value_len: *mut usize,
+) -> FelixStatus {
+    guard(|| {
+        if out_name.is_null()
+            || out_name_len.is_null()
+            || out_value.is_null()
+            || out_value_len.is_null()
+        {
+            return Err(Failure::invalid("the out-pointers must not be null"));
+        }
+        // SAFETY: null or a live event, per the contract above.
+        let event = unsafe { live(event) }?;
+        let (name, value) = event
+            .headers
+            .as_ref()
+            .and_then(|headers| headers.headers.get(index))
+            .ok_or_else(|| Failure::invalid(format!("header index {index} is out of range")))?;
+        let value_at = if value.is_empty() {
+            std::ptr::null()
+        } else {
+            value.as_ptr()
+        };
+        // SAFETY: all checked non-null; the caller promises they are
+        // writable.
+        unsafe {
+            out_name.write(name.as_ptr());
+            out_name_len.write(name.len());
+            out_value.write(value_at);
+            out_value_len.write(value.len());
         }
         Ok(FELIX_STATUS_OK)
     })
