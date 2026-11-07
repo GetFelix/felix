@@ -2016,6 +2016,46 @@ fn entry_for(storage: [u8; 16]) -> felix_router::Readmitted {
     }
 }
 
+/// **A record vouches only for the copy it names, caught up as far as it
+/// says.** The copy holds one record at 6. An entry from a later generation
+/// (the copy could be missing what that generation acknowledged), past the
+/// copy's end, or for another node vouches for nothing.
+#[tokio::test]
+async fn a_record_vouches_only_for_a_copy_that_holds_what_it_says() {
+    let cases = [
+        (entry_for(OWN), true),
+        (
+            felix_router::Readmitted {
+                generation: 7,
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+        (
+            felix_router::Readmitted {
+                offset: 2,
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+        (
+            felix_router::Readmitted {
+                node: "broker-a".to_string(),
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+    ];
+    for (entry, trusted) in cases {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (copy, _trust) = readmitted_at_6(&broker, trust_dir.path(), marks(true)).await;
+        publish_readmitted(&copy.router, vec![entry.clone()]);
+
+        assert_eq!(attested_at_7(&copy).await.trusted, trusted, "{entry:?}");
+    }
+}
+
 /// **The control plane's `readmitted` record vouches for a copy only in
 /// place of the copy-trust vouch a clean restart loses.** A readmitted copy
 /// the record names, by its current storage id and caught up to what it

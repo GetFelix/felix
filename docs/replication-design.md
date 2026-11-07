@@ -720,10 +720,11 @@ uncleanly with no leader vouching since still attests untrusted. The leader
 reads no records; it counts what each copy attests, its own included. The
 generation clause is the commit-offset half above for this source: without
 it the offset alone could vouch for a copy missing records an earlier
-generation acknowledged. The record never makes a copy's promises count. The control plane records it from metadata level 30, and not
-from a leader that elected itself: that leader may have opened before the
-copy was replaced, at a generation the control plane adopted later for a set
-naming the new id, so it does not hold what the old copy acknowledged at that
+generation acknowledged. The record never makes a copy's promises count.
+The control plane records it from metadata level 30, and not from a
+leader that elected itself: that leader may have opened before the copy was
+replaced, at a generation the control plane adopted later for a set naming
+the new id, so it does not hold what the old copy acknowledged at that
 generation. A control plane below level 30 sends no records, and the fence
 then trusts on the answer alone. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
