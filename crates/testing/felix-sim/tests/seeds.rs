@@ -486,9 +486,9 @@ fn seed_33_abandoning_held_shards_replays_the_same_twice() {
     not(tokio_unstable),
     ignore = "replays this seed's run only under --cfg tokio_unstable"
 )]
-fn seed_3_kills_between_promotion_and_open_replay_the_same_twice() {
+fn seed_7_kills_between_promotion_and_open_replay_the_same_twice() {
     placement_shape_runs_the_same_twice(
-        3,
+        7,
         &[
             "named leader of stream/*, before it opens",
             "elected leader of stream/*, before it opens",
