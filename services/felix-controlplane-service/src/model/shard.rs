@@ -263,6 +263,35 @@ pub struct ShardAssignment {
     /// Under Raft it needs metadata level 29.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_generation: Option<u64>,
+    /// Members whose replaced storage a leader has shown caught up, one entry
+    /// per member: see [`Readmitted`]. Store-owned like `generation`: the
+    /// store records an entry from a leader's report and carries it to later
+    /// writes while the member stays in the set under that storage identity;
+    /// whatever a caller passes is replaced. Under Raft it needs metadata
+    /// level 30.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub readmitted: Vec<Readmitted>,
+}
+
+/// A copy whose storage was replaced, shown caught up by the leader of a set
+/// that names it by its new storage identity.
+///
+/// The leader of `generation` reported `node`'s copy `storage_id` caught up
+/// to `offset`. That set names the copy by `storage_id`, which only a write
+/// made after the identity registered can do, so it is a set introduced
+/// after the copy lost what it held. A fence may then trust an answer from
+/// that same copy showing a last generation of at least `generation` and a
+/// log end of at least `offset` (`docs/replication-design.md`, "Fencing a
+/// promotion").
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct Readmitted {
+    pub node: String,
+    /// The copy's storage identity (32 lowercase hex).
+    pub storage_id: String,
+    /// The generation whose leader reported the copy caught up.
+    pub generation: u64,
+    /// Where that report put the copy.
+    pub offset: u64,
 }
 
 /// A leader that elected itself, as its report names it (rule 10 of
@@ -817,6 +846,83 @@ impl ShardAssignment {
             .flat_map(|pending| pending.replicas.iter())
             .filter(|node| !self.nodes().any(|named| named == *node));
         self.nodes().chain(pending)
+    }
+
+    /// The [`Readmitted`] entries `report` adds to this assignment: a
+    /// learner it shows caught up, from this assignment's leader at its
+    /// generation, under the storage identity this assignment names it by
+    /// and that `registered` (node id to its registered storage identity and
+    /// incarnation) still gives, at the incarnation the report was taken
+    /// at. A member already held under that identity keeps its entry: the
+    /// first report is the weakest claim that is still true.
+    ///
+    /// A learner is a member this set names by a new storage identity, so
+    /// the set was introduced after the copy was lost: an assignment names an
+    /// identity only once its registration committed, so its generation is
+    /// above every one the shard held then. A report of an earlier
+    /// generation, whose set named the copy that was lost, adds nothing, and
+    /// neither does one about a copy that was never replaced.
+    pub(crate) fn readmitted_by(
+        &self,
+        report: &ReplicaReport,
+        registered: &dyn Fn(&str) -> Option<(String, u64)>,
+    ) -> Vec<Readmitted> {
+        if report.generation != self.generation
+            || report.leader.as_deref() != Some(self.leader.as_str())
+            || report.given_up
+            || report.refused.is_some()
+        {
+            return Vec::new();
+        }
+        report
+            .caught_up
+            .iter()
+            .filter(|node| self.learners.contains(*node) && !report.halted.contains_key(*node))
+            .filter_map(|node| {
+                let storage_id = self.member_storage_ids.get(node)?;
+                let (registered_id, incarnation) = registered(node)?;
+                let offset = *report.offsets.get(node)?;
+                (report.follower_storage.get(node) == Some(storage_id)
+                    && registered_id == *storage_id
+                    && report.node_incarnations.get(node) == Some(&incarnation)
+                    && !self
+                        .readmitted
+                        .iter()
+                        .any(|held| held.node == *node && held.storage_id == *storage_id))
+                .then(|| Readmitted {
+                    node: node.clone(),
+                    storage_id: storage_id.clone(),
+                    generation: self.generation,
+                    offset,
+                })
+            })
+            .collect()
+    }
+
+    /// Record `entries`, each replacing what was held for its node.
+    pub(crate) fn readmit(&mut self, entries: Vec<Readmitted>) {
+        for entry in entries {
+            self.readmitted.retain(|held| held.node != entry.node);
+            self.readmitted.push(entry);
+        }
+        self.readmitted.sort_by(|a, b| a.node.cmp(&b.node));
+    }
+
+    /// `held`, the entries of the assignment this write replaces, kept for
+    /// members this one still names and does not name by another storage
+    /// identity. An entry for a copy that is gone only costs space, since a
+    /// fence matches it by identity, but it would otherwise never leave.
+    pub(crate) fn carry_readmitted(&mut self, held: &[Readmitted]) {
+        self.readmitted = held
+            .iter()
+            .filter(|entry| self.named_nodes().any(|node| *node == entry.node))
+            .filter(|entry| {
+                self.member_storage_ids
+                    .get(&entry.node)
+                    .is_none_or(|id| *id == entry.storage_id)
+            })
+            .cloned()
+            .collect();
     }
 }
 

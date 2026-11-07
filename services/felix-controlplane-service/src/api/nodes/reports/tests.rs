@@ -28,6 +28,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -158,6 +159,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("fenced move");
@@ -291,6 +293,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,
+        readmitted: Default::default(),
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -746,6 +749,7 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -831,6 +835,7 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -896,6 +901,7 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -957,6 +963,7 @@ async fn named_y_beside_z() -> (
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");

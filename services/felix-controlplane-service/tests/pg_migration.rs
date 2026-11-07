@@ -217,6 +217,7 @@ async fn seed(store: &(dyn ControlPlaneAuthStore + Send + Sync)) {
             learners: Default::default(),
             pending_set: None,
             previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assignment");

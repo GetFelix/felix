@@ -682,7 +682,18 @@ quorum offset at the leader's generation, and right after an open it can sit
 below records an earlier generation acknowledged (`VouchBelowStart`). The
 start record alone is short of what the leader acknowledged since
 (`StandInNoCatchUp`). For a copy that lost its ballots, only a leader that
-readmits it may vouch for it. A broker that starts without the control plane
+readmits it may vouch for it.
+
+A vouch is held in the broker's process, so a clean restart loses it. The
+control plane keeps a durable form: when the leader of a set that names a
+replaced copy by its new storage id reports it caught up, the assignment
+records `readmitted {node, storage_id, generation, offset}` (see
+`docs/control-plane.md`, "Re-admitting a replaced copy"). An answer from that
+same copy is trusted when it shows a last generation of at least `generation`
+and a log end of at least `offset`. The generation clause is the commit-offset
+half above for this source: without it the offset alone could vouch for a copy
+missing records an earlier generation acknowledged. The control plane records
+this from metadata level 30; no fence reads it yet. A broker that starts without the control plane
 attests neither kept nor trusted until the restore check has run, because a
 restored directory looks clean until then (`CountsForgotten`,
 `TrustsRegistered`). For now that is the whole run. A failed flush poisons the
