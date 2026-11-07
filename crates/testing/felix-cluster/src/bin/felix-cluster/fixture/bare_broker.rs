@@ -27,21 +27,76 @@ pub(crate) struct BareBroker {
     task: tokio::task::JoinHandle<()>,
 }
 
+/// A client certificate and its key, PEM, issued by the CA a broker started
+/// with [`BareBroker::start_requiring_client_cert`] trusts.
+pub(crate) struct ClientCert {
+    pub(crate) cert_pem: String,
+    pub(crate) key_pem: String,
+}
+
 impl BareBroker {
     pub(crate) fn start() -> Result<Self> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .context("certificate for the bare broker")?;
+        let builder = tls_builder()?.with_no_client_auth();
+        Self::serve(cert, builder)
+    }
+
+    /// A broker that refuses a client without a certificate from a CA of its
+    /// own, as a real broker does under `FELIX_TLS_CLIENT_CA`. Returns a
+    /// certificate that CA issued.
+    pub(crate) fn start_requiring_client_cert() -> Result<(Self, ClientCert)> {
+        let ca_key = rcgen::KeyPair::generate().context("client CA key")?;
+        let mut ca_params =
+            rcgen::CertificateParams::new(Vec::<String>::new()).context("client CA params")?;
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        let ca_cert = ca_params
+            .self_signed(&ca_key)
+            .context("self-sign client CA")?;
+        let issuer = rcgen::Issuer::new(ca_params, ca_key);
+
+        let key = rcgen::KeyPair::generate().context("client key")?;
+        let cert = rcgen::CertificateParams::new(vec!["felix-client".to_string()])
+            .context("client cert params")?
+            .signed_by(&key, &issuer)
+            .context("sign client cert")?;
+
+        let mut trusted = rustls::RootCertStore::empty();
+        trusted
+            .add(ca_cert.der().clone())
+            .context("trust the client CA")?;
+        let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+            Arc::new(trusted),
+            Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        )
+        .build()
+        .context("client certificate verifier")?;
+
+        let server_cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .context("certificate for the mTLS broker")?;
+        let broker = Self::serve(
+            server_cert,
+            tls_builder()?.with_client_cert_verifier(verifier),
+        )?;
+        Ok((
+            broker,
+            ClientCert {
+                cert_pem: cert.pem(),
+                key_pem: key.serialize_pem(),
+            },
+        ))
+    }
+
+    fn serve(
+        cert: rcgen::CertifiedKey<rcgen::KeyPair>,
+        builder: rustls::ConfigBuilder<rustls::ServerConfig, rustls::server::WantsServerCert>,
+    ) -> Result<Self> {
         let cert_pem = cert.cert.pem();
         let key = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
         // No ALPN, like the client-facing role of a real broker.
-        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
-            rustls::crypto::aws_lc_rs::default_provider(),
-        ))
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .context("bare broker protocol versions")?
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.cert.der().clone()], key.into())
-        .context("bare broker certificate")?;
+        let tls = builder
+            .with_single_cert(vec![cert.cert.der().clone()], key.into())
+            .context("bare broker certificate")?;
         let config = quinn::ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(tls).context("bare broker crypto")?,
         ));
@@ -76,6 +131,14 @@ impl BareBroker {
             task,
         })
     }
+}
+
+fn tls_builder() -> Result<rustls::ConfigBuilder<rustls::ServerConfig, rustls::WantsVerifier>> {
+    rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[&rustls::version::TLS13])
+    .context("bare broker protocol versions")
 }
 
 impl Drop for BareBroker {

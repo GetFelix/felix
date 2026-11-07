@@ -1625,14 +1625,16 @@ impl ShardStore for DurableShardStore {
         };
         // Reclaimed: a probe of every follower since the give-up found none
         // ahead of this copy, so nothing a client was promised is held beyond
-        // it. Only at a newer generation, which placement names for it.
+        // it. The probe runs at the generation placement named when it gave
+        // up, which can be past the one the copy accepted. Only at a newer
+        // generation than the probe's, which placement names for it.
         let accepted = log.accepted_generation();
         let reclaimed = log.gave_up()
-            && generation > accepted
-            && self
-                .fence
-                .as_ref()
-                .is_some_and(|fence| fence.reclaimable_at(key) == Some(accepted));
+            && self.fence.as_ref().is_some_and(|fence| {
+                fence
+                    .reclaimable_at(key)
+                    .is_some_and(|probed| probed >= accepted && generation > probed)
+            });
         if replicated && log.gave_up() && !reclaimed {
             return Err(GaveUp { generation }.into());
         }

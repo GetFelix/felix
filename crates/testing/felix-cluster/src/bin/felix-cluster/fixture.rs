@@ -105,7 +105,13 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // them, and a PEM bundle holding several is exactly how that is spelled.
     // The broker that advertises no commits adds its own.
     let bare = bare_broker::BareBroker::start()?;
+    // A second stub that only serves clients presenting a certificate.
+    let (mtls, client_cert) = bare_broker::BareBroker::start_requiring_client_cert()?;
     let mut bundle = bare.cert_pem.clone();
+    if !bundle.ends_with('\n') {
+        bundle.push('\n');
+    }
+    bundle.push_str(&mtls.cert_pem);
     if !bundle.ends_with('\n') {
         bundle.push('\n');
     }
@@ -125,6 +131,13 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     }
     std::fs::write(&ca_file, &bundle)
         .with_context(|| format!("write the certificate bundle to {ca_file}"))?;
+
+    let client_cert_file = format!("{ca_file}.client-cert.pem");
+    let client_key_file = format!("{ca_file}.client-key.pem");
+    std::fs::write(&client_cert_file, &client_cert.cert_pem)
+        .with_context(|| format!("write the client certificate to {client_cert_file}"))?;
+    std::fs::write(&client_key_file, &client_cert.key_pem)
+        .with_context(|| format!("write the client key to {client_key_file}"))?;
 
     let link_owner = cluster.owner(LINK_STREAM).await?;
     let link_upstream = cluster
@@ -173,6 +186,9 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         trim_stream: Some(TRIM_STREAM.to_string()),
         records_publishers: true,
         no_commit_addrs: vec![bare.addr.to_string()],
+        mtls_addr: Some(mtls.addr.to_string()),
+        client_cert_file: Some(client_cert_file.clone()),
+        client_key_file: Some(client_key_file.clone()),
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;
@@ -184,6 +200,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     println!("control   {control_url}");
     println!("link      {} -> {link_owner}", link.addr());
     println!("no commit {}", fixture.no_commit_addrs.join(", "));
+    println!("mtls      {}", mtls.addr);
     eprintln!("\nholding the fixture. press Ctrl-C to tear it down.");
 
     // A placement pass on a timer, which is what makes the reconnect scenario
@@ -214,7 +231,10 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     let _ = placement.await;
     eprintln!("\ntearing down...");
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&client_cert_file);
+    let _ = std::fs::remove_file(&client_key_file);
     drop(bare);
+    drop(mtls);
     drop(cluster);
     Ok(())
 }

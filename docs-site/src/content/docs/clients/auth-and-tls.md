@@ -14,10 +14,10 @@ Every Felix connection is encrypted with TLS (QUIC has no plaintext mode) and ev
 | Get a fresh token when one is needed | `ClientConfig.token_provider`, usually a `RefreshingToken` | `token_provider=` (a function or an `async def`) | `tokenProvider` option | `TokenProvider` | `token_fetch` in `FelixConnectOptions` |
 | Trust a private CA | `root_store_from_pem_file`, passed to `quic_client_config` | `ca_file=` | `caFile` option | `CaFile` | `ca_file` argument |
 | Name the certificate you expect | `server_name` argument to `Client::connect` | `server_name=` | `serverName` option | `ServerName` | `server_name` argument |
-| Present a client certificate (mutual TLS) | `ClientIdentity` and `quic_client_config_with_identity` | not supported | not supported | not supported | not supported |
+| Present a client certificate (mutual TLS) | `ClientIdentity` and `quic_client_config_with_identity` | `client_cert_file=` and `client_key_file=` | `clientCertFile` and `clientKeyFile` options | `ClientCertFile` and `ClientKeyFile` | `client_cert_file` and `client_key_file` in `FelixConnectOptions` |
 | Act as another tenant or principal on the same connections | `Client::with_identity` | `with_identity` | `withIdentity` | n/a | n/a |
 
-Client certificates work in the Rust client only. The Python, TypeScript, C# and C clients trust the broker's certificate but cannot present one of their own.
+A client certificate and its key go in as two PEM files, and you give both or neither. [Presenting a client certificate](#presenting-a-client-certificate) says when you need one.
 
 `server_name` defaults to `localhost` in every client except Rust, where you always pass it. Set it to the name in the broker's certificate. With no CA file, a client trusts the operating system's roots.
 
@@ -48,6 +48,28 @@ By default a client trusts the operating system's root certificates. A broker wi
 
 The language pages show the TLS options in context:
 [Rust](/clients/rust/#tls-and-alpn), [Python](/clients/python/#connecting), [TypeScript](/clients/typescript/#connecting).
+
+## Presenting a client certificate
+
+A broker started with `FELIX_TLS_CLIENT_CA` requires every client to present a certificate issued by that CA, on top of the token. Without one the handshake is refused and the connect fails. Pass the certificate and its key as PEM files, next to the CA file. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key.
+
+The option is the same in every client, apart from its spelling. This is the Python form:
+
+```python
+import felix
+
+with felix.Client(
+    "felix-0:5000",
+    tenant_id="t1",
+    token=tok,
+    ca_file="ca.pem",
+    client_cert_file="client.pem",
+    client_key_file="client.key",
+) as client:
+    client.publish("t1", "app", "events", b"hello")
+```
+
+A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two is reported as an invalid argument before anything is sent, and the message names the file. The language pages show the form for their client: [Rust](/clients/rust/#tls-and-alpn), [Python](/clients/python/#connecting), [TypeScript](/clients/typescript/#connecting), [C#](/clients/csharp/) and [C](/clients/c/).
 
 ## What the broker checks
 

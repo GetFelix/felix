@@ -390,6 +390,17 @@ pub struct Fixture {
     /// skips the scenarios that need one rather than claiming them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_commit_addrs: Vec<String>,
+    /// A broker that answers `auth` only for a client presenting the
+    /// certificate below, as one started with `FELIX_TLS_CLIENT_CA` does. Its
+    /// certificate is in `ca_file`. Absent from a fixture that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_addr: Option<String>,
+    /// PEM file of a certificate the broker at `mtls_addr` accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert_file: Option<String>,
+    /// PEM file of the private key for `client_cert_file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key_file: Option<String>,
     /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
     /// the steps without hard-coding them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

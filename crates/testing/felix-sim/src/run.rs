@@ -131,10 +131,18 @@ impl SimOutcome {
         } else {
             ""
         };
+        let power = if self.config.power_loss {
+            "FELIX_SIM_POWER_LOSS=1 "
+        } else {
+            ""
+        };
         match self.config.clocks {
-            ClockSkew::Off => format!("{placement}FELIX_SIM_SEED={} task sim:replay", self.seed),
+            ClockSkew::Off => format!(
+                "{placement}{power}FELIX_SIM_SEED={} task sim:replay",
+                self.seed
+            ),
             skew => format!(
-                "{placement}FELIX_SIM_SEED={} FELIX_SIM_CLOCKS={} task sim:replay",
+                "{placement}{power}FELIX_SIM_SEED={} FELIX_SIM_CLOCKS={} task sim:replay",
                 self.seed,
                 skew.name()
             ),
@@ -295,13 +303,16 @@ async fn drive(
 
     let run_start = Instant::now();
     let nemesis = Nemesis::new(cluster.clone(), recorder.clone());
-    let plan =
-        match (config.faults, config.placement_faults) {
-            (false, _) => Plan::default(),
-            (true, false) => Plan::generate(seed, config.brokers, config.fault_window),
-            (true, true) => Plan::generate(seed, config.brokers, config.fault_window)
-                .with_placement(seed, config.brokers, config.fault_window),
-        };
+    let plan = match (config.faults, config.placement_faults) {
+        (false, _) => Plan::default(),
+        (true, false) => {
+            Plan::generate(seed, config.brokers, config.fault_window, config.power_loss)
+        }
+        (true, true) => {
+            Plan::generate(seed, config.brokers, config.fault_window, config.power_loss)
+                .with_placement(seed, config.brokers, config.fault_window)
+        }
+    };
     if config.faults {
         for step in &plan.steps {
             tracing::debug!(at = ?step.at, fault = %step.fault, "planned");

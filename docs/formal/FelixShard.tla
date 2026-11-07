@@ -4764,7 +4764,7 @@ Steps ==
         \/ ForgetSet(b) /\ UNCHANGED quietVars
         \/ RetryContinuingFence(b)
            /\ UNCHANGED << counterVars, heard, idVars, named, refusalVars, wipedAt, readmit, learner,
-                           marked, cpLearner, forgot >>
+                           marked, cpLearner, forgot, pinVars >>
         \/ \E f \in Brokers :
             \/ Ship(b, f) /\ UNCHANGED quietVars
             \/ LearnHwm(b, f) /\ UNCHANGED quietVars

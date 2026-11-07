@@ -96,3 +96,21 @@ public class OptionsTests
             new FelixClientOptions { Addrs = ["127.0.0.1:1"], TenantId = "t", Token = "x" }, cts.Token));
     }
 }
+
+public class ClientCertificateOptionsTests
+{
+    [Fact]
+    public void TheNativeOptionsNameNoCertificateUntilConnectSetsOne()
+    {
+        var native = FelixClient.NativeOptionsOf(new FelixClientOptions
+        {
+            Addrs = ["127.0.0.1:1"],
+            TenantId = "t",
+            Token = "x",
+            ClientCertFile = "client.pem",
+            ClientKeyFile = "client.key",
+        });
+        Assert.Equal(0, native.ClientCertFile);
+        Assert.Equal(0, native.ClientKeyFile);
+    }
+}
