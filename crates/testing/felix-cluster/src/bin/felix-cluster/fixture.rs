@@ -60,7 +60,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // Lease tokens: the cache the brokers mint for, and one output stream per
     // key a client suite may claim. The template slot is the cache's name.
     const LEASE_CACHE: &str = "leases";
-    const LEASE_KEYS: [&str; 4] = ["c", "c2", "cs", "cs2"];
+    const LEASE_KEYS: [&str; 6] = ["c", "c2", "cs", "cs2", "ts", "ts2"];
     // A fixed key is fine: the brokers live as long as this process and trust
     // nothing outside it. Thirty-two bytes, base64.
     const LEASE_KEY: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
@@ -211,6 +211,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
+        inspector_token: Some(cluster.inspector_token()),
         trimmer_token: Some(cluster.trimmer_token()),
         trim_stream: Some(TRIM_STREAM.to_string()),
         lease_cache: Some(LEASE_CACHE.to_string()),

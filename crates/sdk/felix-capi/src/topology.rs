@@ -40,7 +40,7 @@ pub type FelixConnectionsCallback = Option<
     ),
 >;
 
-pub(crate) struct Count(usize);
+pub(crate) struct Count(pub(crate) usize);
 
 impl Deliver for Count {
     type Callback = FelixCountCallback;

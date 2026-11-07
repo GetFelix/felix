@@ -54,6 +54,71 @@ public sealed class FelixSubscription : IAsyncEnumerable<FelixEvent>, IAsyncDisp
     /// </summary>
     public long? LiveOffset { get; }
 
+    /// <summary>
+    /// How many times the subscription followed its shard to a new owner. Zero until the shard changes
+    /// owner, which on a single broker it never does. Counted as reads return, so it can trail a read
+    /// still pending.
+    /// </summary>
+    public unsafe long Moves
+    {
+        get
+        {
+            using var call = new HandleLease(handle);
+            ulong moves;
+            Callbacks.Check(NativeMethods.felix_subscription_moves(call.Pointer, &moves));
+            return unchecked((long)moves);
+        }
+    }
+
+    /// <summary>
+    /// How many times the subscription resubscribed after losing its connection, resuming after the last
+    /// event it delivered. Zero until that happens. Counted as reads return.
+    /// </summary>
+    public unsafe long Reconnects
+    {
+        get
+        {
+            using var call = new HandleLease(handle);
+            ulong reconnects;
+            Callbacks.Check(NativeMethods.felix_subscription_reconnects(call.Pointer, &reconnects));
+            return unchecked((long)reconnects);
+        }
+    }
+
+    /// <summary>
+    /// Whether the subscription ended because its stream was deleted; true only once a read has failed with
+    /// <see cref="FelixStatus.Closed"/>. The same fact as <see cref="CloseReason"/> being
+    /// <see cref="Felix.CloseReason.StreamDeleted"/>.
+    /// </summary>
+    public unsafe bool StreamDeleted
+    {
+        get
+        {
+            using var call = new HandleLease(handle);
+            byte deleted;
+            Callbacks.Check(NativeMethods.felix_subscription_stream_deleted(call.Pointer, &deleted));
+            return deleted != 0;
+        }
+    }
+
+    /// <summary>
+    /// How many batches the broker's queue for this subscription holds, as the broker granted it:
+    /// <see cref="FelixClientOptions.BrokerSubQueueCapacity"/> clamped to the broker's maximum, or the
+    /// stream's default. Null from a broker that does not report it. After a resubscribe it is the new
+    /// subscription's.
+    /// </summary>
+    public unsafe uint? QueueCapacity
+    {
+        get
+        {
+            using var call = new HandleLease(handle);
+            uint capacity;
+            byte has;
+            Callbacks.Check(NativeMethods.felix_subscription_queue_capacity(call.Pointer, &capacity, &has));
+            return has != 0 ? capacity : null;
+        }
+    }
+
     /// <summary>Why the subscription ended, or <see cref="Felix.CloseReason.Open"/> while it is live.</summary>
     public CloseReason CloseReason
     {

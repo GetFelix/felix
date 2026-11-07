@@ -697,6 +697,22 @@ record names the storage id it had before (`Kept` in
 start is `UncleanStart::trust`, set where a replicated batch is applied, and the
 answer is `ReplicaHandler::attestation`.
 
+Trust has to outlive the process. A copy that crashed uncleanly, answered a
+fence and then restarted cleanly looks like any clean copy: the ballot it took
+replaced whatever said it was short, and a clean start has no unclean record.
+So a start that rotates the storage id first writes `copy-trust` at the
+durable root saying no copy is trusted, and each vouch adds the copy to it,
+synced, before the copy attests trusted (`docs/storage-format.md`). A later
+clean start reads the file, and only the next rotation clears it again. The
+same file names the copies this broker led before the crash, written before
+such a copy takes a newer leader's ballot, so the refusal in "A leader's own
+crash" also survives that ballot and a clean restart. It also names a copy that took a
+ballot while its promises counted for nothing, such as a learner answering a
+unified fence. Until it is readmitted that copy attests no kept ballot, and an
+older caller continuing from that ballot is refused as before, even after a
+crash that kept the ballot. A memory-only broker has
+no file and attests no kept ballot, so it never attests trusted.
+
 The sets a fence must cover are its own and the set of every start from an
 **anchor** up to G. The anchor is a generation with evidence it opened: its
 start record reached a majority, or a trusted answer holds a record of it. A set
@@ -715,11 +731,15 @@ the shard's own log (`ReplicaHandler::fence_from`). A learner, or a copy the
 fence's set lists only as a learner, answers with `kept_from` = `u64::MAX`, so
 its promise counts for nothing, even when its ballot names the fencing leader
 at the generation before: that ballot may be one a unified fence gave it while
-its promises counted for nothing. A copy this broker led before an unclean crash
-answers untrusted, and keeps that doubt in the process after it takes the new
-ballot, so an older leader's fence is still refused. A copy given up on disk
-before a clean restart still refuses: that mark is the only record of its
-doubt, and taking the ballot would erase it. Group and counter logs carry no
+its promises counted for nothing. Before it takes such a ballot the replica
+records the copy as unkept in the directory's copy-trust record, so after a
+crash that keeps the ballot an older caller still does not count it, until a
+batch readmits the copy. A copy this broker led before an unclean crash
+answers untrusted. Before it takes the new ballot the replica records the copy
+as doubted, in the process and in the copy-trust record, so after a clean
+restart the copy still attests untrusted and an older leader's fence is still
+refused. A copy given up on disk before a clean restart still refuses, as it
+does an older caller. Group and counter logs carry no
 attestation and refuse as before. Every other caller gets today's refusals.
 
 What this replaces: the short-copy refusal, the two-member acknowledgement

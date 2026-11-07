@@ -52,6 +52,18 @@ public sealed class TrimFixtureFactAttribute : FixtureFactAttribute
     }
 }
 
+/// <summary>As <see cref="FixtureFactAttribute"/>, and skips when the fixture has no inspector token.</summary>
+public sealed class InspectorFixtureFactAttribute : FixtureFactAttribute
+{
+    public InspectorFixtureFactAttribute()
+    {
+        if (Skip is null && Fixture.Load().InspectorToken is null)
+        {
+            Skip = "the fixture has no inspector_token (an older client-fixture)";
+        }
+    }
+}
+
 internal sealed record Fixture(
     string[] Addrs,
     string Tenant,
@@ -69,7 +81,8 @@ internal sealed record Fixture(
     string? TrimStream,
     string? LeaseCache,
     string? LeaseNodeToken,
-    string[] LeaseKeys)
+    string[] LeaseKeys,
+    string? InspectorToken = null)
 {
     internal static Fixture Load()
     {
@@ -95,7 +108,8 @@ internal sealed record Fixture(
             root.TryGetProperty("lease_node_token", out var ln) && ln.ValueKind == JsonValueKind.String ? ln.GetString() : null,
             root.TryGetProperty("lease_keys", out var lk) && lk.ValueKind == JsonValueKind.Array
                 ? lk.EnumerateArray().Select(k => k.GetString()!).ToArray()
-                : []);
+                : [],
+            root.TryGetProperty("inspector_token", out var it) && it.ValueKind == JsonValueKind.String ? it.GetString() : null);
     }
 
     internal Task<FelixClient> ConnectAsync(string? token = null, CancellationToken ct = default) =>

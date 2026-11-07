@@ -26,7 +26,7 @@
 
 use felix_client::{
     AckLost, AuthError, BrokerError, CommitError, NotLeaderError, PublishRefusalReason,
-    PublishRefused, SubscribeCursorError, SubscriptionLost, TrimError,
+    PublishRefused, RecordHeadersError, SubscribeCursorError, SubscriptionLost, TrimError,
 };
 use felix_wire::{CursorErrorReason, RetryClass};
 use napi::{Error, Status};
@@ -103,6 +103,10 @@ pub(crate) fn encode(err: &anyhow::Error) -> String {
             }
             _ => format!("{KIND_COMMIT}{KIND_SEPARATOR}{text}"),
         };
+    }
+    // Nothing was sent, and no retry changes it.
+    if err.chain().any(|e| e.is::<RecordHeadersError>()) {
+        return format!("{KIND_INVALID}{KIND_SEPARATOR}{text}");
     }
     if err.chain().any(|e| e.is::<TrimError>()) {
         return format!("{KIND_TRIM}{KIND_SEPARATOR}{text}");

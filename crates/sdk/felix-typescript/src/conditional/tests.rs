@@ -41,3 +41,39 @@ fn a_stale_tail_is_an_answer_with_the_tail() {
     let answer = ConditionalTrim::from(felix_client::ConditionalTrim::Refused { tail: 31 });
     assert_eq!(fields(&answer), (false, None, None, Some(31)));
 }
+
+#[test]
+fn an_applied_lease_write_carries_its_token_and_expiry() {
+    let written = super::LeaseWrite::from(felix_client::LeaseWrite {
+        result: felix_client::CacheConditionResult {
+            applied: true,
+            version: Some(4),
+        },
+        token: Some(felix_client::LeaseToken {
+            token: "secret".into(),
+            expires_at: 1_900_000_000,
+        }),
+        token_refused: None,
+    });
+    assert!(written.result.applied);
+    let Either::A(token) = written.token else {
+        panic!("token dropped")
+    };
+    assert_eq!(token.token, "secret");
+    assert_eq!(token.expires_at.get_u64().1, 1_900_000_000);
+    assert!(matches!(written.token_refused, Either::B(_)));
+}
+
+#[test]
+fn a_lease_write_without_a_token_says_why() {
+    let written = super::LeaseWrite::from(felix_client::LeaseWrite {
+        result: felix_client::CacheConditionResult {
+            applied: true,
+            version: Some(4),
+        },
+        token: None,
+        token_refused: Some("no lease template".into()),
+    });
+    assert!(matches!(written.token, Either::B(_)));
+    assert!(matches!(written.token_refused, Either::A(ref why) if why == "no lease template"));
+}

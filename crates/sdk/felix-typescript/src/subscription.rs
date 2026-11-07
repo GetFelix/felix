@@ -1,6 +1,7 @@
 //! A subscription to one stream, read with `nextEvent`.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use felix_client::ClusterSubscription;
 use napi::bindgen_prelude::*;
@@ -8,7 +9,7 @@ use napi_derive::napi;
 use tokio::sync::{Mutex, watch};
 
 use crate::errors::classify;
-use crate::types::{Event, or_null};
+use crate::types::Event;
 
 /// A live subscription. Read it with `nextEvent`, and `close` it when done.
 ///
@@ -21,8 +22,61 @@ use crate::types::{Event, or_null};
 pub struct SubscriptionHandle {
     start_offset: Option<u64>,
     live_offset: Option<u64>,
+    /// Copied from the subscription after each read. The subscription is held
+    /// by the read in flight, so a getter cannot ask it directly.
+    progress: Progress,
     inner: Arc<Mutex<Option<ClusterSubscription>>>,
     closed: watch::Sender<bool>,
+}
+
+/// What a subscription has done so far, readable while a read is in flight.
+struct Progress {
+    /// `NO_CAPACITY` when the stream's default applies.
+    queue_capacity: AtomicU32,
+    moves: AtomicU64,
+    reconnects: AtomicU64,
+    stream_deleted: AtomicBool,
+}
+
+/// The granted capacity is a `u32`, so the sentinel cannot collide with one a
+/// broker would grant.
+const NO_CAPACITY: u32 = u32::MAX;
+
+impl Progress {
+    fn record(&self, subscription: &ClusterSubscription) {
+        self.store(
+            subscription.queue_capacity(),
+            subscription.moves(),
+            subscription.reconnects(),
+            subscription.stream_deleted(),
+        );
+    }
+
+    fn store(&self, queue_capacity: Option<u32>, moves: u64, reconnects: u64, deleted: bool) {
+        self.queue_capacity
+            .store(queue_capacity.unwrap_or(NO_CAPACITY), Ordering::Relaxed);
+        self.moves.store(moves, Ordering::Relaxed);
+        self.reconnects.store(reconnects, Ordering::Relaxed);
+        self.stream_deleted.store(deleted, Ordering::Relaxed);
+    }
+
+    fn queue_capacity(&self) -> Option<u32> {
+        match self.queue_capacity.load(Ordering::Relaxed) {
+            NO_CAPACITY => None,
+            granted => Some(granted),
+        }
+    }
+}
+
+impl Default for Progress {
+    fn default() -> Self {
+        Self {
+            queue_capacity: AtomicU32::new(NO_CAPACITY),
+            moves: AtomicU64::new(0),
+            reconnects: AtomicU64::new(0),
+            stream_deleted: AtomicBool::new(false),
+        }
+    }
 }
 
 impl SubscriptionHandle {
@@ -30,6 +84,11 @@ impl SubscriptionHandle {
         Self {
             start_offset: subscription.start_offset(),
             live_offset: subscription.live_offset(),
+            progress: {
+                let progress = Progress::default();
+                progress.record(&subscription);
+                progress
+            },
             inner: Arc::new(Mutex::new(Some(subscription))),
             closed: watch::Sender::new(false),
         }
@@ -51,6 +110,35 @@ impl SubscriptionHandle {
     #[napi(getter)]
     pub fn live_offset(&self) -> Option<BigInt> {
         self.live_offset.map(BigInt::from)
+    }
+
+    /// The broker-side queue capacity the broker granted, in published
+    /// batches, when `brokerSubQueueCapacity` asked for one. `null` means the
+    /// stream's default.
+    #[napi(getter)]
+    pub fn queue_capacity(&self) -> Option<u32> {
+        self.progress.queue_capacity()
+    }
+
+    /// How many times the subscription followed its shard to another broker.
+    /// Updated as reads return.
+    #[napi(getter)]
+    pub fn moves(&self) -> BigInt {
+        BigInt::from(self.progress.moves.load(Ordering::Relaxed))
+    }
+
+    /// How many times the subscription resubscribed after losing its
+    /// connection. Updated as reads return.
+    #[napi(getter)]
+    pub fn reconnects(&self) -> BigInt {
+        BigInt::from(self.progress.reconnects.load(Ordering::Relaxed))
+    }
+
+    /// Whether the subscription ended because its stream was deleted. Check it
+    /// once `nextEvent` returns `null`; there is nothing to resubscribe to.
+    #[napi(getter)]
+    pub fn stream_deleted(&self) -> bool {
+        self.progress.stream_deleted.load(Ordering::Relaxed)
     }
 
     /// The next record, or `null` once the subscription has ended.
@@ -77,6 +165,12 @@ impl SubscriptionHandle {
             result = subscription.next_event() => Some(result),
             _ = closed.wait_for(|closed| *closed) => None,
         };
+        // Recorded on errors and the end too: that is where a delete shows.
+        if outcome.is_some()
+            && let Some(subscription) = guard.as_ref()
+        {
+            self.progress.record(subscription);
+        }
         match outcome {
             // Closed underneath this read, so this reader is the one holding
             // the subscription and the one that has to let it go.
@@ -84,14 +178,7 @@ impl SubscriptionHandle {
                 guard.take();
                 Ok(None)
             }
-            Some(Ok(Some(event))) => Ok(Some(Event {
-                tenant_id: event.tenant_id.to_string(),
-                namespace: event.namespace.to_string(),
-                stream: event.stream.to_string(),
-                payload: event.payload.to_vec().into(),
-                offset: or_null(event.offset.map(BigInt::from)),
-                skipped_before: BigInt::from(event.skipped_before),
-            })),
+            Some(Ok(Some(event))) => Ok(Some(event.into())),
             Some(Ok(None)) => Ok(None),
             Some(Err(err)) => Err(classify(err)),
         }
@@ -118,3 +205,6 @@ impl SubscriptionHandle {
         *self.closed.borrow()
     }
 }
+
+#[cfg(test)]
+mod tests;

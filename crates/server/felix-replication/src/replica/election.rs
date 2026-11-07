@@ -470,7 +470,7 @@ impl ReplicaHandler {
         // A learner's promise to the leader its ballot names at the
         // generation before is no vote for records it lacks: that leader
         // holds them. Group logs stay refused while wiped.
-        if !group && self.continues_from(own, request.shard.generation, sender) {
+        if !group && self.continues_from(key, own, request.shard.generation, sender) {
             return None;
         }
         let learner = self.is_learner(own) || (group && self.is_wiped(own));

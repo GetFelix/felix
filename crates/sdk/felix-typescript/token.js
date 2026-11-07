@@ -57,7 +57,19 @@ function fetchFrom(tokenProvider) {
   };
 }
 
-const CONNECT_OPTIONS = ["token", "tokenProvider", "serverName", "caFile", "offerAlpn", "reconnectAttempts", "reconnectDeadline", "reconnectBackoff", "reconnectMaxBackoff", "clientCertFile", "clientKeyFile"];
+// Tuning options travel to the addon as one object, so the positional call does
+// not grow a slot for every knob.
+const TUNING_OPTIONS = [
+  "publishers", "timestamps", "recordHeaders",
+  "clientSubQueuePolicy", "clientSubQueueCapacity", "brokerSubQueueCapacity",
+  "publishConnPool", "publishStreamsPerConn", "publishQueueDepth", "publishInflightBytes",
+  "publishSharding", "publishShardStreams",
+  "cacheConnPool", "cacheStreamsPerConn", "eventConnPool", "clusterConnPool", "clusterStreamsPerConn",
+  "eventConnRecvWindow", "eventStreamRecvWindow", "eventSendWindow",
+  "cacheConnRecvWindow", "cacheStreamRecvWindow", "cacheSendWindow",
+  "eventRouterMaxPending", "maxFrameBytes", "ackOnCommit", "connectTimeout", "finishTimeout",
+];
+const CONNECT_OPTIONS = ["token", "tokenProvider", "serverName", "caFile", "offerAlpn", "reconnectAttempts", "reconnectDeadline", "reconnectBackoff", "reconnectMaxBackoff", "clientCertFile", "clientKeyFile", ...TUNING_OPTIONS];
 const IDENTITY_OPTIONS = ["token", "tokenProvider"];
 
 /** The options object, checked: unknown keys are a mistake, not something to drop. */
@@ -79,7 +91,9 @@ function optionsOf(method, args, count, allowed) {
 /** `connect(addrs, tenantId, options)` as the addon's positional call. */
 function connectArgs(args) {
   const o = optionsOf("Client.connect", args, 2, CONNECT_OPTIONS);
-  return [args[0], args[1], o.token, o.serverName, o.caFile, o.offerAlpn, fetchFrom(o.tokenProvider), o.reconnectAttempts, o.reconnectDeadline, o.reconnectBackoff, o.reconnectMaxBackoff, o.clientCertFile, o.clientKeyFile];
+  const tuning = {};
+  for (const key of TUNING_OPTIONS) if (o[key] !== undefined) tuning[key] = o[key];
+  return [args[0], args[1], o.token, o.serverName, o.caFile, o.offerAlpn, fetchFrom(o.tokenProvider), o.reconnectAttempts, o.reconnectDeadline, o.reconnectBackoff, o.reconnectMaxBackoff, o.clientCertFile, o.clientKeyFile, Object.keys(tuning).length > 0 ? tuning : undefined];
 }
 
 /** `withIdentity(tenantId, options)` as the addon's positional call. */

@@ -59,6 +59,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   controlplane.view                          ← what the control plane last said about this node's shards
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
+  copy-trust                                 ← which copies a leader vouched for since the id last rotated
   run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
@@ -1251,6 +1252,42 @@ After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash.
 An older release neither reads nor writes the file.
+
+## `copy-trust`: which copies hold what they acknowledged
+
+One text file at the durable root. A directory without it never rotated its
+storage id, and every copy on it counts as trusted. Every write goes through
+`copy-trust.tmp`, synced, renamed and the directory synced.
+
+```text
+copy_trust
+distrusted
+trusted <key in lowercase hex>
+doubted <key in lowercase hex>
+unkept <key in lowercase hex>
+```
+
+The first line is fixed. `distrusted` appears once a start rotated the
+storage id (`run-state`): such a start may have lost acknowledged records on
+any copy, so a copy is trusted only when a `trusted` line names it. The start
+writes the file before it writes the new id, so a crash in between leaves a
+directory that trusts no copy. Each rotation drops every `trusted` line.
+
+A `trusted` line is added when a leader ships the copy a batch that leaves it
+level through the leader's generation start and the batch's commit offset,
+above zero (`docs/replication-design.md`, "One fence rule for every change of
+leader"). A `doubted` line names a copy this broker led before such a crash,
+written before the copy takes a newer leader's ballot, and removed when a
+newer leader ships it level with its generation start. An `unkept` line
+names a copy that took a ballot while its promises counted for nothing, as a
+learner answering a unified fence does, written before that ballot and
+removed when the copy is readmitted. Such a ballot is no kept promise, even
+after a crash that keeps it. A rotation keeps `doubted` and `unkept` lines.
+
+A key is the shard's replication key (tenant, namespace, stream, shard and
+kind) as JSON. Lines are sorted. A file that does not decode trusts no copy
+and doubts none. An older release neither reads nor writes the file, so a
+copy it ran after an unclean start counts as trusted again.
 
 ## `run-token`: the run the witness names
 

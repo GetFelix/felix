@@ -898,7 +898,10 @@ attestation says what the answer counts for: a learner's `kept_from` is
 `u64::MAX`, and a crashed leader's copy is not trusted. That includes a
 learner whose ballot names the fencing leader at the generation before, which
 an older caller counts: a unified fence gives a learner a ballot, so its
-ballot may be one taken while its promises counted for nothing. A
+ballot may be one taken while its promises counted for nothing; the
+replica records the copy as unkept before writing it, so an older caller
+does not count it after a crash either. A crashed leader's copy is recorded
+as doubted before its ballot, so it stays untrusted after a clean restart. A
 learner's answer that counts for no set does not make this replica route the
 shard to a candidate. Three cases still refuse:
 

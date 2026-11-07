@@ -19,11 +19,12 @@ use crate::args::{
 };
 use crate::batch::{BatchReport, OwnedBatchReport};
 use crate::conditional::{
-    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, OwnedVersionedValue,
-    VersionedValue,
+    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, LeaseWrite,
+    OwnedLeaseWrite, OwnedVersionedValue, VersionedValue,
 };
 use crate::errors::to_py_err;
 use crate::group_admin::{GroupInfo, GroupPosition};
+use crate::inspect;
 use crate::producer::{Core, check_payloads};
 use crate::runtime::block_on;
 use crate::stream_page::{OwnedStreamPage, StreamPage};
@@ -102,6 +103,10 @@ impl Client {
         reconnect_deadline=None,
         reconnect_backoff=None,
         reconnect_max_backoff=None,
+        publishers=None,
+        timestamps=None,
+        record_headers=None,
+        tuning=None,
     ))]
     fn new(
         py: Python<'_>,
@@ -118,6 +123,10 @@ impl Client {
         reconnect_deadline: Option<f64>,
         reconnect_backoff: Option<f64>,
         reconnect_max_backoff: Option<f64>,
+        publishers: Option<bool>,
+        timestamps: Option<bool>,
+        record_headers: Option<bool>,
+        tuning: Option<PyRef<'_, crate::tuning::ClientTuning>>,
     ) -> PyResult<Self> {
         let seeds = parse_addrs(py, &addrs)?;
         if seeds.is_empty() {
@@ -134,6 +143,13 @@ impl Client {
         let quinn = tls::client_config(ca_file, client_cert_file, client_key_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
+        crate::tuning::apply_options(
+            &mut config,
+            publishers,
+            timestamps,
+            record_headers,
+            tuning.as_deref(),
+        );
         match resolve(py, token, token_provider, Flavor::Blocking)? {
             Tokens::Fixed(token) => config.auth_token = Some(token),
             Tokens::Provider(provider) => config.token_provider = Some(provider),
@@ -207,6 +223,7 @@ impl Client {
         key=None,
         ack="per_message",
         at_least_once=false,
+        headers=None,
     ))]
     fn publish(
         &self,
@@ -218,6 +235,7 @@ impl Client {
         key: Option<&[u8]>,
         ack: &str,
         at_least_once: bool,
+        headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<u64>> {
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
@@ -228,7 +246,25 @@ impl Client {
         );
         let payload = payload.to_vec();
         let key = key.map(Bytes::copy_from_slice);
+        let headers = headers
+            .filter(|h| !h.is_none())
+            .map(|h| {
+                if key.is_some() || at_least_once {
+                    return Err(PyValueError::new_err(
+                        "headers cannot be combined with key or at_least_once: put the \
+                         record's own key in RecordHeaders(key=...)",
+                    ));
+                }
+                crate::headers::extract(h)
+            })
+            .transpose()?;
         block_on(py, async move {
+            if let Some(headers) = headers {
+                return inner
+                    .publish_with_headers(&tenant_id, &namespace, &stream, headers, payload, ack)
+                    .await
+                    .map_err(to_py_err);
+            }
             match (key, at_least_once) {
                 (Some(key), false) => {
                     inner
@@ -530,6 +566,41 @@ impl Client {
                 .map(Into::into)
                 .map_err(to_py_err)
         })
+    }
+
+    /// `cache_put_if` that also asks the broker for a lease token for the
+    /// writer. Use it to take a lease: `CacheCondition.absent()` claims a key
+    /// nobody holds, and the `LeaseWrite` carries the token to present with
+    /// `with_identity(tenant_id, token=lease.token.token)` for what the
+    /// broker's lease templates grant on that key. `token` is `None` when the
+    /// condition was refused or the broker minted none; `token_refused` says
+    /// why for an applied write. Never sent twice, like `cache_put_if`.
+    #[pyo3(signature = (tenant_id, namespace, cache, key, value, condition, *, ttl=None))]
+    fn cache_put_if_lease(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: &[u8],
+        condition: PyRef<'_, CacheCondition>,
+        ttl: Option<f64>,
+    ) -> PyResult<Py<LeaseWrite>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        let value = Bytes::copy_from_slice(value);
+        let condition = condition.inner;
+        let ttl_ms = crate::args::ttl_millis(ttl)?;
+        let write = block_on(py, async move {
+            inner
+                .cache_put_if_lease(
+                    &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+                )
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(OwnedLeaseWrite(write).into_pyobject(py)?.unbind())
     }
 
     /// Remove a key only if its version is `version`. A refusal is a
@@ -1228,9 +1299,9 @@ impl Client {
     /// Publish `payloads` as one batch, all under `key` when given, else all
     /// to shard 0 as `publish` does. Records sharing a key share a shard, so
     /// the batch is one frame to its owner and keeps its order. Returns the
-    /// first record's log offset, or `None` as `publish` does. An empty list
-    /// sends nothing.
-    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message"))]
+    /// first record's log offset, or `None` as `publish` does. An empty list raises
+    /// `ValueError`.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None, ack="per_message", headers=None))]
     fn publish_batch(
         &self,
         py: Python<'_>,
@@ -1240,7 +1311,9 @@ impl Client {
         payloads: Vec<Vec<u8>>,
         key: Option<&[u8]>,
         ack: &str,
+        headers: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<u64>> {
+        check_payloads(&payloads)?;
         let ack = parse_ack(ack)?;
         let inner = Arc::clone(&self.inner);
         let (tenant_id, namespace, stream) = (
@@ -1249,7 +1322,26 @@ impl Client {
             stream.to_string(),
         );
         let key = key.map(Bytes::copy_from_slice);
+        let records = headers
+            .filter(|h| !h.is_none())
+            .map(|h| {
+                if key.is_some() {
+                    return Err(PyValueError::new_err(
+                        "headers cannot be combined with key on a batch: the batch's key routes it, \
+                         and a record's own key goes in RecordHeaders(key=...)",
+                    ));
+                }
+                crate::headers::extract_batch(h, payloads.len())
+            })
+            .transpose()?;
         block_on(py, async move {
+            if let Some(blocks) = records {
+                let records = blocks.into_iter().zip(payloads).collect();
+                return inner
+                    .publish_batch_with_headers(&tenant_id, &namespace, &stream, records, ack)
+                    .await
+                    .map_err(to_py_err);
+            }
             match key {
                 Some(key) => {
                     inner
@@ -1309,6 +1401,159 @@ impl Client {
             })
         })?;
         Ok(OwnedBatchReport(report).into_pyobject(py)?.unbind())
+    }
+
+    /// Which questions the broker in use answers, as a dict of booleans:
+    /// `inspect` (`inspect_shard` and `list_subscriptions`), `topology`,
+    /// `stream_shards`, `cache_shards` and `shard_owners`. A broker older than
+    /// a feature refuses its call; check here to tell that from a real failure.
+    fn supports(&self, py: Python<'_>) -> PyResult<std::collections::BTreeMap<&'static str, bool>> {
+        let inner = Arc::clone(&self.inner);
+        block_on(py, async move { Ok(inspect::supports(&inner).await) })
+    }
+
+    /// The connected broker's own view of one shard, as a dict: its role and
+    /// phase, whether it is serving and why not, its generation, fence, lease,
+    /// tail and commit mark, and, on a leader, every replica's position.
+    /// `kind` is `"stream"` or `"cache"`. Needs `node.view:cluster:*`, and
+    /// raises on a broker that does not advertise it (see `supports`).
+    /// Not forwarded: ask each broker for its own.
+    fn inspect_shard(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> PyResult<Py<PyAny>> {
+        let kind = inspect::parse_kind(kind)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, name) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            name.to_string(),
+        );
+        let record = block_on(py, async move {
+            inspect::inspect_shard(&inner, kind, &tenant_id, &namespace, &name, shard).await
+        })?;
+        Ok(record.into_pyobject(py)?.unbind())
+    }
+
+    /// One page of the subscriptions the connected broker serves, as
+    /// `{"node_id", "subscriptions", "next_cursor"}`. Each subscription dict
+    /// carries its queue `depth` and `capacity`, overflow `policy`, `dropped`
+    /// count, position against the shard's tail, `peer` and `principal`.
+    /// The keyword arguments narrow the list; `dropping=True` keeps only
+    /// subscriptions that have dropped records. Pass `next_cursor` back as
+    /// `cursor` for the next page; it is `None` on the last. `limit` defaults
+    /// to 100 and the broker caps it at 1000. Needs `node.view:cluster:*`.
+    #[pyo3(signature = (*, tenant_id=None, namespace=None, stream=None, shard=None, principal=None, dropping=false, limit=None, cursor=None))]
+    fn list_subscriptions(
+        &self,
+        py: Python<'_>,
+        tenant_id: Option<String>,
+        namespace: Option<String>,
+        stream: Option<String>,
+        shard: Option<u32>,
+        principal: Option<String>,
+        dropping: bool,
+        limit: Option<u32>,
+        cursor: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let query = inspect::SubscriptionQuery {
+            filter: felix_client::SubscriptionFilter {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                principal,
+                dropping,
+            },
+            limit,
+            cursor: cursor
+                .filter(|c| !c.is_none())
+                .map(inspect::parse_cursor)
+                .transpose()?,
+        };
+        let inner = Arc::clone(&self.inner);
+        let record = block_on(py, async move {
+            inspect::list_subscriptions(&inner, query).await
+        })?;
+        Ok(record.into_pyobject(py)?.unbind())
+    }
+
+    /// The brokers clients may connect to, as a list of
+    /// `{"node_id", "addr"}` dicts. Empty for a broker with no cluster behind
+    /// it; raises on a broker that predates discovery.
+    fn topology(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let record = block_on(py, async move { inspect::topology(&inner).await })?;
+        Ok(record.into_pyobject(py)?.unbind())
+    }
+
+    /// Who owns each shard of a stream or cache, as a list of dicts with
+    /// `shard`, `node_id`, `addr`, `generation` and, for a shard nobody can
+    /// serve now, `unavailable`. A snapshot that can be stale the way a
+    /// redirect can. `kind` is `"stream"` or `"cache"`.
+    fn shard_owners(
+        &self,
+        py: Python<'_>,
+        kind: &str,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let kind = inspect::parse_kind(kind)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, name) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            name.to_string(),
+        );
+        let record = block_on(py, async move {
+            inspect::shard_owners(&inner, kind, &tenant_id, &namespace, &name).await
+        })?;
+        Ok(record.into_pyobject(py)?.unbind())
+    }
+
+    /// How many shards a stream has and how a routing key maps onto them:
+    /// `(shards, routing)` with `routing` `"modulo"` or `"jump_hash"`.
+    fn stream_routing(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> PyResult<(u32, String)> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        block_on(py, async move {
+            inspect::stream_routing(&inner, &tenant_id, &namespace, &stream).await
+        })
+    }
+
+    /// How many shards a cache has.
+    fn cache_shards(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+    ) -> PyResult<u32> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+        );
+        block_on(py, async move {
+            inspect::cache_shards(&inner, &tenant_id, &namespace, &cache).await
+        })
     }
 
     /// Ask the broker in use which brokers a client may connect to, and add

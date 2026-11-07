@@ -1236,6 +1236,13 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   rotates the id in any boot. That rewrite is not synced: only a process crash
   has to find it, and a machine crash rotates anyway.
 
+A rotation also tells the broker's own fence answers that a copy may be
+short. Before the new id is written, the start records in `<root>/copy-trust`
+that no copy on the directory is trusted. A copy becomes trusted again only
+when a leader ships it level with what that leader acknowledged, and the file
+keeps that across clean restarts until the next rotation. See
+`docs/replication-design.md`, "One fence rule for every change of leader".
+
 The boot is the kernel's boot id, `/proc/sys/kernel/random/boot_id`, read
 once at startup (macOS records `kern.bootsessionuuid`, but never keeps an id
 on it). Every restart, kernel

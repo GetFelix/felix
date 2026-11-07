@@ -49,7 +49,9 @@ To run it you need a running broker, a token for tenant `t1`, and the stream `t1
 - Consumer groups: poll, acknowledge, retry later, dead letters
 - Cache, counters and cache watches
 - Atomic commits, conditional writes and head trims
-- Idempotent producers
+- Idempotent producers, and hand-offs that queue batches in order without waiting for each answer
+- Inspecting the cluster: what a broker supports, shard owners and routing, one shard's state, and the subscriptions a broker serves
+- Subscription counters: `Moves`, `Reconnects`, `StreamDeleted` and `QueueCapacity`
 - Record headers, page reads by offset range, lease-token writes and per-principal identities
 - Token refresh, cluster discovery, failover and following a shard that moves
 
@@ -70,6 +72,8 @@ A publish without a `key` puts every record on shard 0. A record's own key and h
 | `ClientCertFile`, `ClientKeyFile` | The client certificate and its key, as PEM files. |
 | `DisableRecordHeaders` | Stop offering record headers to brokers. Off by default. |
 | `ReconnectAttempts`, `ReconnectDeadline`, `ReconnectBackoff`, `ReconnectMaxBackoff` | Retry policy. `ReconnectAttempts` is an `int`; the others are `TimeSpan`. |
+| `ClientSubQueuePolicy`, `ClientSubQueueCapacity`, `BrokerSubQueueCapacity` | What a subscription's queue does when full, and how many events and batches it holds. Null is the default. |
+| `PublishConnPool`, `PublishSharding`, `MaxFrameBytes`, `AckOnCommit`, `ConnectTimeout`, `FinishTimeout` and the other pool, window and queue sizes | Transport tuning. Null is the default. The [C# client guide](https://docs.getfelix.dev/clients/csharp/#queue-and-transport-options) lists them all. |
 
 TLS is always on, and there is no switch to skip verification. A development broker with a self-signed certificate needs its CA file. A broker started with `FELIX_TLS_CLIENT_CA` also requires a client certificate. Give the certificate and its key as two PEM files, both or neither.
 

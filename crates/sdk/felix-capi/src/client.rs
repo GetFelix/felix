@@ -18,6 +18,7 @@ use crate::completion::{Completion, Deliver, user_cancelled};
 use crate::groups::spawn_read;
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
 use crate::token::{FelixTokenFetch, FelixTokenRelease, TokenSource, provider};
+use crate::tuning::{FelixPublishSharding, FelixSubQueuePolicy, Tuning};
 
 /// Two workers are plenty for one client's connections and background tasks,
 /// and keep a process with several clients from spawning a thread per core
@@ -336,6 +337,83 @@ pub struct FelixConnectOptions {
     /// that takes them; on, `felix_client_publish_with_headers` fails with
     /// `FELIX_STATUS_UNSUPPORTED` and events carry no headers.
     pub disable_record_headers: bool,
+    /// Ask brokers to answer acknowledged publishes after the write, with
+    /// the offset, as the broker-wide `FELIX_ACK_ON_COMMIT=true` does. Slower
+    /// per publish. Whether a broker honours it is
+    /// `FELIX_SUPPORTS_ACK_ON_COMMIT`.
+    pub ack_on_commit: bool,
+    /// Put every publish on the connection pool instead of giving the first
+    /// shards of a stream a publish stream each. Wins over
+    /// `publish_shard_streams`.
+    pub no_publish_shard_streams: bool,
+    /// What a subscription does when its client-side queue is full, a
+    /// `FELIX_QUEUE_*` value. `FELIX_QUEUE_DEFAULT` drops the arriving item.
+    pub client_sub_queue_policy: FelixSubQueuePolicy,
+    /// How publishes are spread across publish streams, a `FELIX_SHARDING_*`
+    /// value. `FELIX_SHARDING_DEFAULT` hashes the stream's name, which keeps
+    /// a stream's publishes in order.
+    pub publish_sharding: FelixPublishSharding,
+    /// Events each subscription's client-side queue holds. Zero is the
+    /// default, 256.
+    pub client_sub_queue_capacity: u32,
+    /// Batches the broker's queue for each subscription should hold. The
+    /// broker clamps it to its maximum; `felix_subscription_queue_capacity`
+    /// reports what was granted. Zero leaves the stream's default.
+    pub broker_sub_queue_capacity: u32,
+    /// Publish connections per client. Zero is the default, 4.
+    pub publish_conn_pool: u32,
+    /// Publish streams per publish connection. Zero is the default, 2.
+    pub publish_streams_per_conn: u32,
+    /// Publishes queued per publish stream before the next waits for room.
+    /// Zero is the default, 64.
+    pub publish_queue_depth: u32,
+    /// Most publish streams opened per broker for one shard each, beside the
+    /// pool. Zero is the default, 4; use `no_publish_shard_streams` for none.
+    pub publish_shard_streams: u32,
+    /// Cache connections per client. Zero is the default, 8.
+    pub cache_conn_pool: u32,
+    /// Cache streams per cache connection. Zero is the default, 4.
+    pub cache_streams_per_conn: u32,
+    /// Connections that carry subscriptions and cache watches. Zero is the
+    /// default, 8.
+    pub event_conn_pool: u32,
+    /// Most connections opened to one broker. Zero is the default, 8.
+    pub cluster_conn_pool: u32,
+    /// Streams one of those connections carries before another is opened.
+    /// Zero is the default, 1024.
+    pub cluster_streams_per_conn: u32,
+    /// Registrations and unclaimed event streams one event connection holds
+    /// before refusing more. Zero is the default, 16384.
+    pub event_router_max_pending: u32,
+    /// Bytes of publishes sent but not yet answered, across the client. Zero
+    /// is the default, 4 MiB.
+    pub publish_inflight_bytes: u64,
+    /// Largest frame the client will read. Zero is the default, 16 MiB.
+    pub max_frame_bytes: u64,
+    /// QUIC receive window per event connection, in bytes. Zero is the
+    /// default, 256 MiB. The six windows must be below 2^62.
+    pub event_conn_recv_window: u64,
+    /// QUIC receive window per event stream, in bytes. Zero is the default,
+    /// 64 MiB.
+    pub event_stream_recv_window: u64,
+    /// QUIC send window per event connection, in bytes. Zero is the default,
+    /// 256 MiB.
+    pub event_send_window: u64,
+    /// QUIC receive window per cache connection, in bytes. Zero is the
+    /// default, 256 MiB.
+    pub cache_conn_recv_window: u64,
+    /// QUIC receive window per cache stream, in bytes. Zero is the default,
+    /// 64 MiB.
+    pub cache_stream_recv_window: u64,
+    /// QUIC send window per cache connection, in bytes. Zero is the default,
+    /// 256 MiB.
+    pub cache_send_window: u64,
+    /// Longest a connect to one broker may take, in milliseconds. Zero is the
+    /// default, 10000.
+    pub connect_timeout_ms: u64,
+    /// Longest a producer waits to flush when closed, in milliseconds. Zero is
+    /// the default, 60000.
+    pub finish_timeout_ms: u64,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -353,6 +431,7 @@ struct ConnectOptions {
     client_cert_file: *const c_char,
     client_key_file: *const c_char,
     disable_record_headers: bool,
+    tuning: Tuning,
 }
 
 impl ConnectOptions {
@@ -390,6 +469,7 @@ impl Default for ConnectOptions {
             client_cert_file: ptr::null(),
             client_key_file: ptr::null(),
             disable_record_headers: false,
+            tuning: Tuning::default(),
         }
     }
 }
@@ -470,6 +550,8 @@ impl ConnectOptions {
                 FelixConnectOptions,
                 disable_record_headers
             )),
+            // SAFETY: `size` bytes are readable, per the contract above.
+            tuning: unsafe { Tuning::read(options, size) }?,
         })
     }
 }
@@ -542,12 +624,7 @@ pub unsafe extern "C" fn felix_client_connect_with(
                 optional_str(options.client_key_file, "client_key_file")?,
             )
         };
-        let mut config = tls_config(ca_file, cert_file, key_file)?;
-        config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = token.map(str::to_string);
-        config.publishers = options.publishers;
-        config.timestamps = options.timestamps;
-        config.record_headers = !options.disable_record_headers;
+        let mut config = connect_config(&options, tenant_id, token, ca_file, cert_file, key_file)?;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
 
@@ -599,6 +676,26 @@ pub unsafe extern "C" fn felix_client_connect_with(
         });
         Ok(FELIX_STATUS_OK)
     })
+}
+
+/// The client config a connect builds: TLS, credentials, the protocol features
+/// the caller asked for, and the queue and transport tuning.
+fn connect_config(
+    options: &ConnectOptions,
+    tenant_id: &str,
+    token: Option<&str>,
+    ca_file: Option<&str>,
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<ClientConfig, Failure> {
+    let mut config = tls_config(ca_file, cert_file, key_file)?;
+    config.auth_tenant_id = Some(tenant_id.to_string());
+    config.auth_token = token.map(str::to_string);
+    config.publishers = options.publishers;
+    config.timestamps = options.timestamps;
+    config.record_headers = !options.disable_record_headers;
+    options.tuning.apply(&mut config);
+    Ok(config)
 }
 
 /// The QUIC config for a connect: the CA to trust, and the client certificate

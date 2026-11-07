@@ -29,6 +29,32 @@ internal struct NativeConnectOptions
     public nint ClientCertFile;
     public nint ClientKeyFile;
     public byte DisableRecordHeaders;
+    public byte AckOnCommit;
+    public byte NoPublishShardStreams;
+    public int ClientSubQueuePolicy;
+    public int PublishSharding;
+    public uint ClientSubQueueCapacity;
+    public uint BrokerSubQueueCapacity;
+    public uint PublishConnPool;
+    public uint PublishStreamsPerConn;
+    public uint PublishQueueDepth;
+    public uint PublishShardStreams;
+    public uint CacheConnPool;
+    public uint CacheStreamsPerConn;
+    public uint EventConnPool;
+    public uint ClusterConnPool;
+    public uint ClusterStreamsPerConn;
+    public uint EventRouterMaxPending;
+    public ulong PublishInflightBytes;
+    public ulong MaxFrameBytes;
+    public ulong EventConnRecvWindow;
+    public ulong EventStreamRecvWindow;
+    public ulong EventSendWindow;
+    public ulong CacheConnRecvWindow;
+    public ulong CacheStreamRecvWindow;
+    public ulong CacheSendWindow;
+    public ulong ConnectTimeoutMs;
+    public ulong FinishTimeoutMs;
 }
 
 /// <summary><c>FelixGroupRecord</c>, borrowed for the length of a callback.</summary>

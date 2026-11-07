@@ -110,6 +110,19 @@ pub(crate) fn duration_ms(ms: f64, min: f64, name: &str) -> Result<Duration> {
     Ok(Duration::from_secs_f64(ms / 1000.0))
 }
 
+/// A count or byte size: a whole number from `min` up to 2^53, the largest a
+/// JavaScript number holds exactly. A fraction or `NaN` is refused rather than
+/// truncated into something the caller did not ask for.
+pub(crate) fn whole(value: f64, min: u64, name: &str) -> Result<u64> {
+    const MAX: f64 = 9_007_199_254_740_992.0;
+    if !(value.is_finite() && value.fract() == 0.0 && (min as f64..=MAX).contains(&value)) {
+        return Err(invalid(format!(
+            "{name} must be a whole number of at least {min}, not {value}"
+        )));
+    }
+    Ok(value as u64)
+}
+
 /// Where a new subscription begins.
 pub(crate) fn parse_start(start: Option<Either<String, BigInt>>) -> Result<StartPosition> {
     match start {
