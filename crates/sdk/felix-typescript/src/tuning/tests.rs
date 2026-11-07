@@ -110,3 +110,69 @@ fn values_that_do_not_fit_are_refused() {
     };
     assert!(tuning.apply(&mut config).is_err());
 }
+
+#[test]
+fn every_knob_lands_on_its_own_config_field() {
+    let mut c = config();
+    ClientTuning {
+        client_sub_queue_capacity: Some(101.0),
+        publish_conn_pool: Some(102.0),
+        publish_streams_per_conn: Some(103.0),
+        publish_queue_depth: Some(104.0),
+        publish_inflight_bytes: Some(105.0),
+        publish_shard_streams: Some(106.0),
+        cache_conn_pool: Some(107.0),
+        cache_streams_per_conn: Some(108.0),
+        event_conn_pool: Some(109.0),
+        cluster_conn_pool: Some(110.0),
+        cluster_streams_per_conn: Some(111.0),
+        event_router_max_pending: Some(112.0),
+        max_frame_bytes: Some(113.0),
+        event_conn_recv_window: Some(201.0),
+        event_stream_recv_window: Some(202.0),
+        event_send_window: Some(203.0),
+        cache_conn_recv_window: Some(204.0),
+        cache_stream_recv_window: Some(205.0),
+        cache_send_window: Some(206.0),
+        connect_timeout: Some(301.0),
+        finish_timeout: Some(302.0),
+        client_sub_queue_policy: Some("drop_old".into()),
+        publish_sharding: Some("hash_stream".into()),
+        ..none()
+    }
+    .apply(&mut c)
+    .unwrap();
+    let counts = [
+        (c.client_sub_queue_capacity, 101),
+        (c.publish_conn_pool, 102),
+        (c.publish_streams_per_conn, 103),
+        (c.publish_queue_depth, 104),
+        (c.publish_inflight_bytes, 105),
+        (c.publish_shard_streams, 106),
+        (c.cache_conn_pool, 107),
+        (c.cache_streams_per_conn, 108),
+        (c.event_conn_pool, 109),
+        (c.cluster_conn_pool, 110),
+        (c.cluster_streams_per_conn, 111),
+        (c.event_router_max_pending, 112),
+        (c.max_frame_bytes, 113),
+    ];
+    for (got, want) in counts {
+        assert_eq!(got, want);
+    }
+    let windows = [
+        (c.event_conn_recv_window, 201),
+        (c.event_stream_recv_window, 202),
+        (c.event_send_window, 203),
+        (c.cache_conn_recv_window, 204),
+        (c.cache_stream_recv_window, 205),
+        (c.cache_send_window, 206),
+    ];
+    for (got, want) in windows {
+        assert_eq!(got, want);
+    }
+    assert_eq!(c.connect_timeout.as_millis(), 301);
+    assert_eq!(c.finish_timeout.as_millis(), 302);
+    assert_eq!(c.client_sub_queue_policy, ClientSubQueuePolicy::DropOld);
+    assert_eq!(c.publish_sharding, PublishSharding::HashStream);
+}

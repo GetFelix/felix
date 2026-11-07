@@ -453,3 +453,6 @@ impl Client {
             .map_err(classify)
     }
 }
+
+#[cfg(test)]
+mod tests;

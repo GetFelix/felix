@@ -111,6 +111,39 @@ export default function register(ctx) {
     });
   });
 
+  describe("who published a group record", () => {
+    it("group records carry publisher and timestampMicros when asked for, and null otherwise", async () => {
+      const { fixture } = ctx;
+      const [tenant, namespace, stream] = target();
+      const tag = unique("group-meta");
+      const newest = (records) => records.find((r) => r.payload.toString() === tag);
+      async function pollFor(poll) {
+        for (let i = 0; i < 20; i++) {
+          const found = newest(await poll());
+          if (found) return found;
+        }
+        throw new Error("the published record never reached the group");
+      }
+      await withClient(fixture, { publishers: true, timestamps: true }, async (asking) => {
+        await ctx.client.publishOnShard(tenant, namespace, stream, 0, [Buffer.from(tag)]);
+        const group = unique("meta");
+        const record = await pollFor(() => asking.groupPoll(tenant, namespace, stream, 0, group, 64, 1_000));
+        assert.equal(typeof record.publisher, "string");
+        assert.equal(typeof record.timestampMicros, "bigint");
+
+        const plain = unique("meta-plain");
+        const unasked = await pollFor(() => ctx.client.groupPoll(tenant, namespace, stream, 0, plain, 64, 1_000));
+        assert.equal(unasked.publisher, null);
+        assert.equal(unasked.timestampMicros, null);
+
+        const sharded = await asking.groupSharded(tenant, namespace, stream, unique("meta-sharded"));
+        const across = await pollFor(() => sharded.poll(64));
+        assert.equal(typeof across.publisher, "string");
+        assert.equal(typeof across.timestampMicros, "bigint");
+      });
+    });
+  });
+
   describe("lease tokens", () => {
     it("a put that applies reports a token or why there is none; one that does not apply has none", async () => {
       const { client, fixture } = ctx;
@@ -128,6 +161,14 @@ export default function register(ctx) {
       } else {
         assert.equal(typeof first.token.token, "string");
         assert.equal(typeof first.token.expiresAt, "bigint");
+        // The token is a bearer credential for withIdentity. The fixture sets
+        // no lease templates, so a token appears only on a broker that has some.
+        const holder = await client.withIdentity(fixture.tenant_id, { token: first.token.token });
+        try {
+          assert.equal(holder.closed, false);
+        } finally {
+          holder.close();
+        }
       }
       const second = await put();
       assert.equal(second.result.applied, false);
@@ -201,33 +242,53 @@ export default function register(ctx) {
       assert.ok(Array.isArray(await client.topology()));
     });
 
-    it("inspection answers or is refused by permission, and bad arguments are refused first", async () => {
+    it("a wrong kind is refused before anything is sent", async () => {
       const { client, felix } = ctx;
       const [tenant, namespace, stream] = target();
-      // The fixture's tenant token may not hold `node.view:cluster:*`, so a
-      // refusal is as valid an answer as a view. A wrong kind never gets that far.
       await assert.rejects(client.inspectShard("table", tenant, namespace, stream, 0), felix.InvalidArgumentError);
-      const view = await client.inspectShard("stream", tenant, namespace, stream, 0).then(
-        (v) => v,
-        (err) => {
-          assert.ok(err instanceof felix.FelixError, String(err));
-          return null;
-        },
-      );
-      if (view) {
-        assert.equal(typeof view.phase, "string");
-        assert.ok(Array.isArray(view.replicas));
-      }
-      const page = await client.listSubscriptions({ stream }, 10).then(
-        (p) => p,
-        (err) => {
-          assert.ok(err instanceof felix.FelixError, String(err));
-          return null;
-        },
-      );
-      if (page) {
-        assert.ok(Array.isArray(page.subscriptions));
-        assert.notEqual(page.nextCursor, undefined);
+      await assert.rejects(client.shardOwners("table", tenant, namespace, stream), felix.InvalidArgumentError);
+    });
+
+    it("a token without node.view:cluster:* is refused inspection", async () => {
+      const { client, felix } = ctx;
+      const [tenant, namespace, stream] = target();
+      await assert.rejects(client.inspectShard("stream", tenant, namespace, stream, 0), felix.AuthError);
+      await assert.rejects(client.listSubscriptions({ stream }, 10), felix.AuthError);
+    });
+
+    it("an inspector sees a shard's state and the subscriptions on it", async () => {
+      const { fixture, client } = ctx;
+      const [tenant, namespace, stream] = target();
+      assert.ok(fixture.inspector_token, "the fixture has no inspector token");
+      const events = await client.subscribe(tenant, namespace, stream);
+      try {
+        await withClient(fixture, { token: fixture.inspector_token }, async (inspector) => {
+          // The broker answered is the one in use, which may not lead shard 0
+          // or hold this subscription, so assert the shape and keep paging.
+          const view = await inspector.inspectShard("stream", tenant, namespace, stream, 0);
+          assert.ok(view.shards > 1);
+          assert.ok(["leader", "follower", "none"].includes(view.role), view.role);
+          assert.equal(typeof view.phase, "string");
+          assert.equal(typeof view.serving, "boolean");
+          assert.ok(Array.isArray(view.replicas));
+          assert.notEqual(view.tail, undefined);
+
+          let cursor;
+          const seen = [];
+          do {
+            const page = await inspector.listSubscriptions({ tenantId: tenant, stream }, 1, cursor);
+            assert.notEqual(page.nextCursor, undefined);
+            seen.push(...page.subscriptions);
+            cursor = page.nextCursor ?? undefined;
+          } while (cursor && seen.length < 50);
+          for (const sub of seen) {
+            assert.equal(sub.stream, stream);
+            assert.equal(typeof sub.capacity, "bigint");
+            assert.ok(["block", "drop_new", "drop_old"].includes(sub.policy), sub.policy);
+          }
+        });
+      } finally {
+        await events.close();
       }
     });
   });
