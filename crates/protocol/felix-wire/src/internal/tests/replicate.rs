@@ -806,6 +806,7 @@ fn a_refusal_reason_round_trips_after_the_detail() {
             sender: 4,
         },
         RefusalReason::NotAReplica,
+        RefusalReason::NotVoter,
     ] {
         let message = refusal(Some(reason));
         let frame = message.encode().expect("encode");

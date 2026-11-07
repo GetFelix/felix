@@ -1163,6 +1163,7 @@ fn put_refusal_reason(buf: &mut BytesMut, reason: &RefusalReason) -> Result<()> 
             buf.put_u64(*sender);
         }
         RefusalReason::NotAReplica => buf.put_u8(5),
+        RefusalReason::NotVoter => buf.put_u8(6),
     }
     Ok(())
 }
@@ -1188,6 +1189,7 @@ fn take_refusal_reason(buf: &mut Bytes) -> Result<RefusalReason> {
             sender: take_u64(buf)?,
         },
         5 => RefusalReason::NotAReplica,
+        6 => RefusalReason::NotVoter,
         _ => return Err(Error::Incomplete),
     })
 }
