@@ -726,6 +726,17 @@ whose file has them. Start the broker on 0.7 again and roll it back once the
 shard's next replica set is written; a broker that knows `joint_fence` is off
 drops the older sets at that write.
 
+Rolling a broker back below 0.7 and forward again can leave it doubting every
+copy it holds. 0.7 keeps `copy-trust` in the data directory, stamped with the
+directory's storage id. If the older build gave the directory a new id while
+it ran (after a machine crash, for example), the next 0.7 start finds a stamp
+that does not match and treats every copy as untrusted, possibly short, and
+led here before a crash. Each copy clears once its shard's leader ships to it.
+Until then an older broker's failover fence to that copy is refused, so a
+shard whose leader is down at that moment fails over only on its other
+copies. Roll forward while the shards' leaders are up, and let each broker
+catch up on its shards before you move to the next one.
+
 ## What this does not cover
 
 Topology, install steps and replacing a persistent volume are on

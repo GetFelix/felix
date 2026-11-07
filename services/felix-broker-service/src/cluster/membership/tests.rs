@@ -1212,11 +1212,19 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
+    // The running broker's record of which copies it trusts.
+    let trust =
+        felix_storage::run_state::copy_trust::CopyTrust::open_live(dir.path()).expect("trust");
+    assert!(trust.trusted(b"a copy"));
     let judged = judge_directory(dir.path(), id, Some(&registered), None).expect("judge");
     let Directory::Restored { rotated } = judged else {
         panic!("not a restore: {judged:?}");
     };
     assert_ne!(rotated, id);
+    assert!(
+        !trust.trusted(b"a copy"),
+        "the rotation distrusts every copy at once"
+    );
     assert_eq!(
         felix_storage::storage_identity::load(dir.path()).expect("load"),
         Some(rotated)
