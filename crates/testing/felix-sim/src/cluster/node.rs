@@ -88,6 +88,9 @@ pub(crate) struct Node {
     pub(crate) cut: Cut,
     state: Mutex<State>,
     index: usize,
+    /// Killed uncleanly and not up since: the next start distrusts every
+    /// copy, so until it is up the sim reads its copies as doubted.
+    left_unclean: std::sync::atomic::AtomicBool,
 }
 
 impl Node {
@@ -99,6 +102,7 @@ impl Node {
             cut: Cut::new(),
             state: Mutex::new(State::Down),
             index,
+            left_unclean: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -223,6 +227,8 @@ impl Node {
             }
         });
         *self.state.lock() = State::Up(Running { handles, broker });
+        self.left_unclean
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -325,6 +331,8 @@ impl Node {
                 tracing::error!(node = %self.id, error = %err, "could not record the kill as unsafe");
                 return false;
             }
+            self.left_unclean
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             return true;
         }
         if let Err(err) = felix_storage::run_state::mark_clean(self.dir.path(), id) {
@@ -354,10 +362,15 @@ impl Node {
         })
     }
 
-    /// Whether the running broker trusts its copy of `key`. `None` if it is
-    /// not running.
-    pub(crate) fn copy_trusted(&self, key: &ShardKey) -> Option<bool> {
-        Some(self.broker()?.copy_trusted(key))
+    /// Whether this broker's copy of `key` holds what its seat acknowledged,
+    /// as it attests to a unified fence. `None` when that is not known: the
+    /// broker is down or starting after a clean stop, or holds no copy.
+    pub(crate) async fn copy_trusted(&self, key: &ShardKey) -> Option<bool> {
+        let Some(broker) = self.broker() else {
+            let doubted = self.left_unclean.load(std::sync::atomic::Ordering::SeqCst);
+            return doubted.then_some(false);
+        };
+        Some(broker.copy_attestation(key).await?.trusted)
     }
 
     /// What the running broker believes about `key`, read at one instant.

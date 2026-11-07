@@ -279,21 +279,24 @@ impl Checker for ElectionSettles {
         }
         let cluster = &ctx.cluster;
         let deadline = ctx.healed_at + cluster.config.settle_within;
-        let held = cluster.held_shards().await;
-        println!(
-            "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
-            held.len(),
-            cluster.shard_keys().count(),
-        );
+        let exempt = |held: &BTreeSet<String>| {
+            println!(
+                "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
+                held.len(),
+                cluster.shard_keys().count(),
+            );
+        };
         loop {
-            // Read again each pass: a copy a leader vouches meanwhile stops
-            // being doubted, and its shard stops being exempt.
+            // Read again each pass: a copy a leader ships to meanwhile is
+            // trusted again, and its shard stops being exempt.
             let held = cluster.held_shards().await;
             let stuck = without_held(cluster.unserved().await, &held);
             if stuck.is_empty() {
+                exempt(&held);
                 return Vec::new();
             }
             if cluster.elapsed() >= deadline {
+                exempt(&held);
                 let names: Vec<String> = stuck
                     .iter()
                     .take(12)

@@ -423,7 +423,6 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
-        self.note_opens().await;
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -432,24 +431,9 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
-        self.note_opens().await;
         let at = self.elapsed();
-        // Read from the store before the stop, so the view is the one the
-        // broker died under.
-        let mut view = self.cp.shard_views().await.unwrap_or_default();
-        let node = &self.nodes[index];
-        let unopened: std::collections::BTreeSet<String> = self
-            .shard_keys()
-            .filter(|key| {
-                node.stand(key)
-                    .is_some_and(|stand| stand.opened_generation.is_none())
-            })
-            .map(|key| describe(&key))
-            .collect();
-        // Named leader but not open yet: it acknowledged nothing as leader.
-        kills::leave_out_unopened(&mut view, &node.id, &unopened);
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
-            self.kills.lock().kill(&self.nodes[index].id, at, view);
+            self.kills.lock().kill(&self.nodes[index].id, at);
         }
     }
 
@@ -462,9 +446,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
-        self.note_opens().await;
         let at = self.elapsed();
-        let view = self.cp.shard_views().await.unwrap_or_default();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
         let repaired_before = node.torn_tails_repaired().len();
@@ -503,7 +485,6 @@ impl SimCluster {
             at,
             torn,
             repaired_before,
-            view,
             restarted_at: None,
         });
         mid_append
@@ -522,39 +503,30 @@ impl SimCluster {
 
     /// Shards (`stream/3`) the broker holds on purpose after unclean kills,
     /// until an operator abandons a member, so they are not expected to be
-    /// served. See `kills.rs` for the rule.
+    /// served: nobody serves them and their untrusted copies, as each broker
+    /// attests them, are a majority. See `kills.rs` for the rule.
     pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
-        self.note_opens().await;
-        self.kills.lock().held()
-    }
-
-    /// Record which shards are open and which copies their opened leader can
-    /// ship to now, so the kill log reads each kill against the last opened
-    /// set. Called before anything that stops a broker.
-    pub(crate) async fn note_opens(&self) {
-        let Ok(views) = self.cp.shard_views().await else {
-            return;
+        let Ok(mut views) = self.cp.shard_views().await else {
+            return Default::default();
         };
-        let at = self.elapsed();
-        let mut kills = self.kills.lock();
-        for key in self.shard_keys() {
-            let shard = describe(&key);
-            if let Some(view) = views.get(&shard)
-                && let Some(leader) = self.nodes.iter().find(|n| n.id == view.leader)
-                && leader
-                    .stand(&key)
-                    .is_some_and(|stand| stand.opened_generation == Some(view.generation))
-            {
-                kills.opened(&shard, view, at);
-            }
-            // The broker's own record: a copy is trusted once a leader has
-            // shipped it since the crash.
+        let unserved: Vec<ShardKey> = self
+            .unserved()
+            .await
+            .into_iter()
+            .filter(|(_, serving)| serving.is_empty())
+            .map(|(key, _)| key)
+            .collect();
+        let names: std::collections::BTreeSet<String> = unserved.iter().map(describe).collect();
+        views.retain(|shard, _| names.contains(shard));
+        let mut trust = kills::Trust::new();
+        for key in &unserved {
             for node in &self.nodes {
-                if node.copy_trusted(&key) == Some(true) {
-                    kills.shipped(&shard, &node.id, at);
+                if let Some(trusted) = node.copy_trusted(key).await {
+                    trust.insert((describe(key), node.id.clone()), trusted);
                 }
             }
         }
+        self.kills.lock().held(&views, &trust)
     }
 
     /// Abandon `key`'s log through the operator API. On success the shard is
@@ -583,7 +555,6 @@ impl SimCluster {
             return;
         };
         let now = self.elapsed();
-        self.kills.lock().restart(&self.nodes[index].id, now);
         let lost_power = self.power.lock().restart(index, now);
         let cluster = Arc::clone(self);
         let run = self.starts.fetch_add(1, Ordering::SeqCst) + 1;
@@ -603,10 +574,7 @@ impl SimCluster {
             if let Some(loss) = lost_power
                 && node.started_unclean() == Some(true)
             {
-                cluster
-                    .kills
-                    .lock()
-                    .doubted(&node.id, loss.at, now, loss.view);
+                cluster.kills.lock().kill(&node.id, loss.at);
             }
         });
     }

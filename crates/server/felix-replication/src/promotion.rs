@@ -1025,15 +1025,7 @@ fn own_copy(
     log: &felix_broker::StreamLog,
     local_node_id: &str,
 ) -> OwnCopy {
-    let voter = log.member_is_learner(local_node_id) != Some(true);
-    let attested = crate::replica::attest_copy(
-        Some(marks),
-        marks.unclean_start().map(|unclean| &**unclean),
-        felix_storage::disk_log::any_log_poisoned(),
-        key,
-        voter,
-        log.gave_up(),
-    );
+    let attested = marks.attest(key, log, local_node_id);
     OwnCopy {
         attested: true,
         kept: attested.kept_from == 0,

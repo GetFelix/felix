@@ -184,7 +184,7 @@ pub struct SimBroker {
     registered_watch: tokio::sync::watch::Receiver<Option<u64>>,
     storage_id: felix_storage::StorageId,
     started_unclean: bool,
-    unclean: Option<Arc<replication::unclean::UncleanStart>>,
+    node_id: String,
     membership: Option<MembershipTask>,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
@@ -382,7 +382,11 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             outgoing: _,
         } = self;
         let started_unclean = unclean.is_some();
-        let unclean_start = unclean.clone();
+        let node_id = config
+            .membership
+            .as_ref()
+            .map(|membership| membership.node_id.clone())
+            .unwrap_or_default();
         let peers = Some(peers);
         let shutdown = CancellationToken::new();
         let seeded = CancellationToken::new();
@@ -502,7 +506,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered_watch,
             storage_id,
             started_unclean,
-            unclean: unclean_start,
+            node_id,
             membership,
             shutdown,
             tasks,
@@ -569,12 +573,31 @@ impl SimBroker {
         self.started_unclean
     }
 
-    /// Whether this broker trusts its copy of `key`: it did not start after an
-    /// unclean stop, or a leader has shipped the copy since it did.
-    pub fn copy_trusted(&self, key: &ShardKey) -> bool {
-        self.unclean
-            .as_ref()
-            .is_none_or(|unclean| unclean.is_vouched(key))
+    /// What this broker attests of its copy of `key` to a unified fence, the
+    /// answer a promotion counts. `None` when it holds no copy.
+    pub async fn copy_attestation(
+        &self,
+        key: &ShardKey,
+    ) -> Option<felix_wire::internal::FenceAttestation> {
+        let kind = match key.kind {
+            ShardKind::Stream => LogKind::Stream,
+            ShardKind::Cache => LogKind::Cache,
+        };
+        let log = self
+            .broker
+            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        let route = felix_router::ShardKey {
+            tenant_id: key.tenant_id.clone(),
+            namespace: key.namespace.clone(),
+            stream: key.stream.clone(),
+            shard: key.shard,
+            kind: match key.kind {
+                ShardKind::Stream => felix_router::ShardKind::Stream,
+                ShardKind::Cache => felix_router::ShardKind::Cache,
+            },
+        };
+        Some(self.quorum_marks.attest(&route, &log, &self.node_id))
     }
 
     /// The membership task, `None` only if the config named no cluster.

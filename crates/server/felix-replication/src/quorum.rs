@@ -341,6 +341,25 @@ impl QuorumMarks {
         self.unclean.get()
     }
 
+    /// What this broker attests of its copy `log` of `key`, as it answers a
+    /// unified fence and as its own fence counts it as a promoted leader.
+    pub fn attest(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        local_node_id: &str,
+    ) -> felix_wire::internal::FenceAttestation {
+        let voter = log.member_is_learner(local_node_id) != Some(true);
+        crate::replica::attest_copy(
+            Some(self),
+            self.unclean_start().map(|unclean| &**unclean),
+            felix_storage::disk_log::any_log_poisoned(),
+            key,
+            voter,
+            log.gave_up(),
+        )
+    }
+
     /// Whether the control plane last registered this node under another
     /// storage identity.
     pub fn replaced_storage(&self) -> bool {
