@@ -681,3 +681,92 @@ fn in_order_writeback_never_leaves_a_hole() {
         }
     }
 }
+
+const SEGMENT: &str = "00000000000000000000.log";
+
+/// Where an armed cut went off, once it has.
+fn armed(sim: &Sim, seed: u64) -> std::sync::Arc<std::sync::Mutex<Option<PathBuf>>> {
+    let torn = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = std::sync::Arc::clone(&torn);
+    sim_fs::arm_power_cut(&sim.root, seed, move |path, _| {
+        *slot.lock().unwrap() = Some(path.to_path_buf());
+    })
+    .expect("arm");
+    torn
+}
+
+#[test]
+fn an_armed_cut_lands_in_the_next_append_to_a_segment() {
+    let sim = Sim::new("where");
+    let segment = sim.path(SEGMENT);
+    let other = sim.path("index");
+    durable_file(&segment, &bytes(100, 1));
+    durable_file(&other, &bytes(100, 1));
+    let torn = armed(&sim, 1);
+    let file = OpenOptions::new().write(true).open(&other).expect("open");
+    io::write_at(&file, &bytes(50, 2), 100).expect("not a segment");
+    let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+    io::write_at(&seg, &bytes(10, 3), 0).expect("not an append");
+    assert!(torn.lock().unwrap().is_none());
+    // Unsynced bytes before it do not stop the cut: group commit.
+    io::write_at(&seg, &bytes(10, 4), 100).expect("append");
+    assert_eq!(torn.lock().unwrap().as_deref(), Some(Path::new(SEGMENT)));
+}
+
+#[test]
+fn the_append_in_flight_never_comes_back_whole() {
+    let (mut short, mut gap_then_data) = (0, 0);
+    for seed in 0..256 {
+        let sim = Sim::new("cut");
+        let segment = sim.path(SEGMENT);
+        durable_file(&segment, &bytes(100, 1));
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        // An earlier batch nobody synced yet, then the append that is cut.
+        io::write_at(&seg, &bytes(700, 2), 100).expect("earlier batch");
+        let _torn = armed(&sim, seed);
+        io::write_at(&seg, &bytes(1500, 3), 800).expect("append");
+        // The dying process keeps writing and syncing; none of it lands.
+        io::write_at(&seg, &bytes(100, 5), 2300).expect("write after the cut");
+        io::sync_data(&seg).expect("sync after the cut");
+        durable_file(&sim.path("late"), b"late");
+
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+        let after = fs::read(&segment).expect("read");
+        assert!(
+            after.len() > 800 && after.len() <= 2300,
+            "seed {seed}: none of the append"
+        );
+        assert_eq!(&after[..100], &bytes(100, 1)[..], "seed {seed}: synced");
+        assert!(
+            after[100..800].iter().all(|b| *b == 2 || *b == 0),
+            "seed {seed}"
+        );
+        let append = &after[800..];
+        assert!(append.iter().all(|b| *b == 3 || *b == 0), "seed {seed}");
+        assert!(
+            append.len() < 1500 || append.contains(&0),
+            "seed {seed}: the append came back whole"
+        );
+        short += usize::from(append.len() < 1500);
+        let first_lost = append.iter().position(|b| *b == 0);
+        if first_lost.is_some_and(|at| append[at..].contains(&3)) {
+            gap_then_data += 1;
+        }
+        assert!(!names(&sim.root).contains(&"late".to_string()));
+    }
+    assert!(short > 0 && gap_then_data > 0, "{short} {gap_then_data}");
+}
+
+#[test]
+fn a_cut_with_no_append_keeps_what_was_synced() {
+    let sim = Sim::new("now");
+    let path = sim.path("file");
+    durable_file(&path, b"synced");
+    sim_fs::cut_power(&sim.root, 3).expect("cut");
+    let file = OpenOptions::new().write(true).open(&path).expect("open");
+    io::write_at(&file, b"!", 6).expect("write after the cut");
+    io::sync_data(&file).expect("sync after the cut");
+    assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+    assert_eq!(fs::read(&path).expect("read"), b"synced");
+    assert!(!sim_fs::reboot(&sim.root).expect("reboot"), "only once");
+}

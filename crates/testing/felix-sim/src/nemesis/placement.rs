@@ -20,7 +20,7 @@ use felix_controlplane_service::model::ShardKind as CpShardKind;
 use felix_controlplane_service::store::ControlPlaneStore;
 use tokio::time::Instant;
 
-use super::{Fault, Nemesis, Plan, Step};
+use super::{Fault, Nemesis, Plan, Step, Stop};
 use crate::cluster::describe;
 
 /// How often the promotion watch looks. Opening a shard takes a fence round
@@ -262,7 +262,7 @@ impl Nemesis {
     /// tell that apart from a bug.
     async fn abandon_held(&self, within: Duration) {
         let until = Instant::now() + within;
-        let (index, mut shards) = loop {
+        let (mut index, mut shards) = loop {
             if self.stopped.is_cancelled() {
                 return;
             }
@@ -275,18 +275,40 @@ impl Nemesis {
             }
             self.lapse(OPERATOR_RETRY).await;
         };
-        let id = self.cluster.node_id(index).to_string();
-        // It may be restarting from an earlier fault; wait for it to run.
+        // The shards were picked from views read before the wait. The control
+        // plane may have promoted another broker since, and it is that one
+        // (`docs/replication-design.md`) whose stop makes abandon succeed, so
+        // read the leaders again once the broker can be stopped.
         let ready_by = Instant::now() + ABANDON_STOPPED;
-        while !self.may_crash(index) {
-            if self.stopped.is_cancelled() || Instant::now() >= ready_by {
-                self.recorder.fault(format!(
-                    "abandon: {id} could not be stopped, so nothing is abandoned"
-                ));
+        let (index, mut shards) = loop {
+            // It may be restarting from an earlier fault; wait for it to run.
+            while !self.may_crash(index) {
+                if self.stopped.is_cancelled() || Instant::now() >= ready_by {
+                    self.recorder.fault(format!(
+                        "abandon: {} could not be stopped, so nothing is abandoned",
+                        self.cluster.node_id(index)
+                    ));
+                    return;
+                }
+                self.lapse(OPERATOR_RETRY).await;
+            }
+            let Some(now) = self.led_now(&shards).await else {
+                self.recorder
+                    .fault("abandon: no leader is named for the held shards");
+                return;
+            };
+            if now.0 == index {
+                break now;
+            }
+            if Instant::now() >= ready_by {
+                self.recorder
+                    .fault("abandon: the leaders kept changing, so nothing is abandoned");
                 return;
             }
-            self.lapse(OPERATOR_RETRY).await;
-        }
+            index = now.0;
+            shards = now.1;
+        };
+        let id = self.cluster.node_id(index).to_string();
         let names: Vec<String> = shards.iter().map(describe).collect();
         self.recorder.fault(format!(
             "stop {id} to abandon the logs of {}",
@@ -329,6 +351,21 @@ impl Nemesis {
             self.recorder.fault(format!("restart b{}", index + 1));
             self.cluster.restart(index);
         }
+    }
+
+    /// The first of `shards` the control plane names a leader for, with that
+    /// leader's index and every one of `shards` it leads now.
+    async fn led_now(&self, shards: &[ShardKey]) -> Option<(usize, Vec<ShardKey>)> {
+        let views = self.cluster.cp().shard_views().await.ok()?;
+        let leader_of = |key: &ShardKey| views.get(&describe(key)).map(|v| v.leader.clone());
+        let leader = shards.iter().find_map(leader_of)?;
+        let index = self.cluster.index_of(&leader)?;
+        let keys = shards
+            .iter()
+            .filter(|key| leader_of(key).as_deref() == Some(leader.as_str()))
+            .cloned()
+            .collect();
+        Some((index, keys))
     }
 
     /// The held stream shards assigned to the first broker that leads any,
@@ -378,7 +415,8 @@ impl Nemesis {
             leader + 1
         ));
         let this = Arc::clone(self);
-        tokio::spawn(async move { this.crash_for(leader, down_for, kill).await });
+        let stop = Stop::of_kill(kill, self.cluster.config.power_loss);
+        tokio::spawn(async move { this.crash_for(leader, down_for, stop).await });
         if !self
             .kill_next_promoted(Some(&key), SECOND_PROMOTION_WITHIN, down_for, kill)
             .await
@@ -517,13 +555,14 @@ impl Nemesis {
                 if !unopened || !self.may_crash(index) {
                     continue;
                 }
+                let stop = Stop::of_kill(kill, self.cluster.config.power_loss);
                 self.recorder.fault(format!(
                     "{} b{}, {how} leader of {shard} at generation {generation}, before it opens",
-                    if kill { "kill" } else { "crash" },
+                    stop.verb(),
                     index + 1,
                 ));
                 let this = Arc::clone(self);
-                tokio::spawn(async move { this.crash_for(index, down_for, kill).await });
+                tokio::spawn(async move { this.crash_for(index, down_for, stop).await });
                 return true;
             }
         }

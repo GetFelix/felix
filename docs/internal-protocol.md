@@ -1092,6 +1092,7 @@ u8 tag    1 PromisedTo: u64 generation, u32+bytes leader
           3 View:       u64 have, u64 sender
           4 Assigned:   u64 assigned, u64 sender
           5 NotAReplica
+          6 NotVoter
 ```
 
 `sender` is the generation the refused request named, so a reason is read

@@ -139,11 +139,13 @@ impl Plan {
 }
 
 /// The post-reboot copy of `dir`: everything in it is durable.
+/// `torn` names one file whose contents are already decided, with them.
 pub(super) fn dir(
     old: &Arc<DirNode>,
     plan: &Plan,
     rng: &mut SplitMix64,
     writeback: Writeback,
+    torn: Option<(&FileNode, &[u8])>,
 ) -> Arc<DirNode> {
     let data = old.data.lock();
     let names: BTreeSet<&OsString> = data
@@ -180,9 +182,9 @@ pub(super) fn dir(
         };
         let node = match chosen {
             None => continue,
-            Some(Node::Dir(child)) => Node::Dir(dir(child, plan, rng, writeback)),
+            Some(Node::Dir(child)) => Node::Dir(dir(child, plan, rng, writeback, torn)),
             Some(Node::File(file)) => Node::File(Arc::new(FileNode::with_bytes(contents(
-                file, rng, writeback,
+                file, rng, writeback, torn,
             )))),
         };
         kept.current.insert(name.clone(), node);
@@ -200,9 +202,19 @@ fn alive(node: Option<&Node>) -> Option<&Node> {
 
 /// What the file reads back as. One with no name left only has the bytes of
 /// its last flush.
-fn contents(file: &FileNode, rng: &mut SplitMix64, writeback: Writeback) -> Vec<u8> {
+fn contents(
+    file: &FileNode,
+    rng: &mut SplitMix64,
+    writeback: Writeback,
+    torn: Option<(&FileNode, &[u8])>,
+) -> Vec<u8> {
     let data = file.data.lock();
-    if !data.unlinked {
+    if let Some((torn, bytes)) = torn
+        && std::ptr::eq(torn, file)
+        && !data.unlinked
+    {
+        bytes.to_vec()
+    } else if !data.unlinked {
         crash_contents(&data.durable, &data.current, rng, writeback)
     } else {
         data.durable.clone()

@@ -242,6 +242,14 @@ typedef struct FelixConnectOptions {
   // 2000. Every wait is capped at it, even when the backoff is larger.
   // Both backoff fields count anything past a year as a year.
   uint64_t reconnect_max_backoff_ms;
+  // A PEM file holding the client certificate, leaf first and then any
+  // intermediates, to present to a broker started with
+  // `FELIX_TLS_CLIENT_CA`. Null presents none. Needs `client_key_file`.
+  // Read during `felix_client_connect_with`; the string is not kept.
+  const char *client_cert_file;
+  // A PEM file holding the private key of `client_cert_file`: PKCS#8,
+  // PKCS#1 or SEC1. Null presents no certificate. Needs `client_cert_file`.
+  const char *client_key_file;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`

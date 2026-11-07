@@ -19,8 +19,16 @@ use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 
-pub(crate) fn client_config(ca_file: Option<&str>, offer_alpn: bool) -> napi::Result<ClientConfig> {
-    match ca_file {
+/// The QUIC config for a connection. `client_cert_file` and `client_key_file`
+/// go together: a certificate chain and its private key, presented to a broker
+/// that asks clients to authenticate with one (`FELIX_TLS_CLIENT_CA`).
+pub(crate) fn client_config(
+    ca_file: Option<&str>,
+    client_cert_file: Option<&str>,
+    client_key_file: Option<&str>,
+    offer_alpn: bool,
+) -> napi::Result<ClientConfig> {
+    let roots = match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
             let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_file_iter(path)
@@ -39,14 +47,38 @@ pub(crate) fn client_config(ca_file: Option<&str>, offer_alpn: bool) -> napi::Re
                     ))
                 })?;
             }
-            felix_client::quic_client_config(Some(Arc::new(roots)), offer_alpn)
-                .map_err(|err| invalid(format!("could not build a TLS config: {err:#}")))
+            Some(Arc::new(roots))
         }
-        None => felix_client::quic_client_config(None, offer_alpn).map_err(|err| {
+        None => None,
+    };
+    let identity = match (client_cert_file, client_key_file) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(
+            felix_client::ClientIdentity::from_pem_files(cert, key).map_err(|err| {
+                invalid(format!("could not load the client certificate: {err:#}"))
+            })?,
+        ),
+        _ => {
+            return Err(invalid(
+                "clientCertFile and clientKeyFile must be given together",
+            ));
+        }
+    };
+    let platform_only = roots.is_none() && identity.is_none();
+    let built = match identity {
+        Some(identity) => {
+            felix_client::quic_client_config_with_identity(roots, identity, offer_alpn)
+        }
+        None => felix_client::quic_client_config(roots, offer_alpn),
+    };
+    built.map_err(|err| {
+        if platform_only {
             invalid(format!(
                 "could not use the platform trust store: {err:#}. \
                  Pass caFile to trust a specific CA instead."
             ))
-        }),
-    }
+        } else {
+            invalid(format!("could not build a TLS config: {err:#}"))
+        }
+    })
 }

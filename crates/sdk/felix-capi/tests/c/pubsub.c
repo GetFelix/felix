@@ -444,6 +444,9 @@ struct fixture {
   /* Brokers that advertise no features, so no commits. Empty when the fixture
      has none. */
   const char *no_commit_addrs;
+  /* A broker that serves only a client presenting a certificate, and a
+     certificate and key it accepts. Empty when the fixture has none. */
+  const char *mtls_addr, *client_cert_file, *client_key_file;
   /* The link interposer: a broker address that faults can be injected on, and
      the single-shard stream behind it. Empty when the fixture has none. */
   const char *link_addr, *link_stream;
@@ -500,6 +503,9 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->control_url, "control_url", false},
       {&f->records_publishers, "records_publishers", false},
       {&f->no_commit_addrs, "no_commit_addrs", false},
+      {&f->mtls_addr, "mtls_addr", false},
+      {&f->client_cert_file, "client_cert_file", false},
+      {&f->client_key_file, "client_key_file", false},
       {&f->link_addr, "link_addr", false},
       {&f->link_stream, "link_stream", false},
       {&f->kill_helper, "kill_helper", false},
@@ -822,6 +828,33 @@ static void offline(void) {
                                 "/nonexistent/ca.pem", NULL, on_connect, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing ca_file gave %d",
         (int)status);
+
+  /* A client certificate needs its key, and the other way round. */
+  FelixConnectOptions cert_only;
+  memset(&cert_only, 0, sizeof cert_only);
+  cert_only.size = sizeof cert_only;
+  cert_only.client_cert_file = "/nonexistent/client.pem";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "cert without key gave %d",
+        (int)status);
+  message = felix_last_error_message();
+  CHECK(message && strstr(message, "together"),
+        "message does not say they go together");
+  cert_only.client_cert_file = NULL;
+  cert_only.client_key_file = "/nonexistent/client.key";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "key without cert gave %d",
+        (int)status);
+  cert_only.client_cert_file = "/nonexistent/client.pem";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing cert file gave %d",
+        (int)status);
+  message = felix_last_error_message();
+  CHECK(message && strstr(message, "client.pem"),
+        "message does not name the certificate file");
 
   status = felix_client_endpoints(NULL, NULL, on_endpoints, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "endpoints of a null client gave %d",
@@ -3770,6 +3803,65 @@ static void commits_negotiated(const struct fixture *f, const char *run) {
   SCENARIO_END("commit.negotiated");
 }
 
+/* Mutual TLS: a broker that requires a client certificate serves a client that
+   presents one, refuses one that does not, and a certificate file that is not
+   a key is the caller's bad argument. */
+static void client_certificate(const struct fixture *f) {
+  if (!f->mtls_addr[0] || !f->client_cert_file[0] || !f->client_key_file[0]) {
+    fprintf(stderr, "FAIL: the fixture file has no mtls_addr, client_cert_file "
+                    "or client_key_file\n");
+    failures++;
+    return;
+  }
+  FelixConnectOptions options;
+  memset(&options, 0, sizeof options);
+  options.size = sizeof options;
+  options.reconnect_attempts = 1;
+  options.client_cert_file = f->client_cert_file;
+  options.client_key_file = f->client_key_file;
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with(
+      f->mtls_addr, f->tenant, f->token, NULL, f->ca_file, &options, NULL,
+      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK, "connect with a client certificate gave %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(w.handle);
+  }
+  waiter_destroy(&w);
+
+  options.client_cert_file = NULL;
+  options.client_key_file = NULL;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->mtls_addr, f->tenant, f->token, NULL,
+                                     f->ca_file, &options, NULL, on_connect,
+                                     &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status != FELIX_STATUS_OK,
+        "connect without a client certificate gave %d", (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(w.handle);
+  }
+  waiter_destroy(&w);
+
+  /* A certificate file is not a key file. */
+  options.client_cert_file = f->client_cert_file;
+  options.client_key_file = f->client_cert_file;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->mtls_addr, f->tenant, f->token, NULL,
+                                     f->ca_file, &options, NULL, on_connect,
+                                     &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "a certificate used as the key gave %d", (int)status);
+  waiter_destroy(&w);
+}
+
 /* A trim of `shard` 0 of `stream` below `before`, only if its next offset is
    `expected`. */
 static FelixStatus c_trim(FelixClient *client, const struct fixture *f,
@@ -5760,6 +5852,7 @@ int main(int argc, char **argv) {
     caches(&f, run);
     commits(&f, run);
     commits_negotiated(&f, run);
+    client_certificate(&f);
     head_trims(&f);
     producers(&f, run);
     concurrency(&f, run);

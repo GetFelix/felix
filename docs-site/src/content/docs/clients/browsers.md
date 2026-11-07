@@ -298,7 +298,7 @@ The browser protocol above is the whole surface. It has no message for anything 
 | Atomic commits and conditional writes | Yes | No |
 | Head trims | Yes | No |
 | Choosing a shard | Yes | No |
-| Client certificates (mutual TLS) | Rust | No. The browser's identity is its sign-in token. |
+| Client certificates (mutual TLS) | Rust, Python, TypeScript, C#, C | No. The browser's identity is its sign-in token. |
 
 Use a native client on a server you control when you need these, and the gateway for the part of the app that runs in the browser.
 

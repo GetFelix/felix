@@ -39,3 +39,7 @@ tokio-util = "0.7"
 quinn = { version = "0.11", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = "0.23"
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3"

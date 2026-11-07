@@ -180,6 +180,9 @@ pub enum RefusalReason {
     Assigned { assigned: u64, sender: u64 },
     /// Its route does not name it a replica of the shard.
     NotAReplica,
+    /// It answers a fence but does not vote: a learner, or a copy replaced
+    /// until a set change re-admits it. Its position counts for nothing.
+    NotVoter,
 }
 
 /// The leader has nothing older than `base_offset` left.

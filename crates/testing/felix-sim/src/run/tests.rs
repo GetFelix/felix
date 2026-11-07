@@ -72,3 +72,13 @@ fn the_replay_command_keeps_placement_faults_on() {
         "FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=7 task sim:replay"
     );
 }
+
+#[test]
+fn the_replay_command_keeps_power_loss_on() {
+    let config = small().with_power_loss();
+    let outcome = failed_start(7, config, String::new(), Duration::ZERO);
+    assert_eq!(
+        outcome.replay_command(),
+        "FELIX_SIM_POWER_LOSS=1 FELIX_SIM_SEED=7 task sim:replay"
+    );
+}
