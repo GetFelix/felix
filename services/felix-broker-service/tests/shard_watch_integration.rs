@@ -214,6 +214,7 @@ impl Cluster {
                 learners: Default::default(),
                 pending_set: None,
                 previous_generation: None,
+                readmitted: Default::default(),
             })
             .await
             .expect("assign");

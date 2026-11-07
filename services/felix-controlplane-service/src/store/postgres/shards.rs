@@ -38,6 +38,8 @@ struct DbShardAssignment {
     learners_generation: Option<i64>,
     previous_generation: Option<i64>,
     previous_generation_at: Option<i64>,
+    readmitted: Option<serde_json::Value>,
+    readmitted_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -250,7 +252,7 @@ async fn write_shard_assignment(
     let existing = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
                FOR UPDATE"#,
@@ -323,12 +325,17 @@ async fn write_shard_assignment(
     let previous_generation = existing.as_ref().and_then(|existing| {
         crate::model::previous_generation(existing.generation, generation, elected)
     });
-    let stored = ShardAssignment {
+    let mut stored = ShardAssignment {
         generation,
         incarnation: incarnation as u64,
         previous_generation,
         ..assignment
     };
+    let held = existing
+        .as_ref()
+        .map(|existing| existing.readmitted.clone())
+        .unwrap_or_default();
+    stored.carry_readmitted(&held);
 
     let fence_storage = (!stored.fence_storage_ids.is_empty())
         .then(|| serde_json::to_value(&stored.fence_storage_ids))
@@ -354,16 +361,21 @@ async fn write_shard_assignment(
     // And for the generation a write past the next one replaced (0045).
     let previous_generation = stored.previous_generation.map(|previous| previous as i64);
     let previous_generation_at = previous_generation.map(|_| stored.generation as i64);
+    // And for the readmitted copies (0046).
+    let readmitted = (!stored.readmitted.is_empty())
+        .then(|| serde_json::to_value(&stored.readmitted))
+        .transpose()?;
+    let readmitted_at = readmitted.as_ref().map(|_| stored.generation as i64);
 
     // A write that expects no assignment must not replace one another writer
     // inserted since the read above.
     let insert = if expected == Some(None) {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO NOTHING"#
     } else {
-        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+        r#"INSERT INTO shard_assignments (tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor, joining, move_started_at_millis, move_reason, incarnation, fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
                ON CONFLICT (tenant_id, namespace, kind, stream, shard) DO UPDATE SET
                  leader = EXCLUDED.leader,
                  replicas = EXCLUDED.replicas,
@@ -384,6 +396,8 @@ async fn write_shard_assignment(
                  learners_generation = EXCLUDED.learners_generation,
                  previous_generation = EXCLUDED.previous_generation,
                  previous_generation_at = EXCLUDED.previous_generation_at,
+                 readmitted = EXCLUDED.readmitted,
+                 readmitted_at = EXCLUDED.readmitted_at,
                  updated_at = now()"#
     };
     let written = sqlx::query(insert)
@@ -411,6 +425,8 @@ async fn write_shard_assignment(
         .bind(learners_generation)
         .bind(previous_generation)
         .bind(previous_generation_at)
+        .bind(readmitted)
+        .bind(readmitted_at)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -443,7 +459,7 @@ pub(super) async fn get_shard_assignment(
     sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
     )
@@ -465,7 +481,7 @@ pub(super) async fn list_shard_assignments(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&store.pool)
@@ -485,7 +501,7 @@ pub(super) async fn list_shard_assignments_page(
         None => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $2"#,
         )
@@ -494,7 +510,7 @@ pub(super) async fn list_shard_assignments_page(
         Some(after) => sqlx::query_as::<_, DbShardAssignment>(
             r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments WHERE ($1::text IS NULL OR leader = $1)
                  AND (tenant_id, namespace, kind, stream, shard) > ($2, $3, $4, $5, $6)
                ORDER BY tenant_id, namespace, kind, stream, shard LIMIT $7"#,
@@ -525,7 +541,7 @@ pub(super) async fn list_shard_assignments_for_node(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments WHERE leader = $1
                ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
@@ -572,7 +588,7 @@ pub(super) async fn shard_assignment_snapshot(
     let rows = sqlx::query_as::<_, DbShardAssignment>(
         r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
                       joining, move_started_at_millis, move_reason, incarnation,
-                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
                FROM shard_assignments ORDER BY tenant_id, namespace, stream, shard, kind"#,
     )
     .fetch_all(&mut *tx)
@@ -731,12 +747,14 @@ pub(super) async fn record_replica_report(
     leader: &str,
 ) -> StoreResult<ReportWrite> {
     let mut tx = store.pool.begin().await?;
-    // `FOR SHARE` holds the assignment row until commit, so a promotion
+    // `FOR UPDATE` holds the assignment row until commit, so a promotion
     // either committed before this read and is seen, or waits for the report.
+    // Not `FOR SHARE`: the report may write the row's readmitted copies, and
+    // two reports upgrading shared locks would deadlock.
     let assignment: Option<(String, i64, i64)> = sqlx::query_as(
         r#"SELECT leader, generation, incarnation FROM shard_assignments
                WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5
-               FOR SHARE"#,
+               FOR UPDATE"#,
     )
     .bind(&report.key.tenant_id)
     .bind(&report.key.namespace)
@@ -879,6 +897,7 @@ pub(super) async fn record_replica_report(
     match result {
         Ok(done) if done.rows_affected() == 0 => Ok(ReportWrite::Stale),
         Ok(_) => {
+            record_readmitted(&mut tx, &report).await?;
             tx.commit().await?;
             Ok(ReportWrite::Stored)
         }
@@ -887,6 +906,70 @@ pub(super) async fn record_replica_report(
         }
         Err(err) => Err(err.into()),
     }
+}
+
+/// Add the [`crate::model::Readmitted`] entries a stored `report` gives to its
+/// assignment, under the row lock the report took. The generation stays, so
+/// the change log is not written: the entries reach brokers with the next
+/// assignment write, which carries them, or a snapshot.
+async fn record_readmitted(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    report: &ReplicaReport,
+) -> StoreResult<()> {
+    if report.caught_up.is_empty() {
+        return Ok(());
+    }
+    let mut assignment = sqlx::query_as::<_, DbShardAssignment>(
+        r#"SELECT tenant_id, namespace, stream, shard, kind, leader, replicas, generation, state, successor,
+                      joining, move_started_at_millis, move_reason, incarnation,
+                      fence_storage_ids, fence_storage_generation, pending_set, pending_set_generation, member_storage_ids, member_storage_generation, learners, learners_generation, previous_generation, previous_generation_at, readmitted, readmitted_at
+               FROM shard_assignments
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
+    )
+    .bind(&report.key.tenant_id)
+    .bind(&report.key.namespace)
+    .bind(&report.key.stream)
+    .bind(report.key.shard as i32)
+    .bind(report.key.kind.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(StoreError::from)
+    .and_then(shard_from_db)?;
+    let names: Vec<&String> = report.caught_up.iter().collect();
+    let registered: std::collections::HashMap<String, (String, u64)> = sqlx::query_as::<
+        _,
+        (String, Option<String>, i64),
+    >(
+        // Only the registration that wrote the id speaks for it (0030).
+        r#"SELECT node_id,
+                      CASE WHEN storage_id_incarnation = incarnation THEN storage_id END,
+                      incarnation
+                   FROM nodes WHERE node_id = ANY($1)"#,
+    )
+    .bind(&names)
+    .fetch_all(&mut **tx)
+    .await?
+    .into_iter()
+    .filter_map(|(node, storage_id, incarnation)| Some((node, (storage_id?, incarnation as u64))))
+    .collect();
+    let entries = assignment.readmitted_by(report, &|node| registered.get(node).cloned());
+    if entries.is_empty() {
+        return Ok(());
+    }
+    assignment.readmit(entries);
+    sqlx::query(
+        r#"UPDATE shard_assignments SET readmitted = $6, readmitted_at = generation
+               WHERE tenant_id = $1 AND namespace = $2 AND stream = $3 AND shard = $4 AND kind = $5"#,
+    )
+    .bind(&report.key.tenant_id)
+    .bind(&report.key.namespace)
+    .bind(&report.key.stream)
+    .bind(report.key.shard as i32)
+    .bind(report.key.kind.as_str())
+    .bind(serde_json::to_value(&assignment.readmitted)?)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 pub(super) async fn list_replica_reports(store: &PostgresStore) -> StoreResult<Vec<ReplicaReport>> {
@@ -968,6 +1051,12 @@ fn shard_from_db(row: DbShardAssignment) -> StoreResult<ShardAssignment> {
                 Some(previous as u64)
             }
             _ => None,
+        },
+        readmitted: match row.readmitted {
+            Some(entries) if row.readmitted_at == Some(row.generation) => {
+                serde_json::from_value(entries)?
+            }
+            _ => Vec::new(),
         },
     })
 }

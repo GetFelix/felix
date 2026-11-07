@@ -190,6 +190,12 @@ fn assignment() -> ShardAssignment {
             generation: 1,
         }),
         previous_generation: Some(1),
+        readmitted: vec![crate::model::Readmitted {
+            node: s("c"),
+            storage_id: s("0123456789abcdef0123456789abcdef"),
+            generation: 1,
+            offset: 1,
+        }],
     }
 }
 
@@ -504,6 +510,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RecordReplicaReport {
             report: report(),
             leader: Some(s("b")),
+            readmit: true,
         },
         MetaCommand::SetMovesPaused { paused: true },
         MetaCommand::UpsertIdpIssuer {

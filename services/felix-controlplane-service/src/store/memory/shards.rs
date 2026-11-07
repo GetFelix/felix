@@ -234,12 +234,18 @@ async fn write_shard_assignment(
 
     // Store-owned, so a caller cannot pin a generation and make its own
     // stale report look current.
-    let stored = ShardAssignment {
+    let mut stored = ShardAssignment {
         generation,
         incarnation,
         previous_generation,
         ..assignment
     };
+    let held = state
+        .records
+        .get(&stored.key)
+        .map(|existing| existing.readmitted.clone())
+        .unwrap_or_default();
+    stored.carry_readmitted(&held);
     state.records.insert(stored.key.clone(), stored.clone());
     state.record(op, &stored.key, Some(stored.clone()));
     if fence.is_some() {
@@ -372,15 +378,21 @@ pub(super) async fn shard_assignment_changes(
         .page(since, store.limit(), |change| change.seq))
 }
 
+/// `readmit`: also record the [`crate::model::Readmitted`] entries the report
+/// adds to the assignment; false for a Raft entry proposed below the level
+/// that stores them.
 pub(super) async fn record_replica_report(
     store: &InMemoryStore,
     report: ReplicaReport,
     leader: Option<&str>,
+    readmit: bool,
 ) -> StoreResult<ReportWrite> {
+    // Nodes before shards, the order an assignment write takes them in.
+    let nodes = store.nodes.read().await;
     // Held across the leadership check and the write, so a promotion or
     // delete either lands first and is seen, or waits for the report.
-    let shards = store.shards.read().await;
-    let Some(assignment) = shards.records.get(&report.key) else {
+    let mut shards = store.shards.write().await;
+    let Some(assignment) = shards.records.get_mut(&report.key) else {
         return Err(StoreError::NotFound("shard assignment".into()));
     };
     // `None` only from a Raft entry proposed before the check existed, which
@@ -411,6 +423,16 @@ pub(super) async fn record_replica_report(
         report.carry_halts(&held.halted);
     } else {
         report.carry_halts(&Default::default());
+    }
+    // A report the leader check above did not hold to its generation adds
+    // nothing: `readmitted_by` needs the stamped leader anyway.
+    if readmit {
+        let registered = |node: &str| {
+            let node = nodes.records.get(node)?;
+            Some((node.status.storage_id.clone()?, node.status.incarnation))
+        };
+        let entries = assignment.readmitted_by(&report, &registered);
+        assignment.readmit(entries);
     }
     reports.insert(report.key.clone(), report);
     Ok(ReportWrite::Stored)
