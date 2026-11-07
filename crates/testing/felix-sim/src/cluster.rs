@@ -70,7 +70,7 @@ use self::kills::KillLog;
 use self::node::Node;
 use self::power::PowerLog;
 pub use self::power::PowerLoss;
-use crate::controlplane::{CpConfig, SimControlPlane};
+use crate::controlplane::{Answer, CpConfig, SimControlPlane};
 use crate::nemesis::Stop;
 use crate::net::{Link, SimNet};
 
@@ -103,6 +103,11 @@ pub struct SimConfig {
     pub settle_within: Duration,
     /// Whether to inject faults at all.
     pub faults: bool,
+    /// Whether the nemesis also acts as an operator on placement: moves,
+    /// drains, seat replacement, node removal, abandoned logs and kills
+    /// between promotion and open. Off by default, so a seed's schedule stays
+    /// what it was; [`SimConfig::with_placement_faults`] turns it on.
+    pub placement_faults: bool,
     /// The most real time a run may take, startup included. A run past it
     /// stops and reports a stall. Separately, a run whose virtual time stands
     /// still for four minutes of real time stalls: a broker loop that never
@@ -138,6 +143,7 @@ impl SimConfig {
             fault_window: Duration::from_secs(90),
             settle_within: Duration::from_secs(60),
             faults: true,
+            placement_faults: false,
             real_time_limit: Duration::from_secs(480),
             fsync_mode: if power_loss {
                 FsyncMode::OnCommit
@@ -152,6 +158,21 @@ impl SimConfig {
 
 /// How many seeds in a hundred cut the power.
 const POWER_LOSS_PERCENT: u64 = 34;
+
+/// Copies placement may have in flight at once with placement faults on. The
+/// default of one would leave a drain moving a shard at a time, too slow for
+/// two promotions to land on a shard while its seat is being replaced.
+const PLACEMENT_FAULT_MOVES: usize = 4;
+
+impl SimConfig {
+    /// The same run with placement faults on (see
+    /// [`SimConfig::placement_faults`]).
+    pub fn with_placement_faults(mut self) -> Self {
+        self.placement_faults = true;
+        self.controlplane.moves.max_concurrent = PLACEMENT_FAULT_MOVES;
+        self
+    }
+}
 
 /// The handles a client needs to reach one running broker.
 ///
@@ -385,7 +406,18 @@ impl SimCluster {
         let at = self.elapsed();
         // Read from the store before the stop, so the view is the one the
         // broker died under.
-        let view = self.cp.shard_views().await.unwrap_or_default();
+        let mut view = self.cp.shard_views().await.unwrap_or_default();
+        let node = &self.nodes[index];
+        let unopened: std::collections::BTreeSet<String> = self
+            .shard_keys()
+            .filter(|key| {
+                node.stand(key)
+                    .is_some_and(|stand| stand.opened_generation.is_none())
+            })
+            .map(|key| describe(&key))
+            .collect();
+        // Named leader but not open yet: it acknowledged nothing as leader.
+        kills::leave_out_unopened(&mut view, &node.id, &unopened);
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
             self.kills.lock().kill(&self.nodes[index].id, at, view);
         }
@@ -462,6 +494,16 @@ impl SimCluster {
     /// served. See `kills.rs` for the rule.
     pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
         self.kills.lock().held()
+    }
+
+    /// Abandon `key`'s log through the operator API. On success the shard is
+    /// no longer held.
+    pub async fn abandon(&self, key: &ShardKey) -> Answer {
+        let answer = self.cp.abandon(key).await;
+        if answer.ok {
+            self.kills.lock().abandon(&describe(key), self.elapsed());
+        }
+        answer
     }
 
     /// Whether the broker at `index` is running and started after an unclean

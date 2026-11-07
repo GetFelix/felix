@@ -16,8 +16,8 @@
 //! - The handler hears who asked only when the target keeps ballots.
 //! - Pings are answered without the handler, and an answer is shaped by what
 //!   the caller offered ([`for_caller`]): a learner's ack reads as a plain one
-//!   without `LEARNER_ACKS`, and a refusal has no reason without
-//!   `REFUSAL_REASONS`.
+//!   without `LEARNER_ACKS`, a kept-ballot fence answer as a plain one without
+//!   `KEPT_BALLOTS`, and a refusal has no reason without `REFUSAL_REASONS`.
 //!
 //! What it leaves out: the listener's per-stream permits (`Overload`) and its
 //! one-at-a-time answering of an older peer's stream. Every request runs at

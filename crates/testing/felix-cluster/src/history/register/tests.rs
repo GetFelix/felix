@@ -2,9 +2,10 @@
 //! planted stale or phantom get must be caught under its own rule.
 
 use super::super::checker::{Rule, Violation};
+use super::super::linearizable::Budget;
 use super::super::model::FOREIGN_PAYLOAD;
 use super::super::rng::Rng;
-use super::{RegisterAction, RegisterOp, check};
+use super::{RegisterAction, RegisterOp, check, check_with, drop_unobserved_unknown_puts};
 
 fn put(invoke: u64, complete: u64, value: u64, acknowledged: bool) -> RegisterOp {
     RegisterOp {
@@ -188,4 +189,70 @@ fn linearizable(seed: u64) -> Vec<RegisterOp> {
         ops.push(get(invoke, complete, value));
     }
     ops
+}
+
+/// Twenty-five unknown puts that nobody read, all in flight together with the
+/// reads, make the search try every subset unless they are dropped.
+fn many_unknown_puts() -> Vec<RegisterOp> {
+    let mut ops = vec![put(0, 10, 1, true)];
+    ops.extend((0..25).map(|n| put(1 + n, 1_000, 100 + n, false)));
+    ops.extend((0..5).map(|n| get(20 + n * 10, 25 + n * 10, Some(1))));
+    ops
+}
+
+#[test]
+fn unobserved_unknown_puts_do_not_exhaust_the_search() {
+    let small = Budget {
+        steps: 200_000,
+        states: 20_000,
+    };
+    let mut out = Vec::new();
+    let undecided = check_with(&many_unknown_puts(), small, &mut out);
+    assert!(out.is_empty(), "{out:?}");
+    assert!(undecided.is_empty(), "undecided: {undecided:?}");
+}
+
+#[test]
+fn an_unknown_put_that_a_get_saw_stays_in_the_search() {
+    let mut ops = many_unknown_puts();
+    // A read of unknown put 105, after the reads of 1.
+    ops.push(get(500, 510, Some(105)));
+    let indices: Vec<usize> = (0..ops.len()).collect();
+    let kept = drop_unobserved_unknown_puts(&ops, indices);
+    let unknown_kept: Vec<_> = kept
+        .iter()
+        .filter(|&&i| {
+            matches!(
+                ops[i].action,
+                RegisterAction::Put {
+                    acknowledged: false,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(unknown_kept.len(), 1);
+    assert!(matches!(
+        ops[*unknown_kept[0]].action,
+        RegisterAction::Put { value: 105, .. }
+    ));
+    assert!(run(&ops).is_empty());
+}
+
+#[test]
+fn a_key_with_a_conditional_put_keeps_every_unknown_put() {
+    let mut ops = many_unknown_puts();
+    ops.push(RegisterOp {
+        process: 2,
+        invoke: 600,
+        complete: 610,
+        key: "k".to_string(),
+        action: RegisterAction::PutIf {
+            expect: None,
+            value: 999,
+            applied: Some(false),
+        },
+    });
+    let indices: Vec<usize> = (0..ops.len()).collect();
+    assert_eq!(drop_unobserved_unknown_puts(&ops, indices.clone()), indices);
 }

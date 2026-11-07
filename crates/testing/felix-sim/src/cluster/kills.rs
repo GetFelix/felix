@@ -14,6 +14,17 @@
 //! broker acknowledged was synced, so it keeps its storage id and starts
 //! clean, and its copy is trusted. Should a restart after one run
 //! `UncleanStart` anyway, [`KillLog::doubted`] counts it like a kill.
+//!
+//! Placement faults move shards while kills land, so the rule reads each kill
+//! against the set and term the shard had at that instant:
+//!
+//! - A broker named leader that had not opened the shard yet (killed between
+//!   promotion and open) acknowledged nothing at that generation, so its kill
+//!   is not a leader's kill for the shard ([`leave_out_unopened`]).
+//! - A follower being copied in (`joining`) counts in the set, so a seat
+//!   replacement in flight needs a majority of the wider set.
+//! - An operator's `placement abandon` ends the hold: kills before it no
+//!   longer count for that shard.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
@@ -40,10 +51,18 @@ struct Window {
     view: Views,
 }
 
+/// Leave out of `view` each shard `node` is named leader of but had not
+/// opened (`unopened`): it acknowledged nothing there as leader.
+pub(crate) fn leave_out_unopened(view: &mut Views, node: &str, unopened: &BTreeSet<String>) {
+    view.retain(|shard, v| v.leader != node || !unopened.contains(shard));
+}
+
 /// Unclean kills so far. A clean stop never enters it.
 #[derive(Debug, Default)]
 pub(crate) struct KillLog {
     windows: Vec<Window>,
+    /// When an operator last abandoned each shard's log.
+    abandoned: BTreeMap<String, Duration>,
 }
 
 impl KillLog {
@@ -80,11 +99,18 @@ impl KillLog {
         closed
     }
 
+    /// An operator abandoned `shard`'s log at `at`: kills before then no
+    /// longer hold it.
+    pub(crate) fn abandon(&mut self, shard: &str, at: Duration) {
+        self.abandoned.insert(shard.to_string(), at);
+    }
+
     /// Shards the broker holds. For each unclean kill of a shard's leader, the
     /// leader counts, and so does every other member killed uncleanly earlier,
     /// at the same leader and generation (no successor had opened), that was
     /// still down when the leader died. The shard is held when those reach
-    /// `n / 2 + 1` of its `n` members.
+    /// `n / 2 + 1` of its `n` members, the leader and a joining follower
+    /// included.
     ///
     /// A restart counts as re-reported the moment it is asked for, so a member
     /// that came back and had not yet reported is treated as healthy: the rule
@@ -93,7 +119,12 @@ impl KillLog {
         let mut held = BTreeSet::new();
         for leader in &self.windows {
             for (shard, view) in &leader.view {
-                if view.leader != leader.node {
+                if view.leader != leader.node
+                    || self
+                        .abandoned
+                        .get(shard)
+                        .is_some_and(|at| *at > leader.from)
+                {
                     continue;
                 }
                 let mut doubted = BTreeSet::from([leader.node.as_str()]);
@@ -110,7 +141,9 @@ impl KillLog {
                         doubted.insert(other.node.as_str());
                     }
                 }
-                if doubted.len() > view.members.len() / 2 {
+                let mut set: BTreeSet<&str> = view.members.iter().map(String::as_str).collect();
+                set.insert(view.leader.as_str());
+                if doubted.len() > set.len() / 2 {
                     held.insert(shard.clone());
                 }
             }

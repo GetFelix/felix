@@ -588,6 +588,7 @@ async fn fence_one<'a, R: PeerRequester>(
     key: ShardKey,
     route: felix_router::Route,
     marks: &'a QuorumMarks,
+    continuing: bool,
 ) -> Fenced<'a> {
     // Before registration answers, a feature missing from the fleet view may
     // still be on, so the lease would stand in for a fence the fleet may
@@ -619,6 +620,7 @@ async fn fence_one<'a, R: PeerRequester>(
             promotion::Joint::new(&addr_of, router.prior_set(&key))
                 .with_local_storage(marks.local_storage())
                 .with_replaced_storage(marks.replaced_storage())
+                .with_continuing(continuing)
         });
     // This broker's own standing for election, if that is what the route is.
     let candidacy = marks
@@ -664,14 +666,14 @@ async fn open_promoted<R: PeerRequester>(
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<Fenced<'_>> = futures::stream::iter(
-        promoted
-            .into_iter()
-            .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
-    )
-    .buffer_unordered(FENCE_CONCURRENCY)
-    .collect()
-    .await;
+    let outcomes: Vec<Fenced<'_>> =
+        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
+            let continuing = gate.continuing(&watch_key(&key), route.generation);
+            fence_one(requester, broker, router, key, route, marks, continuing)
+        }))
+        .buffer_unordered(FENCE_CONCURRENCY)
+        .collect()
+        .await;
     let mut pending = false;
     for (key, generation, outcome, fencing) in outcomes {
         let opened = open_fenced(gate, &key, generation, outcome).await;

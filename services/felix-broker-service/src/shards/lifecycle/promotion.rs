@@ -48,6 +48,10 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
         self.ingress.fence().awaiting_promotion(key)
     }
 
+    fn continuing(&self, key: &ShardKey, generation: u64) -> bool {
+        self.ingress.fence().continuing(key, generation)
+    }
+
     async fn open(&self, key: &ShardKey, generation: u64) -> bool {
         let mut lifecycle = self.lifecycle.lock().await;
         if lifecycle.phase(key) != super::Phase::Fencing

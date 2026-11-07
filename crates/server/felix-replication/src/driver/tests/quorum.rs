@@ -1016,7 +1016,8 @@ async fn a_promotion_waits_for_the_fleet_view_before_the_lease() {
         let dead = &dead;
         let router = &router;
         async move {
-            let (_, _, outcome, _) = fence_one(dead, &broker, router, key(), route, &marks).await;
+            let (_, _, outcome, _) =
+                fence_one(dead, &broker, router, key(), route, &marks, false).await;
             outcome
         }
     };
@@ -1077,7 +1078,8 @@ async fn a_seeded_gate_fences_before_registration_only_with_what_it_reads() {
         let dead = &dead;
         let router = &router;
         async move {
-            let (_, _, outcome, _) = fence_one(dead, &broker, router, key(), route, &marks).await;
+            let (_, _, outcome, _) =
+                fence_one(dead, &broker, router, key(), route, &marks, false).await;
             match outcome {
                 Outcome::Pending { why, .. } => why.contains("fleet features"),
                 // Never the lease: follower acks are on.

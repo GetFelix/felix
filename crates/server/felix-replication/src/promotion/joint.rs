@@ -50,6 +50,7 @@ pub struct Joint<'a> {
     prior: Option<PriorSet>,
     local_storage: Option<StorageId>,
     replaced: bool,
+    continuing: bool,
 }
 
 impl<'a> Joint<'a> {
@@ -62,7 +63,23 @@ impl<'a> Joint<'a> {
             prior,
             local_storage: None,
             replaced: false,
+            continuing: false,
         }
+    }
+
+    /// Whether the generation fenced continues one this process served
+    /// itself ([`crate::promotion::PromotionGate::continuing`]). Its fence
+    /// then also counts a promise from a copy the sets do not name, when the
+    /// answer attests a kept ballot naming this broker at the generation
+    /// before: nothing it acknowledged can be missing here, and that copy
+    /// promised this generation to no one else.
+    pub fn with_continuing(mut self, continuing: bool) -> Self {
+        self.continuing = continuing;
+        self
+    }
+
+    pub(super) fn continuing(&self) -> bool {
+        self.continuing
     }
 
     /// This broker's storage identity, so a promotion can tell a copy a set
@@ -145,6 +162,11 @@ pub(super) struct JointSets {
     local: String,
 }
 
+/// A fence answer: the node, the copy its handshake named, and whether it
+/// attested a kept ballot to a continuing leader, which then counts it from
+/// any copy.
+pub(super) type Answered<'n> = (&'n str, Option<StorageId>, bool);
+
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
 /// that copy: another copy under the same node id holds nothing this set
@@ -207,19 +229,17 @@ impl JointSets {
         self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, each with the copy its handshake named, is with
-    /// this broker a majority of the voters of every set. A learner is never
-    /// a voter, so it never counts.
-    pub(super) fn has_majorities<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> bool {
+    /// Whether `answered`, each with the copy its handshake named and
+    /// whether a continuing leader counts it from any copy, is with this
+    /// broker a majority of the voters of every set. A learner is never a
+    /// voter, so it never counts.
+    pub(super) fn has_majorities<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> bool {
         let answered: Vec<_> = answered.collect();
         self.old_voters
             .iter()
             .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
             && self.majority(&self.new_voters, |v| {
-                answered.iter().any(|(node, _)| *node == v)
+                answered.iter().any(|(node, _, _)| *node == v)
             })
     }
 
@@ -234,15 +254,10 @@ impl JointSets {
             .all(|voters| self.majority(voters, |v| nodes.contains(v)))
     }
 
-    fn answered_for(
-        &self,
-        old: &OldVoters,
-        answered: &[(&str, Option<StorageId>)],
-        voter: &str,
-    ) -> bool {
+    fn answered_for(&self, old: &OldVoters, answered: &[Answered<'_>], voter: &str) -> bool {
         answered
             .iter()
-            .any(|(node, identity)| *node == voter && old.counts(node, *identity))
+            .any(|(node, identity, kept)| *node == voter && (*kept || old.counts(node, *identity)))
     }
 
     fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
@@ -257,10 +272,7 @@ impl JointSets {
     }
 
     /// How far the answers got, for a fence that stays pending.
-    pub(super) fn shortfall<'n>(
-        &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
-    ) -> String {
+    pub(super) fn shortfall<'n>(&self, answered: impl Iterator<Item = Answered<'n>>) -> String {
         let answered: Vec<_> = answered.collect();
         let old = self
             .old_voters
@@ -276,7 +288,7 @@ impl JointSets {
              a majority of each needed",
             self.count(&self.new_voters, |v| answered
                 .iter()
-                .any(|(node, _)| *node == v)),
+                .any(|(node, _, _)| *node == v)),
             self.new_voters.len(),
         )
     }

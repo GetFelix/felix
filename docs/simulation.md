@@ -40,6 +40,14 @@ stops and reports a `stalled` finding. That means some broker task never
 waits on a timer, which holds the paused clock still; the finding says so and
 prints no census, since the busy task would hold that up too.
 
+`FELIX_SIM_PLACEMENT=1` turns on placement faults (below) for `seeds`,
+`replay` and `each_seed_runs_the_same_twice`:
+
+```bash
+FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEEDS=8 \
+  cargo test -p felix-sim --release --test seeds -- --ignored --exact seeds
+```
+
 When a seed fails, the test prints the command that replays it:
 
 ```bash
@@ -163,8 +171,10 @@ cargo test -p felix-cluster --lib history::
    The crash is skipped when half the brokers or more are already down, so
    some runs keep a quorum. While the faults run, the checkers marked "every
    second" below sample the cluster.
-3. **Heal and settle.** Every link is healed, the control plane answers again
-   and crashed brokers restart. The cluster then has 60 virtual seconds to get
+   With placement faults on, the nemesis also acts as an operator; see
+   [Placement faults](#placement-faults).
+3. **Heal and settle.** Every link is healed, the control plane answers again,
+   drained brokers are put back to `live` and crashed brokers restart. The cluster then has 60 virtual seconds to get
    every shard served again. The clients keep running until second 120.
 4. **Check.** Clients stop, work in flight drains for 20 seconds, a last read
    takes each shard and cache key, and the checkers below run on the clients'
@@ -232,6 +242,59 @@ Under a simulator every sync runs on the run's own runtime, so what the
 device holds at the cut does not depend on thread timing and a seed replays
 exactly. The faults list says, for each cut, whether it landed in an
 append.
+
+### Placement faults
+
+Most liveness and safety bugs in replication have needed a shard's set or
+leader to change while something else went wrong: a seat replaced while the
+leader died, or a broker named leader that never opened. The faults above
+change sets only as a side effect of failover. With placement faults on
+(`SimConfig::with_placement_faults`, or `FELIX_SIM_PLACEMENT=1` for the seed
+tests), the nemesis also acts as an operator. It calls the control plane's
+operator API, the one `felixctl` uses, and never writes an assignment or a
+node record itself, so placement runs its real move, drain, replacement and
+abandon code:
+
+| Fault | What the operator does |
+| --- | --- |
+| `Move` | `POST /v1/shard-moves`: moves a shard's leadership to another broker. Three in ten are cancelled (`DELETE /v1/shard-moves/...`) a few seconds later. |
+| `Drain` | `POST /v1/nodes/{id}/drain`, then `PATCH /v1/nodes/{id}` back to `live`. Leaderships move away. With four or more brokers the follower seats the broker holds are replaced: a newcomer copies in and a pending set swaps it for the drained broker. |
+| `Remove` | Drains a broker, stops it, deregisters it and retries `DELETE /v1/nodes/{id}` each second. The delete is refused while any shard still names the broker, which with a hundred shards to reseat is usually the whole window. The broker comes back later and registers again. |
+| `Abandon` | The procedure in `docs/replication-design.md`: stops the broker assigned the stream shards the broker holds after unclean kills, sends `POST /v1/placement/abandon/...` for each (retried each second for up to 30 s while the control plane answers `not_stranded`), then starts the broker again. While that broker is up, `not_stranded` is the expected answer. A cache shard is left alone. |
+| `KillBeforeOpen` | Watches for the next new leader of any shard and stops it before it opens the shard. A new leader is one placement names, seen in the store's change feed, or one that won an election and routes the shard to itself above every generation the control plane wrote. |
+| `SeatRace` | Drains a broker, waits for a shard whose seat on it is being replaced, stops that shard's leader, then stops the next leader named or elected for it before it opens. That is seat replacement plus two promotions, the shape behind #1922 and #1929. Drawn only with four or more brokers. |
+
+Placement faults have their own random stream, so turning them on adds steps to
+a seed's schedule and keeps every step it had. They are off by default, so the
+seeds pinned to an issue keep the run they pin. With them on, placement may
+copy four shards at once instead of one, so a drain moves enough shards during
+the window for two promotions to land on a shard whose seat is being replaced.
+The stops follow the crash rule: never more than a minority down. Each fault
+logs every request and its answer, refusals included, in the fault timeline.
+
+Placement faults change what the double-kill exemption of `ElectionSettles`
+has to read. A kill counts against the set and term the shard had at that
+instant:
+
+- A broker named or promoted leader that had not opened the shard
+  acknowledged nothing there as leader, so its kill does not count as the
+  leader's.
+- A follower being copied in is in the set, so a seat replacement in flight
+  needs a majority of the wider set.
+- An abandoned log ends the hold. A later pair of kills can hold the shard
+  again.
+
+An abandoned shard loses what it acknowledged by design. Appends
+acknowledged before the abandon count as unknown (they may or may not be on
+the new log), and reads started before it are dropped. An append still being
+retried at the abandon can only be acknowledged by the new leader, since the
+old one is stopped first, so it is held to the new log. Everything started after the abandon
+is checked as usual, so the new log losing an acknowledged write still fails
+the run. The run names abandoned shards in a warning.
+
+`tests/seeds.rs` pins one seed per fault (`seed_*_replays_the_same_twice`).
+Each test checks that its seed reaches the fault and runs the same twice; it
+does not judge what the checkers found.
 
 A pause is approximate. The simulator cannot stop one broker's tasks on a
 runtime they share, so a frozen broker is cut off from every peer and from the
@@ -348,6 +411,21 @@ With power loss added, seeds 1, 4, 6 and 7 run under `OnCommit`, and seeds 1
 and 4 cut the power during an append. Seeds 1, 4, 6 and 8 pass. Seeds 2, 3, 5
 and 7 fail only `ElectionSettles` and `final-reads`: shards nobody serves
 after the heal. None of them has a history violation.
+
+Seeds 1 to 8 with placement faults on, built with the flag, as of the change
+that added them. None breaks a history rule or a cluster check other than
+`ElectionSettles`:
+
+| Seeds | What fails | Issue |
+| --- | --- | --- |
+| 8 | Nothing: it passes. | |
+| 1, 2, 5, 6, 7 | A few shards (3 to 7) are served by nobody after the heal (`ElectionSettles`, `final-reads`). Seed 6 passes without placement faults. | not filed yet |
+| 3, 4 | Most shards are served by nobody after the heal: all 178 on seed 3, where the control plane keeps a failed leader with a move to `b2` that never ends, and 103 on seed 4. | not filed yet |
+
+Seed 122, which `seed_122_abandoning_held_shards_replays_the_same_twice`
+pins, stops `b3` at 41 s to abandon the 22 shards it holds after unclean
+kills. Only `stream/2` is abandoned. The control plane refuses the other 21
+(`not_stranded`) while `b3` stays down, so those stay unserved.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
