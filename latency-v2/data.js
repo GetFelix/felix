@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794087052479,
+  "lastUpdate": 1794087821222,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62832,6 +62832,72 @@ window.BENCHMARK_DATA = {
             "range": "34.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 544.00\nmean: 545.40\nstdev: 34.31\ncv: 6.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c69881d36b854ec7933cabecba6a3c67b8b98efd",
+          "message": "fix(replication): an empty shard's follower is vouched for by an empty batch (#2114)\n\n* fix(replication): an empty shard's follower is vouched for by an empty batch\n\nA follower back from an unclean restart is trusted again only by a batch\nthat leaves it level through the leader's start and a commit offset above\nzero. On a shard that never held a record the mark stays 0, the leader\nships nothing, and the idle resend has no last record to send again. The\ncopy stayed untrusted, so one more failure left a fence that could never\ncover although nothing was ever acknowledged (felix-sim seed 3,\nstream/139).\n\nThe leader of a Quorum shard whose log never held a record now sends each\nlabelled follower one empty batch at offset 0 with its start at 0 and the\nmark 0, once per follower process. The replica trusts its copy on such a\nbatch only when the copy is still empty after it. An empty batch no longer\ncounts as level for a copy that holds records, so it neither labels nor\nvouches for records it compared with nothing.\n\nModel: FelixShardUnified gains the VouchEmpty knob. The mark rule needs a\nclient record in the leader's log, as the code's offsets do, and on a log\nof start records alone VouchEmpty vouches instead. IdleVouch now checks the\nempty shard, IdleVouchWrite the same with one write, and VouchEmptyLegacy\nviolates FollowerTrusted.\n\n* fix(replication): an empty batch leaves a copy holding records unverified\n\nThe empty batch answers with the follower's tail, so a follower holding\nrecords its empty leader never had was remembered as verified through\nthem. The next conflict at offset 0 was then not repaired as a dead\nleader's suffix and halted replication. Such an answer now changes\nnothing the replica remembers.",
+          "timestamp": "2026-11-07T13:38:57-08:00",
+          "tree_id": "ea00cf92cc816e4b511aece6dfbc7e6e00ede0e8",
+          "url": "https://github.com/GetFelix/felix/commit/c69881d36b854ec7933cabecba6a3c67b8b98efd"
+        },
+        "date": 1794087813722,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.40\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "3.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.00\nstdev: 3.00\ncv: 2.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 174,
+            "range": "1126.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 676.60\nstdev: 1126.08\ncv: 166.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "6.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 135.40\nstdev: 6.02\ncv: 4.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 275,
+            "range": "138.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 331.40\nstdev: 138.28\ncv: 41.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 513,
+            "range": "868.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 513.00\nmean: 1031.20\nstdev: 868.40\ncv: 84.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
