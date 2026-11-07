@@ -109,6 +109,13 @@ pub(super) async fn wire_broker(
     if let Some(trust) = &copy_trust {
         quorum_marks.set_copy_trust(Arc::clone(trust));
     }
+    quorum_marks.set_unified_fence(
+        durable_storage.is_some()
+            && config
+                .peer_transport
+                .as_ref()
+                .is_some_and(|peer| peer.fence && peer.unified_fence),
+    );
     // Before anything can lead or answer a fence: a copy this broker led
     // before a crash that may have cost it acknowledged records is not one it
     // can lead from or vouch for (#1295).
@@ -122,6 +129,7 @@ pub(super) async fn wire_broker(
             }
             let unclean = Arc::new(start);
             ingress.fence().bind_unclean_start(Arc::clone(&unclean));
+            quorum_marks.set_unclean_start(Arc::clone(&unclean));
             Some(unclean)
         }
         _ => None,

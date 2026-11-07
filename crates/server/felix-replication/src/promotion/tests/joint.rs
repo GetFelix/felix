@@ -1055,6 +1055,7 @@ async fn a_candidate_fences_the_set_a_move_left_jointly() {
             false,
             Some(&joint),
             Some(&candidacy),
+            None,
         )
         .await;
         (outcome, dir)

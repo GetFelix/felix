@@ -166,6 +166,13 @@ pub struct PeerTransportConfig {
     /// operator's opt-in to replica election: turn it on on every broker
     /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
+    /// `FELIX_UNIFIED_FENCE`: whether this broker offers `UNIFIED_FENCE`
+    /// when it dials, and so counts a promotion fence's answers by what each
+    /// copy attests: promises from copies that kept their ballots, coverage
+    /// from copies that hold what they acknowledged. On unless set to `0`.
+    /// Only takes effect with `fence`, and the broker turns it off without a
+    /// durable directory, which has nothing to attest.
+    pub unified_fence: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -203,6 +210,7 @@ impl Default for PeerTransportConfig {
             partition_file: None,
             fence: true,
             election: false,
+            unified_fence: true,
         }
     }
 }
@@ -296,6 +304,11 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::LEARNER_ACKS)
             .union(PeerCapabilities::REFUSAL_REASONS)
             .union(PeerCapabilities::KEPT_BALLOTS)
+            .union(if self.fence && self.unified_fence {
+                PeerCapabilities::UNIFIED_FENCE
+            } else {
+                PeerCapabilities::NONE
+            })
     }
 
     /// Read the internal transport settings, validated against the
@@ -358,6 +371,10 @@ impl PeerTransportConfig {
                 ));
             }
         };
+        // A kill switch: anything but `0` keeps it on.
+        config.unified_fence = std::env::var("FELIX_UNIFIED_FENCE")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(true);
         config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
             .ok()
             .filter(|value| !value.trim().is_empty())

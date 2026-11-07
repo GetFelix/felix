@@ -1435,6 +1435,7 @@ async fn a_candidates_fence_carries_the_set_it_keeps() {
         false,
         None,
         Some(&candidacy),
+        None,
     )
     .await;
 
