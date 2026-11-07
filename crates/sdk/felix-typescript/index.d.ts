@@ -702,6 +702,14 @@ export interface ConnectOptions {
   serverName?: string;
   /** A CA file to trust instead of the operating system's store. */
   caFile?: string;
+  /**
+   * A PEM file holding the client certificate, leaf first and then any
+   * intermediates, to present to a broker started with `FELIX_TLS_CLIENT_CA`.
+   * Needs `clientKeyFile`.
+   */
+  clientCertFile?: string;
+  /** A PEM file holding the private key of `clientCertFile`. Needs `clientCertFile`. */
+  clientKeyFile?: string;
   /** Offer the `felix/1` ALPN. */
   offerAlpn?: boolean;
   /**
@@ -748,7 +756,7 @@ export declare class Client {
    * use the operating system's trust store.
    *
    * The options go in the last argument: `{ token, tokenProvider, serverName,
-   * caFile, offerAlpn, reconnectAttempts, reconnectDeadline, reconnectBackoff, reconnectMaxBackoff }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
+   * caFile, clientCertFile, clientKeyFile, offerAlpn, reconnectAttempts, reconnectDeadline, reconnectBackoff, reconnectMaxBackoff }`. `offerAlpn` offers the `felix/1` ALPN. A broker with
    * `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker older
    * than ALPN support refuses them, which is why it is off by default.
    *

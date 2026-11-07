@@ -70,6 +70,12 @@ impl Client {
     /// to trust a specific CA (what the demos and a self-signed development
     /// broker need); omit it to use the operating system's trust store.
     ///
+    /// `client_cert_file` and `client_key_file` are PEM files holding a client
+    /// certificate (leaf first, then any intermediates) and its private key.
+    /// Pass both to connect to a broker started with `FELIX_TLS_CLIENT_CA`,
+    /// which refuses a client without one. Either alone, an unreadable or
+    /// non-PEM file, or a key that does not match raises `ValueError`.
+    ///
     /// `offer_alpn=True` offers the `felix/1` ALPN. A broker with
     /// `FELIX_TLS_REQUIRE_ALPN=true` serves only clients that do; a broker
     /// older than ALPN support refuses them, which is why it is off by default.
@@ -89,6 +95,8 @@ impl Client {
         token_provider=None,
         server_name="localhost",
         ca_file=None,
+        client_cert_file=None,
+        client_key_file=None,
         offer_alpn=false,
         reconnect_attempts=None,
         reconnect_deadline=None,
@@ -103,6 +111,8 @@ impl Client {
         token_provider: Option<Py<PyAny>>,
         server_name: &str,
         ca_file: Option<&str>,
+        client_cert_file: Option<&str>,
+        client_key_file: Option<&str>,
         offer_alpn: bool,
         reconnect_attempts: Option<Bound<'_, PyAny>>,
         reconnect_deadline: Option<f64>,
@@ -121,7 +131,7 @@ impl Client {
             reconnect_backoff,
             reconnect_max_backoff,
         )?;
-        let quinn = tls::client_config(ca_file, offer_alpn)?;
+        let quinn = tls::client_config(ca_file, client_cert_file, client_key_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
         match resolve(py, token, token_provider, Flavor::Blocking)? {
