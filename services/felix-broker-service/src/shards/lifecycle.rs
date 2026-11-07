@@ -743,6 +743,13 @@ impl ShardLifecycle {
             .joint_fence
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
+        // A continuing generation fenced jointly still needs only promises:
+        // this broker holds every record acknowledged before it, so the fence
+        // neither counts copies by identity nor takes a tail (#2047).
+        self.fence.set_continuing(
+            key,
+            (continues && joint && self.fence_promotions).then_some(generation),
+        );
         let continues = continues && !joint;
         // Every other generation this broker starts leading at is fenced, not
         // only a promotion (`FenceEveryChange` in the model). A cut-over, a

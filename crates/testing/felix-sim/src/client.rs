@@ -78,6 +78,8 @@ pub struct Recorder {
     started: Instant,
     history: Mutex<History>,
     values: AtomicU64,
+    /// When an operator abandoned each list's log, on the history's clock.
+    abandoned: Mutex<BTreeMap<String, u64>>,
 }
 
 impl Recorder {
@@ -103,6 +105,7 @@ impl Recorder {
                 ..History::default()
             }),
             values: AtomicU64::new(0),
+            abandoned: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -140,11 +143,49 @@ impl Recorder {
             .insert(list_name(shard), elements);
     }
 
-    /// The history so far. Lists with no final read are left declared; use
+    /// An operator abandoned `shard`'s log just now.
+    pub fn abandoned(&self, shard: u32) {
+        let at = self.now();
+        self.abandoned.lock().insert(list_name(shard), at);
+    }
+
+    /// The lists whose log an operator abandoned, with when.
+    pub fn abandoned_lists(&self) -> BTreeMap<String, u64> {
+        self.abandoned.lock().clone()
+    }
+
+    /// The history so far, with what each abandon gave up forgotten (see
+    /// [`forget_abandoned`]). Lists with no final read are left declared; use
     /// [`History::lists`] to drop them before checking.
     pub fn history(&self) -> History {
-        self.history.lock().clone()
+        let mut history = self.history.lock().clone();
+        forget_abandoned(&mut history, &self.abandoned.lock());
+        history
     }
+}
+
+/// An abandoned log loses what it acknowledged by design, so for each list in
+/// `abandoned` (list, when) an append acknowledged before the abandon becomes
+/// unknown (it may or may not be on the new log) and a read started before it
+/// is dropped (it may have read the log that was given up). An append still
+/// retrying at the abandon can only be acknowledged by the new leader, since
+/// the old one is stopped first, so it is held to the new log. Everything started after
+/// the abandon is checked as usual, so a write the new log loses still fails.
+pub fn forget_abandoned(history: &mut History, abandoned: &BTreeMap<String, u64>) {
+    history.ops.retain_mut(|op| {
+        let (invoke, complete) = (op.invoke, op.complete);
+        match &mut op.action {
+            Action::Append { list, outcome, .. } => {
+                if abandoned.get(list).is_some_and(|at| complete < *at)
+                    && matches!(outcome, AppendOutcome::Ok { .. })
+                {
+                    *outcome = AppendOutcome::Info;
+                }
+                true
+            }
+            Action::Read { list, .. } => abandoned.get(list).is_none_or(|at| invoke >= *at),
+        }
+    });
 }
 
 /// A seeded logical client.

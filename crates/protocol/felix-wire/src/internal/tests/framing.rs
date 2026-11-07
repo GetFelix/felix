@@ -94,6 +94,7 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (50, Kind::ReplicateHeaderedFetch),
         (51, Kind::HeaderedForwardPublish),
         (52, Kind::SequencedForwardPublish),
+        (53, Kind::FenceKeptOk),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -156,6 +157,7 @@ fn every_body_begins_with_its_correlation_id() {
             log_end: 1,
             commit_offset: 1,
             last_generation: 1,
+            kept_ballot: true,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,

@@ -126,10 +126,15 @@ impl SimOutcome {
     /// through `task sim:replay`, which builds with `--cfg tokio_unstable`:
     /// a plain `cargo test` build leaves `select!` unseeded.
     pub fn replay_command(&self) -> String {
+        let placement = if self.config.placement_faults {
+            "FELIX_SIM_PLACEMENT=1 "
+        } else {
+            ""
+        };
         match self.config.clocks {
-            ClockSkew::Off => format!("FELIX_SIM_SEED={} task sim:replay", self.seed),
+            ClockSkew::Off => format!("{placement}FELIX_SIM_SEED={} task sim:replay", self.seed),
             skew => format!(
-                "FELIX_SIM_SEED={} FELIX_SIM_CLOCKS={} task sim:replay",
+                "{placement}FELIX_SIM_SEED={} FELIX_SIM_CLOCKS={} task sim:replay",
                 self.seed,
                 skew.name()
             ),
@@ -290,11 +295,13 @@ async fn drive(
 
     let run_start = Instant::now();
     let nemesis = Nemesis::new(cluster.clone(), recorder.clone());
-    let plan = if config.faults {
-        Plan::generate(seed, config.brokers, config.fault_window)
-    } else {
-        Plan::default()
-    };
+    let plan =
+        match (config.faults, config.placement_faults) {
+            (false, _) => Plan::default(),
+            (true, false) => Plan::generate(seed, config.brokers, config.fault_window),
+            (true, true) => Plan::generate(seed, config.brokers, config.fault_window)
+                .with_placement(seed, config.brokers, config.fault_window),
+        };
     if config.faults {
         for step in &plan.steps {
             tracing::debug!(at = ?step.at, fault = %step.fault, "planned");
@@ -400,6 +407,17 @@ async fn drive(
 
     let held = cluster.held_shards().await;
     let mut history = recorder.history();
+    let abandoned: Vec<String> = recorder.abandoned_lists().into_keys().collect();
+    if !abandoned.is_empty() {
+        findings.push(Finding::warning(
+            "abandoned",
+            format!(
+                "an operator abandoned the logs of {} shards, which loses what they acknowledged by design; operations started before each abandon are not held to it: {}",
+                abandoned.len(),
+                abandoned.join(", ")
+            ),
+        ));
+    }
     let unread = drop_unread_lists(&mut history, &held);
     let ctx = context(Point::End, healed_at, history.clone());
     for checker in &checkers {
