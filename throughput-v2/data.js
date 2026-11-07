@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794075265090,
+  "lastUpdate": 1794079969870,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49296,6 +49296,58 @@ window.BENCHMARK_DATA = {
             "range": "5910.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819485.79\nmean: 819997.43\nstdev: 5910.51\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c7ff467c5c34605ed465e4b5e30294f66aa83128",
+          "message": "fix(sim): election-settles exempts only shards the broker is designed to hold (#2092)\n\nA shard is exempt from election-settles only if nobody serves it and a majority of its set counts as untrusted, where a copy counts only if it attests untrusted and either is down after an unclean kill or never had a serving leader while up since its last unclean start. An untrusted copy that was up beside a serving leader is vouchable: the shard is reported as a stall and listed on a warning line, so a vouch gap can never pass as a designed hold. The leader's own-copy attestation moves into QuorumMarks::attest so the simulator reads the same answer a fence counts.\n\nSpec-Unaffected: simulator oracle and a behaviour-preserving refactor.",
+          "timestamp": "2026-11-07T19:28:46Z",
+          "tree_id": "5ec105238fee75d72c8cd460f0417c4459e15d21",
+          "url": "https://github.com/GetFelix/felix/commit/c7ff467c5c34605ed465e4b5e30294f66aa83128"
+        },
+        "date": 1794079969022,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 487646.83,
+            "range": "26849.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487646.83\nmean: 500425.66\nstdev: 26849.57\ncv: 5.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 487646.83,
+            "range": "26849.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 487646.83\nmean: 500425.66\nstdev: 26849.57\ncv: 5.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122506.54,
+            "range": "7809.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122506.54\nmean: 119023.35\nstdev: 7809.81\ncv: 6.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1225065.41,
+            "range": "78098.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1225065.41\nmean: 1190233.54\nstdev: 78098.11\ncv: 6.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
