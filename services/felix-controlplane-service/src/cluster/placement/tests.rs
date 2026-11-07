@@ -4,6 +4,7 @@ mod abandon;
 mod adoption;
 mod balance;
 mod caches;
+mod copy_pins;
 mod departed;
 mod departed_leader;
 mod failover;

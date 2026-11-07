@@ -1453,14 +1453,7 @@ impl ReplicaHandler {
                 // Not fenced by this leader yet; it fences, then reads.
                 ErrorCode::StaleRoute
             };
-            return refused(
-                correlation_id,
-                code,
-                0,
-                format!(
-                    "this broker accepted generation {accepted}, the reader is at {generation}"
-                ),
-            );
+            return refused(correlation_id, code, 0, reader_detail(accepted, generation));
         }
         let max_bytes = (request.max_bytes as usize).clamp(1, MAX_FETCH_BYTES);
         // A promoted leader reads a cursor log whole to take its groups, and
@@ -2370,6 +2363,12 @@ pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
     format!("this broker accepted generation {accepted}, the sender is at {generation}")
 }
 
+/// What a replica answers a fetch at `generation` when its ballot holds
+/// `accepted`; [`superseded_by`] reads a newer one back.
+pub(crate) fn reader_detail(accepted: u64, generation: u64) -> String {
+    format!("this broker accepted generation {accepted}, the reader is at {generation}")
+}
+
 /// What a replica answers a sender at `generation` when the control plane's
 /// confirmed assignment is at the newer `assigned`; [`assigned_newer`] reads
 /// it back.
@@ -2392,6 +2391,23 @@ pub(crate) fn assigned_newer(err: &ReplicateError, generation: u64) -> bool {
             .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
             .and_then(|assigned| assigned.parse::<u64>().ok())
             .is_some_and(|assigned| assigned > generation),
+    }
+}
+
+/// The newer generation a `FencedEpoch` refusal of a sender at `generation`
+/// says the control plane assigned, if it says so.
+pub(crate) fn assigned_by(err: &ReplicateError, generation: u64) -> Option<u64> {
+    match &err.reason {
+        Some(RefusalReason::Assigned { assigned, sender }) => {
+            (*sender == generation && *assigned > generation).then_some(*assigned)
+        }
+        Some(_) => None,
+        None => err
+            .detail
+            .strip_prefix("the control plane assigned generation ")
+            .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+            .and_then(|assigned| assigned.parse::<u64>().ok())
+            .filter(|assigned| *assigned > generation),
     }
 }
 
@@ -2423,7 +2439,10 @@ pub(crate) fn superseded_by(err: &ReplicateError, generation: u64) -> Option<u64
             let detail = &err.detail;
             detail
                 .strip_prefix("this broker accepted generation ")
-                .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+                .and_then(|rest| {
+                    rest.strip_suffix(&format!(", the sender is at {generation}"))
+                        .or_else(|| rest.strip_suffix(&format!(", the reader is at {generation}")))
+                })
                 .or_else(|| {
                     detail
                         .strip_prefix("this broker is at generation ")?

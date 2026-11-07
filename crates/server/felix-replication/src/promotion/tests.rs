@@ -603,6 +603,52 @@ async fn a_replica_counting_a_newer_set_has_the_fence_refused() {
     assert!(why.contains("counts a newer replica set"), "{why}");
 }
 
+/// **A replica ahead of the generation has the fence refused with its
+/// ballot** (#2046): one that saw the control plane assign a newer generation,
+/// or that accepted one. Left pending, nothing moves the shard; named only one
+/// up, the leader could land on a generation a withdrawn standing holds.
+#[tokio::test]
+async fn a_replica_ahead_has_the_fence_refused_with_its_ballot() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").refuses =
+        Some("the control plane assigned generation 9, the sender is at 5");
+    replicas.get_mut("broker-b").refuses_with = ErrorCode::FencedEpoch;
+    replicas.get_mut("broker-c").reachable = false;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused {
+        promised_to,
+        ballot,
+        ..
+    } = outcome
+    else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!((promised_to.as_str(), ballot), ("", 9));
+
+    let mut replicas = Replicas::new();
+    replicas.ballots = true;
+    replicas.get_mut("broker-c").reachable = false;
+    replicas
+        .get("broker-b")
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log")
+        .accept_generation(PROMOTED + 2, Some("broker-d"))
+        .await
+        .expect("ballot");
+
+    let outcome = fence_shard(&replicas, &leader, LEADER, &key(), &route(), true, None).await;
+
+    let Outcome::Refused { ballot, .. } = outcome else {
+        panic!("{outcome:?}");
+    };
+    assert_eq!(ballot, PROMOTED + 2);
+}
+
 /// Promise `node_id`'s log of the shard to `to` at the promoted generation,
 /// as a vote for a candidate there does.
 async fn promised_to(replicas: &Replicas, node_id: &str, to: &str) {
