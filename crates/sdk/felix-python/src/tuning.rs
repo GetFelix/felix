@@ -22,7 +22,7 @@ use crate::args::positive_duration;
 /// `"round_robin"`. `broker_sub_queue_capacity` asks the broker for that many
 /// queued batches per subscription; read what it granted from
 /// `Subscription.queue_capacity`.
-#[pyclass(module = "felix", frozen)]
+#[pyclass(module = "felix", frozen, skip_from_py_object)]
 #[derive(Clone, Default)]
 pub struct ClientTuning {
     publish_conn_pool: Option<usize>,

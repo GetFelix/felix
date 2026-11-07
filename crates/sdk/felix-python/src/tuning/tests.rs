@@ -17,9 +17,15 @@ fn a_count_must_be_at_least_one() {
 
 #[test]
 fn names_parse_and_unknown_ones_are_refused() {
-    assert_eq!(parse_sharding("round_robin").unwrap(), PublishSharding::RoundRobin);
+    assert_eq!(
+        parse_sharding("round_robin").unwrap(),
+        PublishSharding::RoundRobin
+    );
     assert!(parse_sharding("random").is_err());
-    assert_eq!(parse_queue_policy("block").unwrap(), ClientSubQueuePolicy::Block);
+    assert_eq!(
+        parse_queue_policy("block").unwrap(),
+        ClientSubQueuePolicy::Block
+    );
     assert!(parse_queue_policy("newest").is_err());
 }
 

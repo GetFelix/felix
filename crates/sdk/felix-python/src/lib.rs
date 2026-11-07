@@ -30,7 +30,9 @@ mod commit;
 mod conditional;
 mod errors;
 mod group_admin;
+mod handed;
 mod headers;
+mod inspect;
 mod producer;
 mod runtime;
 mod sharded_cache_watch;
@@ -65,6 +67,8 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<asyncio::AsyncProducer>()?;
 
     module.add_class::<headers::RecordHeaders>()?;
+    module.add_class::<handed::Handed>()?;
+    module.add_class::<handed::AsyncHanded>()?;
     module.add_class::<tuning::ClientTuning>()?;
     module.add_class::<types::Event>()?;
     module.add_class::<types::GroupRecord>()?;
@@ -83,6 +87,8 @@ fn _felix(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<conditional::CacheCondition>()?;
     module.add_class::<conditional::CacheConditionResult>()?;
     module.add_class::<conditional::VersionedValue>()?;
+    module.add_class::<conditional::LeaseToken>()?;
+    module.add_class::<conditional::LeaseWrite>()?;
     module.add_class::<conditional::ConditionalWrite>()?;
     module.add_class::<conditional::ConditionalTrim>()?;
     module.add_class::<group_admin::GroupPosition>()?;

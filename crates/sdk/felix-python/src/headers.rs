@@ -12,7 +12,7 @@ use pyo3::types::{PyBytes, PyDict};
 /// The key belongs to the record and does not route it; `publish(key=...)` is
 /// the routing key. Names may repeat and keep their order. A name must not be
 /// empty or start with `felix.`, which the broker reserves.
-#[pyclass(module = "felix", frozen)]
+#[pyclass(module = "felix", frozen, skip_from_py_object)]
 #[derive(Clone)]
 pub struct RecordHeaders {
     key: Option<Vec<u8>>,
@@ -106,13 +106,21 @@ fn pairs(source: &Bound<'_, PyAny>) -> PyResult<Vec<(String, Vec<u8>)>> {
     if let Ok(dict) = source.cast::<PyDict>() {
         return dict
             .iter()
-            .map(|(name, value)| Ok((name.extract().map_err(|_| bad())?, value.extract().map_err(|_| bad())?)))
+            .map(|(name, value)| {
+                Ok((
+                    name.extract().map_err(|_| bad())?,
+                    value.extract().map_err(|_| bad())?,
+                ))
+            })
             .collect();
     }
     source
         .try_iter()
         .map_err(|_| bad())?
-        .map(|item| item.and_then(|pair| pair.extract::<(String, Vec<u8>)>()).map_err(|_| bad()))
+        .map(|item| {
+            item.and_then(|pair| pair.extract::<(String, Vec<u8>)>())
+                .map_err(|_| bad())
+        })
         .collect()
 }
 

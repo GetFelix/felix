@@ -44,11 +44,7 @@ impl SubscriptionHandle {
     /// a timeout returns `None`, which is *not* the same as the stream ending
     /// — check `closed` to tell them apart.
     #[pyo3(signature = (timeout=None))]
-    fn next_event(
-        &self,
-        py: Python<'_>,
-        timeout: Option<f64>,
-    ) -> PyResult<Option<Py<PyAny>>> {
+    fn next_event(&self, py: Python<'_>, timeout: Option<f64>) -> PyResult<Option<Py<PyAny>>> {
         let inner = Arc::clone(&self.inner);
         let progress = Arc::clone(&self.progress);
         let timeout = timeout_of(timeout)?;
@@ -86,7 +82,11 @@ impl SubscriptionHandle {
         })?;
 
         event
-            .map(|event| OwnedEvent::from(event).into_pyobject(py).map(|b| b.into_any().unbind()))
+            .map(|event| {
+                OwnedEvent::from(event)
+                    .into_pyobject(py)
+                    .map(|b| b.into_any().unbind())
+            })
             .transpose()
     }
 

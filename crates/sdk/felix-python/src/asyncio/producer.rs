@@ -10,6 +10,7 @@ use bytes::Bytes;
 use pyo3::prelude::*;
 
 use crate::errors::to_py_err;
+use crate::handed::{Answer, AsyncHanded, Slot};
 use crate::producer::{Core, check_batches, check_payloads, timeout_of};
 
 /// A producer whose publishes land once, however many times they are sent.
@@ -48,6 +49,81 @@ impl AsyncProducer {
             vec![payload.to_vec()],
             key,
         )
+    }
+
+    /// Queue a batch and resolve once it is queued, to an `AsyncHanded`. See
+    /// the synchronous `Producer.hand_off_batch`.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None))]
+    fn hand_off_batch<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        key: Option<&[u8]>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        check_payloads(&payloads)?;
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let key = key.map(Bytes::copy_from_slice);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let handed = core
+                .hand_off_batch(&tenant_id, &namespace, &stream, key, payloads)
+                .await
+                .map_err(to_py_err)?;
+            Ok(AsyncHanded::new(Slot::new(handed, Answer::Offset)))
+        })
+    }
+
+    fn hand_off_batches<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        check_batches(&batches)?;
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let handed = core
+                .hand_off_batches(&tenant_id, &namespace, &stream, batches)
+                .await
+                .map_err(to_py_err)?;
+            Ok(AsyncHanded::new(Slot::new(handed, Answer::Done)))
+        })
+    }
+
+    fn hand_off_abandon<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let handed = core
+                .hand_off_abandon(&tenant_id, &namespace, &stream)
+                .await
+                .map_err(to_py_err)?;
+            Ok(AsyncHanded::new(Slot::new(handed, Answer::Done)))
+        })
     }
 
     #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None))]

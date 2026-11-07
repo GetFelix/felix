@@ -17,10 +17,12 @@ use crate::args::{
 };
 use crate::batch::OwnedBatchReport;
 use crate::conditional::{
-    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, OwnedVersionedValue,
+    CacheCondition, CacheConditionResult, ConditionalTrim, ConditionalWrite, OwnedLeaseWrite,
+    OwnedVersionedValue,
 };
 use crate::errors::to_py_err;
 use crate::group_admin::{GroupInfo, GroupPosition};
+use crate::inspect;
 use crate::producer::{Core, check_payloads};
 use crate::stream_page::OwnedStreamPage;
 use crate::token::{Flavor, Tokens, resolve};
@@ -105,7 +107,13 @@ impl AsyncClient {
             crate::tls::client_config(ca_file, client_cert_file, client_key_file, offer_alpn)?;
         let mut config = ClientConfig::optimized_defaults(quinn);
         config.auth_tenant_id = Some(tenant_id.to_string());
-        crate::tuning::apply_options(&mut config, publishers, timestamps, record_headers, tuning.as_deref());
+        crate::tuning::apply_options(
+            &mut config,
+            publishers,
+            timestamps,
+            record_headers,
+            tuning.as_deref(),
+        );
         let flavor = Flavor::asyncio(py, token_provider.is_some())?;
         match resolve(py, token, token_provider, flavor)? {
             Tokens::Fixed(token) => config.auth_token = Some(token),
@@ -476,6 +484,36 @@ impl AsyncClient {
                 .await
                 .map_err(to_py_err)?;
             Ok(CacheConditionResult::from(result))
+        })
+    }
+
+    /// `cache_put_if` that also asks for a lease token. See the synchronous
+    /// `Client.cache_put_if_lease`.
+    #[pyo3(signature = (tenant_id, namespace, cache, key, value, condition, *, ttl=None))]
+    fn cache_put_if_lease<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        key: &str,
+        value: &[u8],
+        condition: PyRef<'_, CacheCondition>,
+        ttl: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache, key) = owned4(tenant_id, namespace, cache, key);
+        let value = Bytes::copy_from_slice(value);
+        let condition = condition.inner;
+        let ttl_ms = ttl.map(|seconds| (seconds.max(0.0) * 1000.0) as u64);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inner
+                .cache_put_if_lease(
+                    &tenant_id, &namespace, &cache, &key, value, ttl_ms, condition,
+                )
+                .await
+                .map(OwnedLeaseWrite)
+                .map_err(to_py_err)
         })
     }
 
@@ -1214,6 +1252,145 @@ impl AsyncClient {
                     .await
             };
             Ok(OwnedBatchReport(report))
+        })
+    }
+
+    /// Which questions the broker in use answers. See the synchronous
+    /// `Client.capabilities`.
+    fn capabilities<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            Ok(inspect::capabilities(&inner).await)
+        })
+    }
+
+    /// The connected broker's view of one shard. See the synchronous
+    /// `Client.inspect_shard`.
+    fn inspect_shard<'py>(
+        &self,
+        py: Python<'py>,
+        kind: &str,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let kind = inspect::parse_kind(kind)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, name) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            name.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inspect::inspect_shard(&inner, kind, &tenant_id, &namespace, &name, shard).await
+        })
+    }
+
+    /// One page of the connected broker's subscriptions. See the synchronous
+    /// `Client.list_subscriptions`.
+    #[pyo3(signature = (*, tenant_id=None, namespace=None, stream=None, shard=None, principal=None, dropping=false, limit=None, cursor=None))]
+    fn list_subscriptions<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: Option<String>,
+        namespace: Option<String>,
+        stream: Option<String>,
+        shard: Option<u32>,
+        principal: Option<String>,
+        dropping: bool,
+        limit: Option<u32>,
+        cursor: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let query = inspect::SubscriptionQuery {
+            filter: felix_client::SubscriptionFilter {
+                tenant_id,
+                namespace,
+                stream,
+                shard,
+                principal,
+                dropping,
+            },
+            limit,
+            cursor: cursor
+                .filter(|c| !c.is_none())
+                .map(inspect::parse_cursor)
+                .transpose()?,
+        };
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inspect::list_subscriptions(&inner, query).await
+        })
+    }
+
+    /// The brokers clients may connect to. See the synchronous
+    /// `Client.topology`.
+    fn topology<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        pyo3_async_runtimes::tokio::future_into_py(
+            py,
+            async move { inspect::topology(&inner).await },
+        )
+    }
+
+    /// Who owns each shard of a stream or cache. See the synchronous
+    /// `Client.shard_owners`.
+    fn shard_owners<'py>(
+        &self,
+        py: Python<'py>,
+        kind: &str,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let kind = inspect::parse_kind(kind)?;
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, name) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            name.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inspect::shard_owners(&inner, kind, &tenant_id, &namespace, &name).await
+        })
+    }
+
+    /// `(shards, routing)` of a stream. See the synchronous
+    /// `Client.stream_routing`.
+    fn stream_routing<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inspect::stream_routing(&inner, &tenant_id, &namespace, &stream).await
+        })
+    }
+
+    /// How many shards a cache has.
+    fn cache_shards<'py>(
+        &self,
+        py: Python<'py>,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = Arc::clone(&self.inner);
+        let (tenant_id, namespace, cache) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+        );
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            inspect::cache_shards(&inner, &tenant_id, &namespace, &cache).await
         })
     }
 
