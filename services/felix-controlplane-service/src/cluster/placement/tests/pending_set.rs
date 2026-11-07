@@ -698,3 +698,37 @@ fn a_pending_set_is_dropped_when_a_member_comes_back_on_new_storage() {
     assert_eq!(dropped.leader, "broker-b");
     assert_eq!(dropped.replicas, cut_over_pending().replicas);
 }
+
+/// The drop holds the member as a learner, a re-admission, so it waits when
+/// the pass has none left, as while placement is paused.
+#[test]
+fn a_pending_set_waits_for_a_readmission_slot_before_it_is_dropped() {
+    let streams = [Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes: Vec<Node> = ["broker-a", "broker-b", "broker-c", "broker-d"]
+        .into_iter()
+        .map(|id| node(id, NodeLifecycle::Live, None))
+        .collect();
+    let policy = MovePolicy {
+        joint_fence: true,
+        paused: true,
+        ..electing()
+    };
+    let reports = Replaced {
+        replaced: Some("broker-c"),
+    };
+    let decision = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[cut_over_pending()],
+        &reports,
+        policy,
+    )
+    .shards
+    .remove(0)
+    .decision;
+    assert_eq!(decision, Decision::Waiting(Blocked::SetChangePending));
+}

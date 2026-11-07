@@ -1584,13 +1584,14 @@ That last ending exists because of brokers that restart after an unclean
 stop. Such a broker comes back on new storage, and its copy counts toward
 neither set until it is re-admitted. No re-admission is written while a change
 is pending. After a move the new set is the old one less a copy, so a majority
-of the old set needs every member of the new one. Take a move from a to b with
-c the other follower: the old set {a, b, c, d} needs 3 of 4, and the leader b
-ships only to the new set {b, a, c}. If c comes back on new storage, only b and
+of the old set needs every member of the new one. Take a move from a to b
+whose old set is {a, b, c, d}: the cut-over drops d, so the new set is
+{b, a, c}. The old set needs 3 of 4, and the leader b ships only to the new
+set. If c comes back on new storage, only b and
 a count, and the shard takes no acknowledged writes until the timeout. The
 drop's write names c by its new storage and holds it as a learner, as a
 re-admission does ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)),
-and it counts against the same per-pass limit.
+so it counts against the same per-pass limit and waits while placement is paused.
 
 The pending-set timeout clock is the instance's own and starts again when the lease
 changes hands. Follower replacement, top-up and trim wait only until then.
