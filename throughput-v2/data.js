@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794084813984,
+  "lastUpdate": 1794086681372,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49400,6 +49400,58 @@ window.BENCHMARK_DATA = {
             "range": "39103.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 787767.11\nmean: 779494.85\nstdev: 39103.90\ncv: 5.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eeae958e10d77a988e6d6963ae784bd443692ae7",
+          "message": "test(cluster): a broker respawn picks fresh ports for every listener (#2111)\n\nThe MQTT failover test picked its listener ports itself and passed them in the environment, so a start retry after \"Address already in use\" reused the port it had lost. ClusterConfig::tcp_listeners declares a listener with a {port} template; spawn_broker picks a fresh port per spawn and BrokerNode::tcp_port reads it back. ports.rs never hands out the same TCP or UDP port twice in one process.\n\nSpec-Unaffected: test harness only.",
+          "timestamp": "2026-11-07T21:14:43Z",
+          "tree_id": "37e89ab5801746e1d729471f396cbd1d740bd5fe",
+          "url": "https://github.com/GetFelix/felix/commit/eeae958e10d77a988e6d6963ae784bd443692ae7"
+        },
+        "date": 1794086680685,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 421068.23,
+            "range": "17898.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 421068.23\nmean: 414090.92\nstdev: 17898.28\ncv: 4.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 421068.23,
+            "range": "17898.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 421068.23\nmean: 414090.92\nstdev: 17898.28\ncv: 4.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 96911.11,
+            "range": "4870.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 96911.11\nmean: 94984.53\nstdev: 4870.54\ncv: 5.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 969111.09,
+            "range": "48705.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 969111.09\nmean: 949845.24\nstdev: 48705.37\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
