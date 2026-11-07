@@ -63,11 +63,11 @@ UnifiedFence == TRUE
 \* leader serves, and faults and budgeted starts stop at `FaultUntil`.
 LiveCp == FALSE
 FaultUntil == MaxGen
-\* `ShapeJ`: the one budgeted start is a readmission, a set change by the
+\* `ReadmitFirst`: the one budgeted start is a readmission, a set change by the
 \* serving leader after another member crashed uncleanly. The leader
 \* crashes only while that fence is pending, and the control plane fails
 \* over only once it has, so a stall TLC finds goes through it.
-ShapeJ == FALSE
+ReadmitFirst == FALSE
 \* `DropEvidenced`: a set started between the anchor and the fence is not
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
@@ -191,7 +191,7 @@ Start(f) ==
     /\ FaultsAllowed /\ budget.starts > 0
     /\ \E g \in (ballot[f].g + 1)..MaxGen, o \in SetOptions(f, 0) :
         LET opt == IF o.si = Len(starts) + 1 THEN [o EXCEPT !.sg = g] ELSE o
-        IN /\ ShapeJ => /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
+        IN /\ ReadmitFirst => /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
                         /\ \E m \in o.S \ {f} : rotAt[m] > 0
            /\ BeginFence(f, g, [g |-> g, l |-> f, S |-> opt.S, sg |-> opt.sg, si |-> opt.si])
     /\ budget' = [budget EXCEPT !.starts = @ - 1]
@@ -201,7 +201,7 @@ Start(f) ==
 \* every ballot on the newest start's set.
 CpStart(f) ==
     /\ LiveCp /\ ~Serving /\ TopGen < MaxGen
-    /\ ShapeJ => budget.starts = 0 /\ rotAt[First] > 0
+    /\ ReadmitFirst => budget.starts = 0 /\ rotAt[First] > 0
     /\ LET last == starts[Len(starts)]
        IN BeginFence(f, TopGen + 1, [g |-> TopGen + 1, l |-> f, S |-> last.S,
                                      sg |-> last.sg, si |-> last.si])
@@ -411,7 +411,7 @@ Stop(n) ==
 
 UncleanCrash(n) ==
     /\ FaultsAllowed /\ budget.unclean > 0
-    /\ ShapeJ => n /= First \/ (budget.starts = 0 /\ fence[n].g > 0)
+    /\ ReadmitFirst => n /= First \/ (budget.starts = 0 /\ fence[n].g > 0)
     /\ \E j \in 0..Len(log[n]) : log' = [log EXCEPT ![n] = Prefix(@, j)]
     /\ trusted' = [trusted EXCEPT ![n] = FALSE]
     /\ rotAt' = [rotAt EXCEPT ![n] = ballot[n].g]
@@ -485,8 +485,8 @@ CoverLost == 2 * Cardinality({n \in Nodes : trusted[n]}) <= Cardinality(Nodes)
 Settled == Serving \/ CoverLost
 EventuallyServes == <>[]Settled
 
-\* Reachability probe for shape R1: TLC reports a "violation" when a
-\* continuing fence opens counting a doubted copy whose ballot names another
-\* leader, or one older than g - 1, which today's window refuses.
+\* Reachability probe: TLC reports a "violation" when a continuing fence
+\* opens counting a doubted copy whose ballot names another leader, or one
+\* older than g - 1, which today's window refuses.
 NoContinuingOnForeignBallot == ~(note.cont /\ note.foreign)
 =============================================================================

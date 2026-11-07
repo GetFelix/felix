@@ -211,6 +211,8 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `CpLeaderServes` | With the control plane up and every stopped broker back, the leader it names ends up open at its generation, serving with a mark over its whole log and a majority of its set taking its batches, and stays (`<>[](LeaderServes /\ ServesWith(leader))`). Checked under `CpLiveSpec` in `FelixShardCpLive.cfg` and its twins. |
 | `CpDownServesInBound` | With the control plane stopped for good, some live leader ends up open and serving on a majority that holds its generation for it, and stays (`CpDownServes`), or elections stop only at the model's bound with a broker that would still stand (`Exhausted`). Checked under `CpDownSpec` in `FelixShardCpDown*.cfg`. |
 | `CpDownFullyBacked` | The same, with every live member of the leader's set behind it. Not owed: `FelixShardCpDownDegraded.cfg` is its witness. |
+| `EventuallyServes` | In `FelixShardUnified.tla`: once faults stop, some leader serves for good, unless a majority of the nodes lost their trusted logs, which waits for the operator by design. Checked under `LiveSpec` in the `FelixShardUnifiedCpLive*.cfg` configurations. |
+| `NoContinuingOnForeignBallot` | In `FelixShardUnified.tla`: no continuing fence opens counting a crashed copy whose ballot names another leader. A reachability probe: under the rule this happens and is safe, so `FelixShardUnifiedContinuingDoubted.cfg` must find it. |
 
 ## The configurations, and what each must do
 
@@ -494,6 +496,35 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixGroupsSplitSources.cfg` | the same with a promotion taking dead letters and cursors from different replicas, cursors replacing its own | pass `NoSkip` (60.5M distinct states, 17 min on a CI runner) |
 | `FelixGroupsSplitSourcesLengthOnly.cfg` | the same with the check comparing lengths only | violate `NoSkip` |
 | `FelixGroupsShipUnsynced.cfg` | `FelixGroups.cfg` with dead letters shipped before they are synced | violate `NoSkip` |
+| `FelixShardUnified.cfg` | `FelixShardUnified.tla`: the one fence rule (promises from kept ballots, coverage from trusted logs), one write, an unclean crash, a wipe, two starts | pass `OneLeaderPerGeneration` and `AckedHeldByLeader` (20.5M distinct states, 6 min with four workers) |
+| `FelixShardUnifiedSets.cfg` | set changes to any set holding the leader, with an unclean crash: joint fences, shrinks to one and two voters, readmissions | pass (3.7M distinct states, 1 min with four workers) |
+| `FelixShardUnifiedMixed.cfg` | one node predates the attestation and is counted under today's rules | pass (13.7M distinct states, 4 min with four workers) |
+| `FelixShardUnifiedRestore.cfg` | a restored directory and a fence round that starts over | pass (35.8M distinct states, 9 min with four workers) |
+| `FelixShardUnifiedReadmit.cfg` | a wiped copy readmitted by a set change, three starts, no writes | pass (25.1M distinct states, 8 min with four workers) |
+| `FelixShardUnifiedReadmitFull.cfg` | the same with one write | pass, nightly |
+| `FelixShardUnifiedDropEvidenced.cfg` | a set between the anchor and the fence left out when its own leader's trusted answer shows it never opened, no writes | pass (50.6M distinct states, 14 min with four workers) |
+| `FelixShardUnifiedDropEvidencedFull.cfg` | the same with one write | pass, nightly |
+| `FelixShardUnifiedVouch.cfg` | two writes, two unclean crashes: a copy is trusted again only when a batch leaves it level with the leader's mark | pass |
+| `FelixShardUnifiedVouchMark.cfg` | the vouch at the code's quorum mark, held to the start record too | pass |
+| `FelixShardUnifiedVouchBelowStart.cfg` | the same vouch without the start record: the mark can sit below it right after an open | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedStandInNoCatchUp.cfg` | a copy trusted once a batch reaches the start record, short of the mark | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedCoverFromDoubted.cfg` | coverage counts a copy an unclean crash may have shortened | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedTrustsRegistered.cfg` | a wiped copy's empty log counts as the copy its set named (#1335) | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedSkipCoverage.cfg` | a leader that is not continuing opens on its own log | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedDropUnopenedLeaving.cfg` | a set being left is dropped on silence | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedCountNonKept.cfg` | a promise counts from a copy that lost its ballots | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedCountsWiped.cfg` | a readmission counts the wiped seat in the set it leaves too (#1331) | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedAnyCopy.cfg` | a continuing fence counts every answer, a lost copy's included | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedBatchBallot.cfg` | a lost copy's ballot taken from a batch since the wipe counts as kept | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedCountsForgotten.cfg` | a restore goes unnoticed and the copy claims kept ballots | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedNamesByRegistration.cfg` | a wiped copy counted as the copy it replaced, by registered storage id (#1335) | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedContinuingDoubted.cfg` | a continuing fence counts a crashed copy whose ballot names another leader | violate `NoContinuingOnForeignBallot`: the shape is reachable under the rule, and it is safe |
+| `FelixShardUnifiedContinuingDoubtedLegacy.cfg` | the same under today's rules | pass `NoContinuingOnForeignBallot`: today's window never counts that copy |
+| `FelixShardUnifiedCpLiveElectedFailover.cfg` | an elected leader crashes uncleanly and the control plane fails over | pass `EventuallyServes` |
+| `FelixShardUnifiedCpLiveElectedFailoverLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
+| `FelixShardUnifiedCpLiveReadmitUnopened.cfg` | a readmission whose leader crashes uncleanly before it opens | pass `EventuallyServes` |
+| `FelixShardUnifiedCpLiveReadmitUnopenedLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
+| `FelixShardUnifiedCpLiveMoveDoubted.cfg` | a move to two voters, one back from an unclean crash | pass `EventuallyServes` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2047,8 +2078,9 @@ four `StoodOneDest` and the four `StoodSeveralDest`),
 `FelixShardElectHandoff.cfg`,
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
-`FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
-`FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
+`FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`,
+`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg` and
+`FelixShardUnifiedDropEvidencedFull.cfg`. Each must pass. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
