@@ -1992,6 +1992,31 @@ The fence itself, the lease and the records' log are `FelixShard.tla`'s; this
 model takes from it only that a promotion fences a majority and a replica
 refuses a leader older than one it accepted.
 
+### One fence rule: exclusion from kept ballots, coverage from trusted logs
+
+`FelixShardUnified.tla` is a separate, smaller model of the fence rule every change of leader uses: failover,
+election, rename, skip, set change, readmission and a continuing leader. It splits what a fence must prove in two.
+
+- **Exclusion**: a majority of every set the fence leaves, and of its own, promised with ballots the copy kept.
+  An unclean crash keeps ballots. A wipe or a restore loses them until a set introduced after the loss readmits
+  the copy.
+- **Coverage**: a continuing leader has it already. Any other leader needs trusted answers (a clean start, or
+  vouched up to the leader's acknowledged mark) that meet every majority of each such set, and takes the log
+  furthest ahead.
+
+`UnifiedFence = No` gives today's rules in outline, and the `Legacy` configurations show the stalls the simulator
+sweep found (an elected leader killed, a readmission whose leader crashed, a continuing leader past two doubted
+copies). Each shortcut configuration breaks one part of the rule and must fail: `CountNonKept`, `CountsWiped`
+(#1331), `AnyCopy`, `BatchBallot`, `CountsForgotten` and `NamesByRegistration` let a lost promise make a second
+leader. `CoverFromDoubted`, `TrustsRegistered` (#1335), `StandInNoCatchUp`, `VouchBelowStart`, `SkipCoverage`
+and `DropUnopenedLeaving` let a leader open without an acknowledged record.
+
+A batch vouches for a copy only when it leaves it level through both the leader's start record and the mark it
+carries. The mark is the code's quorum offset, which right after an open can sit below the start record:
+`VouchBelowStart` drops the start record and loses an acknowledged write, and `VouchMark` passes at the same bounds.
+`FelixShardUnifiedReadmit` and `FelixShardUnifiedDropEvidenced` run without client writes, so coverage is checked
+on start records. Their `Full` twins have one write and run nightly.
+
 ## Which configurations run where
 
 TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
