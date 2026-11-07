@@ -53,11 +53,6 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         Arg.OptionalText(options.CaFile, nameof(options.CaFile));
         Arg.OptionalText(options.ClientCertFile, nameof(options.ClientCertFile));
         Arg.OptionalText(options.ClientKeyFile, nameof(options.ClientKeyFile));
-        if ((options.ClientCertFile is null) != (options.ClientKeyFile is null))
-        {
-            throw new ArgumentException("ClientCertFile and ClientKeyFile must be given together", nameof(options));
-        }
-
         foreach (var addr in options.Addrs)
         {
             Arg.Text(addr, nameof(options.Addrs));
@@ -103,13 +98,11 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             var userData = state.Pin();
             // The library reads the struct during the call; its size says which fields we know.
             var native = NativeOptionsOf(options);
-            if (options.ClientCertFile is not null && options.ClientKeyFile is not null)
-            {
-                certFile = Marshal.StringToCoTaskMemUTF8(options.ClientCertFile);
-                keyFile = Marshal.StringToCoTaskMemUTF8(options.ClientKeyFile);
-                native.ClientCertFile = certFile;
-                native.ClientKeyFile = keyFile;
-            }
+            // Either one alone goes through too: the library refuses it as an invalid argument.
+            certFile = options.ClientCertFile is null ? 0 : Marshal.StringToCoTaskMemUTF8(options.ClientCertFile);
+            keyFile = options.ClientKeyFile is null ? 0 : Marshal.StringToCoTaskMemUTF8(options.ClientKeyFile);
+            native.ClientCertFile = certFile;
+            native.ClientKeyFile = keyFile;
 
             if (tokens is not null)
             {
@@ -127,7 +120,7 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 options.Publishers || options.Timestamps || tokens is not null
                     || options.ReconnectAttempts is not null || options.ReconnectDeadline is not null
                     || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null
-                    || certFile != 0 ? &native : null,
+                    || certFile != 0 || keyFile != 0 ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);

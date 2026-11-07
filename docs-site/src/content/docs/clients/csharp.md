@@ -194,7 +194,7 @@ await foreach (var ev in sub)
 ```
 
 TLS is always on. `ServerName` is the name the broker's certificate must carry (`localhost` when
-null), and `CaFile` is a PEM file of CA certificates to trust instead of the system store. 
+null), and `CaFile` is a PEM file of CA certificates to trust instead of the system store.
 
 A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Set `ClientCertFile` and `ClientKeyFile` to PEM files holding the certificate and its key. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key:
 
@@ -210,7 +210,7 @@ await using var client = await FelixClient.ConnectAsync(new FelixClientOptions
 });
 ```
 
-Set both or neither: one alone throws `ArgumentException`. A missing file, a file that is not PEM, or a key that does not match the certificate fails the connect with a `FelixException` of status `InvalidArgument` naming the file. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+Set both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two fails the connect with a `FelixException` of status `InvalidArgument` naming the file. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 `PublishAsync` returns the record's log offset, or null when the stream has no log,
 the ack mode is `AckMode.None`, or the broker acknowledged before writing. A `key`

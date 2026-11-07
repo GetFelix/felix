@@ -40,16 +40,6 @@ fn build(
     client_key_file: Option<&str>,
     offer_alpn: bool,
 ) -> Result<ClientConfig, String> {
-    let identity = match (client_cert_file, client_key_file) {
-        (None, None) => None,
-        (Some(cert), Some(key)) => Some(
-            felix_client::ClientIdentity::from_pem_files(cert, key)
-                .map_err(|err| format!("could not load the client certificate: {err:#}"))?,
-        ),
-        _ => {
-            return Err("client_cert_file and client_key_file must be given together".to_string());
-        }
-    };
     let roots = match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
@@ -69,7 +59,17 @@ fn build(
         }
         None => None,
     };
-    let trusts_platform = roots.is_none();
+    let identity = match (client_cert_file, client_key_file) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(
+            felix_client::ClientIdentity::from_pem_files(cert, key)
+                .map_err(|err| format!("could not load the client certificate: {err:#}"))?,
+        ),
+        _ => {
+            return Err("client_cert_file and client_key_file must be given together".to_string());
+        }
+    };
+    let platform_only = roots.is_none() && identity.is_none();
     let built = match identity {
         Some(identity) => {
             felix_client::quic_client_config_with_identity(roots, identity, offer_alpn)
@@ -77,9 +77,9 @@ fn build(
         None => felix_client::quic_client_config(roots, offer_alpn),
     };
     built.map_err(|err| {
-        if trusts_platform {
+        if platform_only {
             format!(
-                "could not use the platform trust store or the client certificate: {err:#}. \
+                "could not use the platform trust store: {err:#}. \
                  Pass ca_file= to trust a specific CA instead."
             )
         } else {

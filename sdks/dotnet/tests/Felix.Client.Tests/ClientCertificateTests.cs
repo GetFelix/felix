@@ -58,4 +58,16 @@ public class ClientCertificateTests
         error = await Assert.ThrowsAsync<FelixException>(() => FelixClient.ConnectAsync(f.Options(f.CertFile, f.CertFile)));
         Assert.Equal(FelixStatus.InvalidArgument, error.Status);
     }
+
+    [FixtureTheory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ACertificateWithoutItsKeyOrTheOtherWayRoundIsAnInvalidArgument(bool certOnly)
+    {
+        var f = MutualTls.Load();
+        var options = certOnly ? f.Options(f.CertFile, null) : f.Options(null, f.KeyFile);
+        var error = await Assert.ThrowsAsync<FelixException>(() => FelixClient.ConnectAsync(options));
+        Assert.Equal(FelixStatus.InvalidArgument, error.Status);
+        Assert.Contains("given together", error.Message);
+    }
 }

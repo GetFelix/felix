@@ -99,22 +99,6 @@ public class OptionsTests
 
 public class ClientCertificateOptionsTests
 {
-    [Theory]
-    [InlineData("client.pem", null)]
-    [InlineData(null, "client.key")]
-    public async Task ACertificateWithoutItsKeyIsRefusedBeforeAnythingIsSent(string? cert, string? key)
-    {
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => FelixClient.ConnectAsync(new FelixClientOptions
-        {
-            Addrs = ["127.0.0.1:1"],
-            TenantId = "t",
-            Token = "x",
-            ClientCertFile = cert,
-            ClientKeyFile = key,
-        }));
-        Assert.Contains("given together", error.Message);
-    }
-
     [Fact]
     public void TheNativeOptionsNameNoCertificateUntilConnectSetsOne()
     {

@@ -580,24 +580,67 @@ for the system store. `addrs` is a `host:port` string.
 A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Set `client_cert_file` and `client_key_file` in `FelixConnectOptions` to PEM files holding the certificate and its key. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key. Both fields follow `reconnect_max_backoff_ms` in the struct, so a caller built against an older header presents none. The library reads the two paths during the call and keeps neither:
 
 ```c
-static bool connect_with_certificate(void) {
-  FelixConnectOptions options = {
-      .size = sizeof options,
-      .client_cert_file = "client.pem",
-      .client_key_file = "client.key",
-  };
-  FelixStatus status = felix_client_connect_with(
-      "felix-0:5000", "t1", "my-token", "localhost", "ca.pem", &options, NULL,
-      on_connect, NULL);
-  if (status != FELIX_STATUS_OK) {
-    fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
-    return false;
-  }
-  return true;
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+
+#include "felix.h"
+
+struct connect_result {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool done;
+    FelixStatus status;
+    FelixClient *client;
+    char message[256]; /* copied: the callback's message dies with the callback */
+};
+
+static void on_connected(void *user_data, FelixStatus status, const char *message,
+                         FelixClient *client) {
+    struct connect_result *r = user_data;
+    pthread_mutex_lock(&r->mu);
+    r->done = true;
+    r->status = status;
+    r->client = client;
+    snprintf(r->message, sizeof r->message, "%s", message ? message : "");
+    pthread_cond_signal(&r->cv);
+    pthread_mutex_unlock(&r->mu);
+}
+
+int main(void) {
+    struct connect_result r = {.mu = PTHREAD_MUTEX_INITIALIZER,
+                               .cv = PTHREAD_COND_INITIALIZER};
+    FelixConnectOptions options = {
+        .size = sizeof options,
+        .client_cert_file = "client.pem",
+        .client_key_file = "client.key",
+    };
+    FelixStatus status = felix_client_connect_with(
+        "felix-0:5000", "t1", "my-token", "localhost", "ca.pem", &options, NULL,
+        on_connected, &r);
+    if (status != FELIX_STATUS_OK) {
+        /* Refused before it started, such as an unreadable certificate file:
+           the callback never runs. */
+        fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+        return 1;
+    }
+
+    pthread_mutex_lock(&r.mu);
+    while (!r.done) pthread_cond_wait(&r.cv, &r.mu);
+    pthread_mutex_unlock(&r.mu);
+    if (r.status != FELIX_STATUS_OK) {
+        /* The broker refused the handshake, or no broker answered. */
+        fprintf(stderr, "connect failed: %s\n", r.message);
+        return 1;
+    }
+
+    /* ... use r.client ... */
+    felix_client_free(r.client);
+    return 0;
 }
 ```
 
-Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two returns `FELIX_STATUS_INVALID_ARGUMENT` with a message naming the problem. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two makes `felix_client_connect_with` return `FELIX_STATUS_INVALID_ARGUMENT` with a message naming the problem, and the callback never runs. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 ## Publishing
 

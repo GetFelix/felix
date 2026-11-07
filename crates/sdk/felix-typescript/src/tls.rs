@@ -28,19 +28,6 @@ pub(crate) fn client_config(
     client_key_file: Option<&str>,
     offer_alpn: bool,
 ) -> napi::Result<ClientConfig> {
-    let identity = match (client_cert_file, client_key_file) {
-        (None, None) => None,
-        (Some(cert), Some(key)) => Some(
-            felix_client::ClientIdentity::from_pem_files(cert, key).map_err(|err| {
-                invalid(format!("could not load the client certificate: {err:#}"))
-            })?,
-        ),
-        _ => {
-            return Err(invalid(
-                "clientCertFile and clientKeyFile must be given together",
-            ));
-        }
-    };
     let roots = match ca_file {
         Some(path) => {
             let mut roots = RootCertStore::empty();
@@ -64,7 +51,20 @@ pub(crate) fn client_config(
         }
         None => None,
     };
-    let trusts_platform = roots.is_none();
+    let identity = match (client_cert_file, client_key_file) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(
+            felix_client::ClientIdentity::from_pem_files(cert, key).map_err(|err| {
+                invalid(format!("could not load the client certificate: {err:#}"))
+            })?,
+        ),
+        _ => {
+            return Err(invalid(
+                "clientCertFile and clientKeyFile must be given together",
+            ));
+        }
+    };
+    let platform_only = roots.is_none() && identity.is_none();
     let built = match identity {
         Some(identity) => {
             felix_client::quic_client_config_with_identity(roots, identity, offer_alpn)
@@ -72,9 +72,9 @@ pub(crate) fn client_config(
         None => felix_client::quic_client_config(roots, offer_alpn),
     };
     built.map_err(|err| {
-        if trusts_platform {
+        if platform_only {
             invalid(format!(
-                "could not use the platform trust store or the client certificate: {err:#}. \
+                "could not use the platform trust store: {err:#}. \
                  Pass caFile to trust a specific CA instead."
             ))
         } else {
