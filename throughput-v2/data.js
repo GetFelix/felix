@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794006509777,
+  "lastUpdate": 1794010956080,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47892,6 +47892,58 @@ window.BENCHMARK_DATA = {
             "range": "27379.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1175520.74\nmean: 1169765.47\nstdev: 27379.56\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25e53cfb60379c0064c45d65ccf909a4f7686b4e",
+          "message": "spec: RetryContinuingFence leaves waits unchanged (#2068)\n\n* spec: RetryContinuingFence leaves waits unchanged\n\nThe action's UNCHANGED list omitted waits, added by the ack-wait model, so TLC\nrejected every config that enables ContinuingRetries.\n\n* ci(tla): expect FelixShardReplacedPendingLeftTwiceAllLog to violate AckedHeldByLeader\n\nSpec-Unaffected: only registers an existing configuration's documented violation.",
+          "timestamp": "2026-11-06T15:48:45-08:00",
+          "tree_id": "662686e8d680a9b20e7cad9c37aa07219ff86ff6",
+          "url": "https://github.com/GetFelix/felix/commit/25e53cfb60379c0064c45d65ccf909a4f7686b4e"
+        },
+        "date": 1794010955386,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 631825.31,
+            "range": "60168.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631825.31\nmean: 641087.37\nstdev: 60168.76\ncv: 9.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 631825.31,
+            "range": "60168.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631825.31\nmean: 641087.37\nstdev: 60168.76\ncv: 9.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157702.72,
+            "range": "1741.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157702.72\nmean: 156835.13\nstdev: 1741.66\ncv: 1.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1577027.21,
+            "range": "17416.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1577027.21\nmean: 1568351.25\nstdev: 17416.57\ncv: 1.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
