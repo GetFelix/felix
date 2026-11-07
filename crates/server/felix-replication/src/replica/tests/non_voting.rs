@@ -1636,6 +1636,7 @@ async fn a_readmission_waits_until_the_start_says_what_it_kept() {
     let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
     let (broker, _dir) = broker_with_storage().await;
     let trust_dir = tempfile::tempdir().expect("tempdir");
+    felix_storage::storage_identity::replace(trust_dir.path(), OWN).expect("storage id");
     let trust = Arc::new(
         felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open"),
     );
@@ -1657,6 +1658,7 @@ async fn a_readmission_waits_until_the_start_says_what_it_kept() {
         "before the start says what it kept"
     );
 
+    marks.set_readmits(true);
     marks.set_kept_ballots(false);
     let answer = settled(|| {
         copy.apply(
@@ -1673,7 +1675,8 @@ async fn a_readmission_waits_until_the_start_says_what_it_kept() {
         matches!(answer, InternalMessage::ReplicateOk(_)),
         "{answer:?}"
     );
-    assert!(trust.unkept(&name).is_none(), "readmitted once it has");
+    assert!(trust.unkept(&name).is_none(), "cleared once it has");
+    assert!(trust.readmitted(&name).is_some(), "readmitted once it has");
 }
 
 /// **A copy unkept since a generation the record lost is unkept since at

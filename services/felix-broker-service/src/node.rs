@@ -520,9 +520,10 @@ where
         view.as_ref().map(|_| {
             let marks = Arc::clone(&quorum_marks);
             membership::deferred_check(&restore_checked, own_kept, move |kept| {
-                // Kept first, so a kept copy never reads as lost in between.
-                marks.set_kept_ballots(kept.ballots);
+                // Readmits first: setting kept is what lets a readmission
+                // count (`QuorumMarks::knows_kept_ballots`).
                 marks.set_readmits(kept.readmits);
+                marks.set_kept_ballots(kept.ballots);
             })
         }),
         &sync_shutdown,
