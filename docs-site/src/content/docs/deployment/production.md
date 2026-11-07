@@ -9,6 +9,9 @@ to lock down. It links the deep pages and does not repeat them. Variable names
 and defaults are in the [environment reference](/reference/environment-variables/),
 which is authoritative when this page and it disagree.
 
+For ready-made combinations of these settings by workload, see
+[Choosing a configuration](/deployment/choosing-a-configuration/).
+
 Felix publishes few measured sizing numbers, because the right ones depend on
 payload size, fanout and the device under the log. Where the docs have a
 measurement, this page links it. Everywhere else it gives the formula and the
@@ -143,20 +146,21 @@ its `replication_factor`.
 the environment reference's figure, shared by concurrent publishers through
 group commit. Check that sharing works with the group-commit panel on the
 dashboard: `felix_storage_sync_batch_appends` near 1 under concurrent publishers
-means appends are not coalescing. Under `periodic` and `none`, a broker that
-crashes restarts under a new storage id and its leaders copy each shard it
-follows again.
+means appends are not coalescing. Under `periodic` and `none`, a broker whose
+machine crashed restarts under a new storage id and its leaders copy each
+shard it follows again. On Linux a crash of the broker process alone keeps
+the id.
 
 ### Leader or Quorum
 
 | | `Leader` (default) | `Quorum` |
 | --- | --- | --- |
 | Acknowledged once | The leader has it | A majority of the shard's replicas, the leader included, has it |
-| Leader dies with followers behind | No follower is promoted, because that would drop an acknowledged record. The shard is unavailable until the old leader returns with its disk. | A follower holding every acknowledged record is promoted. |
+| Leader dies | A follower is promoted only if the leader's last replica report showed it caught up, and what the leader acknowledged after that report is lost (`felix_broker_replication_lag_records` is the window). With no follower reported caught up, the shard is unavailable until the old leader returns with its disk. | A follower holding every acknowledged record is promoted. |
 | Cost | Lowest latency | A replication round trip per commit. A wait past `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s) is refused. |
 | Failure shows up as | Failover time | Publish time |
 
-Neither loses data silently. `Leader` trades availability for latency; see the
+`Quorum` loses no acknowledged record to a failover. `Leader` trades a loss window and availability for latency; see the
 [Leader vs Quorum demo](https://github.com/GetFelix/felix/blob/main/docs/demos.md#leader-vs-quorum-felix-cluster-consistency).
 A refused `Quorum` publish means "cannot be vouched for", and the record may
 still be present, so check before you retry if a duplicate matters.
