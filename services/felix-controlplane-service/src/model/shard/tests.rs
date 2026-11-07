@@ -988,3 +988,38 @@ fn no_readmitted_entries_leave_the_assignment_unchanged_on_the_wire() {
     let json = serde_json::to_value(assignment()).expect("serialize");
     assert!(json.get("readmitted").is_none());
 }
+
+/// A leader that refused its generation, gave the shard up, or halted the
+/// copy vouches for nothing: none of those reports is one of a leader
+/// serving the set it ships to the copy on.
+#[test]
+fn a_refusing_giving_up_or_halting_leader_readmits_nothing() {
+    let refused = ReplicaReport {
+        refused: Some(felix_common::membership::RefusedGeneration::set_unknown(7)),
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting()
+            .readmitted_by(&refused, &registered)
+            .is_empty(),
+        "refused"
+    );
+    let given_up = ReplicaReport {
+        given_up: true,
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting()
+            .readmitted_by(&given_up, &registered)
+            .is_empty(),
+        "given up"
+    );
+    let halted = ReplicaReport {
+        halted: [("broker-c".to_string(), halted(7, 0))].into(),
+        ..caught_up_at(7)
+    };
+    assert!(
+        readmitting().readmitted_by(&halted, &registered).is_empty(),
+        "halted"
+    );
+}
