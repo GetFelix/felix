@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794049807761,
+  "lastUpdate": 1794055120157,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48776,6 +48776,58 @@ window.BENCHMARK_DATA = {
             "range": "50553.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814135.79\nmean: 783625.21\nstdev: 50553.12\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "513abf61bf38d59472fd5adb9f952179a98c1720",
+          "message": "feat(replication): a replica answers a unified fence with its attestation instead of refusing (#2098)\n\nFor a caller that offered UNIFIED_FENCE only, the replica answers a fence with its attestation (kept_from, trusted) instead of refusing a short, led-before or learner copy. Ballot and set refusals still apply. A learner records itself unkept and a crashed leader's copy keeps its doubt durably before the ballot, or the fence is refused. No broker offers the bit yet (peer/config.rs unchanged), so every real caller is unchanged.\n\nSpec-Unaffected: the model already has these rules (FelixShardUnified.tla, #2084); this implements the replica's side of them.",
+          "timestamp": "2026-11-07T04:32:46-08:00",
+          "tree_id": "5fdd6deb005e432269633cad3df94eafca8ae71a",
+          "url": "https://github.com/GetFelix/felix/commit/513abf61bf38d59472fd5adb9f952179a98c1720"
+        },
+        "date": 1794055119612,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 460164.98,
+            "range": "21656.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 460164.98\nmean: 468035.27\nstdev: 21656.59\ncv: 4.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 460164.98,
+            "range": "21656.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 460164.98\nmean: 468035.27\nstdev: 21656.59\ncv: 4.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119744.14,
+            "range": "1884.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119744.14\nmean: 119182.84\nstdev: 1884.91\ncv: 1.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1197441.36,
+            "range": "18849.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1197441.36\nmean: 1191828.45\nstdev: 18849.07\ncv: 1.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
