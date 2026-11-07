@@ -450,6 +450,8 @@ expectations=(
   "FelixShardUnifiedCpLiveReadmitUnopened pass"
   "FelixShardUnifiedCpLiveReadmitUnopenedLegacy violates liveness"
   "FelixShardUnifiedCpLiveMoveDoubted pass"
+  "FelixShardUnifiedIdleVouch pass"
+  "FelixShardUnifiedIdleVouchLegacy violates liveness"
   "FelixShardUnifiedLearnerBlocking pass"
   "FelixShardUnifiedLearnerBlockingTwo pass"
   "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"

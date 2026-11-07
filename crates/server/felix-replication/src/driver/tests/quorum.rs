@@ -1271,3 +1271,184 @@ async fn a_learners_answer_does_not_move_the_mark_until_it_is_readmitted() {
         "the re-admitted copy's answer counts"
     );
 }
+
+/// A follower that stores everything, offers generation labels and gives a
+/// storage identity the test can change.
+#[derive(Default)]
+struct LabelledFollower {
+    inner: AcceptingFollower,
+    identity: Mutex<crate::peer::PeerIdentity>,
+    /// Asked what it offers, it does not answer, and nothing is recorded.
+    unknown: std::sync::atomic::AtomicBool,
+}
+
+impl LabelledFollower {
+    /// What each batch to `node` carried: its end and its commit offset.
+    fn marks_sent(&self, node: &str) -> Vec<(u64, Option<u64>)> {
+        self.inner
+            .sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter(|(to, _)| to == node)
+            .map(|(_, batch)| {
+                (
+                    batch.first_offset + batch.payloads.len() as u64,
+                    batch.commit_offset,
+                )
+            })
+            .collect()
+    }
+}
+
+impl PeerRequester for LabelledFollower {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        self.inner.request(node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, PeerError> {
+        if self.unknown.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PeerError::Unavailable {
+                node_id: _node_id.to_string(),
+                detail: "no handshake".to_string(),
+            });
+        }
+        Ok(felix_wire::internal::PeerCapabilities::GENERATION_LABELS)
+    }
+
+    fn recorded_capabilities(
+        &self,
+        _node_id: &str,
+    ) -> Option<felix_wire::internal::PeerCapabilities> {
+        (!self.unknown.load(std::sync::atomic::Ordering::SeqCst))
+            .then_some(felix_wire::internal::PeerCapabilities::GENERATION_LABELS)
+    }
+
+    async fn identity(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<crate::peer::PeerIdentity, PeerError> {
+        Ok(*self.identity.lock().expect("lock"))
+    }
+}
+
+/// **A level follower of an idle shard is sent the mark, once per process.**
+/// A follower back from an unclean restart is trusted again only by a batch
+/// that leaves it level through the leader's start and a commit offset
+/// above zero. The batch that catches it up goes before its own answer
+/// raises the mark, so it carries none, and a level follower of an idle
+/// shard is sent nothing more. Its copy stayed untrusted and the shard's
+/// next fence could not cover (`FelixShardUnifiedIdleVouch`).
+#[tokio::test]
+async fn an_idle_follower_is_sent_the_mark_once_per_process() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = LabelledFollower {
+        identity: Mutex::new(crate::peer::PeerIdentity::storage(
+            felix_storage::StorageId::from_bytes([1; 16]),
+        )),
+        ..LabelledFollower::default()
+    };
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+    );
+    let mut passes = async |count: usize| {
+        for _ in 0..count {
+            replicate_once(
+                &follower,
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut cursors,
+                &mut group,
+                &mut dead,
+                &mut counters,
+            )
+            .await;
+        }
+    };
+    let vouching = |sent: &[(u64, Option<u64>)]| {
+        sent.iter()
+            .filter(|(end, mark)| mark.is_some_and(|mark| mark > 0 && mark <= *end))
+            .count()
+    };
+
+    passes(4).await;
+    assert_eq!(marks.offset(&watch_key(&key()), 4), Some(3));
+    for node in ["broker-b", "broker-c"] {
+        let sent = follower.marks_sent(node);
+        assert_eq!(vouching(&sent), 1, "{node} was sent {sent:?}");
+    }
+
+    // A clean restart keeps the copy, but the new process is sent the mark
+    // again.
+    follower.identity.lock().expect("lock").incarnation = crate::peer::Incarnation::At(2);
+    passes(3).await;
+    for node in ["broker-b", "broker-c"] {
+        let sent = follower.marks_sent(node);
+        assert_eq!(vouching(&sent), 2, "{node} was sent {sent:?}");
+    }
+}
+
+/// **A follower sent an unlabelled batch only because what it offers was
+/// unknown is still owed the mark.** It took the batch, but without labels
+/// the replica cannot vouch, so once the handshake says it takes them it is
+/// sent the mark.
+#[tokio::test]
+async fn a_follower_of_unknown_offer_is_still_sent_the_mark() {
+    let (broker, _dir) = quorum_leader(3, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let follower = LabelledFollower {
+        unknown: std::sync::atomic::AtomicBool::new(true),
+        ..LabelledFollower::default()
+    };
+    let marks = QuorumMarks::new();
+    let (mut cursors, mut group, mut dead, mut counters) = (
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+        HashMap::default(),
+    );
+    let mut passes = async |count: usize| {
+        for _ in 0..count {
+            replicate_once(
+                &follower,
+                &broker,
+                &router,
+                &marks,
+                None,
+                &mut cursors,
+                &mut group,
+                &mut dead,
+                &mut counters,
+            )
+            .await;
+        }
+    };
+    passes(2).await;
+    follower
+        .unknown
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    passes(2).await;
+    let sent = follower.marks_sent("broker-b");
+    assert!(
+        sent.iter()
+            .any(|(end, mark)| mark.is_some_and(|mark| mark > 0 && mark <= *end)),
+        "{sent:?}"
+    );
+}

@@ -73,6 +73,12 @@ ReadmitFirst == FALSE
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
 DropEvidenced == FALSE
+\* `IdleVouch`: a leader sends a follower level with it a batch anyway, its
+\* last record again with the mark, so an idle shard's untrusted follower is
+\* vouched without a write. FALSE is a leader that ships only what a
+\* follower lacks: nothing on an idle shard.
+IdleVouch == TRUE
+
 \* Learners: a set change may stage members that are not voters yet (a move's
 \* successor). `LearnerChoices` is the learner sets a set change may name.
 \* An acknowledgement counts a majority of the voters, or of the voters and
@@ -389,14 +395,15 @@ Vouches(l, k) ==
     \/ VouchAtStart /\ k >= StartPos(l)
 
 \* A batch: the leader's log from where the two agree to some later point,
-\* or to its end. It readmits a copy that lost its ballots when the leader's
+\* or to its end, even when the follower already holds it all (`IdleVouch`).
+\* It readmits a copy that lost its ballots when the leader's
 \* set was introduced after the loss and names it.
 Ship(l, m) ==
     /\ Leads(l) /\ m /= l
     /\ ballot[m].g < openAt[l] \/ ballot[m] = ballot[l]
     /\ setGen[m] <= LeadStart(l).sg
     /\ \E k \in Common(log[m], log[l])..Len(log[l]) :
-        /\ k > Common(log[m], log[l]) \/ k = Len(log[l])
+        /\ k > Common(log[m], log[l]) \/ (IdleVouch /\ k = Len(log[l]))
         /\ log' = [log EXCEPT ![m] = Prefix(log[l], k)]
         /\ trusted' = [trusted EXCEPT ![m] =
                          @ \/ (Vouches(l, k) /\ (Readmits(l, m) \/ keptFrom[m] < Inf))]
@@ -488,6 +495,13 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* A leader keeps shipping and acknowledging. No fairness on starts, faults
+\* or writes, so a run ends idle once the budgets are spent.
+ShipSpec ==
+    /\ Spec
+    /\ \A l \in Nodes : WF_vars(Ack(l))
+    /\ \A l, m \in Nodes : WF_vars(Ship(l, m))
+
 LiveSpec ==
     /\ Spec
     /\ WF_vars(\E f \in Nodes : CpStart(f))
@@ -510,6 +524,14 @@ AckedHeldByLeader ==
 CoverLost == 2 * Cardinality({n \in Nodes : trusted[n]}) <= Cardinality(Nodes)
 Settled == Serving \/ CoverLost
 EventuallyServes == <>[]Settled
+
+\* Liveness: a follower of a serving leader that has not lost its ballots
+\* is trusted again, writes or none, while that leader serves it.
+FollowerTrusted ==
+    \A l, m \in Nodes :
+        (/\ Leads(l) /\ m /= l /\ m \in LeadStart(l).S /\ ~trusted[m]
+         /\ ballot[m] = ballot[l] /\ keptFrom[m] < Inf)
+            ~> (trusted[m] \/ ~Leads(l) \/ ballot[m] /= ballot[l])
 
 \* Reachability probe: TLC reports a "violation" when a continuing fence
 \* opens counting a doubted copy whose ballot names another leader, or one
