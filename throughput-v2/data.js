@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794027885443,
+  "lastUpdate": 1794029383972,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48256,6 +48256,58 @@ window.BENCHMARK_DATA = {
             "range": "22356.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1170610.54\nmean: 1162298.90\nstdev: 22356.48\ncv: 1.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f4c61f7a7cd7f986288ae834831ef26a7eeec586",
+          "message": "fix(broker): a restored directory no longer starts from its view without the control plane (#2073)\n\n* fix(broker): a restored directory no longer starts from its view without the control plane (#2071)\n\nA start from the control-plane view kept a restored directory's storage id\nand view, so it voted on its old ballots and its short log counted. Nothing\ninside the directory can tell a restore apart, so every start now writes a\nfresh token to <root>/run-token and a run witness to /dev/shm naming the\ntoken, the boot and the directory. A start from the view needs the witness\nto match; otherwise it waits for the control plane.\n\nSpec-Unaffected: the model already assumes a copy that lost its promises is\nnever the copy a leader expects (ContinuingCountsForgotten is the unsafe\nsetting). The view start and the witness are not modelled; this makes the\ncode meet that assumption again.\n\n* fix(broker): keep run witnesses per user and say which restarts keep one (#2071)\n\n/dev/shm is sticky, so a witness another uid left under the same name could\nnot be removed and the start failed. The name now carries the effective uid.\nThe docs name the restarts that keep /dev/shm: a process restart in the same\nboot, and a container restart inside a live pod.\n\nSpec-Unaffected: naming of a local file and docs only.",
+          "timestamp": "2026-11-06T21:14:11-08:00",
+          "tree_id": "a2f534b7c3a5d0c45b5f54c466776d42402e8cfb",
+          "url": "https://github.com/GetFelix/felix/commit/f4c61f7a7cd7f986288ae834831ef26a7eeec586"
+        },
+        "date": 1794029383219,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 498352.33,
+            "range": "34502.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498352.33\nmean: 504936.42\nstdev: 34502.38\ncv: 6.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 498352.33,
+            "range": "34502.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498352.33\nmean: 504936.42\nstdev: 34502.38\ncv: 6.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116203.95,
+            "range": "3059.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116203.95\nmean: 116075.49\nstdev: 3059.70\ncv: 2.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1162039.48,
+            "range": "30597.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1162039.48\nmean: 1160754.87\nstdev: 30597.05\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
