@@ -1545,6 +1545,10 @@ control plane is back, and a shard is elected during an outage only while a
 majority of its copies kept running. With `FELIX_START_WITHOUT_CONTROLPLANE`
 on it starts from what the control plane last told it and takes part again;
 see [Rejoining without the control plane](#rejoining-without-the-control-plane).
+With the unified fence on, the default, that broker does not vote or count
+toward a promotion until it reaches the control plane, so a failover that
+needs its vote waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores
+the pin-based rule, under which its vote counts.
 
 **Which shards.** The ones failover on the followers' word already covers: a
 durable `Quorum` stream with `majority_ack` and `lease_free_reads` finalized,

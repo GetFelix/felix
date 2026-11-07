@@ -404,15 +404,18 @@ pub(crate) async fn fence_shard_as<R: PeerRequester>(
                 Some(marks) => Some(own_copy(marks, key, &log, local_node_id, route).await),
                 None => None,
             };
-            // Continuing only while this copy's ballot is still this leader's
-            // at the generation before or this one: any other means another
-            // leader reached it in between. And not after a failed flush,
-            // which may have dropped acknowledged pages from this process.
+            // Under the unified rule, continuing only while this copy's
+            // ballot is still this leader's at the generation before or this
+            // one: any other means another leader reached it in between. And
+            // not after a failed flush, which may have dropped acknowledged
+            // pages from this process. Without it the rule is unchanged.
             let continuing = continuing
-                && log.accepted_leader().as_deref() == Some(local_node_id)
-                && (log.accepted_generation() == route.generation
-                    || Some(log.accepted_generation()) == route.generation.checked_sub(1))
-                && !felix_storage::disk_log::any_log_poisoned();
+                && (unified.is_none()
+                    || (log.accepted_leader().as_deref() == Some(local_node_id)
+                        && (log.accepted_generation() == route.generation
+                            || Some(log.accepted_generation())
+                                == route.generation.checked_sub(1))
+                        && !felix_storage::disk_log::any_log_poisoned()));
             let asked: Vec<&felix_router::NodeRef>;
             let fenced_on = match joint {
                 Some(joint) => {
