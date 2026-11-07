@@ -17,6 +17,7 @@
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `FELIX_SIM_PLACEMENT` | `1` turns placement faults on for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
+//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
@@ -70,8 +71,9 @@ fn env_u64(name: &str) -> Option<u64> {
     )
 }
 
-/// `seed`'s config, with the clock skew `FELIX_SIM_CLOCKS` asks for and
-/// placement faults when `FELIX_SIM_PLACEMENT=1`.
+/// `seed`'s config, with the clock skew `FELIX_SIM_CLOCKS` asks for,
+/// placement faults when `FELIX_SIM_PLACEMENT=1` and power cuts when
+/// `FELIX_SIM_POWER_LOSS=1`.
 fn config(seed: u64) -> SimConfig {
     let clocks = match std::env::var("FELIX_SIM_CLOCKS") {
         Ok(value) => ClockSkew::parse(&value).unwrap_or_else(|| {
@@ -83,8 +85,12 @@ fn config(seed: u64) -> SimConfig {
         clocks,
         ..SimConfig::for_seed(seed)
     };
-    match std::env::var("FELIX_SIM_PLACEMENT").as_deref() {
+    let config = match std::env::var("FELIX_SIM_PLACEMENT").as_deref() {
         Ok("1") => config.with_placement_faults(),
+        _ => config,
+    };
+    match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
+        Ok("1") => config.with_power_loss(),
         _ => config,
     }
 }
@@ -369,6 +375,30 @@ fn seed_5_cache_keeps_acknowledged_puts_across_a_failover() {
     assert_cache_is_linearizable(5);
 }
 
+/// A seed that cuts the power during an append runs the same twice, and
+/// recovery repaired the torn append it left.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_1_power_cuts_run_the_same_twice_and_are_repaired() {
+    log();
+    let config = SimConfig::for_seed(1).with_power_loss();
+    let first = run_seed(1, config.clone());
+    let second = run_seed(1, config);
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 1 ran differently the second time: {difference}");
+    }
+    let cut_in_append = first
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lost power during an append"));
+    assert!(cut_in_append, "no cut landed in an append:\n{first}");
+    assert!(!found(&first, "torn-tail-repaired"), "{first}");
+}
+
 // Placement faults. Each test pins a seed whose run reaches one shape, checks
 // that the run did reach it, and that the seed is the same run twice. They
 // assert nothing about what the checkers found: the seeds that fail are
@@ -458,4 +488,27 @@ fn seed_13_a_seat_race_replays_the_same_twice() {
             "named leader of stream/3 at generation 5, before it opens",
         ],
     );
+}
+
+/// With power loss on, placement faults cut the power where they would kill:
+/// a kill makes an `OnCommit` broker forget a boot whose records were synced.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_placement_cuts_the_power_instead_of_killing() {
+    log();
+    let config = SimConfig::for_seed(3)
+        .with_placement_faults()
+        .with_power_loss();
+    let outcome = run_seed(3, config);
+    let faults = &outcome.history.faults;
+    let before_open = |verb: &str| {
+        faults
+            .iter()
+            .any(|f| f.what.starts_with(verb) && f.what.contains("before it opens"))
+    };
+    assert!(before_open("power-cut b"), "{outcome}");
+    assert!(!before_open("kill b"), "{outcome}");
 }
