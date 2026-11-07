@@ -161,13 +161,17 @@ pub(super) struct JointSets {
     /// member is sent the rest as the fence's earlier sets, to keep.
     besides: Vec<ReplicaSetView>,
     /// Each set being left counted with its learners and without: replicas
-    /// keep it either way, and a majority of each is needed.
+    /// keep it either way, and a majority of each is needed, or half of the
+    /// one with learners for a leader that counts by attestation.
     old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
     /// The generation of the set this leader fences on, which an attested
     /// promise must count from.
     new_generation: u64,
     local: String,
+    /// The leader counts by attestation, so a set being left counted with
+    /// its learners needs only half its members (see [`OldVoters::learners`]).
+    attested: bool,
 }
 
 /// A fence answer: the node, the copy its handshake named, whether it
@@ -190,6 +194,15 @@ struct OldVoters {
     voters: BTreeSet<String>,
     copies: std::collections::BTreeMap<String, StorageId>,
     generation: u64,
+    /// These voters are a set's members with its learners, which differ from
+    /// its voters alone. A leader that counts the learners as voters
+    /// acknowledges on a majority of them, and half of them meets every such
+    /// majority. Two fences that both know the learners meet in the set
+    /// without them, which needs a majority anyway. A learner the route does
+    /// not name refuses every fence, so asking a majority here can stall the
+    /// fence for good.
+    /// `LearnerBlocking` in `docs/formal/FelixShardUnified.tla`.
+    learners: bool,
 }
 
 impl OldVoters {
@@ -258,8 +271,13 @@ impl JointSets {
     ) -> bool {
         let answered: Vec<_> = answered.collect();
         self.tallies(&answered, own).iter().all(|tally| {
-            2 * tally.promised > tally.voters && (continuing || 2 * tally.covered >= tally.voters)
+            tally.excludes(tally.promised) && (continuing || 2 * tally.covered >= tally.voters)
         })
+    }
+
+    /// Whether `old` needs only half its voters' promises.
+    fn blocking(&self, old: &OldVoters) -> bool {
+        self.attested && old.learners
     }
 
     /// Whether `nodes` could still make every majority, whichever copies
@@ -268,15 +286,14 @@ impl JointSets {
         let nodes: BTreeSet<&str> = nodes.collect();
         self.old_voters
             .iter()
-            .map(|old| &old.voters)
-            .chain(std::iter::once(&self.new_voters))
-            .all(|voters| {
-                voters
+            .map(|old| (&old.voters, self.blocking(old)))
+            .chain(std::iter::once((&self.new_voters, false)))
+            .all(|(voters, blocking)| {
+                let left = voters
                     .iter()
                     .filter(|v| **v == self.local || nodes.contains(v.as_str()))
-                    .count()
-                    * 2
-                    > voters.len()
+                    .count();
+                Tally::needs(left, voters.len(), blocking)
             })
     }
 
@@ -285,6 +302,7 @@ impl JointSets {
     fn tallies(&self, answered: &[Answered<'_>], own: super::OwnCopy) -> Vec<Tally> {
         let tally = |voters: &BTreeSet<String>,
                      generation: u64,
+                     blocking: bool,
                      legacy: &dyn Fn(&str, Option<StorageId>, bool) -> bool| {
             let mut promised = 0;
             let mut covered = 0;
@@ -310,18 +328,23 @@ impl JointSets {
                 voters: voters.len(),
                 promised,
                 covered,
+                blocking,
             }
         };
         self.old_voters
             .iter()
             .map(|old| {
-                tally(&old.voters, old.generation, &|node, identity, kept| {
-                    kept || old.counts(node, identity)
-                })
+                tally(
+                    &old.voters,
+                    old.generation,
+                    self.blocking(old),
+                    &|node, identity, kept| kept || old.counts(node, identity),
+                )
             })
             .chain(std::iter::once(tally(
                 &self.new_voters,
                 self.new_generation,
+                false,
                 &|_, _, _| true,
             )))
             .collect()
@@ -338,7 +361,14 @@ impl JointSets {
         let (new, old) = tallies.split_last().expect("the new set is always tallied");
         let old = old
             .iter()
-            .map(|tally| format!("{} of {}", tally.promised, tally.voters))
+            .map(|tally| {
+                let half = if tally.blocking {
+                    " (with its learners, half needed)"
+                } else {
+                    ""
+                };
+                format!("{} of {}{half}", tally.promised, tally.voters)
+            })
             .collect::<Vec<_>>()
             .join(" and ");
         let mut why = format!(
@@ -365,6 +395,22 @@ struct Tally {
     voters: usize,
     promised: usize,
     covered: usize,
+    /// Half its voters' promises exclude, rather than a majority.
+    blocking: bool,
+}
+
+impl Tally {
+    fn excludes(&self, promised: usize) -> bool {
+        Self::needs(promised, self.voters, self.blocking)
+    }
+
+    fn needs(count: usize, voters: usize, blocking: bool) -> bool {
+        if blocking {
+            2 * count >= voters
+        } else {
+            2 * count > voters
+        }
+    }
 }
 
 /// Why [`set_before`] has no set for a route.
@@ -647,6 +693,7 @@ pub(super) async fn sets<R: PeerRequester>(
     route: &Route,
     set: &ReplicaSetView,
     joint: &Joint<'_>,
+    attested: bool,
 ) -> Result<Fenced, NoSetBefore> {
     let stored = log.replica_set();
     let before = match set_before(stored.as_ref(), route, joint.prior.as_ref()) {
@@ -713,7 +760,17 @@ pub(super) async fn sets<R: PeerRequester>(
         let unopened = unopened_sets(Some(stored), route, opened, &fenced);
         besides.extend(unopened);
     }
-    Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
+    Ok(across(
+        requester,
+        local_node_id,
+        route,
+        set,
+        before,
+        besides,
+        joint,
+        attested,
+    )
+    .await)
 }
 
 /// Whether `kept` names exactly `route`'s set: the same voters, none a learner
@@ -734,7 +791,9 @@ fn names_the_route_set(kept: &Membership, route: &Route) -> bool {
 }
 
 /// The fence for `route` leaving `before`, and each of `besides` when more
-/// sets are being left: jointly when the voters differ.
+/// sets are being left: jointly when the voters differ. `attested` when the
+/// leader counts its answers by attestation.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn across<R: PeerRequester>(
     requester: &R,
     local_node_id: &str,
@@ -743,6 +802,7 @@ pub(super) async fn across<R: PeerRequester>(
     before: Membership,
     besides: Vec<Membership>,
     joint: &Joint<'_>,
+    attested: bool,
 ) -> Fenced {
     let olds = || std::iter::once(&before).chain(&besides);
     let new_voters: BTreeSet<String> = set
@@ -766,11 +826,13 @@ pub(super) async fn across<R: PeerRequester>(
             .iter()
             .filter_map(|m| Some((m.node.clone(), m.storage?)))
             .collect();
-        for voters in [all, counted] {
+        let learners = all != counted;
+        for (voters, learners) in [(all, learners), (counted, false)] {
             let voters = OldVoters {
                 voters,
                 copies: copies.clone(),
                 generation: old.generation,
+                learners,
             };
             if !old_voters.contains(&voters) {
                 old_voters.push(voters);
@@ -808,9 +870,20 @@ pub(super) async fn across<R: PeerRequester>(
             members.push((member.node.clone(), (joint.addr_of)(&member.node)));
         }
     }
+    // A member that is only a learner of the sets being left is not a
+    // replica the route names, so it refuses: its answer is never needed
+    // where half of the set with learners is enough.
+    let learner_only = |node_id: &str| {
+        olds()
+            .flat_map(|old| &old.members)
+            .filter(|member| member.node == node_id)
+            .all(|member| member.learner)
+    };
     let mut asked = Vec::new();
     for (node_id, addr) in members {
-        if node_id == local_node_id {
+        if node_id == local_node_id
+            || (attested && !route_names(route, &node_id) && learner_only(&node_id))
+        {
             continue;
         }
         let Some(advertise_addr) = addr else {
@@ -843,11 +916,19 @@ pub(super) async fn across<R: PeerRequester>(
         new_voters,
         new_generation: set.generation,
         local: local_node_id.to_string(),
+        attested,
     };
     Fenced {
         before,
         joint: Some(joint),
     }
+}
+
+/// Whether `route` names `node_id` as its leader or a replica.
+fn route_names(route: &Route, node_id: &str) -> bool {
+    std::iter::once(&route.leader)
+        .chain(&route.replicas)
+        .any(|node| node.node_id == node_id)
 }
 
 pub(crate) fn view(set: &Membership) -> ReplicaSetView {
