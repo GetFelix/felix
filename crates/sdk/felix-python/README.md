@@ -1,6 +1,6 @@
 # felix-client for Python
 
-The Python client for [Felix](https://github.com/GetFelix/felix). It publishes to and reads from streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. It is a binding over the Rust client, so reconnection, redirects, retry classification and offsets behave as they do there.
+[Felix](https://github.com/GetFelix/felix) is a broker that serves streams, work queues and a cache from one replicated log, over QUIC. This is the Python client. It publishes to and reads streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. It is a binding over the Rust client, so reconnection, redirects, retry classification and offsets behave as they do there.
 
 ## Install
 
@@ -31,7 +31,7 @@ with felix.Client(
         print(event.payload, event.offset)
 ```
 
-The stream has to exist first; create it with [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/).
+To run it you need a running broker, a token for tenant `t1`, and the stream `t1/default/events`. The [quick start](https://docs.getfelix.dev/getting-started/quickstart/) shows how to start a broker, [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) covers tokens, and [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/) makes the stream.
 
 `AsyncClient` is the same client for `asyncio`. Its calls are awaitable and its subscriptions are read with `async for`:
 

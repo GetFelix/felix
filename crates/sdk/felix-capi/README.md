@@ -1,6 +1,6 @@
 # libfelix
 
-The C client for [Felix](https://github.com/GetFelix/felix): a C ABI over the Rust client, built as a shared library, a static library and the header `felix.h`. Reconnection, redirects, retry classification and offsets behave as they do in the Rust client. The C# client binds this library, and any language with a C FFI can.
+[Felix](https://github.com/GetFelix/felix) is a broker that serves streams, work queues and a cache from one replicated log, over QUIC. This is the C client: a C ABI over the Rust client, built as a shared library, a static library and the header `felix.h`. Reconnection, redirects, retry classification and offsets behave as they do in the Rust client. The C# client binds this library, and any language with a C FFI can.
 
 It is not published to crates.io. It ships as a native library with its header.
 
@@ -159,7 +159,7 @@ cleanup:
 }
 ```
 
-The stream has to exist first; create it with [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/).
+To run it you need a running broker, a token for tenant `t1`, and the stream `t1/default/events`. The [quick start](https://docs.getfelix.dev/getting-started/quickstart/) shows how to start a broker, [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) covers tokens, and [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/) makes the stream.
 
 ## What it covers
 

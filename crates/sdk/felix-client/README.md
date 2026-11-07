@@ -1,6 +1,6 @@
 # felix-client
 
-The Rust client for [Felix](https://github.com/GetFelix/felix). It publishes to and reads from streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. The Python, TypeScript, C and C# clients are bindings over this crate.
+[Felix](https://github.com/GetFelix/felix) is a broker that serves streams, work queues and a cache from one replicated log, over QUIC. This is the Rust client. It publishes to and reads streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. The Python, TypeScript, C and C# clients are bindings over this crate.
 
 ## Install
 
@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
 }
 ```
 
-The stream has to exist first; create it with [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/). Use `Client` for one broker or a cluster. `Connection` is the single-connection layer underneath it, for tools and special cases.
+To run it you need a running broker, a token for tenant `t1`, and the stream `t1/default/events`. The [quick start](https://docs.getfelix.dev/getting-started/quickstart/) shows how to start a broker, [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) covers tokens, and [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/) makes the stream. Use `Client` for one broker or a cluster. `Connection` is the single-connection layer underneath it, for tools and special cases.
 
 ## What it covers
 

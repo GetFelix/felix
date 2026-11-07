@@ -1,6 +1,6 @@
 # Felix.Client
 
-The C# client for [Felix](https://github.com/GetFelix/felix). It publishes to and reads from streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. It is a binding over the Felix C ABI, which wraps the Rust client, so reconnection, redirects, retry classification and offsets behave as they do there.
+[Felix](https://github.com/GetFelix/felix) is a broker that serves streams, work queues and a cache from one replicated log, over QUIC. This is the C# client. It publishes to and reads streams, runs consumer groups, uses the cache and counters, and follows a cluster as brokers fail and shards move. It is a binding over the Felix C ABI, which wraps the Rust client, so reconnection, redirects, retry classification and offsets behave as they do there.
 
 ## Install
 
@@ -40,7 +40,7 @@ if (received is null)
 Console.WriteLine($"{received.Offset}: {System.Text.Encoding.UTF8.GetString(received.Payload.Span)}");
 ```
 
-The stream has to exist first; create it with [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/). A subscription is also an `IAsyncEnumerable<FelixEvent>`, so `await foreach (var ev in events)` reads until the broker ends the stream.
+To run it you need a running broker, a token for tenant `t1`, and the stream `t1/default/events`. The [quick start](https://docs.getfelix.dev/getting-started/quickstart/) shows how to start a broker, [Auth and TLS](https://docs.getfelix.dev/clients/auth-and-tls/) covers tokens, and [`felixctl stream create`](https://docs.getfelix.dev/getting-started/felixctl/) makes the stream. A subscription is also an `IAsyncEnumerable<FelixEvent>`, so `await foreach (var ev in events)` reads until the broker ends the stream.
 
 ## What it covers
 
