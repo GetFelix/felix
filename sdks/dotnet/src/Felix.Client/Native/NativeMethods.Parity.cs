@@ -100,6 +100,18 @@ internal static unsafe partial class NativeMethods
         nint userData);
 
     [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int felix_client_with_identity_provider(
+        nint client,
+        string tenantId,
+        string? token,
+        nint tokenFetch,
+        nint tokenUserData,
+        nint tokenRelease,
+        nint cancel,
+        delegate* unmanaged[Cdecl]<nint, int, byte*, nint, void> callback,
+        nint userData);
+
+    [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
     internal static partial int felix_client_read(
         nint client,
         string tenantId,

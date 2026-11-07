@@ -714,7 +714,8 @@ the record and come back on the delivered event. `felix_client_publish_with_head
 `FelixRecord`; `felix_client_publish_batch_with_headers` sends an array of them to shard 0's
 owner as one frame. Set `size` to `sizeof(FelixRecord)` in each record: a batch call steps through
 the array by the first record's `size`, so a caller built against an older header keeps working when
-fields are added.
+fields are added. A batch needs at least one record: a `count` of zero is
+`FELIX_STATUS_INVALID_ARGUMENT`, as an empty batch is `ArgumentException` in the C# client.
 
 ```c
 /* on_publish is any FelixPublishCallback: it gets the offset when there is one. */
@@ -1104,36 +1105,123 @@ connections of the client it was made from. A gateway serving many principals ne
 identity is its own client with its own routing state, and the requests it makes are checked against its
 token's grants alone. Free it with `felix_client_free`, which closes only its own streams. It shares the runtime
 with its parent, so freeing the parent first does not stop it; keep it alive while subscriptions made from it
-are in use. A refused token completes with `FELIX_STATUS_AUTH`. The token is fixed for the new client, so make
-another when it expires.
+are in use. A refused token completes with `FELIX_STATUS_AUTH`.
+
+A token passed to `felix_client_with_identity` is fixed for the new client, so make another when it expires (a
+lease token is short-lived by design). For a token that must be renewed,
+`felix_client_with_identity_provider` takes the same `token_fetch`, `token_user_data` and `token_release` as
+`FelixConnectOptions`, with the same rules: `token_release` runs exactly once after it returns
+`FELIX_STATUS_OK`, once the identity is freed and every reply is answered, and never when it returns anything
+else. `token` is the first token and may be `NULL`.
+
+The callbacks run on a library thread, so the example hands each result to the waiting thread under a lock and
+copies the token out of the callback.
 
 ```c
-static char lease_token[1024];
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "felix.h"
+
+struct claim {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    bool done;
+    FelixStatus status;
+    bool applied;
+    char *token;  /* malloc'd by on_lease; the waiter owns it afterwards */
+};
 
 static void on_lease(void *user_data, FelixStatus status, const char *message,
                      bool applied, bool has_version, uint64_t version,
                      const char *token, uint64_t expires_at,
                      const char *token_refused) {
-    (void)user_data; (void)has_version; (void)version; (void)expires_at;
+    (void)has_version; (void)version; (void)expires_at;
+    struct claim *claim = user_data;
+    pthread_mutex_lock(&claim->lock);
+    claim->status = status;
+    claim->applied = applied;
     if (status != FELIX_STATUS_OK) {
         fprintf(stderr, "lease write failed (%d): %s\n", (int)status, message ? message : "");
     } else if (applied && token) {
-        snprintf(lease_token, sizeof lease_token, "%s", token);
+        claim->token = strdup(token);
+        if (!claim->token) claim->status = FELIX_STATUS_ERROR;
     } else if (applied) {
         fprintf(stderr, "no token: %s\n", token_refused ? token_refused : "");
     }
+    claim->done = true;
+    pthread_cond_signal(&claim->changed);
+    pthread_mutex_unlock(&claim->lock);
 }
 
-static FelixStatus take_lease(const FelixClient *client, void *state) {
+/* Claims `key` in the lease cache `locks`. Returns the lease token, which the
+   caller frees, or NULL when the claim was refused, lost or minted no token. */
+static char *take_lease(const FelixClient *client, const char *key) {
     static const uint8_t holder[] = "worker-7";
-    return felix_client_cache_put_if_lease(
-        client, "t1", "default", "locks", "report", holder, sizeof holder - 1,
-        30000, FELIX_IF_ABSENT, 0, NULL, on_lease, state);
+    struct claim claim = {.lock = PTHREAD_MUTEX_INITIALIZER,
+                          .changed = PTHREAD_COND_INITIALIZER};
+    FelixStatus status = felix_client_cache_put_if_lease(
+        client, "t1", "default", "locks", key, holder, sizeof holder - 1,
+        30000, FELIX_IF_ABSENT, 0, NULL, on_lease, &claim);
+    if (status != FELIX_STATUS_OK) { /* the callback will not run */
+        fprintf(stderr, "lease refused: %s\n", felix_last_error_message());
+        return NULL;
+    }
+    pthread_mutex_lock(&claim.lock);
+    while (!claim.done) pthread_cond_wait(&claim.changed, &claim.lock);
+    pthread_mutex_unlock(&claim.lock);
+    pthread_cond_destroy(&claim.changed);
+    pthread_mutex_destroy(&claim.lock);
+    if (claim.status != FELIX_STATUS_OK) {
+        free(claim.token);
+        return NULL;
+    }
+    return claim.token;
 }
 
-/* on_connect is the callback from the minimal example. */
-static FelixStatus act_as_holder(const FelixClient *client, void *state) {
-    return felix_client_with_identity(client, "t1", lease_token, NULL, on_connect, state);
+struct opened {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    bool done;
+    FelixStatus status;
+    FelixClient *client;
+};
+
+static void on_identity(void *user_data, FelixStatus status, const char *message,
+                        FelixClient *client) {
+    struct opened *opened = user_data;
+    pthread_mutex_lock(&opened->lock);
+    opened->status = status;
+    opened->client = client;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "identity failed (%d): %s\n", (int)status, message ? message : "");
+    }
+    opened->done = true;
+    pthread_cond_signal(&opened->changed);
+    pthread_mutex_unlock(&opened->lock);
+}
+
+/* A client acting as the lease holder, or NULL. Free it with felix_client_free. */
+static FelixClient *act_as_holder(const FelixClient *client, const char *lease_token) {
+    struct opened opened = {.lock = PTHREAD_MUTEX_INITIALIZER,
+                            .changed = PTHREAD_COND_INITIALIZER};
+    FelixStatus status = felix_client_with_identity(
+        client, "t1", lease_token, NULL, on_identity, &opened);
+    if (status != FELIX_STATUS_OK) { /* the callback will not run */
+        fprintf(stderr, "identity refused: %s\n", felix_last_error_message());
+        return NULL;
+    }
+    pthread_mutex_lock(&opened.lock);
+    while (!opened.done) pthread_cond_wait(&opened.changed, &opened.lock);
+    pthread_mutex_unlock(&opened.lock);
+    pthread_cond_destroy(&opened.changed);
+    pthread_mutex_destroy(&opened.lock);
+    return opened.client;
 }
 ```
 

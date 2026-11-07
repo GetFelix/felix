@@ -134,7 +134,8 @@ fn a_larger_record_than_this_library_knows_still_reads() {
 #[test]
 fn a_batch_is_checked_before_it_is_read() {
     // SAFETY: nothing is read for a count of zero.
-    assert!(unsafe { parse_batch(ptr::null(), 0) }.unwrap().is_empty());
+    let empty = unsafe { parse_batch(ptr::null(), 0) }.err().unwrap();
+    assert_eq!(empty.status, FELIX_STATUS_INVALID_ARGUMENT);
     // SAFETY: a null array with a count is the case.
     let failure = unsafe { parse_batch(ptr::null(), 2) }.err().unwrap();
     assert_eq!(failure.status, FELIX_STATUS_INVALID_ARGUMENT);

@@ -101,7 +101,7 @@ pub use headers::{
     FelixHeader, FelixRecord, felix_client_publish_batch_with_headers,
     felix_client_publish_with_headers,
 };
-pub use identity::felix_client_with_identity;
+pub use identity::{felix_client_with_identity, felix_client_with_identity_provider};
 pub use producer::{
     FelixProducer, FelixProducerCallback, felix_client_idempotent_producer,
     felix_producer_abandon_in_doubt, felix_producer_close, felix_producer_free, felix_producer_id,

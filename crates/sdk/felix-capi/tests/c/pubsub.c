@@ -435,6 +435,10 @@ struct fixture {
   /* A token that may also trim, and the stream nothing else writes to, for the
      head trim scenarios. Empty when the fixture has none. */
   const char *trimmer_token, *trim_stream;
+  /* The cache brokers mint lease tokens for, a token that may claim its keys
+     but not publish to their outputs (wl.<key>.out), and the keys whose
+     outputs exist, comma separated. Empty when the fixture has none. */
+  const char *lease_cache, *lease_node_token, *lease_keys;
   /* Empty when the fixture has no control endpoint. */
   const char *movable_stream, *quorum_stream, *control_url;
   /* "true" when the fixture's brokers store each record's publisher. That
@@ -511,6 +515,9 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->kill_helper, "kill_helper", false},
       {&f->trimmer_token, "trimmer_token", false},
       {&f->trim_stream, "trim_stream", false},
+      {&f->lease_cache, "lease_cache", false},
+      {&f->lease_node_token, "lease_node_token", false},
+      {&f->lease_keys, "lease_keys", false},
   };
   bool ok = true;
   for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
@@ -6074,6 +6081,196 @@ static void parity(const struct fixture *f, const char *run) {
   felix_client_free(client);
 }
 
+struct lease_waiter {
+  struct waiter w;
+  bool applied;
+  bool has_token;
+  char token[2048];
+  char refused[256];
+};
+
+static void on_lease(void *user_data, FelixStatus status, const char *message,
+                     bool applied, bool has_version, uint64_t version,
+                     const char *token, uint64_t expires_at,
+                     const char *token_refused) {
+  (void)has_version;
+  (void)version;
+  struct lease_waiter *l = user_data;
+  l->applied = applied;
+  l->has_token = token != NULL;
+  if (token) {
+    snprintf(l->token, sizeof l->token, "%s", token);
+    CHECK(expires_at > 0, "a lease token has no expiry");
+  }
+  if (token_refused) {
+    snprintf(l->refused, sizeof l->refused, "%s", token_refused);
+  }
+  finish(&l->w, status, message, NULL);
+}
+
+static FelixStatus claim(FelixClient *client, const struct fixture *f,
+                         const char *key, struct lease_waiter *l) {
+  memset(l, 0, sizeof *l);
+  waiter_init(&l->w);
+  FelixStatus status = felix_client_cache_put_if_lease(
+      client, f->tenant, f->ns, f->lease_cache, key, (const uint8_t *)"node", 4,
+      2000, FELIX_IF_ABSENT, 0, NULL, on_lease, l);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&l->w, WAIT_MS);
+  }
+  return status;
+}
+
+static FelixStatus identity_with(FelixClient *client, const struct fixture *f,
+                                 const char *token, FelixClient **out) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_with_identity(client, f->tenant, token,
+                                                  NULL, on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* An identity whose token comes from the app's fetch, as a connect's does. */
+static FelixStatus identity_provided(FelixClient *client,
+                                     const struct fixture *f,
+                                     struct token_app *app,
+                                     const char *first, FelixClient **out) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_with_identity_provider(
+      client, f->tenant, first, token_fetch, app, token_release, NULL,
+      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* Lease tokens against a broker that mints them: the holder's token publishes
+   to its own output and to no other, a lost claim gets none, and a token past
+   its expiry opens nothing. */
+static void leases(const struct fixture *f) {
+  CHECK(f->lease_cache[0] && f->lease_node_token[0] &&
+            strstr(f->lease_keys, "c2"),
+        "the fixture file has no lease cache, node token or keys");
+  if (!f->lease_cache[0] || !f->lease_node_token[0]) {
+    return;
+  }
+  FelixClient *node = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->lease_node_token,
+                          f->ca_file, &node));
+
+  /* The node's own token names no output, so it cannot publish to one. */
+  FelixStatus status = publish(node, f, "wl.c.out", "denied", NULL, NULL, 0);
+  CHECK(status != FELIX_STATUS_OK, "a node without a lease published");
+
+  struct lease_waiter l;
+  status = claim(node, f, "c", &l);
+  CHECK(status == FELIX_STATUS_OK && l.applied && l.has_token,
+        "claiming a free key gave %d, applied %d, token %d (%s)", (int)status,
+        l.applied, l.has_token, l.refused);
+  char token[sizeof l.token];
+  snprintf(token, sizeof token, "%s", l.token);
+  waiter_destroy(&l.w);
+
+  FelixClient *holder = NULL;
+  status = identity_with(node, f, token, &holder);
+  CHECK(status == FELIX_STATUS_OK && holder, "the lease token was refused: %d",
+        (int)status);
+  if (holder) {
+    status = publish(holder, f, "wl.c.out", "held", NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "the holder's publish gave %d",
+          (int)status);
+  }
+
+  /* The key is taken, so a second claim loses the write and gets no token. */
+  status = claim(node, f, "c", &l);
+  CHECK(status == FELIX_STATUS_OK && !l.applied && !l.has_token,
+        "a second claim gave %d, applied %d, token %d", (int)status, l.applied,
+        l.has_token);
+  waiter_destroy(&l.w);
+
+  /* The token names its key's output and no other. */
+  FelixClient *wrong = NULL;
+  status = identity_with(node, f, token, &wrong);
+  CHECK(status == FELIX_STATUS_OK && wrong, "a second identity gave %d",
+        (int)status);
+  if (wrong) {
+    status = publish(wrong, f, "wl.c2.out", "other", NULL, NULL, 0);
+    CHECK(status != FELIX_STATUS_OK, "a lease token published to another key");
+    felix_client_free(wrong);
+  }
+
+  /* Past its expiry the holder's stream ends and no new identity opens. */
+  bool ended = false;
+  for (int i = 0; holder && i < 80 && !ended; i++) {
+    ended = publish(holder, f, "wl.c.out", "late", NULL, NULL, 0) !=
+            FELIX_STATUS_OK;
+    if (!ended) {
+      pause_ms(100);
+    }
+  }
+  CHECK(ended, "a stale lease token kept publishing");
+  FelixClient *stale = NULL;
+  status = identity_with(node, f, token, &stale);
+  CHECK(status != FELIX_STATUS_OK && stale == NULL,
+        "an expired lease token opened an identity");
+  if (holder) {
+    felix_client_free(holder);
+  }
+
+  /* A token provider hands the identity a lease token, and is released once. */
+  status = claim(node, f, "c2", &l);
+  CHECK(status == FELIX_STATUS_OK && l.applied && l.has_token,
+        "claiming the second key gave %d", (int)status);
+  snprintf(token, sizeof token, "%s", l.token);
+  waiter_destroy(&l.w);
+
+  struct token_app app;
+  token_app_init(&app, token);
+  FelixClient *provided = NULL;
+  status = identity_provided(node, f, &app, NULL, &provided);
+  CHECK(status == FELIX_STATUS_OK && provided,
+        "a provider identity gave %d", (int)status);
+  if (provided) {
+    status = publish(provided, f, "wl.c2.out", "provided", NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "the provider identity's publish gave %d",
+          (int)status);
+    CHECK(atomic_load(&app.fetches) >= 1, "the provider was never asked");
+    CHECK(atomic_load(&app.released) == 0, "released while the identity lives");
+    felix_client_free(provided);
+  }
+  CHECK(released_once(&app), "token_release ran %d times",
+        atomic_load(&app.released));
+
+  /* A first token in hand needs no fetch; a refusal hands out no client but
+     still releases; a missing fetch is refused with the data left alone. */
+  struct token_app unused;
+  token_app_init(&unused, "never");
+  status = identity_provided(node, f, &unused, "not-a-token", &provided);
+  CHECK(status != FELIX_STATUS_OK, "a bad first token was accepted");
+  CHECK(released_once(&unused), "a refused identity released %d times",
+        atomic_load(&unused.released));
+
+  struct token_app untouched;
+  token_app_init(&untouched, "never");
+  status = felix_client_with_identity_provider(
+      node, f->tenant, NULL, NULL, &untouched, token_release, NULL, on_connect,
+      NULL);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "no fetch gave %d",
+        (int)status);
+  CHECK(atomic_load(&untouched.released) == 0, "a refused call released");
+
+  felix_client_free(node);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
@@ -6092,6 +6289,7 @@ int main(int argc, char **argv) {
     pubsub(&f, run);
     batches(&f, run);
     parity(&f, run);
+    leases(&f);
     subscriptions(&f, run);
     groups(&f, run);
     connect_options(&f, run);

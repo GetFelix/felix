@@ -128,6 +128,121 @@ public class ParityFixtureTests
     }
 
     [FixtureFact]
+    public async Task AnIdentityOutlivesAParentWhoseProviderItShares()
+    {
+        var f = Fixture.Load();
+        var fetches = 0;
+        var client = await FelixClient.ConnectAsync(new FelixClientOptions
+        {
+            Addrs = f.Addrs,
+            TenantId = f.Tenant,
+            CaFile = f.CaFile,
+            TokenProvider = _ =>
+            {
+                Interlocked.Increment(ref fetches);
+                return ValueTask.FromResult(f.Token);
+            },
+        });
+        var source = client.Tokens!;
+        await using var identity = await client.WithIdentityAsync(f.Tenant, f.Token);
+        Assert.Same(source, identity.Tokens);
+        await client.DisposeAsync();
+
+        Assert.False(source.IsCancelled);
+        var offset = await identity.PublishAsync(f.Tenant, f.Namespace, f.Stream, Encoding.UTF8.GetBytes($"cs-{Run()}-shared"));
+        Assert.NotNull(offset);
+        await using var sub = await identity.SubscribeAsync(f.Tenant, f.Namespace, f.Stream, 0, StartPosition.Latest);
+        Assert.False(source.IsCancelled);
+        Assert.True(fetches >= 1);
+    }
+
+    [FixtureFact]
+    public async Task AnIdentityWithAProviderAsksItForTheToken()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync();
+        var fetches = 0;
+        await using var identity = await client.WithIdentityAsync(
+            f.Tenant,
+            _ =>
+            {
+                Interlocked.Increment(ref fetches);
+                return ValueTask.FromResult(f.Token);
+            });
+
+        var offset = await identity.PublishAsync(f.Tenant, f.Namespace, f.Stream, Encoding.UTF8.GetBytes($"cs-{Run()}-provider"));
+        Assert.NotNull(offset);
+        Assert.True(fetches >= 1, "with no first token the provider supplies it");
+
+        await using var first = await client.WithIdentityAsync(f.Tenant, _ => throw new InvalidOperationException("not needed"), f.Token);
+        Assert.NotNull(await first.PublishAsync(f.Tenant, f.Namespace, f.Stream, Encoding.UTF8.GetBytes($"cs-{Run()}-first")));
+    }
+
+    [FixtureFact]
+    public async Task AProviderIdentityWhoseTokenIsRefusedHandsOutNoClient()
+    {
+        var f = Fixture.Load();
+        await using var client = await f.ConnectAsync();
+        await Assert.ThrowsAsync<FelixException>(() =>
+            client.WithIdentityAsync(f.Tenant, _ => ValueTask.FromResult("not-a-token")));
+    }
+
+    [FixtureFact]
+    public async Task ALeaseTokenMintedByTheBrokerActsForItsOwnOutputOnly()
+    {
+        var f = Fixture.Load();
+        Assert.NotNull(f.LeaseNodeToken);
+        Assert.NotNull(f.LeaseCache);
+        var (key, other) = ("cs", "cs2");
+        Assert.Contains(key, f.LeaseKeys);
+        Assert.Contains(other, f.LeaseKeys);
+
+        await using var node = await f.ConnectAsync(f.LeaseNodeToken);
+        var cache = node.Cache(f.Tenant, f.Namespace, f.LeaseCache!);
+        var output = $"wl.{key}.out";
+
+        // The node's own token cannot publish to the output; only a lease token can.
+        await Assert.ThrowsAsync<FelixException>(() =>
+            node.PublishAsync(f.Tenant, f.Namespace, output, "denied"u8.ToArray()));
+
+        var lease = await cache.PutIfAbsentLeaseAsync(key, "node"u8.ToArray(), ttl: TimeSpan.FromMilliseconds(2000));
+        Assert.True(lease.Result.Applied);
+        var token = lease.Token;
+        Assert.NotNull(token);
+
+        await using var holder = await node.WithIdentityAsync(f.Tenant, token!.Value);
+        Assert.NotNull(await holder.PublishAsync(f.Tenant, f.Namespace, output, "held"u8.ToArray()));
+
+        // A second claim loses the write and gets no token.
+        var lost = await cache.PutIfAbsentLeaseAsync(key, "node"u8.ToArray(), ttl: TimeSpan.FromMilliseconds(2000));
+        Assert.False(lost.Result.Applied);
+        Assert.Null(lost.Token);
+
+        // The token names this key's output and no other.
+        await using var wrong = await node.WithIdentityAsync(f.Tenant, token.Value);
+        await Assert.ThrowsAsync<FelixException>(() =>
+            wrong.PublishAsync(f.Tenant, f.Namespace, $"wl.{other}.out", "other"u8.ToArray()));
+
+        // Once the token expires, the identity it opened stops being served and no new one opens.
+        var ended = false;
+        for (var i = 0; i < 80 && !ended; i++)
+        {
+            try
+            {
+                await holder.PublishAsync(f.Tenant, f.Namespace, output, "late"u8.ToArray());
+                await Task.Delay(100);
+            }
+            catch (FelixException)
+            {
+                ended = true;
+            }
+        }
+
+        Assert.True(ended, "a stale lease token kept publishing");
+        await Assert.ThrowsAsync<FelixException>(() => node.WithIdentityAsync(f.Tenant, token.Value));
+    }
+
+    [FixtureFact]
     public async Task ARefusedIdentityTokenHandsOutNoClient()
     {
         var f = Fixture.Load();
