@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794029383972,
+  "lastUpdate": 1794029725526,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -48308,6 +48308,58 @@ window.BENCHMARK_DATA = {
             "range": "30597.05",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1162039.48\nmean: 1160754.87\nstdev: 30597.05\ncv: 2.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf58be2facdf246ec90b405ee84c0cfb83f9b3ab",
+          "message": "feat(capi,dotnet): inspection, subscription counters, queue and transport options and hand-offs for C and C# (#2080)\n\n* feat(capi): record headers, lease writes, identity, stream reads, topology and live offset\n\n* feat(capi,dotnet): record headers, leases, identities, page reads, topology and live offset for C and C#\n\n* fix(capi,dotnet): identity shares the parent's token source, token-provider identities, broker-backed lease tests, safe lease example, empty headered batch refused in both\n\n* feat(capi,dotnet): inspection, subscription counters, queue and transport options and producer hand-offs for C and C#\n\nC: felix_client_supports, _inspect_shard, _list_subscriptions, _topology,\n_stream_routing, _shard_owners and _cache_shards (structured answers as one\nJSON string with the wire's field names); felix_subscription_moves,\n_reconnects, _stream_deleted and _queue_capacity; felix_producer_hand_off_*\nwith the FelixHanded handle; and the queue and transport fields at the end of\nFelixConnectOptions. C#: the same as typed records, FelixSubscription\nproperties, Handed, and FelixClientOptions properties.\n\n* fix(capi,dotnet): review fixes for hand-offs, tuning coverage and the JSON contract\n\nA hand-off that completes after the token fired reports an unknown outcome in\nC#, the connect config is built in one tested function, the fixture-only\ninspector scenarios fail instead of returning, and the JSON answers state that\nparsers must ignore unknown fields.\n\n* fix(capi,dotnet): lease node token names the namespace, doc example avoids strdup, plain-event test reads its own record",
+          "timestamp": "2026-11-06T21:26:37-08:00",
+          "tree_id": "1b3536e57c3e35c76b55237b63fb1b4955728a95",
+          "url": "https://github.com/GetFelix/felix/commit/bf58be2facdf246ec90b405ee84c0cfb83f9b3ab"
+        },
+        "date": 1794029724621,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358857.81,
+            "range": "7221.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358857.81\nmean: 358195.95\nstdev: 7221.23\ncv: 2.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358857.81,
+            "range": "7221.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358857.81\nmean: 358195.95\nstdev: 7221.23\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81440.15,
+            "range": "403.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81440.15\nmean: 81422.34\nstdev: 403.57\ncv: 0.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814401.46,
+            "range": "4035.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814401.46\nmean: 814223.43\nstdev: 4035.67\ncv: 0.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
