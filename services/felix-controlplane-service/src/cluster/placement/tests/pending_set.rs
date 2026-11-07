@@ -629,7 +629,7 @@ impl CaughtUp for Replaced {
     }
 
     fn pending_since_millis(&self, _key: &ShardKey, generation: u64) -> Option<u64> {
-        Some(NOW).filter(|_| generation == 5)
+        (generation == 5).then_some(NOW)
     }
 
     fn readmittable(&self, _key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
