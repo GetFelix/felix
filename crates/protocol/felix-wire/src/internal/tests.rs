@@ -113,6 +113,7 @@ fn every_message() -> Vec<InternalMessage> {
             commit_offset: 100,
             last_generation: 6,
             kept_ballot: false,
+            attestation: None,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,

@@ -1233,6 +1233,7 @@ impl ReplicaHandler {
                     commit_offset: 0,
                     last_generation: 0,
                     kept_ballot: false,
+                    attestation: None,
                 });
             }
             // Nowhere to keep the promise, so no promise: the leader must not
@@ -1377,6 +1378,7 @@ impl ReplicaHandler {
             commit_offset: log.commit_offset(),
             last_generation: last_generation(&log.generations(), log_end),
             kept_ballot,
+            attestation: None,
         })
     }
 

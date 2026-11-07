@@ -143,6 +143,10 @@ impl PeerCapabilities {
     /// answer that attests to a kept ballot travels to it as `FenceKeptOk`.
     /// To any other caller the answer goes without the attestation.
     pub const KEPT_BALLOTS: Self = Self(1 << 20);
+    /// Offered by a caller that reads [`FenceOk::attestation`], so a fence
+    /// answer carrying one travels to it as `FenceAttestedOk`. To any other
+    /// caller the answer goes without it.
+    pub const UNIFIED_FENCE: Self = Self(1 << 21);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -201,10 +205,30 @@ pub struct FenceOk {
     pub last_generation: u64,
     /// The replica's ballot before this fence named the sender at the
     /// generation right before this one, and its data directory has kept
-    /// every ballot it took. `true` travels as `FenceKeptOk`, sent only to a
-    /// caller that offered [`PeerCapabilities::KEPT_BALLOTS`]; `false` is the
-    /// original `FenceOk`, byte for byte.
+    /// every ballot it took. `true` travels as `FenceKeptOk` (or inside
+    /// `FenceAttestedOk`), sent only to a caller that offered
+    /// [`PeerCapabilities::KEPT_BALLOTS`]; `false` is the original `FenceOk`,
+    /// byte for byte.
     pub kept_ballot: bool,
+    /// What the replica attests about its copy, for a leader that counts
+    /// promises and coverage separately. `Some` travels as
+    /// `FenceAttestedOk`, sent only to a caller that offered
+    /// [`PeerCapabilities::UNIFIED_FENCE`]; `None` leaves the answer as it
+    /// was.
+    pub attestation: Option<FenceAttestation>,
+}
+
+/// A replica's account of its copy in a fence answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FenceAttestation {
+    /// The set generation from which the copy's promises count. Zero when its
+    /// data directory never lost a ballot; after a wipe or a restore, the
+    /// generation of the set that readmitted it.
+    pub kept_from: u64,
+    /// The copy holds every record its seat acknowledged: it started clean,
+    /// or a leader has since shipped it a batch that left it level through
+    /// that leader's acknowledged mark.
+    pub trusted: bool,
 }
 
 /// The leader that fenced a replica reads the replica's copy of the shard's
