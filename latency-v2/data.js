@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794079966499,
+  "lastUpdate": 1794084810387,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -62634,6 +62634,72 @@ window.BENCHMARK_DATA = {
             "range": "768.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 387.00\nmean: 734.40\nstdev: 768.47\ncv: 104.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c17a094d58b7e4b4b13442d7ba728c0bf2f28286",
+          "message": "fix(placement): drop a pending set change when a member comes back on new storage (#2110)\n\nA cut-over can leave a pending set change; if a member of it then comes back on new storage, its copy counts toward neither set until it is readmitted, and placement never readmitted a shard with a pending set, so acks could never reach a majority and the control plane waited for its 10-minute pending-set timeout. When the leader reports such a member caught up on new storage, placement now drops the pending change at once (capped by the per-pass readmission limit) and readmits it on the next pass. Model: CpDropChange under DropsChange; FelixShardElectSwapDrop2DropsChange and Keep2DropsChange pass. felix-sim seed 2: events/1 stalled 4/4 with the drop disabled, 0/4 with it.\n\nSpec-Unaffected: placement implements the model's new CpDropChange step; the specs pass.",
+          "timestamp": "2026-11-07T20:42:44Z",
+          "tree_id": "21fd6d01106d1351668f092fbe9f963129fb547f",
+          "url": "https://github.com/GetFelix/felix/commit/c17a094d58b7e4b4b13442d7ba728c0bf2f28286"
+        },
+        "date": 1794084802150,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.40\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 209.40\nstdev: 2.30\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 263,
+            "range": "7.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 263.00\nmean: 262.20\nstdev: 7.36\ncv: 2.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.80\nstdev: 1.10\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 399,
+            "range": "14.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 399.00\nmean: 398.80\nstdev: 14.15\ncv: 3.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 534,
+            "range": "616.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 534.00\nmean: 933.80\nstdev: 616.68\ncv: 66.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
