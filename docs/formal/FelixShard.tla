@@ -5076,6 +5076,13 @@ CpDownSpec == Spec /\ Fairness /\ CpDownFairness
 \* Liveness with the control plane up (FelixShardCpLive.cfg).
 CpLiveSpec == Spec /\ Fairness /\ ReportFairness /\ CpFairness
 
+\* A state constraint that keeps one of the initial states: the first leader
+\* is a fixed broker. The model treats brokers alike, so the other initial
+\* states only repeat its behaviours with brokers renamed. TLC's symmetry
+\* reduction is unsound for liveness; this cut is not, since it drops whole
+\* behaviours from the start (`opened` only grows).
+FirstLeaderFixed == <<1, CHOOSE b \in Brokers : TRUE>> \in opened
+
 \* Under `Renames`, the control plane's rename, taken once it stays possible.
 RenameFairness ==
     /\ WF_vars(CpRename(Now, cpView)
