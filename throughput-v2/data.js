@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794067835781,
+  "lastUpdate": 1794068127644,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49036,6 +49036,58 @@ window.BENCHMARK_DATA = {
             "range": "47415.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809090.38\nmean: 787224.68\nstdev: 47415.75\ncv: 6.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6f146f5979a21346897a57286f8d1b4204c88603",
+          "message": "fix(dotnet): a plain event's Key is null, not empty (#2106)\n\n`cond ? null : CopyBytes(...)` has type byte[], and a null byte[] converts to a\nnon-null empty ReadOnlyMemory<byte>?, so FelixEvent.Key read as an empty key.\nPython and TypeScript pass the wire's Option through and are unaffected; the C\nAPI documents an empty key as absent.\n\nSpec-Unaffected: client-side C# marshalling only",
+          "timestamp": "2026-11-07T08:06:24-08:00",
+          "tree_id": "616217acf791580041916c52b624df49fa1b8973",
+          "url": "https://github.com/GetFelix/felix/commit/6f146f5979a21346897a57286f8d1b4204c88603"
+        },
+        "date": 1794068127094,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 713634.5,
+            "range": "34616.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 713634.50\nmean: 701231.76\nstdev: 34616.91\ncv: 4.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 713634.5,
+            "range": "34616.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 713634.50\nmean: 701231.76\nstdev: 34616.91\ncv: 4.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165726.55,
+            "range": "1469.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165726.55\nmean: 165865.05\nstdev: 1469.95\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1657265.54,
+            "range": "14699.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1657265.54\nmean: 1658650.46\nstdev: 14699.46\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
