@@ -153,13 +153,49 @@ fn a_directory_that_ran_without_the_record_starts_untrusted() {
         (true, false, false)
     );
     mark_clean(dir.path(), begun.id).expect("clean stop");
+    // As an older release left it: neither file.
     std::fs::remove_file(dir.path().join(FILE_NAME)).expect("remove");
+    std::fs::remove_file(dir.path().join(KEPT_FILE_NAME)).expect("remove");
     let begun = start(dir.path(), 1, &mut fresh);
     assert!(!begun.rotated);
     assert_eq!(
         marks(&CopyTrust::open(dir.path()).expect("open"), A),
         (false, false, false)
     );
+}
+
+/// **A record lost on a directory this release ran on marks every copy every
+/// way.** Only a directory with no sign of this release gets the older
+/// release's treatment.
+#[test]
+fn a_lost_record_marks_every_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter();
+    let begun = start(dir.path(), 1, &mut fresh);
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    trust.doubt(A).expect("doubt");
+    mark_clean(dir.path(), begun.id).expect("clean stop");
+    std::fs::remove_file(dir.path().join(FILE_NAME)).expect("remove");
+    start(dir.path(), 1, &mut fresh);
+    let trust = CopyTrust::open(dir.path()).expect("open");
+    assert_eq!(marks(&trust, A), (false, true, true));
+    assert_eq!(marks(&trust, B), (false, true, true));
+}
+
+/// **A rotation matches the running broker's record however the root is
+/// spelled.**
+#[cfg(unix)]
+#[test]
+fn a_rotation_finds_the_live_record_by_its_resolved_root() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter();
+    start(dir.path(), 1, &mut fresh);
+    let trust = CopyTrust::open_live(dir.path()).expect("open");
+    let links = tempfile::tempdir().expect("tempdir");
+    let spelled = links.path().join("data");
+    std::os::unix::fs::symlink(dir.path(), &spelled).expect("link");
+    rotate_storage_id(&spelled, [43; 16]).expect("rotate");
+    assert!(!trust.trusted(A));
 }
 
 /// **A rotation while the broker runs distrusts every copy in the record it

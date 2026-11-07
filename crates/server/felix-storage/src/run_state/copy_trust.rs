@@ -33,6 +33,13 @@ use felix_common::random::{HashMap, HashSet};
 /// discovery passes over it.
 pub const FILE_NAME: &str = "copy-trust";
 
+/// Says a release that keeps [`FILE_NAME`] ran on the directory: written,
+/// synced, before the record is first created, and never removed. Without it
+/// a missing record is an older release's directory; with it, a lost one.
+/// Its own file, since the run state and the storage id decode strictly and
+/// an older build would take a changed one for a crash.
+pub const KEPT_FILE_NAME: &str = "copy-trust-kept";
+
 const HEADER: &str = "copy_trust\n";
 const UNTRUSTED: &str = "untrusted";
 const DOUBTED: &str = "doubted";
@@ -108,10 +115,21 @@ impl State {
 /// unknown, and is rewritten so under the current id, so its marks stay on
 /// until each copy clears them: an older release may have rotated the id
 /// after a crash without touching this file.
+///
+/// A missing record where [`KEPT_FILE_NAME`] says one was kept reads as
+/// unknown too: it was lost, and its marks with it.
 pub(crate) fn ensure(root: &Path, created: bool) -> Result<()> {
     let id = storage_identity::load(root)?;
-    let state = if crate::fs::try_exists(root.join(FILE_NAME)).map_err(StorageError::Io)? {
+    let exists = |name| crate::fs::try_exists(root.join(name)).map_err(StorageError::Io);
+    let state = if exists(FILE_NAME)? {
         read(root)?
+    } else if exists(KEPT_FILE_NAME)? {
+        tracing::error!(
+            root = %root.display(),
+            "this data directory's copy-trust record is missing though one was kept here; \
+             taking every copy as untrusted, doubted and unkept until a leader vouches for it"
+        );
+        State::unknown()
     } else if created {
         State::default()
     } else {
@@ -125,6 +143,9 @@ pub(crate) fn ensure(root: &Path, created: bool) -> Result<()> {
             ..State::default()
         }
     };
+    if !exists(KEPT_FILE_NAME)? {
+        super::write_atomically(root, KEPT_FILE_NAME, b"copy_trust\n", true)?;
+    }
     super::write_atomically(root, FILE_NAME, &encode(&state, id), true)
 }
 
@@ -183,6 +204,8 @@ fn read(root: &Path) -> Result<State> {
 #[derive(Debug)]
 pub struct CopyTrust {
     root: PathBuf,
+    /// `root` resolved, which a rotation matches by.
+    canonical: PathBuf,
     /// The directory's storage id, which every write names. Changes only
     /// through [`rotate_storage_id`].
     id: Mutex<Option<StorageId>>,
@@ -213,6 +236,7 @@ impl CopyTrust {
         let state = read(root)?;
         Ok(Self {
             root: root.to_path_buf(),
+            canonical: canonical(root),
             id: Mutex::new(storage_identity::load(root)?),
             durable: Mutex::new(state.clone()),
             wanted: Mutex::new((state, 0)),
@@ -338,11 +362,12 @@ static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
 /// another id than the directory's, which reads as unknown.
 pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
     let next = StorageId::from_bytes(fresh);
+    let canonical = canonical(root);
     let live = LIVE
         .lock()
         .iter()
         .filter_map(std::sync::Weak::upgrade)
-        .find(|trust| trust.root == root);
+        .find(|trust| trust.canonical == canonical);
     match live {
         Some(trust) => trust.distrust_all(next)?,
         None => distrust_all(root, next)?,
@@ -457,6 +482,12 @@ fn marks_of<'a>(state: &'a mut State, name: &str) -> Option<&'a mut Marks> {
         UNKEPT => Some(&mut state.unkept),
         _ => None,
     }
+}
+
+/// `root` with links and relative parts resolved, or as given when it
+/// cannot be.
+fn canonical(root: &Path) -> PathBuf {
+    std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf())
 }
 
 fn unhex(hex: &str) -> Option<Vec<u8>> {
