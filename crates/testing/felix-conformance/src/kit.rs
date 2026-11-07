@@ -369,6 +369,10 @@ pub struct Fixture {
     /// discard, redrive); `token` only consumes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_operator_token: Option<String>,
+    /// A token with `node.view:cluster:*`, which shard and subscription
+    /// inspection needs and `token` lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspector_token: Option<String>,
     /// A token that may also trim a stream's head (`stream.trim`); `token`
     /// may not.
     #[serde(default, skip_serializing_if = "Option::is_none")]

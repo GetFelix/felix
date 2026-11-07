@@ -124,6 +124,30 @@ pub(crate) unsafe fn write_optional<T>(out: *mut T, value: T) {
     }
 }
 
+/// A field of a caller's size-gated struct, or `None` when `size` does not
+/// reach all of it. Read unaligned: nothing checks the caller's alignment.
+///
+/// # Safety
+///
+/// `base` is valid for reads of `size` bytes, and `offset` is where a `T`
+/// would lie in the struct.
+pub(crate) unsafe fn read_field<T: Copy>(base: *const u8, size: usize, offset: usize) -> Option<T> {
+    // SAFETY: `size` covers the field, so the address is in bounds.
+    (size >= offset + size_of::<T>())
+        .then(|| unsafe { base.add(offset).cast::<T>().read_unaligned() })
+}
+
+/// A `bool` field of a caller's struct, false when `size` does not reach it.
+/// Read as a byte, since C may hold any value there.
+///
+/// # Safety
+///
+/// As for [`read_field`].
+pub(crate) unsafe fn read_flag(base: *const u8, size: usize, offset: usize) -> bool {
+    // SAFETY: the caller's contract, passed through.
+    unsafe { read_field::<u8>(base, size, offset) }.is_some_and(|byte| byte != 0)
+}
+
 fn panic_text(payload: &(dyn Any + Send)) -> &str {
     payload
         .downcast_ref::<&str>()

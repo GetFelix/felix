@@ -7,6 +7,25 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// The broker answers `felix_client_inspect_shard` and
+// `felix_client_list_subscriptions`.
+#define FELIX_SUPPORTS_INSPECT (1 << 0)
+
+// The broker answers `felix_client_topology`.
+#define FELIX_SUPPORTS_TOPOLOGY (1 << 1)
+
+// The broker honours `FelixConnectOptions.ack_on_commit`.
+#define FELIX_SUPPORTS_ACK_ON_COMMIT (1 << 2)
+
+// The broker answers `felix_client_stream_routing`.
+#define FELIX_SUPPORTS_STREAM_SHARDS (1 << 3)
+
+// The broker answers `felix_client_cache_shards`.
+#define FELIX_SUPPORTS_CACHE_SHARDS (1 << 4)
+
+// The broker answers `felix_client_shard_owners`.
+#define FELIX_SUPPORTS_SHARD_OWNERS (1 << 5)
+
 // The offset was discarded by retention or a head trim.
 #define FELIX_CURSOR_TOO_OLD 0
 
@@ -35,6 +54,12 @@ typedef struct FelixClient FelixClient;
 // One record delivered to a subscription. Owns its payload until freed with
 // `felix_event_free`.
 typedef struct FelixEvent FelixEvent;
+
+// A call the producer's task has been handed and not yet answered.
+//
+// Its answer is read once, by `felix_handed_offset` or `felix_handed_done`.
+// Freeing the handle does not stop the call.
+typedef struct FelixHanded FelixHanded;
 
 // A producer whose publishes are numbered, so a batch the caller never got
 // an answer for can be sent again without landing twice.
@@ -73,6 +98,83 @@ typedef struct FelixTokenReply FelixTokenReply;
 // The result of every fallible call. `FELIX_STATUS_OK` is zero; every other
 // value says why the call did not do what it was asked.
 typedef int32_t FelixStatus;
+
+// Called once when `felix_client_supports` finishes. On `FELIX_STATUS_OK`,
+// `flags` has a `FELIX_SUPPORTS_*` bit for each question the broker in use
+// answers; zero on failure.
+typedef void (*FelixSupportsCallback)(void *user_data,
+                                      FelixStatus status,
+                                      const char *message,
+                                      uint32_t flags);
+
+// Whether a shard belongs to a stream or a cache.
+typedef int32_t FelixShardKind;
+
+// Called once when `felix_client_inspect_shard`, `felix_client_topology` or
+// `felix_client_shard_owners` finishes. On `FELIX_STATUS_OK`, `json` is a
+// NUL-terminated JSON value with the wire's field names, valid only while
+// the callback runs; null on failure.
+typedef void (*FelixJsonCallback)(void *user_data,
+                                  FelixStatus status,
+                                  const char *message,
+                                  const char *json);
+
+// Which subscriptions `felix_client_list_subscriptions` returns. Every field
+// set narrows the list; none set lists them all.
+//
+// Set `size` to `sizeof(FelixSubscriptionFilter)`; a field is read only when
+// `size` covers it.
+typedef struct FelixSubscriptionFilter {
+  // `sizeof(FelixSubscriptionFilter)` as the caller compiled it.
+  size_t size;
+  // Only this tenant's subscriptions. Null for any.
+  const char *tenant_id;
+  // Only this namespace. Null for any.
+  const char *ns;
+  // Only this stream. Null for any.
+  const char *stream;
+  // Only subscriptions made under this principal (the token's subject).
+  // Null for any.
+  const char *principal;
+  // Only this shard, when `has_shard` is true.
+  uint32_t shard;
+  // Whether `shard` narrows the list.
+  bool has_shard;
+  // Only subscriptions whose queue has dropped records.
+  bool dropping;
+} FelixSubscriptionFilter;
+
+// Called once when `felix_client_list_subscriptions` finishes. On
+// `FELIX_STATUS_OK`, `json` is the page as a JSON object
+// `{"node_id", "subscriptions", "next_cursor"}`, and `next_cursor` is the
+// cursor of the next page as a JSON string to pass back to
+// `felix_client_list_subscriptions`, or null on the last page. Both strings
+// are valid only while the callback runs; both are null on failure.
+typedef void (*FelixSubscriptionsCallback)(void *user_data,
+                                           FelixStatus status,
+                                           const char *message,
+                                           const char *json,
+                                           const char *next_cursor);
+
+// How a stream maps routing keys onto its shards.
+typedef int32_t FelixShardRouting;
+
+// Called once when `felix_client_stream_routing` finishes. On
+// `FELIX_STATUS_OK`, the stream has `shards` shards mapped by `routing`, a
+// `FELIX_ROUTING_*` value; both are zero on failure.
+typedef void (*FelixRoutingCallback)(void *user_data,
+                                     FelixStatus status,
+                                     const char *message,
+                                     uint32_t shards,
+                                     FelixShardRouting routing);
+
+// Called once when `felix_client_refresh_topology` finishes. On
+// `FELIX_STATUS_OK`, `count` is how many brokers the cluster named; zero is a
+// legitimate answer for a broker with no cluster behind it. Zero on failure.
+typedef void (*FelixCountCallback)(void *user_data,
+                                   FelixStatus status,
+                                   const char *message,
+                                   size_t count);
 
 // Called once when a group call that returns nothing finishes.
 typedef void (*FelixDoneCallback)(void *user_data, FelixStatus status, const char *message);
@@ -211,6 +313,12 @@ typedef void (*FelixTokenFetch)(void *user_data, struct FelixTokenReply *reply);
 // lock it takes while answering, and don't touch `user_data` after answering.
 typedef void (*FelixTokenRelease)(void *user_data);
 
+// What a subscription's client-side queue does when it is full.
+typedef int32_t FelixSubQueuePolicy;
+
+// How publishes are spread across the publish streams.
+typedef int32_t FelixPublishSharding;
+
 // What a client asks of the cluster beyond the defaults.
 //
 // Set `size` to `sizeof(FelixConnectOptions)`; a field is read only when
@@ -274,6 +382,83 @@ typedef struct FelixConnectOptions {
   // that takes them; on, `felix_client_publish_with_headers` fails with
   // `FELIX_STATUS_UNSUPPORTED` and events carry no headers.
   bool disable_record_headers;
+  // Ask brokers to answer acknowledged publishes after the write, with
+  // the offset, as the broker-wide `FELIX_ACK_ON_COMMIT=true` does. Slower
+  // per publish. Whether a broker honours it is
+  // `FELIX_SUPPORTS_ACK_ON_COMMIT`.
+  bool ack_on_commit;
+  // Put every publish on the connection pool instead of giving the first
+  // shards of a stream a publish stream each. Wins over
+  // `publish_shard_streams`.
+  bool no_publish_shard_streams;
+  // What a subscription does when its client-side queue is full, a
+  // `FELIX_QUEUE_*` value. `FELIX_QUEUE_DEFAULT` drops the arriving item.
+  FelixSubQueuePolicy client_sub_queue_policy;
+  // How publishes are spread across publish streams, a `FELIX_SHARDING_*`
+  // value. `FELIX_SHARDING_DEFAULT` hashes the stream's name, which keeps
+  // a stream's publishes in order.
+  FelixPublishSharding publish_sharding;
+  // Events each subscription's client-side queue holds. Zero is the
+  // default, 256.
+  uint32_t client_sub_queue_capacity;
+  // Batches the broker's queue for each subscription should hold. The
+  // broker clamps it to its maximum; `felix_subscription_queue_capacity`
+  // reports what was granted. Zero leaves the stream's default.
+  uint32_t broker_sub_queue_capacity;
+  // Publish connections per client. Zero is the default, 4.
+  uint32_t publish_conn_pool;
+  // Publish streams per publish connection. Zero is the default, 2.
+  uint32_t publish_streams_per_conn;
+  // Publishes queued per publish stream before the next waits for room.
+  // Zero is the default, 64.
+  uint32_t publish_queue_depth;
+  // Most publish streams opened per broker for one shard each, beside the
+  // pool. Zero is the default, 4; use `no_publish_shard_streams` for none.
+  uint32_t publish_shard_streams;
+  // Cache connections per client. Zero is the default, 8.
+  uint32_t cache_conn_pool;
+  // Cache streams per cache connection. Zero is the default, 4.
+  uint32_t cache_streams_per_conn;
+  // Connections that carry subscriptions and cache watches. Zero is the
+  // default, 8.
+  uint32_t event_conn_pool;
+  // Most connections opened to one broker. Zero is the default, 8.
+  uint32_t cluster_conn_pool;
+  // Streams one of those connections carries before another is opened.
+  // Zero is the default, 1024.
+  uint32_t cluster_streams_per_conn;
+  // Registrations and unclaimed event streams one event connection holds
+  // before refusing more. Zero is the default, 16384.
+  uint32_t event_router_max_pending;
+  // Bytes of publishes sent but not yet answered, across the client. Zero
+  // is the default, 4 MiB.
+  uint64_t publish_inflight_bytes;
+  // Largest frame the client will read. Zero is the default, 16 MiB.
+  uint64_t max_frame_bytes;
+  // QUIC receive window per event connection, in bytes. Zero is the
+  // default, 256 MiB. The six windows must be below 2^62.
+  uint64_t event_conn_recv_window;
+  // QUIC receive window per event stream, in bytes. Zero is the default,
+  // 64 MiB.
+  uint64_t event_stream_recv_window;
+  // QUIC send window per event connection, in bytes. Zero is the default,
+  // 256 MiB.
+  uint64_t event_send_window;
+  // QUIC receive window per cache connection, in bytes. Zero is the
+  // default, 256 MiB.
+  uint64_t cache_conn_recv_window;
+  // QUIC receive window per cache stream, in bytes. Zero is the default,
+  // 64 MiB.
+  uint64_t cache_stream_recv_window;
+  // QUIC send window per cache connection, in bytes. Zero is the default,
+  // 256 MiB.
+  uint64_t cache_send_window;
+  // Longest a connect to one broker may take, in milliseconds. Zero is the
+  // default, 10000.
+  uint64_t connect_timeout_ms;
+  // Longest a producer waits to flush when closed, in milliseconds. Zero is
+  // the default, 60000.
+  uint64_t finish_timeout_ms;
 } FelixConnectOptions;
 
 // Called once when `felix_client_connect` or `felix_client_connect_with`
@@ -627,6 +812,14 @@ typedef void (*FelixProducerCallback)(void *user_data,
                                       const char *message,
                                       struct FelixProducer *producer);
 
+// Called once when a `felix_producer_hand_off_*` call finishes. On
+// `FELIX_STATUS_OK`, `handed` is a handle the callee owns and frees with
+// `felix_handed_free`; otherwise it is null.
+typedef void (*FelixHandedCallback)(void *user_data,
+                                    FelixStatus status,
+                                    const char *message,
+                                    struct FelixHanded *handed);
+
 // What a publish does when the connection is lost after the record may have
 // been written.
 typedef int32_t FelixDelivery;
@@ -715,14 +908,6 @@ typedef void (*FelixOffsetCallback)(void *user_data,
                                     bool has_offset,
                                     uint64_t offset);
 
-// Called once when `felix_client_refresh_topology` finishes. On
-// `FELIX_STATUS_OK`, `count` is how many brokers the cluster named; zero is a
-// legitimate answer for a broker with no cluster behind it. Zero on failure.
-typedef void (*FelixCountCallback)(void *user_data,
-                                   FelixStatus status,
-                                   const char *message,
-                                   size_t count);
-
 // Called once when `felix_client_connections_per_node` finishes. On
 // `FELIX_STATUS_OK`, `addrs[i]` is a NUL-terminated `host:port` and
 // `counts[i]` is the live connections to it, for `len` brokers. Both arrays
@@ -759,6 +944,18 @@ typedef void (*FelixTrimCallback)(void *user_data,
                                   FelixStatus status,
                                   const char *message,
                                   const struct FelixTrimOutcome *outcome);
+
+// A stream's shard.
+#define FELIX_KIND_STREAM 0
+
+// A cache's shard.
+#define FELIX_KIND_CACHE 1
+
+// `hash(key) % shards`. What a stream created before routing modes has.
+#define FELIX_ROUTING_MODULO 0
+
+// Jump consistent hash of the same key hash.
+#define FELIX_ROUTING_JUMP_HASH 1
 
 // The key has no live entry: never written, deleted, or expired.
 #define FELIX_IF_ABSENT 0
@@ -926,9 +1123,157 @@ typedef void (*FelixTrimCallback)(void *user_data,
 // The stream was deleted. There is nothing to resubscribe to.
 #define FELIX_CLOSE_STREAM_DELETED 2
 
+// The client's default, which drops the arriving item.
+#define FELIX_QUEUE_DEFAULT 0
+
+// Stop reading the event stream until the application catches up.
+#define FELIX_QUEUE_BLOCK 1
+
+// Drop the arriving item.
+#define FELIX_QUEUE_DROP_NEW 2
+
+// Meant to drop the oldest queued item. It currently drops the arriving one,
+// exactly as `FELIX_QUEUE_DROP_NEW` does.
+#define FELIX_QUEUE_DROP_OLD 3
+
+// The client's default, `FELIX_SHARDING_HASH_STREAM`.
+#define FELIX_SHARDING_DEFAULT 0
+
+// Pick the stream by hashing the stream's name, so each stream's publishes
+// share one writer and stay in order.
+#define FELIX_SHARDING_HASH_STREAM 1
+
+// Rotate through the streams. Publishes to one stream can reach the broker
+// out of order.
+#define FELIX_SHARDING_ROUND_ROBIN 2
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+// Ask which questions the broker in use answers. Older brokers answer fewer,
+// and a call this reports unsupported fails with `FELIX_STATUS_UNSUPPORTED`
+// or an error instead of being sent.
+//
+// # Safety
+//
+// `client` is a live client, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_supports(const struct FelixClient *client,
+                                  const struct FelixCancelToken *cancel,
+                                  FelixSupportsCallback callback,
+                                  void *user_data);
+
+// The broker's own view of one shard: its phase and generation, the fence,
+// its lease and tail, and where it leads, every replica's position. `kind`
+// is a `FELIX_KIND_*` value; `name` is the stream or cache.
+//
+// Needs `node.view:cluster:*`, and the broker must advertise inspect (see
+// `felix_client_supports`). It is not forwarded: ask each broker for its
+// own.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_inspect_shard(const struct FelixClient *client,
+                                       FelixShardKind kind,
+                                       const char *tenant_id,
+                                       const char *ns,
+                                       const char *name,
+                                       uint32_t shard,
+                                       const struct FelixCancelToken *cancel,
+                                       FelixJsonCallback callback,
+                                       void *user_data);
+
+// One page of the subscriptions the broker serves: each one's queue depth
+// and capacity, overflow policy, records dropped, position against the
+// shard's tail, connection and principal.
+//
+// `filter` is null for every subscription, or narrows the list. `limit` is
+// the most to return; zero is the broker's default, 100, and it caps a page
+// at 1000. `cursor` is null for the first page, or the `next_cursor` string
+// the previous page's callback received. Needs `node.view:cluster:*`, and
+// the broker must advertise inspect. Not forwarded: ask each broker for its
+// own.
+//
+// # Safety
+//
+// `client` is a live client, `filter` is null or readable up to its `size`,
+// the strings are null or NUL-terminated, `cancel` is null or a live token,
+// and `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_list_subscriptions(const struct FelixClient *client,
+                                            const struct FelixSubscriptionFilter *filter,
+                                            uint32_t limit,
+                                            const char *cursor,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixSubscriptionsCallback callback,
+                                            void *user_data);
+
+// The brokers a client may connect to, as a JSON array of endpoints with the
+// wire's field names. Needs a broker that advertises topology (see
+// `felix_client_supports`). `felix_client_refresh_topology` is what adds them
+// to the endpoints the client tries.
+//
+// # Safety
+//
+// `client` is a live client, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_client_topology(const struct FelixClient *client,
+                                  const struct FelixCancelToken *cancel,
+                                  FelixJsonCallback callback,
+                                  void *user_data);
+
+// How many shards a stream has and how it maps routing keys onto them.
+// Needs a broker that reports stream shards.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_stream_routing(const struct FelixClient *client,
+                                        const char *tenant_id,
+                                        const char *ns,
+                                        const char *stream,
+                                        const struct FelixCancelToken *cancel,
+                                        FelixRoutingCallback callback,
+                                        void *user_data);
+
+// Which broker serves each shard of a stream or cache, as a JSON array of
+// owners with the wire's field names. A shard nobody can serve has no node
+// and says why. The answer is a snapshot and can be stale; a request sent on
+// it is still routed correctly. Needs a broker that reports shard owners.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_shard_owners(const struct FelixClient *client,
+                                      FelixShardKind kind,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *name,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixJsonCallback callback,
+                                      void *user_data);
+
+// How many shards a cache has. Needs a broker that reports cache shards.
+//
+// # Safety
+//
+// `client` is a live client, the strings are NUL-terminated, `cancel` is
+// null or a live token, and `callback` is safe to call with `user_data` from
+// any thread.
+FelixStatus felix_client_cache_shards(const struct FelixClient *client,
+                                      const char *tenant_id,
+                                      const char *ns,
+                                      const char *cache,
+                                      const struct FelixCancelToken *cancel,
+                                      FelixCountCallback callback,
+                                      void *user_data);
 
 // Store `value` under `key`. `ttl_ms` is how long it lives; zero is for
 // ever.
@@ -2333,6 +2678,118 @@ FelixStatus felix_producer_close(const struct FelixProducer *producer,
 // freed, and no other thread is using it.
 void felix_producer_free(struct FelixProducer *producer);
 
+// Hand a batch of `count` records (at least one) to the producer without
+// waiting for the leader.
+//
+// The batch, its key and its sequence are as for `felix_producer_publish`,
+// which this is the first half of: `callback` runs once the producer's task
+// has the batch, with a handle whose `felix_handed_offset` is the leader's
+// answer. Calls handed off one after another are sent in that order. The
+// batch is sent whether or not the answer is read; a failure that leaves it
+// in doubt is settled as `felix_producer_publish` describes.
+//
+// A cancel before the task has the batch stops it and reports
+// `FELIX_STATUS_CANCELLED`; after, the batch is still sent and the call
+// reports `FELIX_STATUS_OUTCOME_UNKNOWN`. A closed producer completes with
+// `FELIX_STATUS_CLOSED`.
+//
+// # Safety
+//
+// As for `felix_producer_publish`, with a `FelixHandedCallback`.
+FelixStatus felix_producer_hand_off_batch(const struct FelixProducer *producer,
+                                          const char *tenant_id,
+                                          const char *ns,
+                                          const char *stream,
+                                          const uint8_t *data,
+                                          const size_t *lens,
+                                          size_t count,
+                                          const uint8_t *key,
+                                          size_t key_len,
+                                          const struct FelixCancelToken *cancel,
+                                          FelixHandedCallback callback,
+                                          void *user_data);
+
+// Hand several batches to the producer without waiting for the leader.
+//
+// The records and `batch_sizes` are as for `felix_producer_publish_batches`;
+// the answer is `felix_handed_done`. The ordering, cancel and in-doubt rules
+// of `felix_producer_hand_off_batch` apply.
+//
+// # Safety
+//
+// As for `felix_producer_publish_batches`, with a `FelixHandedCallback`.
+FelixStatus felix_producer_hand_off_batches(const struct FelixProducer *producer,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *stream,
+                                            const uint8_t *data,
+                                            const size_t *lens,
+                                            size_t count,
+                                            const size_t *batch_sizes,
+                                            size_t batch_count,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixHandedCallback callback,
+                                            void *user_data);
+
+// `felix_producer_abandon_in_doubt` up to the hand-off. The answer is
+// `felix_handed_done`. **A batch given up may land twice**, as for the
+// call this is the first half of.
+//
+// # Safety
+//
+// As for `felix_producer_abandon_in_doubt`, with a `FelixHandedCallback`.
+FelixStatus felix_producer_hand_off_abandon(const struct FelixProducer *producer,
+                                            const char *tenant_id,
+                                            const char *ns,
+                                            const char *stream,
+                                            const struct FelixCancelToken *cancel,
+                                            FelixHandedCallback callback,
+                                            void *user_data);
+
+// Wait for the leader's answer to a `felix_producer_hand_off_batch`: the
+// offset of the batch's first record, as `felix_producer_publish` reports it.
+//
+// The answer is read once, here or by `felix_handed_done`; a second read
+// returns `FELIX_STATUS_INVALID_ARGUMENT` and calls nothing back. A cancel
+// while waiting reports `FELIX_STATUS_OUTCOME_UNKNOWN`, since the batch is
+// sent regardless and its answer is lost with the wait. Any other failure
+// leaves the batch in doubt as `felix_producer_publish` describes.
+//
+// # Safety
+//
+// `handed` is a live handle, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_handed_offset(const struct FelixHanded *handed,
+                                const struct FelixCancelToken *cancel,
+                                FelixPublishCallback callback,
+                                void *user_data);
+
+// Wait for the leader's answer to a `felix_producer_hand_off_batches` or
+// `felix_producer_hand_off_abandon`. As for `felix_handed_offset`, the answer
+// is read once, and a cancel while waiting reports
+// `FELIX_STATUS_OUTCOME_UNKNOWN`.
+//
+// # Safety
+//
+// `handed` is a live handle, `cancel` is null or a live token, and
+// `callback` is safe to call with `user_data` from any thread.
+FelixStatus felix_handed_done(const struct FelixHanded *handed,
+                              const struct FelixCancelToken *cancel,
+                              FelixDoneCallback callback,
+                              void *user_data);
+
+// Free a hand-off handle. Null is ignored.
+//
+// This does not stop the batch, which is sent whether or not its answer was
+// read. An answer wait still pending completes with
+// `FELIX_STATUS_OUTCOME_UNKNOWN`, possibly after this returns.
+//
+// # Safety
+//
+// `handed` is null or a pointer from a hand-off callback that has not been
+// freed, and no other thread is using it.
+void felix_handed_free(struct FelixHanded *handed);
+
 // Publish one record.
 //
 // `payload` may be null when `payload_len` is zero; it is copied before this
@@ -2694,6 +3151,53 @@ FelixStatus felix_subscription_start_offset(const struct FelixSubscription *subs
 FelixStatus felix_subscription_live_offset(const struct FelixSubscription *subscription,
                                            uint64_t *out_offset,
                                            bool *out_has);
+
+// How many times the subscription followed its shard to a new owner. A
+// shard that never changes owner leaves it at zero, which is the usual case
+// on a single broker. Counted as reads return, so it can trail a read still
+// pending.
+//
+// # Safety
+//
+// `subscription` is a live subscription and `out_moves` is writable.
+FelixStatus felix_subscription_moves(const struct FelixSubscription *subscription,
+                                     uint64_t *out_moves);
+
+// How many times the subscription resubscribed after losing its connection,
+// resuming after the last event it delivered. Zero until that happens. Counted
+// as reads return, so it can trail a read still pending.
+//
+// # Safety
+//
+// `subscription` is a live subscription and `out_reconnects` is writable.
+FelixStatus felix_subscription_reconnects(const struct FelixSubscription *subscription,
+                                          uint64_t *out_reconnects);
+
+// Whether the subscription ended because its stream was deleted. True only
+// once a read has returned `FELIX_STATUS_CLOSED`; the same fact as
+// `felix_subscription_close_reason` reporting `FELIX_CLOSE_STREAM_DELETED`.
+//
+// # Safety
+//
+// `subscription` is a live subscription and `out_deleted` is writable.
+FelixStatus felix_subscription_stream_deleted(const struct FelixSubscription *subscription,
+                                              bool *out_deleted);
+
+// How many batches the broker's queue for this subscription holds, as the
+// broker granted it: `FelixConnectOptions.broker_sub_queue_capacity` clamped
+// to the broker's maximum, or the stream's default.
+//
+// `*out_has` is false from a broker that does not report it. After a
+// resubscribe the figure is the new subscription's. Either out-pointer may
+// be null.
+//
+// # Safety
+//
+// `subscription` is a live subscription, and the out-pointers are null or
+// writable.
+FelixStatus felix_subscription_queue_capacity(const struct FelixSubscription *subscription,
+                                              uint32_t *out_capacity,
+                                              bool *out_has);
 
 // The first offset on one shard whose record was appended at or after
 // `at_micros` (microseconds since the Unix epoch), as the leading broker's

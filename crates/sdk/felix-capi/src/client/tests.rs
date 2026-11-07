@@ -8,6 +8,53 @@ use crate::boundary::Failure;
 use crate::completion::Completion;
 use crate::status::{FELIX_STATUS_AUTH, FELIX_STATUS_INVALID_ARGUMENT, FELIX_STATUS_OK};
 
+impl FelixConnectOptions {
+    /// Every field off or zero, for a test to set what it names.
+    fn zeroed() -> Self {
+        Self {
+            size: size_of::<Self>(),
+            publishers: false,
+            timestamps: false,
+            token_fetch: None,
+            token_user_data: std::ptr::null_mut(),
+            token_release: None,
+            reconnect_attempts: 0,
+            reconnect_deadline_ms: 0,
+            reconnect_backoff_ms: 0,
+            reconnect_max_backoff_ms: 0,
+            client_cert_file: std::ptr::null(),
+            client_key_file: std::ptr::null(),
+            disable_record_headers: false,
+            ack_on_commit: false,
+            no_publish_shard_streams: false,
+            client_sub_queue_policy: 0,
+            publish_sharding: 0,
+            client_sub_queue_capacity: 0,
+            broker_sub_queue_capacity: 0,
+            publish_conn_pool: 0,
+            publish_streams_per_conn: 0,
+            publish_queue_depth: 0,
+            publish_shard_streams: 0,
+            cache_conn_pool: 0,
+            cache_streams_per_conn: 0,
+            event_conn_pool: 0,
+            cluster_conn_pool: 0,
+            cluster_streams_per_conn: 0,
+            event_router_max_pending: 0,
+            publish_inflight_bytes: 0,
+            max_frame_bytes: 0,
+            event_conn_recv_window: 0,
+            event_stream_recv_window: 0,
+            event_send_window: 0,
+            cache_conn_recv_window: 0,
+            cache_stream_recv_window: 0,
+            cache_send_window: 0,
+            connect_timeout_ms: 0,
+            finish_timeout_ms: 0,
+        }
+    }
+}
+
 /// Names reach the client as names, so it can resolve them again later.
 #[test]
 fn names_are_kept_as_names() {
@@ -138,6 +185,7 @@ fn a_field_is_read_only_when_size_covers_it() {
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     let options = read(&full);
     assert!(options.publishers && options.timestamps);
@@ -174,6 +222,7 @@ fn reconnect_options_default_and_apply() {
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     let policy = read(&full).reconnect_policy().unwrap();
     let default = felix_client::ReconnectPolicy::default();
@@ -234,6 +283,7 @@ fn a_max_backoff_below_the_backoff_is_allowed_and_a_year_caps_both() {
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     let policy = read(&base).reconnect_policy().unwrap();
     assert_eq!(policy.backoff, std::time::Duration::from_millis(500));
@@ -279,6 +329,7 @@ fn a_size_smaller_than_the_size_field_is_refused() {
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     // SAFETY: a live struct.
     let failure = unsafe { ConnectOptions::read(&bad) }.unwrap_err();
@@ -305,6 +356,7 @@ fn the_certificate_fields_are_read_only_when_size_covers_them() {
         client_cert_file: cert,
         client_key_file: key,
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     let got = read(&full);
     assert_eq!((got.client_cert_file, got.client_key_file), (cert, key));
@@ -447,6 +499,7 @@ mod tokens {
             client_cert_file: std::ptr::null(),
             client_key_file: std::ptr::null(),
             disable_record_headers: false,
+            ..FelixConnectOptions::zeroed()
         }
     }
 
@@ -671,6 +724,7 @@ fn record_headers_are_on_unless_the_caller_turns_them_off() {
         client_cert_file: std::ptr::null(),
         client_key_file: std::ptr::null(),
         disable_record_headers: false,
+        ..FelixConnectOptions::zeroed()
     };
     assert!(!read(&options).disable_record_headers);
     options.disable_record_headers = true;
@@ -678,4 +732,22 @@ fn record_headers_are_on_unless_the_caller_turns_them_off() {
     // A caller built before the field existed leaves headers on.
     options.size = std::mem::offset_of!(FelixConnectOptions, disable_record_headers);
     assert!(!read(&options).disable_record_headers);
+}
+
+#[test]
+fn connect_options_carry_the_tuning_and_refuse_a_bad_value() {
+    let mut options = FelixConnectOptions::zeroed();
+    options.max_frame_bytes = 4096;
+    // SAFETY: `options` is live and its size covers it.
+    let read = unsafe { ConnectOptions::read(&options) }.expect("read");
+    let mut config = felix_client::ClientConfig::optimized_defaults(
+        felix_client::quic_client_config(None, false).expect("quic config"),
+    );
+    read.tuning.apply(&mut config);
+    assert_eq!(config.max_frame_bytes, 4096);
+
+    options.client_sub_queue_policy = 42;
+    // SAFETY: as above.
+    let failure = unsafe { ConnectOptions::read(&options) }.unwrap_err();
+    assert_eq!(failure.status, FELIX_STATUS_INVALID_ARGUMENT);
 }
