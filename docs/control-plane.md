@@ -1903,12 +1903,12 @@ stream or cache there are two conditions. The successor's broker must report
 `fences_every_change`: it fences a majority and takes their tails before it
 serves, as any promoted follower does. An older broker would open the shard
 as the cut-over it expected, without fencing, and its last report can predate
-a record the old leader acknowledged on its followers. And the successor must already be a member of the set: a copy
-staged on top of it never counted toward an acknowledgement. Otherwise
-failover passes the successor over, and if no other replica holds the log the
-shard stays unplaced (`placement plan` says no caught-up replica). Every
-broker with the fence on reports `fences_every_change`; one started with
-`FELIX_INTERNAL_FENCE=false` does not. An ephemeral stream has no log to hand
+a record the old leader acknowledged on its followers. And the successor
+must already be a member of the set: a copy staged on top of it never counted
+toward an acknowledgement. Otherwise failover passes the successor over, and
+if no other replica holds the log the shard stays unplaced (`placement plan`
+says no caught-up replica). A broker reports `fences_every_change` with the
+fence on; one started with `FELIX_INTERNAL_FENCE=false` does not. An ephemeral stream has no log to hand
 off and is reassigned as it always was.
 
 A fenced leader that is live but never reports drained would hold its shard
