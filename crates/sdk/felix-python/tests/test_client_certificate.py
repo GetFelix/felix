@@ -88,8 +88,8 @@ def test_a_client_without_a_certificate_is_refused_by_it(fixture):
 
 def test_the_async_client_presents_a_certificate_too(fixture):
     async def connect(**extra):
-        client = await felix.AsyncClient.connect(**_mutual_tls(fixture), **extra)
-        await client.close()
+        async with await felix.AsyncClient.connect(**_mutual_tls(fixture), **extra):
+            pass
 
     asyncio.run(
         connect(
