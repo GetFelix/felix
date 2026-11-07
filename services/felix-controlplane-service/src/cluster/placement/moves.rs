@@ -787,17 +787,14 @@ pub(super) fn move_step<'a>(
         }
         if gives_up {
             // Gone or halted before it led. Undone rather than waited out, or
-            // the move holds its slot until it times out.
-            let mut replicas = existing.replicas.clone();
-            replicas.retain(|replica| replica != successor);
+            // the move holds its slot until it times out. A successor that
+            // was a member before the stage stays one: it may hold the only
+            // copy of the log (#2088).
             return Decision::Move(
                 given_up(successor, halted),
                 ShardAssignment {
-                    successor: None,
                     move_started_at_millis: None,
-                    move_reason: None,
-                    replicas,
-                    ..existing.renamed()
+                    ..undo_staged(existing, successor, replication_factor)
                 },
             );
         }
