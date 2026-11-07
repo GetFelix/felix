@@ -106,8 +106,12 @@ impl KillLog {
         accepted: u64,
     ) {
         if accepted <= serving {
-            self.served
-                .insert((shard.to_string(), node.to_string()), at);
+            // Samples can finish out of order; keep the latest.
+            let seen = self
+                .served
+                .entry((shard.to_string(), node.to_string()))
+                .or_default();
+            *seen = (*seen).max(at);
         }
     }
 

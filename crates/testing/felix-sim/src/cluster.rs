@@ -546,8 +546,7 @@ impl SimCluster {
     /// Record which running brokers are up beside a broker serving each
     /// shard, so the hold rule knows which copies a leader could have
     /// vouched. Who serves is read without awaiting, so it sees one instant;
-    /// the copies' accepted generations are read after it, which can only
-    /// make a copy look newer than the leader and count less.
+    /// the copies' accepted generations are read after it.
     pub(crate) async fn note_serving(&self) {
         let at = self.elapsed();
         let mut seen = Vec::new();
