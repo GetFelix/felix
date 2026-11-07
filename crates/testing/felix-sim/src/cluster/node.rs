@@ -371,7 +371,11 @@ impl Node {
             let killed = self.left_unclean.load(std::sync::atomic::Ordering::SeqCst);
             return killed.then_some(kills::Copy::DownAfterKill);
         };
-        let trusted = broker.copy_attestation(key).await?.trusted;
+        let attest = clock::on(self.owner(), broker.copy_attestation(key));
+        let trusted = tokio::time::timeout(SNAPSHOT_WITHIN, attest)
+            .await
+            .ok()??
+            .trusted;
         Some(if trusted {
             kills::Copy::Trusted
         } else {

@@ -574,7 +574,8 @@ impl SimBroker {
     }
 
     /// What this broker attests of its copy of `key` to a unified fence, the
-    /// answer a promotion counts. `None` when it holds no copy.
+    /// answer a promotion counts. `None` when it holds no copy open; it never
+    /// opens one, so asking cannot change what is being checked.
     pub async fn copy_attestation(
         &self,
         key: &ShardKey,
@@ -585,7 +586,14 @@ impl SimBroker {
         };
         let log = self
             .broker
-            .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .opened_log(
+                kind,
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+            )
             .await?;
         let route = felix_router::ShardKey {
             tenant_id: key.tenant_id.clone(),
