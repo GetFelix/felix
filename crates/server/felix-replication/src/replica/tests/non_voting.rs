@@ -1887,6 +1887,14 @@ async fn a_once_lost_copy_counts_from_the_set_that_readmitted_it() {
             let reopened = felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path())
                 .expect("open");
             assert_eq!(reopened.readmitted(&name), Some(6), "after a restart");
+            // A start from the view reads the record too, but has not checked
+            // the directory for a restore, which would have brought it back.
+            let (unchecked, _) = lost_handler(&broker, 7, trust_dir.path(), false);
+            assert_eq!(
+                kept_from_at_7(&unchecked).await,
+                u64::MAX,
+                "a start from the view"
+            );
         }
     }
 }

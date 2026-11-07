@@ -391,3 +391,34 @@ async fn a_readmitted_record_covers_a_matching_answer() {
         );
     }
 }
+
+/// **A record covers only for a copy whose promises count.** broker-b
+/// promises but is doubted; broker-c's directory lost its ballots and was
+/// never readmitted, and the control plane holds a record for it. Its
+/// answer neither promises nor covers, so nothing but this broker covers.
+#[tokio::test]
+async fn a_readmitted_record_does_not_cover_an_unkept_copy() {
+    let mut replicas = Replicas::new();
+    replicas.get_mut("broker-b").attests = Some(DOUBTED);
+    replicas.get_mut("broker-c").attests = Some(FenceAttestation {
+        kept_from: u64::MAX,
+        trusted: false,
+    });
+    replicas
+        .get("broker-c")
+        .holds("broker-c", 4, 0, &["a"])
+        .await;
+    let (leader, _dir) = leader_holding(4, &["a"]).await;
+    let mut route = route();
+    route.readmitted = Some(Arc::new(vec![felix_router::Readmitted {
+        node: "broker-c".to_string(),
+        storage_id: storage_of("broker-c").to_hex(),
+        generation: 4,
+        offset: 1,
+    }]));
+    let marks = unified(true);
+
+    let outcome = fence_unified(&replicas, &leader, &route, None, &marks).await;
+
+    assert!(matches!(outcome, Outcome::Pending { .. }), "{outcome:?}");
+}
