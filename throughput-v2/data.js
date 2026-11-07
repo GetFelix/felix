@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794011553042,
+  "lastUpdate": 1794017838760,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -47996,6 +47996,58 @@ window.BENCHMARK_DATA = {
             "range": "20055.17",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1181534.41\nmean: 1183598.85\nstdev: 20055.17\ncv: 1.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3e8b88b77eb3a7ed7d08c97c65da4b612d23c483",
+          "message": "feat(clients): present a client certificate from Python, TypeScript, C# and C (#2075)\n\n* feat(clients): present a client certificate from Python, TypeScript, C# and C\n\nThe bindings take a certificate PEM file and a key PEM file next to the CA\nfile and hand them to ClientIdentity. The client fixture gains a broker that\nserves only a client with a certificate, and each language tests against it.\n\n* fix(clients): one behaviour for a lone certificate or key, a runnable C example\n\nEvery client refuses a certificate without its key at connect as an invalid\nargument, after the CA file is loaded. The Python and TypeScript fallback\nerror no longer blames the certificate for a trust store failure.",
+          "timestamp": "2026-11-06T18:02:19-08:00",
+          "tree_id": "22c039b97ef71ebccd11b161a737907b0e85431a",
+          "url": "https://github.com/GetFelix/felix/commit/3e8b88b77eb3a7ed7d08c97c65da4b612d23c483"
+        },
+        "date": 1794017838180,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360711.83,
+            "range": "14559.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360711.83\nmean: 354693.37\nstdev: 14559.44\ncv: 4.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360711.83,
+            "range": "14559.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360711.83\nmean: 354693.37\nstdev: 14559.44\ncv: 4.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81362.76,
+            "range": "1082.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81362.76\nmean: 81264.33\nstdev: 1082.44\ncv: 1.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813627.57,
+            "range": "10824.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813627.57\nmean: 812643.27\nstdev: 10824.44\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
