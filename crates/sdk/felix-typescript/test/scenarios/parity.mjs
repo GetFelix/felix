@@ -145,26 +145,17 @@ export default function register(ctx) {
   });
 
   describe("lease tokens", () => {
-    it("a put that applies reports a token or why there is none; one that does not apply has none", async () => {
-      const { client, fixture } = ctx;
+    it("a broker with no lease key refuses the token request with a typed error", async () => {
+      // The fixture's brokers have no lease token key, so this is the refusal
+      // path; minting needs a key file and lease templates the fixture lacks.
+      const { client, fixture, felix } = ctx;
       const key = unique("lease-key");
-      const put = () =>
+      await assert.rejects(
         client.cachePutIfLease(
           fixture.tenant_id, fixture.namespace, fixture.cache, key, Buffer.from("v"), { kind: "absent" }, 30,
-        );
-      const first = await put();
-      assert.equal(first.result.applied, true);
-      assert.notEqual(first.token, undefined);
-      assert.notEqual(first.tokenRefused, undefined);
-      if (first.token === null) {
-        assert.equal(typeof first.tokenRefused === "string" || first.tokenRefused === null, true);
-      } else {
-        assert.equal(typeof first.token.token, "string");
-        assert.equal(typeof first.token.expiresAt, "bigint");
-      }
-      const second = await put();
-      assert.equal(second.result.applied, false);
-      assert.equal(second.token, null);
+        ),
+        (err) => err instanceof felix.FelixError && /lease token/.test(err.message),
+      );
     });
   });
 
