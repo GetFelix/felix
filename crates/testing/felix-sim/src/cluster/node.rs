@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use super::census::NodeView;
+use super::kills;
 use super::{NodeHandles, SimConfig};
 use crate::clock::{self, Owner};
 use crate::controlplane::SimControlPlane;
@@ -362,15 +363,20 @@ impl Node {
         })
     }
 
-    /// Whether this broker's copy of `key` holds what its seat acknowledged,
-    /// as it attests to a unified fence. `None` when that is not known: the
-    /// broker is down or starting after a clean stop, or holds no copy.
-    pub(crate) async fn copy_trusted(&self, key: &ShardKey) -> Option<bool> {
+    /// What this broker attests of its copy of `key` to a unified fence.
+    /// `None` when that is not known: the broker is down after a clean stop or
+    /// starting, or holds no copy.
+    pub(crate) async fn copy_trust(&self, key: &ShardKey) -> Option<kills::Copy> {
         let Some(broker) = self.broker() else {
-            let doubted = self.left_unclean.load(std::sync::atomic::Ordering::SeqCst);
-            return doubted.then_some(false);
+            let killed = self.left_unclean.load(std::sync::atomic::Ordering::SeqCst);
+            return killed.then_some(kills::Copy::DownAfterKill);
         };
-        Some(broker.copy_attestation(key).await?.trusted)
+        let trusted = broker.copy_attestation(key).await?.trusted;
+        Some(if trusted {
+            kills::Copy::Trusted
+        } else {
+            kills::Copy::Untrusted
+        })
     }
 
     /// What the running broker believes about `key`, read at one instant.

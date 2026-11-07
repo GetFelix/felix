@@ -49,6 +49,7 @@ pub(crate) mod kills;
 mod node;
 pub(crate) mod power;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -423,6 +424,7 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
+        self.note_serving();
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -431,6 +433,7 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
+        self.note_serving();
         let at = self.elapsed();
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
             self.kills.lock().kill(&self.nodes[index].id, at);
@@ -446,6 +449,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
+        self.note_serving();
         let at = self.elapsed();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
@@ -503,11 +507,17 @@ impl SimCluster {
 
     /// Shards (`stream/3`) the broker holds on purpose after unclean kills,
     /// until an operator abandons a member, so they are not expected to be
-    /// served: nobody serves them and their untrusted copies, as each broker
-    /// attests them, are a majority. See `kills.rs` for the rule.
-    pub async fn held_shards(&self) -> std::collections::BTreeSet<String> {
+    /// served. See `kills.rs` for the rule.
+    pub async fn held_shards(&self) -> BTreeSet<String> {
+        self.holds().await.held
+    }
+
+    /// The held shards, and the unserved ones with a copy still untrusted
+    /// although a broker served the shard while it was up.
+    pub(crate) async fn holds(&self) -> Holds {
+        self.note_serving();
         let Ok(mut views) = self.cp.shard_views().await else {
-            return Default::default();
+            return Holds::default();
         };
         let unserved: Vec<ShardKey> = self
             .unserved()
@@ -516,17 +526,39 @@ impl SimCluster {
             .filter(|(_, serving)| serving.is_empty())
             .map(|(key, _)| key)
             .collect();
-        let names: std::collections::BTreeSet<String> = unserved.iter().map(describe).collect();
+        let names: BTreeSet<String> = unserved.iter().map(describe).collect();
         views.retain(|shard, _| names.contains(shard));
         let mut trust = kills::Trust::new();
         for key in &unserved {
             for node in &self.nodes {
-                if let Some(trusted) = node.copy_trusted(key).await {
-                    trust.insert((describe(key), node.id.clone()), trusted);
+                if let Some(copy) = node.copy_trust(key).await {
+                    trust.insert((describe(key), node.id.clone()), copy);
                 }
             }
         }
-        self.kills.lock().held(&views, &trust)
+        let kills = self.kills.lock();
+        Holds {
+            held: kills.held(&views, &trust),
+            vouchable: kills.vouchable_untrusted(&views, &trust),
+        }
+    }
+
+    /// Record which running brokers are up beside a broker serving each
+    /// shard, so the hold rule knows which copies a leader could have
+    /// vouched. Reads without awaiting, so it sees one instant.
+    pub(crate) fn note_serving(&self) {
+        let at = self.elapsed();
+        let mut kills = self.kills.lock();
+        for key in self.shard_keys() {
+            let stands = self.stands(&key);
+            if !stands.iter().any(|(_, stand)| stand.serving) {
+                continue;
+            }
+            let shard = describe(&key);
+            for (index, _) in &stands {
+                kills.served(&shard, &self.nodes[*index].id, at);
+            }
+        }
     }
 
     /// Abandon `key`'s log through the operator API. On success the shard is
@@ -571,10 +603,12 @@ impl SimCluster {
             }
             // A broker that doubts what it acknowledged before the power went
             // holds shards as it does after a kill, so the copy counts as one.
-            if let Some(loss) = lost_power
-                && node.started_unclean() == Some(true)
-            {
-                cluster.kills.lock().kill(&node.id, loss.at);
+            if node.started_unclean() == Some(true) {
+                let mut kills = cluster.kills.lock();
+                kills.started_unclean(&node.id, cluster.elapsed());
+                if let Some(loss) = lost_power {
+                    kills.kill(&node.id, loss.at);
+                }
             }
         });
     }
@@ -732,6 +766,15 @@ fn spawn_stall_watch(limit: Duration) -> (CancellationToken, Arc<AtomicBool>) {
         })
         .expect("start the stall watch");
     (stalled, done)
+}
+
+/// What [`SimCluster::holds`] found among the shards nobody serves.
+#[derive(Debug, Default)]
+pub(crate) struct Holds {
+    /// Held on purpose: exempt from serving.
+    pub(crate) held: BTreeSet<String>,
+    /// With a copy still untrusted although a leader could have vouched it.
+    pub(crate) vouchable: BTreeSet<String>,
 }
 
 /// The key of stream shard `shard`.
