@@ -800,7 +800,7 @@ voter crashes uncleanly, and the cut-over's fence never opens
 `FelixShardUnifiedCpLiveMoveRotated.cfg` passes with the rule).
 `FelixShardUnifiedTwoRotated.cfg` checks that two fences at one generation
 still meet when voters rotate between their answers. A directory that lost
-them keeps that mark for good, so each of its copies counts again only once
+its ballots keeps its lost-copy mark for good, so each of its copies counts again only once
 readmitted: the copy's log counts a set newer than any ballot it took
 unkept that names it under its storage id now, as a voter, and holds that
 set's generation start, shipped by that set's leader or a later one. With no
@@ -5258,9 +5258,9 @@ Once it is finalized on a broker that offers `ELECTION`:
   refuses older leaders but counts for nothing. A restored directory can
   pass every refusal and answer from a new storage id, though before the
   restore it may have promised this generation to another leader.
-- A copy doubted after an unclean crash, a learner because its storage id
-  rotated and the start could not show the crash kept its ballots (no
-  `rotated-ids` entry for the id the set names), answers a continuing
+- A copy doubted after an unclean crash, a learner because the set names it
+  under an id the start did not record in `rotated-ids` (one older than the
+  16 entries kept, or a file that did not decode), answers a continuing
   leader's fence, and attests, only when its
   ballot names that leader at the generation before or at this one, and the crash kept
   every ballot. It promises and stays doubted until a leader ships to it.
