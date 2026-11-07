@@ -839,6 +839,7 @@ async fn fence_log<R: PeerRequester>(
                     Some(FenceAttestation {
                         kept_from: u64::MAX,
                         trusted: false,
+                        by_record: false,
                     })
                 };
                 // Its ballot still refuses an older leader, and its log may
@@ -1028,17 +1029,28 @@ impl OwnCopy {
         self.kept_from <= set_generation
     }
 
-    /// `attested` as this leader counts it: promises kept only from a
-    /// readmitting set (neither 0 nor none) count for no set once this
-    /// broker cannot rule out elections, whatever the replica's own view of
-    /// the fleet, and such a copy covers nothing either, as a copy that was
-    /// never readmitted.
+    /// `attested` as this leader counts it: once this broker cannot rule out
+    /// elections, whatever the replica's own view of the fleet, promises
+    /// kept only from a readmitting set (neither 0 nor none) count for no
+    /// set and such a copy covers nothing, as a copy that was never
+    /// readmitted; and a copy trusted only on the control plane's record
+    /// covers nothing.
     pub(crate) fn counting(self, attested: FenceAttestation) -> FenceAttestation {
+        if self.readmission_counts {
+            return attested;
+        }
         let readmitted = attested.kept_from != 0 && attested.kept_from != u64::MAX;
-        if readmitted && !self.readmission_counts {
+        if readmitted {
             FenceAttestation {
                 kept_from: u64::MAX,
                 trusted: false,
+                by_record: false,
+            }
+        } else if attested.by_record {
+            FenceAttestation {
+                trusted: false,
+                by_record: false,
+                ..attested
             }
         } else {
             attested
@@ -1076,11 +1088,19 @@ async fn own_copy(
         log.gave_up(),
         recorded,
     );
+    // Held to the same read of the fleet `readmission_counts` gives the
+    // answers, which a heartbeat may change after `attest_copy` read it.
+    let readmission_counts = marks.readmission_counts();
+    let attested = OwnCopy {
+        readmission_counts,
+        ..OwnCopy::UNATTESTED
+    }
+    .counting(attested);
     OwnCopy {
         attested: true,
         kept_from: attested.kept_from,
         trusted: attested.trusted,
-        readmission_counts: marks.readmission_counts(),
+        readmission_counts,
     }
 }
 

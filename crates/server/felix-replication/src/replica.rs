@@ -1688,11 +1688,19 @@ impl ReplicaHandler {
             !fleet.kept_ballots() && fleet.readmits() && trust.readmitted(&name).is_none()
         });
         // An unknown floor is pinned before the batch's ballot; if that did
-        // not happen, nothing says which set is newer.
+        // not happen, nothing says which set is newer. A loss with no floor
+        // counts from 0 only when this start minted the storage id: every set
+        // naming that id came after the loss. An older id (a directory swapped
+        // back without a rotation) may be named by sets from before the loss,
+        // and nothing here says which, so it gets no credit.
         let unkept = trust.unkept(&name);
+        let minted = self
+            .fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.minted_storage());
         let since = match unkept {
             Some(Since::At(since)) => since,
-            None if lost => 0,
+            None if lost && minted => 0,
             _ => return,
         };
         let (Some(generation), Some(own_id)) = (
@@ -3053,15 +3061,19 @@ pub(crate) fn attest_copy(
         voter && kept_from.is_some() && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
     // The control plane's record stands in only for the copy-trust vouch a
     // clean restart can lose, never for any other reason to distrust.
+    let vouched = trust.is_none_or(|trust| trust.trusted(&name));
     let trusted = kept
         && !given_up
         && !trust.is_some_and(|trust| trust.doubted(&name))
         && !poisoned
         && unclean.is_none_or(|unclean| unclean.trusted(&shard))
-        && (trust.is_none_or(|trust| trust.trusted(&name)) || (recorded && readmission_counts));
+        && (vouched || (recorded && readmission_counts));
     felix_wire::internal::FenceAttestation {
         kept_from: kept_from.filter(|_| kept).unwrap_or(u64::MAX),
         trusted,
+        // This copy may not yet know the fleet finalized `replica_election`
+        // when the leader does, so the leader decides whether the record counts.
+        by_record: trusted && !vouched,
     }
 }
 

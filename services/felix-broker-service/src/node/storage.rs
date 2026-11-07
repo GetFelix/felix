@@ -240,6 +240,7 @@ fn start_run(
         // A set names a copy by the id the control plane registered, so
         // without one no set can readmit it.
         readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+        minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
     };
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
@@ -261,6 +262,10 @@ pub(crate) struct Kept {
     /// introduced after the loss readmits it: the start was checked against
     /// a control plane record with a storage id.
     pub(crate) readmits: bool,
+    /// This start minted the storage id, by rotating it or writing a new one, so
+    /// no set written before it names the id. A lost copy with no recorded
+    /// floor is readmitted only then.
+    pub(crate) minted: bool,
 }
 
 impl Kept {
@@ -273,6 +278,7 @@ impl Kept {
             promises: self.promises,
             ballots: self.ballots && !from_view,
             readmits: self.readmits && !from_view,
+            minted: self.minted,
         }
     }
 }

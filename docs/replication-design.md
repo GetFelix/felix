@@ -740,8 +740,13 @@ record names the storage id it had before (`Kept` in
 them keeps that mark for good, so each of its copies counts again only once
 readmitted: the copy's log counts a set newer than any ballot it took
 unkept that names it under its storage id now, as a voter, and holds that
-set's generation start, shipped by that set's leader or a later one. Only a
-set written after the loss can name that id. The broker records the set's
+set's generation start, shipped by that set's leader or a later one. With no
+unkept ballot to count from, that needs a start that minted the storage id
+(a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it. A
+directory that lost its copies under an older id, as one swapped back after
+the node ran under another, may be named by sets from before the loss, so
+its copies get no readmission. So does a copy not yet readmitted when the
+broker restarts cleanly, until a later rotation. The broker records the set's
 generation in the directory's `copy-trust` file (`docs/storage-format.md`)
 before the copy's promises count for that set and later ones, and marks the
 copy untrusted until a vouch after the readmission. The record holds until
@@ -768,7 +773,10 @@ Elections run only once the fleet finalized `replica_election`, and the
 control plane adopts an elected leader only then. So a readmission counts
 only while the broker knows the fleet has not finalized it
 (`QuorumMarks::readmission_counts`): on the copy, for what it attests, and on
-the leader, which counts no promise kept only from a readmitting set. A
+the leader, which counts no promise kept only from a readmitting set and no
+trust the answer says rests on the record alone. A copy can take a new
+record from the watch before it hears the fleet finalized
+`replica_election`, so the leader's view decides. A
 broker that has not yet had a registration answer cannot rule elections out
 and gives no credit. Once `replica_election` is finalized a copy on a
 directory that lost its ballots counts as it did before readmission was

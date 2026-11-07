@@ -391,9 +391,14 @@ async fn a_record_vouches_for_a_kept_copy_only_while_elections_are_off() {
             handler.attestation(&key(), true, false, false),
             attested(0, false).expect("some")
         );
+        // A leader that knows elections can happen ignores trust that rests
+        // on the record, so the answer says when it does.
         assert_eq!(
             handler.attestation(&key(), true, false, true),
-            attested(0, !electing).expect("some"),
+            felix_wire::internal::FenceAttestation {
+                by_record: !electing,
+                ..attested(0, !electing).expect("some")
+            },
             "electing {electing}"
         );
     }

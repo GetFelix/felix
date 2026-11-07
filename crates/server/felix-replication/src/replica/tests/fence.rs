@@ -2366,7 +2366,11 @@ pub(super) fn attested(
     kept_from: u64,
     trusted: bool,
 ) -> Option<felix_wire::internal::FenceAttestation> {
-    Some(felix_wire::internal::FenceAttestation { kept_from, trusted })
+    Some(felix_wire::internal::FenceAttestation {
+        kept_from,
+        trusted,
+        by_record: false,
+    })
 }
 
 /// **A clean start attests kept ballots and a trusted copy, and only a

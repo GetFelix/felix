@@ -9,6 +9,7 @@ use super::*;
 pub(super) const TRUSTED: FenceAttestation = FenceAttestation {
     kept_from: 0,
     trusted: true,
+    by_record: false,
 };
 
 /// A copy that kept its ballots but may have lost acknowledged records, as
@@ -16,6 +17,7 @@ pub(super) const TRUSTED: FenceAttestation = FenceAttestation {
 pub(super) const DOUBTED: FenceAttestation = FenceAttestation {
     kept_from: 0,
     trusted: false,
+    by_record: false,
 };
 
 /// The marks of a leader counting by attestation, whose own directory kept
@@ -176,6 +178,7 @@ async fn an_unkept_copy_never_counts_as_a_promise() {
             replicas.get_mut(id).attests = Some(FenceAttestation {
                 kept_from: u64::MAX,
                 trusted: true,
+                by_record: false,
             });
         }
         replicas
@@ -381,21 +384,31 @@ fn electing(kept: bool) -> crate::quorum::QuorumMarks {
 /// replica attests: an adopted elected leader may have opened that set's
 /// generation before the copy's loss. broker-b attests promises from the set
 /// of 1, trusted; broker-c is down. A copy whose directory kept its ballots
-/// counts either way.
+/// counts either way, but its trust counts only while elections are off when
+/// it rests on the control plane's record: a replica that has not yet heard
+/// the fleet finalized `replica_election` still takes the record.
 #[tokio::test]
 async fn a_readmitted_answer_counts_only_while_elections_are_off() {
     let readmitted = FenceAttestation {
         kept_from: 1,
         trusted: true,
+        by_record: false,
     };
     let kept = FenceAttestation {
         kept_from: 0,
         trusted: true,
+        by_record: false,
+    };
+    let recorded = FenceAttestation {
+        by_record: true,
+        ..kept
     };
     for (attests, electing_fleet, opens) in [
         (readmitted, false, true),
         (readmitted, true, false),
         (kept, true, true),
+        (recorded, false, true),
+        (recorded, true, false),
     ] {
         let mut replicas = Replicas::new();
         replicas.get_mut("broker-c").reachable = false;
@@ -445,6 +458,7 @@ async fn the_leaders_own_readmitted_copy_takes_the_records_vouch() {
         replicas.get_mut("broker-b").attests = Some(FenceAttestation {
             kept_from: 0,
             trusted: true,
+            by_record: false,
         });
         replicas
             .get("broker-b")

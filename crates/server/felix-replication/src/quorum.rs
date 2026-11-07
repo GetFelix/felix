@@ -54,6 +54,7 @@ pub struct QuorumMarks {
     /// fence answer attests it. Unset reads as not kept.
     kept_ballots: std::sync::OnceLock<bool>,
     readmits: std::sync::OnceLock<bool>,
+    minted_storage: std::sync::OnceLock<bool>,
     /// The directory's record of which copies are trusted and doubted
     /// across restarts. Unset on a broker without a durable directory.
     copy_trust: std::sync::OnceLock<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
@@ -308,6 +309,16 @@ impl QuorumMarks {
 
     pub(crate) fn readmits(&self) -> bool {
         self.readmits.get().copied().unwrap_or(false)
+    }
+
+    /// Record whether this start minted the directory's storage id, by
+    /// rotating it or creating it. Only the first call counts.
+    pub fn set_minted_storage(&self, minted: bool) {
+        let _ = self.minted_storage.set(minted);
+    }
+
+    pub(crate) fn minted_storage(&self) -> bool {
+        self.minted_storage.get().copied().unwrap_or(false)
     }
 
     /// Whether a readmission counts here: a copy's promises from the set

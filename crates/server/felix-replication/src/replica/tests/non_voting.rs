@@ -1696,6 +1696,7 @@ fn no_promise() -> Option<felix_wire::internal::FenceAttestation> {
     Some(felix_wire::internal::FenceAttestation {
         kept_from: u64::MAX,
         trusted: false,
+        by_record: false,
     })
 }
 
@@ -1848,6 +1849,8 @@ fn lost_handler_on(
         Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
     marks.set_kept_ballots(false);
     marks.set_readmits(readmits);
+    // As a wipe or a rotation does, unless the caller set it first.
+    marks.set_minted_storage(true);
     marks.set_copy_trust(Arc::clone(&trust));
     let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], generation))
         .with_fleet(marks)
@@ -1909,6 +1912,36 @@ async fn a_once_lost_copy_counts_from_the_set_that_readmitted_it() {
                 "a start from the view"
             );
         }
+    }
+}
+
+/// **A directory that lost its copies without a new storage id is not
+/// readmitted by a set naming that id**, as a directory swapped back after
+/// the node ran under another id: sets from before the loss name the id too,
+/// so nothing says this one came after it.
+#[tokio::test]
+async fn a_lost_copy_under_an_old_id_is_not_readmitted() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    for minted in [true, false] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = marks(true);
+        marks.set_minted_storage(minted);
+        let (copy, trust) = lost_handler_on(&broker, 6, trust_dir.path(), true, marks);
+        let answer = settled(|| copy.fence(SENDER, fence_with(6, set(6, OWN), None, false))).await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+        let answer =
+            settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+                .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+        assert_eq!(
+            trust.readmitted(&name),
+            minted.then_some(6),
+            "minted {minted}"
+        );
     }
 }
 
@@ -2082,6 +2115,7 @@ async fn a_record_vouches_only_for_a_copy_nothing_else_distrusts() {
 
         assert_eq!(attested.kept_from, 6, "{case}");
         assert_eq!(attested.trusted, case == "none", "{case}");
+        assert_eq!(attested.by_record, case == "none", "{case}");
     }
 }
 

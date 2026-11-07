@@ -347,11 +347,50 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
         promises: true,
         ballots: true,
         readmits: true,
+        minted: true,
     };
     assert!(kept.attested(false).ballots && kept.attested(false).readmits);
     assert!(!kept.attested(true).ballots);
     assert!(!kept.attested(true).readmits);
     assert!(!Kept::default().attested(false).ballots);
+}
+
+/// **Only a start that minted the storage id says so.** A wiped directory
+/// and a crash get a new id, which no set from before the start names. A
+/// directory swapped back after the node ran under another id lost its copies
+/// too, but keeps an id older sets may name.
+#[test]
+fn only_a_new_or_rotated_id_is_minted() {
+    let relaxed = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..Default::default()
+    };
+    let other = StorageId::from_bytes([9; 16]);
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, kept) = start_run(
+        root.path(),
+        &relaxed,
+        Some(&registered_as(Some(other))),
+        None,
+    )
+    .expect("wiped");
+    assert!(kept.minted && !kept.ballots, "a wiped directory");
+    forget_boot(root.path()).expect("forget the boot");
+    let (id, rotated, _, kept) =
+        start_run(root.path(), &relaxed, Some(&registered_as(Some(id))), None).expect("crash");
+    assert!(rotated && kept.minted, "a crash");
+
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let (again, rotated, _, kept) = start_run(
+        root.path(),
+        &relaxed,
+        Some(&registered_as(Some(other))),
+        None,
+    )
+    .expect("swapped back");
+    assert_eq!(again, id);
+    assert!(!rotated && !kept.ballots, "lost without a rotation");
+    assert!(!kept.minted, "a swapped-back directory keeps an older id");
 }
 
 /// **Every run witnesses its directory anew**, with the control plane's
