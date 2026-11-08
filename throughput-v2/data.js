@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794179027588,
+  "lastUpdate": 1794179391269,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50128,6 +50128,58 @@ window.BENCHMARK_DATA = {
             "range": "80636.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1546105.78\nmean: 1515182.95\nstdev: 80636.36\ncv: 5.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "135eb55ccca4387ca2b2a77e0b9548a345037abb",
+          "message": "fix(sim): hold a torn segment to a repair only once the broker opened it again (#2130)",
+          "timestamp": "2026-11-08T15:00:24-08:00",
+          "tree_id": "0cc710a22bfe79f38583117aaba666d35f1f27fd",
+          "url": "https://github.com/GetFelix/felix/commit/135eb55ccca4387ca2b2a77e0b9548a345037abb"
+        },
+        "date": 1794179390591,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358898.08,
+            "range": "16921.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358898.08\nmean: 359796.76\nstdev: 16921.93\ncv: 4.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358898.08,
+            "range": "16921.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358898.08\nmean: 359796.76\nstdev: 16921.93\ncv: 4.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82016.98,
+            "range": "400.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82016.98\nmean: 82044.83\nstdev: 400.25\ncv: 0.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820169.77,
+            "range": "4002.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820169.77\nmean: 820448.31\nstdev: 4002.55\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
