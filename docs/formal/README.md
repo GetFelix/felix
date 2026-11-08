@@ -541,6 +541,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardMoveGiveUp.cfg` | `FelixShardMoveGiveUp.tla`: a fenced move whose leader crashes uncleanly before it reports drained; the give-up at the move's generation ends the move, and the leader leads again only if its probe found no follower ahead | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` and `EventuallyServes` (97k distinct states, seconds) |
 | `FelixShardMoveGiveUpStall.cfg` | the same with the move waiting for a drained report or the fence timeout, whose clock restarts with the control plane | violate `EventuallyServes` |
 | `FelixShardMoveGiveUpLeads.cfg` | the same with a broker that leads its given-up copy without the probe | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpKeep.cfg` | replication factor 2 with the destination staged as a third copy, two writes; every move given up keeps the destination, and a trim fence drops a copy later | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` (29.5M distinct states, 7 min locally) |
+| `FelixShardMoveGiveUpKeepLive.cfg` | the same with one write and the crash during the move, for liveness | pass the invariants, `EventuallyServes` and `EventuallyAtFactor` |
+| `FelixShardMoveGiveUpDrop.cfg` | the same with the fence timeout's retake dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpUnstage.cfg` | the same with a staged move given up before its fence dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpTwoDrop.cfg`, `FelixShardMoveGiveUpTwoKeep.cfg` | replication factor 1 with the destination staged as a second copy, dropped or kept | both violate `AckedHeldByLeader`: one copy is lost to an unclean crash either way, so a set of two drops the destination |
+| `FelixShardMoveGiveUpFourDrop.cfg` | replication factor 3 with the destination staged as a fourth copy, every exit dropping it | pass the invariants: a follower that stays holds every acknowledged record (20.6M distinct states with symmetry, 10 min) |
+| `FelixShardMoveGiveUpFailoverDrop.cfg` | a set of three whose leader is taken for dead, the failover dropping a follower | pass the invariants: the drop loses no record, it stalls |
+| `FelixShardMoveGiveUpFailoverStall.cfg` | the same for liveness | violate `EventuallyServes`: the promoted follower's fence needs the dead leader's given-up copy |
+| `FelixShardMoveGiveUpFailoverLive.cfg` | the failover keeping the destination in a set of three | pass the invariants and `EventuallyServes` (2.9M distinct states, 4 min) |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting

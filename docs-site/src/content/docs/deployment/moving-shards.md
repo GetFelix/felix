@@ -175,7 +175,8 @@ felixctl shard move cancel orders 0
 Any move can be cancelled, whoever started it:
 
 - **Staged.** The destination is dropped (unless the stream already kept a
-  copy there) and the leader carries on as if nothing happened.
+  copy there, or the shard has three copies with it, which a later trim takes
+  back to two) and the leader carries on as if nothing happened.
 - **Fenced.** The leader that stopped serves again, at a new generation. It
   still has every write it accepted, because nobody else has led the shard
   since. Publishes held for the move go to it, and subscriptions that were

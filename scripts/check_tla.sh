@@ -468,6 +468,16 @@ expectations=(
   "FelixShardMoveGiveUp pass"
   "FelixShardMoveGiveUpStall violates liveness"
   "FelixShardMoveGiveUpLeads violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpKeep pass"
+  "FelixShardMoveGiveUpKeepLive pass"
+  "FelixShardMoveGiveUpDrop violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpUnstage violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpTwoDrop violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpTwoKeep violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpFourDrop pass"
+  "FelixShardMoveGiveUpFailoverDrop pass"
+  "FelixShardMoveGiveUpFailoverStall violates liveness"
+  "FelixShardMoveGiveUpFailoverLive pass"
   "FelixShardUnifiedTwoRotated pass"
   "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
   "FelixShardUnifiedCpLiveMoveRotated pass"
@@ -592,6 +602,11 @@ fi
 # A configuration missing here weighs one, so it is never left to
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
+  "FelixShardMoveGiveUpKeep 22"
+  "FelixShardMoveGiveUpKeepLive 22"
+  "FelixShardMoveGiveUpFailoverLive 13"
+  "FelixShardMoveGiveUpFailoverDrop 3"
+  "FelixShardMoveGiveUpFourDrop 30"
   "FelixShardElectUnclean 22"
   "FelixShardElectUncleanNoStartRecord 12"
   "FelixShardElectUncleanContinuingDoubted 40"

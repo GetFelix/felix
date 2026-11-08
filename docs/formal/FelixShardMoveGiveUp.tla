@@ -28,17 +28,29 @@
 (* finds an acknowledged record gone (FelixShardMoveGiveUpLeads.cfg). The  *)
 (* retake is safe because the broker refuses, not because of the timeout.  *)
 (*                                                                         *)
-(* Abstractions: three seats, all in the set; the successor is one of      *)
-(* them, and stays in it after the retake, as `move_step` keeps it. A      *)
-(* retake that dropped a destination holding what the leader lost would    *)
-(* hide it from the next probe; the fixed set does not model that drop.    *)
+(* Below three seats' worth of replication factor the set starts one       *)
+(* above it, as with a staged destination. A move given up keeps its       *)
+(* destination in a set of three (`keeps_destination` in moves.rs): a      *)
+(* record can be acknowledged on the leader and the destination alone, and *)
+(* the next probe measures only the set it is given. A later trim fence    *)
+(* drops the extra copy once the rest hold the leader's whole log (`trim`  *)
+(* in moves.rs). With `DropsDestination` the fence timeout's retake drops  *)
+(* it instead, and with `UnstageDrops` a staged move given up before its   *)
+(* fence does; TLC finds an acknowledged record gone either way            *)
+(* (FelixShardMoveGiveUpDrop.cfg, FelixShardMoveGiveUpUnstage.cfg). Kept,  *)
+(* the staged undo only names the leader again with the same set, and the  *)
+(* model leaves it out.                                                    *)
+(*                                                                         *)
+(* Abstractions: the successor is one of the seats, already in the set. A  *)
+(* cut-over keeps the set; the real one cuts it to the factor through a    *)
+(* pending set change, which FelixShard.tla models.                        *)
 (* Only a broker that leads, fences or drains crashes, and every crash is  *)
 (* unclean: any suffix may go. A given-up copy answers no fence until a    *)
 (* newer leader ships to it (`refuse_short_copy` in replica.rs). Placement *)
 (* reads the brokers' state directly, and a probe measures every follower. *)
 (* Leases are left out: a promoted leader fences a majority.               *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Nodes,      \* the seats
@@ -56,14 +68,42 @@ No == FALSE
 RetakeGivenUp == TRUE
 \* Unsafe: the named leader leads a given-up copy without the probe.
 LeadsGivenUp == FALSE
+\* The replication factor. Below the seats, the set starts above it.
+Replication == Cardinality(Nodes)
+One == 1
+Two == 2
+Three == 3
+\* Unsafe: the fence timeout's retake drops the destination when the set
+\* is above the factor.
+DropsDestination == FALSE
+\* Unsafe: a staged move given up before its fence drops the destination.
+UnstageDrops == FALSE
+\* Placement fails the shard over from a leader it takes for dead, as
+\* `keep_replicas` in plan.rs does. With `FailoverDrops` the failover drops
+\* a copy from a set above the factor, which stalls the shard
+\* (FelixShardMoveGiveUpFailoverStall.cfg) but loses no record.
+DeadFailover == FALSE
+FailoverDrops == FALSE
+\* Crashes only while a move with its destination staged above the factor is
+\* fenced. In a set of two a leader's unclean crash stalls the shard whatever
+\* the move rule, as its follower cannot fence a given-up copy, so a liveness
+\* check at a factor of two uses this.
+CrashesInMove == FALSE
+\* Crashes only while the set is above the factor, for the same reason.
+CrashesAboveFactor == FALSE
 
 ASSUME First \in Nodes /\ NoNode \notin Nodes
+
+\* The seats other than First are interchangeable, for a large set's safety
+\* check.
+Seats == Permutations(Nodes \ {First})
 
 Start(g) == [g |-> g, w |-> 0]
 Range(s) == {s[i] : i \in DOMAIN s}
 Max(S) == CHOOSE x \in S : \A y \in S : y <= x
 Min2(a, b) == IF a < b THEN a ELSE b
-Majority(X) == 2 * Cardinality(X) > Cardinality(Nodes)
+\* X holds a majority of the set S.
+MajorityIn(X, S) == 2 * Cardinality(X \cap S) > Cardinality(S)
 LastGen(s) == IF s = <<>> THEN 0 ELSE s[Len(s)].g
 Prefix(s, j) == SubSeq(s, 1, j)
 Common(s, t) == Max({j \in 0..Min2(Len(s), Len(t)) : Prefix(s, j) = Prefix(t, j)})
@@ -79,16 +119,18 @@ VARIABLES
     ans,        \* a fencing broker's answers: the logs it was sent
     gaveUp,     \* the generation each broker gave its copy up at; 0 for none
     reclaimAt,  \* the generation a probe found no follower ahead of it; 0 for none
+    bset,       \* the set each broker took with its generation
     cpGen, cpLeader,
+    cpSet,      \* the set placement names
     cpKind,     \* how the named leader takes cpGen: "fence", "cutover" or "move"
     cpDraining, cpSucc,
     drained,    \* the leader reported drained at cpGen, its successor level with it
     report,     \* the newest give-up report: [gen, pos], gen 0 for none
     moves, acked, opened, writes, crashes
 
-vars == <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, cpGen, cpLeader, cpKind,
+vars == <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, bset, cpGen, cpLeader, cpSet, cpKind,
           cpDraining, cpSucc, drained, report, moves, acked, opened, writes, crashes>>
-cpVars == <<cpGen, cpLeader, cpKind, cpDraining, cpSucc, drained, moves>>
+cpVars == <<cpGen, cpLeader, cpSet, cpKind, cpDraining, cpSucc, drained, moves>>
 
 NoAns == [n \in Nodes |-> <<>>]
 NoReport == [gen |-> 0, pos |-> [n \in Nodes |-> <<>>]]
@@ -101,7 +143,8 @@ Init ==
     /\ ans = [n \in Nodes |-> [has |-> {}, logs |-> NoAns]]
     /\ gaveUp = [n \in Nodes |-> 0]
     /\ reclaimAt = [n \in Nodes |-> 0]
-    /\ cpGen = 1 /\ cpLeader = First /\ cpKind = "fence"
+    /\ bset = [n \in Nodes |-> Nodes]
+    /\ cpGen = 1 /\ cpLeader = First /\ cpSet = Nodes /\ cpKind = "fence"
     /\ cpDraining = FALSE /\ cpSucc = NoNode /\ drained = FALSE
     /\ report = NoReport
     /\ moves = 0 /\ acked = {} /\ opened = {<<1, First>>} /\ writes = 0 /\ crashes = 0
@@ -115,14 +158,14 @@ Write(l) ==
     /\ mode[l] = "open" /\ writes < MaxWrites
     /\ writes' = writes + 1
     /\ log' = [log EXCEPT ![l] = Append(@, [g |-> bgen[l], w |-> writes + 1])]
-    /\ UNCHANGED <<promised, bgen, mode, ans, gaveUp, reclaimAt, report, acked, opened, crashes>>
+    /\ UNCHANGED <<promised, bgen, mode, ans, gaveUp, reclaimAt, bset, report, acked, opened, crashes>>
     /\ UNCHANGED cpVars
 
 \* A batch: the leader's log from where the two agree, or just its
 \* generation. A broker leading below it stops; a given-up copy the batch
 \* reached holds a prefix of a newer leader's log and is not given up any more.
 Ship(l, m) ==
-    /\ Leading(l) /\ m /= l
+    /\ Leading(l) /\ m /= l /\ m \in bset[l]
     /\ promised[m] <= bgen[l]
     /\ \E k \in Common(log[m], log[l])..Len(log[l]) :
         /\ k > Common(log[m], log[l]) \/ promised[m] < bgen[l]
@@ -133,7 +176,7 @@ Ship(l, m) ==
             /\ bgen' = [bgen EXCEPT ![m] = 0]
        ELSE UNCHANGED <<mode, bgen>>
     /\ gaveUp' = [gaveUp EXCEPT ![m] = IF @ < bgen[l] THEN 0 ELSE @]
-    /\ UNCHANGED <<ans, reclaimAt, report, acked, opened, writes, crashes>>
+    /\ UNCHANGED <<ans, reclaimAt, bset, report, acked, opened, writes, crashes>>
     /\ UNCHANGED cpVars
 
 \* Acknowledge the client records of a prefix a majority holds at the
@@ -141,11 +184,11 @@ Ship(l, m) ==
 Ack(l) ==
     /\ Leading(l)
     /\ \E j \in 1..Len(log[l]), M \in SUBSET Nodes :
-        /\ l \in M /\ Majority(M)
+        /\ l \in M /\ M \subseteq bset[l] /\ MajorityIn(M, bset[l])
         /\ \A m \in M \ {l} : promised[m] = bgen[l] /\ Len(log[m]) >= j
                                /\ Prefix(log[m], j) = Prefix(log[l], j)
         /\ acked' = acked \cup {[r |-> log[l][i], at |-> bgen[l]] : i \in {x \in 1..j : log[l][x].w > 0}}
-    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, report, opened, writes, crashes>>
+    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, bset, report, opened, writes, crashes>>
     /\ UNCHANGED cpVars
 
 \* A broker that leads, fences or drains crashes uncleanly and restarts at
@@ -153,6 +196,8 @@ Ack(l) ==
 \* generation it had accepted.
 Crash(n) ==
     /\ crashes < MaxCrashes /\ mode[n] /= "idle"
+    /\ CrashesInMove => cpDraining /\ cpSucc /= NoNode /\ Cardinality(cpSet) > Replication
+    /\ CrashesAboveFactor => Cardinality(cpSet) > Replication
     /\ \E k \in 0..Len(log[n]) : log' = [log EXCEPT ![n] = Prefix(@, k)]
     /\ mode' = [mode EXCEPT ![n] = "idle"]
     /\ bgen' = [bgen EXCEPT ![n] = 0]
@@ -160,7 +205,7 @@ Crash(n) ==
     /\ gaveUp' = [gaveUp EXCEPT ![n] = promised[n]]
     /\ reclaimAt' = [reclaimAt EXCEPT ![n] = 0]
     /\ crashes' = crashes + 1
-    /\ UNCHANGED <<promised, report, acked, opened, writes>>
+    /\ UNCHANGED <<promised, bset, report, acked, opened, writes>>
     /\ UNCHANGED cpVars
 
 \* `may_lead`: a given-up copy leads only at a generation newer than a probe
@@ -182,6 +227,7 @@ Take(n) ==
     /\ cpLeader = n /\ promised[n] < cpGen /\ CanTake(n)
     /\ promised' = [promised EXCEPT ![n] = cpGen]
     /\ bgen' = [bgen EXCEPT ![n] = cpGen]
+    /\ bset' = [bset EXCEPT ![n] = cpSet]
     /\ CASE cpKind = "move" ->
               /\ mode' = [mode EXCEPT ![n] = "draining"]
               /\ UNCHANGED <<log, ans, opened, gaveUp, reclaimAt>>
@@ -200,13 +246,13 @@ Take(n) ==
 \* A member answers a fence at a newer generation than it accepted, with its
 \* log, and stops leading. A given-up copy does not answer.
 Answer(c, m) ==
-    /\ mode[c] = "fencing" /\ m /= c /\ m \notin ans[c].has
+    /\ mode[c] = "fencing" /\ m /= c /\ m \notin ans[c].has /\ m \in bset[c]
     /\ promised[m] < bgen[c] /\ gaveUp[m] = 0
     /\ promised' = [promised EXCEPT ![m] = bgen[c]]
     /\ ans' = [ans EXCEPT ![c] = [has |-> @.has \cup {m}, logs |-> [@.logs EXCEPT ![m] = log[m]]]]
     /\ mode' = [mode EXCEPT ![m] = "idle"]
     /\ bgen' = [bgen EXCEPT ![m] = 0]
-    /\ UNCHANGED <<log, gaveUp, reclaimAt, report, acked, opened, writes, crashes>>
+    /\ UNCHANGED <<log, gaveUp, reclaimAt, bset, report, acked, opened, writes, crashes>>
     /\ UNCHANGED cpVars
 
 Furthest(c) ==
@@ -216,18 +262,18 @@ Furthest(c) ==
 \* With a majority answered, the fencing broker catches up from the
 \* furthest answer and opens with a start record.
 Open(c) ==
-    /\ mode[c] = "fencing" /\ Majority(ans[c].has)
+    /\ mode[c] = "fencing" /\ MajorityIn(ans[c].has, bset[c])
     /\ log' = [log EXCEPT ![c] = Append(Furthest(c), Start(bgen[c]))]
     /\ mode' = [mode EXCEPT ![c] = "open"]
     /\ opened' = opened \cup {<<bgen[c], c>>}
     /\ ans' = [ans EXCEPT ![c] = [has |-> {}, logs |-> NoAns]]
     /\ gaveUp' = [gaveUp EXCEPT ![c] = 0]
     /\ reclaimAt' = [reclaimAt EXCEPT ![c] = 0]
-    /\ UNCHANGED <<promised, bgen, report, acked, writes, crashes>>
+    /\ UNCHANGED <<promised, bgen, bset, report, acked, writes, crashes>>
     /\ UNCHANGED cpVars
 
 \* The given-up leader placement names, unable to take the generation,
-\* probes every follower and reports the give-up at it with their positions
+\* probes every follower in the set it is given and reports the give-up at it with their positions
 \* (`reclaim::probe`). Finding none ahead, it may lead a newer generation.
 Probe(n) ==
     /\ cpLeader = n /\ gaveUp[n] > 0 /\ mode[n] = "idle"
@@ -235,18 +281,18 @@ Probe(n) ==
     /\ ~(promised[n] < cpGen /\ CanTake(n))
     /\ report' = [gen |-> cpGen, pos |-> log]
     /\ reclaimAt' = [reclaimAt EXCEPT ![n] =
-                       IF \A m \in Nodes \ {n} : ~Ahead(log[m], log[n]) THEN cpGen ELSE @]
-    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, acked, opened, writes, crashes>>
+                       IF \A m \in cpSet \ {n} : ~Ahead(log[m], log[n]) THEN cpGen ELSE @]
+    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, bset, acked, opened, writes, crashes>>
     /\ UNCHANGED cpVars
 
 \* The move's leader reports drained once its successor is level with it.
 Drained ==
-    /\ cpDraining /\ ~drained
+    /\ cpDraining /\ ~drained /\ cpSucc /= NoNode
     /\ mode[cpLeader] = "draining" /\ bgen[cpLeader] = cpGen
     /\ promised[cpSucc] = cpGen /\ log[cpSucc] = log[cpLeader]
     /\ drained' = TRUE
-    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, cpGen, cpLeader, cpKind,
-                   cpDraining, cpSucc, report, moves, acked, opened, writes, crashes>>
+    /\ UNCHANGED <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, bset, cpGen, cpLeader, cpSet,
+                   cpKind, cpDraining, cpSucc, report, moves, acked, opened, writes, crashes>>
 
 (***************************************************************************)
 (* Placement. Each write names a leader at the next generation.            *)
@@ -258,61 +304,107 @@ Name(n, kind) ==
     /\ cpKind' = kind
     /\ drained' = FALSE
 
-Brokers == <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, report, acked, opened, writes, crashes>>
+Brokers == <<log, promised, bgen, mode, ans, gaveUp, reclaimAt, bset, report, acked, opened, writes,
+             crashes>>
 
 \* A move fences on a report from its leader serving at the generation.
 CpFence(f) ==
-    /\ moves < MaxMoves /\ ~cpDraining /\ f /= cpLeader
+    /\ moves < MaxMoves /\ ~cpDraining /\ f /= cpLeader /\ f \in cpSet
     /\ mode[cpLeader] = "open" /\ bgen[cpLeader] = cpGen
     /\ Name(cpLeader, "move")
     /\ cpDraining' = TRUE /\ cpSucc' = f /\ moves' = moves + 1
+    /\ UNCHANGED <<cpSet>>
     /\ UNCHANGED Brokers
 
 CpCutOver ==
     /\ cpDraining /\ drained
-    /\ Name(cpSucc, "cutover")
     /\ cpDraining' = FALSE /\ cpSucc' = NoNode
-    /\ UNCHANGED <<moves>>
+    /\ cpSucc /= NoNode /\ Name(cpSucc, "cutover")
+    /\ UNCHANGED <<moves, cpSet>>
     /\ UNCHANGED Brokers
 
-\* The leader serves again at a new generation and the successor is dropped:
-\* a cancel, the fence timeout, or under `RetakeGivenUp` a give-up at the
-\* move's generation.
-Retake ==
+\* The leader serves again at a new generation and the move ends: a cancel,
+\* an abandon, the fence timeout, or under `RetakeGivenUp` a give-up at the
+\* move's generation. The destination stays in the set unless `drop`.
+Retake(drop) ==
     /\ cpDraining /\ ~drained
     /\ Name(cpLeader, "fence")
     /\ cpDraining' = FALSE /\ cpSucc' = NoNode
+    /\ cpSet' = IF drop /\ cpSucc /= NoNode /\ Cardinality(cpSet) > Replication
+                THEN cpSet \ {cpSucc} ELSE cpSet
     /\ UNCHANGED <<moves>>
     /\ UNCHANGED Brokers
 
-CpTimeout == Retake
+CpTimeout == Retake(DropsDestination)
 
-CpRetakeGivenUp == RetakeGivenUp /\ report.gen = cpGen /\ Retake
+CpRetakeGivenUp == RetakeGivenUp /\ report.gen = cpGen /\ Retake(FALSE)
+
+\* A set above the factor fences its serving leader (`trim_fence`), and
+\* drops a follower once every other one holds the leader's whole log at the
+\* fence's generation (`trim`). The leader is named again; its timeout and a
+\* give-up end the fence as for a move.
+CpTrimFence ==
+    /\ ~cpDraining /\ Cardinality(cpSet) > Replication
+    /\ mode[cpLeader] = "open" /\ bgen[cpLeader] = cpGen
+    /\ Name(cpLeader, "move")
+    /\ cpDraining' = TRUE /\ cpSucc' = NoNode
+    /\ UNCHANGED <<moves, cpSet>>
+    /\ UNCHANGED Brokers
+
+CpUnstage(f) ==
+    /\ UnstageDrops /\ ~cpDraining /\ Cardinality(cpSet) > Replication
+    /\ f \in cpSet \ {cpLeader}
+    /\ Name(cpLeader, "fence")
+    /\ cpSet' = cpSet \ {f}
+    /\ UNCHANGED <<cpDraining, cpSucc, moves>>
+    /\ UNCHANGED Brokers
+
+\* The leader is down past its lease; it crashed, and unlike a copy that is
+\* only down, a given-up copy answers no fence when it is back. Placement promotes a follower
+\* its last report named caught up, which may predate a record.
+CpDeadFailover(f, d) ==
+    /\ DeadFailover /\ ~cpDraining /\ Cardinality(cpSet) > Replication
+    /\ mode[cpLeader] = "idle" /\ gaveUp[cpLeader] > 0
+    /\ f \in cpSet \ {cpLeader} /\ d \in cpSet \ {cpLeader, f}
+    /\ Name(f, "fence")
+    /\ cpSet' = IF FailoverDrops THEN cpSet \ {d} ELSE cpSet
+    /\ UNCHANGED <<cpDraining, cpSucc, moves>>
+    /\ UNCHANGED Brokers
+
+CpTrim(t) ==
+    /\ cpDraining /\ cpSucc = NoNode /\ t \in cpSet \ {cpLeader}
+    /\ mode[cpLeader] = "draining" /\ bgen[cpLeader] = cpGen
+    /\ \A m \in cpSet \ {cpLeader, t} : promised[m] = cpGen /\ log[m] = log[cpLeader]
+    /\ Name(cpLeader, "fence")
+    /\ cpDraining' = FALSE /\ cpSet' = cpSet \ {t}
+    /\ UNCHANGED <<cpSucc, moves>>
+    /\ UNCHANGED Brokers
 
 \* With no move fenced, a give-up at the generation promotes the follower
 \* the probe found furthest and not behind the leader, or names the leader
 \* again when every follower is behind it (`reclaimable`).
 CpFailover(f) ==
-    /\ ~cpDraining /\ report.gen = cpGen /\ f /= cpLeader
+    /\ ~cpDraining /\ report.gen = cpGen /\ f /= cpLeader /\ f \in cpSet
     /\ NotBehind(report.pos[f], report.pos[cpLeader])
-    /\ \A o \in Nodes \ {cpLeader} : NotBehind(report.pos[f], report.pos[o])
+    /\ \A o \in cpSet \ {cpLeader} : NotBehind(report.pos[f], report.pos[o])
     /\ Name(f, "fence")
-    /\ UNCHANGED <<cpDraining, cpSucc, moves>>
+    /\ UNCHANGED <<cpSet, cpDraining, cpSucc, moves>>
     /\ UNCHANGED Brokers
 
 CpReclaim ==
     /\ ~cpDraining /\ report.gen = cpGen
-    /\ \A o \in Nodes \ {cpLeader} : Ahead(report.pos[cpLeader], report.pos[o])
+    /\ \A o \in cpSet \ {cpLeader} : Ahead(report.pos[cpLeader], report.pos[o])
     /\ Name(cpLeader, "fence")
-    /\ UNCHANGED <<cpDraining, cpSucc, moves>>
+    /\ UNCHANGED <<cpSet, cpDraining, cpSucc, moves>>
     /\ UNCHANGED Brokers
 
 Next ==
     \/ \E l \in Nodes : Write(l) \/ Ack(l) \/ Crash(l) \/ Take(l) \/ Open(l) \/ Probe(l)
     \/ \E l, m \in Nodes : Ship(l, m) \/ Answer(l, m)
     \/ Drained
-    \/ \E f \in Nodes : CpFence(f) \/ CpFailover(f)
-    \/ CpCutOver \/ CpTimeout \/ CpRetakeGivenUp \/ CpReclaim
+    \/ \E f \in Nodes : CpFence(f) \/ CpFailover(f) \/ CpTrim(f) \/ CpUnstage(f)
+    \/ \E f, d \in Nodes : CpDeadFailover(f, d)
+    \/ CpCutOver \/ CpTimeout \/ CpRetakeGivenUp \/ CpReclaim \/ CpTrimFence
 
 Spec == Init /\ [][Next]_vars
 
@@ -324,6 +416,7 @@ LiveSpec ==
     /\ \A l, m \in Nodes : WF_vars(Ship(l, m)) /\ WF_vars(Answer(l, m))
     /\ WF_vars(Drained) /\ WF_vars(CpCutOver) /\ WF_vars(CpRetakeGivenUp) /\ WF_vars(CpReclaim)
     /\ WF_vars(\E f \in Nodes : CpFailover(f))
+    /\ WF_vars(CpTrimFence) /\ WF_vars(\E t \in Nodes : CpTrim(t))
 
 (***************************************************************************)
 (* Properties.                                                             *)
@@ -339,7 +432,7 @@ AckedHeldByLeader ==
 
 \* Serving: open, with a majority still at its generation to take its
 \* batches. Two never do at once.
-Serving(n) == mode[n] = "open" /\ Majority({n} \cup {m \in Nodes : promised[m] = bgen[n]})
+Serving(n) == mode[n] = "open" /\ MajorityIn({n} \cup {m \in bset[n] : promised[m] = bgen[n]}, bset[n])
 AtMostOneServing == \A a, c \in Nodes : Serving(a) /\ Serving(c) => a = c
 
 \* Liveness: the leader placement names ends up serving, for good. At the
@@ -347,4 +440,6 @@ AtMostOneServing == \A a, c \in Nodes : Serving(a) /\ Serving(c) => a = c
 \* that reaches it is not held to this.
 Serves == mode[cpLeader] = "open" /\ bgen[cpLeader] = cpGen
 EventuallyServes == <>[](Serves \/ cpGen = MaxGen)
+\* A set above the factor is trimmed back to it.
+EventuallyAtFactor == <>[](Cardinality(cpSet) <= Replication \/ cpGen = MaxGen)
 =============================================================================

@@ -2031,6 +2031,20 @@ A destination that goes down or halts before the fence ends the move at once
 before the move: a destination the move added is dropped, and one that was
 already a follower stays, since its copy may be the only full one.
 
+A set of three keeps the destination. That is the set a stream with two
+replicas has while a move stages one, and the rule holds for every way a move
+ends without cutting over: `abandon`, `halted`, `timed_out`, the fence
+timeout, and a cancel before or after the fence. A leader with no earlier
+pass to compare against, one that just restarted for example, counts the
+destination toward the quorum. A record can then be acknowledged on the
+leader and the destination alone. Dropping the destination would leave it on
+the leader only, and a leader that then crashes uncleanly is named again
+without it. The set stays one copy above its factor until a trim fence drops
+a copy the others can do without, so it ends at two again. A failover from a
+dead leader keeps the destination in a set of three too: without it, the
+promoted follower's fence needs the dead leader's copy, and a copy that gave
+itself up in a crash answers none, so the shard would stall.
+
 A move that has been fenced is not timed out. The leader has stopped
 serving; going back means a new generation and every client following the
 shard twice, while going on waits for at most the lag bound's worth of copy.
@@ -2180,7 +2194,8 @@ through the fence and the cut-over, and a timeout abandons it the same way.
 **Cancelling** depends on how far the move has got:
 
 - *Before the fence*, the destination is dropped, as a timeout would, unless
-  the stream already had it as a follower. A replacement drops the follower
+  the stream already had it as a follower or the set has three copies with it
+  (see above). A replacement drops the follower
   it was copying in.
 - *After the fence*, the leader that stopped serves again at a new
   generation (`retake`). Nobody else has led since the fence, so its log
