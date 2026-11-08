@@ -30,6 +30,9 @@
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
 //!
+//! `<durable root>/rotated-ids` names the ids this directory had before a
+//! crash rotated them while it kept every ballot. See [`record_rotated_id`].
+//!
 //! `<durable root>/copy-trust` names the copies a leader has vouched for
 //! since the last rotation, and the copies this broker led before a crash.
 //! See [`copy_trust`].
@@ -370,6 +373,50 @@ pub fn lost_copy(root: &Path) -> Result<Option<bool>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(StorageError::Io(err)),
     }
+}
+
+/// The rotated-ids record's name under the durable root. Not a directory, so
+/// shard discovery passes over it.
+pub const ROTATED_IDS_FILE_NAME: &str = "rotated-ids";
+const ROTATED_IDS_HEADER: &str = "rotated_ids\n";
+/// How many ids [`record_rotated_id`] keeps, newest first. A set naming an
+/// older one reads as naming a lost copy, which costs a readmission, no more.
+const ROTATED_IDS_KEPT: usize = 16;
+
+/// Record, durably, that this directory ran under `id` until a crash rotated
+/// it away and kept every ballot, so a set naming `id` names this directory's
+/// own copy. Call before the new id registers, and only for a rotation that
+/// [`record_lost_copy`] did not mark lost.
+pub fn record_rotated_id(root: &Path, id: StorageId) -> Result<()> {
+    let mut ids = rotated_ids(root)?;
+    ids.retain(|kept| *kept != id);
+    ids.insert(0, id);
+    ids.truncate(ROTATED_IDS_KEPT);
+    let mut body = String::from(ROTATED_IDS_HEADER);
+    for id in &ids {
+        body.push_str(&id.to_hex());
+        body.push('\n');
+    }
+    write_atomically(root, ROTATED_IDS_FILE_NAME, body.as_bytes(), true)
+}
+
+/// The ids [`record_rotated_id`] recorded under `root`, newest first. Empty
+/// without the file, or for one that does not decode, which claims no id as
+/// this directory's own.
+pub fn rotated_ids(root: &Path) -> Result<Vec<StorageId>> {
+    let bytes = match crate::fs::read(root.join(ROTATED_IDS_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    Ok(decode_rotated_ids(&bytes).unwrap_or_default())
+}
+
+pub(crate) fn decode_rotated_ids(bytes: &[u8]) -> Option<Vec<StorageId>> {
+    let body = std::str::from_utf8(bytes)
+        .ok()?
+        .strip_prefix(ROTATED_IDS_HEADER)?;
+    body.lines().map(StorageId::from_hex).collect()
 }
 
 /// The replaced-storage marker's raw bytes under `root`, or `None` without one.
