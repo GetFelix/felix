@@ -225,6 +225,83 @@ fn a_quorum_failover_does_not_promote_a_move_destination() {
     assert_eq!(leader, "broker-b");
 }
 
+/// **A move's destination that fences the promotion is promoted.** The move
+/// fenced the leader toward broker-b, a member of the set, and the leader
+/// died; broker-c is behind. Passing over broker-b leaves the shard unplaced
+/// for good. A broker that fences every change of leader fences a majority
+/// and takes their tails before it serves, so its report predating a record
+/// the leader acknowledged loses nothing. One that does not say so, or a
+/// destination staged on top of the set, is still passed over.
+#[test]
+fn a_quorum_failover_promotes_a_destination_that_fences_the_promotion() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let fences = |id: &str| {
+        let mut node = node(id, NodeLifecycle::Live, None);
+        node.status
+            .features
+            .insert(felix_common::fleet::FENCES_EVERY_CHANGE.name().to_string());
+        node
+    };
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    moving.state = ShardState::Draining;
+    moving.successor = Some("broker-b".to_string());
+    let only_destination = CaughtUpNodes(["broker-b".to_string()].into());
+
+    let nodes = vec![fences("broker-b"), fences("broker-c")];
+    let planned = plan(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&moving),
+        &only_destination,
+    );
+    let (_, leader, replicas) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+        "the promotion fences the set the move left",
+    );
+
+    // A broker that does not say it fences every change opens as the cut-over.
+    let older = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        fences("broker-c"),
+    ];
+    let planned = plan(
+        &streams,
+        &[],
+        &older,
+        std::slice::from_ref(&moving),
+        &only_destination,
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "an unfenced destination was promoted"
+    );
+
+    // A copy staged on top of the set never counted toward an acknowledgement.
+    let mut staged = assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"]);
+    staged.successor = Some("broker-d".to_string());
+    let nodes = vec![fences("broker-b"), fences("broker-c"), fences("broker-d")];
+    let planned = plan(
+        &streams,
+        &[],
+        &nodes,
+        &[staged],
+        &CaughtUpNodes(["broker-d".to_string()].into()),
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "a staged destination was promoted"
+    );
+}
+
 /// **A replicated shard is never handed to a node that does not hold it.**
 ///
 /// The leader is gone and no replica is caught up. Placing the shard on a node

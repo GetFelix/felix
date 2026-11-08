@@ -5027,8 +5027,10 @@ its followers' answers without waiting for the report, so the last report
 can predate a record the followers hold. A promoted follower fences a
 majority and takes that record, but a move's destination on a broker from
 before every change of leader was fenced opens the shard as its cut-over,
-without the fence, so failover on such a stream never promotes the
-destination.
+without the fence. So failover on such a stream promotes the destination only
+when its broker reports `fences_every_change` and the destination is a member
+of the set, not a copy staged on top of it (`PromoteFencedDestination` in
+`docs/formal/FelixShard.tla`).
 
 > `a_move_switches_over_in_well_under_a_second`: with every broker on the
 > default sync interval and placement on a slow timer, the destination accepts
