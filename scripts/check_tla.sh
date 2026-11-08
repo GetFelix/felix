@@ -702,7 +702,7 @@ weights=(
   "FelixShardElectWipeNonVoterGroupsKeepDropsMark 19"
   "FelixShardElectWipeNonVoterIdlessCreation 12"
   "FelixShardElectWipeNonVoterCountersUnchecked 8"
-  "FelixShardElectWipeNonVoterReclaim 21"
+  "FelixShardElectWipeNonVoterReclaim 65"
   "FelixShardElectWipeNonVoterReclaimLive 5"
   "FelixShardElectSwapKeep1 27"
   "FelixShardElectSwapKeep2 8"
