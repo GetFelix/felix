@@ -6,7 +6,7 @@ name: Perf scratch (0.7.0 gate, main vs v0.6.2)
 
 on:
   push:
-    branches: [scratch/perf-070-gate]
+    branches: [scratch/perf-070-gate-main-vs-062]
 
 permissions:
   contents: read
