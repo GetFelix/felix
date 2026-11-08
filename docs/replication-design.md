@@ -4073,6 +4073,21 @@ follower is behind it:
   generation newer than the one its probe ran at, which can be past the one it
   gave up, and only once that probe found no follower ahead. A report from an older broker names no leader identity
   and is read as before.
+- **During a fenced move.** The give-up does not fail the shard over while a
+  move is fenced: failover passes the move's destination over, and the move
+  ends through its own steps. A leader that gave its copy up at the fence's
+  generation will never report drained, so placement ends the move at once
+  (`leader_gave_up` step): the leader is named again at a new generation, as
+  at the fence timeout, but the destination stays in the set as a follower,
+  even above the replication factor. It may be the only copy that holds what
+  the leader lost, and the next probe measures only the set it is given. The
+  broker leads that copy only if its probe found no follower ahead, as for a
+  reclaim. Otherwise it gives the new generation up too, and with no move
+  left placement promotes the follower the probe names caught up, the former
+  destination included. The safety rests on the broker's refusal, not
+  on how long placement waited: `FelixShardMoveGiveUp.tla` checks the rule,
+  and a broker that led a given-up copy without the probe loses an
+  acknowledged record there (`FelixShardMoveGiveUpLeads.cfg`).
 - **In the successor's fence.** The crashed leader answers no promotion fence
   from that copy until a newer leader has shipped to it, since counted in the
   successor's majority its short log could stand in for the follower that

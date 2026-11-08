@@ -112,6 +112,7 @@ impl MoveClock {
             | MoveStep::Cancel { .. }
             | MoveStep::Retake { .. }
             | MoveStep::FenceTimedOut { .. }
+            | MoveStep::LeaderGaveUp { .. }
             | MoveStep::Discard { .. } => {
                 self.moves.remove(key);
                 None
