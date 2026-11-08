@@ -535,3 +535,24 @@ fn seed_3_placement_cuts_the_power_instead_of_killing() {
     assert!(before_open("power-cut b"), "{outcome}");
     assert!(!before_open("kill b"), "{outcome}");
 }
+
+/// A crash that fires as the faults heal must not leave its broker down: the
+/// heal has already restarted everyone, so the crash's own restart is the
+/// only one left.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seeds_210_and_216_with_power_loss_serve_every_shard_after_a_crash_at_the_heal() {
+    for seed in [210, 216] {
+        log();
+        let outcome = run_seed(seed, SimConfig::for_seed(seed).with_power_loss());
+        assert!(!stalled(&outcome), "seed {seed} stalled:\n{outcome}");
+        assert!(
+            !found(&outcome, "election-settles"),
+            "seed {seed}:\n{outcome}"
+        );
+        assert!(!found(&outcome, "final-reads"), "seed {seed}:\n{outcome}");
+    }
+}
