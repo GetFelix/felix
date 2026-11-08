@@ -487,3 +487,62 @@ fn a_set_kept_above_its_factor_is_trimmed() {
         "{decision:?}"
     );
 }
+
+/// [`Fenced`] with broker-c halted at generation 3.
+struct HaltedC {
+    fenced: Fenced,
+    halt: crate::model::HaltedCopy,
+}
+
+impl CaughtUp for HaltedC {
+    fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
+        self.fenced.is_caught_up(key, node_id)
+    }
+
+    fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fenced.is_drained(key, generation)
+    }
+
+    fn reported_generation(&self, key: &ShardKey) -> Option<u64> {
+        self.fenced.reported_generation(key)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        self.fenced.as_of_millis()
+    }
+
+    fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.fenced.fenced_at_millis(key, generation)
+    }
+
+    fn halted(&self, _key: &ShardKey, node_id: &str) -> Option<&crate::model::HaltedCopy> {
+        (node_id == "broker-c").then_some(&self.halt)
+    }
+}
+
+/// A destination that halts after the fence stops being the successor, but
+/// a set of three keeps it until the trim.
+#[test]
+fn a_halted_destination_stays_in_a_set_of_three() {
+    let decision = decide_twice(
+        &live(&["broker-a", "broker-b", "broker-c"]),
+        staged_above_two(ShardState::Draining),
+        &HaltedC {
+            fenced: Fenced {
+                fenced_at: None,
+                drained: false,
+            },
+            halt: crate::model::HaltedCopy {
+                reason: "diverged".to_string(),
+                generation: 3,
+                since_millis: NOW,
+            },
+        },
+    );
+    let Decision::Move(MoveStep::Halted { .. }, next) = decision else {
+        panic!("not given up: {decision:?}");
+    };
+    assert_eq!(next.successor, None);
+    assert_eq!(next.state, ShardState::Draining);
+    assert_eq!(next.replicas, ["broker-b", "broker-c"], "dropped");
+}

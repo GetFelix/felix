@@ -545,6 +545,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardMoveGiveUpKeepLive.cfg` | the same with one write and the crash during the move, for liveness | pass the invariants, `EventuallyServes` and `EventuallyAtFactor` |
 | `FelixShardMoveGiveUpDrop.cfg` | the same with the fence timeout's retake dropping the destination | violate `AckedHeldByLeader` |
 | `FelixShardMoveGiveUpUnstage.cfg` | the same with a staged move given up before its fence dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpTwoDrop.cfg`, `FelixShardMoveGiveUpTwoKeep.cfg` | replication factor 1 with the destination staged as a second copy, dropped or kept | both violate `AckedHeldByLeader`: one copy is lost to an unclean crash either way, so a set of two drops the destination |
+| `FelixShardMoveGiveUpFourDrop.cfg` | replication factor 3 with the destination staged as a fourth copy, every exit dropping it | pass the invariants: a follower that stays holds every acknowledged record |
+| `FelixShardMoveGiveUpFailoverDrop.cfg` | a set of three whose leader is taken for dead, the failover dropping a follower | pass the invariants: the drop loses no record, it stalls |
+| `FelixShardMoveGiveUpFailoverStall.cfg` | the same for liveness | violate `EventuallyServes`: the promoted follower's fence needs the dead leader's given-up copy |
+| `FelixShardMoveGiveUpFailoverLive.cfg` | the failover keeping the destination in a set of three | pass the invariants and `EventuallyServes` (2.9M distinct states, 4 min) |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting

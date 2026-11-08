@@ -50,7 +50,7 @@
 (* reads the brokers' state directly, and a probe measures every follower. *)
 (* Leases are left out: a promoted leader fences a majority.               *)
 (***************************************************************************)
-EXTENDS Naturals, Sequences, FiniteSets
+EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Nodes,      \* the seats
@@ -70,19 +70,32 @@ RetakeGivenUp == TRUE
 LeadsGivenUp == FALSE
 \* The replication factor. Below the seats, the set starts above it.
 Replication == Cardinality(Nodes)
+One == 1
 Two == 2
+Three == 3
 \* Unsafe: the fence timeout's retake drops the destination when the set
 \* is above the factor.
 DropsDestination == FALSE
 \* Unsafe: a staged move given up before its fence drops the destination.
 UnstageDrops == FALSE
+\* Placement fails the shard over from a leader it takes for dead, as
+\* `keep_replicas` in plan.rs does. Unsafe with `FailoverDrops`: the
+\* failover drops a copy from a set above the factor.
+DeadFailover == FALSE
+FailoverDrops == FALSE
 \* Crashes only while a move with its destination staged above the factor is
 \* fenced. In a set of two a leader's unclean crash stalls the shard whatever
 \* the move rule, as its follower cannot fence a given-up copy, so a liveness
 \* check at a factor of two uses this.
 CrashesInMove == FALSE
+\* Crashes only while the set is above the factor, for the same reason.
+CrashesAboveFactor == FALSE
 
 ASSUME First \in Nodes /\ NoNode \notin Nodes
+
+\* The seats other than First are interchangeable, for a large set's safety
+\* check.
+Seats == Permutations(Nodes \ {First})
 
 Start(g) == [g |-> g, w |-> 0]
 Range(s) == {s[i] : i \in DOMAIN s}
@@ -183,6 +196,7 @@ Ack(l) ==
 Crash(n) ==
     /\ crashes < MaxCrashes /\ mode[n] /= "idle"
     /\ CrashesInMove => cpDraining /\ cpSucc /= NoNode /\ Cardinality(cpSet) > Replication
+    /\ CrashesAboveFactor => Cardinality(cpSet) > Replication
     /\ \E k \in 0..Len(log[n]) : log' = [log EXCEPT ![n] = Prefix(@, k)]
     /\ mode' = [mode EXCEPT ![n] = "idle"]
     /\ bgen' = [bgen EXCEPT ![n] = 0]
@@ -344,6 +358,18 @@ CpUnstage(f) ==
     /\ UNCHANGED <<cpDraining, cpSucc, moves>>
     /\ UNCHANGED Brokers
 
+\* The leader is down past its lease; it crashed, and a given-up copy
+\* answers no fence, as a down one does not. Placement promotes a follower
+\* its last report named caught up, which may predate a record.
+CpDeadFailover(f, d) ==
+    /\ DeadFailover /\ ~cpDraining /\ Cardinality(cpSet) > Replication
+    /\ mode[cpLeader] = "idle" /\ gaveUp[cpLeader] > 0
+    /\ f \in cpSet \ {cpLeader} /\ d \in cpSet \ {cpLeader, f}
+    /\ Name(f, "fence")
+    /\ cpSet' = IF FailoverDrops THEN cpSet \ {d} ELSE cpSet
+    /\ UNCHANGED <<cpDraining, cpSucc, moves>>
+    /\ UNCHANGED Brokers
+
 CpTrim(t) ==
     /\ cpDraining /\ cpSucc = NoNode /\ t \in cpSet \ {cpLeader}
     /\ mode[cpLeader] = "draining" /\ bgen[cpLeader] = cpGen
@@ -376,6 +402,7 @@ Next ==
     \/ \E l, m \in Nodes : Ship(l, m) \/ Answer(l, m)
     \/ Drained
     \/ \E f \in Nodes : CpFence(f) \/ CpFailover(f) \/ CpTrim(f) \/ CpUnstage(f)
+    \/ \E f, d \in Nodes : CpDeadFailover(f, d)
     \/ CpCutOver \/ CpTimeout \/ CpRetakeGivenUp \/ CpReclaim \/ CpTrimFence
 
 Spec == Init /\ [][Next]_vars

@@ -2029,7 +2029,10 @@ destination toward the quorum. A record can then be acknowledged on the
 leader and the destination alone. Dropping the destination would leave it on
 the leader only, and a leader that then crashes uncleanly is named again
 without it. The set stays one copy above its factor until a trim fence drops
-a copy the others can do without, so it ends at two again.
+a copy the others can do without, so it ends at two again. A failover from a
+dead leader keeps the destination in a set of three too: without it, the
+promoted follower's fence needs the dead leader's copy, and a copy that gave
+itself up in a crash answers none, so the shard would stall.
 
 A move that has been fenced is not timed out. The leader has stopped
 serving; going back means a new generation and every client following the

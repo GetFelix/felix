@@ -3,7 +3,9 @@ use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use super::leadership::{Leadership, Owner, Shares};
-use super::moves::{DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, move_step};
+use super::moves::{
+    DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, keeps_destination, move_step,
+};
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
 use super::zones;
@@ -861,7 +863,8 @@ fn deposed_by_followers(
 }
 
 /// The followers of a fenced shard promoted to `promoted`: the previous set,
-/// the dead leader included, without a copy staged on top of it, and without
+/// the dead leader included, without a copy staged on top of it (kept in a
+/// set of three, see [`keeps_destination`]), and without
 /// a joining copy unless an acknowledgement may have needed it.
 ///
 /// The new leader serves once a majority of this set has taken its fence, and
@@ -882,14 +885,16 @@ fn keep_replicas<'a>(
     caught_up: &'a dyn CaughtUp,
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
-    // A copy staged on top of the set never counted toward an acknowledgement,
-    // so it goes, and failover ends its move. A destination that was already a
-    // replica did count and stays; told apart by the set's size, as
-    // `undo_staged` does. A joining copy counted too: beside an odd set every
+    // A copy staged on top of the set goes, and failover ends its move, unless
+    // the set is three (`keeps_destination`): a leader with no earlier pass
+    // counts it, so a record may be on the dead leader and it alone.
+    // A destination that was already a replica did count and stays; told
+    // apart by the set's size, as `undo_staged` does. A joining copy counted too: beside an odd set every
     // acknowledging majority still holds a majority without it, but beside an
     // even one (a restore topping up two) the leader and the newcomer were a
     // majority alone, so it stays. `Counted` in `docs/formal/FelixShard.tla`.
-    let added_successor = previous.replicas.len() >= replication_factor.max(1) as usize;
+    let added_successor = previous.replicas.len() >= replication_factor.max(1) as usize
+        && !keeps_destination(previous);
     let seated = previous
         .nodes()
         .filter(|node| previous.joining.as_ref() != Some(*node))

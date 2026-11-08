@@ -5008,7 +5008,14 @@ with no earlier pass counts the destination toward the quorum, so a record
 can be acknowledged on the leader and the destination alone; dropped, it
 would be on the leader only, and a leader that then crashed uncleanly would
 be named again without it. The set stays above its factor until a trim fence
-drops a copy the rest can do without. `FelixShardMoveGiveUpDrop.cfg` and
+drops a copy the rest can do without. A failover from a dead leader keeps it
+too: dropped, it leaves a set of two whose fence needs the dead leader's
+given-up copy, which answers none, so the shard stalls
+(`FelixShardMoveGiveUpFailoverStall.cfg`). A set of four drops the
+destination safely, since a follower that stays holds every acknowledged
+record (`FelixShardMoveGiveUpFourDrop.cfg`), and a set of two is a one-copy
+shard that an unclean crash loses from either way
+(`FelixShardMoveGiveUpTwoKeep.cfg`). `FelixShardMoveGiveUpDrop.cfg` and
 `FelixShardMoveGiveUpUnstage.cfg` show the loss, and
 `FelixShardMoveGiveUpKeep.cfg` and `FelixShardMoveGiveUpKeepLive.cfg` the
 fix. A
