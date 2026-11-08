@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794103973750,
+  "lastUpdate": 1794104581083,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49920,6 +49920,58 @@ window.BENCHMARK_DATA = {
             "range": "16736.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1200307.04\nmean: 1201961.88\nstdev: 16736.22\ncv: 1.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f99c0b052b59eb7c1d22b0c0ebcf8c9953a8e0d",
+          "message": "fix(replication): a given-up leader's probe reports which followers hold the start (#2120)\n\n* fix(replication): a given-up leader's probe reports which followers hold the start\n\nA wiped copy re-admitted as a learner counts again only once its\ngeneration's leader reports it in holds_start. A leader that crashed\nbefore a pass said so only sends probe reports after its unclean restart,\nand those always sent holds_start empty, so the learner (often the one copy\nholding everything) was never promoted and the shard waited as\nNoCaughtUpReplica for good.\n\nThe probe now lists every follower whose fence answer ends at the\ngeneration it gave up on every log of the shard.\n\nFelixShardElectWipeNonVoterReclaim.cfg checks the rule (LearnerAdmitted\nplus safety); FelixShardElectWipeNonVoterReclaimPassOnly.cfg is the\nfailing twin with the old behaviour.\n\n* fix(replication): review fixes for the probe's holds_start\n\nLeave out a learner that answers the unified fence attesting it keeps no\npromise, tighten the tests to pin the every-log rule, split the model\ncheck into a safety config and a liveness pair, and say what the model\nleaves out.\n\n* docs(replication): note the probe's holds_start limits with elections; TLC weights\n\n* ci(tla): weights for the reclaim learner configs\n\n* ci(tla): weigh the reclaim safety configuration by its CI time\n\nIt took 43 minutes on a hosted runner, so it runs in a job of its own.",
+          "timestamp": "2026-11-08T02:19:23Z",
+          "tree_id": "3c82718fcc1106257cb9f48f25f8d83254bd1ab7",
+          "url": "https://github.com/GetFelix/felix/commit/7f99c0b052b59eb7c1d22b0c0ebcf8c9953a8e0d"
+        },
+        "date": 1794104580390,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 671567.78,
+            "range": "32777.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 671567.78\nmean: 666308.68\nstdev: 32777.15\ncv: 4.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 671567.78,
+            "range": "32777.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 671567.78\nmean: 666308.68\nstdev: 32777.15\ncv: 4.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156731.95,
+            "range": "5358.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156731.95\nmean: 155202.94\nstdev: 5358.12\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1567319.47,
+            "range": "53581.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1567319.47\nmean: 1552029.34\nstdev: 53581.17\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
