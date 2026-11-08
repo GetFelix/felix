@@ -253,6 +253,57 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     assert!(!kept, "an older build's replaced directory");
 }
 
+/// **A crash that keeps every ballot records the id it rotated away**, so a
+/// set still naming that id names this directory's own copy. A restore or a
+/// wiped directory records nothing: the copy such a set names is lost.
+#[test]
+fn only_a_crash_that_keeps_every_ballot_records_the_id_it_rotated() {
+    let relaxed = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..Default::default()
+    };
+    let rotated_ids = |root: &Path| felix_storage::run_state::rotated_ids(root).expect("read");
+    let crash = |root: &Path, registered: Option<&Registered>| {
+        forget_boot(root).expect("forget the boot");
+        let (id, rotated, _, _) = start_run(root, &relaxed, registered, None).expect("crash");
+        assert!(rotated);
+        id
+    };
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (first, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
+    assert!(rotated_ids(root.path()).is_empty());
+    let second = crash(root.path(), Some(&registered_as(Some(first))));
+    assert_eq!(rotated_ids(root.path()), vec![first]);
+    crash(root.path(), Some(&registered_as(Some(second))));
+    assert_eq!(rotated_ids(root.path()), vec![second, first]);
+
+    let other = StorageId::from_bytes([9; 16]);
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, _) = start_run(
+        root.path(),
+        &relaxed,
+        Some(&registered_as(Some(other))),
+        None,
+    )
+    .expect("wiped");
+    crash(root.path(), Some(&registered_as(Some(id))));
+    assert!(rotated_ids(root.path()).is_empty(), "a wiped directory");
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
+    felix_storage::run_state::record_registration(root.path(), 2).expect("record");
+    mark_clean_stop(root.path(), id).expect("clean stop");
+    let restored = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    let (_, rotated, _, _) =
+        start_run(root.path(), &relaxed, Some(&restored), None).expect("restored");
+    assert!(rotated);
+    assert!(rotated_ids(root.path()).is_empty(), "a restored directory");
+}
+
 /// **A fence answer attests kept ballots only from a directory that never
 /// lost one.** A clean start and a crash of the directory the control plane
 /// names keep every ballot; a wiped directory, a restored one, and a crash

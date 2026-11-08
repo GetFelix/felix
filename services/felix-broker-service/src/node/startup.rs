@@ -38,6 +38,9 @@ pub(super) struct Stored {
     /// The directory's record of trusted and doubted copies, which outlives
     /// the process. `None` without a durable directory.
     pub(super) copy_trust: Option<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
+    /// The ids this directory had before a crash rotated them away, keeping
+    /// its ballots.
+    pub(super) rotated_ids: Vec<felix_storage::StorageId>,
 }
 
 /// Open storage and the broker over it.
@@ -52,8 +55,13 @@ pub(super) fn open_storage(
     // Read after the run began, which distrusts every copy when it rotated
     // the id. Live, so a rotation later in the run distrusts them here too.
     let copy_trust = root
-        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(&root))
+        .as_ref()
+        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(root))
         .transpose()?;
+    let rotated_ids = match &root {
+        Some(root) => felix_storage::run_state::rotated_ids(root)?,
+        None => Vec::new(),
+    };
     Ok(Stored {
         broker,
         durable_storage,
@@ -62,6 +70,7 @@ pub(super) fn open_storage(
         replaced_storage,
         kept,
         copy_trust,
+        rotated_ids,
     })
 }
 
@@ -99,11 +108,13 @@ pub(super) async fn wire_broker(
         replaced_storage,
         kept,
         copy_trust,
+        rotated_ids,
     } = stored;
     let ingress_router = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
     quorum_marks.set_local_storage(storage_id, replaced_storage);
+    quorum_marks.set_rotated_storage(rotated_ids);
     // Left unset, which attests nothing, until a deferred restore check sets
     // them.
     if !kept.deferred {
@@ -250,3 +261,6 @@ pub(super) fn bind_read_check<R: PeerRequester + Send + Sync + 'static>(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

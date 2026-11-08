@@ -69,6 +69,20 @@ FaultUntil == MaxGen
 \* crashes only while that fence is pending, and the control plane fails
 \* over only once it has, so a stall TLC finds goes through it.
 ReadmitFirst == FALSE
+\* `MoveFirst`: the two budgeted starts are a move by the serving `First` (a
+\* set change that stages a learner) and then the learner's cut-over, a set
+\* change that leaves the move's set. In between, once the move opened, a
+\* voter other than `First` crashes uncleanly. The control plane fails over
+\* only after both starts.
+MoveFirst == FALSE
+\* `RotatedRefuses`: a copy whose id rotated on an unclean crash refuses
+\* every fence as a non-voter. The code did this for a fence carrying a set
+\* that names its old id; this is the coarse form.
+RotatedRefuses == FALSE
+\* `RotatedForgets`: an unclean crash also loses the copy's ballot, yet the
+\* copy still answers as the voter its old id named. The code counts a rotated
+\* copy only while its directory kept every ballot.
+RotatedForgets == FALSE
 \* `DropEvidenced`: a set started between the anchor and the fence is not
 \* fenced when its leader answers with a kept ballot above it and a trusted
 \* log holding no record of it: it never opened and never will.
@@ -219,6 +233,12 @@ Start(f) ==
         LET opt == IF o.si = Len(starts) + 1 THEN [o EXCEPT !.sg = g] ELSE o
         IN /\ ReadmitFirst => /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.si = Len(starts) + 1
                         /\ \E m \in o.S \ {f} : rotAt[m] > 0
+           /\ MoveFirst =>
+                /\ o.si = Len(starts) + 1
+                /\ IF budget.starts = MaxStarts
+                   THEN f = First /\ openAt[f] > 0 /\ g = openAt[f] + 1 /\ o.L /= {}
+                   ELSE /\ f \in starts[Len(starts)].L
+                        /\ \E m \in starts[Len(starts)].S \ {First} : rotAt[m] > 0
            /\ BeginFence(f, g, [g |-> g, l |-> f, S |-> opt.S, L |-> opt.L, sg |-> opt.sg, si |-> opt.si])
     /\ budget' = [budget EXCEPT !.starts = @ - 1]
     /\ UNCHANGED <<log, trusted, keptFrom, lostAt, batchSince, opened, served, acked, ackedAt, rotAt, note, writes>>
@@ -228,6 +248,7 @@ Start(f) ==
 CpStart(f) ==
     /\ LiveCp /\ ~Serving /\ TopGen < MaxGen
     /\ ReadmitFirst => budget.starts = 0 /\ rotAt[First] > 0
+    /\ MoveFirst => budget.starts = 0
     /\ LET last == starts[Len(starts)]
        IN BeginFence(f, TopGen + 1, [g |-> TopGen + 1, l |-> f, S |-> last.S, L |-> last.L,
                                      sg |-> last.sg, si |-> last.si])
@@ -252,6 +273,7 @@ Answer(f, m) ==
     /\ ballot[m].g < fence[f].g \/ ballot[m] = [g |-> fence[f].g, l |-> f]
     /\ setGen[m] <= StartOf(f).sg
     /\ ~LegacyRefuses(f, m)
+    /\ ~(RotatedRefuses /\ rotAt[m] > 0)
     /\ ans' = [ans EXCEPT ![f][m] = Snapshot(m)]
     /\ ballot' = [ballot EXCEPT ![m] = [g |-> fence[f].g, l |-> f]]
     /\ setGen' = [setGen EXCEPT ![m] = StartOf(f).sg]
@@ -456,12 +478,14 @@ Stop(n) ==
 UncleanCrash(n) ==
     /\ FaultsAllowed /\ budget.unclean > 0
     /\ ReadmitFirst => n /= First \/ (budget.starts = 0 /\ fence[n].g > 0)
+    /\ MoveFirst => n /= First /\ budget.starts = MaxStarts - 1 /\ openAt[First] > 1
     /\ \E j \in 0..Len(log[n]) : log' = [log EXCEPT ![n] = Prefix(@, j)]
     /\ trusted' = [trusted EXCEPT ![n] = FALSE]
     /\ rotAt' = [rotAt EXCEPT ![n] = ballot[n].g]
+    /\ ballot' = IF RotatedForgets THEN [ballot EXCEPT ![n] = NoBallot] ELSE ballot
     /\ Stop(n)
     /\ budget' = [budget EXCEPT !.unclean = @ - 1]
-    /\ UNCHANGED <<ballot, keptFrom, lostAt, batchSince, setGen, starts, opened, served,
+    /\ UNCHANGED <<keptFrom, lostAt, batchSince, setGen, starts, opened, served,
                    acked, ackedAt, note, writes>>
 
 Lose(n) ==

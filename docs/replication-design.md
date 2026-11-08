@@ -787,8 +787,32 @@ attests no trusted copy, without waiting for the next start.
 In the code a directory **kept** its ballots when it was never restored and
 never replaced a lost copy, and, after an unclean start, the control plane's
 record names the storage id it had before (`Kept` in
-`services/felix-broker-service/src/node/storage.rs`). A directory that lost
-them keeps that mark for good, so each of its copies counts again only once
+`services/felix-broker-service/src/node/storage.rs`).
+
+A storage id rotates for three reasons, and only the first keeps the ballots:
+
+- **An unclean crash** that may have lost acknowledged records. The ballots
+  are synced in every fsync mode, so they survive. The start records the id it
+  rotated away in `rotated-ids`, before the new id registers.
+- **A restore**: the directory is older than the node's last registration. Its
+  ballots rolled back. The `lost-copy` marker says `lost` for good.
+- **A wipe or a directory from elsewhere**: the control plane last registered
+  another id. Also `lost`.
+
+A set written before the crash still names the copy under its old id. Under
+`joint_fence` a set naming another id for a copy is the evidence of a wipe
+that makes the copy a learner (#1331), but not when the id is one in
+`rotated-ids` and the directory still keeps every ballot: that is the same
+copy, and it answers a fence as a voter of that set, with `kept_from` 0 and
+untrusted until a leader vouches for it (`UncleanCrash` in
+`FelixShardUnified.tla`). Taken for a wipe, it would leave a two-voter set
+being left one promise short for good: a move stages a successor, the other
+voter crashes uncleanly, and the cut-over's fence never opens
+(`FelixShardUnifiedCpLiveMoveRotatedLegacy.cfg`;
+`FelixShardUnifiedCpLiveMoveRotated.cfg` passes with the rule).
+`FelixShardUnifiedTwoRotated.cfg` checks that two fences at one generation
+still meet when voters rotate between their answers. A directory that lost
+its ballots keeps its lost-copy mark for good, so each of its copies counts again only once
 readmitted: the copy's log counts a set newer than any ballot it took
 unkept that names it under its storage id now, as a voter, and holds that
 set's generation start, shipped by that set's leader or a later one. With no
@@ -5267,8 +5291,10 @@ Once it is finalized on a broker that offers `ELECTION`:
   refuses older leaders but counts for nothing. A restored directory can
   pass every refusal and answer from a new storage id, though before the
   restore it may have promised this generation to another leader.
-- A copy doubted after an unclean crash, a learner because its storage id
-  rotated, answers a continuing leader's fence, and attests, only when its
+- A copy doubted after an unclean crash, a learner because the set names it
+  under an id the start did not record in `rotated-ids` (one older than the
+  16 entries kept, or a file that did not decode), answers a continuing
+  leader's fence, and attests, only when its
   ballot names that leader at the generation before or at this one, and the crash kept
   every ballot. It promises and stays doubted until a leader ships to it.
   Every other copy refuses as before. A broker knows the crash kept every
