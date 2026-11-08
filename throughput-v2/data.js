@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794108757127,
+  "lastUpdate": 1794177656722,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50024,6 +50024,58 @@ window.BENCHMARK_DATA = {
             "range": "9225.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 829289.07\nmean: 827161.30\nstdev: 9225.66\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "addab983cb6976bbafc75ead69448aee95662b01",
+          "message": "fix(sim): restart a broker a fault crashes as the run heals (#2129)\n\nA crash fault injected in the same instant as the heal took its broker\ndown after the heal had restarted everyone, and nothing brought it back,\nso its shards never settled (power-loss seeds 210 and 216). Skip the\ncrash once the heal has begun, and restart after any stop that lands\nlate, not only a power cut.",
+          "timestamp": "2026-11-08T14:33:46-08:00",
+          "tree_id": "437c09132e02e28631e4c95deaebfb3276a5226c",
+          "url": "https://github.com/GetFelix/felix/commit/addab983cb6976bbafc75ead69448aee95662b01"
+        },
+        "date": 1794177655884,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346750.72,
+            "range": "10332.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346750.72\nmean: 352340.13\nstdev: 10332.65\ncv: 2.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346750.72,
+            "range": "10332.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346750.72\nmean: 352340.13\nstdev: 10332.65\ncv: 2.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81942.6,
+            "range": "4397.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81942.60\nmean: 80103.49\nstdev: 4397.23\ncv: 5.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819426.04,
+            "range": "43972.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819426.04\nmean: 801034.93\nstdev: 43972.26\ncv: 5.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
