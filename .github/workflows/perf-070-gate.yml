@@ -148,7 +148,7 @@ jobs:
           for s in a b; do
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' $s > $p/wrap-$s.sh
           done
-          sed -i "2i export FELIX_UNIFIED_FENCE=false" $p/wrap-a.sh; chmod +x $p/wrap-*.sh
+          sed -i "2i export FELIX_UNIFIED_FENCE=0" $p/wrap-a.sh; chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
             if [ $(( (round + ${{ matrix.shard }}) % 2 )) -eq 0 ]; then sides="a b"; else sides="b a"; fi
             for side in $sides; do
