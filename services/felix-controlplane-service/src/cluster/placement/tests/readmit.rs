@@ -183,6 +183,63 @@ fn failover_skips_a_replaced_member_until_its_leader_shows_it_holding_the_start(
     assert_eq!(leader_after(&learner, &[], false), "broker-c");
 }
 
+/// **A given-up leader's probe admits a learner too.** broker-a led the
+/// generation that re-admitted broker-c and crashed before a pass reported
+/// broker-c holding its start, so its probe is the only report it can still
+/// send. broker-b is behind, so broker-c is the one copy that can take over.
+#[test]
+fn a_given_up_leaders_probe_admits_a_learner_holding_the_start() {
+    let nodes = vec![
+        registered("broker-a", 1, NodeLifecycle::Live),
+        registered("broker-b", 2, NodeLifecycle::Live),
+        registered("broker-c", 33, NodeLifecycle::Live),
+    ];
+    let learner = ShardAssignment {
+        learners: ["broker-c".to_string()].into(),
+        ..named(
+            "broker-a",
+            &["broker-b", "broker-c"],
+            &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        )
+    };
+    let decision = |holds: &[&str]| {
+        let said = Said {
+            generation: 5,
+            leader: "broker-a",
+            offsets: &[("broker-a", 9), ("broker-b", 5), ("broker-c", 11)],
+            seen: &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+            holds,
+        };
+        let incarnations = nodes
+            .iter()
+            .map(|n| (n.node_id.clone(), n.status.incarnation))
+            .collect();
+        let report = ReplicaReport {
+            given_up: true,
+            leader_offset: None,
+            caught_up: ["broker-c".to_string()].into(),
+            ..said.report(incarnations, 1_000)
+        };
+        let positions = ReplicaPositions::new(vec![report], &Default::default(), 1_000)
+            .with_nodes(&nodes, std::slice::from_ref(&learner))
+            .with_joint_fence(true);
+        plan_for(&nodes, &learner, &positions, true)
+    };
+
+    assert!(
+        matches!(
+            decision(&[]),
+            Decision::Unplaceable(Unplaceable::NoCaughtUpReplica)
+        ),
+        "{:?}",
+        decision(&[])
+    );
+    match decision(&["broker-c"]) {
+        Decision::Place(leader, _) => assert_eq!(leader, "broker-c"),
+        other => panic!("expected broker-c promoted, got {other:?}"),
+    }
+}
+
 /// **A move's old-set majority does not count a learner.** A set above its
 /// factor drops the first follower whose leaving leaves the rest at the
 /// drained leader's tail. broker-b is a learner, so it does not count as at

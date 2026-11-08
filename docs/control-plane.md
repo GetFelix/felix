@@ -1067,7 +1067,9 @@ and placement treats it as one. With `joint_fence` finalized:
 3. **The report lets it count.** The leader's report at that generation
    lists the member in `holds_start` once the member holds the generation's
    start record. For a cache shard its counter log must hold the counter
-   log's start record too. From then on placement counts the member again.
+   log's start record too. A leader that crashed and gave its copy up lists
+   it from its probe, so the member is admitted even when the crash came
+   before a pass reported it. From then on placement counts the member again.
    The next placement write drops it from `learners`.
 4. **The report is recorded as evidence.** When the leader's report at that
    generation shows the learner caught up under the id the assignment names
@@ -1194,7 +1196,9 @@ its lease. Under Raft it is recorded only once every member is at metadata
 level 11.
 `holds_start` lists the followers the leader saw holding the start record of
 its own generation (for a cache, its counter log's too), by node id, and only
-those that gave a storage id. Placement re-admits a replaced copy on it
+those that gave a storage id. A given-up leader's probe report lists the
+followers whose fence answer ends at that generation on every log.
+Placement re-admits a replaced copy on it
 ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)). It is left
 out when empty and by brokers that predate it. Postgres keeps it only for the
 report that wrote it (migration 0040), and under Raft it is recorded only once
