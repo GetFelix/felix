@@ -122,6 +122,7 @@ jobs:
 
   rf3-run:
     needs: rf3-build
+    if: always() && needs.rf3-build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
