@@ -1233,8 +1233,9 @@ pub(super) fn undo_staged(
 /// Whether a move given up keeps its destination in the set: a set of three.
 /// There a record can be acknowledged on the leader and the destination
 /// alone. Dropped, it is on the leader only, and an unclean crash of the
-/// leader then loses it (`FelixShardMoveGiveUpDrop.cfg` in docs/formal). A
-/// set of four keeps a follower holding it (`FourDrop.cfg`), and a set of two
+/// leader then loses it (`FelixShardMoveGiveUpDrop.cfg` in docs/formal). When
+/// a move ends, a set of four keeps a follower holding it (`FourDrop.cfg`), and
+/// a set of two
 /// is a one-copy shard, which such a crash loses from anyway, kept or not
 /// (`TwoKeep.cfg`). A set kept above its factor is trimmed later behind a
 /// fence ([`trim`]).

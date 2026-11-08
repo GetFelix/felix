@@ -912,13 +912,13 @@ fn keep_replicas<'a>(
     load: &mut HashMap<&'a str, u32>,
 ) -> Vec<String> {
     // A copy staged on top of the set goes, and failover ends its move, unless
-    // the set is three (`keeps_destination`): a leader with no earlier pass
-    // counts it, so a record may be on the dead leader and it alone.
-    // A destination that was already a replica did count and stays; told
-    // apart by the set's size, as `undo_staged` does. A joining copy counted too: beside an odd set every
-    // acknowledging majority still holds a majority without it, but beside an
-    // even one (a restore topping up two) the leader and the newcomer were a
-    // majority alone, so it stays. `Counted` in `docs/formal/FelixShard.tla`.
+    // the set is three (`keeps_destination`): the set of two left would need
+    // the dead leader's copy for the fence, and a copy given up in a crash
+    // answers none. A destination that was already a replica did count and
+    // stays; told apart by the set's size, as `undo_staged` does. A joining
+    // copy counted too: beside an odd set every acknowledging majority still
+    // holds a majority without it, but beside an even one (a restore topping
+    // up two) the leader and the newcomer were a majority alone, so it stays. `Counted` in `docs/formal/FelixShard.tla`.
     let added_successor = previous.replicas.len() >= replication_factor.max(1) as usize
         && !keeps_destination(previous);
     let seated = previous

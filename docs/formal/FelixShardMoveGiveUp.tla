@@ -79,8 +79,9 @@ DropsDestination == FALSE
 \* Unsafe: a staged move given up before its fence drops the destination.
 UnstageDrops == FALSE
 \* Placement fails the shard over from a leader it takes for dead, as
-\* `keep_replicas` in plan.rs does. Unsafe with `FailoverDrops`: the
-\* failover drops a copy from a set above the factor.
+\* `keep_replicas` in plan.rs does. With `FailoverDrops` the failover drops
+\* a copy from a set above the factor, which stalls the shard
+\* (FelixShardMoveGiveUpFailoverStall.cfg) but loses no record.
 DeadFailover == FALSE
 FailoverDrops == FALSE
 \* Crashes only while a move with its destination staged above the factor is
@@ -358,8 +359,8 @@ CpUnstage(f) ==
     /\ UNCHANGED <<cpDraining, cpSucc, moves>>
     /\ UNCHANGED Brokers
 
-\* The leader is down past its lease; it crashed, and a given-up copy
-\* answers no fence, as a down one does not. Placement promotes a follower
+\* The leader is down past its lease; it crashed, and unlike a copy that is
+\* only down, a given-up copy answers no fence when it is back. Placement promotes a follower
 \* its last report named caught up, which may predate a record.
 CpDeadFailover(f, d) ==
     /\ DeadFailover /\ ~cpDraining /\ Cardinality(cpSet) > Replication

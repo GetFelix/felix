@@ -1489,7 +1489,8 @@ fn a_member_the_report_never_reached_is_named_by_the_inherited_identity() {
 /// leader with no earlier pass counts it toward the quorum, so a record may
 /// be on the dead leader and the destination alone. Without it the promoted
 /// follower's fence needs the dead leader's given-up copy, which answers
-/// none. `FelixShardMoveGiveUpFailoverDrop.cfg`.
+/// none, and the shard stalls. `FelixShardMoveGiveUpFailoverStall.cfg` and
+/// `FailoverLive.cfg`.
 #[test]
 fn a_failover_keeps_a_destination_staged_on_a_set_of_two() {
     let streams = vec![Stream {
