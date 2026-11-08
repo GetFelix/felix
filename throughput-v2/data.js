@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794093217178,
+  "lastUpdate": 1794097153012,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49764,6 +49764,58 @@ window.BENCHMARK_DATA = {
             "range": "38502.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1171787.59\nmean: 1161714.32\nstdev: 38502.82\ncv: 3.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef9d4e6603587d839c64f192a71f6ad38b0fd7bf",
+          "message": "fix(replication): a copy rotated by an unclean crash answers a fence as a voter (#2119)\n\n* fix(replication): a fence leaving a set with a replaced copy counts half of the rest\n\nA set being left that names a copy since replaced (a member back on new\nstorage) could never take a majority again: in a two-voter set that is both\nmembers. The leader fenced forever, never served and never reported, so the\ncontrol plane could not re-admit the member. When a voter answers from\nanother copy than the set names, the fence now needs only half of that set\nfrom the other voters. ReplacedBlocking in FelixShardUnified.tla.\n\n* WIP: smaller ReplacedBlocking configs and a four-seat two-lost probe\n\n* WIP: model refusals and rotated copies; two probes show ReplacedBlocking lets two leaders open at one generation\n\n* Drop the half-of-a-set rule for a set being left with a replaced voter\n\nTLC shows it lets two leaders open at one generation (a copy that promised\none fence before it was replaced drops out of the other fence's pool).\n\n* WIP: model a move whose leaving voter's id rotated on an unclean crash\n\nFelixShardUnifiedCpLiveMoveRotated passes (82,392 distinct states); its\nLegacy twin, where the rotated copy refuses as a non-voter, stalls.\nFelixShardUnifiedTwoRotated passes (218,899 distinct).\n\n* fix(replication): a copy rotated by an unclean crash answers a fence as a voter\n\nA start whose crash kept every ballot records the id it rotated away in\nrotated-ids. A set still naming the copy under that id is then not the\nevidence of a wipe: the copy answers a unified fence leaving that set with\nkept_from 0, untrusted until vouched, so a move's cut-over no longer waits\nforever on a two-voter set being left (felix-sim seed 2, events/2). A\nrestored or wiped directory records nothing and still promises nothing.\n\n* docs(replication): fix two references in the rotated-copy passages\n\n* test(replication): cover the rotated-ids wiring and a model twin that forgets ballots\n\nA startup test fails if open_storage stops handing rotated-ids to the\nquorum marks. FelixShardUnifiedTwoRotatedForgets lets a rotated copy that\nlost its ballot answer as its old voter and violates\nOneLeaderPerGeneration, so TwoRotated passing says something.\n\n* ci(tla): weigh the rotated-copy configurations",
+          "timestamp": "2026-11-07T16:14:27-08:00",
+          "tree_id": "bb3bbecd750f928aabe6d83c1bba0480239a044e",
+          "url": "https://github.com/GetFelix/felix/commit/ef9d4e6603587d839c64f192a71f6ad38b0fd7bf"
+        },
+        "date": 1794097152383,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344434.34,
+            "range": "10576.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344434.34\nmean: 349263.75\nstdev: 10576.30\ncv: 3.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344434.34,
+            "range": "10576.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344434.34\nmean: 349263.75\nstdev: 10576.30\ncv: 3.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81706.85,
+            "range": "325.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81706.85\nmean: 81567.12\nstdev: 325.60\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817068.54,
+            "range": "3256.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817068.54\nmean: 815671.18\nstdev: 3256.04\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
