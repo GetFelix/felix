@@ -6,18 +6,19 @@ name: Perf scratch (0.7.0 gate, main vs v0.6.2)
 
 on:
   push:
-    branches: [scratch/perf-070-gate-main-vs-062]
+    branches: ['scratch/perf-bisect-**']
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
+  A_SHA: e311f5835b2a1a5ad848e0f4671a1b9ee95c7b8e
   B_SHA: e311f5835b2a1a5ad848e0f4671a1b9ee95c7b8e
 
 jobs:
   single:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 170
     env:
@@ -127,7 +128,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-        payload: [1024, 65536]
+        payload: [65536]
     env:
       ROUNDS: "6"
       BENCH_STEADY_SECS: "20"
@@ -147,7 +148,7 @@ jobs:
           for s in a b; do
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' $s > $p/wrap-$s.sh
           done
-          chmod +x $p/wrap-*.sh
+          sed -i "2i export FELIX_UNIFIED_FENCE=false" $p/wrap-a.sh; chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
             if [ $(( (round + ${{ matrix.shard }}) % 2 )) -eq 0 ]; then sides="a b"; else sides="b a"; fi
             for side in $sides; do
