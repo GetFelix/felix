@@ -48,6 +48,18 @@ impl StorageId {
         })
     }
 
+    /// The id [`Self::to_hex`] wrote, or `None` for anything else.
+    pub fn from_hex(hex: &str) -> Option<Self> {
+        if hex.len() != 32 || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return None;
+        }
+        let mut bytes = [0u8; 16];
+        for (i, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+        }
+        Some(Self(bytes))
+    }
+
     pub(crate) fn encode(&self) -> [u8; ENCODED_LEN] {
         let mut out = [0u8; ENCODED_LEN];
         out[0..4].copy_from_slice(&MAGIC.to_be_bytes());
