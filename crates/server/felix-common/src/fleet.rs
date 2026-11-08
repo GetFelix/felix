@@ -200,6 +200,15 @@ pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 /// adds it to its report.
 pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
 
+/// Not a feature: how a broker reports that it fences every change of leader
+/// it is named to, a move's cut-over and a failover to the move's destination
+/// included, not only a promotion. Placement promotes a fenced move's
+/// destination only on this word: a broker without it would take that
+/// promotion as the cut-over it expected and serve without the fence. Kept
+/// out of [`IMPLEMENTED`], like [`PEER_ELECTION`], and reported only with the
+/// fence on.
+pub const FENCES_EVERY_CHANGE: FleetFeature = FleetFeature::new("fences_every_change");
+
 /// What a broker offering the `ELECTION` peer capability adds to its report:
 /// that it offers it, that it fences set changes jointly once [`JOINT_FENCE`]
 /// is finalized, and that it stands for election once [`REPLICA_ELECTION`]
