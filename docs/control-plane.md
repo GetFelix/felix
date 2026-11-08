@@ -1933,6 +1933,17 @@ which delays the give-up but never hastens it. The shard keeps its move's
 start time, so it waits behind other shards for its next move, and
 `felix_shard_moves_timed_out_total` counts it.
 
+A fenced leader that came back from an unclean crash and reported that it gave
+its copy up at the fence's generation will never report drained either. The
+move does not wait out the timeout for it: placement takes the same write at
+once (`leader_gave_up`), except that the destination stays in the set as a
+follower: it may be the only copy holding what the leader lost. The broker
+leads its copy again only if its probe of
+the followers found none ahead of it. Otherwise it gives the new generation up
+as well, and the shard fails over to a follower that holds the log, the move's
+destination included. That step is not counted as a fence give-up, so the
+shard's next move does not back off for it.
+
 Each give-up costs the shard its writes for the whole timeout and drops the
 destination's copy, so the next move of that shard waits: the fence timeout
 after one give-up, twice that after two in a row, and so on up to an hour.

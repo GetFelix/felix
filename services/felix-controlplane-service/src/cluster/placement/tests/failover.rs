@@ -1129,6 +1129,109 @@ fn a_follower_level_with_a_leader_that_gave_up_is_promoted() {
     assert_eq!(leader, "broker-c");
 }
 
+/// What placement decides for `orders`, replicated `factor` times, from
+/// `report`, a second after it, with `existing` as the shard's assignment.
+fn plan_on(
+    nodes: &[Node],
+    report: crate::model::ReplicaReport,
+    existing: ShardAssignment,
+    factor: u32,
+) -> Plan {
+    let streams = vec![replicated_stream("orders", 1, factor)];
+    let existing = vec![existing];
+    let positions = ReplicaPositions::new(vec![report], &report_liveness(), REPORTED_AT + 1_000)
+        .with_nodes(nodes, &existing);
+    plan(&streams, &[], nodes, &existing, &positions)
+}
+
+/// The shard fenced at generation 3 to move from broker-a to broker-c.
+fn fenced_to_c() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Draining,
+        successor: Some("broker-c".to_string()),
+        move_reason: Some(crate::model::MoveReason::Balance),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    }
+}
+
+/// **A fenced leader that gave its copy up is named again at once.** It came
+/// back from an unclean crash before it reported drained, so it never will,
+/// and failover passes the move's destination over. The move ends with the
+/// fence timeout's write, without waiting out the timeout.
+#[test]
+fn a_fenced_leader_that_gave_up_is_named_again_at_once() {
+    let mut report = given_up_report(10, 4, 10);
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 3);
+    let (_, step, retaken) = plan.moves().next().expect("the move still waits");
+    assert_eq!(
+        step,
+        &MoveStep::LeaderGaveUp {
+            successor: Some("broker-c".to_string())
+        }
+    );
+    assert_eq!(retaken.leader, "broker-a");
+    assert_eq!(retaken.state, ShardState::Assigning);
+    assert_eq!(retaken.successor, None);
+    assert_eq!(
+        retaken.replicas,
+        ["broker-b".to_string(), "broker-c".to_string()],
+        "the destination was a follower already and stays one",
+    );
+}
+
+/// **A staged destination stays in the set when the move ends this way.**
+/// At RF 2 the destination is a third copy, and a record acknowledged on the
+/// leader and the destination may be on nobody else. Dropped, it would be
+/// missing from the next probe, which would then find no follower ahead of
+/// the leader's short copy and let it lead.
+#[test]
+fn a_staged_destination_stays_when_its_leader_gave_up() {
+    let mut report = given_up_report(10, 4, 10);
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 2);
+    let (_, step, retaken) = plan.moves().next().expect("the move still waits");
+    assert!(matches!(step, MoveStep::LeaderGaveUp { .. }), "{step:?}");
+    assert_eq!(
+        retaken.replicas,
+        ["broker-b".to_string(), "broker-c".to_string()],
+        "the destination was dropped",
+    );
+}
+
+/// A give-up from before the fence says nothing about the leader since: the
+/// move waits for its drained report.
+#[test]
+fn a_give_up_from_before_the_fence_does_not_end_the_move() {
+    let mut report = given_up_report(10, 4, 10);
+    report.generation = 2;
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 3);
+    assert_eq!(plan.moves().count(), 0);
+    assert!(
+        plan.waiting()
+            .any(|(_, why)| matches!(why, Blocked::LeaderStopping)),
+    );
+}
+
+/// After the retake the leader gives that generation up too when a follower
+/// holds more than its copy. With no move left, the destination it was
+/// moving to is promoted like any other follower.
+#[test]
+fn a_retaken_leader_that_gives_up_again_fails_over_to_the_destination() {
+    let mut report = given_up_report(10, 4, 12);
+    report.generation = 4;
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let retaken = ShardAssignment {
+        generation: 4,
+        state: ShardState::Assigning,
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    };
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, retaken, 3);
+    let (_, leader, _) = plan.to_place().next().expect("promoted");
+    assert_eq!(leader, "broker-c");
+}
+
 /// **A follower the probe names caught up keeps the leader from reclaiming,
 /// even when placement cannot promote it.** The probe compares (last
 /// generation, end), so the follower may hold records of a newer generation

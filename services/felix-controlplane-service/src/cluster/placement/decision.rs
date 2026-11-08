@@ -92,6 +92,12 @@ pub enum MoveStep {
     /// without reporting drained: it serves again at a new generation, as for
     /// `Retake`, and `successor` is dropped.
     FenceTimedOut { successor: Option<String> },
+    /// The fenced leader reported, at the fence's generation, that it gave
+    /// its copy up in a crash, so it will never report drained: it is named
+    /// again at a new generation, as for `FenceTimedOut`, but `successor`
+    /// stays in the set as a follower. Its broker leads only if no follower is
+    /// ahead of its copy.
+    LeaderGaveUp { successor: Option<String> },
     /// An operator gave up the log of a shard whose only copies are out of
     /// reach: `to` leads it afresh, and whatever `from` held is lost.
     Discard { from: String, to: String },
@@ -168,6 +174,7 @@ impl MoveStep {
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
             Self::FenceTimedOut { .. } => "fence_timed_out",
+            Self::LeaderGaveUp { .. } => "leader_gave_up",
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",

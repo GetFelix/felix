@@ -105,6 +105,7 @@ tlc() {
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
+    FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
     -config "$cfg.cfg" "$module.tla")
@@ -459,6 +460,9 @@ expectations=(
   "FelixShardUnifiedLearnerBlocking pass"
   "FelixShardUnifiedLearnerBlockingTwo pass"
   "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
+  "FelixShardMoveGiveUp pass"
+  "FelixShardMoveGiveUpStall violates liveness"
+  "FelixShardMoveGiveUpLeads violates AckedHeldByLeader"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family

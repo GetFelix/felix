@@ -693,6 +693,26 @@ pub(super) fn move_step<'a>(
                     },
                 );
             }
+            // A leader back from an unclean crash that gave its copy up at
+            // the fence's generation never reports drained, and failover
+            // waits for the move to end. So it ends now. The broker leads that
+            // copy again only if its probe found no follower ahead of it
+            // (`may_lead`); otherwise it gives the new generation up too, and
+            // with no move left a follower is promoted. The destination stays
+            // in the set even above the replication factor: it may be the only
+            // copy holding what the leader lost, and the next probe measures
+            // only the set it is given. `FelixShardMoveGiveUp` in docs/formal.
+            if caught_up.leader_gave_up(key, existing.generation, leader) {
+                return Decision::Move(
+                    MoveStep::LeaderGaveUp {
+                        successor: existing.successor.clone(),
+                    },
+                    ShardAssignment {
+                        replicas: existing.replicas.clone(),
+                        ..retake(existing, replication_factor)
+                    },
+                );
+            }
             // Nobody else has led since the fence, so the leader still holds
             // every write it accepted: the same step as an operator's cancel,
             // and conditional on this generation, so a cut-over planned from
@@ -2074,6 +2094,11 @@ impl CaughtUp for AtGeneration<'_> {
 
     fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
         self.inner.leader_opened(key, generation, leader)
+    }
+
+    // Keyed by its own generation already.
+    fn leader_gave_up(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.inner.leader_gave_up(key, generation, leader)
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {

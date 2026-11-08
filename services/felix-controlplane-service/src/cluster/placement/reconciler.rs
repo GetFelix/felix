@@ -574,6 +574,16 @@ pub(super) async fn apply_pass(
                         "a fenced leader never reported drained; it serves the shard again",
                     );
                 }
+                if let super::MoveStep::LeaderGaveUp { successor } = step {
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = ?successor,
+                        leader = %written.leader,
+                        "a fenced leader gave its copy up in a crash; the move ends and it is named again",
+                    );
+                }
                 if matches!(step, super::MoveStep::PendingSetTimedOut) {
                     metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
                     tracing::warn!(
