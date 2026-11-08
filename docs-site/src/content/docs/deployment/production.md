@@ -148,8 +148,8 @@ group commit. Check that sharing works with the group-commit panel on the
 dashboard: `felix_storage_sync_batch_appends` near 1 under concurrent publishers
 means appends are not coalescing. Under `periodic` and `none`, a broker whose
 machine crashed restarts under a new storage id and its leaders copy each
-shard it follows again. On Linux a crash of the broker process alone keeps
-the id.
+shard it follows again. On Linux a crash of the broker process alone, with
+the machine still up, keeps the id. On macOS it does not.
 
 ### Leader or Quorum
 
@@ -158,7 +158,7 @@ the id.
 | Acknowledged once | The leader has it | A majority of the shard's replicas, the leader included, has it |
 | Leader dies | A follower is promoted only if the leader's last replica report showed it caught up, and what the leader acknowledged after that report is lost (`felix_broker_replication_lag_records` is the window). With no follower reported caught up, the shard is unavailable until the old leader returns with its disk. | A follower holding every acknowledged record is promoted. |
 | Cost | Lowest latency | A replication round trip per commit. A wait past `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s) is refused. |
-| Failure shows up as | Failover time | Publish time |
+| Failure shows up as | Failover time, and records lost past the leader's last report | Publish time |
 
 `Quorum` loses no acknowledged record to a failover. `Leader` trades a loss window and availability for latency; see the
 [Leader vs Quorum demo](https://github.com/GetFelix/felix/blob/main/docs/demos.md#leader-vs-quorum-felix-cluster-consistency).

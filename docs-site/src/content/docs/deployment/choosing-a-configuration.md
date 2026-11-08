@@ -7,7 +7,7 @@ Felix has many settings, and most of them can stay at their defaults. The
 choices that matter are few: whether a stream is durable, how many brokers
 must hold a record before the publisher is told it is safe, how many copies
 each shard keeps, and when bytes are flushed to disk. This page gives a small
-number of tested combinations of those choices and says when to use each.
+number of recommended combinations of those choices and says when to use each.
 
 Start from the set that matches your workload. Change a setting only when you
 know which guarantee you are trading for it. Every other setting is in the
@@ -19,7 +19,7 @@ know which guarantee you are trading for it. Every other setting is in the
 | Anything where an acknowledged record must not be lost: orders, payments, events other systems depend on | [Production default](#production-default) |
 | A job or task queue | [Work queue](#work-queue) |
 | Shared state, sessions, feature flags, counters | [Replicated cache](#replicated-cache) |
-| Metrics, logs, telemetry, where a small loss on a failover is acceptable | [High-throughput telemetry](#high-throughput-telemetry) |
+| Metrics, logs, telemetry, where losing the last fraction of a second to a power loss is acceptable | [High-throughput telemetry](#high-throughput-telemetry) |
 | Live updates nobody replays: presence, live dashboards, game ticks | [Live fan-out](#live-fan-out) |
 | Trying Felix, writing code against it, CI | [Development](#development) |
 
@@ -28,7 +28,10 @@ A few terms used below. A stream is split into **shards**. Each shard has a
 copies. The **replication factor** (RF) is the number of copies, leader
 included. **Consistency** decides when a publish is acknowledged: `Leader`
 answers once the leader has the record, `Quorum` once a majority of the
-copies do.
+copies do. A leader holds a **lease**, a time-limited right to lead the shard
+that the control plane renews. A **fleet feature** is a change in how brokers
+treat each other that stays off until an operator **finalizes** it, which
+cannot be undone.
 
 ## Production default
 
@@ -41,18 +44,23 @@ taking writes. `on_commit` makes every acknowledged record reach the device
 before the answer, so a power loss loses nothing that was acknowledged.
 
 `Leader` cannot promise that. A `Leader` acknowledgement means one broker has
-the record. When that leader dies, a follower is promoted only if the
-leader's last report showed it caught up, and anything the leader
-acknowledged after that report is lost. If no follower was reported caught
-up, the shard waits for the old leader to come back with its disk. The size
-of that window is `felix_broker_replication_lag_records`.
+the record. The leader reports to the control plane which followers hold its
+whole log, and when it dies only a follower named in its last report can be
+promoted. Anything the leader acknowledged after that report is lost. Under
+steady writes a follower is usually a few records behind, so the report
+often names none, and the shard then waits for the old leader to come back
+with its disk. `felix_broker_replication_lag_records` shows how far behind
+the followers are.
 
 `Quorum` also keeps working through a control-plane outage. A `Quorum` stream
 goes on acknowledging writes its followers hold, while a `Leader` stream
 stops once its lease runs out, 5 to 11 seconds into the outage with the
-defaults. And a `Quorum` stream is failed over on its followers' word, about
-5 seconds after its leader stops answering, instead of waiting for the leader
-to be marked down.
+defaults.
+
+With the control plane up, a `Quorum` stream also fails over faster. Once a
+majority of its copies have not heard from the leader for about 5 seconds,
+the control plane promotes one of them, without waiting for the leader's
+lease to run out and the leader to be marked down.
 
 **Settings.** On every broker, in addition to the cluster settings from
 [Kubernetes](/deployment/kubernetes/) or [Docker Compose](/deployment/docker-compose/):
@@ -94,9 +102,11 @@ retention keeps the records it has not acknowledged, so plan disk for that.
 `FELIX_DURABLE_FSYNC_MODE=periodic` (the default, a flush every 250 ms) is a
 cheaper middle ground. A majority must then lose power at once to lose an
 acknowledged record, which separate zones make unlikely. The cost shows after
-a machine crash: the broker comes back under a new storage id and its shards
-are copied to it again, and if a leader and a follower of the same shard lose
-power together, that shard stays closed until an operator steps in.
+a machine crash. The broker comes back under a new storage id, the identity
+of its data directory, and its shards are copied to it again. If a shard's
+leader and every follower its last report named lose power together, the
+shard stays closed until the old leader comes back or an operator gives up
+the newest records with `felixctl placement abandon`.
 
 Depth: [Choosing durability](/deployment/production/#choosing-durability),
 [Consistency](/architecture/semantics/#consistency-how-many-brokers-must-hold-it),
@@ -171,37 +181,39 @@ Depth: [Cache](/features/cache/#6-consistency-levels),
 
 ## High-throughput telemetry
 
-**Good for** metrics, logs and traces, where throughput and latency matter
-more than every last record.
+**Good for** metrics, logs and traces, where throughput matters more than
+every last record surviving a power loss.
 
-**Why.** `Leader` answers after one broker writes the record, with no
-replication round trip on the publish path. The follower copy still lets a
-failover keep almost everything.
+**Why.** It keeps the production default's `Quorum` replication, so a broker
+or disk loss and a failover lose nothing acknowledged. It saves the device
+flush on each publish instead, and gets its throughput from batching and
+shards.
 
-**Settings.** The broker defaults for fsync (`periodic`, every 250 ms).
+**Settings.** The production default without `on_commit`, so the default
+`periodic` fsync (every 250 ms) applies:
 
 ```bash
 FELIX_DURABLE_STORAGE_DIR=/var/lib/felix
+FELIX_NODE_ZONE=zone-a
 ```
 
 ```bash
-felixctl stream create telemetry --shards 16 --replication 2 \
-  --retention-secs 86400
+felixctl stream create telemetry --shards 16 --replication 3 \
+  --consistency quorum --retention-secs 86400
 ```
 
 Publish in batches, with `publish_batch` in the Rust client or its equivalent
 in the others. A batch is one acknowledgement and one entry in each
-subscriber's queue, so it costs far less per record than single publishes.
-More shards spread the load over more brokers and cores.
+subscriber's queue, so the per-publish costs are paid once for the whole
+batch. More shards spread the load over more brokers and cores.
 
-**Fleet features.** Nothing beyond what a new cluster finalizes by itself.
+**Fleet features.** As for the production default.
 
-**Trade-off.** On a failover the stream loses what the leader acknowledged
-after its last replica report, which `felix_broker_replication_lag_records`
-measures. A power loss can lose the last 250 ms on the leader. During a
-control-plane outage writes stop once the leader's lease runs out. If the
-follower was not reported caught up when the leader died, the shard waits
-for the old leader.
+**Trade-off.** If a majority of a shard's brokers lose power at once, the
+last 250 ms they acknowledged can be lost. `Leader` consistency would also
+save the replication round trip, but as the production default explains, a
+`Leader` failover under steady writes usually waits for the old leader, so
+it is not recommended here either.
 
 Depth: [Performance](/features/performance/),
 [Benchmarks](/features/benchmarks/).
@@ -234,12 +246,12 @@ loses records cannot tell from the stream; only
 **Why.** One command starts a control plane and brokers on free ports.
 
 **Settings.** `task cluster:up` (see [Local development](/deployment/local/)).
-Its brokers have durable storage, so streams can stay at the
-`felixctl stream create` defaults: one shard, one copy, `Leader`, durable. A
-broker you run by hand without `FELIX_DURABLE_STORAGE_DIR` refuses durable
-streams, so give it a data directory or create streams with
-`--durable false`. Test against the consistency you will run in production, though, since
-`Quorum` changes what errors a publish can return.
+Its brokers have durable storage. Create streams with the
+consistency you will run in production, for example
+`--replication 3 --consistency quorum` on a three-broker cluster, since
+`Quorum` changes what errors a publish can return. A broker you run by hand
+without `FELIX_DURABLE_STORAGE_DIR` refuses durable streams, so give it a
+data directory or create streams with `--durable false`.
 
 **Fleet features.** None to run by hand.
 
@@ -251,8 +263,9 @@ streams, so give it a data directory or create streams with
 subscriber never slows a publisher. When the queue is full, the default
 `FELIX_SUB_QUEUE_POLICY=drop_new` drops new records for that subscriber. On a
 durable stream the Rust client reports the drop with the offset to resume
-from, and its cluster subscription resubscribes from there by itself. Keep the default. `block` makes every publisher of
-the shard wait for the slowest subscriber. A consumer that must process every
+from, and its cluster subscription resubscribes from there by itself. Keep
+the default. `block` makes every publisher of the shard wait for the
+slowest subscriber. A consumer that must process every
 record should read through a consumer group or resume from offsets.
 
 **Zones.** Set `FELIX_NODE_ZONE` on every broker and run at least as many
@@ -261,9 +274,9 @@ different zones when it can. `felix_shards_zone_unspread` is non-zero while it
 cannot.
 
 **Moves and restores.** When a broker stays down for
-`FELIX_SHARD_RESTORE_AFTER_MS` (5 minutes), its shards are copied to another
-broker. Keep that above your longest planned restart so a rolling upgrade
-does not start copies. A broker whose storage was replaced rejoins as a
+`FELIX_SHARD_RESTORE_AFTER_MS` (5 minutes, set on the control plane), its
+shards are copied to another broker. Keep that above your longest planned
+restart so a rolling upgrade does not start copies. A broker whose storage was replaced rejoins as a
 follower and counts again once its leader shows it caught up.
 See [Adding and removing brokers](/deployment/scaling/) and
 [Sharding](/features/sharding/#where-shards-live).
