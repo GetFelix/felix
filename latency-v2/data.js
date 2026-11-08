@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794103969957,
+  "lastUpdate": 1794104578317,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -63360,6 +63360,72 @@ window.BENCHMARK_DATA = {
             "range": "41.19",
             "unit": "us",
             "extra": "trials: 5\nmedian: 400.00\nmean: 419.40\nstdev: 41.19\ncv: 9.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7f99c0b052b59eb7c1d22b0c0ebcf8c9953a8e0d",
+          "message": "fix(replication): a given-up leader's probe reports which followers hold the start (#2120)\n\n* fix(replication): a given-up leader's probe reports which followers hold the start\n\nA wiped copy re-admitted as a learner counts again only once its\ngeneration's leader reports it in holds_start. A leader that crashed\nbefore a pass said so only sends probe reports after its unclean restart,\nand those always sent holds_start empty, so the learner (often the one copy\nholding everything) was never promoted and the shard waited as\nNoCaughtUpReplica for good.\n\nThe probe now lists every follower whose fence answer ends at the\ngeneration it gave up on every log of the shard.\n\nFelixShardElectWipeNonVoterReclaim.cfg checks the rule (LearnerAdmitted\nplus safety); FelixShardElectWipeNonVoterReclaimPassOnly.cfg is the\nfailing twin with the old behaviour.\n\n* fix(replication): review fixes for the probe's holds_start\n\nLeave out a learner that answers the unified fence attesting it keeps no\npromise, tighten the tests to pin the every-log rule, split the model\ncheck into a safety config and a liveness pair, and say what the model\nleaves out.\n\n* docs(replication): note the probe's holds_start limits with elections; TLC weights\n\n* ci(tla): weights for the reclaim learner configs\n\n* ci(tla): weigh the reclaim safety configuration by its CI time\n\nIt took 43 minutes on a hosted runner, so it runs in a job of its own.",
+          "timestamp": "2026-11-08T02:19:23Z",
+          "tree_id": "3c82718fcc1106257cb9f48f25f8d83254bd1ab7",
+          "url": "https://github.com/GetFelix/felix/commit/7f99c0b052b59eb7c1d22b0c0ebcf8c9953a8e0d"
+        },
+        "date": 1794104572072,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 64,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 64.00\nmean: 64.80\nstdev: 1.30\ncv: 2.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 87,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.20\nstdev: 2.28\ncv: 2.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 117,
+            "range": "7.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 115.40\nstdev: 7.20\ncv: 6.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.60\nstdev: 1.14\ncv: 1.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "4.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 181.80\nstdev: 4.66\ncv: 2.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 324,
+            "range": "164.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 324.00\nmean: 365.40\nstdev: 164.45\ncv: 45.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
