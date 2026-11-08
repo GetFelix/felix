@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794097149516,
+  "lastUpdate": 1794100431631,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -63228,6 +63228,72 @@ window.BENCHMARK_DATA = {
             "range": "1093.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 573.00\nmean: 1037.60\nstdev: 1093.59\ncv: 105.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "274948c9c0d282cb782ccb168fcee198e2e3b238",
+          "message": "fix(placement): promote a fenced move's destination when it fences the promotion (#2112)\n\n* fix(placement): promote a fenced move's destination when it fences the promotion\n\nOn a Quorum shard, failover passed over a move's destination because a\nbroker from before every change of leader was fenced would open the\npromotion as the cut-over, unfenced. A move fenced toward the one follower\nholding the log then left the shard unplaced for good once the leader was\nlost (seed 3, stream/9).\n\nA broker with the fence on now reports `fences_every_change`, and placement\npromotes the destination when its broker reports it and the destination is\na member of the set, not a copy staged on top of it. The promoted\ndestination fences a majority and takes their tails before it serves.\n\nSpec: PromoteFencedDestination in FelixShard.tla, with\nFelixShardFencedAckMovePromoted (pass) and\nFelixShardFencedAckMovePromotedReach (witness: the destination is\npromoted). FelixShardFencedAckMoveDestination remains the twin without the\nfence.\n\n* docs(formal): review fixes for promoting a fenced move's destination\n\nSay the staged-copy guard is held by the placement test, not the model,\ndrop the witness's unchecked claim, note why a per-broker marker matches\nthe model's global knob, and plainer wording in control-plane.md.\n\n* docs(control-plane): rewrap the mid-move failover paragraph\n\n* spec(shard): cite the test on the reach witness's Evidence line\n\nSpec-Unaffected: an Evidence comment only.",
+          "timestamp": "2026-11-07T17:09:29-08:00",
+          "tree_id": "fd68072a4ea4cb2883c574d3c714b638775eb486",
+          "url": "https://github.com/GetFelix/felix/commit/274948c9c0d282cb782ccb168fcee198e2e3b238"
+        },
+        "date": 1794100423837,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 105.40\nstdev: 0.55\ncv: 0.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 159,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 159.00\nmean: 158.80\nstdev: 1.30\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 192,
+            "range": "8.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 192.60\nstdev: 8.59\ncv: 4.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 106,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 106.00\nmean: 106.20\nstdev: 0.84\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 230,
+            "range": "8.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 230.00\nmean: 228.00\nstdev: 8.63\ncv: 3.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 420,
+            "range": "798.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 420.00\nmean: 730.20\nstdev: 798.07\ncv: 109.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
