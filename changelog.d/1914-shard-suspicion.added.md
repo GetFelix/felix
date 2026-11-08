@@ -1,5 +1,0 @@
-Under `replica_election`, a follower can stand for one shard whose leader's broker is alive but makes no progress on it, so such a shard recovers with the control plane down (#1914). It stands only when its copy holds a generation that never started and it has had no batch or fence from the leader for `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default, `0` turns it off). Idle shards are never suspected, and a control plane that renames the shard first restarts the clock. A standing now gets its 3 s to open from when its route is published, not from its ballot, so a slow routing feed no longer makes each election burn several generations.
-
-An elected leader whose generation the control plane also gave to another broker, before going down, fences its set again one generation up once that has lasted `FELIX_SHARD_SUSPECT_AFTER_MS` with a copy refusing it, so the refused copy rejoins instead of staying out until the control plane is back.
-
-A leader elected with the control plane down that then restarts stands for its shard again after `FELIX_SHARD_SUSPECT_AFTER_MS`, instead of staying refused for its own ballot until the control plane is back.

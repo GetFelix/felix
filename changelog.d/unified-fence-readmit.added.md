@@ -1,1 +1,0 @@
-The control plane records when the leader of a set that re-admitted a replaced copy reports it caught up (`readmitted` on the shard assignment, metadata level 30, Postgres migration 0046). This is the durable evidence a fence will trust such a copy on after a restart. Below level 30 nothing is recorded, and no broker reads it yet.

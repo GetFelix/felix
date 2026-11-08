@@ -1,1 +1,0 @@
-A shard whose fence finishes while the routing feed ends a pass starts serving straight away. The feed read the set of shards it serves and published it after letting go of the lifecycle lock, so a fence finishing in between was overwritten by the older set and the shard answered not ready until the next pass (#1962).

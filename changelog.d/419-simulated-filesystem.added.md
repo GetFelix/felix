@@ -1,1 +1,0 @@
-The simulator keeps each broker's data directory in memory, so a run no longer waits on file creates and renames or holds thousands of file descriptors. `felix_storage::sim_fs::crash` leaves what a power loss at that moment would, by the same rules as the storage power-loss tests. Builds without felix-storage's `sim` feature are unchanged.

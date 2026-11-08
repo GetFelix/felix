@@ -1,14 +1,7 @@
 ---
 title: Upgrading to 0.7
-description: What an operator moving a cluster from 0.6.2 to the 0.7 line needs to know. 0.7 is not released, so this page is a working draft.
+description: What an operator moving a cluster from 0.6.2 to 0.7 needs to know.
 ---
-
-:::caution[0.7 is not released]
-This page covers `main`, which is ahead of the newest preview,
-`0.7.0-preview.2`. Items marked *(main)* are not in a preview yet. The page is
-finalized when 0.7.0 is tagged. Do not plan a production upgrade from it yet.
-The released versions are in the [release notes](/release-notes/).
-:::
 
 Read [Upgrades and compatibility](/deployment/upgrades/) for the rules these
 notes rely on: the five compatibility surfaces, the upgrade order, fleet
@@ -16,7 +9,7 @@ features and rollback.
 
 ## Breaking changes
 
-- **Lease-token templates take over braces in RBAC objects** *(main)*. A policy object
+- **Lease-token templates take over braces in RBAC objects**. A policy object
   that holds `{` or `}` is now a lease template. A grant on a literal cache key
   with braces, such as `cache:t1/prod/c/{leases}`, stops granting that key. It
   instead lets the holder of key `K` in cache `t1/prod/leases` get a lease
@@ -31,12 +24,12 @@ features and rollback.
 - **Rust crates that embed Felix.** `StreamLog::base_offset` is now
   `physical_base`, beside `readable_base`. `Broker::allow_head_trims_when`
   replaces `set_replication_enabled`. `SubscribeCursorError` gains
-  `trim_headers` and is no longer `Copy`. On `main`, the `felix-wire` message types also gained fields
+  `trim_headers` and is no longer `Copy`. The `felix-wire` message types also gained fields
   (`record_headers`, `client_flags_ext`, `server_flags_ext`), so struct literals
   and exhaustive matches need them. The wire bytes for a client that
   does not use these are unchanged.
 - **Storage format 7 and 8.** `FORMAT_VERSION` was 6 in 0.6.2, is 7 in
-  preview.2 and is 8 on `main` *(v8: main)*.
+  preview.2 and is 8 in 0.7.0.
   - Version 7 holds the head-trim record. Version 8 holds a record's key and
     headers.
   - A broker moves a log onto a version only to hold such a record: v7 at the
@@ -52,17 +45,16 @@ features and rollback.
     marker. That data directory cannot join a cluster until the cluster has
     finalized `head_trim` (see [`head_trim`](/deployment/upgrades/#head_trim)).
 
-## Wire protocol *(main)*
+## Wire protocol
 
 Record headers are negotiated, so 0.6.2 clients and brokers keep working. A
 frame flag, `FLAG_EXTENDED`, opens an extension word, and `Auth` and `AuthOk`
 carry `client_flags_ext` and `server_flags_ext` to agree on
 `EXT_RECORD_HEADERS`. A peer that does not offer it exchanges the same bytes as
-before. The Rust client offers it; the Python, TypeScript, C and C# clients do
-not yet. Header names starting with `felix.` are reserved.
+before. Every client offers it. Header names starting with `felix.` are reserved.
 
-A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`
-*(main)*. A broker that grants it a publish window then answers plain acked
+A pipelining client can also offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`.
+A broker that grants it a publish window then answers plain acked
 publishes as they complete and keeps request order only among idempotent
 ones, so a shard stalled during a failover no longer holds back the answers
 of every other shard on its stream. Older clients and brokers exchange the
@@ -76,10 +68,10 @@ default.
 
 | Setting | What it does |
 |---|---|
-| `FELIX_RECORD_HEADERS` *(main)* | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. A cluster follows the `record_headers` fleet feature instead. |
-| `FELIX_KAFKA_RECORD_HEADERS` *(main)* | `true` stores a Kafka producer's keys and headers with the record, which moves the logs to v8. Off by default, so the Kafka listener alone never does. |
-| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` *(main)* | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off, and the broker is then unchanged. Devices can publish; subscribing arrives in 0.8.0. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
-| `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` *(main)* | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
+| `FELIX_RECORD_HEADERS` | Single broker only. `false` refuses publishes that carry headers, which keeps logs at v7 or older. Turning it off later leaves stored headers readable. A cluster follows the `record_headers` fleet feature instead. |
+| `FELIX_KAFKA_RECORD_HEADERS` | `true` stores a Kafka producer's keys and headers with the record, which moves the logs to v8. Off by default, so the Kafka listener alone never does. |
+| `FELIX_MQTT_LISTEN`, `FELIX_MQTT_WS_LISTEN` | Bind the MQTT listener, plain and over WebSockets. Unset leaves it off, and the broker is then unchanged. Devices can publish; subscribing arrives in 0.8.0. Related `FELIX_MQTT_*` limits are in [the reference](/reference/environment-variables/). |
+| `FELIX_LEASE_TOKEN_KEY_FILE`, `FELIX_LEASE_TOKEN_MAX_TTL_SECONDS` | Key file and longest lifetime for lease tokens. Without the key file a broker neither mints nor accepts them. Every broker needs the same file. |
 | `FELIX_INTERNAL_ELECTION` | Broker. `true` makes the broker offer replica elections. Every broker needs it before `joint_fence` and `replica_election` can be finalized, and keeps needing it after. See [Turning on failover without the control plane](#turning-on-failover-without-the-control-plane). |
 | `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | Control-plane timers for `replica_election`. Nothing uses them until that feature is finalized. |
 | `FELIX_SHARD_STUCK_LEADER_MS` | Control plane, 70 s by default. A `Quorum` shard whose leader is on a live broker but shows no progress at its generation for this long is named again one generation up, on the same set. In 0.6.2 such a shard stayed stuck until something else changed its assignment. `0` turns it off. See "The control plane's backstop" in `docs/replication-design.md`. |
@@ -159,7 +151,7 @@ Nothing uses them until that feature is finalized.
 - With the Raft backend, both need every member at metadata level 21.
   Finalizing `replica_election` needs level 26 (below).
 
-Later control-plane changes are on `main`:
+The control plane also changed after preview.2:
 
 - Every placement write names each member's registered storage id
   (`member_storage_ids`): Postgres migration `0039`, Raft metadata level 22.
@@ -203,11 +195,10 @@ Later control-plane changes are on `main`:
   migration `0044`, with no Raft level.
 - When the leader of a set that re-admitted a replaced copy reports it caught
   up, the control plane records that on the assignment (`readmitted`):
-  migration `0046`, level 30. Below level 30 nothing is recorded. No broker
-  reads it yet.
+  migration `0046`, level 30. Below level 30 nothing is recorded.
 
 In short, Postgres runs migrations `0037` to `0046` on start (`0039` to
-`0046` are on `main` only), and under Raft these features wait for metadata
+`0046` are new since preview.2), and under Raft these features wait for metadata
 levels 20 to 30. Upgrade every control-plane member before the brokers.
 
 ## Turning on failover without the control plane
@@ -251,7 +242,7 @@ broker registration, so it needs steps 2, 5, 6 and 7 only.
 The Rust client has the rename above. The other clients are additive: every
 binding takes four reconnect options (an attempt count, a deadline for one
 retried call, and the backoff and max backoff between attempts), unset values
-keep the Rust defaults, and `trim_before` is new. On `main`, cursor errors in every binding also carry
+keep the Rust defaults, and `trim_before` is new. Cursor errors in every binding also carry
 the reason, the nearest available offsets and the trim's headers. The
 C struct `FelixConnectOptions` gained `reconnect_attempts`,
 `reconnect_deadline_ms`, `reconnect_backoff_ms` and `reconnect_max_backoff_ms`
@@ -262,9 +253,8 @@ Cache and consumer-group calls on the Rust `Client` now follow
 `ReconnectPolicy`, as publishes already did. The limits bound the whole call,
 and a write is sent again only after a refusal that says nothing was applied.
 
-A `Connection` opens its pooled connections as its traffic needs them
-*(main)*. A
-subscriber with default settings now holds 5 broker connections instead of 20,
+A `Connection` opens its pooled connections as its traffic needs them.
+A subscriber with default settings now holds 5 broker connections instead of 20,
 so about 100 fit under the default `FELIX_MAX_CONNECTIONS_PER_IP=512` instead
 of about 25. No action is needed; the pool sizes are ceilings.
 
@@ -273,9 +263,9 @@ of about 25. No action is needed; the pool sizes are ceilings.
 A client can trim a stream's oldest records at the tail it expects
 (`trim_before`, `felixctl stream trim`); a cursor error now says where to resume
 and carries the trim's headers; a single broker accepts and delivers record
-headers, on a cluster once it finalizes `record_headers`; the Rust client has
+headers, on a cluster once it finalizes `record_headers`; every client has
 lease tokens; and a broker can serve MQTT, where a device can publish at QoS 0
-and 1 (the last four are on `main`). See
+and 1. See
 [what Felix is for](/getting-started/what-felix-is-for/) for the status of each.
 
 ## Packaging

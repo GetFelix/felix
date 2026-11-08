@@ -21,10 +21,10 @@ and for how a new language is gated on a conformance suite.
 ## Installation
 
 ```bash
-cargo add felix-client@0.7.0-preview.2
+cargo add felix-client@0.7.0
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, a plain `cargo add felix-client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
+This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.
 
 With the optional telemetry feature:
 

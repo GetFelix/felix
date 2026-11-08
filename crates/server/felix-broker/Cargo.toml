@@ -19,9 +19,9 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 metrics = { workspace = true }
-felix-common = { path = "../felix-common", version = "0.7.0-preview.3", features = ["blocking", "hasher"] }
-felix-storage = { path = "../felix-storage", version = "0.7.0-preview.3" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.7.0-preview.3" }
+felix-common = { path = "../felix-common", version = "0.7.0", features = ["blocking", "hasher"] }
+felix-storage = { path = "../felix-storage", version = "0.7.0" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.7.0" }
 arc-swap = "1.8"
 ahash = { workspace = true }
 hashbrown = { workspace = true }

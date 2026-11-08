@@ -210,9 +210,9 @@ plus the backoff you can afford, or leave it off to wait out a failover.
 | C# | `ReconnectAttempts` | `ReconnectDeadline` (`TimeSpan`) | `ReconnectBackoff`, `ReconnectMaxBackoff` (`TimeSpan`) |
 | C | `reconnect_attempts` | `reconnect_deadline_ms` | `reconnect_backoff_ms`, `reconnect_max_backoff_ms` |
 
-:::note[New in 0.7 (preview)]
+:::note[New in 0.7]
 The deadline, and the attempt count and backoff outside Rust, arrive with 0.7.
-On 0.6.2, the current stable release, Rust's `ReconnectPolicy` has `attempts`,
+On 0.6.2, Rust's `ReconnectPolicy` has `attempts`,
 `backoff` and `max_backoff` but no `deadline`, and the Python, TypeScript, C#
 and C clients take none of these options: they retry with the Rust defaults. On 0.6.2, bound a call
 yourself with a timeout around it, as the [tutorials](/tutorials/overview/#time-limits)

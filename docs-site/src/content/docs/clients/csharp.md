@@ -28,10 +28,10 @@ against a broker run on Linux x64 only.
 ## Install
 
 ```bash
-dotnet add package Felix.Client --version 0.7.0-preview.2
+dotnet add package Felix.Client --version 0.7.0
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, a plain `dotnet add package Felix.Client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
+This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.
 
 The package carries the native library for each row above, built for glibc, and finds it
 automatically. Alpine and other musl systems get a clear error; build `felix-capi` yourself

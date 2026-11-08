@@ -15,7 +15,7 @@ come first here rather than last.
 ## Try it in one command
 
 With Docker or Podman and nothing else, this runs a control plane, a broker and
-development credentials from the 0.7 preview images:
+development credentials from the 0.7 images:
 
 ```bash
 curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/main/compose.yaml

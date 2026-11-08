@@ -1,1 +1,0 @@
-Placement re-admits a replaced copy into at most 16 shards a pass and none while paused, renames stuck leaders only from the placement lease holder, and no longer counts a follower wiped since it was named toward the majority a rename needs. Postgres also refuses a mount on a non-durable stream in the schema (migration 0044).

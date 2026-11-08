@@ -11,7 +11,7 @@ control plane's migration tool run through it too.
 
 ```bash
 brew install getfelix/tap/felixctl          # macOS or Linux, releases after 0.6.0-preview.2
-cargo install felixctl --version 0.7.0-preview.2
+cargo install felixctl --version 0.7.0
 
 felixctl context add local --brokers 127.0.0.1:5000 --tenant t1 \
     --token-file token.jwt --ca-file broker-cert.pem
@@ -34,7 +34,7 @@ with shell completions and man pages, to its
 container image:
 
 ```bash
-docker run --rm ghcr.io/getfelix/felixctl:0.7.0-preview.2 --help   # or podman run
+docker run --rm ghcr.io/getfelix/felixctl:0.7.0 --help   # or podman run
 ```
 
 Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.

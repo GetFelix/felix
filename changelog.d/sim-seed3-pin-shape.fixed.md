@@ -1,1 +1,0 @@
-- felix-sim: `seed_3_kills_between_promotion_and_open_replay_the_same_twice` checks for a named and an elected leader stopped before it opens on any shard, instead of on `stream/4` and `stream/5` at fixed generations, so a broker change that moves which shard gets there no longer fails it. The run is still checked to replay the same twice.

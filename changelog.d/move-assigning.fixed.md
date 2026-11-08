@@ -1,1 +1,0 @@
-A shard moved under `replica_election` no longer stops taking acknowledged writes for the pending-set timeout (10 minutes) when a member of its new set restarts on new storage before the change completes. Placement drops the pending change at once and holds the member as a learner until it is level (`pending_set_member_replaced`).

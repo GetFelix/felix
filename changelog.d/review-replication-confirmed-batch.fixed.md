@@ -1,4 +1,0 @@
-- Learner copies under elections stay backed by fresh confirmed reads however many a broker holds: the reads go up to 64 shards per control-plane request through the new `POST /v1/shard-assignments/confirmed`, instead of one shard per request with 16 in flight. A control plane without the form is read one shard at a time, as before.
-- Confirmed reads go through `ControlPlaneLink`, so the simulator backs learners as a broker does instead of refusing every batch to them.
-- A replica's refusal carries its reason as fields (`RefusalReason`, peer capability `REFUSAL_REASONS`) that a leader reads instead of parsing the detail text; refusals to and from older peers are unchanged.
-- The candidate loop no longer opens a quiet cache shard's log while scanning for stuck shards, and a panicking election round no longer leaves its shard in flight for good. The replica's election paths open logs off the runtime worker.

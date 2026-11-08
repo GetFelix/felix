@@ -1,1 +1,0 @@
-- A replica answers a fence from a caller that offered `UNIFIED_FENCE` where it would refuse a learner or the copy it led before a crash, and its attestation says the answer counts for no promise or covers nothing. No broker offers the capability yet, so every fence is still answered as before.

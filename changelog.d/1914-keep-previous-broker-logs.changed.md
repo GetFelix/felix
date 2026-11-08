@@ -1,1 +1,0 @@
-- The cluster test harness keeps a restarted broker's previous log (`broker.log.previous`) with the kept logs, and the failover canary uploads every broker log gzipped with replication at debug (#1914).
