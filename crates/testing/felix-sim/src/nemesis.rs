@@ -564,6 +564,7 @@ impl Nemesis {
                 let ends = Instant::now() + *cp_lasts;
                 self.lapse(*after).await;
                 if let Some(node) = self.busiest_leader().await
+                    && !self.stopped.is_cancelled()
                     && self.may_crash(node)
                 {
                     let (down_for, stop) = (*down_for, *stop);
@@ -619,11 +620,10 @@ impl Nemesis {
         if !self.stopped.is_cancelled() {
             self.recorder.fault(format!("restart b{}", node + 1));
             self.cluster.restart(node);
-        } else if stop == Stop::PowerLoss {
-            // A power cut stops the broker inside a write and finishes the
-            // stop later, so one under way when the heal restarted every
-            // broker can still take this one down, and nobody else would
-            // bring it back.
+        } else {
+            // The heal already restarted every broker. A crash that lands
+            // after it, or a power cut that finishes its stop later, would
+            // leave this one down with nobody to bring it back.
             self.cluster.restart(node);
         }
     }
