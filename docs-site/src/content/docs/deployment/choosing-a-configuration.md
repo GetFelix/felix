@@ -16,12 +16,13 @@ know which guarantee you are trading for it. Every other setting is in the
 
 | You are building | Use |
 | --- | --- |
-| Anything where an acknowledged record must not be lost: orders, payments, events other systems depend on | [Production default](#production-default) |
-| A job or task queue | [Work queue](#work-queue) |
-| Shared state, sessions, feature flags, counters | [Replicated cache](#replicated-cache) |
-| Metrics, logs, telemetry, where losing the last fraction of a second to a power loss is acceptable | [High-throughput telemetry](#high-throughput-telemetry) |
-| Live updates nobody replays: presence, live dashboards, game ticks | [Live fan-out](#live-fan-out) |
-| Trying Felix, writing code against it, CI | [Development](#development) |
+| Orders, payments, or events other systems depend on. You cannot afford to lose an acknowledged record. | [Production default](#production-default) |
+| A job or task queue. A worker dies halfway through a job. | [Work queue](#work-queue) |
+| Sessions, feature flags, counters. Many services read the same keys. | [Replicated cache](#replicated-cache) |
+| Metrics, logs, telemetry. Volume matters more than the last quarter second. | [High-throughput telemetry](#high-throughput-telemetry) |
+| A live dashboard or app feed in one data center, on brokers that keep their disks. Latency matters more than surviving a lost machine. | [Leader consistency](#leader-consistency) |
+| Presence, cursors, game ticks. Nobody replays them. | [Live fan-out](#live-fan-out) |
+| You are trying Felix or writing tests. | [Development](#development) |
 
 A few terms used below. A stream is split into **shards**. Each shard has a
 **leader**, the broker that takes its writes, and **followers** that hold
@@ -35,7 +36,10 @@ cannot be undone.
 
 ## Production default
 
-**Good for** any stream whose records other systems rely on.
+**The story.** You run orders, payments or events that other systems act on.
+What usually fails is a machine, and now and then a whole zone. You care that
+a record you were told is safe is still there afterwards, even if that costs
+a little latency.
 
 **Why.** A `Quorum` acknowledgement means a majority of the shard's copies hold
 the record, so it survives losing the leader, its machine or its disk. With
@@ -114,8 +118,9 @@ Depth: [Choosing durability](/deployment/production/#choosing-durability),
 
 ## Work queue
 
-**Good for** jobs where each record is handled by one worker, retried on
-failure, and dead-lettered after too many attempts.
+**The story.** You hand out jobs, each to one worker. What usually fails is a
+worker that crashes or stalls halfway through. You care that the job is tried
+again, and that one that keeps failing is set aside instead of looping.
 
 **Why.** A queue in Felix is a consumer group on a stream, so it inherits the
 stream's durability. Use the production default stream, and workers share
@@ -149,8 +154,10 @@ Depth: [Queues](/features/queues/).
 
 ## Replicated cache
 
-**Good for** keyed state many services read: sessions, feature flags, rate
-limit counters.
+**The story.** Many services read the same keys: sessions, feature flags, rate
+limit counters. What usually fails is a leader that is replaced while an old
+one still answers reads. You care that a read never returns a value older than
+one you were told was written.
 
 **Why.** A replicated `Quorum` cache acknowledges a put once a majority holds
 it, and with `lease_free_reads` finalized a read confirms with a majority
@@ -181,8 +188,10 @@ Depth: [Cache](/features/cache/#6-consistency-levels),
 
 ## High-throughput telemetry
 
-**Good for** metrics, logs and traces, where throughput matters more than
-every last record surviving a power loss.
+**The story.** You ship metrics, logs and traces in large volumes. What
+usually fails is a single broker or disk, and a power cut across a whole
+shard is rare. You care about throughput, and you can live without the last
+quarter second if that rare cut happens.
 
 **Why.** It keeps the production default's `Quorum` replication, so a broker
 or disk loss and a failover lose nothing acknowledged. It saves the device
@@ -218,10 +227,57 @@ it is not recommended here either.
 Depth: [Performance](/features/performance/),
 [Benchmarks](/features/benchmarks/).
 
+## Leader consistency
+
+**The story.** Your brokers come back with their own disk: Kubernetes
+StatefulSets on persistent volumes, or VMs with attached disks, in one zone.
+What usually fails is a restart, a rollout or a reschedule, and the broker is
+back in seconds with the same disk. You care about latency, for a live
+dashboard, a game or app event feed, or an interactive pipeline in one data
+center, more than about staying up through a lost machine.
+
+**Why.** A `Leader` publish is acknowledged once the leader has written the
+record, so it costs one round trip where `Quorum` costs two. Readers and live
+subscribers see a record as soon as the leader has it, without waiting for the
+quorum mark.
+
+**Settings.** The same broker settings as the production default. `Leader` is
+what `felixctl` uses when you pass no `--consistency`, so name it anyway:
+
+```bash
+felixctl stream create feed --shards 4 --replication 2 --consistency leader
+```
+
+Replication factor 2 or 3 still keeps copies on other brokers, which planned
+moves and restores use. They do not make a crash failover safe, as below. For
+a restart on the same disk, replication factor 1 also works.
+
+**Fleet features.** None needed. The ones in the production default only
+change `Quorum` streams and caches.
+
+**Trade-off.**
+
+- If the leader dies holding records no follower has, the control plane does
+  not promote a follower. The shard waits for the old leader and its disk. It
+  does not silently lose data. Under steady writes that is the usual case.
+- The single writer rests on the leader's lease. A control-plane outage longer
+  than the expiry window (5 to 11 seconds with the defaults) stops writes to
+  `Leader` shards.
+- If the disk itself is lost, an operator has to act, for example with
+  `felixctl placement abandon`, which gives up the newest records.
+
+**When not to use it.** You must keep serving through losing a machine or a
+zone. Use the [production default](#production-default), `Quorum`.
+
+Depth: [Consistency](/architecture/semantics/#consistency-how-many-brokers-must-hold-it),
+[Choosing durability](/deployment/production/#leader-or-quorum).
+
 ## Live fan-out
 
-**Good for** messages that are only useful right now: presence, cursor
-positions, live prices on a screen.
+**The story.** You send messages that only matter right now: presence, cursor
+positions, live prices on a screen. What usually fails is a subscriber that
+lags, and a message that is a second old is worthless anyway. You care about
+the lowest latency and no storage to look after.
 
 **Why.** An in-memory stream skips the disk and replication entirely. It has
 the lowest latency and no storage to size.
@@ -241,7 +297,9 @@ loses records cannot tell from the stream; only
 
 ## Development
 
-**Good for** trying Felix, local work and CI.
+**The story.** You are trying Felix, writing code against it, or running CI.
+What usually fails is your own code, not a machine. You care that it starts
+with one command and behaves like the real thing.
 
 **Why.** One command starts a control plane and brokers on free ports.
 
