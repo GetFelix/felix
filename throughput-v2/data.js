@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794100434255,
+  "lastUpdate": 1794103973750,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -49868,6 +49868,58 @@ window.BENCHMARK_DATA = {
             "range": "7521.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1159679.48\nmean: 1156094.95\nstdev: 7521.92\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7aaab8048a1ed51a26fa6af50ad4d3e0c907ab3e",
+          "message": "fix(placement): end a fenced move at once when its leader gave its copy up (#2125)\n\nA move fenced at generation G whose leader crashes uncleanly before it\nreports drained comes back having given its copy up, and never reports\ndrained. Failover passes the fenced move's destination over and ignores\nthe give-up during a move, so only the fence timeout ended it, and its\nclock restarts with every control-plane restart (sim seed 3, stream/0).\n\nPlacement now takes a give-up at the fence's generation as the end of the\nmove (`leader_gave_up` step): the leader is named again at a new\ngeneration, and the destination stays in the set as a follower, since it\nmay be the only copy holding what the leader lost. The broker leads its\ncopy only if its probe found no follower ahead (`may_lead`); otherwise it\ngives the new generation up and the shard fails over. `AtGeneration` now\nforwards `leader_gave_up`, which move_step reads through it.\n\nFelixShardMoveGiveUp.tla checks the rule: the fixed config passes the\nsafety invariants and EventuallyServes, the Stall twin (old rule) violates\nliveness, and the Leads twin (broker leads without the probe) violates\nAckedHeldByLeader.",
+          "timestamp": "2026-11-08T02:08:48Z",
+          "tree_id": "425875da721a20be09d811309dbab92274bc462e",
+          "url": "https://github.com/GetFelix/felix/commit/7aaab8048a1ed51a26fa6af50ad4d3e0c907ab3e"
+        },
+        "date": 1794103973198,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 532663.14,
+            "range": "31600.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 532663.14\nmean: 513830.61\nstdev: 31600.31\ncv: 6.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 532663.14,
+            "range": "31600.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 532663.14\nmean: 513830.61\nstdev: 31600.31\ncv: 6.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120030.7,
+            "range": "1673.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120030.70\nmean: 120196.19\nstdev: 1673.62\ncv: 1.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1200307.04,
+            "range": "16736.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1200307.04\nmean: 1201961.88\nstdev: 16736.22\ncv: 1.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
