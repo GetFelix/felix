@@ -603,6 +603,7 @@ weights=(
   "FelixShardMoveGiveUpKeepLive 22"
   "FelixShardMoveGiveUpFailoverLive 13"
   "FelixShardMoveGiveUpFailoverDrop 3"
+  "FelixShardMoveGiveUpFourDrop 30"
   "FelixShardElectUnclean 22"
   "FelixShardElectUncleanNoStartRecord 12"
   "FelixShardElectUncleanContinuingDoubted 40"
