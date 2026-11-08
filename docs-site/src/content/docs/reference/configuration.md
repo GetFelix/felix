@@ -4,6 +4,8 @@ title: "Configuration Reference"
 
 Every key the broker's YAML config file accepts. Each has an environment variable, listed with it. Settings that exist only as environment variables are in the [Environment Variables](/reference/environment-variables/) reference. The broker refuses a file with a key it does not know.
 
+For recommended combinations of settings by workload, see [Choosing a configuration](/deployment/choosing-a-configuration/).
+
 ## Configuration Methods
 
 Felix supports three configuration methods, applied in order (later sources override earlier):
