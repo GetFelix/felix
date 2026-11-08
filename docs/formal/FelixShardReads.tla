@@ -88,7 +88,7 @@ ConfirmRead(b, f) ==
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
                     handoffVars, fencing, answered, confirmed, opened, setVars, ackGen, heard, counterVars, idVars, named, refusalVars,
-                    wipeVars >>
+                    wipeVars, waits, pinVars, cpGone >>
     /\ UNCHANGED << reading, rgen, rseen, rval, reads, staleRead >>
 
 Confirmed(b) ==

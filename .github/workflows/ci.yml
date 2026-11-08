@@ -1134,9 +1134,9 @@ jobs:
       cancel-in-progress: false
     # TLC runs a worker per core.
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    # A full run on main takes 55-75 min per shard; the rest is headroom for a
-    # slow hosted runner, which can take twice that.
-    timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '200')) }}
+    # A full run on main takes up to about 200 min per shard, and the longest
+    # single configurations run 2-3 h, so main gets the hosted-runner maximum.
+    timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '360')) }}
     # Ten shards on a pull request, sixteen for main's full set (about 2200
     # minutes of weight, too much for ten 200-minute jobs), filled by each configuration's measured time
     # (scripts/check_tla.sh).
