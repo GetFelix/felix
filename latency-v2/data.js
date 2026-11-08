@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794100431631,
+  "lastUpdate": 1794103969957,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -63294,6 +63294,72 @@ window.BENCHMARK_DATA = {
             "range": "798.07",
             "unit": "us",
             "extra": "trials: 5\nmedian: 420.00\nmean: 730.20\nstdev: 798.07\ncv: 109.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7aaab8048a1ed51a26fa6af50ad4d3e0c907ab3e",
+          "message": "fix(placement): end a fenced move at once when its leader gave its copy up (#2125)\n\nA move fenced at generation G whose leader crashes uncleanly before it\nreports drained comes back having given its copy up, and never reports\ndrained. Failover passes the fenced move's destination over and ignores\nthe give-up during a move, so only the fence timeout ended it, and its\nclock restarts with every control-plane restart (sim seed 3, stream/0).\n\nPlacement now takes a give-up at the fence's generation as the end of the\nmove (`leader_gave_up` step): the leader is named again at a new\ngeneration, and the destination stays in the set as a follower, since it\nmay be the only copy holding what the leader lost. The broker leads its\ncopy only if its probe found no follower ahead (`may_lead`); otherwise it\ngives the new generation up and the shard fails over. `AtGeneration` now\nforwards `leader_gave_up`, which move_step reads through it.\n\nFelixShardMoveGiveUp.tla checks the rule: the fixed config passes the\nsafety invariants and EventuallyServes, the Stall twin (old rule) violates\nliveness, and the Leads twin (broker leads without the probe) violates\nAckedHeldByLeader.",
+          "timestamp": "2026-11-08T02:08:48Z",
+          "tree_id": "425875da721a20be09d811309dbab92274bc462e",
+          "url": "https://github.com/GetFelix/felix/commit/7aaab8048a1ed51a26fa6af50ad4d3e0c907ab3e"
+        },
+        "date": 1794103962784,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 98.80\nstdev: 0.84\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 132.40\nstdev: 2.51\ncv: 1.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "18.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 184.40\nstdev: 18.23\ncv: 9.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 133.60\nstdev: 0.55\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "4.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 262.20\nstdev: 4.92\ncv: 1.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 400,
+            "range": "41.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 419.40\nstdev: 41.19\ncv: 9.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
