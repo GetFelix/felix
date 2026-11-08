@@ -453,7 +453,6 @@ impl SimCluster {
         let at = self.elapsed();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
-        let repaired_before = node.torn_tails_repaired().len();
         let cut = CancellationToken::new();
         let torn_slot = Arc::new(parking_lot::Mutex::new(None));
         node.arm_power_cut(seed, {
@@ -479,6 +478,11 @@ impl SimCluster {
         }
         node.crash(&self.net, Stop::PowerLoss).await;
         node.reboot();
+        // Counted once the broker is down: a start that ran into this cut can
+        // finish its recovery after the cut was asked for, and that repair
+        // belongs to the previous loss.
+        let repaired_before = node.torn_tails_repaired().len();
+        let opened_before = node.segments_opened().len();
         // A segment whose name did not survive, or that holds nothing past
         // where the append began, leaves recovery nothing to repair.
         let torn =
@@ -489,6 +493,7 @@ impl SimCluster {
             at,
             torn,
             repaired_before,
+            opened_before,
             restarted_at: None,
         });
         mid_append
@@ -503,6 +508,12 @@ impl SimCluster {
     /// repaired on the broker at `index`, in order over the whole run.
     pub fn torn_tails_repaired(&self, index: usize) -> Vec<std::path::PathBuf> {
         self.nodes[index].torn_tails_repaired()
+    }
+
+    /// The segments, below the data directory, the broker at `index` has
+    /// opened, in order, once for each stretch between power losses.
+    pub fn segments_opened(&self, index: usize) -> Vec<std::path::PathBuf> {
+        self.nodes[index].segments_opened()
     }
 
     /// Shards (`stream/3`) the broker holds on purpose after unclean kills,

@@ -280,6 +280,11 @@ impl Node {
             .expect("the data directory is simulated")
     }
 
+    pub(crate) fn segments_opened(&self) -> Vec<std::path::PathBuf> {
+        felix_storage::sim_fs::segments_opened(self.dir.path())
+            .expect("the data directory is simulated")
+    }
+
     /// Stop whatever is running or starting, as a crash does. A kill leaves
     /// the run state unclean, so the next start rotates the storage id and
     /// runs the unclean-start handling. A power loss leaves it as the broker
