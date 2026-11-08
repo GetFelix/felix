@@ -674,16 +674,19 @@ pub(super) fn move_step<'a>(
                 );
             }
             // A halted one never will either, but its leader is reporting:
-            // drop it, still fenced, and the leader reports drained against
-            // the followers it has. The cut-over then picks one of them, or
-            // hands the shard back to the leader.
+            // drop it as the successor, still fenced, and the leader reports
+            // drained against the followers it has. The cut-over then picks
+            // one of them, or hands the shard back to the leader. It leaves
+            // the set unless `keeps_destination`; then the trim drops it.
             if let Some(successor) = existing
                 .successor
                 .as_deref()
                 .filter(|s| halted_now(s).is_some())
             {
                 let mut replicas = existing.replicas.clone();
-                replicas.retain(|replica| replica != successor);
+                if !keeps_destination(existing) {
+                    replicas.retain(|replica| replica != successor);
+                }
                 return Decision::Move(
                     given_up(successor, halted_now(successor)),
                     ShardAssignment {
@@ -1189,8 +1192,8 @@ pub(super) fn start(
 }
 
 /// A fenced move given up: the leader that stopped serves again at a new
-/// generation, and the destination is dropped unless the shard had it anyway.
-/// The start stays, as for [`undo_staged`].
+/// generation, and the destination is dropped as by [`undo_staged`]. The
+/// start stays, as for [`undo_staged`].
 pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> ShardAssignment {
     let replicas = match existing.successor.as_deref() {
         Some(successor) => undo_staged(existing, successor, replication_factor).replicas,
@@ -1207,15 +1210,16 @@ pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> Sha
 }
 
 /// A staged move without its destination: the copy is dropped unless the
-/// stream had it anyway. The start stays, so this shard waits behind the
-/// others for its next slot rather than being chosen again at once.
+/// stream had it anyway or [`keeps_destination`]. The start stays,
+/// so this shard waits behind the others for its next slot rather than being
+/// chosen again at once.
 pub(super) fn undo_staged(
     existing: &ShardAssignment,
     successor: &str,
     replication_factor: u32,
 ) -> ShardAssignment {
     let mut replicas = existing.replicas.clone();
-    if replicas.len() >= replication_factor.max(1) as usize {
+    if replicas.len() >= replication_factor.max(1) as usize && !keeps_destination(existing) {
         replicas.retain(|replica| replica != successor);
     }
     ShardAssignment {
@@ -1224,6 +1228,17 @@ pub(super) fn undo_staged(
         replicas,
         ..existing.renamed()
     }
+}
+
+/// Whether a move given up keeps its destination in the set: a set of three.
+/// There a record can be acknowledged on the leader and the destination
+/// alone. Dropped, it is on the leader only, and an unclean crash of the
+/// leader then loses it. A larger set keeps a follower holding it, and a set
+/// of two is a one-copy shard, which such a crash loses from anyway. A set kept
+/// above its factor is trimmed later behind a fence ([`trim`]).
+/// `FelixShardMoveGiveUpDrop.cfg` in docs/formal.
+fn keeps_destination(existing: &ShardAssignment) -> bool {
+    existing.nodes().count() == 3
 }
 
 /// Undo a replacement, or, on a fenced stream where dropping `joining`

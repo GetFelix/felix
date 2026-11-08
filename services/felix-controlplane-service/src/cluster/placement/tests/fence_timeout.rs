@@ -373,3 +373,117 @@ fn give_ups_count_in_a_row_and_reset_on_a_new_leader() {
     assert_eq!(progress.give_ups(&led_by_b).get(&key), None);
     assert_eq!(progress.give_ups(&led_by_a).get(&key), None, "forgotten");
 }
+
+/// A Quorum shard replicated twice on broker-a and broker-b, with broker-c
+/// staged as the move's destination: a set of three.
+fn staged_above_two(state: ShardState) -> ShardAssignment {
+    ShardAssignment {
+        state,
+        successor: Some("broker-c".to_string()),
+        move_started_at_millis: Some(NOW - 10 * MINUTE),
+        move_reason: Some(MoveReason::Balance),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    }
+}
+
+fn decide_twice(nodes: &[Node], existing: ShardAssignment, reports: &dyn CaughtUp) -> Decision {
+    let streams = [Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    }];
+    plan_with(
+        &streams,
+        &[],
+        nodes,
+        &[existing],
+        reports,
+        MovePolicy::default(),
+    )
+    .shards
+    .remove(0)
+    .decision
+}
+
+fn down_c() -> Vec<Node> {
+    vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Down, None),
+    ]
+}
+
+/// **A set of three keeps a destination the fence timeout gives up.** A
+/// record can be acknowledged on the leader and the destination alone; with
+/// the destination dropped it is on the leader only, and a leader that then
+/// crashes uncleanly is reclaimed without it. `FelixShardMoveGiveUpDrop.cfg`.
+#[test]
+fn a_fence_timeout_keeps_the_staged_destination() {
+    let decision = decide_twice(
+        &live(&["broker-a", "broker-b", "broker-c"]),
+        staged_above_two(ShardState::Draining),
+        &Fenced {
+            fenced_at: Some(NOW - DEFAULT_FENCE_TIMEOUT_MILLIS - 1),
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::FenceTimedOut { .. }, retaken) = decision else {
+        panic!("not timed out: {decision:?}");
+    };
+    assert_eq!(retaken.successor, None);
+    assert_eq!(retaken.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// The same when the destination is down at the fence.
+#[test]
+fn an_abandoned_fence_keeps_the_staged_destination() {
+    let decision = decide_twice(
+        &down_c(),
+        staged_above_two(ShardState::Draining),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::Abandon { .. }, retaken) = decision else {
+        panic!("not abandoned: {decision:?}");
+    };
+    assert_eq!(retaken.successor, None);
+    assert_eq!(retaken.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// And before the fence, where a leader with no earlier pass counts the
+/// destination toward the quorum.
+#[test]
+fn a_staged_destination_lost_before_the_fence_stays_in_a_set_of_three() {
+    let decision = decide_twice(
+        &down_c(),
+        staged_above_two(ShardState::Assigning),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::Abandon { .. }, undone) = decision else {
+        panic!("not abandoned: {decision:?}");
+    };
+    assert_eq!(undone.successor, None);
+    assert_eq!(undone.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// The copy kept above the factor leaves later behind a trim fence, so the
+/// set does not stay above it.
+#[test]
+fn a_set_kept_above_its_factor_is_trimmed() {
+    let decision = decide_twice(
+        &down_c(),
+        assigned("orders", "broker-a", &["broker-b", "broker-c"]),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    assert!(
+        matches!(decision, Decision::Move(MoveStep::TrimFence, _)),
+        "{decision:?}"
+    );
+}

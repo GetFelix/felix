@@ -4976,9 +4976,18 @@ dies after the fence but before it is level, the drained report would wait
 for it forever, so once the destination is marked down the control plane
 gives the shard back to the old leader at a new generation, the same write as
 an operator's cancel. Nobody has led since the fence, so the old leader holds
-every write it accepted. A destination that halts instead is dropped at a new
-generation that is still fenced; the leader then reports drained against the
-followers it has, and reports even when that is none. A
+every write it accepted. A destination that halts instead is dropped as the
+successor at a new generation that is still fenced; the leader then reports drained against the
+followers it has, and reports even when that is none. Neither path, nor a
+staged move given up, takes the destination out of a set of three. A leader
+with no earlier pass counts the destination toward the quorum, so a record
+can be acknowledged on the leader and the destination alone; dropped, it
+would be on the leader only, and a leader that then crashed uncleanly would
+be named again without it. The set stays above its factor until a trim fence
+drops a copy the rest can do without. `FelixShardMoveGiveUpDrop.cfg` and
+`FelixShardMoveGiveUpUnstage.cfg` show the loss, and
+`FelixShardMoveGiveUpKeep.cfg` and `FelixShardMoveGiveUpKeepLive.cfg` the
+fix. A
 leader that dies mid-move is a failover, and the successor is a candidate
 there like any other replica. Neither path can name a broker holding less
 than the report said, because the report is the only input either reads.

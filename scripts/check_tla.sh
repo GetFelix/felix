@@ -463,6 +463,10 @@ expectations=(
   "FelixShardMoveGiveUp pass"
   "FelixShardMoveGiveUpStall violates liveness"
   "FelixShardMoveGiveUpLeads violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpKeep pass"
+  "FelixShardMoveGiveUpKeepLive pass"
+  "FelixShardMoveGiveUpDrop violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpUnstage violates AckedHeldByLeader"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -583,6 +587,7 @@ fi
 # A configuration missing here weighs one, so it is never left to
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
+  "FelixShardMoveGiveUpKeep 22"
   "FelixShardElectUnclean 22"
   "FelixShardElectUncleanNoStartRecord 12"
   "FelixShardElectUncleanContinuingDoubted 40"

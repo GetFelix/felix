@@ -541,6 +541,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardMoveGiveUp.cfg` | `FelixShardMoveGiveUp.tla`: a fenced move whose leader crashes uncleanly before it reports drained; the give-up at the move's generation ends the move, and the leader leads again only if its probe found no follower ahead | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` and `EventuallyServes` (97k distinct states, seconds) |
 | `FelixShardMoveGiveUpStall.cfg` | the same with the move waiting for a drained report or the fence timeout, whose clock restarts with the control plane | violate `EventuallyServes` |
 | `FelixShardMoveGiveUpLeads.cfg` | the same with a broker that leads its given-up copy without the probe | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpKeep.cfg` | replication factor 2 with the destination staged as a third copy, two writes; every move given up keeps the destination, and a trim fence drops a copy later | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` (29.5M distinct states, 7 min locally) |
+| `FelixShardMoveGiveUpKeepLive.cfg` | the same with one write and the crash during the move, for liveness | pass the invariants, `EventuallyServes` and `EventuallyAtFactor` |
+| `FelixShardMoveGiveUpDrop.cfg` | the same with the fence timeout's retake dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpUnstage.cfg` | the same with a staged move given up before its fence dropping the destination | violate `AckedHeldByLeader` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
