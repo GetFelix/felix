@@ -588,6 +588,7 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixShardMoveGiveUpKeep 22"
+  "FelixShardMoveGiveUpKeepLive 22"
   "FelixShardElectUnclean 22"
   "FelixShardElectUncleanNoStartRecord 12"
   "FelixShardElectUncleanContinuingDoubted 40"
