@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794177656722,
+  "lastUpdate": 1794179027588,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50076,6 +50076,58 @@ window.BENCHMARK_DATA = {
             "range": "43972.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 819426.04\nmean: 801034.93\nstdev: 43972.26\ncv: 5.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fd7dca7775aa2e943aba5c470babf2c4f48e4d11",
+          "message": "spec, ci: fix the read/commit confirms' UNCHANGED lists and give main's TLA shards room (#2127)\n\n* spec: read and group-commit confirms leave the pins, waits and cpGone unchanged\n\nConfirmRead and ConfirmCommit list the base spec's variables by hand, and\nthe list predates waits, pinVars and cpGone. TLC stopped at depth 5 with an\nincompletely specified successor in FelixShardReadsRound and\nFelixShardSessionsGroupRound.\n\n* ci: give main's TLA shards six hours and the slow configurations their measured weight\n\nMain's full run cancelled six shards at 200 minutes. Twelve configurations\nhad grown to 2-3x their weight, so the sharder stacked them, and\nFelixShardCpLiveNoOwnBallotRefused alone needs more than 200 minutes.\n\nSpec-Unaffected: CI budget and shard weights only",
+          "timestamp": "2026-11-08T14:59:58-08:00",
+          "tree_id": "378d95fbbb0e2a261167e9b8bc92dd3ed1f6b449",
+          "url": "https://github.com/GetFelix/felix/commit/fd7dca7775aa2e943aba5c470babf2c4f48e4d11"
+        },
+        "date": 1794179026924,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 631867.95,
+            "range": "36280.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631867.95\nmean: 637245.84\nstdev: 36280.37\ncv: 5.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 631867.95,
+            "range": "36280.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 631867.95\nmean: 637245.84\nstdev: 36280.37\ncv: 5.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154610.58,
+            "range": "8063.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154610.58\nmean: 151518.30\nstdev: 8063.63\ncv: 5.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1546105.78,
+            "range": "80636.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1546105.78\nmean: 1515182.95\nstdev: 80636.36\ncv: 5.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
