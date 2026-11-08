@@ -266,6 +266,8 @@ expectations=(
   "FelixShardFencedAckStagedMoveShort pass"
   "FelixShardFencedAckMoveCancelShort pass"
   "FelixShardFencedAckMoveDestination violates AckedHeldByLeader"
+  "FelixShardFencedAckMovePromoted pass"
+  "FelixShardFencedAckMovePromotedReach violates NeverPromotesDestination"
   "FelixShardFencedCache pass"
   "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
   "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
@@ -462,6 +464,10 @@ expectations=(
   "FelixShardUnifiedLearnerBlocking pass"
   "FelixShardUnifiedLearnerBlockingTwo pass"
   "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
+  "FelixShardUnifiedTwoRotated pass"
+  "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCpLiveMoveRotated pass"
+  "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -588,6 +594,7 @@ weights=(
   "FelixShardElectUncleanVouchOnShip 2"
   "FelixShardElectLiveUncleanLed 2"
   "FelixShardFencedAckMoveShort 31"
+  "FelixShardFencedAckMovePromoted 120"
   "FelixShardWipeStripped 29"
   "FelixShardFencedAckMoveCancelShort 95"
   "FelixShardFencedAckStagedMoveShort 65"
@@ -631,6 +638,10 @@ weights=(
   "FelixShardUnifiedLearnerBlocking 8"
   "FelixShardUnifiedLearnerVariantDropped 5"
   "FelixShardUnifiedIdleVouchWrite 16"
+  "FelixShardUnifiedCpLiveMoveRotated 1"
+  "FelixShardUnifiedCpLiveMoveRotatedLegacy 1"
+  "FelixShardUnifiedTwoRotated 1"
+  "FelixShardUnifiedTwoRotatedForgets 1"
   "FelixShardUnifiedSets 7"
   "FelixShardUnifiedCpLiveMoveDoubted 3"
   "FelixShardUnifiedVouchMark 3"

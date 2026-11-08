@@ -1918,11 +1918,18 @@ would land on a broker about to stop serving it. The shard stays fenced until an
 it or the leader's lease runs out and it fails over (`placement plan` says the
 leader has deregistered). While a follower is being seated, only the lease ends
 the wait. A leader that dies mid-move is a failover, where
-the successor is a candidate like any other replica, except on a durable
-`Quorum` stream: there a broker from before every change of leader was
-fenced would open the shard as a cut-over, without the fence, so failover
-passes it over. An ephemeral stream has
-no log to hand off and is reassigned as it always was.
+the successor is a candidate like any other replica. On a durable `Quorum`
+stream or cache there are two conditions. The successor's broker must report
+`fences_every_change`: it fences a majority and takes their tails before it
+serves, as any promoted follower does. An older broker would open the shard
+as the cut-over it expected, without fencing, and its last report can predate
+a record the old leader acknowledged on its followers. And the successor
+must already be a member of the set: a copy staged on top of it never counted
+toward an acknowledgement. Otherwise failover passes the successor over, and
+if no other replica holds the log the shard stays unplaced (`placement plan`
+says no caught-up replica). A broker reports `fences_every_change` with the
+fence on; one started with `FELIX_INTERNAL_FENCE=false` does not. An ephemeral stream has no log to hand
+off and is reassigned as it always was.
 
 A fenced leader that is live but never reports drained would hold its shard
 without writes forever, so the move has a second timeout. Once the instance

@@ -1793,6 +1793,88 @@ async fn a_wiped_copy_answers_a_unified_fence_with_no_promise() {
     assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
 }
 
+/// A copy that took a move's fence at 5 as a voter under `OLD`, and kept the
+/// set naming it so, then restarted under `OWN` with `marks`: the copy-trust
+/// record rotated with the id, so every copy is untrusted.
+async fn restarted_under_own(
+    broker: &Arc<Broker>,
+    trust_dir: &std::path::Path,
+    marks: Arc<QuorumMarks>,
+) -> ReplicaHandler {
+    let before = handler(broker, 5, OLD).with_fleet(kept_marks());
+    let answer = settled(|| unified(&before, fence_with(5, set(5, OLD), None, false))).await;
+    assert!(
+        matches!(&answer, InternalMessage::FenceOk(ok) if ok.attestation.is_some_and(|a| a.kept_from == 0)),
+        "{answer:?}"
+    );
+    drop(before);
+    felix_storage::run_state::copy_trust::rotate_storage_id(trust_dir, OWN).expect("rotate");
+    let trust =
+        Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
+    handler_with_trust_on(broker, 6, trust, marks).0
+}
+
+/// **A copy whose id an unclean crash rotated answers a fence leaving its
+/// old set as a voter there.** Its sets still name the id it had before the
+/// crash, but the crash kept every ballot and the start recorded that id as
+/// the directory's own, so its promise counts, untrusted until a leader
+/// vouches for it. Taking that set for a wipe left a two-voter set being left
+/// one promise short for good (`FelixShardUnifiedCpLiveMoveRotated.cfg`).
+#[tokio::test]
+async fn a_copy_rotated_by_a_crash_answers_a_fence_leaving_its_old_set() {
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let marks = kept_marks();
+    marks.set_rotated_storage(vec![StorageId::from_bytes(OLD)]);
+    let copy = restarted_under_own(&broker, trust_dir.path(), marks).await;
+
+    let cut_over = fence_with(6, set(6, OLD), Some(set(5, OLD)), false);
+    let answer = settled(|| unified(&copy, cut_over.clone())).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(
+        ok.attestation,
+        Some(felix_wire::internal::FenceAttestation {
+            kept_from: 0,
+            trusted: false,
+            by_record: false,
+        })
+    );
+    let log = log_of(&broker).await;
+    assert_eq!(log.accepted_generation(), 6);
+    assert_ne!(log.member_is_learner(LOCAL), Some(true));
+}
+
+/// **A restored or wiped copy still answers with no promise**, and so does
+/// one whose sets name an id the directory never recorded as its own: their
+/// ballots may be gone, so the same set names a lost copy.
+#[tokio::test]
+async fn a_rotated_copy_that_lost_its_ballots_still_promises_nothing() {
+    for (kept, rotated) in [(false, true), (true, false)] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = marks(true);
+        marks.set_kept_ballots(kept);
+        if rotated {
+            marks.set_rotated_storage(vec![StorageId::from_bytes(OLD)]);
+        }
+        let copy = restarted_under_own(&broker, trust_dir.path(), marks).await;
+
+        let cut_over = fence_with(6, set(6, OLD), Some(set(5, OLD)), false);
+        let answer = settled(|| unified(&copy, cut_over.clone())).await;
+        let InternalMessage::FenceOk(ok) = answer else {
+            panic!("expected the fence to be taken, got {answer:?}");
+        };
+        assert_eq!(
+            ok.attestation,
+            no_promise(),
+            "kept {kept} rotated {rotated}"
+        );
+        assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
+    }
+}
+
 /// **A copy the fence's set lists only as a learner answers a unified
 /// fence with no promise**, where it refuses an older caller as no voter in
 /// that set. A broker the set does not list refuses either way.

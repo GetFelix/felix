@@ -262,7 +262,9 @@ impl ReplicaHandler {
     /// the evidence of a wipe (#1331). A set naming none, or no set at all, is
     /// no evidence, so a new shard's copies and copies written before sets
     /// existed vote (`Creates` and `CreateCountsEmpty` in
-    /// `docs/formal/FelixShard.tla`).
+    /// `docs/formal/FelixShard.tla`). Nor is an id a crash rotated away on
+    /// this directory while it kept every ballot: that copy's promises still
+    /// count (`UncleanCrash` in `docs/formal/FelixShardUnified.tla`).
     fn names_other_copy<'a>(
         &self,
         mut members: impl Iterator<Item = (&'a str, Option<felix_storage::StorageId>)>,
@@ -271,7 +273,14 @@ impl ReplicaHandler {
         let Some(own) = self.local_storage else {
             return false;
         };
-        members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
+        let rotated = |named| {
+            self.fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.rotated_own_copy(named))
+        };
+        members.any(|(node, storage)| {
+            node == local && storage.is_some_and(|named| named != own && !rotated(named))
+        })
     }
 
     /// Whether `set` names this broker under the storage id it holds now.

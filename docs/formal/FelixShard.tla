@@ -168,7 +168,10 @@
 (* its last report (AckedHeldByLeader). Without it a `Quorum` failover     *)
 (* ends the move instead. With `FenceEveryChange` each of these fences and *)
 (* catches up before it serves, as a promotion does, which is what the     *)
-(* broker does once every replica offers the fence.                        *)
+(* broker does once every replica offers the fence. There                  *)
+(* `PromoteFencedDestination` lets failover name a destination that is a   *)
+(* member of the set, so a move fenced toward the one follower holding the *)
+(* log does not strand its shard when the leader is lost.                  *)
 (*                                                                         *)
 (* `StartRecord` has a leader write a generation-start record before any   *)
 (* client write, and lets the mark and the report's length stop only at a  *)
@@ -687,6 +690,15 @@ WipedNonVoter == FALSE
 ReadmitCountsWiped == FALSE
 ReadmitBeforeCatchUp == FALSE
 PromoteNonVoter == FALSE
+\* `PromoteFencedDestination`: with `PromoteDestination` off, a `Quorum`
+\* failover may still name a move's destination that is a member of the set,
+\* not a copy staged on top of it, when its broker fences every change of
+\* leader (`FenceEveryChange`). It then fences and catches up before it
+\* serves, as any promoted follower does, so the last report predating a
+\* record the old leader acknowledged on its followers loses nothing.
+\* Without it, a move fenced toward a destination whose leader then dies,
+\* with the other follower behind, has nothing placement may promote.
+PromoteFencedDestination == FALSE
 \* `WriteDropsLearners`: a placement write may name no learners, as one does
 \* when its read of the assignment it replaces fails and is taken for no
 \* assignment, or when it comes from a control plane that predates learners
@@ -2474,7 +2486,13 @@ Promote(v, f, views) ==
     \* With it off, a `Quorum` failover never names the destination: it ends
     \* the move instead (`promote` in services/felix-controlplane-service/src/
     \* cluster/placement/plan.rs).
-    /\ Quorum /\ ~PromoteDestination => ~Incoming(f)
+    \* `PromoteFencedDestination` names a member destination whose broker
+    \* fences the promotion (`promotable_destination` in placement/plan.rs).
+    \* The code asks that of the destination's broker alone, which is all
+    \* that matters here: the others only answer its fence.
+    /\ Quorum /\ ~PromoteDestination =>
+           \/ ~Incoming(f)
+           \/ PromoteFencedDestination /\ FenceEveryChange /\ f \notin staged
     /\ CASE Promotion = "leader-report" -> ByLeaderReport(v.report, f) \/ ByProbe(v, f)
           [] Promotion = "log-order"     -> ByLogOrder(v.leader, f)
           [] Promotion = "any"           -> ByAny(f)
@@ -5312,6 +5330,13 @@ AdoptedMatchesOpened ==
 \* name again (`RenameDue`) that never took its generation. TLC finds one
 \* under `Renames` (FelixShardElectRenameDue.cfg), which shows the
 \* configuration that passes with it gets that far.
+\* A witness, not a property: a failover names a move's destination leader.
+\* A configuration expecting it violated shows that the stalled shape, a
+\* move fenced toward a destination whose leader is then lost, is reached
+\* and that placement can resolve it.
+NeverPromotesDestination ==
+    [][~\E f \in Brokers : Incoming(f) /\ Promote(Now, f, cpView')]_vars
+
 NeverRenameDue == ~(RenameDue /\ bgen[leader] < gen)
 
 \* The same for a leader that took the control plane's generation and is

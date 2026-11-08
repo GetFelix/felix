@@ -500,16 +500,16 @@ fn plan_once(
         // The leader is gone. Prefer one of its followers -- but only one that
         // actually holds the log, or the failover is the data loss.
         //
-        // On a fenced shard a move's destination is never promoted: its broker
-        // takes the new leadership as the cut-over and serves without the
-        // promotion fence, and its last report can predate records the old
-        // leader acknowledged on its followers. `PromoteDestination` in
-        // `docs/formal/FelixShard.tla`.
+        // On a fenced shard a move's destination is promoted only where it
+        // fences the promotion. A broker that does not takes the new
+        // leadership as the cut-over and serves without the fence, and its
+        // last report can predate records the old leader acknowledged on its
+        // followers. `PromoteDestination` in `docs/formal/FelixShard.tla`.
         let promotable: Vec<&Node> = match current.get(&key) {
             Some(previous) if fenced => eligible
                 .iter()
                 .copied()
-                .filter(|node| previous.successor.as_deref() != Some(node.node_id.as_str()))
+                .filter(|node| promotable_destination(previous, node, replication_factor))
                 .collect(),
             _ => eligible.clone(),
         };
@@ -525,7 +525,7 @@ fn plan_once(
                     node.status.lifecycle == NodeLifecycle::Draining
                         && !departed.contains(&node.node_id)
                         && allowed(&node.node_id)
-                        && !(fenced && previous.successor.as_deref() == Some(node.node_id.as_str()))
+                        && (!fenced || promotable_destination(previous, node, replication_factor))
                 })
                 .collect(),
             _ => Vec::new(),
@@ -749,6 +749,32 @@ fn with_copy_pins(
     };
     keep_copy_pins(existing, &mut next, caught_up, readmitted);
     Decision::Move(step, next)
+}
+
+/// Whether failover on a fenced shard may name `node`, given the move
+/// `previous` may have in flight.
+///
+/// Anything but the move's destination may be. The destination may be once
+/// its broker fences every change of leader, so it fences a majority and
+/// takes their tails before it serves, as any promoted follower does, and
+/// only while it is a member of the set: a copy staged on top of the set
+/// never counted toward an acknowledgement. Passed over, a move fenced toward
+/// the one follower that holds the log leaves its shard unplaced once the
+/// leader is lost. `PromoteFencedDestination` in `docs/formal/FelixShard.tla`.
+fn promotable_destination(
+    previous: &ShardAssignment,
+    node: &Node,
+    replication_factor: u32,
+) -> bool {
+    if previous.successor.as_deref() != Some(node.node_id.as_str()) {
+        return true;
+    }
+    let staged_on_top = previous.replicas.len() >= replication_factor.max(1) as usize;
+    !staged_on_top
+        && node
+            .status
+            .features
+            .contains(felix_common::fleet::FENCES_EVERY_CHANGE.name())
 }
 
 /// Who leads `assignment` once the move in flight completes: a live staged

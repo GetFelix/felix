@@ -212,6 +212,9 @@ fn features_for(fences: bool, reads_by_lease: bool) -> std::collections::BTreeSe
         })
         .filter(|feature| !(reads_by_lease && matches!(**feature, LEASE_FREE_READS)))
         .map(|feature| feature.name().to_string())
+        // A broker that fences fences every leadership it takes
+        // (`begin_open` in shards/lifecycle.rs).
+        .chain(fences.then(|| felix_common::fleet::FENCES_EVERY_CHANGE.name().to_string()))
         // This build's leaders name the followers holding the start record,
         // and it keeps a wiped copy from voting or counting.
         .chain([

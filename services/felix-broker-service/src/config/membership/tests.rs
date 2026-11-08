@@ -72,3 +72,14 @@ fn a_broker_reports_record_headers() {
     assert!(features_for(true, false).contains(headers));
     assert!(features_for(false, true).contains(headers));
 }
+
+/// **A broker with the fence says it fences every change of leader**, which
+/// placement needs before it promotes a fenced move's destination; one with
+/// the fence off says nothing.
+#[test]
+fn a_broker_reports_fencing_every_change_only_with_the_fence() {
+    let every_change = felix_common::fleet::FENCES_EVERY_CHANGE.name();
+    assert!(features_for(true, false).contains(every_change));
+    assert!(features_for(true, true).contains(every_change));
+    assert!(!features_for(false, false).contains(every_change));
+}

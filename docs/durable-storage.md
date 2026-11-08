@@ -1383,7 +1383,10 @@ leader's own crash", for the whole of it and what it costs.
 Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
 them. Giving a copy up only narrows them: the ballot it writes accepts no
-leader at the generation it had already accepted.
+leader at the generation it had already accepted. The start records the id it
+rotated away in `rotated-ids` (`docs/storage-format.md`), so a set that still
+names the copy under that id is read as naming this directory's own copy, with
+its promises, and not a lost one.
 
 Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route
