@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794093214520,
+  "lastUpdate": 1794097149516,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -63162,6 +63162,72 @@ window.BENCHMARK_DATA = {
             "range": "1237.26",
             "unit": "us",
             "extra": "trials: 5\nmedian: 379.00\nmean: 1249.20\nstdev: 1237.26\ncv: 99.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef9d4e6603587d839c64f192a71f6ad38b0fd7bf",
+          "message": "fix(replication): a copy rotated by an unclean crash answers a fence as a voter (#2119)\n\n* fix(replication): a fence leaving a set with a replaced copy counts half of the rest\n\nA set being left that names a copy since replaced (a member back on new\nstorage) could never take a majority again: in a two-voter set that is both\nmembers. The leader fenced forever, never served and never reported, so the\ncontrol plane could not re-admit the member. When a voter answers from\nanother copy than the set names, the fence now needs only half of that set\nfrom the other voters. ReplacedBlocking in FelixShardUnified.tla.\n\n* WIP: smaller ReplacedBlocking configs and a four-seat two-lost probe\n\n* WIP: model refusals and rotated copies; two probes show ReplacedBlocking lets two leaders open at one generation\n\n* Drop the half-of-a-set rule for a set being left with a replaced voter\n\nTLC shows it lets two leaders open at one generation (a copy that promised\none fence before it was replaced drops out of the other fence's pool).\n\n* WIP: model a move whose leaving voter's id rotated on an unclean crash\n\nFelixShardUnifiedCpLiveMoveRotated passes (82,392 distinct states); its\nLegacy twin, where the rotated copy refuses as a non-voter, stalls.\nFelixShardUnifiedTwoRotated passes (218,899 distinct).\n\n* fix(replication): a copy rotated by an unclean crash answers a fence as a voter\n\nA start whose crash kept every ballot records the id it rotated away in\nrotated-ids. A set still naming the copy under that id is then not the\nevidence of a wipe: the copy answers a unified fence leaving that set with\nkept_from 0, untrusted until vouched, so a move's cut-over no longer waits\nforever on a two-voter set being left (felix-sim seed 2, events/2). A\nrestored or wiped directory records nothing and still promises nothing.\n\n* docs(replication): fix two references in the rotated-copy passages\n\n* test(replication): cover the rotated-ids wiring and a model twin that forgets ballots\n\nA startup test fails if open_storage stops handing rotated-ids to the\nquorum marks. FelixShardUnifiedTwoRotatedForgets lets a rotated copy that\nlost its ballot answer as its old voter and violates\nOneLeaderPerGeneration, so TwoRotated passing says something.\n\n* ci(tla): weigh the rotated-copy configurations",
+          "timestamp": "2026-11-07T16:14:27-08:00",
+          "tree_id": "bb3bbecd750f928aabe6d83c1bba0480239a044e",
+          "url": "https://github.com/GetFelix/felix/commit/ef9d4e6603587d839c64f192a71f6ad38b0fd7bf"
+        },
+        "date": 1794097141060,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.60\nstdev: 0.55\ncv: 0.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "4.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 210.00\nstdev: 4.64\ncv: 2.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 272,
+            "range": "129.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 340.60\nstdev: 129.64\ncv: 38.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "11.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.20\nstdev: 11.78\ncv: 5.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 391,
+            "range": "367.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 556.00\nstdev: 367.89\ncv: 66.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 573,
+            "range": "1093.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 573.00\nmean: 1037.60\nstdev: 1093.59\ncv: 105.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
