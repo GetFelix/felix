@@ -6,7 +6,7 @@ name: Perf scratch (0.7.0 gate, main vs v0.6.2)
 
 on:
   push:
-    branches: [scratch/perf-070-gate-main-vs-062]
+    branches: ['scratch/perf-bisect-**']
 
 permissions:
   contents: read
@@ -14,10 +14,11 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
-  B_SHA: e311f5835b2a1a5ad848e0f4671a1b9ee95c7b8e
+  B_SHA: 755f1b0e972553c7af6ec2b8b849b563757116ff
 
 jobs:
   single:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 170
     env:
@@ -127,7 +128,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3]
-        payload: [1024, 65536]
+        payload: [65536]
     env:
       ROUNDS: "6"
       BENCH_STEADY_SECS: "20"
