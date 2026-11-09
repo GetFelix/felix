@@ -290,7 +290,9 @@ _gcp_create_vms() {
       esac
     fi
     if [ "${role}" = broker ] && [ "${PLACEMENT}" = compact ]; then
-      args+=(--resource-policies "$(_gcp_policy)")
+      # A collocated placement policy refuses automatic restart, and a broker that
+      # restarted mid-run would spoil the measurement anyway.
+      args+=(--resource-policies "$(_gcp_policy)" --no-restart-on-failure)
     fi
     cli _gc "${args[@]}"
   done
