@@ -5013,9 +5013,11 @@ publishes the routes and the set of shards it serves in one swap, so no
 publish sees one updated and the other not. A pass that opens many new
 shards, as a bulk create does, publishes along the way too, at most every
 100 ms: each new shard is routed once it is open instead of after the last
-one in the pass. Those interim publishes add only the new shards and any
-shard that started serving meanwhile; every other route stays as last
-published until the pass ends. Every publish of the serving set, the feed's
+one in the pass. A new shard this broker leads is added only once it serves,
+because replication starts work for every led route it sees and shards still
+opening would hold its pass slots. Those interim publishes add only the new
+shards and any shard that started serving meanwhile; every other route stays
+as last published until the pass ends. Every publish of the serving set, the feed's
 and a finished fence's, reads it and swaps it in under the lifecycle lock, so
 a fence that finishes during a pass is never overwritten by an older set. On
 a local cluster with every broker on the default 2 s interval the switch-over is tens of milliseconds;
