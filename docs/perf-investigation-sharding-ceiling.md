@@ -506,7 +506,7 @@ Recommended next, in this order:
 Related: #539. Perf session results were gitignored, so published numbers had
 no auditable evidence trail. Fixed: the ignore rule was narrowed to
 `sessions/*.env`, and the session output behind these numbers is committed
-under `scripts/perf/azure/sessions/`.
+under `scripts/perf/cloud/sessions/`.
 
 ---
 

@@ -293,7 +293,7 @@ Delivery latency runs from the publish to when the subscriber receives it.
 
 ### Reproduce it
 
-The driver for these measurements lives under `scripts/perf/azure/`, and the
+The driver for these measurements lives under `scripts/perf/cloud/`, and the
 README there describes the result format and the summary tools. It provisions
 the VMs, runs the preflight, records the system facts, runs the gate, the
 throughput matrix, the latency measurements, the NATS comparisons and the
@@ -303,7 +303,7 @@ and 8, the 64 MiB window arm, the 4-in-flight arm of the latency curve and the
 second trial of the sweeps were dropped.
 
 ```bash
-cd scripts/perf/azure
+cd scripts/perf/cloud
 SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 ./campaign-final.sh --dry-run
 SESSION=<name> BUILD_SHA=88a9168148f6fab3245712ea8dee3dc110c9f778 nohup ./campaign-final.sh &
 ```

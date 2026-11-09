@@ -1,0 +1,151 @@
+#cloud-config
+# A Felix broker for one perf session (GCP). provider/gcp.sh fills the numbered
+# placeholders: 0 release tarball URL (empty when the session builds its own
+# refs; seed.sh installs those), 1 the control plane's private IP, 2 the
+# local-NVMe flag, 3 the listener count.
+#
+# The broker unit is installed but not started: it needs a node credential
+# that does not exist until the control plane is bootstrapped and seeded, so
+# seed.sh drops it and starts the service — provisioning and credentialling
+# stay separate steps with separate failures. The broker refreshes its access
+# token before it expires and writes each rotated refresh token back to
+# node.refresh_token, so /etc/felix must stay writable by it (it runs as root).
+users:
+  - name: felix
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    ssh_authorized_keys:
+      - __SSH_PUBLIC_KEY__
+package_update: true
+write_files:
+  # Felix asks for 8 MiB UDP socket buffers, but Linux silently clamps
+  # SO_RCVBUF/SO_SNDBUF to net.core.rmem_max/wmem_max — stock ~208 KB, which throttles
+  # QUIC throughput and, on the loopback jumbo-MTU path, collapses it entirely
+  # (docs/storage-performance.md, docs/perf-investigation-throughput.md round 18;
+  # installation.md tells Linux operators to do exactly this). 25 MiB clears the
+  # 8 MiB request with headroom. Applied in runcmd before the broker starts.
+  - path: /etc/sysctl.d/99-felix-quic.conf
+    content: |
+      net.core.rmem_max = 26214400
+      net.core.wmem_max = 26214400
+      # Sockets that never ask for a size, and softirq headroom for multi-GB/s
+      # UDP bursts.
+      net.core.rmem_default = 8388608
+      net.core.wmem_default = 8388608
+      net.core.netdev_max_backlog = 250000
+      net.core.netdev_budget = 600
+  - path: /usr/local/sbin/felix-broker-env.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      # Written at boot from the instance's own metadata, because the private
+      # IP is not known when the template renders.
+      set -euo pipefail
+      ip=$(curl -s -H "Metadata-Flavor: Google" \
+        "http://metadata.google.internal/computeMetadata/v1/instance/network-interfaces/0/ip")
+      host=$(hostname)
+      mkdir -p /etc/felix /data/felix
+      cat > /etc/felix/broker.env <<ENV
+      FELIX_NODE_ID=$host
+      FELIX_REGION_ID=gcp
+      FELIX_CONTROLPLANE_URL=http://{1}:8080
+      FELIX_QUIC_BIND=$ip:5000
+      FELIX_QUIC_LISTENERS={3}
+      FELIX_CLIENT_ADVERTISE_ADDR=$ip:5000
+      FELIX_INTERNAL_BIND=$ip:7000
+      FELIX_NODE_ADVERTISE_ADDR=$ip:7000
+      FELIX_BROKER_METRICS_BIND=$ip:9100
+      FELIX_DURABLE_STORAGE_DIR=/data/felix
+      FELIX_NODE_TOKEN_FILE=/etc/felix/node.token
+      FELIX_NODE_REFRESH_TOKEN_FILE=/etc/felix/node.refresh_token
+      # Perf VMs share a private VNet with nothing else on it; no peer PKI.
+      FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true
+      # Keep MTU discovery in the Linux-safe, fast-converging band. GCP VPC
+      # path MTU is <=1460 by default, so 4096 never caps the achievable size, stays well
+      # under the UDP-GSO ceiling (mtu*10 <= 65535 => 6553; >=8192 hard-stalls
+      # sustained throughput with a spurious EMSGSIZE quinn never recovers from),
+      # and shrinks the probe range so a false black-hole collapse re-climbs
+      # fast (docs/perf-investigation-throughput.md round 18). NEVER pin
+      # FELIX_INITIAL_MTU on a real path — it is unsafe before PMTUD.
+      FELIX_MTU_UPPER_BOUND=4096
+      ENV
+  - path: /etc/systemd/system/felix-broker.service
+    content: |
+      [Unit]
+      Description=Felix broker (perf session)
+      After=network-online.target data.mount
+      Wants=network-online.target
+
+      [Service]
+      ExecStartPre=/usr/local/sbin/felix-broker-env.sh
+      EnvironmentFile=/etc/felix/broker.env
+      # Per-session knobs. broker.env is rewritten on every start, and a
+      # drop-in's Environment= loses to any EnvironmentFile, so overrides live
+      # in a second file; the later file wins. The leading - makes it optional.
+      EnvironmentFile=-/etc/felix/overrides.env
+      ExecStart=/usr/local/bin/felix-broker
+      Restart=on-failure
+      LimitNOFILE=1048576
+
+      [Install]
+      WantedBy=multi-user.target
+  - path: /usr/local/sbin/felix-mount-data.sh
+    permissions: "0755"
+    content: |
+      #!/bin/sh
+      # Choose the /data device. When flag {2}=1, put the durable log on the VM's
+      # local SSDs (NVMe), which bypass the persistent-disk throughput cap. GCP
+      # lists them under /dev/disk/by-id/google-local-nvme-ssd-*; several are
+      # striped into one md RAID0 so the VM reaches its write ceiling. Otherwise
+      # fall back to a 128 GiB data disk if one was attached, else the boot disk.
+      # Local SSD is fine here: a session's data dies with it.
+      set -e
+      LOCAL=""
+      for l in /dev/disk/by-id/google-local-nvme-ssd-*; do
+        [ -e "$l" ] && LOCAL="$LOCAL $(readlink -f "$l")"
+      done
+      DEV=""
+      if [ "{2}" = "1" ] && [ -n "$LOCAL" ]; then
+        set -- $LOCAL
+        if [ "$#" -gt 1 ]; then
+          DEBIAN_FRONTEND=noninteractive apt-get install -y mdadm >/dev/null 2>&1 || true
+          mdadm --create /dev/md0 --level=0 --raid-devices=$# $LOCAL --run --force
+          DEV=/dev/md0
+        else
+          DEV="$1"
+        fi
+      elif [ -e /dev/disk/by-id/google-felix-data ]; then
+        DEV=$(readlink -f /dev/disk/by-id/google-felix-data)
+      fi
+      [ -n "$DEV" ] || { mkdir -p /data; chmod 1777 /data; exit 0; }
+      wipefs -a "$DEV" 2>/dev/null || true
+      mkfs.ext4 -F -m 0 "$DEV"
+      mkdir -p /data
+      grep -q ' /data ' /etc/fstab || echo "$DEV /data ext4 defaults,nofail,noatime 0 2" >> /etc/fstab
+      mount /data
+      chmod 1777 /data
+runcmd:
+  # The daily apt upgrade restarts services whose libraries changed. A
+  # restarted control plane forgets the session (its store is in memory), so
+  # every token goes invalid mid-run. A session VM lives for hours; no updates.
+  - systemctl disable --now apt-daily.timer apt-daily-upgrade.timer || true
+  - systemctl mask apt-daily.service apt-daily-upgrade.service unattended-upgrades.service || true
+  - /usr/local/sbin/felix-mount-data.sh
+  - sysctl --system
+  # fio for the device baseline, iptables for per-listener datagram counters,
+  # perf and pidstat for profiling. None is on the data path; a missing one
+  # only costs that measurement.
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y fio iptables sysstat linux-tools-common "linux-tools-$(uname -r)" || true
+  # Binaries live in /opt/felix/<name>/ behind a /usr/local/bin symlink, so
+  # switching builds is a relink and a restart.
+  - |
+    if [ -n "{0}" ]; then
+      set -e
+      curl -fsSL "{0}" -o /var/tmp/felix.tar.gz
+      mkdir -p /opt/felix/release
+      tar -xzf /var/tmp/felix.tar.gz -C /opt/felix/release --strip-components=1
+      echo "release {0}" > /opt/felix/release/REF
+      ln -sfn /opt/felix/release/felix-broker /usr/local/bin/felix-broker
+    fi
+  - systemctl daemon-reload
+  - touch /var/lib/cloud/instance/felix-provisioned
