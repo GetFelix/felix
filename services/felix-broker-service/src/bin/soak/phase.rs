@@ -118,7 +118,7 @@ pub(crate) async fn run_repeated_load_cycles(
         let peak = samples.iter().map(|s| s.rss_kb).max().unwrap_or(0);
         peaks.push(peak);
         if let Ok(dir) = std::env::var("SOAK_PROF_DIR")
-            && matches!(cycle, 2 | 11)
+            && matches!(cycle, 2 | 9 | 10 | 11 | 12)
         {
             crate::resources::dump_heap_profile(&format!("{dir}/heap.{cycle}.prof"));
         }

@@ -36,10 +36,8 @@ jobs:
           ls -la prof
           JP=$(command -v jeprof || command -v jeprof.sh || true)
           echo "jeprof=$JP"
-          {
-            echo "## growth between cycle 2 and cycle 11 (inuse_space)"
-            $JP --text --inuse_space --lines --base=prof/heap.2.prof ./target/release/soak prof/heap.11.prof 2>&1 | head -45
-            echo "## by function"
-            $JP --text --inuse_space --base=prof/heap.2.prof ./target/release/soak prof/heap.11.prof 2>&1 | head -30
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          for hi in 9 10 11 12; do
+            echo "## growth cycle 2 -> $hi (inuse_space, by cumulative)"
+            $JP --text --cum --inuse_space --lines --base=prof/heap.2.prof ./target/release/soak prof/heap.$hi.prof 2>&1 | grep -vE "tikv-jemallocator|/rustc/|/\.cargo/registry/src/[^ ]*/(tokio|std)-" | head -50 | cut -c1-210
+          done | tee -a "$GITHUB_STEP_SUMMARY"
           grep -E "cycle " out.txt | tee -a "$GITHUB_STEP_SUMMARY"
