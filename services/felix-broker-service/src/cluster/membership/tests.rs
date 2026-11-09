@@ -362,6 +362,56 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let _ = handle.await;
 }
 
+/// **The first beat goes out at startup, not an interval later.** The lease is
+/// invalid until a beat is answered, so waiting an interval would have the
+/// broker refuse every publish for that long.
+#[tokio::test]
+async fn the_first_heartbeat_does_not_wait_an_interval() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        heartbeat_interval_ms: Some(60_000),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let mut registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    registration.heartbeat_interval_ms = 60_000;
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(
+        std::time::Duration::from_secs(30),
+    ));
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+    ));
+
+    for _ in 0..300 {
+        if lease.is_valid_now() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let valid = lease.is_valid_now();
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    assert!(valid, "the lease stayed invalid well before one interval");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
 /// **A new suspicion goes out at once, not an interval later.** The control
 /// plane promotes on it, so waiting for the next beat would add the whole
 /// interval to a failover. With nothing suspected the field is left out.
@@ -397,20 +447,12 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
         Arc::clone(&suspects),
     ));
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(calls.lock().expect("lock").heartbeat_bodies.is_empty());
+    // Only the startup beat, which has nothing to report.
+    let startup = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(startup.len(), 1, "{startup:?}");
+    assert!(startup[0].get("suspects").is_none(), "{startup:?}");
 
     suspects.publish(["broker-b".to_string()].into_iter().collect());
-    for _ in 0..200 {
-        if !calls.lock().expect("lock").heartbeat_bodies.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
-    assert_eq!(bodies.len(), 1, "{bodies:?}");
-    assert_eq!(bodies[0]["suspects"], json!(["broker-b"]));
-
-    suspects.publish(Default::default());
     for _ in 0..200 {
         if calls.lock().expect("lock").heartbeat_bodies.len() > 1 {
             break;
@@ -419,7 +461,18 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     }
     let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
     assert_eq!(bodies.len(), 2, "{bodies:?}");
-    assert!(bodies[1].get("suspects").is_none(), "{bodies:?}");
+    assert_eq!(bodies[1]["suspects"], json!(["broker-b"]));
+
+    suspects.publish(Default::default());
+    for _ in 0..200 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() > 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(bodies.len(), 3, "{bodies:?}");
+    assert!(bodies[2].get("suspects").is_none(), "{bodies:?}");
 
     shutdown.cancel();
     beating.await.expect("heartbeat task");

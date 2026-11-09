@@ -515,10 +515,15 @@ async fn run_heartbeat_checked(
     let mut suspected = suspects.subscribe();
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
     let mut last_success = std::time::Instant::now();
+    // The lease is invalid until a beat is answered, so the first one goes at
+    // once instead of refusing every publish for an interval.
+    let mut first = true;
 
     loop {
         let failures = consecutive_failures.load(Ordering::Acquire);
-        let delay = if failures == 0 {
+        let delay = if std::mem::take(&mut first) {
+            Duration::ZERO
+        } else if failures == 0 {
             interval
         } else {
             backoff(interval, failures).min(retry_cap(lease.usable()))
@@ -526,7 +531,7 @@ async fn run_heartbeat_checked(
 
         tokio::select! {
             _ = shutdown.cancelled() => return HeartbeatEnd::Shutdown,
-            _ = tokio::time::sleep(jittered(delay)) => {}
+            _ = tokio::time::sleep(if delay.is_zero() { delay } else { jittered(delay) }) => {}
             // A new suspicion goes now rather than an interval later: the
             // control plane promotes on it. Not while backing off.
             Ok(()) = suspected.changed(), if failures == 0 => {}
