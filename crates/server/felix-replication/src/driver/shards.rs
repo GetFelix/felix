@@ -668,6 +668,13 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     .is_some_and(|slot| appended.contains(slot));
                 if !own
                     && let Some(state) = self.states.get_mut(&key)
+                    && state.running.is_none()
+                    && !state.owed
+                {
+                    continue;
+                }
+                if !own
+                    && let Some(state) = self.states.get_mut(&key)
                     && state.running.is_some()
                 {
                     state.again = true;
