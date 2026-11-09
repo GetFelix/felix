@@ -231,8 +231,18 @@ provider_run_on() {
   local vm="$1" script="$2" out rc
   local -a opts=()
   while IFS= read -r o; do opts+=("${o}"); done < <(_gcp_ssh_opts)
-  out="$(ssh "${opts[@]}" "felix@${vm}" 'f=$(mktemp) && cat > "$f" && sudo sh "$f" 2>&1; r=$?; rm -f "$f"; exit $r' < "${script}" 2>&1)"
-  rc=$?
+  # IAP tunnels drop now and then ("Connection is already closed"). ssh exits
+  # 255 only when the connection itself failed, so retry that and nothing else.
+  # A drop mid-script also exits 255; the setup scripts are idempotent.
+  local attempt
+  for attempt in 1 2 3 4; do
+    out="$(ssh "${opts[@]}" "felix@${vm}" 'f=$(mktemp) && cat > "$f" && sudo sh "$f" 2>&1; r=$?; rm -f "$f"; exit $r' < "${script}" 2>&1)"
+    rc=$?
+    [ "${rc}" = 255 ] || break
+    [ "${attempt}" = 4 ] && break
+    echo "!! ssh to ${vm} failed to connect (attempt ${attempt}); retrying" >&2
+    sleep $((attempt * attempt * 5 > 30 ? 30 : attempt * attempt * 5))
+  done
   if [ "${rc}" = 255 ]; then
     printf '%s\n' "${out}" >&2
     return 1
@@ -245,7 +255,15 @@ provider_fetch_file() {
   local vm="$1" src="$2" dst="$3"
   local -a opts=()
   while IFS= read -r o; do opts+=("${o}"); done < <(_gcp_ssh_opts)
-  ssh "${opts[@]}" "felix@${vm}" "sudo cat '${src}'" > "${dst}"
+  local attempt rc
+  for attempt in 1 2 3 4; do
+    ssh "${opts[@]}" "felix@${vm}" "sudo cat '${src}'" > "${dst}"
+    rc=$?
+    [ "${rc}" = 255 ] || return "${rc}"
+    [ "${attempt}" = 4 ] && return "${rc}"
+    echo "!! fetch from ${vm} failed to connect (attempt ${attempt}); retrying" >&2
+    sleep $((attempt * attempt * 5 > 30 ? 30 : attempt * attempt * 5))
+  done
 }
 
 provider_vm_names() {
