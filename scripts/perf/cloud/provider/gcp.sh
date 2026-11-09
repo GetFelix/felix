@@ -27,10 +27,12 @@
 : "${PLACEMENT:=compact}"          # compact | none (brokers only)
 : "${BROKER_LOCAL_SSDS:=1}"        # local SSDs per broker; ignored for *-lssd types
 : "${GCP_NETWORK_MTU:=1460}"
+: "${GCP_ZONE_FALLBACKS:=us-central1-b us-central1-f}"   # tried in order on a capacity stockout
+GCP_ZONE_ATTEMPTS=""
 : "${USE_LOCAL_NVME:=true}"
 GCP_REGION="${GCP_ZONE%-*}"
 GCP_SUBNET_PREFIX="10.10.0"
-export SSH_KEY_FILE GCP_PROJECT GCP_ZONE GCP_REGION PROVISIONING MAX_RUN_HOURS PLACEMENT BROKER_LOCAL_SSDS USE_LOCAL_NVME
+export GCP_ZONE_FALLBACKS GCP_ZONE_ATTEMPTS SSH_KEY_FILE GCP_PROJECT GCP_ZONE GCP_REGION PROVISIONING MAX_RUN_HOURS PLACEMENT BROKER_LOCAL_SSDS USE_LOCAL_NVME
 
 provider_name() { echo gcp; }
 
@@ -135,7 +137,7 @@ provider_preflight() {
   fi
   local role name type ip total=0 v ssd_gb=0 line metric need
   local -a fam_metrics=() fam_need=()
-  echo ">> plan (${PROVISIONING}, zone ${GCP_ZONE}, run-time cap ${MAX_RUN_HOURS}h):"
+  echo ">> plan (${PROVISIONING}, zone ${GCP_ZONE}, fallbacks on stockout: ${GCP_ZONE_FALLBACKS:-none}, run-time cap ${MAX_RUN_HOURS}h):"
   while read -r role name type ip; do
     v="$(_gcp_vcpus "${type}")"
     total=$((total + v))
@@ -144,7 +146,7 @@ provider_preflight() {
     fi
     metric="$(_gcp_family_metric "${type}")"
     fam_metrics+=("${metric}"); fam_need+=("${v}")
-    printf '   %-13s %-28s %-22s %2s vCPU  %s\n' "${role}" "${name}" "${type}" "${v}" "${ip}"
+    printf '   %-13s %-28s %-22s %2s vCPU  %-10s %s\n' "${role}" "${name}" "${type}" "${v}" "${ip}" "${GCP_ZONE}"
   done < <(_gcp_plan)
   printf '   total: %s vCPU, %s GB local SSD\n' "${total}" "${ssd_gb}"
   if [ -n "${GCP_VCPU_LIMIT:-}" ] && [ "${total}" -gt "${GCP_VCPU_LIMIT}" ]; then
@@ -298,6 +300,42 @@ _gcp_create_vms() {
   done
 }
 
+# _gcp_create_in_zones <tmp> <cp specs> <broker specs> <loadgen specs>: create
+# the VMs in GCP_ZONE; on a capacity stockout delete what that zone got and
+# retry the whole set in the next of GCP_ZONE_FALLBACKS (same region only, the
+# network and placement policy are regional). GCP_ZONE ends as the zone used.
+_gcp_create_in_zones() {
+  local tmp="$1" z log rc
+  local -a cp bk lg
+  read -ra cp <<<"$2"; read -ra bk <<<"$3"; read -ra lg <<<"$4"
+  log="${tmp}/create.log"
+  for z in ${GCP_ZONE} ${GCP_ZONE_FALLBACKS}; do
+    [ "${z%-*}" = "${GCP_REGION}" ] || { echo "!! fallback zone ${z} is outside ${GCP_REGION}; skipped" >&2; continue; }
+    GCP_ZONE="${z}"; GCP_ZONE_ATTEMPTS="${GCP_ZONE_ATTEMPTS:+${GCP_ZONE_ATTEMPTS} }${z}"
+    export GCP_ZONE GCP_ZONE_ATTEMPTS
+    rc=0
+    {
+      # The control plane first: the brokers are told its address.
+      _gcp_create_vms controlplane "${tmp}/controlplane.yaml" 30 "${cp[@]}" &&
+      _gcp_create_vms broker "${tmp}/broker.yaml" 50 "${bk[@]}" &&
+      _gcp_create_vms loadgen "${tmp}/loadgen.yaml" 128 "${lg[@]}"
+    } 2> >(tee "${log}" >&2) || rc=$?
+    wait
+    [ "${rc}" = 0 ] && { echo ">> VMs created in ${z}"; return 0; }
+    if [ "${DRY_RUN:-0}" != 1 ] && grep -qE 'ZONE_RESOURCE_POOL_EXHAUSTED|does not have enough resources' "${log}"; then
+      echo "!! capacity stockout in ${z}; removing what it created and trying the next zone" >&2
+      local made
+      made="$(_gc compute instances list --filter "labels.felix-perf=${SESSION} AND zone:${z}" --format 'value(name)' | tr '\n' ' ')"
+      # shellcheck disable=SC2086
+      [ -z "${made}" ] || _gc compute instances delete ${made} --zone "${z}" --quiet || true
+      continue
+    fi
+    return 1
+  done
+  echo "!! no zone had capacity (tried: ${GCP_ZONE_ATTEMPTS})" >&2
+  return 1
+}
+
 provider_create_session() {
   local net tmp i role name type ip s
   local -a brokers_spec=() lg_spec=() cp_spec=()
@@ -342,10 +380,7 @@ provider_create_session() {
       --region "${GCP_REGION}" --collocation COLLOCATED --vm-count "${#brokers_spec[@]}"
   fi
 
-  # The control plane first: the brokers are told its address.
-  _gcp_create_vms controlplane "${tmp}/controlplane.yaml" 30 "${cp_spec[@]}"
-  _gcp_create_vms broker "${tmp}/broker.yaml" 50 "${brokers_spec[@]}"
-  _gcp_create_vms loadgen "${tmp}/loadgen.yaml" 128 "${lg_spec[@]}"
+  _gcp_create_in_zones "${tmp}" "${cp_spec[*]}" "${brokers_spec[*]}" "${lg_spec[*]}" || return 1
   if [ "${DRY_RUN:-0}" != 1 ]; then
     loadgen_ip="${loadgen_private_ip}"
     rm -rf "${tmp}"

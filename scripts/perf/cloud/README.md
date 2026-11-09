@@ -51,6 +51,7 @@ All go in `session.env`. The defaults suit the small run.
 | `PROVISIONING` | `STANDARD` | `SPOT` is cheaper and can be reclaimed mid-run |
 | `MAX_RUN_HOURS` | 8 | every VM is deleted by GCP this long after it starts |
 | `PLACEMENT` | `compact` | `compact` puts the brokers in one compact placement policy; `none` skips it |
+| `GCP_ZONE_FALLBACKS` | `us-central1-b us-central1-f` | zones tried in order when a create fails for lack of capacity. The VMs created in the failed zone are deleted first. The zone used, and the ones tried, are in the inventory and `session.json` |
 | `GCP_VCPU_LIMIT` | unset | refuse to start above this many vCPUs, even if the quota read fails |
 | `GCP_NETWORK_MTU` | 1460 | MTU of the session network |
 
