@@ -494,6 +494,7 @@ if you may use headers or head trim.
 - Reading a data directory's storage id and its replaced-storage marker now goes through the same filesystem seam as writing them, so the simulator no longer sees every restarted broker as having lost its copy.
 - A copy that may have lost acknowledged records in an unclean crash now stays untrusted in its fence attestation after a later clean restart, until a leader vouches for it through its mark. A copy a broker led before such a crash is refused to older callers after it takes a newer leader's ballot and the broker restarts cleanly. Both are kept in a new `copy-trust` file at the durable root, written before the storage id rotates.
 - A follower back from an unclean restart on an idle `Quorum` shard is trusted again without a client write. The leader sends a level follower its last record again with the current commit offset, once per follower process, so the copy can count toward a later fence instead of stalling it.
+- A pass that opens many new shards no longer routes the ones it leads before they serve (#2132). Replication started work for every led route it saw, so a bulk create's unopened shards held its pass slots and delayed publishes to shards that already took writes. A bulk create now routes a shard this broker leads only once it serves, and the RF 3 failover burst is faster than in 0.6.2.
 
 ### Performance
 - A plain QUIC publish is answered once it is durable and in the replay ring,
@@ -514,6 +515,13 @@ if you may use headers or head trim.
 - The `cosign verify` example on the Kubernetes page names the
   `GetFelix/felix` workflow that signs the images.
 - The election and fence docs now say they follow the prepare and promise steps of Paxos, with sources, and the system design page no longer says no consensus runs between brokers.
+- A Correctness Evidence page lists what the formal models, simulator, history checker and scale runs check, how much of each runs, the defects they found and how to rerun them.
+
+### Performance numbers
+- PERF NUMBERS: filled from the release A/B.
+
+### Known issue
+- On CI hardware with three brokers sharing one disk, the p99 latency of steady 64 KiB publishes to an RF 3 stream rose from about 16 ms to 30-50 ms after a replication scheduling change (#1801). Throughput and median latency are unchanged, and 1 KiB publishes are unaffected. It is being re-measured on separate machines and is tracked in #2148.
 
 ## [0.7.0-preview.2] - 2026-11-01
 
