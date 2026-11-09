@@ -637,12 +637,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// shards no longer led, and the reports the tick repeats, wait for the
     /// next full scan; a route change always gets one.
     fn scan_appended(&mut self, table: &felix_router::RoutingTable, appended: &Appended) {
-        let mut visit: Vec<ShardKey> = appended
-            .slots()
-            .filter_map(|slot| self.led_slots.get(&slot))
-            .flatten()
-            .cloned()
-            .collect();
+        let mut visit: Vec<ShardKey> = self.led_slots.values().flatten().cloned().collect();
         visit.extend(
             self.states
                 .iter()
@@ -666,6 +661,20 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 continue;
             };
             if let Some((urgent, cuts)) = self.asks(&key, route, WakeKind::Append, appended) {
+                let own = self
+                    .states
+                    .get(&key)
+                    .and_then(|state| state.slot)
+                    .is_some_and(|slot| appended.contains(slot));
+                if !own
+                    && let Some(state) = self.states.get_mut(&key)
+                    && state.running.is_some()
+                {
+                    state.again = true;
+                    state.again_urgent |= urgent;
+                    asked.insert(key);
+                    continue;
+                }
                 self.want(&key, urgent, cuts);
                 self.cx
                     .status
@@ -955,7 +964,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let slot = *state.slot.get_or_insert_with(|| {
             AppendedShards::slot(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         });
-        let dirty = appended.contains(slot);
+        let dirty = appended.contains(slot) || append;
         // A move's drained report holds its clients, so it goes first too.
         let moving = route.draining || route.pending.is_some();
         if dirty || state.owed || moving {
