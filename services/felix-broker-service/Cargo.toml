@@ -149,6 +149,7 @@ felix-loadgen = { path = "../../crates/testing/felix-loadgen", version = "0.8.0-
 
 [features]
 # Soak-only: run the harness on jemalloc to tell allocator retention from a leak.
+soak-jemalloc-prof = ["soak-jemalloc", "tikv-jemallocator/profiling"]
 soak-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 default = []
 # `serving::auth::demo`: a fixed signing key and a token minted with it, so a

@@ -111,6 +111,20 @@ pub(crate) fn heap_stats() -> HeapStats {
     HeapStats::default()
 }
 
+/// Write a jemalloc heap profile of live allocations to `path`.
+#[cfg(feature = "soak-jemalloc-prof")]
+pub(crate) fn dump_heap_profile(path: &str) {
+    let Ok(path) = std::ffi::CString::new(path) else {
+        return;
+    };
+    // SAFETY: `prof.dump` takes a NUL-terminated path that outlives the call.
+    let result = unsafe { tikv_jemalloc_ctl::raw::write(b"prof.dump\0", path.as_ptr()) };
+    println!("  heap profile dump: {result:?}");
+}
+
+#[cfg(not(feature = "soak-jemalloc-prof"))]
+pub(crate) fn dump_heap_profile(_path: &str) {}
+
 /// Ask glibc to return free arena pages to the OS. Used under
 /// `SOAK_TRIM_AFTER_CYCLE` to show how much RSS is only retained, not live.
 pub(crate) fn trim_heap() {

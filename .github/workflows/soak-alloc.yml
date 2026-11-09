@@ -7,17 +7,12 @@ permissions:
 env:
   FELIX_DISABLE_TIMINGS: "1"
   FELIX_CORE_SHARDS: "2"
+  CARGO_PROFILE_RELEASE_DEBUG: "line-tables-only"
+  CARGO_PROFILE_RELEASE_STRIP: "none"
 jobs:
-  soak:
+  prof:
     runs-on: ubuntu-latest
     timeout-minutes: 50
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: glibc-default, features: "", arena: "" }
-          - { name: glibc-arena2, features: "", arena: "2" }
-          - { name: jemalloc, features: "soak-jemalloc", arena: "" }
     steps:
       - uses: actions/checkout@v7
         with:
@@ -27,15 +22,24 @@ jobs:
           toolchain: "1.99.1"
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Build
-        run: cargo build --release -p felix-broker-service --bin soak --features "${{ matrix.features }}"
+        run: cargo build --release -p felix-broker-service --bin soak --features soak-jemalloc-prof
       - name: Run
-        env:
-          SOAK_TRIM_AFTER_CYCLE: "1"
         run: |
           set -uo pipefail
+          sudo apt-get install -y libjemalloc-dev binutils >/dev/null 2>&1 || true
           ulimit -n 65536
-          if [ -n "${{ matrix.arena }}" ]; then export MALLOC_ARENA_MAX=${{ matrix.arena }}; fi
+          mkdir -p prof
+          export SOAK_PROF_DIR=$PWD/prof
+          export _RJEM_MALLOC_CONF=prof:true,prof_active:true,lg_prof_sample:16,prof_prefix:$PWD/prof/auto
           ./target/release/soak --duration-secs 60 --quiesce-secs 30 --churn-cycles 500 \
-            --load-cycles 20 --restart-cycles 1 2>&1 | tee out.txt || true
-          echo "## ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
-          grep -E "baseline|cycle |quiesced" out.txt | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+            --load-cycles 13 --restart-cycles 0 2>&1 | tee out.txt || true
+          ls -la prof
+          JP=$(command -v jeprof || command -v jeprof.sh || true)
+          echo "jeprof=$JP"
+          {
+            echo "## growth between cycle 2 and cycle 11 (inuse_space)"
+            $JP --text --inuse_space --lines --base=prof/heap.2.prof ./target/release/soak prof/heap.11.prof 2>&1 | head -45
+            echo "## by function"
+            $JP --text --inuse_space --base=prof/heap.2.prof ./target/release/soak prof/heap.11.prof 2>&1 | head -30
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+          grep -E "cycle " out.txt | tee -a "$GITHUB_STEP_SUMMARY"
