@@ -110,6 +110,23 @@ async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
     let key = crate::cluster::stream_key(shard);
     let old = cluster.servers_of(&key).await[0];
     let old_generation = cluster.snapshot(old, &key).await.unwrap().generation;
+    // The broker's first beat lands before the fleet features are finalized,
+    // so it reads by lease until a later beat tells it otherwise. This test
+    // is about reads by round, so wait for that beat before cutting it off.
+    let heard = Instant::now() + Duration::from_secs(60);
+    while cluster
+        .handles(old)
+        .unwrap()
+        .marks
+        .reads_by_round()
+        .is_none()
+    {
+        assert!(
+            Instant::now() < heard,
+            "the old leader never heard the finalized features"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     cluster.cut_controlplane(old, true);
     for other in (0..cluster.broker_count()).filter(|index| *index != old) {
         cluster
