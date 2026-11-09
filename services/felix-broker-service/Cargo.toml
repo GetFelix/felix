@@ -113,8 +113,8 @@ x509-parser = { workspace = true }
 # gated in code.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
-tikv-jemallocator = { version = "0.6", optional = true }
-tikv-jemalloc-ctl = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.6", optional = true, features = ["stats"] }
+tikv-jemalloc-ctl = { version = "0.6", optional = true, features = ["stats"] }
 # Used by the durable-restart and queue-semantics demo binaries to stage a
 # throwaway storage root.
 tempfile = { workspace = true }
