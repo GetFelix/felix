@@ -29,8 +29,9 @@ flowchart LR
 **TLA+ models.** `docs/formal/` holds twelve modules. `FelixShard` models one
 shard on three brokers with a control plane, leases, majority acknowledgement,
 promotion fences, planned and cancelled moves, and replicas electing themselves
-under ballots. Others cover the generation-start record against the Figure 8
-loss from the Raft paper, reads and group sessions, atomic commit, head trim,
+under ballots. Others cover the generation-start record against the "Figure 8"
+loss from the Raft paper (a new leader that counts an older leader's entries as
+committed can lose them), reads and group sessions, atomic commit, head trim,
 consumer groups, placement pacing across shards, and the unified fence used by
 every change of leader. TLC checks every interleaving within the configured
 bounds. The invariants include `AckedHeldByLeader` (whoever serves a shard holds
@@ -43,8 +44,8 @@ instance, a cancelled move, and a promotion racing a fence.
 
 **Deterministic simulator.** `felix-sim` runs three to five real brokers and a
 control plane in one process on a virtual clock. Everything random, the faults,
-the clients' operations and the retry jitter, comes from one seed, so a failure
-replays from the seed. The nemesis crashes and freezes brokers, partitions and
+the clients' operations and the retry jitter, comes from one seed, so replaying a seed
+replays the same faults and operations at the same virtual times. The nemesis crashes and freezes brokers, partitions and
 delays links, pauses and downs the control plane, and in opt-in modes skews
 clocks, cuts the power inside an append, and acts as an operator (moves, drains,
 removals, abandons). Six cluster checkers are named after model invariants:
@@ -58,8 +59,10 @@ and a replicated cache on a real three-broker cluster of `felix-broker`
 processes while a nemesis kills, pauses and partitions brokers, drops and delays
 peer links, skews lease clocks, slows or fails fsyncs, moves shards and drains
 brokers. Afterwards it checks twenty-one rules, among them: no acknowledged
-append is missing (rule 1), no value sits at two offsets (2), no G0, G1c,
-G-single or G2 cycle, each also with real-time edges (12 to 19), cache
+append is missing (rule 1), no value sits at two offsets (2), no cycle of
+the kinds the isolation literature names G0, G1c, G-single and G2 (writes or
+reads that order each other in a circle, which no serial order can explain),
+each also with real-time edges (12 to 19), cache
 operations are linearizable per key (20), and no two brokers open one shard at
 the same generation (21). It also checks that every shard serves again within 60
 seconds of the heal. The adversarial nemesis adds compound faults on four
@@ -82,7 +85,7 @@ paused.
 | --- | --- | --- |
 | TLA+ | 12 modules, 451 configurations. 349 are registered for the per-push check: 169 must pass and 180 must fail, 26 of those for a liveness property. A further 24 are random walks: 14 must pass and 10 must fail. | A pull request that touches the specs runs the quick configurations and any it changes. Main runs all registered ones. Walks and the largest exhaustive configurations run nightly. |
 | Simulator | 120 s of virtual time per seed, in four modes: default, clock skew, placement faults, power loss. | Per pull request: 4 seeds in their own job, and seeds 1 to 20 run twice each to check determinism, which blocks merging. Nightly: 2000 seeds, plus 250 each in the other three modes. Release gate: 2000 seeds in every mode, 8000 runs. |
-| History checker | 21 rules. Campaigns: single faults, compound faults on four brokers, election with the control plane down. | Per pull request: 45 s with a fixed seed, plus 90 s of the election campaign and shorter compound campaigns. Nightly: 20 minutes each of the single-fault and the compound campaign, each with a random seed. The election campaign also runs on dispatch, as the gate does. |
+| History checker | 21 rules. Campaigns: single faults, compound faults on four brokers, election with the control plane down. | Per pull request, each with a fixed seed: 45 s of single faults, 75 s that injects every fault family, 150 s of compound faults, and 90 s of the election campaign. Nightly: 20 minutes each of the single-fault and the compound campaign, each with a random seed. The election campaign also runs on dispatch, as the gate does. |
 | Scale and failover | Lease canary at 600 streams (debug build) and 1500 streams (release build). Failover variant, two tests (election on and off). felixd at 1000 workloads, about 2010 replicated streams. | Per pull request: the 600-stream canary. Nightly: the 1500-stream canary. Failover and felixd runs are dispatched and are part of the gate. |
 
 The 180 configurations that must fail are the part to look at. Each removes one
@@ -121,16 +124,18 @@ the pull request or its issue.
 | Simulator | After a fenced move toward the one follower holding the log, losing the leader left the shard with no caught-up replica forever (seed 3, placement). | [#2112](https://github.com/GetFelix/felix/pull/2112) |
 | Simulator | A copy whose storage id rotated after an unclean crash answered a move's fence as a wiped learner, leaving the cut-over one promise short for good (seed 2). | [#2119](https://github.com/GetFelix/felix/pull/2119) |
 | Simulator | A fenced move whose leader crashed before reporting drained waited out a two-minute timeout, restarting with every control-plane restart (seed 3). | [#2125](https://github.com/GetFelix/felix/pull/2125) |
-| Checker | The simulator recorded a read from a frozen, deposed leader as if it were the log's tail and reported G-single-realtime. The product was right: a deposed leader's readers may see less. The recorder now waits for a confirming round. | [#1967](https://github.com/GetFelix/felix/pull/1967) |
-| Checker | The cache linearizability search hit its state cap on keys with many unknown-outcome puts and left them undecided. It now drops unknown puts nobody read before searching. | [#2064](https://github.com/GetFelix/felix/pull/2064) |
-| Checker | Two shards of main's TLA run failed because two hand-written `UNCHANGED` lists in the spec predated newer variables, so TLC reported an incompletely specified next-state relation. | [#2127](https://github.com/GetFelix/felix/pull/2127) |
-| Checker | A fault woke at the heal, crashed a broker after the heal had restarted all of them, and left it down. Power-loss seeds 210 and 216 stalled, and the harness, not the broker, was at fault. | [#2129](https://github.com/GetFelix/felix/pull/2129) |
-| Checker | `TornTailRepaired` demanded a repair when nothing had opened the torn segment again, failing 17 power-loss seeds of a 2000-seed sweep while the history checker found nothing. | [#2130](https://github.com/GetFelix/felix/pull/2130) |
+| Checker wrong | The simulator recorded a read from a frozen, deposed leader as if it were the log's tail and reported G-single-realtime. The product was right: a deposed leader's readers may see less. The recorder now waits for a confirming round. | [#1967](https://github.com/GetFelix/felix/pull/1967) |
+| Checker wrong | The cache linearizability search hit its state cap on keys with many unknown-outcome puts and left them undecided. It now drops unknown puts nobody read before searching. | [#2064](https://github.com/GetFelix/felix/pull/2064) |
+| Spec defect | Two shards of main's TLA run failed because two hand-written `UNCHANGED` lists in the spec predated newer variables, so TLC reported an incompletely specified next-state relation. | [#2127](https://github.com/GetFelix/felix/pull/2127) |
+| Harness bug | A fault woke at the heal, crashed a broker after the heal had restarted all of them, and left it down. Power-loss seeds 210 and 216 stalled, and the harness, not the broker, was at fault. | [#2129](https://github.com/GetFelix/felix/pull/2129) |
+| Checker wrong | `TornTailRepaired` demanded a repair when nothing had opened the torn segment again, failing 17 power-loss seeds of a 2000-seed sweep while the history checker found nothing. | [#2130](https://github.com/GetFelix/felix/pull/2130) |
 
-The last five rows are checkers that were wrong. They are listed because a
-checker that fails for the wrong reason teaches people to ignore it, and each
-was fixed by making the check more precise, not by loosening it: a violation
-that the code really causes still fails.
+The last five rows are defects in the checks themselves: three checkers that
+flagged correct behavior, a simulator harness that broke its own fault model,
+and a spec whose frame conditions fell behind the model. They are listed
+because a check that fails for the wrong reason teaches people to ignore it.
+Each checker was made more precise, not looser: a violation the code really
+causes still fails.
 
 ## The release gate
 
