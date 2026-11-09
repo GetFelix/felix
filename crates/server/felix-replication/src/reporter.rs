@@ -46,6 +46,7 @@ const QUEUE_DEPTH: usize = 1024;
 struct Pending {
     report: ShardReport,
     landed: oneshot::Sender<bool>,
+    queued_us: u64,
 }
 
 /// Submits replica reports and tells each caller whether its own landed.
@@ -73,7 +74,16 @@ impl Reporter {
     /// saw is the window the report-before-mark ordering exists to close.
     pub async fn send(&self, report: ShardReport) -> bool {
         let (landed, answer) = oneshot::channel();
-        if self.tx.send(Pending { report, landed }).await.is_err() {
+        if self
+            .tx
+            .send(Pending {
+                report,
+                landed,
+                queued_us: crate::ackpath::now_us(),
+            })
+            .await
+            .is_err()
+        {
             // The flushing task is gone, which means the broker is shutting
             // down. Nothing will carry this report, so it did not land.
             return false;
@@ -85,7 +95,11 @@ impl Reporter {
     /// the next pass sends a fresher one, and no mark waits on this.
     pub(crate) fn submit(&self, report: ShardReport) {
         let (landed, _) = oneshot::channel();
-        let _ = self.tx.try_send(Pending { report, landed });
+        let _ = self.tx.try_send(Pending {
+            report,
+            landed,
+            queued_us: crate::ackpath::now_us(),
+        });
     }
 }
 
@@ -398,7 +412,25 @@ async fn flush_loop<L: ControlPlaneLink>(
             .iter()
             .map(|report| refusals.carry(report))
             .collect();
+        let trace_t0 = crate::ackpath::now_us();
+        let oldest = batch.iter().map(|p| p.queued_us).min().unwrap_or(trace_t0);
         let landed = send_reports(&to, &reports, &carried).await;
+        if crate::ackpath::on() {
+            let took = crate::ackpath::now_us() - trace_t0;
+            let batch_len = batch.len();
+            crate::ackpath::line(|| {
+                format!(
+                    "REPORT t0={trace_t0} n={batch_len} queued_wait_us={} http_us={took}",
+                    trace_t0.saturating_sub(oldest)
+                )
+            });
+            crate::ackpath::ev("*", || {
+                format!(
+                    "report_req n={batch_len} queued_wait={}us http={took}us",
+                    trace_t0.saturating_sub(oldest)
+                )
+            });
+        }
 
         // Each caller hears about its own shard: a report the control plane
         // refused must not move that shard's mark, whatever happened to the

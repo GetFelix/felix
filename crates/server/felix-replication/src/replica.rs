@@ -627,6 +627,34 @@ impl ReplicaHandler {
         batch: ReplicateRecords,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
+        if !crate::ackpath::on() {
+            return self.apply_inner(sender, batch, log_kind).await;
+        }
+        let tag = format!("{}/{}", batch.shard.stream, batch.shard.shard);
+        let (n, first, from) = (
+            batch.payloads.len(),
+            batch.first_offset,
+            sender.map(str::to_string),
+        );
+        let t0 = crate::ackpath::now_us();
+        let answer = self.apply_inner(sender, batch, log_kind).await;
+        let dur = crate::ackpath::now_us() - t0;
+        if dur > 3_000 {
+            crate::ackpath::line(|| {
+                format!(
+                    "APPLY tag={tag} t0={t0} dur_us={dur} n={n} first={first} from={from:?} kind={log_kind:?}"
+                )
+            });
+        }
+        answer
+    }
+
+    async fn apply_inner(
+        &self,
+        sender: Option<&str>,
+        batch: ReplicateRecords,
+        log_kind: felix_broker::LogKind,
+    ) -> InternalMessage {
         let correlation_id = batch.correlation_id;
         // Only a stream's records carry header blocks; storing another log's
         // batch without them would leave it differing from the leader's.

@@ -41,6 +41,8 @@
 
 pub mod peer;
 
+pub(crate) mod ackpath;
+
 pub mod confirmed;
 pub mod controlplane_link;
 pub mod driver;

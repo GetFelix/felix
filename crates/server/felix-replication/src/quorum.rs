@@ -1062,10 +1062,34 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         generation
     };
     let started = tokio::time::Instant::now();
+    let trace_tag = crate::ackpath::tag(shard);
+    let trace_start = crate::ackpath::now_us();
+    crate::ackpath::ev(&trace_tag, || {
+        format!(
+            "pub_begin offs={first_offset}..{last_offset} mark={:?}",
+            marks.offset(shard, generation)
+        )
+    });
     let waited = marks
         .wait_while_leading(shard, leading, last_offset + 1, timeout)
         .await;
     crate::metrics::record_quorum_wait(started.elapsed());
+    if crate::ackpath::on() {
+        let took = started.elapsed();
+        crate::ackpath::ev(&trace_tag, || {
+            format!("pub_done wait={}us", took.as_micros())
+        });
+        if took > std::time::Duration::from_millis(20) {
+            crate::ackpath::slow_ack(
+                &trace_tag,
+                trace_start,
+                format!(
+                    "wait_ms={:.1} last_offset={last_offset}",
+                    took.as_secs_f64() * 1e3
+                ),
+            );
+        }
+    }
     let reached_at = waited_at.load(Ordering::Relaxed);
     match waited {
         // Reached at a newer generation: its mark counts the log as it is

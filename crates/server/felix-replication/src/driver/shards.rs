@@ -614,6 +614,15 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// waited behind scans (#1987).
     pub(super) fn scan(&mut self, wake: WakeKind) {
         self.scan += 1;
+        crate::ackpath::ev("*", || {
+            format!(
+                "scan#{} {} passes={} waiting={}",
+                self.scan,
+                wake.name(),
+                self.passes.len(),
+                self.waiting
+            )
+        });
         self.metrics.scanned(wake.index());
         self.cx.status.scanned(self.scan);
         // Taken on every scan: one that passes every shard covers the bits.
@@ -666,6 +675,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 continue;
             };
             if let Some((urgent, cuts)) = self.asks(&key, route, WakeKind::Append, appended) {
+                crate::ackpath::ev(&crate::ackpath::tag(&key), || {
+                    format!("ask urgent={urgent} cuts={cuts}")
+                });
                 self.want(&key, urgent, cuts);
                 self.cx
                     .status
@@ -976,6 +988,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         };
         let state = self.states.entry(key.clone()).or_default();
         if let Some(next) = &state.running {
+            crate::ackpath::ev(&crate::ackpath::tag(key), || {
+                format!("want urgent={urgent} cuts={cuts} -> running, again")
+            });
             state.again = true;
             state.again_urgent |= urgent;
             state.again_appended |= cuts;
@@ -1076,9 +1091,18 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
             return;
         }
         if self.passes.len() >= SHARD_CONCURRENCY {
+            crate::ackpath::ev(&crate::ackpath::tag(key), || {
+                format!("want urgent={urgent} cuts={cuts} -> queued (slots full)")
+            });
             self.enqueue(key, Queue::of(cuts, urgent));
             return;
         }
+        crate::ackpath::ev(&crate::ackpath::tag(key), || {
+            format!(
+                "want urgent={urgent} cuts={cuts} -> start (passes={})",
+                self.passes.len()
+            )
+        });
         self.dequeue(key);
         let state = self.states.get_mut(key).expect("inserted above");
         state.again = false;
@@ -1404,6 +1428,9 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let scan = self.scan;
         let prior = cx.router.prior_set(&key);
         Box::pin(async move {
+            let trace_tag = crate::ackpath::tag(&key);
+            let trace_t0 = crate::ackpath::now_us();
+            crate::ackpath::ev(&trace_tag, || "pass_begin".to_string());
             let pass = replicate_shard(
                 cx.requester,
                 cx.broker,
@@ -1421,6 +1448,11 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 prior,
             )
             .await;
+            if crate::ackpath::on() {
+                let dur = crate::ackpath::now_us() - trace_t0;
+                crate::ackpath::ev(&trace_tag, || format!("pass_end dur={dur}us"));
+                crate::ackpath::line(|| format!("PASS tag={trace_tag} t0={trace_t0} dur_us={dur}"));
+            }
             (scan, pass)
         })
     }

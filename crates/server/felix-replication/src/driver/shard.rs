@@ -1101,6 +1101,7 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 counter_log.clone(),
             );
             let generation = route.generation;
+            let shard_key_for_trace = key.clone();
             let candidacy = candidacy.clone();
             // Before the exchange can be polled, so no mark counts the old
             // vouch until this exchange has seen the copy.
@@ -1110,7 +1111,11 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                 // Every request below goes through this, so the pass counts
                 // the follower only on an answer from the copy its cursor
                 // describes. See [`Witness`].
-                let requester = &Witness::new(requester, &unconfirmed);
+                let trace_tag = crate::ackpath::tag(&shard_key_for_trace);
+                let trace_node = cursor.node_id.clone();
+                let trace_t0 = crate::ackpath::now_us();
+                crate::ackpath::ev(&trace_tag, || format!("exch_begin {trace_node}"));
+                let requester = &Witness::new(requester, &unconfirmed, trace_tag.clone());
                 // On an idle shard nothing is shipped, so this is the only
                 // contact that can tell a wiped follower from the copy its
                 // cursor describes. It reads the pooled connection's
@@ -1381,6 +1386,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
                     }
                     unconfirmed.lock().remove(&cursor.node_id);
                 }
+                crate::ackpath::ev(&trace_tag, || {
+                    format!(
+                        "exch_end {trace_node} dur={}us checked={checked}",
+                        crate::ackpath::now_us() - trace_t0
+                    )
+                });
                 Shipped {
                     cursor,
                     rode,
@@ -1550,6 +1561,12 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             break;
         };
         for (mut shipped, launched_here) in arrived {
+            crate::ackpath::ev(&crate::ackpath::tag(key), || {
+                format!(
+                    "answer_counted {} launched_here={launched_here}",
+                    shipped.cursor.node_id
+                )
+            });
             if !launched_here {
                 // Dropped from the set since that exchange: nothing to count.
                 let Some(held) = positions
@@ -1597,6 +1614,9 @@ pub(super) async fn replicate_shard<'a, R: PeerRequester + Sync>(
             None => raised,
         };
         if enough {
+            crate::ackpath::ev(&crate::ackpath::tag(key), || {
+                format!("majority offset={offset} tail={tail} mark_now={mark_now}")
+            });
             majority = Some((
                 with_counter_offsets(
                     shard_report(
@@ -2670,11 +2690,13 @@ struct Witness<'r, R> {
     unconfirmed: &'r Unconfirmed,
     /// The follower and the copy the probe found its cursor describes.
     expected: parking_lot::Mutex<Option<(String, PeerIdentity)>>,
+    trace: String,
 }
 
 impl<'r, R: PeerRequester> Witness<'r, R> {
-    fn new(inner: &'r R, unconfirmed: &'r Unconfirmed) -> Self {
+    fn new(inner: &'r R, unconfirmed: &'r Unconfirmed, trace: String) -> Self {
         Self {
+            trace,
             inner,
             answered: parking_lot::Mutex::new(Vec::new()),
             unconfirmed,
@@ -2753,7 +2775,18 @@ impl<R: PeerRequester> PeerRequester for Witness<'_, R> {
         addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<(InternalMessage, PeerIdentity), PeerError> {
-        match self.inner.request_identified(node_id, addr, message).await {
+        let trace_kind = format!("{:?}", message.kind());
+        let trace_t0 = crate::ackpath::now_us();
+        crate::ackpath::ev(&self.trace, || format!("req_send {node_id} {trace_kind}"));
+        let result = self.inner.request_identified(node_id, addr, message).await;
+        crate::ackpath::ev(&self.trace, || {
+            format!(
+                "req_answer {node_id} {trace_kind} rtt={}us ok={}",
+                crate::ackpath::now_us() - trace_t0,
+                result.is_ok()
+            )
+        });
+        match result {
             Ok((answer, identity)) => {
                 self.record(identity);
                 Ok((answer, identity))
@@ -2940,6 +2973,12 @@ pub(super) async fn publish_mark(
     if crate::incarnation::of(broker, key) != incarnation {
         return false;
     }
+    let trace_tag = crate::ackpath::tag(key);
+    let trace_t0 = crate::ackpath::now_us();
+    let trace_prev = marks.offset_at(&watch_key(key), incarnation, generation);
+    crate::ackpath::ev(&trace_tag, || {
+        format!("mark_begin offset={offset} prev={trace_prev:?} by_followers={by_followers}")
+    });
     // Readers stop at the mark, but a trim's floor applies only below the
     // log's own commit offset. Raised first, so the mark never lets a reader
     // in below a trim it covers, as a promoted leader's inherited one.
@@ -2971,6 +3010,13 @@ pub(super) async fn publish_mark(
         if let Some(reporter) = reporter {
             reporter.submit(report.clone());
         }
+        crate::ackpath::ev(&trace_tag, || "mark_published(by_followers)".to_string());
+        crate::ackpath::line(|| {
+            format!(
+                "MARK tag={trace_tag} t0={trace_t0} by_followers=true offset={offset} prev={trace_prev:?} total_us={}",
+                crate::ackpath::now_us() - trace_t0
+            )
+        });
         return true;
     }
     let reported = match reporter {
@@ -2979,12 +3025,27 @@ pub(super) async fn publish_mark(
         // cluster membership has no promotion to inform.
         None => true,
     };
+    let trace_reported = crate::ackpath::now_us();
+    crate::ackpath::ev(&trace_tag, || {
+        format!(
+            "mark_report_done ok={reported} took={}us",
+            trace_reported - trace_t0
+        )
+    });
     if reported {
         note_committed();
         if !withheld {
             marks.publish_at(&watch_key(key), incarnation, generation, offset);
         }
         release_readers(broker, key).await;
+        crate::ackpath::ev(&trace_tag, || "mark_published".to_string());
+        crate::ackpath::line(|| {
+            format!(
+                "MARK tag={trace_tag} t0={trace_t0} by_followers=false offset={offset} prev={trace_prev:?} report_us={} total_us={}",
+                trace_reported - trace_t0,
+                crate::ackpath::now_us() - trace_t0
+            )
+        });
     } else {
         metrics::record_mark_withheld();
         tracing::warn!(
