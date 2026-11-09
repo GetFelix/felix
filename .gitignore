@@ -49,13 +49,13 @@ data/soak/
 # cluster, so they stay out. The *results* do not, and they are the only record
 # of how a published number was obtained -- a figure in the docs with its
 # evidence on one laptop is a figure nobody else can check.
-scripts/perf/azure/sessions/*.env
-scripts/perf/azure/sessions/*.blob
-scripts/perf/azure/*.env
-!scripts/perf/azure/session.env.example
-scripts/perf/azure/main.json
-scripts/perf/azure/compare/sessions/
-scripts/perf/azure/compare/*.json
+scripts/perf/cloud/sessions/*.env
+scripts/perf/cloud/sessions/*.blob
+scripts/perf/cloud/*.env
+!scripts/perf/cloud/session.env.example
+scripts/perf/cloud/main.json
+scripts/perf/cloud/compare/sessions/
+scripts/perf/cloud/compare/*.json
 
 # Python binding build artifacts.
 # `maturin develop` compiles the extension straight into the package source so
@@ -73,3 +73,4 @@ docs/formal/states/
 
 # Conformance results, written by the client suites (see `task ts:conformance`).
 *-conformance.json
+.scratch/

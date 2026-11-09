@@ -1617,7 +1617,7 @@ tasks it creates. A sweep of listener counts or broker settings from one
 generator process comes back flat whether or not the change works.
 
 To measure transport scaling, generate load from several processes (on
-Linux, from separate machines), as `scripts/perf/azure` does. Linux defaults
+Linux, from separate machines), as `scripts/perf/cloud` does. Linux defaults
 this pool to `0`, so the cap does not apply there.
 :::
 

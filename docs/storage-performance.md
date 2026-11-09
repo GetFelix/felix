@@ -315,10 +315,10 @@ against 153µs alone, roughly 7µs per subscriber, either way. The broker and
 all 101 clients share four vCPUs there, so the delivery work sets the rate,
 not the order of the answer. The gain needs spare cores.
 
-To compare before and after, run `scripts/perf/azure/nats/nats-latency.sh`
+To compare before and after, run `scripts/perf/cloud/nats/nats-latency.sh`
 with `LAT_PAIRS="oncommit inmem"` on both builds. The `inmem`
 pair has no fsync, so it isolates the hand-offs. See
-`scripts/perf/azure/README.md` ("Latency").
+`scripts/perf/cloud/README.md` ("Latency").
 
 ## Measured results
 
