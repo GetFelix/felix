@@ -14,7 +14,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
-  B_SHA: f93613d74dfaa2686ecd84bfe9e756971221bf5d
+  B_SHA: 9184e99c93ac64b8a38490329bf3901c1f056690
 
 jobs:
   single:
@@ -149,7 +149,7 @@ jobs:
           for s in a b; do
             printf '#!/bin/bash\nshift\nexec /tmp/perf-bin/felix-broker-%s "$@"\n' $s > $p/wrap-$s.sh
           done
-          chmod +x $p/wrap-*.sh
+          sed -i "2i export FELIX_DURABLE_FSYNC_MODE=on_commit" $p/wrap-a.sh $p/wrap-b.sh; chmod +x $p/wrap-*.sh
           for round in $(seq 1 "$ROUNDS"); do
             if [ $(( (round + ${{ matrix.shard }}) % 2 )) -eq 0 ]; then sides="a b"; else sides="b a"; fi
             for side in $sides; do
