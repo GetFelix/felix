@@ -14,7 +14,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   A_SHA: cf8c400e34c4c3870345692e90abe357057c16e5
-  B_SHA: dc851b3d3879c0da23966d89b6758158dfe09d61
+  B_SHA: 85ead4165d88114f05c3aa3768e2dcbcde45a9e4
 
 jobs:
   single:
