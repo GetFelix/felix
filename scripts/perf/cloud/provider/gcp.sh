@@ -95,11 +95,14 @@ _gcp_lssd_count() {
   esac
 }
 
+# Brokers boot from SSD. Load generators and the control plane boot from
+# standard disk: SSD boot disks count against the regional SSD_TOTAL_GB quota
+# (250 GB on a new project) and theirs do not touch what is measured.
 _gcp_boot_disk_type() {
   case "${1%%-*}" in
     c4|c4d|n4|c4a|n4d) echo hyperdisk-balanced ;;   # these families have no persistent disk
     e2) echo pd-balanced ;;
-    *) echo pd-ssd ;;
+    *) if [ "${2:-broker}" = broker ]; then echo pd-ssd; else echo pd-standard; fi ;;
   esac
 }
 
@@ -278,7 +281,7 @@ _gcp_create_vms() {
     local -a args=(compute instances create "${name}"
       --zone "${GCP_ZONE}" --machine-type "${type}"
       --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud
-      --boot-disk-size "${boot_gb}GB" --boot-disk-type "$(_gcp_boot_disk_type "${type}")"
+      --boot-disk-size "${boot_gb}GB" --boot-disk-type "$(_gcp_boot_disk_type "${type}" "${role}")"
       --network "$(_gcp_network)" --subnet "$(_gcp_network)" --private-network-ip "${ip}"
       --no-address --tags felix-perf --labels "felix-perf=${SESSION},role=${role}"
       --metadata-from-file "user-data=${userdata}"
