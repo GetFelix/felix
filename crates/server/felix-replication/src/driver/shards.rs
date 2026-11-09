@@ -631,6 +631,35 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         self.count_rebuilds();
     }
 
+    fn stranded_for_diag(&self, mode: u8) -> Vec<ShardKey> {
+        self.states
+            .iter()
+            .filter(|(key, state)| {
+                if state.running.is_some() || state.queued.is_some() {
+                    return false;
+                }
+                let Some(tail) = state.last.as_ref().and_then(|last| last.tail) else {
+                    return false;
+                };
+                let Some(cursors) = self.streams.get(*key) else {
+                    return false;
+                };
+                if mode == 1 {
+                    let mark = self
+                        .cx
+                        .marks
+                        .offset_at(&watch_key(key), cursors.incarnation, cursors.generation)
+                        .unwrap_or(0);
+                    mark < tail
+                } else {
+                    self.busy.contains_key(*key)
+                        || cursors.followers.iter().any(|c| c.next_offset < tail)
+                }
+            })
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
+
     /// An append wake's scan: the shards appended to, owed a mark or moving,
     /// and the ones not led at the last full scan that may be led now. These
     /// are the only shards [`Self::asks`] passes on an append. Forgetting
@@ -650,6 +679,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                 .map(|(key, _)| key.clone()),
         );
         visit.extend(self.moving.iter().cloned());
+        visit.extend(self.stranded_for_diag(2));
         visit.extend(
             self.not_led
                 .iter()
