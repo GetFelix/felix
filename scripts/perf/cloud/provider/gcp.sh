@@ -38,7 +38,7 @@ provider_default_size() {
   case "$1" in
     broker) echo n2-standard-2 ;;
     loadgen) echo n2-standard-4 ;;
-    controlplane) echo e2-small ;;
+    controlplane) echo n2-standard-2 ;;
   esac
 }
 
@@ -121,6 +121,14 @@ _gcp_plan() {
 # and refuse to start when anything is short. GCP_VCPU_LIMIT additionally caps
 # the vCPU total (a new project often has 12) even when the quota read fails.
 provider_preflight() {
+  # max-run-duration needs onHostMaintenance=TERMINATE, which e2 does not allow
+  # on STANDARD VMs.
+  if [ "${PROVISIONING}" = STANDARD ] && [ -n "${MAX_RUN_HOURS}" ]; then
+    local _r _n _t _i
+    while read -r _r _n _t _i; do
+      case "${_t}" in e2-*) echo "!! ${_n} is ${_t}: e2 cannot run with the TERMINATE maintenance policy that MAX_RUN_HOURS needs; use an n2 size or PROVISIONING=SPOT" >&2; return 1 ;; esac
+    done < <(_gcp_plan)
+  fi
   if [ "${USE_LOCAL_NVME}" != true ]; then
     echo "!! GCP brokers keep their data on local NVMe SSD only; USE_LOCAL_NVME must be true" >&2
     return 1
@@ -364,7 +372,7 @@ provider_teardown() {
   fi
   cli _gc compute routers nats delete "${net}" --router "${net}" --region "${GCP_REGION}" --quiet || true
   cli _gc compute routers delete "${net}" --region "${GCP_REGION}" --quiet || true
-  cli _gc compute firewall-rules delete "${net}-internal" "${net}-iap-ssh" "${net}-ssh" --quiet || true
+  cli _gc compute firewall-rules delete "${net}-internal" "${net}-iap-ssh" --quiet || true
   cli _gc compute resource-policies delete "$(_gcp_policy)" --region "${GCP_REGION}" --quiet || true
   cli _gc compute networks subnets delete "${net}" --region "${GCP_REGION}" --quiet || true
   cli _gc compute networks delete "${net}" --quiet || true

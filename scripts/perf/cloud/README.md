@@ -45,7 +45,7 @@ All go in `session.env`. The defaults suit the small run.
 | `GCP_ZONE` | `us-central1-a` | the one zone every VM goes in |
 | `BROKER_VM_SIZE` | `n2-standard-2` | broker machine type. `c4-standard-24-lssd` is the large run |
 | `LOADGEN_VM_SIZE` | `n2-standard-4` | generator machine type |
-| `CONTROLPLANE_VM_SIZE` | `e2-small` | control plane machine type |
+| `CONTROLPLANE_VM_SIZE` | `n2-standard-2` | control plane machine type |
 | `BROKER_COUNT`, `LOADGEN_COUNT` | 3, 1 | VMs per role |
 | `BROKER_LOCAL_SSDS` | 1 | local SSDs per broker (375 GB each). Ignored for `-lssd` sizes, which come with theirs |
 | `PROVISIONING` | `STANDARD` | `SPOT` is cheaper and can be reclaimed mid-run |
@@ -84,8 +84,8 @@ session wants.
 `session.sh` prints the plan and checks it first. It lists every VM with its
 vCPU count, then compares the totals with `gcloud compute regions describe`
 (`CPUS`, the machine family such as `N2_CPUS`, `LOCAL_SSD_TOTAL_GB`, and
-`PREEMPTIBLE_CPUS` for spot) and refuses to start when any is short. A shared-core
-`e2-small` is counted as 2 vCPUs to stay on the safe side.
+`PREEMPTIBLE_CPUS` for spot) and refuses to start when any is short. Shared-core `e2` sizes are refused on STANDARD provisioning: the run-time cap needs
+the TERMINATE maintenance policy, which e2 does not allow.
 
 Three things stop a session from running up a bill:
 
@@ -112,7 +112,7 @@ written against the documentation, and a dry run is the cheap way to read them.
 `session.gcp-rf3.env.example` is the default first session. It has the shape of
 the v0.6.0 Azure RF 3 cluster: three brokers (`n2-standard-4`, 4 vCPU, one
 local SSD each as the data volume, compact placement, one zone), two
-`n2-standard-4` generators and an `e2-small` control plane. That is 22 vCPUs
+`n2-standard-4` generators and an `n2-standard-2` control plane. That is 22 vCPUs
 with no external IPs (outbound through Cloud NAT), inside a 30 vCPU budget. On Azure the brokers
 were `Standard_L4as_v4` (4 vCPU, local NVMe) and the generators
 `Standard_D4as_v5`. The shapes match, the CPUs, disks, network and kernel
@@ -121,7 +121,7 @@ differ, so results are comparable in shape, not in absolute numbers. Set
 
 `session.gcp-rf3-ab.env.example` is the smaller alternative for 12 vCPUs: three
 `n2-standard-2` brokers, each with its own local SSD, one `n2-standard-4`
-generator and one `e2-small` control plane. It installs two builds, v0.6.2
+generator and one `n2-standard-2` control plane. It installs two builds, v0.6.2
 (`cf8c400e3`) and a main commit, on the same VMs and runs `run-ab.sh`:
 
 ```bash
