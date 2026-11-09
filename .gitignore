@@ -73,3 +73,4 @@ docs/formal/states/
 
 # Conformance results, written by the client suites (see `task ts:conformance`).
 *-conformance.json
+.scratch/

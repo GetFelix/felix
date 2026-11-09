@@ -24,9 +24,23 @@
 set -euo pipefail
 
 : "${SESSION:?SESSION=<name> (becomes the resource group felix-perf-<name>)}"
+# Refuse to run on a half-loaded or unfilled session.env: a <placeholder> left
+# in, or a file that stopped sourcing at a syntax error, would otherwise fall
+# through to the defaults below.
+for _v in SESSION GCP_PROJECT MAIN_SHA BROKER_REFS LOADGEN_REF AZ_SUBSCRIPTION IDP_TENANT_ID IDP_CLIENT_ID IDP_SCOPE IDP_CLIENT_SECRET; do
+  case "${!_v:-}" in
+    *"<"*">"*) echo "!! ${_v} still holds a placeholder (${!_v}); fill it in session.env" >&2; exit 1 ;;
+  esac
+done
+if [ "${CLOUD:-azure}" = gcp ]; then
+  [ "${FELIX_ENV_LOADED:-}" = 1 ] || { echo "!! session.env was not fully loaded (FELIX_ENV_LOADED unset): fix its syntax errors, then set -a; source it" >&2; exit 1; }
+  if [ -z "${GCP_PROJECT:-}" ] && [ -z "$(gcloud config get-value project 2>/dev/null)" ]; then
+    echo "!! GCP_PROJECT is unset and gcloud has no default project" >&2; exit 1
+  fi
+fi
 : "${LOCATION:=$([ "${CLOUD:-azure}" = gcp ] && echo "${GCP_ZONE:-us-central1-a}" || echo eastus2)}"
 : "${TIER:=t1}"
-: "${RELEASE_TAG:=v0.5.0}"
+: "${RELEASE_TAG:=v0.7.0}"
 # The instrument builds from a ref that HAS felix-loadgen. The crate merged to
 # main in #370, so main is the default again; override for a branch under review.
 : "${LOADGEN_REF:=main}"

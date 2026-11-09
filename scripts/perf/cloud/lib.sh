@@ -32,6 +32,14 @@ esac
 # shellcheck source=/dev/null
 source "${_lib_dir}/provider/${CLOUD}.sh"
 
+# Scratch for generated files (rendered user-data, script copies that can carry
+# tokens). Never the operator's system temp: FELIX_SCRATCH, default
+# <repo>/.scratch/perf-cloud (gitignored).
+: "${FELIX_SCRATCH:=${_lib_dir}/../../../.scratch/perf-cloud}"
+mkdir -p "${FELIX_SCRATCH}" && chmod 700 "${FELIX_SCRATCH}"
+FELIX_SCRATCH="$(cd "${FELIX_SCRATCH}" && pwd)"
+export FELIX_SCRATCH
+
 # cli <command...>: run a cloud CLI command, or with DRY_RUN=1 print it to
 # stderr and do nothing. Every command that creates, changes or deletes cloud
 # resources goes through here, so a dry run shows the whole plan.
@@ -66,7 +74,7 @@ run_on() {
 # private temp file (the script text can carry tokens), runs it, and removes it.
 run_on_str() {
   _vm="$1"; _text="$2"
-  _tmp="$(mktemp "${TMPDIR:-/tmp}/felix-run.XXXXXX")"
+  _tmp="$(mktemp "${FELIX_SCRATCH}/felix-run.XXXXXX")"
   chmod 600 "${_tmp}"
   printf '%s' "${_text}" > "${_tmp}"
   run_on "${_vm}" "${_tmp}"

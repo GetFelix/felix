@@ -305,7 +305,7 @@ provider_create_session() {
   local net tmp my_ip i role name type ip s
   local -a brokers_spec=() lg_spec=() cp_spec=()
   net="$(_gcp_network)"
-  tmp="${TMPDIR:-/tmp}/felix-gcp-${SESSION}"
+  tmp="${FELIX_SCRATCH}/gcp-${SESSION}"
   mkdir -p "${tmp}"; chmod 700 "${tmp}"
   if [ "${DRY_RUN:-0}" = 1 ]; then my_ip="<operator-ip>"; else my_ip="$(curl -fsS https://api.ipify.org)"; fi
 

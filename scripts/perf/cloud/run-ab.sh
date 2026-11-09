@@ -65,6 +65,14 @@ run_build() {
   done
 }
 
+# Both builds run on these same VMs; print and record exactly what each side is.
+side() { local l; for l in $BROKER_SPECS; do [ "${l%@*}" = "$1" ] && echo "${l#*@}"; done; }
+{
+  echo "A ${label_a} $(side "${label_a}")"
+  echo "B ${label_b} $(side "${label_b}")"
+  echo "brokers ${BROKER_IPS}"
+} | tee "${OUT}/ab-builds.txt"
+[ "$(side "${label_a}")" != "$(side "${label_b}")" ] || { echo "!! A and B are the same commit" >&2; exit 1; }
 record_session run-ab
 fio_baseline seq256k-j1 256k 1 seq256k-j4 256k 4 seq256k-j8 256k 8 seq4k-j1 4k 1
 for r in $(seq 1 "${ROUNDS}"); do
