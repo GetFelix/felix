@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794246490827,
+  "lastUpdate": 1794247474686,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50336,6 +50336,58 @@ window.BENCHMARK_DATA = {
             "range": "6075.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 889455.52\nmean: 889488.61\nstdev: 6075.56\ncv: 0.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0ebccbc227a10f8ea043e86fa70a0acec546ae9",
+          "message": "perf: cloud harness with Azure and Google Cloud providers (#2151)\n\nThe cloud perf harness moves to scripts/perf/cloud with a provider layer for Azure and Google Cloud. GCP VMs have no external addresses (IAP for ssh, Cloud NAT for outbound), every VM deletes itself after a run-time cap, teardown deletes by label in dependency order and verifies nothing is left, a quota preflight refuses short sessions, and a stockout in one zone retries the next. run-ab.sh runs alternating A/B rounds on the same VMs with an fio baseline first. DRY_RUN=1 prints every cloud command.",
+          "timestamp": "2026-11-09T09:59:06-08:00",
+          "tree_id": "aeb7d386b56c1bf50ff2962009f113360934299b",
+          "url": "https://github.com/GetFelix/felix/commit/e0ebccbc227a10f8ea043e86fa70a0acec546ae9"
+        },
+        "date": 1794247473785,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 676308.76,
+            "range": "46005.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 676308.76\nmean: 655838.46\nstdev: 46005.72\ncv: 7.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 676308.76,
+            "range": "46005.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 676308.76\nmean: 655838.46\nstdev: 46005.72\ncv: 7.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159568.62,
+            "range": "5081.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159568.62\nmean: 158179.05\nstdev: 5081.74\ncv: 3.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1595686.2,
+            "range": "50817.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1595686.20\nmean: 1581790.47\nstdev: 50817.41\ncv: 3.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
