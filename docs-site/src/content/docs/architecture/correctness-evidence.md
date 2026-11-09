@@ -90,9 +90,10 @@ piece of the design, such as the fence, the start record or the read round, and
 TLC must find a violation of one named invariant, not just any failure. If a
 configuration stopped finding its violation, the check would fail, so the model
 cannot go quiet without anyone noticing. In total 37 distinct property names are
-asserted this way. The 81 configurations in neither list are the ones that do
-not fit a runner in a single run. Some run nightly in pieces, and a few do not
-yet finish; `docs/formal/README.md` says which.
+asserted this way. The 81 configurations in neither list are not part of the
+per-push check. Twenty of them are not referenced by any job, and
+[issue #2142](https://github.com/GetFelix/felix/issues/2142) tracks registering
+or deleting each one.
 
 The counts come from `scripts/check_tla.sh` (the `expectations` and `walks`
 lists), `ls docs/formal/*.cfg`, `.github/workflows/dst-nightly.yml`,
