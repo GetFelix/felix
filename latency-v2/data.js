@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794245959694,
+  "lastUpdate": 1794246484462,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -63822,6 +63822,72 @@ window.BENCHMARK_DATA = {
             "range": "1059.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 753.00\nmean: 1320.60\nstdev: 1059.15\ncv: 80.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "692be6b44132f4c73a5e68ea8df80c18295bc6c7",
+          "message": "ci(deps): bump the actions-minor-and-patch group with 3 updates (#2146)\n\nBumps the actions-minor-and-patch group with 3 updates: [docker/login-action](https://github.com/docker/login-action), [softprops/action-gh-release](https://github.com/softprops/action-gh-release) and [sigstore/cosign-installer](https://github.com/sigstore/cosign-installer).\n\n\nUpdates `docker/login-action` from 4.7.0 to 4.8.0\n- [Release notes](https://github.com/docker/login-action/releases)\n- [Commits](https://github.com/docker/login-action/compare/81c6f93d4bc991e510b342a00b419b3bb4efc5c6...8aa5831fb8d48d8f76594c7ddde61ae58019f550)\n\nUpdates `softprops/action-gh-release` from 3.0.3 to 3.0.4\n- [Release notes](https://github.com/softprops/action-gh-release/releases)\n- [Changelog](https://github.com/softprops/action-gh-release/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/softprops/action-gh-release/compare/efb35369e0ad2afab669f228072c1b0d510eae64...8a0cd651e5b2365bd640854a3fa5dfc70e4875f3)\n\nUpdates `sigstore/cosign-installer` from 4.1.2 to 4.1.3\n- [Release notes](https://github.com/sigstore/cosign-installer/releases)\n- [Commits](https://github.com/sigstore/cosign-installer/compare/6f9f17788090df1f26f669e9d70d6ae9567deba6...756fe2d284c7292c4e9b62c8a28f1e5629c59532)\n\n---\nupdated-dependencies:\n- dependency-name: docker/login-action\n  dependency-version: 4.8.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: actions-minor-and-patch\n- dependency-name: softprops/action-gh-release\n  dependency-version: 3.0.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: actions-minor-and-patch\n- dependency-name: sigstore/cosign-installer\n  dependency-version: 4.1.3\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: actions-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-09T09:32:18-08:00",
+          "tree_id": "e2771c87fa10c682de99d725369b953045d0a964",
+          "url": "https://github.com/GetFelix/felix/commit/692be6b44132f4c73a5e68ea8df80c18295bc6c7"
+        },
+        "date": 1794246470799,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 122,
+            "range": "6.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 120.00\nstdev: 6.04\ncv: 5.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "37.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 209.40\nstdev: 37.49\ncv: 17.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 416,
+            "range": "225.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 416.00\nmean: 511.40\nstdev: 225.09\ncv: 44.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 138,
+            "range": "7.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 141.60\nstdev: 7.57\ncv: 5.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 312,
+            "range": "272.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 312.00\nmean: 427.80\nstdev: 272.88\ncv: 63.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 577,
+            "range": "1007.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 577.00\nmean: 1056.20\nstdev: 1007.76\ncv: 95.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
