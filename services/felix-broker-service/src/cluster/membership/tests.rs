@@ -42,17 +42,18 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let (incarnation, fleet) = {
+                    let (incarnation, fleet, interval) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
                         (
                             calls.registrations.len() as u64 - 1,
                             calls.fleet_features.clone(),
+                            calls.heartbeat_interval_ms.unwrap_or(20),
                         )
                     };
                     Json(json!({
                         "node": { "status": { "incarnation": incarnation, "lifecycle": "live" } },
-                        "heartbeat_interval_ms": 20,
+                        "heartbeat_interval_ms": interval,
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
                     }))
@@ -666,6 +667,53 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
     assert!(
         matches!(err, MembershipError::Unavailable(_)),
         "a 5xx must stay retryable",
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that answers down at once must not be re-registered with
+/// at round-trip speed: re-registrations stay about one interval apart.
+#[tokio::test]
+async fn a_control_plane_answering_down_is_not_hammered() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        down_through_incarnation: Some(u64::MAX),
+        heartbeat_interval_ms: Some(300),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let data = tempfile::tempdir().expect("tempdir");
+
+    let task = spawn(
+        link(&client, &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        Some(data.path().to_path_buf()),
+        None,
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+
+    let registrations = calls.lock().expect("lock").registrations.len();
+    assert!(
+        registrations <= 7,
+        "re-registered {registrations} times in 1.5 s with a 300 ms interval",
     );
 
     let _ = stop.send(());

@@ -851,6 +851,7 @@ pub(crate) fn spawn_with(
                 adopt_fleet(&fleet, &registration.fleet_features);
                 incarnation.store(registration.incarnation, Ordering::Release);
                 registered.send_replace(Some(registration.incarnation));
+                let pace = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
 
                 match run_heartbeat_checked(
                     link.clone(),
@@ -870,6 +871,12 @@ pub(crate) fn spawn_with(
                             node_id = %config.node_id,
                             "the control plane marked this broker down; registering again",
                         );
+                        // The first beat is immediate, so without this a
+                        // control plane answering down would be hit in a loop.
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return,
+                            _ = tokio::time::sleep(jittered(pace)) => {}
+                        }
                     }
                 }
             }
