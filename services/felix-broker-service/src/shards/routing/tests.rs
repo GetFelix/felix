@@ -533,6 +533,50 @@ mod feed {
         let _ = feed.await;
     }
 
+    /// **A led shard is not routed before it serves.** Replication starts
+    /// work for every led route it sees, so naming the unopened rest of a
+    /// batch would fill its pass slots with shards that cannot take a write.
+    #[tokio::test]
+    async fn a_led_shard_still_opening_is_not_routed_early() {
+        let shards = 8;
+        let assignments: Vec<_> = (0..shards)
+            .map(|shard| assignment(shard, "broker-a", 1))
+            .collect();
+        let (mut state, _router) = state(&assignments);
+        state.store = Arc::new(SlowStore {
+            delay: Duration::from_millis(150),
+        });
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+        let count = |f: &dyn Fn(u32) -> bool| (0..shards).filter(|shard| f(*shard)).count();
+
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_secs(60),
+            shutdown.clone(),
+        );
+        let mut sampled = 0;
+        for _ in 0..400 {
+            // Routed first: serving only grows, so a routed shard that was
+            // not yet serving would show as more routed than serving.
+            let routed = count(&|shard| ingress.route(&key(shard)).is_some());
+            let serving =
+                count(&|shard| matches!(ingress.dispatch(&key(shard)), Dispatch::Local { .. }));
+            assert!(routed <= serving, "{routed} routed, {serving} serving");
+            if serving > 0 && serving < shards as usize {
+                sampled += 1;
+            }
+            if serving == shards as usize {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(sampled > 0, "never saw the batch part open");
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
     /// **Only the new shards change mid-pass.** A shard reassigned away in
     /// the same pass keeps the route and the serving state last published
     /// until the pass ends, so a write to it is held as it was, not refused.
