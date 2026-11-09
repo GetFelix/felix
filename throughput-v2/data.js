@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794250147247,
+  "lastUpdate": 1794255246160,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50440,6 +50440,58 @@ window.BENCHMARK_DATA = {
             "range": "3026.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 912780.51\nmean: 913989.57\nstdev: 3026.41\ncv: 0.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "47c0348b7874631d5ccd2207a86d5b375cebeb02",
+          "message": "perf: GCP load generators and control plane boot from standard disk (#2155)\n\nSSD boot disks count against the regional SSD_TOTAL_GB quota (250 GB on a\nnew project); three brokers plus two 128 GB load-generator disks exceeded it.\nBrokers keep SSD boot disks.",
+          "timestamp": "2026-11-09T12:06:37-08:00",
+          "tree_id": "a3713471c79182075f88d7460c99c89735f265f9",
+          "url": "https://github.com/GetFelix/felix/commit/47c0348b7874631d5ccd2207a86d5b375cebeb02"
+        },
+        "date": 1794255245502,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355270.26,
+            "range": "10065.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355270.26\nmean: 355249.71\nstdev: 10065.38\ncv: 2.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355270.26,
+            "range": "10065.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355270.26\nmean: 355249.71\nstdev: 10065.38\ncv: 2.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80190.35,
+            "range": "788.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80190.35\nmean: 80395.95\nstdev: 788.11\ncv: 0.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801903.45,
+            "range": "7881.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801903.45\nmean: 803959.45\nstdev: 7881.08\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
