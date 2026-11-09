@@ -84,7 +84,9 @@ _gcp_lssd_count() {
   case "$1" in
     c4-standard-*-lssd|c4d-standard-*-lssd|c3-standard-*-lssd)
       local n="${1%-lssd}"; n="${n##*-}"
-      case "${n}" in 8) echo 1 ;; 16) echo 2 ;; 24) echo 4 ;; 32) echo 5 ;; 48) echo 8 ;; 96) echo 16 ;; *) echo 4 ;; esac ;;
+      # c4: 4 and 8 vCPU have one disk, 16 has two (read from the machine type
+      # API); larger sizes are estimates.
+      case "${n}" in 4|8) echo 1 ;; 16) echo 2 ;; 24) echo 4 ;; 32) echo 5 ;; 48) echo 8 ;; 96) echo 16 ;; *) echo 4 ;; esac ;;
     *) echo "${BROKER_LOCAL_SSDS}" ;;
   esac
 }
@@ -117,6 +119,10 @@ _gcp_plan() {
 # and refuse to start when anything is short. GCP_VCPU_LIMIT additionally caps
 # the vCPU total (a new project often has 12) even when the quota read fails.
 provider_preflight() {
+  if [ "${USE_LOCAL_NVME}" != true ]; then
+    echo "!! GCP brokers keep their data on local NVMe SSD only; USE_LOCAL_NVME must be true" >&2
+    return 1
+  fi
   local role name type ip total=0 v ssd_gb=0 line metric need
   local -a fam_metrics=() fam_need=()
   echo ">> plan (${PROVISIONING}, zone ${GCP_ZONE}, run-time cap ${MAX_RUN_HOURS}h):"
@@ -290,9 +296,6 @@ _gcp_create_vms() {
     fi
     if [ "${role}" = broker ] && [ "${PLACEMENT}" = compact ]; then
       args+=(--resource-policies "$(_gcp_policy)")
-    fi
-    if [ "${role}" = broker ] && [ "${USE_LOCAL_NVME}" != true ]; then
-      args+=(--create-disk "name=${name}-data,size=${BROKER_DATA_DISK_GIB:-128}GB,type=$(_gcp_boot_disk_type "${type}" | sed 's/^pd-balanced$/pd-ssd/'),device-name=felix-data,auto-delete=yes")
     fi
     cli _gc "${args[@]}"
   done

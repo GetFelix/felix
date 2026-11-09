@@ -54,6 +54,26 @@ All go in `session.env`. The defaults suit the small run.
 | `GCP_VCPU_LIMIT` | unset | refuse to start above this many vCPUs, even if the quota read fails |
 | `GCP_NETWORK_MTU` | 1460 | MTU of the session network |
 
+Broker data is never on a persistent disk. Local SSDs are attached with
+`interface=NVME`. If a broker finds no `/dev/disk/by-id/google-local-nvme-ssd-*`
+the provision fails and `session.sh` stops. Before any cell, `run-ab.sh` runs
+the same `fio` baseline the v0.6.0 report uses on every broker: sequential
+256 KiB writes with an `fdatasync` after each at 1, 4 and 8 jobs, and 4 KiB at
+1 job, stored in `<results>/system/`. `fio-baseline.sh` repeats it on a live
+session.
+
+`c4-standard-4-lssd` and `-8-lssd` exist in us-central1 (checked with
+`gcloud compute machine-types list`). The 4 and 8 vCPU sizes bundle one local
+SSD, the 16 vCPU size two. They are the closest match to Azure's L-series
+(Titanium SSD). The fallback is `n2-standard-4` with `BROKER_LOCAL_SSDS` 1 or 2.
+
+Local SSD speed scales with the disk count and the VM's vCPU count, not with
+capacity. Each 375 GB NVMe disk on N2 is capped well below what the Azure
+Lsv4 disks reach per VM, and a small VM gets a smaller share of it. Read the
+caps off the Google "Local SSD performance" table for your size, and trust the
+`fio` baseline in the results over any table: the durable cells are judged
+against it.
+
 The brokers' durable log is one md RAID0 over their local SSDs
 (`/dev/disk/by-id/google-local-nvme-ssd-*`), ext4 mounted `noatime`, the same
 shape as the Azure sessions. Local SSD data dies with the VM, which is what a

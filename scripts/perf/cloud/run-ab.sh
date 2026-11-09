@@ -66,7 +66,7 @@ run_build() {
 }
 
 record_session run-ab
-fio_baseline seq256k-j1 256k 1 seq4k-j1 4k 1
+fio_baseline seq256k-j1 256k 1 seq256k-j4 256k 4 seq256k-j8 256k 8 seq4k-j1 4k 1
 for r in $(seq 1 "${ROUNDS}"); do
   if [ $((r % 2)) = 1 ]; then first="${label_a}"; second="${label_b}"; else first="${label_b}"; second="${label_a}"; fi
   log "round ${r}: ${first} then ${second}"

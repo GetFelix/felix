@@ -96,8 +96,8 @@ write_files:
       # Choose the /data device. When flag {2}=1, put the durable log on the VM's
       # local SSDs (NVMe), which bypass the persistent-disk throughput cap. GCP
       # lists them under /dev/disk/by-id/google-local-nvme-ssd-*; several are
-      # striped into one md RAID0 so the VM reaches its write ceiling. Otherwise
-      # fall back to a 128 GiB data disk if one was attached, else the boot disk.
+      # striped into one md RAID0 so the VM reaches its write ceiling. With none
+      # present the script fails (see below).
       # Local SSD is fine here: a session's data dies with it.
       set -e
       LOCAL=""
@@ -114,10 +114,13 @@ write_files:
         else
           DEV="$1"
         fi
-      elif [ -e /dev/disk/by-id/google-felix-data ]; then
-        DEV=$(readlink -f /dev/disk/by-id/google-felix-data)
+      else
+        # Broker data never goes on a persistent disk: fail the provision so
+        # the session stops here instead of measuring the wrong device.
+        echo "no local NVMe SSD under /dev/disk/by-id/google-local-nvme-ssd-*" | tee /var/log/felix-provision.log >&2
+        touch /var/lib/cloud/instance/felix-provision-failed
+        exit 1
       fi
-      [ -n "$DEV" ] || { mkdir -p /data; chmod 1777 /data; exit 0; }
       wipefs -a "$DEV" 2>/dev/null || true
       mkfs.ext4 -F -m 0 "$DEV"
       mkdir -p /data
