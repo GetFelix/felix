@@ -20,6 +20,10 @@
 #   TRIALS=3                 trials per cell (suffix -t1..-tN)
 #   RESUME=1                 skip cells whose directory is marked done
 #   WIPE_DURABLE=1           wipe /data/felix and drop caches before durable cells
+#                            (replicated sessions: 0, a whole-cluster wipe under a
+#                            live control plane leaves publishes timing out on quorum)
+#   DURABLE_PREP=<function>  run after configure and before each durable cell; a
+#                            failure skips the cell (run-ab.sh recreates the stream)
 #   EXTRA_BROKER_ENV="K=V …" applied on top of every configuration
 #   EXTRA_LOADGEN_ENV="K=V …" exported on every generator for every cell
 #   RUN_TAG=<tag>            inserted into every cell name (before -tN), so a
@@ -455,6 +459,10 @@ durable_cell() {
   fi
   CONFIG_WIPE="${WIPE_DURABLE}" configure "${CONFIG_LABEL}" ${CONFIG_ARGS[@]+"${CONFIG_ARGS[@]}"} || {
     FAILED_CELLS="${FAILED_CELLS} ${name}"; return 0; }
+  if [ -n "${DURABLE_PREP:-}" ] && ! "${DURABLE_PREP}"; then
+    echo "!! ${DURABLE_PREP} failed; ${name} not run" >&2
+    FAILED_CELLS="${FAILED_CELLS} ${name}"; return 0
+  fi
   cell "$@"
 }
 

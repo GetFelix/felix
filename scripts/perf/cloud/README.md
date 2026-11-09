@@ -399,7 +399,7 @@ before/after delta by the cell's length both miss by a wide margin; those older
 figures stay in the table for comparison, and cells recorded before the series
 existed are marked `legacy`. Fire-and-forget publishes also make the client's
 figure an enqueue rate. Durable cells start from a wiped
-`/data/felix` and dropped page cache (`WIPE_DURABLE=1`; off in session C, where
+`/data/felix` and dropped page cache (`WIPE_DURABLE=1`; off in session C and in `run-ab.sh`, where
 a whole-cluster wipe under live replicas is its own experiment). `fio-baseline.sh`
 takes the device baseline; the drivers run it first.
 
