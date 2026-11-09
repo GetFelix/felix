@@ -1,4 +1,4 @@
-name: Perf scratch (ack path trace run 1)
+name: Perf scratch (ack path trace run 2)
 
 # Temporary: early release-style A/B, a = v0.6.2, b = main. Deleted with the branch.
 # single: perf-pr's cells (incl. 64 KiB fanout-10 and 100-subscriber fanout), both sides on one runner.
