@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794192897506,
+  "lastUpdate": 1794245964124,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50232,6 +50232,58 @@ window.BENCHMARK_DATA = {
             "range": "67178.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798334.59\nmean: 768920.65\nstdev: 67178.84\ncv: 8.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bb719ee3a328ac278a63d2b16e21c3b3b88c44d",
+          "message": "chore: start the 0.8 line at 0.8.0-preview.0 (#2153)\n\nMain moves to 0.8.0-preview.0 after the v0.7.0 release so its version names its line: workspace and crate versions, client packages, lockfiles and the Helm appVersion, as for the 0.7 line.",
+          "timestamp": "2026-11-09T09:32:01-08:00",
+          "tree_id": "0281242c162b614b40c7dbd72419f7402603c547",
+          "url": "https://github.com/GetFelix/felix/commit/0bb719ee3a328ac278a63d2b16e21c3b3b88c44d"
+        },
+        "date": 1794245963251,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344741.53,
+            "range": "8194.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344741.53\nmean: 342219.43\nstdev: 8194.58\ncv: 2.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344741.53,
+            "range": "8194.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344741.53\nmean: 342219.43\nstdev: 8194.58\ncv: 2.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79618.82,
+            "range": "2223.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79618.82\nmean: 79032.32\nstdev: 2223.62\ncv: 2.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796188.18,
+            "range": "22236.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796188.18\nmean: 790323.22\nstdev: 22236.19\ncv: 2.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
