@@ -670,9 +670,6 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
                     && let Some(state) = self.states.get_mut(&key)
                     && state.running.is_some()
                 {
-                    state.again = true;
-                    state.again_urgent |= urgent;
-                    asked.insert(key);
                     continue;
                 }
                 self.want(&key, urgent, cuts);
