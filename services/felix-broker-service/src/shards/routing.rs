@@ -1107,7 +1107,7 @@ const EARLY_PUBLISH_EVERY: std::time::Duration = std::time::Duration::from_milli
 
 impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
     fn due(&self) -> bool {
-        self.assignments.is_some()
+        false && self.assignments.is_some()
             && self
                 .last
                 .is_none_or(|last| last.elapsed() >= EARLY_PUBLISH_EVERY)
