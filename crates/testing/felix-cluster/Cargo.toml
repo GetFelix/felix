@@ -28,11 +28,11 @@ anyhow = { workspace = true }
 # runs under broker-to-broker mTLS.
 rcgen = { workspace = true, features = ["x509-parser"] }
 # The clock fault seam the in-process control plane reads time through.
-felix-common = { path = "../../server/felix-common", version = "0.7.0" }
-felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.7.0" }
-felix-client = { path = "../../sdk/felix-client", version = "0.7.0" }
-felix-transport = { path = "../../protocol/felix-transport", version = "0.7.0" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.7.0" }
+felix-common = { path = "../../server/felix-common", version = "0.8.0-preview.0" }
+felix-controlplane-service = { path = "../../../services/felix-controlplane-service", version = "0.8.0-preview.0" }
+felix-client = { path = "../../sdk/felix-client", version = "0.8.0-preview.0" }
+felix-transport = { path = "../../protocol/felix-transport", version = "0.8.0-preview.0" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.0" }
 bytes = { workspace = true }
 quinn = { workspace = true }
 rustls = { workspace = true }
@@ -48,7 +48,7 @@ tokio = { workspace = true, features = ["io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-felix-conformance = { version = "0.7.0", path = "../felix-conformance" }
+felix-conformance = { version = "0.8.0-preview.0", path = "../felix-conformance" }
 
 [target.'cfg(unix)'.dependencies]
 # Suspending a broker needs a signal, not a kill: the point of the fault is a
@@ -57,7 +57,7 @@ libc = { workspace = true }
 
 [dev-dependencies]
 # The backup tests open a restored copy of a shard's logs directly.
-felix-storage = { path = "../../server/felix-storage", version = "0.7.0" }
+felix-storage = { path = "../../server/felix-storage", version = "0.8.0-preview.0" }
 # The replica set test speaks to brokers over the peer transport as one of them.
 felix-replication = { path = "../../server/felix-replication" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.
