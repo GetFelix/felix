@@ -107,13 +107,26 @@ impl LogInner {
                 .map(|()| self.note_synced_since(segment_id, synced_bytes, rewinds)),
             None => {
                 let marker = Arc::clone(&self);
+                let label = self.label.clone();
+                let submitted = crate::io::wall_us();
                 self.flusher
                     .run(move || {
+                        let thread_start = crate::io::wall_us();
                         // The retired segment first, for the same reason.
                         if let Some(retired) = retired {
                             sync_data(&retired)?;
                         }
                         sync_data(&handle)?;
+                        let synced = crate::io::wall_us();
+                        if synced - submitted > 4_000 {
+                            crate::io::trace_line(|| {
+                                format!(
+                                    "FSYNC log={label} submitted={submitted} queue_us={} sync_us={}",
+                                    thread_start - submitted,
+                                    synced - thread_start
+                                )
+                            });
+                        }
                         injected_failure()?;
                         // On this thread too: the mark is a write, and a write
                         // waits on a busy filesystem journal like a sync does.

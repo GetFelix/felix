@@ -531,3 +531,32 @@ fn injected_fault() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+/// Scratch diagnostic: append a line to `$FELIX_TRACE_ACK_DIR/storage-<pid>.log`.
+pub(crate) fn trace_line(text: impl FnOnce() -> String) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
+        std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        std::env::var_os("FELIX_TRACE_ACK_PATH")?;
+        let dir = std::env::var("FELIX_TRACE_ACK_DIR").ok()?;
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("{dir}/storage-{}.log", std::process::id()))
+            .ok()
+            .map(std::sync::Mutex::new)
+    });
+    if let Some(file) = file
+        && let Ok(mut file) = file.lock()
+    {
+        let _ = writeln!(file, "{}", text());
+    }
+}
+
+pub(crate) fn wall_us() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_micros() as u64)
+}
