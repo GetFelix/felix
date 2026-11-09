@@ -1,0 +1,41 @@
+name: Soak allocator variants (scratch)
+on:
+  push:
+    branches: ["scratch/soak-alloc-2152"]
+permissions:
+  contents: read
+env:
+  FELIX_DISABLE_TIMINGS: "1"
+  FELIX_CORE_SHARDS: "2"
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: glibc-default, features: "", arena: "" }
+          - { name: glibc-arena2, features: "", arena: "2" }
+          - { name: jemalloc, features: "soak-jemalloc", arena: "" }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Build
+        run: cargo build --release -p felix-broker-service --bin soak --features "${{ matrix.features }}"
+      - name: Run
+        env:
+          SOAK_TRIM_AFTER_CYCLE: "1"
+        run: |
+          set -uo pipefail
+          ulimit -n 65536
+          if [ -n "${{ matrix.arena }}" ]; then export MALLOC_ARENA_MAX=${{ matrix.arena }}; fi
+          ./target/release/soak --duration-secs 60 --quiesce-secs 30 --churn-cycles 500 \
+            --load-cycles 20 --restart-cycles 1 2>&1 | tee out.txt || true
+          echo "## ${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+          grep -E "baseline|cycle |quiesced" out.txt | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"

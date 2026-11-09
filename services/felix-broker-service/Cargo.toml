@@ -113,6 +113,8 @@ x509-parser = { workspace = true }
 # gated in code.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
+tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemalloc-ctl = { version = "0.6", optional = true }
 # Used by the durable-restart and queue-semantics demo binaries to stage a
 # throwaway storage root.
 tempfile = { workspace = true }
@@ -146,6 +148,8 @@ felix-controlplane-service = { path = "../felix-controlplane-service", version =
 felix-loadgen = { path = "../../crates/testing/felix-loadgen", version = "0.8.0-preview.0" }
 
 [features]
+# Soak-only: run the harness on jemalloc to tell allocator retention from a leak.
+soak-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 default = []
 # `serving::auth::demo`: a fixed signing key and a token minted with it, so a
 # demo broker needs no control plane. Never for a deployed broker.

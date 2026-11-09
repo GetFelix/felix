@@ -117,10 +117,23 @@ pub(crate) async fn run_repeated_load_cycles(
         let samples = sampler.await?;
         let peak = samples.iter().map(|s| s.rss_kb).max().unwrap_or(0);
         peaks.push(peak);
+        let heap = crate::resources::heap_stats();
+        let rss_now = crate::resources::read_rss_kb();
+        let trimmed = if std::env::var_os("SOAK_TRIM_AFTER_CYCLE").is_some() {
+            crate::resources::trim_heap();
+            crate::resources::read_rss_kb()
+        } else {
+            0
+        };
         println!(
-            "  cycle {cycle}: published={} peak_rss={} KiB",
+            "  cycle {cycle}: published={} peak_rss={} KiB rss_end={} KiB heap_live={} KiB \
+             heap_resident={} KiB rss_after_trim={} KiB",
             stats.published.load(Ordering::Relaxed),
-            peak
+            peak,
+            rss_now,
+            heap.live_kb,
+            heap.resident_kb,
+            trimmed
         );
     }
     Ok(peaks)

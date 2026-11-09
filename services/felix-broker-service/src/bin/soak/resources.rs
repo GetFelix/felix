@@ -39,7 +39,7 @@ impl ResourceSample {
 /// equivalent procfs entry, so we shell out to `ps` — slow, but the sampler
 /// runs twice a second, not in a hot loop.
 #[cfg(target_os = "linux")]
-fn read_rss_kb() -> u64 {
+pub(crate) fn read_rss_kb() -> u64 {
     let Ok(statm) = std::fs::read_to_string("/proc/self/statm") else {
         return 0;
     };
@@ -53,7 +53,7 @@ fn read_rss_kb() -> u64 {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn read_rss_kb() -> u64 {
+pub(crate) fn read_rss_kb() -> u64 {
     let pid = std::process::id();
     let Ok(output) = std::process::Command::new("ps")
         .args(["-o", "rss=", "-p", &pid.to_string()])
@@ -65,6 +65,64 @@ fn read_rss_kb() -> u64 {
         .trim()
         .parse()
         .unwrap_or(0)
+}
+
+/// Allocator view of the heap, in KiB: bytes the program holds live, and bytes
+/// the allocator keeps resident. Live growing across identical cycles is a
+/// leak; resident growing with live flat is allocator retention.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct HeapStats {
+    pub live_kb: u64,
+    pub resident_kb: u64,
+}
+
+#[cfg(all(unix, feature = "soak-jemalloc"))]
+pub(crate) fn heap_stats() -> HeapStats {
+    use tikv_jemalloc_ctl::{epoch, stats};
+    if epoch::advance().is_err() {
+        return HeapStats::default();
+    }
+    HeapStats {
+        live_kb: stats::allocated::read().unwrap_or(0) as u64 / 1024,
+        resident_kb: stats::resident::read().unwrap_or(0) as u64 / 1024,
+    }
+}
+
+/// glibc: `uordblks` plus mmapped chunks is live; `arena` plus mmapped is held.
+#[cfg(all(
+    target_os = "linux",
+    target_env = "gnu",
+    not(feature = "soak-jemalloc")
+))]
+pub(crate) fn heap_stats() -> HeapStats {
+    // SAFETY: `mallinfo2` has no preconditions and returns a plain struct.
+    let info = unsafe { libc::mallinfo2() };
+    HeapStats {
+        live_kb: (info.uordblks + info.hblkhd) as u64 / 1024,
+        resident_kb: (info.arena + info.hblkhd) as u64 / 1024,
+    }
+}
+
+#[cfg(not(any(
+    feature = "soak-jemalloc",
+    all(target_os = "linux", target_env = "gnu")
+)))]
+pub(crate) fn heap_stats() -> HeapStats {
+    HeapStats::default()
+}
+
+/// Ask glibc to return free arena pages to the OS. Used under
+/// `SOAK_TRIM_AFTER_CYCLE` to show how much RSS is only retained, not live.
+pub(crate) fn trim_heap() {
+    #[cfg(all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "soak-jemalloc")
+    ))]
+    // SAFETY: `malloc_trim` has no preconditions.
+    unsafe {
+        libc::malloc_trim(0);
+    }
 }
 
 /// Extract gauge values from rendered Prometheus text.

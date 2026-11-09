@@ -26,6 +26,10 @@
 //! ```
 //! Exits non-zero if any steady-state check fails, so CI can gate on it.
 
+#[cfg(all(unix, feature = "soak-jemalloc"))]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod child;
 mod config;
 mod fixture;
