@@ -675,7 +675,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         }
         // As in a full scan: a pass waiting on a slow follower gives its slot
         // up once shards wait for one.
-        if self.queued_for_pass() {
+        if true {
             for (key, state) in &self.states {
                 if let Some(next) = &state.running
                     && !asked.contains(key)
