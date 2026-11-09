@@ -40,6 +40,17 @@ pub(crate) struct Tree {
     /// The segments, below the root, whose torn tails recovery repaired, in
     /// order, across reboots.
     torn_tails: Mutex<Vec<PathBuf>>,
+    /// The segments opened, in order, once for each stretch between
+    /// reboots. A log is recovered when it is opened, so a segment that
+    /// never shows up here after a power loss was never given the chance
+    /// to be repaired.
+    opened: Mutex<Opened>,
+}
+
+#[derive(Default)]
+struct Opened {
+    order: Vec<PathBuf>,
+    since_reboot: std::collections::HashSet<PathBuf>,
 }
 
 struct Structure {
@@ -120,6 +131,7 @@ impl Tree {
             me: me.clone(),
             power: Mutex::new(power::Power::On),
             torn_tails: Mutex::new(Vec::new()),
+            opened: Mutex::new(Opened::default()),
         })
     }
 
@@ -185,6 +197,12 @@ impl Tree {
             .to_str()
             .and_then(crate::segment::parse_segment_file_name)
             .map(|_| Arc::from(path));
+        if segment.is_some() {
+            let mut opened = self.opened.lock();
+            if opened.since_reboot.insert(path.to_path_buf()) {
+                opened.order.push(path.to_path_buf());
+            }
+        }
         Ok(MemFile::new(node, flags, self.me.clone(), segment))
     }
 
@@ -404,6 +422,7 @@ impl Tree {
         let mut state = self.structure.lock();
         state.root = rebooted;
         state.pending.clear();
+        self.opened.lock().since_reboot.clear();
         true
     }
 
@@ -469,6 +488,10 @@ impl Tree {
 
     pub(super) fn note_torn_tail(&self, segment: &Path) {
         self.torn_tails.lock().push(segment.to_path_buf());
+    }
+
+    pub(crate) fn opened_segments(&self) -> Vec<PathBuf> {
+        self.opened.lock().order.clone()
     }
 
     pub(crate) fn torn_tails(&self) -> Vec<PathBuf> {

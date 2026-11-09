@@ -100,6 +100,16 @@ pub fn torn_tails_repaired(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(tree(root)?.torn_tails())
 }
 
+/// The segments, as paths below `root`, that were opened, in order. A
+/// segment appears once for each stretch between reboots in which it was
+/// opened.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn segments_opened(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
+    Ok(tree(root)?.opened_segments())
+}
+
 fn tree(root: &Path) -> io::Result<std::sync::Arc<crate::fs::Tree>> {
     crate::fs::tree_at(root).ok_or_else(|| {
         io::Error::new(

@@ -19,8 +19,11 @@ pub struct PowerLoss {
     /// in and tore. `None` when no append was in flight, or the segment came
     /// back without any of it.
     pub torn: Option<PathBuf>,
-    /// How many torn tails the broker's recovery had repaired before the cut.
+    /// How many torn tails the broker's recovery had repaired by the time the
+    /// cut took effect.
     pub repaired_before: usize,
+    /// How many segments the broker had opened by the time the cut took effect.
+    pub opened_before: usize,
     /// When the broker was started again.
     pub restarted_at: Option<Duration>,
 }

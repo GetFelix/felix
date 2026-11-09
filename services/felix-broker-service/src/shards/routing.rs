@@ -946,6 +946,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 ingress: &ingress,
                 catalog: &catalog.nodes,
                 published_priors: &published_priors,
+                local: ingress.local_node_id(),
                 assignments: (!reads_catalog || !catalog.nodes.is_empty())
                     .then(|| early_assignments(&applied, &assignments, &priors))
                     .flatten(),
@@ -1056,16 +1057,13 @@ async fn refresh_catalog<L: ControlPlaneLink>(
     }
 }
 
-/// The last applied assignments with this pass's new shards added, and the
-/// new shards' priors; `None` when the pass names none.
+/// The last applied assignments with this pass's new shards added, those new
+/// shards' keys, and their priors; `None` when the pass names none.
 fn early_assignments(
     applied: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     assignments: &HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     priors: &HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-) -> Option<(
-    HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-)> {
+) -> Option<EarlyAdditions> {
     let added: HashMap<_, _> = assignments
         .iter()
         .filter(|(key, _)| !applied.contains_key(*key))
@@ -1074,14 +1072,29 @@ fn early_assignments(
     if added.is_empty() {
         return None;
     }
-    let added_priors = added
+    let priors = added
         .keys()
         .map(to_router_key)
         .filter_map(|key| priors.get(&key).map(|prior| (key, prior.clone())))
         .collect();
+    let added_keys = added.keys().cloned().collect();
     let mut routes = applied.clone();
     routes.extend(added);
-    Some((routes, added_priors))
+    Some(EarlyAdditions {
+        routes,
+        added: added_keys,
+        priors,
+    })
+}
+
+/// What a pass routes early: the last applied assignments with the new shards
+/// added.
+struct EarlyAdditions {
+    routes: HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    /// The new shards in `routes`.
+    added: Vec<ShardKey>,
+    /// The new shards' priors.
+    priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 }
 
 /// The view a reconcile pass publishes while it is still opening shards: the
@@ -1092,12 +1105,10 @@ struct EarlyRoutes<'a> {
     catalog: &'a HashMap<String, felix_router::NodeRef>,
     /// The priors of the last end-of-pass publish.
     published_priors: &'a HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-    /// The last applied assignments with the new shards added, and the new
-    /// shards' priors. `None` when there is nothing to add.
-    assignments: Option<(
-        HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-        HashMap<felix_router::ShardKey, felix_router::PriorSet>,
-    )>,
+    /// This broker's node id.
+    local: &'a str,
+    /// `None` when there is nothing to add.
+    assignments: Option<EarlyAdditions>,
     last: Option<tokio::time::Instant>,
 }
 
@@ -1116,7 +1127,7 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
     /// The pass's own publish at the end follows regardless, so one skipped
     /// here is only late.
     fn opened(&mut self, servable: ServableShards) {
-        let Some((routes, added_priors)) = &self.assignments else {
+        let Some(early) = &self.assignments else {
             return;
         };
         self.last = Some(tokio::time::Instant::now());
@@ -1126,18 +1137,35 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
         // generation routed here; other removals wait for the pass's end.
         let mut early_servable = self.ingress.view.load().servable.clone();
         early_servable.extend(servable.into_iter().filter(|(key, generation)| {
-            routes
+            early
+                .routes
                 .get(key)
                 .is_some_and(|assignment| assignment.generation == *generation)
         }));
+        // A new shard this broker leads is routed once it serves, not when it
+        // is named: replication starts shipping and fencing every led route it
+        // sees, and hundreds of shards still opening would hold its pass
+        // slots while their followers open copies, starving shards that
+        // already take writes.
+        let mut routes = early.routes.clone();
+        for key in &early.added {
+            let waiting = routes.get(key).is_some_and(|assignment| {
+                assignment.leader == self.local
+                    && early_servable.get(key) != Some(&assignment.generation)
+            });
+            if waiting {
+                routes.remove(key);
+            }
+        }
         let mut priors = self.published_priors.clone();
         priors.extend(
-            added_priors
+            early
+                .priors
                 .iter()
                 .map(|(key, prior)| (key.clone(), prior.clone())),
         );
         self.ingress.publish(
-            routing_table_from(routes, self.catalog).with_priors(priors),
+            routing_table_from(&routes, self.catalog).with_priors(priors),
             self.catalog,
             early_servable,
         );

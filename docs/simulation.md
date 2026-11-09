@@ -247,8 +247,10 @@ copy stays trusted, so the power loss does not count towards the shards
 Recovery must then repair the torn append. The storage records each segment
 whose torn tail it repairs, or that it removes as unfinished, under a
 simulated directory. The `TornTailRepaired` checker fails the seed when the
-segment a cut tore is not among them on that broker before its next power
-loss or the end of the run. A segment that came back without its name, or
+segment a cut tore is opened again but not among them on that broker before
+its next power loss or the end of the run. Recovery runs when a log is opened,
+so a segment never opened again (the broker stayed down, or no longer hosts
+that shard) is not held to a repair. A segment that came back without its name, or
 with nothing past where the append began, has nothing to repair and is not
 held to it.
 
@@ -376,7 +378,7 @@ A cluster checker runs at up to three kinds of point:
 | `AtMostOneServing` | every second, Healed, End | Two brokers would take a write for one shard at the same instant. The brokers are read in one step, so none moves between two reads. It covers shards protected by the lease only. The model asserts it for those, and for a shard acknowledged by a majority of followers it asserts `AckedHeldByLeader` instead: a deposed leader may keep serving there until it learns of the newer generation, because it cannot collect a majority once its successor has fenced one. Each broker says which kind a shard is from its own write gate, so a shard opened before election was finalized stays checked. Once election is finalized that is every stream shard. A run does not finalize `fenced_caches`, so its cache shards stay on the lease and are the ones checked. |
 | `AckedHeldByLeader` | every second, Healed, End | A broker serving a shard does not hold, at the offset the client was told, an append that was acknowledged before the sample. A broker at the newest generation any broker knows must hold all of them. A deposed one still serving is held only to the offsets below its quorum mark at its own generation. Past that mark its log may hold records no majority took, at offsets where its successor has since acknowledged others. Below it, a hole or a different record is a lost acknowledgement. After the heal, a shard served by nobody at the newest generation is looked at again until the settle deadline, and at the end its server is held to every acknowledged append. The record is read from the broker's log whether or not a quorum has committed it. A shard with no server is left to `ElectionSettles`. |
 | `AdoptedMatchesOpened` | every second, Healed, End | A broker that serves a shard at generation `g` does not route the shard to itself at `g`, or its lifecycle did not open `g`. The model's version of this also compares the replica set with the control plane's; the simulator does not read the set. |
-| `TornTailRepaired` | End | A power cut landed inside an append, and the broker's recovery did not repair that segment's torn tail before its next power loss or the end of the run. |
+| `TornTailRepaired` | End | A power cut landed inside an append, the broker opened that segment again (recovery runs on open), and recovery did not repair its torn tail before the broker's next power loss or the end of the run. A segment never opened again, because the broker stayed down or no longer hosts that shard, is not held to a repair. |
 | `GenerationBurn` | End | A warning, never a failure. A shard went through more generations than `2 * faults + 2`, counting the faults in the plan that could have cost its leader: a crash, freeze or isolation of a broker that has led it, a split with a former leader in the minority, a dropped link to one, a paused or downed control plane, or the pause-then-crash fault. Many elections for few faults often means candidates deposing each other. |
 
 A violation that lasts is reported once, with a census of the shard. After three
