@@ -446,8 +446,8 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
 
-With power loss on, seed 1 cuts the power during an append, and
-`seed_1_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
+With power loss on, seed 3 cuts the power during an append, and
+`seed_3_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
 the same and that recovery repairs the torn tail.
 
 Seeds 1 to 8 with placement faults on, built with the flag, as of the change
