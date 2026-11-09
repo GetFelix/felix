@@ -518,10 +518,14 @@ if you may use headers or head trim.
 - A Correctness Evidence page lists what the formal models, simulator, history checker and scale runs check, how much of each runs, the defects they found and how to rerun them.
 
 ### Performance numbers
-- PERF NUMBERS: filled from the release A/B.
+Measured against v0.6.2 on GitHub-hosted runners, the same build of each, alternating rounds (medians):
+
+- One broker: throughput within noise in every cell, from -2.7% (1 KiB, batch 64, one subscriber; that cell has measured +8.9% in an earlier run) to +4.4% (256 B to 100 subscribers). Single-message publish latency is unchanged, about 100 us at p50 and 130 us at p99 for 256 B.
+- Three brokers, RF 3, majority ack, steady publishing: throughput +11 to +13% at 1 KiB and +4% at 64 KiB, with lower median latency in every cell.
+- Three brokers, RF 3, publishing while shards are created in bulk and promoted: 2.5 times the throughput of 0.6.2 at 1 KiB and 1.8 times at 64 KiB, with p99 falling from 71-321 ms to 22-42 ms.
 
 ### Known issue
-- On CI hardware with three brokers sharing one disk, the p99 latency of steady 64 KiB publishes to an RF 3 stream rose from about 16 ms to 30-50 ms after a replication scheduling change (#1801). Throughput and median latency are unchanged, and 1 KiB publishes are unaffected. It is being re-measured on separate machines and is tracked in #2148.
+- On CI hardware with three brokers sharing one disk, the p99 latency of steady 64 KiB publishes to an RF 3 stream rose from about 16 ms to between 21 and 50 ms, depending on the runner's disk, after a replication scheduling change (#1801). Throughput and median latency are unchanged, and 1 KiB publishes are unaffected. It is being re-measured on separate machines and is tracked in #2148.
 
 ## [0.7.0-preview.2] - 2026-11-01
 
