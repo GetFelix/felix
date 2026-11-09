@@ -8,7 +8,7 @@ with `CLOUD=azure` or `CLOUD=gcp` in `session.env` (Azure is the default).
 | | Azure | Google Cloud |
 |---|---|---|
 | Unit of a session | one resource group, one Bicep deployment | one network plus every VM labelled `felix-perf=<session>` |
-| How the scripts reach a VM | `az vm run-command` over HTTPS | ssh as `felix`, port 22 open to your address only |
+| How the scripts reach a VM | `az vm run-command` over HTTPS | ssh as `felix` through an IAP tunnel; VMs have no external address and reach the internet through Cloud NAT |
 | Local NVMe | L-series sizes (`Standard_L*`) | local SSD on any N2 size, or the built-in disks of `-lssd` sizes |
 | Cost cap | a group tag; teardown is manual | `--max-run-duration` on every VM: GCP deletes it, default 8 h |
 | Teardown | delete the resource group | delete by label, then the network |
@@ -29,7 +29,7 @@ SSD cannot do), `compare/` and `nats/`. They refuse to run with `CLOUD=gcp`.
    `jq`.
 2. `gcloud auth login`, then `gcloud config set project <project-id>` (or put
    `GCP_PROJECT` in `session.env`).
-3. Turn on the API: `gcloud services enable compute.googleapis.com`.
+3. Turn on the APIs: `gcloud services enable compute.googleapis.com iap.googleapis.com`. Without a project owner role, ask for `roles/iap.tunnelResourceAccessor`. The preflight checks IAP and prints this command if it is off.
 4. Make sure `~/.ssh/id_ed25519.pub` exists, or set `SSH_KEY_FILE`.
 5. Check the quota (below). A new project often allows 12 vCPUs in a region
    and no more.
@@ -93,8 +93,9 @@ Three things stop a session from running up a bill:
   VM. If you forget `teardown.sh`, GCP deletes the VMs at `MAX_RUN_HOURS`.
 - Every resource carries the label `felix-perf=<session>`, so nothing is hard to
   find: `gcloud compute instances list --filter labels.felix-perf=<session>`.
-- `teardown.sh` deletes by that label, then the firewall rules, subnet,
-  network and placement policy, which have no label of their own.
+- `teardown.sh` deletes by that label, then the NAT, router, firewall rules,
+  placement policy, subnet and network in dependency order, and lists anything
+  still named for the session.
 
 The VMs are deleted at the cap but the network pieces are not, so still run
 `teardown.sh`. They cost nothing while idle.
@@ -112,7 +113,7 @@ written against the documentation, and a dry run is the cheap way to read them.
 the v0.6.0 Azure RF 3 cluster: three brokers (`n2-standard-4`, 4 vCPU, one
 local SSD each as the data volume, compact placement, one zone), two
 `n2-standard-4` generators and an `e2-small` control plane. That is 22 vCPUs
-and 6 external IPs, inside a 30 vCPU and 8 address budget. On Azure the brokers
+with no external IPs (outbound through Cloud NAT), inside a 30 vCPU budget. On Azure the brokers
 were `Standard_L4as_v4` (4 vCPU, local NVMe) and the generators
 `Standard_D4as_v5`. The shapes match, the CPUs, disks, network and kernel
 differ, so results are comparable in shape, not in absolute numbers. Set

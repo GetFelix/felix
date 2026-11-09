@@ -5,9 +5,11 @@
 # defines (see "Provider interface" in ../README.md).
 #
 # What differs from Azure:
-#   - The operator reaches every VM over ssh (felix@<external ip>, key from
-#     SSH_KEY_FILE, port 22 open to the operator's address only). The scripts
-#     shipped to the VM are the same POSIX sh ones, run as root with sudo.
+#   - No VM has an external address (an org policy often forbids them). The
+#     operator reaches every VM over ssh through IAP (key from SSH_KEY_FILE,
+#     port 22 open to Google's IAP range only), and the VMs reach the internet
+#     through a Cloud NAT. The scripts shipped to the VM are the same POSIX sh
+#     ones, run as root with sudo.
 #   - Everything carries the label felix-perf=<session>. Teardown deletes by
 #     that label, and every VM has a run-time cap (MAX_RUN_HOURS) after which
 #     GCP deletes it, so a forgotten session cannot keep billing.
@@ -141,8 +143,14 @@ provider_preflight() {
     echo "!! ${total} vCPU is over GCP_VCPU_LIMIT=${GCP_VCPU_LIMIT}" >&2
     return 1
   fi
+  if command -v gcloud >/dev/null && ! _gc services list --enabled --format 'value(config.name)' | grep -qx iap.googleapis.com; then
+    echo "!! the IAP API is not enabled; enable it (once per project) with:" >&2
+    echo "   gcloud services enable iap.googleapis.com${GCP_PROJECT:+ --project ${GCP_PROJECT}}" >&2
+    echo "   and grant yourself roles/iap.tunnelResourceAccessor if you are not an owner" >&2
+    return 1
+  fi
   if [ "${DRY_RUN:-0}" = 1 ]; then
-    echo "   (dry run: live quota not read; needs CPUS ${total}, family totals below)"
+    echo "   (dry run: also checks iap.googleapis.com is enabled; live quota not read; needs CPUS ${total}, family totals below)"
     _gcp_family_totals "${total}" "${ssd_gb}" "${fam_metrics[@]}" -- "${fam_need[@]}"
     return 0
   fi
@@ -179,7 +187,6 @@ _gcp_quota_needs() {
   shift
   n=("$@")
   echo "CPUS ${total}"
-  echo "IN_USE_ADDRESSES $(_gcp_plan | wc -l | tr -d ' ')"   # every VM has an external IP for ssh
   [ "${ssd}" -eq 0 ] || echo "LOCAL_SSD_TOTAL_GB ${ssd}"
   local i
   if [ "${PROVISIONING}" = SPOT ]; then
@@ -196,41 +203,22 @@ _gcp_family_totals() {
 
 # ------------------------------------------------------------------- reaching VMs
 
+# ssh runs through an IAP tunnel, with the harness's own key (gcloud's
+# `compute ssh` would push keys into project metadata instead).
 _gcp_ssh_opts() {
   printf '%s\n' -i "${SSH_KEY_FILE%.pub}" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-    -o LogLevel=ERROR -o ConnectTimeout=20 -o ServerAliveInterval=15 -o IdentitiesOnly=yes
-}
-
-_gcp_ips_file() { echo "${here}/sessions/${SESSION}.ips"; }
-
-# _gcp_refresh_ips: cache "name external-ip" for the session's VMs.
-_gcp_refresh_ips() {
-  mkdir -p "${here}/sessions"
-  _gc compute instances list --filter "labels.felix-perf=${SESSION}" \
-    --format 'value(name,networkInterfaces[0].accessConfigs[0].natIP)' | tr '\t' ' ' > "$(_gcp_ips_file).tmp" \
-    && mv "$(_gcp_ips_file).tmp" "$(_gcp_ips_file)"
-}
-
-_gcp_ip() {
-  local ip
-  ip="$(awk -v v="$1" '$1 == v { print $2 }' "$(_gcp_ips_file)" 2>/dev/null)"
-  if [ -z "${ip}" ]; then
-    _gcp_refresh_ips || return 1
-    ip="$(awk -v v="$1" '$1 == v { print $2 }' "$(_gcp_ips_file)")"
-  fi
-  [ -n "${ip}" ] || { echo "!! no external IP for $1" >&2; return 1; }
-  printf '%s\n' "${ip}"
+    -o LogLevel=ERROR -o ConnectTimeout=30 -o ServerAliveInterval=15 -o IdentitiesOnly=yes \
+    -o "ProxyCommand=gcloud ${GCP_PROJECT:+--project ${GCP_PROJECT} }compute start-iap-tunnel %h 22 --listen-on-stdin --zone ${GCP_ZONE}"
 }
 
 # provider_run_on <vm> <local-script-file>: ship the script, run it as root, print
 # its output. Only a failed connection is an error here; run_on judges the script
 # by its __RUNOK__ sentinel, as it does for run-command.
 provider_run_on() {
-  local vm="$1" script="$2" ip out rc
+  local vm="$1" script="$2" out rc
   local -a opts=()
-  ip="$(_gcp_ip "${vm}")" || return 1
   while IFS= read -r o; do opts+=("${o}"); done < <(_gcp_ssh_opts)
-  out="$(ssh "${opts[@]}" "felix@${ip}" 'f=$(mktemp) && cat > "$f" && sudo sh "$f" 2>&1; r=$?; rm -f "$f"; exit $r' < "${script}" 2>&1)"
+  out="$(ssh "${opts[@]}" "felix@${vm}" 'f=$(mktemp) && cat > "$f" && sudo sh "$f" 2>&1; r=$?; rm -f "$f"; exit $r' < "${script}" 2>&1)"
   rc=$?
   if [ "${rc}" = 255 ]; then
     printf '%s\n' "${out}" >&2
@@ -241,11 +229,10 @@ provider_run_on() {
 
 # provider_fetch_file <vm> <remote-path> <local-path>
 provider_fetch_file() {
-  local vm="$1" src="$2" dst="$3" ip
+  local vm="$1" src="$2" dst="$3"
   local -a opts=()
-  ip="$(_gcp_ip "${vm}")" || return 1
   while IFS= read -r o; do opts+=("${o}"); done < <(_gcp_ssh_opts)
-  ssh "${opts[@]}" "felix@${ip}" "sudo cat '${src}'" > "${dst}"
+  ssh "${opts[@]}" "felix@${vm}" "sudo cat '${src}'" > "${dst}"
 }
 
 provider_vm_names() {
@@ -283,7 +270,7 @@ _gcp_create_vms() {
       --image-family ubuntu-2404-lts-amd64 --image-project ubuntu-os-cloud
       --boot-disk-size "${boot_gb}GB" --boot-disk-type "$(_gcp_boot_disk_type "${type}")"
       --network "$(_gcp_network)" --subnet "$(_gcp_network)" --private-network-ip "${ip}"
-      --tags felix-perf --labels "felix-perf=${SESSION},role=${role}"
+      --no-address --tags felix-perf --labels "felix-perf=${SESSION},role=${role}"
       --metadata-from-file "user-data=${userdata}"
       --maintenance-policy TERMINATE
       --provisioning-model "${PROVISIONING}"
@@ -302,12 +289,11 @@ _gcp_create_vms() {
 }
 
 provider_create_session() {
-  local net tmp my_ip i role name type ip s
+  local net tmp i role name type ip s
   local -a brokers_spec=() lg_spec=() cp_spec=()
   net="$(_gcp_network)"
   tmp="${FELIX_SCRATCH}/gcp-${SESSION}"
   mkdir -p "${tmp}"; chmod 700 "${tmp}"
-  if [ "${DRY_RUN:-0}" = 1 ]; then my_ip="<operator-ip>"; else my_ip="$(curl -fsS https://api.ipify.org)"; fi
 
   while read -r role name type ip; do
     s="${name}:${type}:${ip}"
@@ -335,8 +321,12 @@ provider_create_session() {
   cli _gc compute networks subnets create "${net}" --network "${net}" --region "${GCP_REGION}" --range "${GCP_SUBNET_PREFIX}.0/24"
   cli _gc compute firewall-rules create "${net}-internal" --network "${net}" --direction INGRESS \
     --allow tcp,udp,icmp --source-ranges "${GCP_SUBNET_PREFIX}.0/24" --target-tags felix-perf
-  cli _gc compute firewall-rules create "${net}-ssh" --network "${net}" --direction INGRESS \
-    --allow tcp:22 --source-ranges "${my_ip}/32" --target-tags felix-perf
+  # 35.235.240.0/20 is Google's IAP range: the only way in is an IAP tunnel.
+  cli _gc compute firewall-rules create "${net}-iap-ssh" --network "${net}" --direction INGRESS \
+    --allow tcp:22 --source-ranges 35.235.240.0/20 --target-tags felix-perf
+  cli _gc compute routers create "${net}" --network "${net}" --region "${GCP_REGION}"
+  cli _gc compute routers nats create "${net}" --router "${net}" --region "${GCP_REGION}" \
+    --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges
   if [ "${PLACEMENT}" = compact ]; then
     cli _gc compute resource-policies create group-placement "$(_gcp_policy)" \
       --region "${GCP_REGION}" --collocation COLLOCATED --vm-count "${#brokers_spec[@]}"
@@ -347,8 +337,7 @@ provider_create_session() {
   _gcp_create_vms broker "${tmp}/broker.yaml" 50 "${brokers_spec[@]}"
   _gcp_create_vms loadgen "${tmp}/loadgen.yaml" 128 "${lg_spec[@]}"
   if [ "${DRY_RUN:-0}" != 1 ]; then
-    _gcp_refresh_ips
-    loadgen_ip="$(_gcp_ip "$(loadgen_vm)")"
+    loadgen_ip="${loadgen_private_ip}"
     rm -rf "${tmp}"
   fi
 }
@@ -356,25 +345,42 @@ provider_create_session() {
 # GCP enforces the cap itself (--max-run-duration); nothing to schedule.
 provider_set_backstop() { echo "   (GCP deletes every VM ${MAX_RUN_HOURS}h after it starts: --max-run-duration)"; }
 
-# provider_teardown: delete by label, then the network pieces by name.
+# provider_teardown: delete in dependency order (instances, NAT, router, firewall
+# rules, placement policy, subnet, network), then list anything still named or
+# labelled for the session. A failed delete does not stop the rest.
 provider_teardown() {
-  local net names zone
+  local net names zone left=0
   net="$(_gcp_network)"
-  echo ">> deleting everything labelled felix-perf=${SESSION}"
+  echo ">> deleting everything labelled or named felix-perf-${SESSION}"
   if [ "${DRY_RUN:-0}" = 1 ]; then
     cli _gc compute instances delete "<instances labelled felix-perf=${SESSION}>" --zone "${GCP_ZONE}" --quiet
   else
     while read -r zone names; do
       [ -n "${names}" ] || continue
       # shellcheck disable=SC2086
-      cli _gc compute instances delete ${names} --zone "${zone}" --quiet
+      cli _gc compute instances delete ${names} --zone "${zone}" --quiet || left=1
     done < <(_gc compute instances list --filter "labels.felix-perf=${SESSION}" --format 'value(name,zone.basename())' \
       | awk '{ n[$2] = n[$2] " " $1 } END { for (z in n) print z n[z] }')
   fi
+  cli _gc compute routers nats delete "${net}" --router "${net}" --region "${GCP_REGION}" --quiet || true
+  cli _gc compute routers delete "${net}" --region "${GCP_REGION}" --quiet || true
+  cli _gc compute firewall-rules delete "${net}-internal" "${net}-iap-ssh" "${net}-ssh" --quiet || true
   cli _gc compute resource-policies delete "$(_gcp_policy)" --region "${GCP_REGION}" --quiet || true
-  cli _gc compute firewall-rules delete "${net}-internal" "${net}-ssh" --quiet || true
   cli _gc compute networks subnets delete "${net}" --region "${GCP_REGION}" --quiet || true
   cli _gc compute networks delete "${net}" --quiet || true
-  rm -f "$(_gcp_ips_file)"
-  echo ">> verify nothing is left: gcloud compute instances list --filter labels.felix-perf=${SESSION}"
+  [ "${DRY_RUN:-0}" = 1 ] && return 0
+  echo ">> still present (should be empty):"
+  {
+    _gc compute instances list --filter "labels.felix-perf=${SESSION}" --format 'value(name)' | sed 's/^/instance /'
+    _gc compute networks list --filter "name~^felix-perf-${SESSION}" --format 'value(name)' | sed 's/^/network /'
+    _gc compute networks subnets list --filter "name~^felix-perf-${SESSION}" --format 'value(name)' | sed 's/^/subnet /'
+    _gc compute routers list --filter "name~^felix-perf-${SESSION}" --format 'value(name)' | sed 's/^/router /'
+    _gc compute firewall-rules list --filter "name~^felix-perf-${SESSION}" --format 'value(name)' | sed 's/^/firewall /'
+    _gc compute resource-policies list --filter "name~^felix-perf-${SESSION}" --format 'value(name)' | sed 's/^/policy /'
+  } | tee "${FELIX_SCRATCH}/teardown-left-${SESSION}.txt"
+  if [ -s "${FELIX_SCRATCH}/teardown-left-${SESSION}.txt" ] || [ "${left}" = 1 ]; then
+    echo "!! teardown left resources behind (list above); re-run teardown.sh" >&2
+    return 1
+  fi
+  echo ">> nothing left"
 }
