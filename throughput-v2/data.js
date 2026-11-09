@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794179391269,
+  "lastUpdate": 1794192897506,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50180,6 +50180,58 @@ window.BENCHMARK_DATA = {
             "range": "4002.55",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820169.77\nmean: 820448.31\nstdev: 4002.55\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9184e99c93ac64b8a38490329bf3901c1f056690",
+          "message": "fix(broker): route a led shard early only once it serves (#2132)\n\n* fix(broker): route a led shard early only once it serves\n\n* Route publication timing only; the model's rules are unchanged\n\nSpec-Unaffected: the change only delays when clients learn a route to a led shard that is still opening; the lease, quorum mark, reports, promotion and handoff are unchanged",
+          "timestamp": "2026-11-08T18:47:37-08:00",
+          "tree_id": "c1917234f15d1e4ae04f5a01fb24ff95ee432741",
+          "url": "https://github.com/GetFelix/felix/commit/9184e99c93ac64b8a38490329bf3901c1f056690"
+        },
+        "date": 1794192896844,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351935.27,
+            "range": "18159.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351935.27\nmean: 358670.97\nstdev: 18159.36\ncv: 5.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351935.27,
+            "range": "18159.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351935.27\nmean: 358670.97\nstdev: 18159.36\ncv: 5.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79833.46,
+            "range": "6717.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79833.46\nmean: 76892.07\nstdev: 6717.89\ncv: 8.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 798334.59,
+            "range": "67178.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 798334.59\nmean: 768920.65\nstdev: 67178.84\ncv: 8.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
