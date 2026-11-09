@@ -91,7 +91,7 @@ bootstrap_token="$(openssl rand -hex 24)"
 # the suite derive the rest and mint the token. The seed and the token-exchange
 # scenario both run against whatever this resolves to — the real flow, not demo
 # auth.
-if [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
+if [ "${IDP_MODE:-}" != local ] && [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
   : "${IDP_CLIENT_ID:?set IDP_CLIENT_ID with IDP_TENANT_ID}"
   : "${IDP_CLIENT_SECRET:?set IDP_CLIENT_SECRET with IDP_TENANT_ID}"
   export IDP_SCOPE="${IDP_SCOPE:-${IDP_AUDIENCE:-}}"
@@ -107,6 +107,9 @@ if [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
   echo ">> minted an IdP token for scope ${IDP_SCOPE}"
 fi
 
+if [ -z "${IDP_TOKEN:-}" ] && { [ "${IDP_MODE:-}" = local ] || [ -z "${IDP_TENANT_ID:-}" ]; }; then
+  echo ">> IdP: local (seed.sh makes a key and JWKS server on the control plane)"
+fi
 echo ">> session ${SESSION}: tier ${TIER}, ${LOCATION}, brokers from ${release_desc}"
 echo "   loadgen from ${loadgen_spec}"
 provider_check
@@ -201,6 +204,7 @@ echo ">> seeding (bootstrap + exchange on the loadgen; token-drop + start per br
 CONTROLPLANE_IP="${cp_ip}" \
 BROKER_COUNT="${#broker_ip_list[@]}" \
 BOOTSTRAP_TOKEN="${bootstrap_token}" \
+IDP_MODE="${IDP_MODE:-}" \
 IDP_JWKS_URL="${IDP_JWKS_URL:-}" \
 IDP_AUDIENCE="${IDP_AUDIENCE:-}" \
 IDP_TOKEN="${IDP_TOKEN:-}" \

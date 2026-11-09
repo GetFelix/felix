@@ -17,15 +17,29 @@ set -euo pipefail
 : "${CONTROLPLANE_IP:?}"
 : "${BROKER_COUNT:?}"
 : "${BOOTSTRAP_TOKEN:?}"
-: "${IDP_JWKS_URL:?set IDP_JWKS_URL}"
 # Not required: the audience the tenant is registered with is derived from
 # IDP_TOKEN itself. If it is set it is only used to flag a mismatch.
-: "${IDP_TOKEN:?set IDP_TOKEN (a token from the IdP for the perf principal)}"
 : "${GROUP:?}"
 
 here="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib.sh
 source "${here}/lib.sh"
+
+# IDP_MODE=entra uses a real OIDC provider: IDP_JWKS_URL and IDP_TOKEN come
+# from session.sh (or are pasted). IDP_MODE=local has no external IdP: a key,
+# a JWKS server and the token are made on the control plane VM below.
+# Default: entra when a tenant or token is configured, else local.
+if [ -z "${IDP_MODE:-}" ]; then
+  if [ -n "${IDP_TENANT_ID:-}" ] || [ -n "${IDP_TOKEN:-}" ]; then IDP_MODE=entra; else IDP_MODE=local; fi
+fi
+case "${IDP_MODE}" in
+  entra)
+    : "${IDP_JWKS_URL:?set IDP_JWKS_URL}"
+    : "${IDP_TOKEN:?set IDP_TOKEN (a token from the IdP for the perf principal)}"
+    ;;
+  local) ;;
+  *) echo "!! IDP_MODE must be entra or local, got '${IDP_MODE}'" >&2; exit 1 ;;
+esac
 
 TENANT="perf"
 NAMESPACE="default"
@@ -48,6 +62,42 @@ until curl -s -o /dev/null http://${CONTROLPLANE_IP}:8080/; do
   i=\$((i + 1)); [ \$i -lt 60 ] || { journalctl -u felix-controlplane --no-pager | tail -20; exit 1; }
   sleep 2
 done" | grep -E '^(installed|active)\.|!!' || { echo "!! control plane install failed" >&2; exit 1; }
+fi
+
+# --- 0b. local IdP --------------------------------------------------------
+# The JWKS is served on the control plane's own loopback: the control plane
+# refuses a plain-HTTP JWKS URL on any other host unless it is run with
+# FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP, and loopback needs no config.
+# The service lives until the VM is deleted; the control plane re-fetches the
+# JWKS when its cache expires, so it has to stay up for the whole session.
+# Re-running reuses the key, so a reseed gets a token the same JWKS verifies.
+if [ "${IDP_MODE}" = local ]; then
+  idp_port="${IDP_LOCAL_PORT:-8099}"
+  IDP_AUDIENCE="${IDP_AUDIENCE:-felix-perf}"
+  idp_issuer="http://felix-perf-idp"
+  echo ">> local IdP on $(cp_vm) (issuer ${idp_issuer}, aud ${IDP_AUDIENCE})"
+  idp_out="$(agent_on "$(cp_vm)" "mkdir -p /opt/felix-idp
+cat > /opt/felix-idp/local-idp.py <<'LOCAL_IDP_EOF'
+$(cat "${here}/remote/local-idp.py")
+LOCAL_IDP_EOF
+python3 /opt/felix-idp/local-idp.py init /opt/felix-idp
+systemctl stop felix-idp 2>/dev/null || true
+systemctl reset-failed felix-idp 2>/dev/null || true
+systemd-run --unit felix-idp --property=Restart=always \
+  python3 -m http.server ${idp_port} --bind 127.0.0.1 --directory /opt/felix-idp/www >/dev/null 2>&1
+i=0
+until curl -fsS -o /dev/null http://127.0.0.1:${idp_port}/jwks.json; do
+  i=\$((i + 1)); [ \$i -lt 20 ] || { echo '!! JWKS server did not come up'; exit 1; }
+  sleep 1
+done
+printf '__IDPTOKEN_BEGIN__%s__IDPTOKEN_END__\n' \
+  \"\$(python3 /opt/felix-idp/local-idp.py mint /opt/felix-idp '${idp_issuer}' '${IDP_AUDIENCE}' perf-harness 86400)\"")" \
+    || { printf '%s\n' "${idp_out}" | grep -v '^eyJ' >&2; echo "!! local IdP setup failed" >&2; exit 1; }
+  IDP_TOKEN="$(printf '%s' "${idp_out}" | extract_between IDPTOKEN)"
+  [ -n "${IDP_TOKEN}" ] || { echo "!! local IdP returned no token" >&2; exit 1; }
+  # The key stays on the control plane. The token (24h) outlives any session
+  # the harness runs (the teardown backstop is 8h).
+  IDP_JWKS_URL="http://127.0.0.1:${idp_port}/jwks.json"
 fi
 
 # --- 1. bootstrap + exchange + scopes, on the loadgen -----------------------
