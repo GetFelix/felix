@@ -3,3 +3,4 @@
   record, so resident memory climbed with each connection's traffic and the weekly
   soak failed its peak-RSS check. The broker now folds samples into summaries every
   five seconds, scraped or not.
+  The control plane's recorder gets the same timer.

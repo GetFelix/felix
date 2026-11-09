@@ -174,6 +174,22 @@ fn health_router(handle: PrometheusHandle, readiness: Readiness) -> axum::Router
         )
 }
 
+/// Folds the recorder's raw histogram samples into summaries on a timer; it
+/// otherwise keeps every sample until a scrape.
+fn spawn_metrics_upkeep(handle: PrometheusHandle) {
+    let spawned = std::thread::Builder::new()
+        .name("felix-metrics-upkeep".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                handle.run_upkeep();
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(%err, "metrics upkeep thread did not start");
+    }
+}
+
 fn install_metrics_recorder() -> PrometheusHandle {
     if let Some(handle) = METRICS_HANDLE.get() {
         return handle.clone();
@@ -196,6 +212,7 @@ fn install_metrics_recorder() -> PrometheusHandle {
         .expect("histogram buckets are non-empty")
         .install_recorder()
         .expect("install metrics recorder");
+    spawn_metrics_upkeep(handle.clone());
     let _ = METRICS_HANDLE.set(handle.clone());
     handle
 }
