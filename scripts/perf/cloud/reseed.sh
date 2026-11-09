@@ -16,7 +16,7 @@ SESSION="${session}"
 source "${here}/sessions/${SESSION}.env"
 set +a
 # The same IdP derivation session.sh does.
-if [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
+if [ "${IDP_MODE:-}" != local ] && [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
   export IDP_SCOPE="${IDP_SCOPE:-${IDP_AUDIENCE:-}}"
   : "${IDP_SCOPE:?set IDP_SCOPE (the app Application ID URI, or the bare client id)}"
   export IDP_JWKS_URL="${IDP_JWKS_URL:-https://login.microsoftonline.com/${IDP_TENANT_ID}/discovery/v2.0/keys}"
@@ -38,6 +38,7 @@ done
 CONTROLPLANE_IP="${CONTROLPLANE_IP}" \
 BROKER_COUNT="${#broker_ip_list[@]}" \
 BOOTSTRAP_TOKEN="${BOOTSTRAP_TOKEN}" \
+IDP_MODE="${IDP_MODE:-}" \
 IDP_JWKS_URL="${IDP_JWKS_URL:-}" \
 IDP_AUDIENCE="${IDP_AUDIENCE:-}" \
 IDP_TOKEN="${IDP_TOKEN:-}" \

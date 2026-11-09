@@ -179,6 +179,70 @@ async fn the_default_allowlist_accepts_rs256() {
     assert_eq!(validated.subject, "user-1");
 }
 
+/// The perf harness's local IdP (scripts/perf/cloud/remote/local-idp.py) has
+/// to mint tokens this validator accepts, with the default allowlist.
+#[tokio::test]
+async fn the_perf_harness_local_idp_tokens_validate() {
+    let script = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../scripts/perf/cloud/remote/local-idp.py"
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dir_arg = dir.path().to_str().expect("utf-8 path");
+    let run = |args: &[&str]| {
+        let out = std::process::Command::new("python3")
+            .arg(script)
+            .args(args)
+            .output()
+            .expect("python3 runs the script");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).expect("utf-8 output")
+    };
+    run(&["init", dir_arg]);
+    let jwks: Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("www/jwks.json")).expect("jwks.json"),
+    )
+    .expect("jwks json");
+    let (addr, _handle) = spawn_jwks_server(jwks).await;
+    let issuer = format!("http://{addr}");
+    let token = run(&[
+        "mint",
+        dir_arg,
+        &issuer,
+        "felix-perf",
+        "perf-harness",
+        "3600",
+    ]);
+    let validator = validator_with_algorithms(Vec::new());
+
+    let validated = validator
+        .validate(token.trim(), &[issuer_cfg(&issuer, "felix-perf")])
+        .await
+        .expect("a locally minted token");
+    assert_eq!(validated.subject, "perf-harness");
+
+    validator
+        .validate(token.trim(), &[issuer_cfg(&issuer, "another-audience")])
+        .await
+        .expect_err("a token for another audience is refused");
+    let expired = run(&[
+        "mint",
+        dir_arg,
+        &issuer,
+        "felix-perf",
+        "perf-harness",
+        "-3600",
+    ]);
+    validator
+        .validate(expired.trim(), &[issuer_cfg(&issuer, "felix-perf")])
+        .await
+        .expect_err("an expired token is refused");
+}
+
 /// An explicit allowlist still narrows the default.
 #[tokio::test]
 async fn rejects_rs256_when_not_allowlisted() {

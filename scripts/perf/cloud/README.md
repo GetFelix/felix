@@ -222,6 +222,22 @@ az login                                    # the Azure account
 (The manual path still works: set `IDP_TOKEN` plus `IDP_JWKS_URL` yourself
 and skip the three secrets. The issuer and audience are read off the token.)
 
+No external IdP? Leave `IDP_TENANT_ID` and `IDP_TOKEN` unset (or set
+`IDP_MODE=local`) and the seed makes its own. `IDP_MODE` is `entra` when a
+tenant or token is configured, `local` otherwise.
+
+In local mode `seed.sh` runs `remote/local-idp.py` on the control plane VM. It
+creates an RS256 key, serves the public half as a JWKS on that VM's loopback
+(`http://127.0.0.1:8099/jwks.json`, port from `IDP_LOCAL_PORT`) under a
+`felix-idp` systemd unit, and signs a 24 h token (`iss=http://felix-perf-idp`,
+`aud=felix-perf` unless `IDP_AUDIENCE` is set, `sub=perf-harness`, `iat`,
+`exp`, and a `kid` header). The rest of the seed runs unchanged. Loopback
+because the control plane refuses a plain-HTTP JWKS on any other host unless
+it runs with `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP`. The key and the
+JWKS server live on the control plane and go away with its VM, and a reseed
+reuses the key. A control-plane unit test mints a token with this script and
+validates it with the control plane's own OIDC validator.
+
 - **Tiers**: `t1` one-zone proximity-placed baseline; `t2` brokers across
   zones 1/2/3 (set `REPLICATION_FACTOR=3` in the environment before
   `session.sh` so the seeded streams replicate). t3 is a second small
