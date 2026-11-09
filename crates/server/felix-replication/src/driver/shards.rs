@@ -637,12 +637,8 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
     /// shards no longer led, and the reports the tick repeats, wait for the
     /// next full scan; a route change always gets one.
     fn scan_appended(&mut self, table: &felix_router::RoutingTable, appended: &Appended) {
-        let mut visit: Vec<ShardKey> = appended
-            .slots()
-            .filter_map(|slot| self.led_slots.get(&slot))
-            .flatten()
-            .cloned()
-            .collect();
+        let mut visit: Vec<ShardKey> = self.led_slots.values().flatten().cloned().collect();
+        let _ = appended.slots();
         visit.extend(
             self.states
                 .iter()
@@ -955,7 +951,7 @@ impl<'a, R: PeerRequester + Send + Sync> Shards<'a, R> {
         let slot = *state.slot.get_or_insert_with(|| {
             AppendedShards::slot(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         });
-        let dirty = appended.contains(slot);
+        let dirty = appended.contains(slot) || append;
         // A move's drained report holds its clients, so it goes first too.
         let moving = route.draining || route.pending.is_some();
         if dirty || state.owed || moving {
