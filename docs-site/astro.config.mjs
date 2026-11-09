@@ -134,6 +134,7 @@ export default defineConfig({
             { label: 'Semantics', slug: 'architecture/semantics' },
             { label: 'Projections', slug: 'architecture/projections' },
             { label: 'How Felix Is Tested', slug: 'architecture/testing' },
+            { label: 'Correctness Evidence', slug: 'architecture/correctness-evidence' },
             { label: 'Metadata Raft', slug: 'architecture/metadata-raft' },
           ],
         },
