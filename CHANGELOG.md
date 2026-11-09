@@ -11,6 +11,522 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-08
+
+0.7.0 makes replicated shards sturdier and widens what a broker accepts. It also
+contains everything in the two previews below. Replicas can elect a new leader
+themselves while the control plane is down, and a broker restarted during that
+outage can rejoin; both are opt-in, so nothing changes on a running cluster until
+an operator sets `FELIX_INTERNAL_ELECTION=true` on every broker and finalizes
+`joint_fence` and then `replica_election` (see "Failover without the control
+plane" in the docs). A record can carry a key and headers (storage format 8, in
+every client and the Kafka listener), a broker can take MQTT 3.1.1 and 5.0
+publishes, a cache write can mint a lease token, and a stream's oldest records
+can be trimmed at the tail a caller expects. Many failover, fencing and placement
+defects found by the simulator and cluster tests are fixed.
+
+Upgrading: read [Upgrading to 0.7](docs-site/src/content/docs/release-notes/upgrading-to-0-7.md)
+first. Upgrade the control plane, then the brokers one at a time, then clients.
+In Rust, rename `Client` to `Connection` and then `ClusterClient` to `Client`.
+Lease-token templates take over braces in RBAC objects. Fleet features and
+storage formats 7 and 8 do not roll back, so back up each data directory first
+if you may use headers or head trim.
+
+### Added
+- A copy whose control-plane set names another storage id for it votes in no set until a set naming its current id is learned and it has caught up, and takes records only from the leader the control plane confirms (#1009, #1331). New shards and copies from before sets vote as before. Behind the `joint_fence` fleet feature. Every placement write now names each member's registered storage id (`member_storage_ids`, metadata level 22, Postgres migration 0039), so a wiped copy learns it from a move or a creation, not only from a failover. A wiped copy that is a learner refuses to open as leader and keeps its mark, which the `replica-set` file now records apart from a staged learner's (flag bit 2). Its group logs answer no fence until they hold a record of the re-admitting generation.
+- Replicas elect a new leader themselves when a leader dies while the control plane is down (#1009). A follower that suspects its leader asks the set for a pre-vote, waits its place, writes its ballot and fences the set as a candidate; the other replicas then route to it, and the control plane adopts it when it returns. It runs only on brokers with `FELIX_INTERNAL_ELECTION` on, which now report `peer_election`, `joint_fence` and `replica_election`, once the fleet finalizes `replica_election` (after `joint_fence`). A shard leader now refuses a pre-vote against itself (#1815).
+- `felix-broker inspect records` (#1077). Decodes the records around an offset of
+  one shard in a data directory, offline and read-only: the offset, the time the
+  record carries, its kind, payload size, where it sits on disk and whether it
+  verifies, with payload bytes only on request (`--payload`, cut at 64 KiB each).
+  `--damage` finds the first record that fails and centres the window on it. It
+  seeks with the sparse index, which it checks rather than trusts, and a record
+  that fails its checksum ends the read instead of failing it. Whether that is a
+  torn tail or damage comes from the recovery plan startup runs, so it agrees
+  with `inspect segments`. Use it after `inspect segments` names a position.
+- A cluster member keeps what the control plane last told it about its own
+  shards in `controlplane.view` in its data directory: the finalized fleet
+  features, the shards' assignments, the addresses of the nodes they name, and
+  their catalog entries (#1196). It is rewritten at most once a second while the
+  control plane changes something. A broker started with
+  `FELIX_START_WITHOUT_CONTROLPLANE` reads it when the control plane is down at
+  a restart.
+- A broker restarted while the control plane is down can rejoin its shards' elections, with `FELIX_START_WITHOUT_CONTROLPLANE=true` (off by default) (#1196). When the startup lookup finds the control plane down for `FELIX_CONTROLPLANE_STARTUP_WAIT_MS` (10 s by default), not refusing, and the data directory's control-plane view is this node's, under the storage id on disk, with `replica_election` finalized and every listed feature reported by this build, the broker opens its storage and starts from the view. It votes and follows its shards' leaders, but stands for election and serves clients only once it registers. Until then its listeners accept nothing, `/ready` stays not ready, and forwarded client requests are refused as retryable. When the control plane answers, the restore check runs first: a directory older than the node's last registration gets a new storage id, counts `felix_restored_directory_total`, and the broker stops before it registers. The first catalog snapshot then unregisters any stream or cache from the view it does not list, and keeps its data. A directory restored without deleting `storage-id` is caught only after it may have voted, so delete it, or use `felix-broker restore-point`, before starting a restored broker.
+- The broker-wide byte budgets (`FELIX_SUB_QUEUE_MAX_BYTES_TOTAL` and the
+  replay ring and cache watch totals) stay off by default (#1338). Measured on a
+  CI runner they leave throughput unchanged but add queueing delay once the
+  working set reaches the total, and no single size
+  suits every machine, so the configuration reference now says how to size one.
+  The manual `perf-env-ab.yml` workflow runs the fast benchmark subsets with
+  and without any environment setting, to price a default like this one.
+- The control plane can serve an API reference page, off by default (#1361).
+  Set `FELIX_CONTROLPLANE_API_UI=scalar` to get it at `/api`, or move it with
+  `FELIX_CONTROLPLANE_API_UI_PATH`. The page loads a pinned, integrity-checked
+  Scalar script from a CDN and reads `/v1/openapi.json` from the same origin.
+- Lease tokens (#1625). A `cache_put_if` with `lease_token: true` that applies
+  returns a short-lived broker token granting what the caller's lease templates
+  (RBAC objects such as `stream:t1/prod/wl.{leases}.out`) name for the key, so
+  nodes sharing an identity can write a workload's output only while they hold
+  its lease. The key's owner mints it with a key every broker shares
+  (`FELIX_LEASE_TOKEN_KEY_FILE`), with no control-plane call on the claim, and
+  a lease token's open streams end at its `exp`. Negotiated as
+  `FEATURE_LEASE_TOKEN`; forwarded as the new peer kinds 45 and 46. Rust client
+  only: `cache_put_if_lease` on `Connection` and `Client`.
+- A refused start offset now tells every client where to resume (#1684). The
+  cursor error in the C ABI (`felix_last_cursor_error`), C#
+  (`FelixException.Cursor`), Python (`CursorError`) and TypeScript
+  (`CursorError`) carries the reason, the requested and nearest available
+  offsets, and the head trim's headers, as the Rust client's already did.
+- `felix-broker inspect records --json` reports `headers_bytes`, the size of a
+  record's key and headers block (#1688).
+- The Kafka listener can keep record keys and headers (#1688). With
+  `FELIX_KAFKA_RECORD_HEADERS=true`, a produced record's key and headers are
+  stored with it when the broker also accepts record headers (a broker outside
+  a cluster, unless `FELIX_RECORD_HEADERS=false`; a cluster once its fleet
+  finalizes `record_headers`), and a fetch returns them, including those a
+  Felix client published. The variable is off by default, because the first
+  stored block moves the logs to storage format v8, which an older build
+  refuses to open: enabling the Kafka listener alone never does that. Off, keys
+  and headers are dropped and counted in `felix_kafka_produce_dropped_total`
+  as before. A null header value is stored as an empty value, and a header name
+  starting with `felix.` or an empty one is refused as `INVALID_RECORD` (the
+  message reaches Produce v8 and later clients). Header bytes count toward the
+  tenant's publish quota. Producer timestamps are still dropped. A record with
+  no key or headers is fetched byte for byte as before.
+- A single broker now accepts and delivers record headers (#1688). A client that
+  offers `EXT_RECORD_HEADERS` in `Auth` is answered with it and can publish a
+  key and headers with each record; a subscriber that offers it gets them back
+  on live delivery, replay and after a restart. A durable stream stores them in
+  storage format v8, so a log moves onto v8 only for the first record that has
+  headers. Header names starting with `felix.` are reserved and refused. Every
+  other client gets the same bytes as before. A clustered broker accepts them
+  once its fleet finalizes `record_headers`, and a data directory that stored
+  one refuses to join a fleet that has not. Consumer groups do not deliver
+  headers. A retried idempotent batch is matched on its payloads only, so a
+  re-send with changed headers is not stored with the new ones.
+  `FELIX_RECORD_HEADERS=false` makes a single broker refuse every publish that
+  carries headers, which keeps its logs at v7 and readable by older builds;
+  turning it off later leaves stored headers readable. See `docs/protocol.md`.
+- The Rust client publishes and reads record headers (#1688). `Client::publish_with_headers` and `publish_batch_with_headers` (and the same on `Publisher`) send each record with a `RecordHeaders` key and headers, and `Event::headers` returns them on read. The client offers the extension in every `Auth` unless `ClientConfig::record_headers` is turned off, in which case the `Auth` is the one it sent before. A publish with headers against a broker that did not accept them fails with `RecordHeadersError::Unsupported` and sends nothing, and a header name that is empty or starts with `felix.` is refused before sending. Records with no key and no headers go out as the plain frame. `Event` gained a field, so code that builds or destructures one by name needs `headers`.
+- Replication and forwarding carry record headers (#1688). A leader ships each
+  record's key and headers with it to a follower that offers the new
+  `RECORD_HEADERS` peer capability, so the follower's log holds the same
+  records, a promoted replica delivers the same headers, and the promotion
+  catch-up fetch brings them back too. The batch checksum covers them. A forward
+  carries them to a shard owner that offers the capability. A follower from an
+  older build is held at the first record with headers instead of being sent it
+  bare (`headers_unsupported` in `felix_broker_replication_shipped_total`). A
+  cluster accepts record headers once its fleet finalizes `record_headers`,
+  which a new cluster does at its first registration. New peer message kinds 49
+  to 51; a batch without headers is byte for byte what it was. See
+  `docs/internal-protocol.md` and `docs/replication-design.md`.
+- A broker writes a `record-headers` marker in its data directory before it
+  first stores a record with headers, and refuses to join a fleet that has not
+  finalized `record_headers` while the marker is there. A data directory written
+  by a main or nightly build before this change can hold headers without the
+  marker: do not add it to a fleet that has not finalized `record_headers`.
+- Storage format v8: a record may carry a key and headers (#1688). Bit 26 of
+  the record's length word marks a length-prefixed block at the front of the
+  body, which storage keeps as given. A log moves onto a v8 segment only for
+  the first record with one, and from then on older builds refuse it. Records without a key or headers are byte for byte
+  what v7 wrote, pinned by golden vectors.
+- The wire format can carry a key and headers with each record (#1688). A new
+  frame flag, `FLAG_EXTENDED`, opens a `u32` extension word, and its first bit
+  puts a length-prefixed headers block before every record of a publish batch or
+  event batch. `Auth` and `AuthOk` gain `client_flags_ext` and `server_flags_ext`
+  to negotiate it, and `felix-wire` gains `RecordHeaders` to build and check the
+  block. No broker or client sends it yet, so every frame on the wire is
+  unchanged. See `docs/protocol.md`.
+- A broker can accept MQTT 3.1.1 and 5.0 connections: set `FELIX_MQTT_LISTEN`
+  (#1689). The listener runs on its own tokio runtime, caps connections per
+  broker and per source address, paces new ones, and authenticates `CONNECT`
+  with the tenant id and a Felix token. It answers pings and enforces keepalive,
+  and ends a connection when its token expires or is revoked. Every `PUBLISH`
+  and `SUBSCRIBE` is refused until the publish and subscribe paths land. With
+  the variable unset the broker is unchanged. See `docs/mqtt-compatibility.md`.
+- A durable stream can be mounted at an MQTT topic prefix (#1690): create it
+  with `"mount": "plant/"`, or set, change or clear the mount with a `PATCH`
+  (`null` clears it). A tenant's mounts may not overlap, in any namespace; the
+  control plane refuses an overlap with `409` inside the write, in every store,
+  so racing requests cannot both succeed, and refuses a mount on a stream that
+  is not durable with `400` on create and `409` on a `PATCH`. Postgres migration 0041 adds `streams.mount`, and
+  under Raft a mount needs metadata level 24 on every member. Brokers receive
+  the mount with the stream and resolve each MQTT `PUBLISH` topic to its stream
+  and shard by longest prefix. A publish to a topic under no mount closes a
+  3.1.1 connection and gets reason 0x90 under 5.0, counted in
+  `felix_mqtt_refused_total{reason="unmounted"}`; a publish to a mounted topic
+  is still refused until the publish path lands. Streams with no mount are
+  unchanged. See `docs/mqtt-compatibility.md`.
+- The MQTT listener forwards a publish for a shard another broker owns to that broker, so a device can publish through any broker in a cluster (#1691). The forward carries the connection's producer id and batch sequence in a new internal kind, `SequencedForwardPublish` (52), offered as the `SEQUENCED_FORWARDS` capability (`1 << 18`). If the forward's answer is lost, for example because the owner died, the batch is sent again under the same sequence to whichever broker owns the shard next, and a log that already holds it answers with its offsets instead of writing it twice. An owner that predates the kind is never sent it; the message is refused `not_owner` as before. A connection without credentials still publishes only to shards its own broker owns, and a token the owner refuses is answered `not_authorized` (`PUBACK` 0x87). A new unknown-outcome reason, `forward_unanswered`, closes the connection when no owner answered within the forward budget.
+- The MQTT listener publishes at QoS 0 and 1 to a mounted durable stream whose shard the broker owns (#1691). A `PUBACK` is sent only after the write has the acknowledgement the stream's consistency asks for, in the order the publishes arrived, and a write whose outcome is unknown closes the connection instead of answering. Each connection publishes under its own producer id, batches publishes read while a write is out, and is held to `FELIX_MQTT_MAX_INFLIGHT` (default 64), advertised as `Receive Maximum`. The topic is the record's key and the MQTT fields are `felix.mqtt.*` headers, so the first MQTT publish to a mounted stream moves its logs to storage format v8. A shard owned by another broker is refused, since forwarding comes later; QoS 2 and retained publishes are refused. Counted in `felix_mqtt_published_total` and `felix_mqtt_refused_total{reason}`. With `FELIX_MQTT_ANONYMOUS_TENANT` set, a connection without credentials can now publish to every stream mounted for that tenant.
+- MQTT over WebSockets for browser clients (#1700): set `FELIX_MQTT_WS_LISTEN`
+  next to `FELIX_MQTT_LISTEN` and the broker serves `ws` or `wss` (following
+  `FELIX_MQTT_TLS`) on a second socket. It shares the MQTT listener's runtime,
+  limits, connection caps and authentication. The upgrade has a header size
+  limit (`FELIX_MQTT_WS_MAX_HEADER_BYTES`), a time limit
+  (`FELIX_MQTT_WS_UPGRADE_TIMEOUT_MS`) and an `Origin` allow-list
+  (`FELIX_MQTT_WS_ALLOWED_ORIGINS`; a browser is refused until it is set).
+  With the variable unset the broker is unchanged. See
+  `docs/mqtt-compatibility.md`.
+- The control plane re-admits a copy whose storage was replaced and keeps placement off it until then (#1737). Under `joint_fence` a replaced member is a learner: no failover picks it and no majority of a move counts it. When the leader's report shows it caught up under its new storage id, placement writes the same set again at the next generation, naming that id and listing the member in the assignment's `learners`. It counts again once the leader's report at that generation lists it in the new `holds_start` field, the followers holding the generation's start record. Both fields are metadata level 23 under Raft, Postgres migration 0040, and finalizing `joint_fence` needs that level, `generation_start` finalized first, and every serving broker reporting `start_holders`, which brokers now add to their reported features. A leader reports `holds_start`, and a joint fence treats a member kept under another storage id as a set change even with the same node list.
+- A cluster test that catches shard starvation (#1760). A lease canary renews keys in a small
+  `Quorum` cache while hundreds of replicated shards are created and appended to, and fails if
+  a lease lapses, a renewal takes longer than its bound (4 s per PR, 2 s nightly), or a read
+  takes over 2 s. Pull requests run it at 600 streams; `scale-nightly.yml` runs it at 1500
+  every night and opens an issue labelled `scale-nightly` on failure. See
+  `docs/cluster-harness.md` ("Shard starvation").
+- Under `replica_election`, a follower can stand for one shard whose leader's broker is alive but makes no progress on it, so such a shard recovers with the control plane down (#1914). It stands only when its copy holds a generation that never started and it has had no batch or fence from the leader for `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default, `0` turns it off). Idle shards are never suspected, and a control plane that renames the shard first restarts the clock. A standing now gets its 3 s to open from when its route is published, not from its ballot, so a slow routing feed no longer makes each election burn several generations.
+
+  An elected leader whose generation the control plane also gave to another broker, before going down, fences its set again one generation up once that has lasted `FELIX_SHARD_SUSPECT_AFTER_MS` with a copy refusing it, so the refused copy rejoins instead of staying out until the control plane is back.
+
+  A leader elected with the control plane down that then restarts stands for its shard again after `FELIX_SHARD_SUSPECT_AFTER_MS`, instead of staying refused for its own ballot until the control plane is back.
+- The control plane names a `Quorum` shard's leader again one generation up, on the same set, when the leader's broker is live but the leader has shown no progress at its generation for `FELIX_SHARD_STUCK_LEADER_MS` (70 s by default, never under two report TTLs; `0` turns it off) (#1914). Progress is a first report at the generation, a report with nothing waiting on a majority, or a majority's position moving, so idle and slow shards are left alone. A shard stuck behind a fence that never settles, a failed open or a halt that lasts until its assignment changes no longer stays stuck. Never during a move, a fence, a set change or an election, nor without a live majority; when more than 64 leaders (or an eighth of those watched) look stuck at once, a pass renames one of them, the first that can be renamed. A leader that never opened gets twice the bound. Renames back off and stop at four per shard an hour per control-plane instance, sixteen per pass. Each logs a warning and counts in `felix_shard_move_steps_total{step="stuck"}`.
+- The Python, TypeScript, C# and C clients can present a client certificate to a broker started with `FELIX_TLS_CLIENT_CA`, as the Rust client already could. Python takes `client_cert_file` and `client_key_file`, TypeScript `clientCertFile` and `clientKeyFile`, C# `ClientCertFile` and `ClientKeyFile`, and C the same two names as `client_cert_file` and `client_key_file` in `FelixConnectOptions`. Give both PEM files or neither; a missing file, a bad PEM, or one file without the other is an invalid argument naming the problem. `FelixConnectOptions` grew two pointer fields after `reconnect_max_backoff_ms`, and a caller built against the older header presents no certificate.
+- A broker can be published to in-process, without a connection (`felix_broker_service::serving::direct_publish`): it resolves a target and runs the same fence, append and quorum wait as a QUIC publish, and tells a refusal that wrote nothing from an outcome that is unknown. The publish worker shares that final step (#419).
+- Python client: matches the Rust client for record headers (`publish(headers=)`, `publish_batch(headers=)`, `Event.headers`, `RecordHeaders`), `publisher` and `timestamp_micros` on events and group records (`publishers=`, `timestamps=`, `record_headers=` on the client), `cache_put_if_lease` with `LeaseToken`, producer `hand_off_batch`, `hand_off_batches` and `hand_off_abandon` returning `Handed`, subscription `moves`, `reconnects`, `stream_deleted` and `queue_capacity`, the broker inspection calls (`inspect_shard`, `list_subscriptions`, `topology`, `shard_owners`, `stream_routing`, `cache_shards`, `supports`) and `ClientTuning` for transport and queue settings. Only `publish_json` and a custom `quinn` transport stay Rust-only.
+- C and C# clients reach parity with the Rust client for record headers,
+  lease-token writes, per-principal identities, page reads, topology refresh and the
+  subscription live offset. C: `felix_client_publish_with_headers`,
+  `felix_client_publish_batch_with_headers` (`FelixRecord`, `FelixHeader`),
+  `felix_event_key` / `felix_event_header_count` / `felix_event_header`,
+  `felix_client_cache_put_if_lease`, `felix_client_with_identity`, `felix_client_with_identity_provider`, `felix_client_read`,
+  `felix_client_refresh_topology`, `felix_client_connections_per_node` and
+  `felix_subscription_live_offset`. `FelixConnectOptions` gains
+  `disable_record_headers`, so record headers are offered unless it is set. C#:
+  `PublishWithHeadersAsync`, `PublishBatchWithHeadersAsync`, `FelixEvent.Key` and
+  `Headers`, `PutIfAbsentLeaseAsync` / `PutIfVersionLeaseAsync`, `WithIdentityAsync` (a fixed token or a provider),
+  `ReadRangeAsync`, `RefreshTopologyAsync`, `GetConnectionsPerNodeAsync` and
+  `FelixSubscription.LiveOffset`. A refused record header maps to
+  `FELIX_STATUS_INVALID_ARGUMENT` and an unsupported broker to
+  `FELIX_STATUS_UNSUPPORTED`. A batch of headered records must hold at least one record in both clients. The client fixture now finalizes `record_headers` and brokers mint lease tokens (cache `leases`).
+- C and C# clients reach parity with the Rust client for inspection, subscription counters,
+  queue and transport options, and producer hand-offs. C: `felix_client_supports`,
+  `felix_client_inspect_shard`, `felix_client_list_subscriptions`
+  (`FelixSubscriptionFilter`), `felix_client_topology`, `felix_client_stream_routing`,
+  `felix_client_shard_owners` and `felix_client_cache_shards`, which answer structured data as
+  one JSON string with the wire's field names;
+  `felix_subscription_moves`, `felix_subscription_reconnects`,
+  `felix_subscription_stream_deleted` and `felix_subscription_queue_capacity`;
+  `felix_producer_hand_off_batch`, `felix_producer_hand_off_batches`,
+  `felix_producer_hand_off_abandon` and the `FelixHanded` handle
+  (`felix_handed_offset`, `felix_handed_done`, `felix_handed_free`); and new
+  `FelixConnectOptions` fields at the end of the struct for the subscription queue policy and
+  capacities, publish and cache pool sizes, QUIC windows, `max_frame_bytes`, `ack_on_commit`
+  and the connect and finish timeouts. C#: `GetSupportsAsync`, `InspectShardAsync`,
+  `ListSubscriptionsAsync`, `GetTopologyAsync`, `GetStreamRoutingAsync`,
+  `GetShardOwnersAsync` and `GetCacheShardsAsync` with typed records,
+  `FelixSubscription.Moves` / `Reconnects` / `StreamDeleted` / `QueueCapacity`,
+  `FelixProducer.HandOffBatchAsync` / `HandOffBatchesAsync` / `HandOffAbandonAsync` returning a
+  `Handed`, and the same options as properties of `FelixClientOptions`. The client fixture
+  file gains `inspector_token`.
+- The TypeScript client now covers what the Rust client does. `publishWithHeaders` and `publishBatchWithHeaders` send record keys and headers, and `Event.headers` reads them back. `Event`, `GroupRecord` and `ShardedGroupRecord` carry `publisher` and `timestampMicros`. `cachePutIfLease` returns a `LeaseWrite` with a token for `withIdentity`. A subscription reports `moves`, `reconnects`, `streamDeleted` and `queueCapacity`. `Client` gains `supports`, `inspectShard`, `listSubscriptions`, `topology`, `streamRouting`, `shardOwners` and `cacheShards`. `Producer` gains `handOffBatch`, `handOffBatches` and `handOffAbandon`, which return a `Handed`. `connect` takes the transport, queue and timeout options of `ClientConfig`, and refuses a value that cannot be right before connecting. A refused header name is an `InvalidArgumentError`.
+- A promoted leader offers `UNIFIED_FENCE` and counts each attested fence answer by what it attests: a promise only from a copy that kept its ballots, and coverage only from a copy that holds every record it acknowledged. The fence opens on a majority of promises in every set it must fence, with trusted answers meeting every majority of each, or on promises alone for a leader continuing its own generation. Its own copy counts by its own attestation. Answers from older brokers count as before. `FELIX_UNIFIED_FENCE=0` turns it off; a memory-only broker counts as before.
+- Under the unified fence, a copy on a data directory that once lost its ballots (a wipe or a restore) counts again once a set written after the loss readmits it, and the readmission survives restarts (a `readmitted` line in `copy-trust`). A fence also trusts an answer the control plane's `readmitted` record vouches for. A report from a leader that elected itself records no such entry.
+- The control plane records when the leader of a set that re-admitted a replaced copy reports it caught up (`readmitted` on the shard assignment, metadata level 30, Postgres migration 0046). This is the durable evidence a fence will trust such a copy on after a restart. Below level 30 nothing is recorded.
+- A replica answers a fence from a caller that offered `UNIFIED_FENCE` where it would refuse a learner or the copy it led before a crash, and its attestation says the answer counts for no promise or covers nothing. A caller that did not offer the capability gets the answer it always did.
+- The broker-internal protocol has a fence answer that carries the replica's account of its copy (`FenceAttestedOk`, kind 54): the set generation its promises count from and whether it holds every record its seat acknowledged. It is negotiated with a new `UNIFIED_FENCE` capability, so peers that do not offer it still exchange the same frames.
+
+### Changed
+- The simulator, `felix-sim`, now runs whole clusters deterministically: a seed replays event for event, brokers keep their data in memory, peers talk over a simulated network, each broker and the control plane get their own clocks, and the nemesis can cut power, crash uncleanly and act as a placement operator (#419, #2037, #2038, #2039, #2041). Its seed batch runs in its own non-blocking CI job. It is test tooling and changes nothing a broker does.
+- Brokers now keep a wiped copy from voting under `joint_fence` whenever the fleet has it, with no switch left in the build, and report it as `non_voting`. The control plane no longer refuses `joint_fence` outright: it finalizes it once every serving broker reports `peer_election`, `start_holders` and `non_voting`, so a fleet mixing builds stays safe whatever order they were upgraded in. It also needs `stream_incarnations` and `cache_incarnations` finalized first: under joint fences a broker opens a new stream's or cache's shard only once its incarnation, above 0, says nothing came before it (#1862). A broker that reports `joint_fence` cannot know whether the fleet has it until its registration is answered, so it treats that window as if the fleet might: until the answer arrives, a copy whose set names another storage id for it answers with a retryable refusal, and a follower takes a fence or records at a new generation only on a fresh control-plane read. A broker that does not report it, which is every release build today, behaves as before. The cluster harness turns joint fences on with `ClusterConfig::joint_fence`, and a new cluster test follows a wiped follower from learner to counted voter across a failover.
+- A shard stalled during a failover no longer holds up the other shards on its publish stream. A pipelining client can offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, and a broker that grants it a window answers plain acked publishes as they complete instead of in request order. Idempotent publishes keep request order among themselves, so a producer still sees batch n fail before any `sequence_gap` for batch n+1, and every publish still holds its window slot until it is answered. The Rust client offers the bit and keeps writing to a stream while answers are outstanding. Older clients and brokers exchange the same frames as before (#1417, #1920).
+- `felix_authz::PermissionMatcher` skips any permission whose object holds a
+  `{` or `}`, and `FelixClaims` has an optional `lease` claim. The control
+  plane checks such objects as lease templates when a policy is written, and
+  refuses malformed ones.
+- A policy object that holds `{` or `}` is now a lease template. An existing
+  grant on a literal cache key containing braces, such as
+  `cache:t1/prod/c/{leases}`, stops granting that key and instead lets the
+  holder of key `K` of cache `t1/prod/leases` get a lease token for `c/K`.
+- `Broker::publish_records_idempotent` takes a new `headers` argument, each
+  record's key and headers block (#1688). Pass `None` for the previous
+  behaviour. `felix_kafka::Settings` gained `record_headers`, and
+  `KafkaListenerConfig` the same field.
+- The wire types changed in ways that break code building or matching them
+  (#1688). `PublishBatch`, `AckedPublishBatch`'s batch, `EventBatch` and
+  `SharedEventBatch` gain a `record_headers` field, `EventBatchMeta` gains
+  `record_headers`, and `Message::Auth` and `Message::AuthOk` gain
+  `client_flags_ext` and `server_flags_ext`, so struct literals and exhaustive
+  patterns need the new fields. `Error` gains `UnknownExtension` and
+  `InvalidRecordHeaders`. `has_unknown_flags` and `Frame::decode` now accept
+  `0x8000` (`FLAG_EXTENDED`); with all sixteen flag bits defined, no frame is
+  refused for its flags alone, and the body decoders refuse the bit where it has
+  no meaning. The broker still refuses it.
+- A `Connection` opens its pooled connections only as its traffic needs them (#1779). The publish pool still opens at connect; the event pool opens one connection per subscription up to `event_conn_pool`, and the cache pool opens on the first cache request. A subscriber with the default settings holds 5 broker connections instead of 20, so about 100 of them fit under the broker's default per-address cap (`FELIX_MAX_CONNECTIONS_PER_IP=512`) instead of about 25. Pool sizes are now ceilings, and a client using every kind of traffic holds what it did before.
+- The cluster test harness keeps a restarted broker's previous log (`broker.log.previous`) with the kept logs, and the failover canary uploads every broker log gzipped with replication at debug (#1914).
+- Opening a log now syncs its directory once instead of up to three times (first segment, durable mark, then again after the mark), which cuts the directory fsyncs a bulk shard create makes. The guarantee is unchanged: every entry of a new log is durable before the open returns.
+- Every call a broker makes to the control plane for registration, heartbeats, the assignment watch, the node catalog and replica reports now goes through the `ControlPlaneLink` trait in `felix-replication`, with `HttpControlPlaneLink` as the HTTP implementation. Behaviour on the wire is unchanged. `ReportTo` carries a `link` in place of `client` and `base_url`, and the membership, watch and catalog functions take a link in place of a client and base URL (#419).
+- `felixctl` is the one operator command line, and `felix-controlplane admin` is gone. No alias is left. What replaced what: `admin moves` is `felixctl shard moves`; `admin plan` is `felixctl placement plan`; `admin replication` is `felixctl placement replication`; `admin move SHARD NODE` is `felixctl shard move NAME N --to NODE`; `admin cancel` is `felixctl shard move cancel NAME N`; `admin abandon` is `felixctl placement abandon NAME N --yes`; `admin pause` and `admin resume` are `felixctl placement pause` and `resume`; `admin backup-point` is `felixctl backup-point`; `admin features` is `felixctl features ls`; `admin features finalize` is `felixctl features finalize`, which now asks before the one-way change (`--yes` off a terminal). Shards are named by the context's tenant and namespace instead of a `tenant/namespace/name/shard` path, and the connection comes from a context, `FELIX_CONTROLPLANE_URL`, `FELIX_CONTROLPLANE_TOKEN` and `FELIX_CONTROLPLANE_CA` instead of `--url`, `--token` and `FELIX_TOKEN`.
+- `felixctl data inspect`, `felixctl data restore-point` and `felixctl controlplane migrate` run `felix-broker inspect`, `felix-broker restore-point` and `felix-controlplane migrate` and exit with their status. They find the program with `--broker-bin` or `--controlplane-bin`, then `FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then `PATH`. The server programs keep these subcommands.
+
+### Fixed
+- An elected leader that restarts before the control plane adopts it now rebuilds its standing from its own log (its ballot, and the record that it opened at the elected generation), fences at that generation again and reports, instead of forgetting it. A shard whose generation was claimed twice keeps serving instead of waiting for the control plane to write it again. A standing a majority has moved past is withdrawn within 3 s (#1196).
+- Starting without the control plane (`FELIX_START_WITHOUT_CONTROLPLANE`): a clean stop before registering no longer deletes a view an earlier start wrote when the deregistration never reached the control plane. A directory once marked `replaced-storage` can start from its view again once it has registered under its current id: the marker now records that id and the control plane's incarnation (markers from older releases still refuse). A restore check the control plane refuses with a 401 or an unreadable answer logs a warning instead of debug. A shard ended for silence serves readers again when reopened at the same generation. Tenants and namespaces created from the view are unregistered when the first snapshots lack them. The view writer skips the rebuild on a second in which nothing it reads changed, and the panic log flush no longer blocks on a full queue.
+- The control plane's Raft store now commits on tokio's blocking pool instead
+  of an async worker (#1705). Each commit fsyncs, and under disk load a slow
+  flush stalled the other tasks on that worker. On a one-worker runtime, such
+  as a control plane limited to one CPU, that was enough to start an
+  election. Write order and durability are unchanged.
+- When the control plane records an election without adopting it, the leader it still names now reports that it cannot serve the elected generation (`refused` in the replica report: the generation and the node it was promised to). It sends it when its open is refused because it promised the generation away, and when a majority of the set answers its fence with a promise to another node. Placement then names it again at the next generation on the same set (`election_refused`). Before, writes to the shard waited for the pending-set timeout or a lease lapse, or for good with no pending set. Placement acts only on that report, at exactly the assignment's generation. It skips the step while a move has a successor named or the leader is draining, and takes it during a follower replacement, keeping the joining copy. Under Raft the field needs metadata level 25; under Postgres it is migration 0042 (#1730).
+- A control-plane member could fail to restart after a snapshot it built
+  finished after a newer snapshot it received from the leader (#1745). The
+  older snapshot replaced the newer one on disk while the log was already
+  purged up to the newer one, so replay asked for entries that were gone. A
+  snapshot is now written only if it is newer than the stored one, checked in
+  the same transaction as the write.
+- A leader no longer counts a learner's acknowledgements toward its commit or counter marks (#1762). A copy re-admitted after a wipe answers batches with the new internal kind `ReplicateLearnerOk` (47) until it is a voter again, and the leader leaves it out of every majority while still counting it in the set's size. The kind goes only to a caller that offered the new `LEARNER_ACKS` capability; any other caller gets `ReplicateOk` as before. Without this, once elections run, a leader could acknowledge a write on a copy whose pre-wipe promise let a candidate open without it.
+- Creating many single-shard streams at once no longer makes the control
+  plane move existing shard leaders (#1766). A new shard's leader now goes to
+  a broker under the cluster's floor share before one under its ceiling, so
+  such a batch leaves the leader totals within one of even. Before, a batch
+  could leave them two apart, and the balancer evened them by moving the first
+  shard in key order, often the same cache each time, holding its writes while
+  it was fenced.
+- Evening out leader totals moves a stream shard instead of a cache shard
+  (#1768). Placement used to move the first over-share shard by name, often
+  a cache, so a delete or a drain that left the totals two apart moved a
+  cache and fenced it for every client using it. Caches are now planned
+  after the streams, so a stream shard goes first whenever one can.
+- A broker that opens again, fenced, at a generation it already started now writes a new generation-start record, and its report of a set change's joint start counts from that record rather than the generation's first. Records an earlier stint at the generation acknowledged on the old set alone are then on a majority of the new set before the control plane flips to it. Once elections ship this covers a broker elected at a generation and then named there by a cut-over. Today it adds one record when a replicated leader restarts, which a subscriber that did not negotiate `skipped_before` reads as one more false drop (#1787).
+- A copy with no promise no longer waits on the control plane while it
+  answers a peer request (#1791). Its confirmed assignment read held the peer
+  lane for a control-plane round trip, so during a bulk create every new
+  shard's first fence stood in front of other shards' fences, batches and
+  lease renewals. A new shard's copy now skips the read when its routing
+  view holds the creation of the shard's incarnation naming its storage id. Any other copy
+  with no promise reads in the background, one read per shard at a time,
+  refuses retryably until an answer arrives, and keeps the answer fresh
+  while the leader keeps asking, for up to twice the control-plane sync
+  interval after a refusal. A move's destination or a newly added follower
+  starts the read as soon as its assignments name it, so the leader's first
+  request is usually answered.
+- A control-plane outage no longer refuses `Auth`s or forwarded writes for tenants a broker already holds keys for (#1793). Brokers renew each tenant's JWKS in the background about every 10 minutes and keep verifying with the cached keys while a renewal fails, for up to 24 hours after the last successful fetch. Before, the keys expired an hour after a fetch and the next request fetched them inline, so an outage at that moment refused every token of the tenant.
+- A token signed by a key the broker has not seen makes it fetch the tenant's JWKS once (shared by concurrent requests, at most every 10 seconds per tenant and within a small broker-wide budget) and verify again, so a newly staged signing key works without waiting for a cache to expire. A retired key stops verifying within about 10 minutes instead of an hour. New metrics: `felix_jwks_renew_errors_total` and `felix_jwks_oldest_age_seconds`.
+- A leader no longer starves shards when more than 16 have work (#1794). Under
+  a steady stream of appends the same 16 shards kept the replication pass
+  slots, and a shard with one write could wait until its `Quorum` publish timed
+  out with both followers idle. Shards now take turns: a finished pass goes
+  behind the shards already waiting, shards with new writes or a write waiting
+  on the mark go first, and fences have their own 16 slots. An append now wakes
+  a pass for its own shard only, instead of every shard the broker leads, which
+  also cuts the driver's work on a broker leading many idle shards. Only the
+  first append to a shard since the driver last looked wakes it, so a busy
+  shard's publishes no longer contend on one shared wake-up per append. New
+  metrics show the queue (#1797): `felix_broker_replication_scans_total{wake}`,
+  `felix_broker_replication_passes_waiting` and
+  `felix_broker_replication_slot_wait_seconds{queue}`.
+- A broker answers fences, tail fetches, pre-votes and pings on a peer
+  connection's control stream as each one finishes, instead of one at a time
+  (#1796). During a burst of shard creates, the fences that confirm cache reads
+  and the pings followers send their leaders no longer queue behind the new
+  shards' promotion fences, where a long enough queue read as a dead leader.
+  Answers are matched by correlation id, so older peers need no change. A
+  follower still runs one leader's promotion fences one at a time, so a burst
+  of them does not slow the publishes it is already replicating.
+- A cut-over's joint fence takes the set being left from the control plane's pending change on the route, not from the broker's watch or log, which could disagree after an election the control plane recorded without taking (#1806). A failover fences a majority of both the control plane's set and the set the promoted broker's log keeps when they differ, in members, voters or copies, counting each only from the copies it names. Dormant behind the `joint_fence` fleet feature.
+- A fenced shard move whose destination broker goes down (or starts draining) no longer holds the shard's writes until the two-minute fence timeout. The pass after the broker is marked down gives the move up and the old leader serves again at a new generation, as an operator's cancel does (#1808).
+- Placement no longer moves shards for balance while a broker is down or a restore is copying a shard back. Fencing a cache or stream then could refuse its writes for minutes while the remaining brokers took over the dead one's shards. A balance move already staged is dropped before it fences, freeing its move slot. Failover, restores, drains and an operator's moves are not held, and a broker that never returns holds balancing for at most `FELIX_SHARD_RESTORE_AFTER_MS` (five minutes when that is `0`) (#1808).
+- Under `joint_fence`, a `Quorum` cache's counter updates now wait for a majority of both the old and the new
+  replica set while a set change is pending, and the leader reports the change's start only once the counter
+  log's start record is on both majorities too. Before, a counter update acknowledged before the cut-over could
+  be held by only the leader of the new set once the control plane took it (#1830).
+- A subscriber that follows a shard move no longer skips a record that was waiting
+  for the committed mark when the move came (#1835). A generation-start record
+  written behind the held record moved the `shard_moved` resume position past it,
+  though the record stayed on disk and the next leader committed it.
+- A subscriber of a leader that lost its shard could be told to resume past
+  records it was never offered (#1837). When the old leader's log took the
+  new leader's records, or was rebuilt at its request, before its readers
+  were ended, the move's `resume_from` named a position past them, and a
+  batch it had held for the commit mark was skipped too. Readers are now
+  ended as soon as that happens, at the position they had reached.
+- A replica the node catalog does not name no longer shrinks its shard's
+  majority (#1845). A broker builds routes before its first `/v1/nodes` read
+  succeeds, and such a replica used to be dropped from the route. With an empty
+  catalog a promoted leader of three opened without fencing either follower,
+  and a `Quorum` write was acknowledged on the leader alone. The replica now
+  stays in the route without an address and counts as one that has not
+  answered, so the shard waits for a real majority.
+- A leader that lost a `Quorum` stream to a move no longer answers reads for it as if it still served it (#1852). After a move to a route with no replicas it could deliver records to live subscribers before a majority had them, and history reads, Kafka `Fetch` and consumer-group polls could return them too. A Kafka `ListOffsets` for `latest`, or a group seek to `latest`, that raced the move could answer the start of the log, rewinding the consumer. The read bound now checks that this broker serves the shard before anything else. Where it does not, group operations are refused as fenced and Kafka answers `NOT_LEADER_OR_FOLLOWER`. A broker that serves a shard with no replicas still reads it in full. A broker that has just taken a `Quorum` shard over has no mark at its generation yet; it used to answer `latest` with the start of the log there too. Now Kafka `ListOffsets` for `latest` answers `OFFSET_NOT_AVAILABLE` (v5 and later) or `LEADER_NOT_AVAILABLE` (earlier versions), both retriable, while earliest and timestamp queries are still answered; `Fetch` answers empty; and group polls, seeks and describes are refused as `shard_unavailable` (`not_ready`) until the first mark.
+- Under `joint_fence`, a leader no longer waits forever when it cannot know the replica set its generation replaced, in the two cases where it has evidence that no earlier set holds acknowledged records. A leader restarted after the finalize at a generation it opened before it keeps that generation's set and its own ballot: it now reports the generation refused with no node named, and placement names it again one generation up on the same set (step `set_unknown`, broker counter `felix_broker_fence_set_unknown_total`). A new shard whose first assignment reaches its leader in a control-plane snapshot opens at once: snapshot items now carry `first_assignment` for a shard's first assignment, as the `assigned` change does. A leader whose log keeps no set and has no such mark, or keeps the set under another node's ballot, still waits, since a rename could lose records the old set acknowledged. Under Raft, finalizing `joint_fence` now needs metadata level 25, where the refusal report is kept (#1872).
+- Under `joint_fence`, a failover now also fences the set an earlier joint fence was leaving when that fence may never have opened (#1878). That is the case when the failing-over broker's log keeps the old set beside its own and holds no record written at its own set's generation. Before, the failover fenced only the control plane's set before the route and the log's own set. After a set change whose fence never opened, it could open on majorities that held no copy of a write acknowledged before the change. No release can finalize `joint_fence` yet.
+- Under `joint_fence`, a replica now keeps every replica set since the last generation it knows opened, and a failover fences all of them (#1881). Before, a replica kept one set being left, so two fences in a row that never opened (lease churn is enough, no set change needed) overwrote the older set, and a later failover could open without a write only that set held. A kept set is dropped only once the log durably holds a record of a newer generation. At most 16 older sets are kept; past that a replica refuses a fence that would add one but still takes a fence on a set it keeps. Fences carry the older sets in a new kind, `ElectionKeptFence`, sent only to peers offering the `KEPT_SETS` capability, and the `replica-set` file gains an optional section an older build refuses, written only once `joint_fence` is finalized. No release can finalize `joint_fence` yet.
+- A replicated shard no longer holds a new record back from its healthy
+  followers while it waits on a dead one (#1886). A pass with no majority yet
+  waited on every follower it had shipped to, and only gave up early when some
+  follower was busy with an earlier pass. A level follower that had been sent
+  nothing could not make the majority, so a `Quorum` publish waited out the
+  dead peer's request. Now a record appended to the shard ends that wait once
+  a follower that counts has answered without vouching for anything (it was
+  sent nothing, or it refused).
+- A wiped copy that finished catching up after its replication pass had moved on is now reported holding its generation's start, so the control plane re-admits it even when nothing more is written to the shard (#1892).
+- A replicated shard whose majority needs two slow followers no longer stops
+  acknowledging writes (#1895). The leader counted a follower toward the
+  quorum mark only if it answered in the current replication pass, and two
+  followers that kept answering in different passes were never counted
+  together. An answer now keeps counting after its pass, for what it said the
+  follower holds, until the leader sees that follower's copy change: a new
+  storage identity or incarnation, a request to it that fails, or an exchange
+  that has not yet found the same copy again.
+- A leader now reports its generation refused when a follower took a newer generation after the leader opened and no majority is left without that follower (#1914). Before, the follower refused every batch, the shard's writes timed out, and the control plane was never told, so it never named a new generation. A follower whose routing view is ahead because it took a candidate's fence now also counts as having a newer generation, both during a fence and after the leader opens. Two ways this state arose are prevented too: a follower no longer stands against a newer leader whose fence it took unless it suspects that leader, and a leader that won an election refuses pre-votes while it fences and once it has opened.
+- Elections settle while the control plane is paused or hung, not only when it is down (#1914, #1009). A broker now reads the node catalog in the background and publishes its routes without waiting for it, so a control plane that takes requests and never answers no longer holds every elected leader's route past the candidate's 3 s open deadline. A broker that restarted and is waiting for the control plane to seed it refuses peer pings, so the followers of the shards it led elect around it instead of waiting for the control plane. A control plane that resumes after a pause no longer marks live brokers down for the heartbeats it did not read during the pause.
+- A leader named below its own ballot now reports the generation refused instead of retrying its fence forever (#1914). With election on, a standing withdrawn before it fenced any replica leaves the ballot only in the candidate's own log. When the control plane then named that broker at a lower generation, its replicas took the fence but the broker could not keep its own ballot, so the shard never served, even after the killed broker came back. The same holds when its own log promised the generation to another node.
+- Two survivors of a lost leader no longer split an election at one generation because the first candidate's fence is slow to arrive (#1914). The follower second in the order now asks its voters again after its wait and does not stand if one that said yes now refuses, so it sees the first candidate's ballot instead of standing against it. Each split cost a generation on both candidates. Candidates that cannot hear each other can still split; the random backoff separates them.
+- More shards that a live leader could not serve now get reported to the control plane, or recover on their own, instead of staying down (#1914). A follower that took a newly elected leader's fence stands again once that leader says it is no longer standing, or after `FELIX_ELECTION_DEFER_FOR_MS` (60 s by default) if it never opened, and that leader stops refusing pre-votes after the same time. One follower's newer ballot no longer ends a working leader's readers; only a newer assignment does. An open that fails with an error such as an I/O error now reports the generation refused once, so the control plane names it again, and so does a fence that meets a newer replica set. The fence on a stream shard's consumer-group logs now reports a newer ballot, a newer replica set or a generation promised to another node the way the records' fence does, instead of retrying forever.
+- A leader the control plane names below a ballot it never issued now reports the generation refused, so the control plane names it again above the ballot (#1914). An election that persisted its ballot and never opened used to leave such shards unserved for good: the leader's open or fence was refused for the newer generation, or the assignment was dropped as older than the withdrawn standing, and nothing told the control plane.
+- A `Quorum` leader acknowledging by its followers (`majority_ack`, and `fenced_caches` for caches) no longer reports a follower as a promotion candidate before it holds the log the leader inherited. After the replica set changed, the next promotion could otherwise pick a broker that never held an acknowledged write and open without it. The same floor now applies to a cache's counter log, counted from the leader's current stint (#1922).
+
+  When the leader is lost and no live follower holds its log, placement now promotes a caught-up follower on a draining broker instead of leaving the shard without a leader; the drain then moves it off as usual.
+
+  A leader whose replica set changes now keeps naming a follower it has not reached yet by the storage identity it knew it by. Before, that follower was named with none, so after the leader died its fence answer never counted and a failover that needed it stayed closed.
+- The control plane no longer keeps its own leader on the recorded replica set
+  when that leader was elected on a different one (#1929). It took only the
+  election's generation, so its record could name a set the shard never
+  opened on, and a later failover could promote from it without records a
+  majority of the elected set held. It now names the leader one generation
+  up, leaving the elected set for the recorded one, as for any other leader
+  elected on another set. A report at the assignment's own generation from
+  the named leader on another set is handled the same way.
+  Under Raft the adoption change waits for metadata level 27 on every member.
+- A broker the control plane has just named leader no longer stands for election against the old leader its routes still name. That standing raised its own ballot past the generation it served, and every `Quorum` write then waited out its timeout while the followers confirmed it. A leader left in that state now reports its generation refused, so the control plane names it one generation up (#1933). So does a leader still fencing when its own copy already holds a newer ballot; until now it stayed closed and reported nothing (#1940).
+- A promoted leader whose fence failed no longer spins its replication loop
+  (#1941). Once the fence's backoff passed, the retry kept coming due with a
+  zero wait whenever the broker could not act on it: until the next routing
+  wake when the shard had moved to another leader, and until the route caught
+  up when the broker stood for a generation no route names yet. It now waits
+  for the route, as the rest of replication does.
+- A broker no longer loses its lease during a disk stall. Registration and heartbeats now run on a thread and runtime of their own, so a filesystem journal stall that blocks every worker of the broker's runtime no longer stops lease renewal and gets the broker marked down (#1942). A broker whose main runtime runs nothing for 10 s still stops renewing, so a hung broker's shards fail over as before. Opening a shard's logs (a stream's own, cursor and dead-letter logs, a cache's record and counter logs) and recording where its leadership begins now run on the blocking pool instead of a runtime worker.
+  A follower opening a new shard's logs for a leader's first batch, fence or bootstrap does the same, as do registering a durable stream, a follower recording the generations of the records it copied, and the durable mark write after each flush (now on the log's flush thread). The broker's log lines are written to stdout from a thread of their own, so a slow disk under a redirected stdout no longer blocks the worker that logged; no line is dropped, and the queue is written out on a clean exit or a panic (a `SIGKILL` can lose the last few lines still queued).
+- A cache delete racing a put to the same key now reports the value it
+  actually removed (#1943). It read the key before the put had applied, so it
+  could answer with the value from before the put while the log, and every
+  replica, deleted the put's value. No data was lost; only the delete's answer
+  was wrong.
+- While one broker is down, `Quorum` writes to the brokers still up no longer
+  time out under a steady load (#1944). Every append made the replication
+  driver ask for a pass on each shard with a follower behind, which with a
+  follower down is every shard it follows, and those passes took the slots
+  from the shards with writes waiting. An append now asks only for its own
+  shard's pass and for shards owed a mark that a follower can still answer
+  for; the tick retries the rest.
+- New shards in a bulk create are routed as soon as each one opens. The routing feed opened a pass's new shards one after another and published the routes only after the last, so with hundreds of streams created at once a shard ready early could not take publishes for many seconds, and its followers refused its leader's fence until their own pass finished (#1945).
+- A follower fenced for a candidate's ballot refused every batch from its leader for the rest of the generation, so the shard ran one copy short, with one less failure to spare. If the candidate withdrew, nothing renamed the shard, so that copy never rejoined. The leader now reports its generation refused once the follower's ballot has lasted 10 s, carrying that ballot, and the control plane names the same leader past it, so the follower takes batches again. A leader left without a majority by such ballots used to report at once, which could depose a candidate that was about to open; it now waits the same 10 s, then carries the ballot, or its own copy's ballot when that one is higher (#1949).
+- An open leader that answered a candidate's higher fence stopped serving, and if that candidate then withdrew, nothing reported it, and only per-shard suspicion would stand again, after `FELIX_SHARD_SUSPECT_AFTER_MS` (120 s by default). The leader now reports its generation refused once that ballot has lasted 10 s, with the ballot in the report, and the control plane names it again one past that ballot, where its fence can complete. A leader still fencing below such a ballot reports it the same way, after the same 10 s. This needs Postgres migration `0043` or, under Raft, metadata level 28 on every control-plane member; below it the leader is named one generation up, as before, and each such rename now waits the same 10 s (#1951).
+- A broker the control plane marked down no longer serves again on its old routes. Its lease now comes back only once its routes include every assignment change made before its first heartbeat back: the heartbeat answer carries the assignment feed's position (`assignment_seq`), and the routes must reach it, so a read answered by a control-plane member that has not applied the move does not count. The assignment watch makes that read at once. Before, a long-poll lost in a partition could leave a shard that moved while the broker was away routed to it at the old generation for up to 30 s, next to the new leader (#1955).
+- A shard whose fence finishes while the routing feed ends a pass starts serving straight away. The feed read the set of shards it serves and published it after letting go of the lifecycle lock, so a fence finishing in between was overwritten by the older set and the shard answered not ready until the next pass (#1962).
+- A replicated `Quorum` leader that heard from no majority for a lease
+  duration, while its lease was lapsed, refused every reader of the shard for
+  good, even after its followers answered again and it went on acknowledging
+  writes (#1964). That ending now lasts only until a round at the same
+  generation is confirmed. A follower naming a newer
+  leader still ends the shard's readers for good.
+- A shard whose leader refuses its generation (it promised it away, or already accepted a newer one) while a move is still copying to its destination no longer goes unserved until the 30-minute move timeout. Placement drops the move and names the leader again one generation up, as it does outside a move (#1965).
+- A leader elected at a generation the control plane then adopted no longer stays unserved after its broker restarts under `joint_fence` (#1966). It keeps the set it stood on, from an older generation, so its fence could not learn the set before and waited. When its own ballot and start record are at that generation, nothing is pending on the route, and the kept set names exactly the route's set on the same copies (with at most the set it left on those copies beside it), it now reports the set unknown and placement names it again one generation up, as for a leader restarted at a generation it opened before `joint_fence` was finalized. A ballot with no start record, as a withdrawn standing leaves, still waits.
+- A follower now stores the record batches on one peer stream side by side, up
+  to 16 at once per stream, 64 per peer node and 256 across the broker, and
+  answers each as it finishes (#1968). Stored in turn, a batch waited behind every batch ahead of
+  it on its stream, so under load a leader's round trip to a follower grew far
+  past the follower's store time. Bootstraps and rebuilds are still answered
+  in turn. Per-shard order is unchanged: a leader has one batch in flight per
+  follower and log.
+- An open leader's regular replica reports no longer replace the refusal it reported, so the control plane names the shard again as intended (#1969).
+- A replica standing for election could take its ballot on a replica set it
+  no longer kept (#1970). It checked the set once, before its pre-votes, and a
+  fence or batch from another leader could give its copy a newer set with a
+  change pending while the round ran. The candidate now writes its ballot
+  only if the copy still keeps the set it checked, and a copy refuses a set
+  from a leader it has promised past. Both checks take the same lock, so a
+  set and a candidate's ballot never interleave.
+- Failover no longer promotes a follower on a broker that has just deregistered. Until that broker's lease ran out, placement counted it as draining, and the fallback that promotes a draining follower when no live one holds the log could pick it. The shard was then assigned to a stopped broker. It now waits for a running broker that holds the log (#1977).
+- Placement no longer names a leader that has deregistered at a new generation. When a move off such a broker gave up after the fence (the destination died or the fence timed out), a fenced set was trimmed or a follower seated, no other copy could take the shard after the leader drained, or the broker refused a generation promised to an elected replica, placement gave the shard back to the departing broker at a new generation, which it might not live to serve. The shard now waits until another caught-up copy can take it or the broker's lease runs out and it fails over (while a follower is being seated, only the lease ends the wait). An operator's cancel still hands the shard back (#1982).
+- A lease renewal no longer waits seconds for its replication pass while a broker
+  creates shards in bulk. A shard with a fresh append now starts ahead of new
+  shards' first passes, and an append wake no longer reads the whole routing
+  table, which had taken about half of the replication task under load.
+- A state read on a `Quorum` stream no longer misses a commit whose event readers can already see. A broker that gave up a shard dropped the commits it held for the mark but kept its state view; when it led the shard again and a later generation committed those records, the view was never rebuilt with them. The view is now dropped and rebuilt from the log whenever the stream moves past records that never reached it, and a broker about to lead the shard moves the stream up to its log's tail first, whether or not it writes a generation-start record (#2010).
+- A shard the control plane moved can elect a leader again while the control plane is down. Its followers kept the move's older sets until the next set change and refused to stand on them, even after the moved shard had opened (#2012).
+- A leader the control plane renamed past a withdrawn standing's ballot no longer leaves its joint fence pending for minutes because no set at the skipped generation was known (#2024). A placement write that lands more than one generation up now records the generation it replaced (`previous_generation`, metadata level 29, Postgres migration 0045), and the broker's watch takes that assignment's set as the one the fence leaves. Below level 29 nothing is recorded and the fence waits as before.
+- A broker that restarted after an unclean crash no longer reads its own election ballot as proof that it led the shard before the crash. It used to refuse every other candidate's fence and give the generation up, so a set of three with its leader down could not elect anyone until the control plane came back. A copy that may be short of what the broker acknowledged before the crash no longer stands for election, since it could not lead what it won (#2025).
+- A broker back from an unclean crash no longer counts its copy as checked by a newer leader after the first batch that leader ships. It waits until the copy holds a record of that leader's generation, which comes after everything the leader holds. Before, a crashed leader that had only part of its lost records shipped back could win an election with an empty copy's vote and lose a record it had acknowledged (#2029).
+- A leader whose fence finds its generation promised to a candidate that withdrew no longer waits forever (#2046, and the second shape of #2047). The fence reports the generation refused once the promises leave either set short of a majority, every refusal carries the newest ballot the leader learned, and a replica that answers ahead ends the fence refused instead of pending. The control plane keeps a failover's copy pins across renames of the same leader until it serves, and under `joint_fence` renames past a ballot only at metadata level 29.
+- A leader that keeps serving into its next generation no longer stays closed when that generation re-admits a member after two members crashed uncleanly (#2047). Under `joint_fence` its fence needs only promises and takes no tail. It counts an answer from a copy it does not expect only when the answer attests a kept ballot (`FenceKeptOk`, a new peer kind negotiated with the `KEPT_BALLOTS` capability): the copy's ballot named that leader at the generation before, and its directory kept every ballot. A copy doubted after an unclean crash answers and attests only then. A broker treats its ballots as kept only when the control plane's record names the storage id its directory had before the crash, and the directory never replaced a lost copy, which a new `lost-copy` marker records. A wiped or restored directory, or a start from the control-plane view, never attests. A failover after the same two crashes still waits for `felixctl placement abandon`.
+- A `Quorum` publish, cache put or counter add whose wait carried over to a newer generation is no longer acknowledged once that generation's promotion dropped its records (#2048). The wait checks that the log still holds the write's offsets at the generation it was written at, and refuses records a promotion took unlabelled after a cut; otherwise the client is told the outcome is unknown. Before, the newer mark passing the offset was enough, so a write a promotion's catch-up replaced could be acknowledged. `felix_kafka::WritePermit::holding` now takes the generation the write was admitted at, and `Cluster::await_consistency` receives it.
+- A follower no longer keeps a dead leader's uncommitted record under the new leader's when the stale record is larger (#2062). The follower compared a resent batch against what it held using a read sized from the leader's records, so a larger stored record cut the read short and the rest of the overlap went unchecked. It now compares every overlapping offset, and refuses the batch for a retry when it cannot read one.
+- A leader that gave its copy up after a crash no longer stalls a shard for good: a probe that ran past the generation the copy accepted can reclaim it at the next generation, and a follower that answers but does not vote counts as having no position, so a shard that could lose records is reported held and can be abandoned (#2066).
+- Starting without the control plane (`FELIX_START_WITHOUT_CONTROLPLANE`): a data directory restored from an older copy no longer starts from its control-plane view and votes on its old ballots. Every start now writes a run witness to `/dev/shm`, and a start from the view needs the witness to name the directory as the last start left it, in the same boot. A restored directory, a reboot, a fresh container or a new machine or pod waits for the control plane instead; a process restart, or a container restart inside a live Kubernetes pod, keeps the witness. Platforms without `/dev/shm` never start from the view.
+- Placement no longer drops a follower from a shard's set when a move to that follower is given up because it went down or halted before the fence. The set goes back to what it was before the move, so a shard whose only full copy is on that follower can still open (#2088).
+- A broker leading a shard again right after dropping its held batches ends the shard's old readers and rebuilds its state with the dropped commit. Before, if the hold's release task had not run yet, leading again was skipped: a reader stayed open on the old log and a state read could miss the dropped commit. Leading again waits at most a second for that task; a release still fanning out to a slow subscriber under `Block` keeps the shard closed until a later promotion pass.
+- felixctl now names the flag and the missing path when a `--token-file`, `--controlplane-token-file`, `--ca-file` or `--controlplane-ca-file` file does not exist, with a hint for the dev compose stack. The `felix-dev-ready` message and the Docker Compose page now list the installed-felixctl setup as numbered steps.
+- A copy with no promise on disk keeps the control plane's confirmed answer fresh after it answers a leader, not only after it refuses one. Under elections a leader retrying every 2 s was refused `StaleRoute` ("reading the control plane's assignment") every other round, and two such copies refused in alternate rounds never took one fence together.
+- With the unified fence on, a broker started from its control-plane view while the control plane was down now
+  attests its copies once the control plane answers and the restore check passes. Before, it attested nothing for
+  the rest of the process, so a shard whose leader died could not elect a new one without it.
+- The C# client no longer reports a missing record key as an empty one: `FelixEvent.Key` is null for a plain record again, as documented.
+- Placement no longer starts a move, or fences a staged one, off a leader that has deregistered. The fence named the stopped broker at a new generation, and once its lease ran out the move's destination, often the only caught-up follower, could not be promoted, so the shard stayed without a leader.
+- A failover after an elected leader crashed no longer names the followers that leader had not reached with an empty storage identity. The control plane names them by the identity the shard's previous report named them by, so their fence answers count and the shard can open again.
+- A cluster client's group calls, commits, conditional publishes and state reads no longer keep following a redirect to a broker that will not connect. The target is left alone for 5 seconds and another broker is asked for the shard instead. Plain publishes are unchanged.
+- A joint fence leaving a set with a staged learner no longer stalls when one voter cannot answer, for a leader that counts by attestation (`UNIFIED_FENCE`). It needs a majority of the set's voters and half of the set with its learners, which still meets every majority an acknowledgement on that set could have used, and it no longer asks a learner the route does not name. With `FELIX_UNIFIED_FENCE=0` the fence counts as before.
+- A shard moved under `replica_election` no longer stops taking acknowledged writes for the pending-set timeout (10 minutes) when a member of its new set restarts on new storage before the change completes. Placement drops the pending change at once and holds the member as a learner until it is level (`pending_set_member_replaced`).
+- A shard move given up without cutting over, whether abandoned, timed out, halted or cancelled, no longer drops its destination from a set of three copies. A leader with no earlier pass counts the destination toward the quorum, so a record could be acknowledged on the leader and the destination alone, and an unclean crash of the leader after the drop lost it. The set now stays one copy above its replication factor until a trim fence takes it back. A failover from a dead leader keeps the destination in such a set too, where dropping it left the promoted follower unable to fence.
+- A fenced shard move whose leader crashed uncleanly before it reported drained no longer waits out the fence timeout, which restarts with every control-plane restart. Once the leader reports that it gave its copy up at the move's generation, placement ends the move at once and names the leader again, keeping the destination in the set; its broker leads only if no follower is ahead of its copy, and otherwise the shard fails over, the move's destination included.
+- The nightly build moves the `nightly` tag and release with the release bot
+  App's token. The workflow's own token cannot point a tag at a commit that
+  changes workflow files, so the tag stayed on an old commit after any such
+  change.
+- Image signing retries up to three times when the transparency log answers
+  that an equivalent entry already exists, instead of failing the release.
+- Placement re-admits a replaced copy into at most 16 shards a pass and none while paused, renames stuck leaders only from the placement lease holder, and no longer counts a follower wiped since it was named toward the majority a rename needs. Postgres also refuses a mount on a non-durable stream in the schema (migration 0044).
+- A `Quorum` shard whose leader is lost while a move is fenced toward a follower is no longer left unplaced when that follower is the only one holding the log. Failover now promotes the move's destination when its broker reports that it fences every change of leader (`fences_every_change`, reported by every broker with the fence on) and the destination is a member of the set; it fences a majority and takes their tails before it serves.
+- Peers that close a QUIC connection normally no longer make the broker log a stats dump and a warning per open stream. A normal close is one short info line, stream failures after a close log at debug, and real failures log with their cause.
+- A wiped copy re-admitted as a learner no longer stays one for good when its
+  leader crashes before reporting it caught up. The given-up leader's probe now
+  lists, in `holds_start`, every follower whose copy holds the start of the
+  generation it gave up, on every log of the shard. Placement then admits the
+  learner and can promote it. Before, such a shard could wait as
+  `NoCaughtUpReplica` until an operator abandoned it.
+- A leader that answered a candidate's fence and released its shard, while the control plane still named it, reported nothing once that candidate withdrew. The control plane then waited out its 70 s stuck bound before naming anyone, so the shard was down for over a minute with the control plane up. The released leader now reports its generation refused, with the candidate's ballot, once its own copy has held that ballot for 10 s without the candidate's generation starting there, and the control plane names it past the ballot. Found by simulation seed 7.
+- Learner copies under elections stay backed by fresh confirmed reads however many a broker holds: the reads go up to 64 shards per control-plane request through the new `POST /v1/shard-assignments/confirmed`, instead of one shard per request with 16 in flight. A control plane without the form is read one shard at a time, as before.
+- Confirmed reads go through `ControlPlaneLink`, so the simulator backs learners as a broker does instead of refusing every batch to them.
+- A replica's refusal carries its reason as fields (`RefusalReason`, peer capability `REFUSAL_REASONS`) that a leader reads instead of parsing the detail text; refusals to and from older peers are unchanged.
+- The candidate loop no longer opens a quiet cache shard's log while scanning for stuck shards, and a panicking election round no longer leaves its shard in flight for good. The replica's election paths open logs off the runtime worker.
+- A copy whose storage id rotated after an unclean crash, with every ballot kept, now answers a fence leaving a set that still names its old id as a voter of that set, instead of refusing as a wiped copy. A move whose other voter crashed this way no longer leaves the successor's cut-over fenced short forever. The start records the rotated id in a new `rotated-ids` file under the data directory; a restored or wiped directory records nothing and still counts only once readmitted.
+- A broker with durable storage reports ready, and registers with the control plane, only after every listener is bound. Before, the catalog could seed before the broker-internal listener was bound, so a broker that then failed to bind its internal port had already said ready and exited looking like a crash; the cluster harness waited out its 90 s registration budget instead of starting it again. The harness now also fails start-up at once, with the broker's log, when a broker exits while it waits for registration.
+- Reading a data directory's storage id and its replaced-storage marker now goes through the same filesystem seam as writing them, so the simulator no longer sees every restarted broker as having lost its copy.
+- A copy that may have lost acknowledged records in an unclean crash now stays untrusted in its fence attestation after a later clean restart, until a leader vouches for it through its mark. A copy a broker led before such a crash is refused to older callers after it takes a newer leader's ballot and the broker restarts cleanly. Both are kept in a new `copy-trust` file at the durable root, written before the storage id rotates.
+- A follower back from an unclean restart on an idle `Quorum` shard is trusted again without a client write. The leader sends a level follower its last record again with the current commit offset, once per follower process, so the copy can count toward a later fence instead of stalling it.
+- A pass that opens many new shards no longer routes the ones it leads before they serve (#2132). Replication started work for every led route it saw, so a bulk create's unopened shards held its pass slots and delayed publishes to shards that already took writes. A bulk create now routes a shard this broker leads only once it serves, and the RF 3 failover burst is faster than in 0.6.2.
+
+### Performance
+- A plain QUIC publish is answered once it is durable and in the replay ring,
+  before it is fanned out, so the ack no longer waits for the subscriber
+  loop. The fanout keeps the batch's commit turn, so delivery order is
+  unchanged. `Quorum` streams, the `Block` queue policy, and idempotent,
+  forwarded, conditional and Kafka publishes still answer after the fanout.
+  On a CPU-bound host subscribers still slow the publisher: the CI fanout
+  cell (100 subscribers, 4 vCPUs) is unchanged at about 1,190 acked
+  publishes/s (#1771).
+- Fanout counts queue depth once per publish rather than once per subscriber,
+  a lone record goes out in the frame its subscribers share instead of being
+  encoded per subscriber, and the subscriber lanes no longer look up a
+  labelled metric on every delivery (#1771).
+
+### Documentation
+- The README of each client package (`felix-client` on crates.io, PyPI and npm, `Felix.Client` on NuGet, `libfelix`) now has the same sections in the same order: install, a connect, publish and subscribe example, configuration, errors, supported platforms and documentation links. The samples match the 0.7 API and compile, links are absolute so they work on the registries, and the `felix-capi` README no longer implies a crates.io package.
+- The `cosign verify` example on the Kubernetes page names the
+  `GetFelix/felix` workflow that signs the images.
+- The election and fence docs now say they follow the prepare and promise steps of Paxos, with sources, and the system design page no longer says no consensus runs between brokers.
+- A Correctness Evidence page lists what the formal models, simulator, history checker and scale runs check, how much of each runs, the defects they found and how to rerun them.
+
+### Performance numbers
+Measured against v0.6.2 on GitHub-hosted runners, the same build of each, alternating rounds (medians):
+
+- One broker: throughput within noise in every cell, from -2.7% (1 KiB, batch 64, one subscriber; that cell has measured +8.9% in an earlier run) to +4.4% (256 B to 100 subscribers). Single-message publish latency is unchanged, about 100 us at p50 and 130 us at p99 for 256 B.
+- Three brokers, RF 3, majority ack, steady publishing: throughput +11 to +13% at 1 KiB and +4% at 64 KiB, with lower median latency in every cell.
+- Three brokers, RF 3, publishing while shards are created in bulk and promoted: 2.5 times the throughput of 0.6.2 at 1 KiB and 1.8 times at 64 KiB, with p99 falling from 71-321 ms to 22-42 ms.
+
+### Known issue
+- On CI hardware with three brokers sharing one disk, the p99 latency of steady 64 KiB publishes to an RF 3 stream rose from about 16 ms to between 21 and 50 ms, depending on the runner's disk, after a replication scheduling change (#1801). Throughput and median latency are unchanged, and 1 KiB publishes are unaffected. It is being re-measured on separate machines and is tracked in #2148.
+
 ## [0.7.0-preview.2] - 2026-11-01
 
 0.7.0-preview.2 adds the conditional head trim: a client can now remove the
@@ -5609,7 +6125,8 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.2...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.2...v0.7.0
 [0.7.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.1...v0.7.0-preview.2
 [0.7.0-preview.1]: https://github.com/GetFelix/felix/compare/v0.6.2...v0.7.0-preview.1
 [0.6.2]: https://github.com/GetFelix/felix/compare/v0.6.1...v0.6.2

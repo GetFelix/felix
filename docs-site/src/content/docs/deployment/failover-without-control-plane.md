@@ -16,12 +16,6 @@ leader when it returns. No acknowledged record is lost on the way.
 This ships in 0.7.0. It is off until you turn it on: see
 [Turning it on](#turning-it-on).
 
-<!-- TODO(0.7.0 release day): decide whether elections are on by default for
-new clusters. Today a broker offers them only with FELIX_INTERNAL_ELECTION=true
-and an operator finalizes joint_fence, then replica_election. If the default
-changes, update this page, the status row in
-getting-started/what-felix-is-for.md and the 0.7 upgrade page together. -->
-
 ## Which shards it covers
 
 Elections cover the shards whose control plane can already replace a leader

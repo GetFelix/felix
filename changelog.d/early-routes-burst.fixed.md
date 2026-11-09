@@ -1,1 +1,0 @@
-- A pass that opens many new shards no longer routes the ones it leads before they serve. Replication started work for every led route it saw, so a bulk create's unopened shards held its pass slots and delayed publishes to shards that already took writes.

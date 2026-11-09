@@ -1,1 +1,0 @@
-A follower back from an unclean restart on an idle `Quorum` shard is trusted again without a client write. The leader sends a level follower its last record again with the current commit offset, once per follower process, so the copy can count toward a later fence instead of stalling it.

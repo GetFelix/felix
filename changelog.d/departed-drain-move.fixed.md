@@ -1,1 +1,0 @@
-Placement no longer starts a move, or fences a staged one, off a leader that has deregistered. The fence named the stopped broker at a new generation, and once its lease ran out the move's destination, often the only caught-up follower, could not be promoted, so the shard stayed without a leader.

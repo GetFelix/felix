@@ -1,1 +1,0 @@
-A shard the control plane moved can elect a leader again while the control plane is down. Its followers kept the move's older sets until the next set change and refused to stand on them, even after the moved shard had opened (#2012).

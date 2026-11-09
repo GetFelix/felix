@@ -19,7 +19,7 @@ messages to Felix and ships its own browser client.
 npm install felix-client
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, npm installs the stable release unless you ask for the `preview` tag: `npm install felix-client@preview`. An exact version such as `felix-client@0.7.0-preview.N` works too.
+This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.
 
 The binary ships as one package per platform, declared as optional
 dependencies, so npm fetches only the one your machine needs. Nothing is

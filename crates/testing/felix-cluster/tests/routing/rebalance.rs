@@ -306,8 +306,17 @@ async fn a_broker_that_joins_takes_shards_from_an_overloaded_one() {
     let mut sent = Vec::new();
     for i in 0..40 {
         let payload = format!("keyed-{i}").into_bytes();
+        // Settled: a broker's lease is valid only after its first heartbeat,
+        // which can land after its shards open, and a refusal until then is
+        // right.
         cluster
-            .publish_keyed_via(&first, STREAM, format!("k{i}").as_bytes(), payload.clone())
+            .publish_keyed_via_settled(
+                &first,
+                STREAM,
+                format!("k{i}").as_bytes(),
+                payload.clone(),
+                felix_cluster::wait::budget(Duration::from_secs(30)),
+            )
             .await
             .expect("publish");
         sent.push(payload);
@@ -435,8 +444,17 @@ async fn a_drain_and_a_join_at_the_same_time_converge() {
     let mut sent = Vec::new();
     for i in 0..40 {
         let payload = format!("keyed-{i}").into_bytes();
+        // Settled: a broker's lease is valid only after its first heartbeat,
+        // which can land after its shards open, and a refusal until then is
+        // right.
         cluster
-            .publish_keyed_via(&first, STREAM, format!("k{i}").as_bytes(), payload.clone())
+            .publish_keyed_via_settled(
+                &first,
+                STREAM,
+                format!("k{i}").as_bytes(),
+                payload.clone(),
+                felix_cluster::wait::budget(Duration::from_secs(30)),
+            )
             .await
             .expect("publish");
         sent.push(payload);

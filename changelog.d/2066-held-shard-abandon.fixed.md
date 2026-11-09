@@ -1,1 +1,0 @@
-A leader that gave its copy up after a crash no longer stalls a shard for good: a probe that ran past the generation the copy accepted can reclaim it at the next generation, and a follower that answers but does not vote counts as having no position, so a shard that could lose records is reported held and can be abandoned (#2066).
