@@ -387,32 +387,26 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
     );
 }
 
-/// **Replicas that never take a fence leave the lease in charge.** With both
-/// followers fence-off, no successor can have fenced a majority, so a round
-/// beside the lease passes, while a round alone still cannot confirm. One
-/// fence-off follower is not enough: the other, unreachable, may have been
-/// fenced. GetFelix/felix#2161.
+/// **A replica that no longer takes the fence does not vouch.** A successor
+/// fenced both followers, which then restarted with
+/// `FELIX_INTERNAL_FENCE=false`. Their refusal to take the round says nothing
+/// about the processes the successor fenced, so the deposed leader must not
+/// read it as "no majority could have been fenced". GetFelix/felix#2161.
 #[tokio::test]
-async fn a_round_beside_the_lease_passes_when_no_majority_takes_the_fence() {
+async fn followers_that_restarted_without_the_fence_do_not_confirm_a_read() {
     let mut replicas = Replicas::new().await;
     for replica in replicas.replicas.values_mut() {
+        replica.fenced_at(LEADING + 1).await;
         replica.fences = false;
     }
     let replicas = Arc::new(replicas);
     let (index, _dir) = read_index(&replicas, LEADING).await;
-    index
-        .confirm_beside_lease(&key(), LEADING)
+    let refused = index
+        .confirm(&key(), LEADING)
         .await
-        .expect("no majority takes the fence");
-    assert!(index.confirm(&key(), LEADING).await.is_err());
-
-    let mut replicas = Replicas::new().await;
-    replicas.replicas.get_mut("broker-b").unwrap().fences = false;
-    replicas.replicas.get_mut("broker-c").unwrap().reachable = false;
-    let replicas = Arc::new(replicas);
-    let (index, _dir) = read_index(&replicas, LEADING).await;
+        .expect_err("a read confirmed by followers that never took the round");
     assert!(
-        index.confirm_beside_lease(&key(), LEADING).await.is_err(),
-        "the leader and broker-c take the fence, a majority"
+        matches!(refused, QuorumError::LeadershipLost { .. }),
+        "{refused:?}"
     );
 }

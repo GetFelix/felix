@@ -607,52 +607,6 @@ async fn a_leader_that_does_not_stand_for_election_reads_on_its_lease_until_it_h
     );
 }
 
-/// The round beside the lease passes where the replicas that take the fence
-/// are short of a majority; the round alone does not.
-#[tokio::test]
-async fn a_round_beside_the_lease_passes_where_no_majority_takes_the_fence() {
-    use felix_common::fleet::{
-        FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
-    };
-    struct Unfenceable;
-    #[async_trait::async_trait]
-    impl LeadershipCheck for Unfenceable {
-        async fn confirm(&self, _key: &ShardKey, _generation: u64) -> Result<(), QuorumError> {
-            Err(QuorumError::LeadershipLost {
-                what: "read",
-                detail: "no majority",
-            })
-        }
-        async fn confirm_beside_lease(
-            &self,
-            _key: &ShardKey,
-            _generation: u64,
-        ) -> Result<(), QuorumError> {
-            Ok(())
-        }
-    }
-    let names = [
-        GENERATION_START.name(),
-        MAJORITY_ACK.name(),
-        LEASE_FREE_READS.name(),
-        REPLICA_ELECTION.name(),
-    ];
-    let stream = key("orders");
-    let fleet = Arc::new(FleetGate::new(names));
-    fleet.restart(std::iter::empty());
-    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
-    marks.set_read_check(Arc::new(Unfenceable), false);
-    confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
-        .await
-        .expect("lease, and no successor could have fenced a majority");
-    fleet.observe(names);
-    assert!(
-        confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
-            .await
-            .is_err()
-    );
-}
-
 /// A shard this broker leads at generation 3, with no lease.
 struct Unleased;
 

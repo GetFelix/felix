@@ -2606,11 +2606,12 @@ Every other broker stays on the lease until it hears, and that is safe:
   either refuses it for lacking an enabled feature or answers with the
   enabled set, so it has heard.
 
-Beside the lease, the round has one more way to pass: when the replicas that
-take the fence, the broker included, are short of a majority. Peers running
-with `FELIX_INTERNAL_FENCE=false` never take one, and no successor can have
-fenced a majority of such a set, so the lease decides. Without this, a broker
-whose replicas were mostly fence-off would refuse every read.
+A replica that does not take the fence (`FELIX_INTERNAL_FENCE=false`) never
+vouches, even beside the lease: it may have restarted that way after a
+successor fenced it. So before the finalize, a broker that stands for election
+whose replicas are mostly fence-off refuses `Quorum` reads with
+`leadership_lost`. That fails safe, and such a fleet could never finalize
+`replica_election` anyway: turn election on across the whole fleet.
 `a_read_on_a_replaced_leader_that_never_heard_of_lease_free_reads_is_not_recorded`
 in `crates/testing/felix-sim/src/client/tests.rs` is the stale read without the
 round.

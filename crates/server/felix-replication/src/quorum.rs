@@ -93,18 +93,6 @@ pub trait LeadershipCheck: Send + Sync {
     /// Whether a majority of `key`'s replicas, this broker included, answered
     /// at `generation` in a round that started after this call did.
     async fn confirm(&self, key: &ShardKey, generation: u64) -> Result<(), QuorumError>;
-
-    /// [`Self::confirm`] for a read the lease also confirms
-    /// ([`ReadConfirm::LeaseAndRound`]). It may also pass when the replicas
-    /// that take the fence are short of a majority, since no successor can
-    /// then have fenced one.
-    async fn confirm_beside_lease(
-        &self,
-        key: &ShardKey,
-        generation: u64,
-    ) -> Result<(), QuorumError> {
-        self.confirm(key, generation).await
-    }
 }
 
 struct ReadRounds {
@@ -242,7 +230,9 @@ impl QuorumMarks {
     /// report it. One marked down has already lost its lease, which ends
     /// before the control plane could expire it, and a restart registers
     /// before it holds a lease again, where it is refused or hears the
-    /// enabled set. See "Before a broker hears of the finalize" in
+    /// enabled set. A replica that does not take the fence never vouches,
+    /// even beside the lease: it may have restarted that way after a
+    /// successor fenced it. See "Before a broker hears of the finalize" in
     /// `docs/replication-design.md`.
     pub(crate) fn read_confirm(&self) -> ReadConfirm<'_> {
         let Some(reads) = self.reads.get() else {
@@ -1644,12 +1634,12 @@ async fn confirm_read<S: ShardServing + ?Sized>(
     marks: &QuorumMarks,
     ingress: &S,
 ) -> Result<(), anyhow::Error> {
-    let (check, beside_lease) = match marks.read_confirm() {
+    let check = match marks.read_confirm() {
         ReadConfirm::Lease => return release(ingress, "read"),
-        ReadConfirm::Round(check) => (check, false),
+        ReadConfirm::Round(check) => check,
         ReadConfirm::LeaseAndRound(check) => {
             release(ingress, "read")?;
-            (check, true)
+            check
         }
     };
     let Some(generation) = ingress.generation(shard) else {
@@ -1659,11 +1649,7 @@ async fn confirm_read<S: ShardServing + ?Sized>(
         }
         .into());
     };
-    if beside_lease {
-        Ok(check.confirm_beside_lease(shard, generation).await?)
-    } else {
-        Ok(check.confirm(shard, generation).await?)
-    }
+    Ok(check.confirm(shard, generation).await?)
 }
 
 /// A `Quorum` shard with no replica set to wait for. A write is done. A read

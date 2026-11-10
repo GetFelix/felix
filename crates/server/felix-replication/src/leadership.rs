@@ -65,16 +65,6 @@ struct Finished {
     through: u64,
     /// The last round a majority answered.
     confirmed: u64,
-    /// The last round in which the replicas that speak the fence, this
-    /// broker included, were short of a majority.
-    unfenceable: u64,
-}
-
-/// What one round found.
-#[derive(Debug, Clone, Copy, Default)]
-struct Outcome {
-    confirmed: bool,
-    unfenceable: bool,
 }
 
 impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
@@ -99,37 +89,6 @@ impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
 #[async_trait::async_trait]
 impl<R: PeerRequester + Send + Sync + 'static> LeadershipCheck for ReadIndex<R> {
     async fn confirm(&self, key: &ShardKey, generation: u64) -> Result<(), QuorumError> {
-        let outcome = self.round_after(key, generation).await;
-        answer(outcome.confirmed)
-    }
-
-    async fn confirm_beside_lease(
-        &self,
-        key: &ShardKey,
-        generation: u64,
-    ) -> Result<(), QuorumError> {
-        // No successor can have fenced a majority of a set most of which
-        // never takes a fence, so the lease beside this round decides.
-        let outcome = self.round_after(key, generation).await;
-        answer(outcome.confirmed || outcome.unfenceable)
-    }
-}
-
-fn answer(confirmed: bool) -> Result<(), QuorumError> {
-    if confirmed {
-        Ok(())
-    } else {
-        crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
-        Err(QuorumError::LeadershipLost {
-            what: "read",
-            detail: "no majority confirmed this broker still leads",
-        })
-    }
-}
-
-impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
-    /// What the first round to start after this call found.
-    async fn round_after(&self, key: &ShardKey, generation: u64) -> Outcome {
         let rounds = Arc::clone(
             self.inner
                 .rounds
@@ -166,14 +125,20 @@ impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
             }
             (needed, rounds.finished.subscribe())
         };
-        finished
+        let done = finished
             .wait_for(|finished| finished.through >= needed)
             .await
-            .map(|finished| Outcome {
-                confirmed: finished.confirmed >= needed,
-                unfenceable: finished.unfenceable >= needed,
+            .map(|finished| finished.confirmed >= needed)
+            .unwrap_or(false);
+        if done {
+            Ok(())
+        } else {
+            crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
+            Err(QuorumError::LeadershipLost {
+                what: "read",
+                detail: "no majority confirmed this broker still leads",
             })
-            .unwrap_or_default()
+        }
     }
 }
 
@@ -185,17 +150,14 @@ fn spawn_round<R: PeerRequester + Send + Sync + 'static>(
     number: u64,
 ) {
     tokio::spawn(async move {
-        let outcome = tokio::time::timeout(inner.timeout, inner.round(&key, generation))
+        let confirmed = tokio::time::timeout(inner.timeout, inner.round(&key, generation))
             .await
-            .unwrap_or_default();
+            .unwrap_or(false);
         let mut state = rounds.state.lock();
         rounds.finished.send_modify(|finished| {
             finished.through = number;
-            if outcome.confirmed {
+            if confirmed {
                 finished.confirmed = number;
-            }
-            if outcome.unfenceable {
-                finished.unfenceable = number;
             }
         });
         if state.queued {
@@ -223,13 +185,8 @@ fn spawn_round<R: PeerRequester + Send + Sync + 'static>(
 
 impl<R: PeerRequester + Send + Sync> Inner<R> {
     /// One round: whether a majority of `key`'s replicas, this broker
-    /// included, answered that no leader newer than `generation` reached it,
-    /// and whether the replicas that speak the fence are short of a majority.
-    async fn round(&self, key: &ShardKey, generation: u64) -> Outcome {
-        let confirmed = |confirmed| Outcome {
-            confirmed,
-            unfenceable: false,
-        };
+    /// included, answered that no leader newer than `generation` reached it.
+    async fn round(&self, key: &ShardKey, generation: u64) -> bool {
         let routing_key = felix_router::ShardKey {
             tenant_id: key.tenant_id.clone(),
             namespace: key.namespace.clone(),
@@ -242,10 +199,10 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
         };
         let local = self.router.local_node_id().to_string();
         let Some(route) = self.router.snapshot().get(&routing_key).cloned() else {
-            return confirmed(false);
+            return false;
         };
         if route.generation != generation || route.leader.node_id != local {
-            return confirmed(false);
+            return false;
         }
         let (log_kind, log) = match key.kind {
             ShardKind::Stream => (felix_broker::LogKind::Stream, ReplicaLog::Stream),
@@ -288,9 +245,8 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
         let needed = crate::quorum::majority_of(replicas.len());
         let mut answered = usize::from(own);
         if answered >= needed {
-            return confirmed(true);
+            return true;
         }
-        let mut unsupported = 0;
         let mut asks: futures::stream::FuturesUnordered<_> = replicas
             .iter()
             .map(|replica| {
@@ -309,21 +265,14 @@ impl<R: PeerRequester + Send + Sync> Inner<R> {
         while let Some(answer) = asks.next().await {
             // A refusal of any kind is a replica that does not vouch for this
             // generation: a newer leader's fence, or one it cannot check.
-            match answer {
-                Ok(InternalMessage::FenceOk(_)) => {
-                    answered += 1;
-                    if answered >= needed {
-                        return confirmed(true);
-                    }
+            if matches!(answer, Ok(InternalMessage::FenceOk(_))) {
+                answered += 1;
+                if answered >= needed {
+                    return true;
                 }
-                Err(crate::peer::PeerError::Unsupported { .. }) => unsupported += 1,
-                _ => {}
             }
         }
-        Outcome {
-            confirmed: false,
-            unfenceable: replicas.len() + 1 - unsupported < needed,
-        }
+        false
     }
 }
 
