@@ -398,10 +398,28 @@ pins it.
 The adapter stays thin: openraft types do not leave `felix-storage::raft_log`
 and the engine module that drives it, so an API change is contained there.
 The control plane already keeps openraft types inside `src/raft/` for the
-same reason (`services/felix-controlplane-service/Cargo.toml:62`), and it
-depends on `loosen-follower-log-revert` so a member with a wiped volume can
-rejoin (`Cargo.toml:63-68`). The pinned version must keep that behaviour, and
-the chaos test that caught its absence stays.
+same reason (`services/felix-controlplane-service/Cargo.toml:62`).
+
+A member that rejoins after its volume was wiped reports a log that went
+backwards. Without permission for that, the leader trips over the reverted
+log, which is the error the control plane's chaos test caught
+(`Cargo.toml:63-68`). On 0.9 the `loosen-follower-log-revert` feature allows
+it, and the control plane keeps that feature until it moves. On 0.10 the
+feature is deprecated in favour of `Config::allow_log_reversion`, which the
+adapter sets for every group.
+
+Checklist for each openraft version change:
+
+1. Pin the exact version in `Cargo.toml` and `Cargo.lock`.
+2. Allow log reversion: `allow_log_reversion` on 0.10, the
+   `loosen-follower-log-revert` feature on 0.9.
+3. Check the follower-side leader lease still equals `election_timeout_max`,
+   and that a follower still refuses votes for that long, since the lease
+   margin depends on both (Decisions, 5).
+4. Check that openraft types still stay inside `felix-storage::raft_log` and
+   the engine module.
+5. Run openraft's storage suite, the crash-point tests, the control-plane
+   chaos test and the history nemeses on the new version.
 
 ### Many groups on one broker
 
@@ -716,8 +734,10 @@ today (`CLOCK_BOOTTIME` on Linux, see "The clock assumption, stated
 precisely" in `replication-design.md`).
 
 **The margin.** Followers refuse to vote for `election_timeout_max` after they
-last heard the leader. openraft 0.9 fixes its follower-side leader lease at
-that value (`raft_core.rs:1476`). Clocks drift in rate by at most `ρ`, so the
+last heard the leader. openraft 0.10 sets its follower-side `leader_lease` to
+`election_timeout_max` (`engine/engine_config.rs:59`; `:56` in 0.9) and refuses
+a vote while that lease is live (`engine/engine_impl.rs:393`; `:282` in 0.9).
+The value is the same in both versions. Clocks drift in rate by at most `ρ`, so the
 leader's lease must satisfy
 
     lease * (1 + ρ) / (1 - ρ) <= election_timeout_max
