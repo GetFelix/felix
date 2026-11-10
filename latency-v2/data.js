@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794283574545,
+  "lastUpdate": 1794291703802,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64548,6 +64548,72 @@ window.BENCHMARK_DATA = {
             "range": "30.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 364.00\nmean: 357.00\nstdev: 30.74\ncv: 8.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b39040042b7a8d9eaadcf6686baec04b3b6b4c8f",
+          "message": "fix(broker): send the first heartbeat at startup (#2150) (#2158)\n\n* fix(broker): send the first heartbeat at startup, not an interval later\n\nThe lease is invalid until a beat is answered, so a new broker refused\nevery publish through the admission fence for a full interval. The lease\nis still only what the control plane grants; only the send time moves.\n\nSpec-Unaffected: only when the first heartbeat is sent; the lease grant, expiry and renewal rules are unchanged.\n\n* fix(broker): pace re-registration after the control plane marks a broker down\n\nThe first beat is immediate, so a control plane answering down right after\nregistration would be re-registered with in a tight loop. Wait one jittered\nheartbeat interval first.\n\nSpec-Unaffected: pacing of a retry loop only; lease and membership rules are unchanged.\n\n* test(sim): re-pin the seed scenarios the immediate first heartbeat moved\n\nThe power-cut pin moves from seed 1 to seed 3, which cuts the power inside an\nappend and is repaired. The seat-race and abandon pins keep their seeds and\nmatch the shard and generation with wildcards, as the helper allows.\n\nSpec-Unaffected: test pins only; no protocol or spec change.\n\n* test(sim): let the old leader hear the finalized features before the read test cuts it off\n\nThe broker's first beat now lands before start finalizes the fleet features,\nso a cut-off broker still reads by lease instead of by round.\n\nSpec-Unaffected: test precondition only.\n\n* test(sim): re-pin the abandon scenario to seed 44 after merging main\n\nSpec-Unaffected: test pin and docs only.",
+          "timestamp": "2026-11-10T06:16:58Z",
+          "tree_id": "a9bbb6878f6966491bc927938027672cd1d6a24a",
+          "url": "https://github.com/GetFelix/felix/commit/b39040042b7a8d9eaadcf6686baec04b3b6b4c8f"
+        },
+        "date": 1794291697770,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 61,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 61.00\nmean: 61.40\nstdev: 0.89\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 83,
+            "range": "8.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 86.60\nstdev: 8.85\ncv: 10.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 105,
+            "range": "157.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 175.20\nstdev: 157.54\ncv: 89.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 78.00\nstdev: 1.22\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "11.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 173.20\nstdev: 11.37\ncv: 6.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "263.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 452.40\nstdev: 263.61\ncv: 58.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
