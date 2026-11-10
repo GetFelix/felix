@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794261431561,
+  "lastUpdate": 1794272036534,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50596,6 +50596,58 @@ window.BENCHMARK_DATA = {
             "range": "18740.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1738077.44\nmean: 1739351.64\nstdev: 18740.98\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "34e4218f0682222585aa90cd373990b9eff2716c",
+          "message": "fix(broker): fold histogram samples on a timer so an unscraped broker does not grow (#2160)\n\n* fix(broker): fold histogram samples on a timer so an unscraped broker does not grow\n\nThe Prometheus recorder keeps every histogram sample until render or upkeep runs. The writer records felix_sub_conn_queue_depth per command batch, so memory rose with traffic until a scrape. A thread now runs upkeep every five seconds, and the soak harness does the same.\n\n* test(broker): cover the upkeep wiring; start the same upkeep in the control plane",
+          "timestamp": "2026-11-10T00:48:08Z",
+          "tree_id": "39e48e745422e20b60ae9341ebfdccaef797e992",
+          "url": "https://github.com/GetFelix/felix/commit/34e4218f0682222585aa90cd373990b9eff2716c"
+        },
+        "date": 1794272035975,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513832.75,
+            "range": "37401.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513832.75\nmean: 501258.15\nstdev: 37401.36\ncv: 7.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513832.75,
+            "range": "37401.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513832.75\nmean: 501258.15\nstdev: 37401.36\ncv: 7.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120293.81,
+            "range": "854.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120293.81\nmean: 120547.61\nstdev: 854.79\ncv: 0.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1202938.13,
+            "range": "8547.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1202938.13\nmean: 1205476.15\nstdev: 8547.92\ncv: 0.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
