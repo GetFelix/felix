@@ -81,7 +81,7 @@ Demonstrates that RBAC mutations applied through the control plane immediately
 change what the broker allows for the same principal (after reissuing a Felix
 access token, since permissions are embedded in tokens).
 
-This demo uses an in-memory control-plane store (no Postgres required).
+This demo uses an in-memory control-plane store.
 
 ### Run
 
@@ -109,8 +109,8 @@ STEP 18 cache allowed: PASS
 Location: `demos/cross_tenant_isolation/`
 
 Demonstrates that tokens minted for one tenant cannot access another tenant's
-resources, even with the same upstream identity. Uses a Postgres-backed control
-plane, a real broker, and a fake ES256 IdP.
+resources, even with the same upstream identity. Uses a real control
+plane (in-memory store), a real broker, and a fake ES256 IdP.
 
 ### Run
 

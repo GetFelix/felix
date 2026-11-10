@@ -103,7 +103,7 @@ cargo run --release --manifest-path demos/slow-consumer/Cargo.toml
   authorization changes in the broker without restarts.
 - Uses a fake ES256 OIDC IdP and the real Felix token exchange flow.
 - Exercises publish/subscribe/cache operations before and after RBAC updates.
-- Uses an in-memory control-plane store (no Postgres required).
+- Uses an in-memory control-plane store.
 
 ```bash
 cargo run --manifest-path demos/rbac-live/Cargo.toml
