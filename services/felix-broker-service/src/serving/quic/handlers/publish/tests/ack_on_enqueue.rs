@@ -18,7 +18,10 @@ fn queue_and_worker(leader: &Leader) -> (PublishContext, TestReceiver, PublishCo
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );

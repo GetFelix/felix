@@ -31,7 +31,7 @@ use felix_authz::{
     cache_resource, stream_resource,
 };
 use felix_broker::{Broker, SequenceReuse};
-use felix_replication::engine::{Engine, Hybrid};
+use felix_replication::engine::Engine;
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
     CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
@@ -64,7 +64,7 @@ pub struct ForwardingHandler {
     /// happened to reach — honoured when it talked to the leader, silently
     /// downgraded to `Leader` through any other broker, which is where a
     /// failover then lost the record.
-    engine: StreamEngine,
+    engine: Arc<StreamEngine>,
     quorum_timeout: std::time::Duration,
     /// Verifies the client credential a forward carries, against the same
     /// keys a direct request is checked with.
@@ -74,14 +74,16 @@ pub struct ForwardingHandler {
 impl ForwardingHandler {
     pub fn new(
         broker: Arc<Broker>,
-        ingress: Arc<IngressRouter>,
+        engine: Arc<StreamEngine>,
         router: Arc<ShardRouter>,
         advertise_addr: String,
-        marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
         quorum_timeout: std::time::Duration,
         auth: Arc<BrokerAuth>,
     ) -> Self {
-        let engine = Hybrid::new(marks, Some(Arc::clone(&ingress)));
+        let ingress = engine
+            .serving()
+            .cloned()
+            .expect("a forwarding handler needs an engine with shard routing");
         Self {
             broker,
             ingress,
@@ -91,6 +93,11 @@ impl ForwardingHandler {
             quorum_timeout,
             auth,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<StreamEngine> {
+        &self.engine
     }
 
     pub(crate) async fn apply(&self, publish: ForwardPublish) -> InternalMessage {

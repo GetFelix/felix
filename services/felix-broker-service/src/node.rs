@@ -48,6 +48,7 @@ use crate::config::{self, DurableStorageConfig};
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore, TenantCatalog};
 use crate::serving::mqtt::{BrokerMounts, BrokerWrites};
 use crate::serving::tls::ClientTls;
+use crate::shards::routing as shard_routing;
 use felix_replication as replication;
 
 /// Start the broker and run until the provided `shutdown` future resolves.
@@ -290,12 +291,19 @@ where
     let quorum_marks = Arc::new(replication::quorum::QuorumMarks::with_fleet(Arc::clone(
         &fleet,
     )));
+    // One engine for every user: client listeners, the Kafka and MQTT writes,
+    // forwarded writes, the read bounds and the peer handler. Its replica is
+    // set when the peer listener binds.
+    let engine = Arc::new(shard_routing::StreamEngine::new(
+        Some(Arc::clone(&quorum_marks)),
+        ingress_router.clone(),
+    ));
     let startup::Opened {
         broker,
         durable_storage,
         storage_id,
         unclean,
-    } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks).await?;
+    } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -385,17 +393,15 @@ where
         &broker,
         &auth,
         listeners::KafkaClusterView {
-            ingress: &ingress_router,
+            engine: &engine,
             client_endpoints: &client_endpoints,
-            quorum_marks: &quorum_marks,
             quotas: &limits.tenant_rates,
         },
     )
     .await?;
     let mqtt_writes = BrokerWrites::new(
         Arc::clone(&broker),
-        ingress_router.clone(),
-        Some(Arc::clone(&quorum_marks)),
+        Arc::clone(&engine),
         std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
     )
     .with_quotas(Arc::clone(&limits.tenant_rates));
@@ -419,10 +425,9 @@ where
             connections: &connections,
             seeded: &clients,
             gate_readiness_on_sync,
-            ingress_router: &ingress_router,
+            engine: &engine,
             peers: &peers,
             lease: &lease,
-            quorum_marks: &quorum_marks,
             shard_status: &shard_status,
             client_endpoints: &client_endpoints,
             limits: &limits,
@@ -535,6 +540,7 @@ where
     let peer_listener = cluster::bind_peer_listener(
         &config,
         &cluster,
+        &engine,
         &broker,
         &quorum_marks,
         &auth,

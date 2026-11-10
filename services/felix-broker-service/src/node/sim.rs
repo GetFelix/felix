@@ -160,6 +160,7 @@ pub struct OpenedBroker<L> {
     lease: Arc<LeaseState>,
     fleet: Arc<FleetGate>,
     quorum_marks: Arc<QuorumMarks>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
     handler: Arc<dyn PeerRequestHandler>,
     prefetch: Option<replication::confirmed::Prefetch>,
     capabilities: PeerCapabilities,
@@ -177,6 +178,7 @@ pub struct SimBroker {
     lifecycle: Arc<tokio::sync::Mutex<ShardLifecycle>>,
     ownership: Arc<tokio::sync::RwLock<ShardOwnership>>,
     quorum_marks: Arc<QuorumMarks>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
     lease: Arc<LeaseState>,
     fleet: Arc<FleetGate>,
     seeded: CancellationToken,
@@ -263,6 +265,12 @@ impl SimBroker {
             ingress.fence().bind_lease(Arc::clone(&lease));
         }
         let quorum_marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
+        let engine = Arc::new(crate::shards::routing::StreamEngine::new(
+            Some(Arc::clone(&quorum_marks)),
+            cluster
+                .as_ref()
+                .map(|(_, ingress, _, _)| Arc::clone(ingress)),
+        ));
         let credential = Some(NodeCredential::new("sim"));
         let link = Some(link);
         let registered = membership::await_registered(&broker_config, &link, &credential).await?;
@@ -278,18 +286,19 @@ impl SimBroker {
             &cluster,
             &fleet,
             &quorum_marks,
+            &engine,
         )
         .await
         .context("open the broker")?;
         super::gate_record_generations(&broker_config, &broker, &fleet);
-        let (router, ingress, _, _) = cluster.as_ref().expect("a cluster member has shard state");
+        let (router, _, _, _) = cluster.as_ref().expect("a cluster member has shard state");
         // Peers are not authenticated in the simulator; nothing here presents
         // a client credential.
         let auth = Arc::new(BrokerAuth::new("http://sim.invalid".to_string()));
         let (handler, prefetch) = cluster::peer_handler(
             &broker_config,
             router,
-            ingress,
+            &engine,
             &broker,
             &quorum_marks,
             &auth,
@@ -321,6 +330,7 @@ impl SimBroker {
             lease,
             fleet,
             quorum_marks,
+            engine,
             handler,
             prefetch,
             registered,
@@ -376,6 +386,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             lease,
             fleet,
             quorum_marks,
+            engine,
             prefetch,
             registered,
             registered_watch,
@@ -501,6 +512,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             lifecycle,
             ownership,
             quorum_marks,
+            engine,
             lease,
             fleet,
             seeded,
@@ -536,6 +548,11 @@ impl SimBroker {
 
     pub fn ownership(&self) -> &Arc<tokio::sync::RwLock<ShardOwnership>> {
         &self.ownership
+    }
+
+    /// The engine every path of this broker shares.
+    pub fn engine(&self) -> &Arc<crate::shards::routing::StreamEngine> {
+        &self.engine
     }
 
     pub fn quorum_marks(&self) -> &Arc<QuorumMarks> {

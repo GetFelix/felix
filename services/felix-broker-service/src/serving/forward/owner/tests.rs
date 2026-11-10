@@ -266,10 +266,12 @@ fn handler_routed(
     ingress.publish_servable(servable);
     ForwardingHandler::new(
         broker,
-        ingress,
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            marks,
+            Some(ingress),
+        )),
         router,
         "10.0.0.1:7001".to_string(),
-        marks,
         timeout,
         auth,
     )
@@ -974,10 +976,12 @@ mod fence {
     fn owner(leader: &Leader, credentials: &Credentials) -> ForwardingHandler {
         ForwardingHandler::new(
             Arc::clone(&leader.broker),
-            Arc::clone(&leader.ingress),
+            Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             Arc::clone(&leader.router),
             "10.0.0.1:7001".to_string(),
-            None,
             Duration::from_secs(1),
             Arc::clone(&credentials.auth),
         )
@@ -1401,10 +1405,12 @@ mod quorum_waits {
     ) -> ForwardingHandler {
         ForwardingHandler::new(
             Arc::clone(&leader.broker),
-            Arc::clone(&leader.ingress),
+            Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             Arc::clone(&leader.router),
             "10.0.0.1:7001".to_string(),
-            Some(Arc::clone(marks)),
             TIMEOUT,
             Arc::clone(&credentials.auth),
         )

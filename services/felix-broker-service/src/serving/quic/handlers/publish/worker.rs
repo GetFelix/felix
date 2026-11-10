@@ -48,17 +48,13 @@ pub(crate) fn build_tracked_publish_context(
     work: &TaskTracker,
 ) -> PublishContext {
     let ClusterContext {
-        ingress,
+        engine,
         peers,
         lease,
-        marks,
         client_endpoints,
         shard_status,
     } = cluster;
-    let engine = Arc::new(felix_replication::engine::Hybrid::new(
-        marks,
-        ingress.clone(),
-    ));
+    let ingress = engine.serving().cloned();
     let quorum_timeout = std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1));
     // Process-wide, not per connection: executors bound how many publishes
     // are inside broker state at once, and one pool per connection turned

@@ -9,13 +9,14 @@ use std::sync::Mutex;
 
 use felix_broker::ConsistencyLevel;
 use felix_replication::peer::pool::PeerError;
+use felix_replication::quorum::QuorumMarks;
 use felix_router::{NodeRef, RegionRouter, ShardRouter};
 use felix_wire::internal::{
     ForwardPublish, ForwardPublishError, ForwardPublishOk, InternalMessage, Kind,
 };
 
 use super::*;
-use crate::shards::routing::routing_table_from;
+use crate::shards::routing::{IngressRouter, routing_table_from};
 use crate::shards::watch::ShardAssignment;
 
 const LOCAL: &str = "broker-a";
@@ -160,8 +161,10 @@ async fn forwarding(
     broker.record_headers_when(|| true);
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Some(ingress(OWNER)),
-        Some(Arc::new(QuorumMarks::new())),
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            Some(Arc::new(QuorumMarks::new())),
+            Some(ingress(OWNER)),
+        )),
         Duration::from_secs(1),
     )
     .with_forwarding(Arc::clone(owner), budget);
@@ -315,7 +318,14 @@ async fn a_batch_that_cannot_be_forwarded_is_refused_as_not_owner() {
     let dir = tempfile::tempdir().expect("tempdir");
     let broker = broker(true, dir.path()).await;
     broker.record_headers_when(|| true);
-    let alone = BrokerWrites::new(broker, Some(ingress(OWNER)), None, Duration::from_secs(1));
+    let alone = BrokerWrites::new(
+        broker,
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            None,
+            Some(ingress(OWNER)),
+        )),
+        Duration::from_secs(1),
+    );
     assert_eq!(
         alone.write(batch(0, 41, &["plant/a"])).await,
         Err(WriteError::Refused(Refusal::NotOwner))
@@ -334,8 +344,10 @@ async fn a_quorum_batch_waits_for_the_majority_on_the_owner() {
     marks.publish(&shard(), GENERATION, 0);
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Some(ingress(LOCAL)),
-        Some(Arc::clone(&marks)),
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            Some(Arc::clone(&marks)),
+            Some(ingress(LOCAL)),
+        )),
         Duration::from_millis(200),
     );
 
@@ -361,8 +373,10 @@ async fn a_shard_not_open_here_is_refused_as_not_owner() {
     ingress.publish_servable(HashMap::default());
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Some(ingress),
-        None,
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            None,
+            Some(ingress),
+        )),
         Duration::from_secs(1),
     );
 
@@ -403,8 +417,10 @@ async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
     let owner = ScriptedOwner::new([ok()]);
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Some(Arc::clone(&ingress)),
-        Some(Arc::clone(&marks)),
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            Some(Arc::clone(&marks)),
+            Some(Arc::clone(&ingress)),
+        )),
         Duration::from_secs(1),
     )
     .with_forwarding(Arc::clone(&owner), Duration::from_secs(3));
@@ -451,8 +467,10 @@ async fn a_quorum_batch_waits_its_timeout_then_is_released_by_the_mark() {
     let timeout = Duration::from_millis(300);
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Some(ingress(LOCAL)),
-        Some(Arc::clone(&marks)),
+        Arc::new(crate::shards::routing::StreamEngine::new(
+            Some(Arc::clone(&marks)),
+            Some(ingress(LOCAL)),
+        )),
         timeout,
     );
 

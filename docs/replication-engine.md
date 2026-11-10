@@ -1026,7 +1026,7 @@ unit, integration and simulator seed tests pass unchanged after each.
    they must exist earlier. `engine::elections` builds the elected-leadership
    table before the routing feed starts, since the feed reads it, and
    `engine::replica_handler` builds the follower side when the peer listener
-   binds, before the shard tasks run. `Hybrid::with_replica` hands that
+   binds, before the shard tasks run. `Hybrid::set_replica` hands that
    handler to the engine, and `Engine::handle` answers every replication
    request with it. `BrokerPeerHandler` keeps forwarded writes and sends the
    fifteen replication kinds to `handle`. The tasks and their arguments are
@@ -1039,12 +1039,17 @@ unit, integration and simulator seed tests pass unchanged after each.
    and the `CATCH_UP_BOUND`, `EngineHost` and `HybridHost` re-exports had no
    user and are removed. No logic changed. No demo uses the crate.
 8. One shared engine: `node.rs` builds a single `Arc<StreamEngine>` and hands
-   it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler` and Kafka. This
-   removes the `(ingress, marks)` inputs on those constructors and the test
-   literals that set `marks` on `ClusterContext`, `BrokerWrites::new` and
-   `ForwardingHandler::new`. Until then `cluster.rs` `peer_handler` builds a
-   second `StreamEngine` with `with_replica` beside the shared one in `node.rs`;
-   this step folds it into the shared engine.
+   it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler`, Kafka, the
+   committed-read bounds and the peer handler.
+   Done as built: the `(ingress, marks)` inputs on `BrokerWrites::new`,
+   `ForwardingHandler::new` and `BrokerCluster::new` are gone, and
+   `ClusterContext` carries the engine in place of `ingress` and `marks`. The
+   replica needs the broker, `unclean` and the confirmed routes, which exist
+   only after the client listeners are built, so `Hybrid` holds it in a
+   `OnceLock` and `cluster.rs` `peer_handler` sets it with `set_replica` once
+   the peer listener binds. A second set is an error. Until then
+   `Engine::handle` refuses a replication request as `Unavailable`, which a
+   peer retries.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.
