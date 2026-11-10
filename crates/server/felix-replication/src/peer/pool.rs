@@ -142,7 +142,7 @@ impl PeerPool {
     /// [`Self::request`], with the identity of the connection the answer
     /// came over. Unlike [`Self::identity`] this says who answered: a pooled
     /// connection can outlive the process it was opened to.
-    pub async fn request_identified(
+    pub(crate) async fn request_identified(
         &self,
         node_id: &str,
         addr: SocketAddr,
@@ -158,7 +158,7 @@ impl PeerPool {
     }
 
     /// What `node_id` can do, dialling it if there is no connection yet.
-    pub async fn capabilities(
+    pub(crate) async fn capabilities(
         &self,
         node_id: &str,
         addr: SocketAddr,
@@ -168,7 +168,7 @@ impl PeerPool {
 
     /// The storage identity and incarnation `node_id` gave in its
     /// handshake, dialling it if there is no connection yet.
-    pub async fn identity(
+    pub(crate) async fn identity(
         &self,
         node_id: &str,
         addr: SocketAddr,
@@ -177,7 +177,7 @@ impl PeerPool {
     }
 
     /// Whether this broker offers the promotion fence to its peers.
-    pub fn offers_fence(&self) -> bool {
+    pub(crate) fn offers_fence(&self) -> bool {
         self.config
             .capabilities()
             .contains(crate::promotion::REQUIRED)
@@ -190,7 +190,8 @@ impl PeerPool {
     }
 
     /// Live connections across all peers. Test and metrics surface.
-    pub async fn connection_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) async fn connection_count(&self) -> usize {
         let peers: Vec<_> = self.peers.lock().values().cloned().collect();
         let mut total = 0;
         for peer in peers {

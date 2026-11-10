@@ -712,7 +712,7 @@ impl ReplicaHandler {
 
     /// Answer a pre-vote. Writes nothing, so it is safe for a copy that does
     /// not vote: that one answers `NotVoting`, which no asker counts.
-    pub async fn pre_vote(&self, request: PreVote) -> InternalMessage {
+    pub(crate) async fn pre_vote(&self, request: PreVote) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let log_kind = super::log_kind(request.log);
         let key = super::shard_key(&request.shard, log_kind);

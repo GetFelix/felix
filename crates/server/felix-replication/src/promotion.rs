@@ -46,7 +46,7 @@ use crate::replica::last_generation;
 
 pub(crate) mod joint;
 
-pub use joint::Joint;
+pub(crate) use joint::Joint;
 use joint::JointSets;
 pub(crate) use joint::set_before;
 
@@ -58,7 +58,8 @@ pub const REQUIRED: PeerCapabilities = PeerCapabilities::FENCE.union(PeerCapabil
 
 /// What a replica must have offered for a cache shard to be fenced: its
 /// counter log is fenced and read as well.
-pub const REQUIRED_FOR_CACHES: PeerCapabilities = REQUIRED.union(PeerCapabilities::CACHE_FENCE);
+pub(crate) const REQUIRED_FOR_CACHES: PeerCapabilities =
+    REQUIRED.union(PeerCapabilities::CACHE_FENCE);
 
 /// Where a promoted shard waits before it serves, as the broker keeps it.
 #[async_trait::async_trait]

@@ -57,7 +57,7 @@ pub struct Reporter {
 impl Reporter {
     /// Start the flushing task. It runs until `shutdown`, or until every
     /// `Reporter` handle is dropped.
-    pub fn spawn<L: ControlPlaneLink>(
+    pub(crate) fn spawn<L: ControlPlaneLink>(
         to: ReportTo<L>,
         shutdown: CancellationToken,
     ) -> (Self, tokio::task::JoinHandle<()>) {
@@ -71,7 +71,7 @@ impl Reporter {
     /// `false` means it did not, and the caller must leave its quorum mark
     /// where it was: releasing a publish on a report the control plane never
     /// saw is the window the report-before-mark ordering exists to close.
-    pub async fn send(&self, report: ShardReport) -> bool {
+    pub(crate) async fn send(&self, report: ShardReport) -> bool {
         let (landed, answer) = oneshot::channel();
         if self.tx.send(Pending { report, landed }).await.is_err() {
             // The flushing task is gone, which means the broker is shutting

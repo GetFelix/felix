@@ -10,8 +10,8 @@
 //! travels over it belongs elsewhere: forwarding in the broker service's
 //! `serving::forward`, and replication in the rest of this crate.
 
-pub mod capabilities;
-pub mod codec;
+pub(crate) mod capabilities;
+pub(crate) mod codec;
 pub mod config;
 pub mod identity;
 pub mod metrics;
@@ -23,8 +23,8 @@ mod partition;
 
 pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
-pub use identity::{Incarnation, PeerIdentity};
-pub use partition::PartitionInjector;
+pub(crate) use identity::{Incarnation, PeerIdentity};
+pub(crate) use partition::PartitionInjector;
 pub use pool::{PeerError, PeerPool, PeerRequester};
 pub use server::{PeerRequestHandler, PeerServer, UnavailableHandler};
 

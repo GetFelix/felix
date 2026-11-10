@@ -163,7 +163,7 @@ impl ReplicaHandler {
 
     /// Answer no promotion fence from a copy this broker led before an
     /// unclean start. See [`Self::fence`].
-    pub fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
+    pub(crate) fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
         self.unclean = Some(unclean);
         self
     }
@@ -171,7 +171,7 @@ impl ReplicaHandler {
     /// Have a copy with no promise on disk check the control plane's
     /// confirmed assignment before it takes a leader. See
     /// [`crate::confirmed`].
-    pub fn with_confirmed_routes(
+    pub(crate) fn with_confirmed_routes(
         mut self,
         confirmed: Arc<dyn crate::confirmed::ConfirmedRoutes>,
     ) -> Self {
@@ -183,7 +183,7 @@ impl ReplicaHandler {
     /// retries it up to `retry` apart: the driver's tick, which is the
     /// control-plane sync interval. Without it the retry is waited for up to
     /// 5 s. Call before [`Self::confirmed_prefetch`].
-    pub fn with_leader_retry(mut self, retry: Duration) -> Self {
+    pub(crate) fn with_leader_retry(mut self, retry: Duration) -> Self {
         self.confirmed_reads = Arc::new(crate::confirmed::ConfirmedReads::new(retry));
         self
     }
@@ -191,7 +191,7 @@ impl ReplicaHandler {
     /// What starts a copy's confirmed read when the routing view first names
     /// it, so the leader's first request finds the answer. `None` without
     /// [`Self::with_confirmed_routes`].
-    pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
+    pub(crate) fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
         self.confirmed.as_ref().map(|routes| {
             crate::confirmed::Prefetch::new(
                 Arc::clone(&self.confirmed_reads),
@@ -203,14 +203,14 @@ impl ReplicaHandler {
 
     /// Read fleet features from `marks`: under `joint_fence` a voter of the
     /// set a joint fence leaves answers it once no route names it.
-    pub fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
+    pub(crate) fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
         self.fleet = Some(marks);
         self
     }
 
     /// Name this broker's storage identity, which a set naming another one
     /// for this broker contradicts: that copy was wiped (#1331).
-    pub fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
+    pub(crate) fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
         self.local_storage = Some(storage);
         self
     }
@@ -219,7 +219,7 @@ impl ReplicaHandler {
     /// storage identity, so every shard log it creates without a kept set is
     /// a learner of a set past generation 1 (`ReplacedIdLearner` in
     /// `docs/formal/FelixShard.tla`).
-    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+    pub(crate) fn with_replaced_storage(mut self, replaced: bool) -> Self {
         self.replaced_storage = replaced;
         self
     }
@@ -227,7 +227,7 @@ impl ReplicaHandler {
     /// Refuse a candidate's fence for this long after hearing the shard's
     /// leader. The suspicion window: a replica that would not yet name its
     /// leader as gone does not help replace it either.
-    pub fn with_stickiness(mut self, stickiness: Duration) -> Self {
+    pub(crate) fn with_stickiness(mut self, stickiness: Duration) -> Self {
         self.stickiness = stickiness;
         self
     }
@@ -251,7 +251,7 @@ impl ReplicaHandler {
     /// keeping, and the leader's copy is the one the majority holds. The
     /// records go, the generation history goes with them, and the answer is
     /// where the new copy begins.
-    pub async fn rebuild(
+    pub(crate) async fn rebuild(
         &self,
         sender: Option<&str>,
         request: ReplicateRebuild,
@@ -474,7 +474,7 @@ impl ReplicaHandler {
         }
     }
 
-    pub async fn bootstrap(
+    pub(crate) async fn bootstrap(
         &self,
         sender: Option<&str>,
         request: ReplicateBootstrap,
@@ -1213,7 +1213,7 @@ impl ReplicaHandler {
     /// counts the answer by its attestation, which says the copy's promises
     /// or its log count for nothing. Every ballot and set refusal stands.
     /// Group and counter logs carry no attestation and refuse as before.
-    pub async fn fence_from(
+    pub(crate) async fn fence_from(
         &self,
         sender: Option<&str>,
         caller: PeerCapabilities,

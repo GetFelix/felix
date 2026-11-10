@@ -171,7 +171,7 @@ impl QuorumMarks {
     /// record of its own generation ([`counted_offset`]). True once the fleet
     /// finalized `generation_start`, which is also when leaders start writing
     /// the record that lets the mark cover what they inherited.
-    pub fn own_generation_only(&self) -> bool {
+    pub(crate) fn own_generation_only(&self) -> bool {
         self.fleet
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
@@ -327,11 +327,11 @@ impl QuorumMarks {
 
     /// Where this broker records the leaderships the replicas elected. Only
     /// the first call counts.
-    pub fn set_elections(&self, elections: Arc<crate::election::Elections>) {
+    pub(crate) fn set_elections(&self, elections: Arc<crate::election::Elections>) {
         let _ = self.elections.set(elections);
     }
 
-    pub(crate) fn elections(&self) -> Option<&Arc<crate::election::Elections>> {
+    pub fn elections(&self) -> Option<&Arc<crate::election::Elections>> {
         self.elections.get()
     }
 
@@ -504,7 +504,7 @@ impl QuorumMarks {
 
     /// Whether the control plane last registered this node under another
     /// storage identity.
-    pub fn replaced_storage(&self) -> bool {
+    pub(crate) fn replaced_storage(&self) -> bool {
         self.local_storage
             .get()
             .is_some_and(|(_, replaced)| *replaced)
@@ -675,7 +675,7 @@ impl QuorumMarks {
     }
 
     /// Keep only the shards named, in both tables.
-    pub fn retain(&self, live: &[ShardKey]) {
+    pub(crate) fn retain(&self, live: &[ShardKey]) {
         self.shards.retain(live);
         self.counters.retain(live);
         self.timeout_logged
@@ -689,8 +689,11 @@ impl QuorumMarks {
         self.offset_at(key, self.incarnation_of(key), generation)
     }
 
-    /// See [`MarkTable::wait_for`].
-    pub async fn wait_for(
+    /// Wait until a majority holds every offset below `offset`.
+    ///
+    /// `offset` is one past the last record of the batch, so this returns when
+    /// the batch itself is on a majority.
+    pub(crate) async fn wait_for(
         &self,
         key: &ShardKey,
         generation: u64,
@@ -709,7 +712,7 @@ impl QuorumMarks {
     }
 
     /// See [`MarkTable::wait_while_leading`].
-    pub async fn wait_while_leading(
+    pub(crate) async fn wait_while_leading(
         &self,
         key: &ShardKey,
         leading: impl Fn() -> Option<u64>,
@@ -818,12 +821,12 @@ impl MarkTable {
     /// Dropping the sender ends every wait on it, which is what turns a
     /// leadership loss into a failed publish rather than one that hangs until
     /// its timeout.
-    pub fn forget(&self, key: &ShardKey) {
+    pub(crate) fn forget(&self, key: &ShardKey) {
         self.shards.lock().remove(key);
     }
 
     /// Keep only the shards named, forgetting the rest.
-    pub fn retain(&self, live: &[ShardKey]) {
+    pub(crate) fn retain(&self, live: &[ShardKey]) {
         self.shards.lock().retain(|key, _| live.contains(key));
     }
 
@@ -846,22 +849,7 @@ impl MarkTable {
             .then(|| *mark.offset.borrow())
     }
 
-    /// Wait until a majority holds every offset below `offset`.
-    ///
-    /// `offset` is one past the last record of the batch, so this returns when
-    /// the batch itself is on a majority.
-    pub async fn wait_for(
-        &self,
-        key: &ShardKey,
-        generation: u64,
-        offset: u64,
-        timeout: std::time::Duration,
-    ) -> QuorumWait {
-        self.wait_for_at(key, || 0, generation, offset, timeout)
-            .await
-    }
-
-    /// [`Self::wait_for`], on the mark of the log of the incarnation
+    /// [`QuorumMarks::wait_for`], on the mark of the log of the incarnation
     /// `incarnation` names.
     async fn wait_for_at(
         &self,
@@ -906,7 +894,7 @@ impl MarkTable {
     /// generation this broker leads `key` at while it waits.
     ///
     /// `leading` is asked for that generation, and `None` from it ends the
-    /// wait as [`QuorumWait::NotLeading`]. Unlike [`MarkTable::wait_for`], a
+    /// wait as [`QuorumWait::NotLeading`]. Unlike [`QuorumMarks::wait_for`], a
     /// generation this broker leads but has no mark for yet is waited out:
     /// a new generation has none until its first replication pass reports,
     /// and a move staging a destination starts one under the same leader.
@@ -917,7 +905,7 @@ impl MarkTable {
     /// generation only if the log still holds it: a promotion's catch-up can
     /// replace it with another leader's records at the same offsets. The
     /// callers check that with `still_holds` before they acknowledge.
-    pub async fn wait_while_leading(
+    pub(crate) async fn wait_while_leading(
         &self,
         key: &ShardKey,
         leading: impl Fn() -> Option<u64>,
@@ -1001,7 +989,7 @@ impl MarkTable {
 
 /// How a wait for a majority ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuorumWait {
+pub(crate) enum QuorumWait {
     /// A majority holds the batch. The publish may be acknowledged.
     Reached,
     /// No majority within the budget. The record may still be on disk here and
@@ -1185,7 +1173,7 @@ fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
 /// `None`, and so does a write it answered `None` for, which waits for no
 /// quorum. A write that does wait with `None` is not acknowledged across a
 /// generation change.
-pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
+pub(crate) async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1295,7 +1283,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// and [`Unreadable::NotServed`] once it does not serve a `Quorum` shard at
 /// all. Either way the caller has no position to answer with: zero would
 /// send a reader asking for the end of the log to its start.
-pub fn read_bound<S: ShardServing + ?Sized>(
+pub(crate) fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1340,7 +1328,7 @@ pub enum Unreadable {
 /// `generation` is the one an add was taken at, as for [`await_quorum`]. A
 /// read does not use it.
 #[allow(clippy::too_many_arguments)]
-pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
+pub(crate) async fn await_counter_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1449,7 +1437,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// waiting on the mark stops and resumes where the shard is served.
 /// `Unbounded` only for a shard this broker serves with no replicas, whose
 /// majority is the leader alone. Only asked for `Quorum` shards.
-pub fn committed_bound<S: ShardServing + ?Sized>(
+pub(crate) fn committed_bound<S: ShardServing + ?Sized>(
     key: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
@@ -1495,7 +1483,7 @@ fn sessions_skip_lease(key: &crate::ShardKey, generation: u64, marks: &QuorumMar
 /// the mark short of `end`: either way the reader has nothing it can stand
 /// behind, and says so rather than answering from records a failover may
 /// replace.
-pub async fn await_readable<S: ShardServing + ?Sized>(
+pub(crate) async fn await_readable<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     key: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1550,7 +1538,7 @@ pub async fn await_readable<S: ShardServing + ?Sized>(
 /// check a read makes before it takes its value does not apply: a replicated
 /// `Quorum` cache in a fleet that reads without the lease. The round comes
 /// after the value, in [`await_cache_quorum`] or [`await_counter_quorum`].
-pub async fn read_skips_lease<S: ShardServing + ?Sized>(
+pub(crate) async fn read_skips_lease<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1571,7 +1559,7 @@ pub async fn read_skips_lease<S: ShardServing + ?Sized>(
 /// broker still leads the shard, as [`await_cache_quorum`] does for a cache
 /// read: as [`confirm_read`] says when the shard has replicas to ask, and by
 /// the lease otherwise.
-pub async fn confirm_state_read<S: ShardServing + ?Sized>(
+pub(crate) async fn confirm_state_read<S: ShardServing + ?Sized>(
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
@@ -1684,7 +1672,7 @@ pub struct CacheWrite {
 /// with no replica set, a shard placed with none, or a cache that is not
 /// `Quorum`. Call it inside the write's fence, right before the write. An
 /// unreadable tail counts as zero, which only asks the wait to check more.
-pub async fn cache_write_at<S: ShardServing + ?Sized>(
+pub(crate) async fn cache_write_at<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     generation: u64,
@@ -1762,7 +1750,7 @@ fn release<S: ShardServing + ?Sized>(ingress: &S, what: &'static str) -> Result<
 /// `replicas` is the follower count, so the replica set is one larger. A set of
 /// three needs two, a set of five needs three — and a set of one needs one,
 /// which is the leader alone and is why `replication_factor: 1` costs nothing.
-pub fn majority_of(replicas: usize) -> usize {
+pub(crate) fn majority_of(replicas: usize) -> usize {
     replicas.div_ceil(2) + 1
 }
 
@@ -1788,7 +1776,8 @@ pub fn majority_of(replicas: usize) -> usize {
 /// Cursors belong to one generation. The caller passes the set for the
 /// generation it is publishing at, which is what stops an older generation's
 /// acknowledgements satisfying a newer generation's quorum.
-pub fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
+#[cfg(test)]
+pub(crate) fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
     quorum_offset_without(leader_tail, followers, None)
 }
 
@@ -1800,7 +1789,7 @@ pub fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
 /// a majority of that set is the promise, and counting a node that is still
 /// copying would make every `Quorum` publish wait for the copy. Its copy is
 /// complete before it can lead, because the cut-over waits for it to be level.
-pub fn quorum_offset_without(
+pub(crate) fn quorum_offset_without(
     leader_tail: u64,
     followers: &[FollowerCursor],
     learner: Option<&str>,
@@ -1970,7 +1959,7 @@ pub(crate) fn held_by_both(
 /// acknowledged. The generation-start record is what reaches a majority
 /// first. With `None` the leader counts as it did before the fleet finalized
 /// `generation_start`.
-pub fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
+pub(crate) fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
     match own_start {
         Some(start) if majority <= start => 0,
         _ => majority,

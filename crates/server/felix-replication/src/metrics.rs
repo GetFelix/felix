@@ -6,7 +6,7 @@
 //! log line that accompanies a halt.
 
 /// Replication batches this broker shipped as a leader, by `outcome`.
-pub const SHIPPED_TOTAL: &str = "felix_broker_replication_shipped_total";
+pub(crate) const SHIPPED_TOTAL: &str = "felix_broker_replication_shipped_total";
 
 /// How far the slowest follower is behind, in records, across every shard this
 /// broker leads.
@@ -14,69 +14,70 @@ pub const SHIPPED_TOTAL: &str = "felix_broker_replication_shipped_total";
 /// This is the `ConsistencyLevel::Leader` loss window. Records acknowledged to
 /// a client but not yet on a follower are the ones a total loss of this broker
 /// would take with it.
-pub const LAG_RECORDS: &str = "felix_broker_replication_lag_records";
+pub(crate) const LAG_RECORDS: &str = "felix_broker_replication_lag_records";
 
 /// Followers replication has stopped for, because their log diverged or this
 /// broker was superseded. Not a rate -- any non-zero value is worth waking
 /// someone for.
-pub const HALTED: &str = "felix_broker_replication_halted";
+pub(crate) const HALTED: &str = "felix_broker_replication_halted";
 
-pub const OUTCOME_OK: &str = "ok";
+pub(crate) const OUTCOME_OK: &str = "ok";
 /// The follower asked to be sent a different offset. Ordinary during catch-up.
-pub const OUTCOME_RESUMED: &str = "resumed";
+pub(crate) const OUTCOME_RESUMED: &str = "resumed";
 /// The follower refused for a reason that resolves on its own.
-pub const OUTCOME_REFUSED: &str = "refused";
+pub(crate) const OUTCOME_REFUSED: &str = "refused";
 /// The leader could not read its own log.
-pub const OUTCOME_READ_FAILED: &str = "read_failed";
+pub(crate) const OUTCOME_READ_FAILED: &str = "read_failed";
 /// The batch held a head trim and the follower does not offer `head_trim`,
 /// so nothing was sent. The follower waits there until it is upgraded.
-pub const OUTCOME_TRIM_UNSUPPORTED: &str = "trim_unsupported";
+pub(crate) const OUTCOME_TRIM_UNSUPPORTED: &str = "trim_unsupported";
 /// The batch held a record with headers and the follower does not offer
 /// `record_headers`, so it was not sent bare. The follower stays behind that
 /// record until it is upgraded.
-pub const OUTCOME_HEADERS_UNSUPPORTED: &str = "headers_unsupported";
+pub(crate) const OUTCOME_HEADERS_UNSUPPORTED: &str = "headers_unsupported";
 /// The next record is a membership or counter record, which this build
 /// cannot replicate, so nothing was sent. The follower stays behind it.
-pub const OUTCOME_KIND_UNSUPPORTED: &str = "kind_unsupported";
+pub(crate) const OUTCOME_KIND_UNSUPPORTED: &str = "kind_unsupported";
 /// The follower stamps records with their writer's generation and refused a
 /// batch that names none. It stays behind until the capability is negotiated.
-pub const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
-pub const OUTCOME_UNREACHABLE: &str = "unreachable";
-pub const OUTCOME_TIMEOUT: &str = "timeout";
-pub const OUTCOME_DISCONNECTED: &str = "disconnected";
+pub(crate) const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
+pub(crate) const OUTCOME_UNREACHABLE: &str = "unreachable";
+pub(crate) const OUTCOME_TIMEOUT: &str = "timeout";
+pub(crate) const OUTCOME_DISCONNECTED: &str = "disconnected";
 /// The two logs disagree about bytes both sides hold.
-pub const OUTCOME_DIVERGED: &str = "diverged";
+pub(crate) const OUTCOME_DIVERGED: &str = "diverged";
 /// The follower knows a newer generation than this broker is shipping at.
-pub const OUTCOME_FENCED: &str = "fenced";
+pub(crate) const OUTCOME_FENCED: &str = "fenced";
 /// The follower needs records retention has removed from the leader. It cannot
 /// be caught up by shipping and needs its history transferred.
-pub const OUTCOME_NEEDS_BOOTSTRAP: &str = "needs_bootstrap";
+pub(crate) const OUTCOME_NEEDS_BOOTSTRAP: &str = "needs_bootstrap";
 /// The follower took a log placed at this leader's oldest surviving offset and
 /// replication resumed. Once per replica per shard.
-pub const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
+pub(crate) const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
 
 /// The leader told a halted follower to discard its copy and start again.
-pub const OUTCOME_REBUILD_STARTED: &str = "started";
+pub(crate) const OUTCOME_REBUILD_STARTED: &str = "started";
 /// A rebuilt follower reached the leader's tail.
-pub const OUTCOME_REBUILD_COMPLETED: &str = "completed";
+pub(crate) const OUTCOME_REBUILD_COMPLETED: &str = "completed";
 /// The follower would not, or could not, rebuild; the halt stands.
-pub const OUTCOME_REBUILD_REFUSED: &str = "refused";
+pub(crate) const OUTCOME_REBUILD_REFUSED: &str = "refused";
 
 /// Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`.
 /// Beside `felix_broker_replication_shipped_total`, it says how much of this
 /// broker's shipping is move copies being held to the limit.
-pub const MOVE_THROTTLED_BYTES_TOTAL: &str = "felix_broker_replication_move_throttled_bytes_total";
+pub(crate) const MOVE_THROTTLED_BYTES_TOTAL: &str =
+    "felix_broker_replication_move_throttled_bytes_total";
 
-pub const REBUILDS_TOTAL: &str = "felix_broker_replication_rebuilds_total";
+pub(crate) const REBUILDS_TOTAL: &str = "felix_broker_replication_rebuilds_total";
 /// Followers this broker is rebuilding right now, across every shard it leads.
-pub const REBUILDING: &str = "felix_broker_replication_rebuilding";
+pub(crate) const REBUILDING: &str = "felix_broker_replication_rebuilding";
 
 /// Quorum marks held back because the replica report did not reach the control
 /// plane.
 ///
 /// Worth alerting on: `Quorum` publishes are timing out on those shards, and
 /// nothing else in the broker looks unwell — the replication itself succeeded.
-pub const MARKS_WITHHELD: &str = "felix_broker_quorum_marks_withheld_total";
+pub(crate) const MARKS_WITHHELD: &str = "felix_broker_quorum_marks_withheld_total";
 
 /// Drained reports held back because a follower level on the shard's log was
 /// still behind on a log that rides it, by `log`.
@@ -84,72 +85,72 @@ pub const MARKS_WITHHELD: &str = "felix_broker_quorum_marks_withheld_total";
 /// A planned move waits on this. Rising steadily means a move is stuck on
 /// shipping group state or counters to its destination; the log line names
 /// the shard and the follower.
-pub const DRAIN_WITHHELD: &str = "felix_broker_replication_drain_withheld_total";
+pub(crate) const DRAIN_WITHHELD: &str = "felix_broker_replication_drain_withheld_total";
 
-pub const LOG_GROUP_CURSORS: &str = "group_cursors";
-pub const LOG_DEAD_LETTERS: &str = "dead_letters";
-pub const LOG_COUNTERS: &str = "counters";
+pub(crate) const LOG_GROUP_CURSORS: &str = "group_cursors";
+pub(crate) const LOG_DEAD_LETTERS: &str = "dead_letters";
+pub(crate) const LOG_COUNTERS: &str = "counters";
 
 /// How many shards' reports shared one control-plane request.
 ///
 /// One means the batching found nothing to batch, which is correct for a
 /// broker leading a single shard and a warning sign for one leading hundreds.
-pub const REPORTS_PER_REQUEST: &str = "felix_broker_replica_reports_per_request";
+pub(crate) const REPORTS_PER_REQUEST: &str = "felix_broker_replica_reports_per_request";
 
 /// Publishes to a `Quorum` stream that did not reach a majority, by `reason`.
 ///
 /// The `ok` case is not counted here: an acknowledged publish is already
 /// counted on the publish path, and a second counter for the same event only
 /// invites the two to disagree.
-pub const QUORUM_FAILED_TOTAL: &str = "felix_broker_publish_quorum_failed_total";
+pub(crate) const QUORUM_FAILED_TOTAL: &str = "felix_broker_publish_quorum_failed_total";
 
 /// How long a `Quorum` publish waited for its majority, whatever the outcome.
 /// Across every shard this broker leads, like the rest.
-pub const QUORUM_WAIT_SECONDS: &str = "felix_broker_publish_quorum_wait_seconds";
+pub(crate) const QUORUM_WAIT_SECONDS: &str = "felix_broker_publish_quorum_wait_seconds";
 
 /// No majority within the budget. The records are durable on this broker and
 /// may yet reach one; this broker simply cannot say that they have.
-pub const QUORUM_TIMED_OUT: &str = "timed_out";
+pub(crate) const QUORUM_TIMED_OUT: &str = "timed_out";
 /// Leadership moved before the batch reached a majority.
-pub const QUORUM_NOT_LEADING: &str = "not_leading";
+pub(crate) const QUORUM_NOT_LEADING: &str = "not_leading";
 
 /// Shards opened for writes at a new leadership, a promotion or any other
 /// change of leader, by `path`: `fenced` once a majority took the fence,
 /// `lease` when some replica did not offer it.
-pub const PROMOTIONS_TOTAL: &str = "felix_broker_promotions_opened_total";
-pub const PATH_FENCED: &str = "fenced";
-pub const PATH_LEASE: &str = "lease";
+pub(crate) const PROMOTIONS_TOTAL: &str = "felix_broker_promotions_opened_total";
+pub(crate) const PATH_FENCED: &str = "fenced";
+pub(crate) const PATH_LEASE: &str = "lease";
 
 /// A promoted leader dropped records of its own that a replica's newer log
 /// had superseded, while taking that log.
-pub const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
+pub(crate) const PROMOTION_TRUNCATED_TOTAL: &str = "felix_broker_promotion_truncated_total";
 
 /// Fences under `joint_fence` that could not learn the set their generation
 /// leaves and reported the generation refused, so the control plane names the
 /// leader again one generation up.
-pub const FENCE_SET_UNKNOWN_TOTAL: &str = "felix_broker_fence_set_unknown_total";
+pub(crate) const FENCE_SET_UNKNOWN_TOTAL: &str = "felix_broker_fence_set_unknown_total";
 
 /// Scans the driver ran, by what woke it: `append`, `tick` or `routes`. Each
 /// one looks at every shard this broker leads.
-pub const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
+pub(crate) const SCANS_TOTAL: &str = "felix_broker_replication_scans_total";
 
 /// Shards waiting for a pass slot or a fence slot right now.
 ///
 /// Zero most of the time. Staying high means this broker leads more shards
 /// with work than it can ship at once; `felix_broker_replication_slot_wait_seconds`
 /// says how long each waits.
-pub const PASSES_WAITING: &str = "felix_broker_replication_passes_waiting";
+pub(crate) const PASSES_WAITING: &str = "felix_broker_replication_passes_waiting";
 
 /// How long a shard waited for a slot before its pass or fence started, by
 /// `queue`: `appended` (an append since the shard was last asked), `urgent`
 /// (a write waiting on the mark, a shard new here, or a follower answer),
 /// `refresh` (nothing new, only the regular pass), or `fence`.
-pub const SLOT_WAIT_SECONDS: &str = "felix_broker_replication_slot_wait_seconds";
+pub(crate) const SLOT_WAIT_SECONDS: &str = "felix_broker_replication_slot_wait_seconds";
 
-pub const QUEUE_URGENT: &str = "urgent";
-pub const QUEUE_REFRESH: &str = "refresh";
-pub const QUEUE_FENCE: &str = "fence";
-pub const QUEUE_APPENDED: &str = "appended";
+pub(crate) const QUEUE_URGENT: &str = "urgent";
+pub(crate) const QUEUE_REFRESH: &str = "refresh";
+pub(crate) const QUEUE_FENCE: &str = "fence";
+pub(crate) const QUEUE_APPENDED: &str = "appended";
 
 /// The driver's scheduling metrics, registered once so recording one is an
 /// atomic update with no lookup.
@@ -185,54 +186,54 @@ impl DriverMetrics {
     }
 }
 
-pub fn record_promotion_opened(path: &'static str) {
+pub(crate) fn record_promotion_opened(path: &'static str) {
     metrics::counter!(PROMOTIONS_TOTAL, "path" => path).increment(1);
 }
 
-pub fn record_promotion_truncated() {
+pub(crate) fn record_promotion_truncated() {
     metrics::counter!(PROMOTION_TRUNCATED_TOTAL).increment(1);
 }
 
-pub fn record_fence_set_unknown() {
+pub(crate) fn record_fence_set_unknown() {
     metrics::counter!(FENCE_SET_UNKNOWN_TOTAL).increment(1);
 }
 
-pub fn record_move_throttled(bytes: u64) {
+pub(crate) fn record_move_throttled(bytes: u64) {
     metrics::counter!(MOVE_THROTTLED_BYTES_TOTAL).increment(bytes);
 }
 
-pub fn record_rebuild(outcome: &'static str) {
+pub(crate) fn record_rebuild(outcome: &'static str) {
     metrics::counter!(REBUILDS_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_rebuilding(count: usize) {
+pub(crate) fn record_rebuilding(count: usize) {
     metrics::gauge!(REBUILDING).set(count as f64);
 }
 
-pub fn record_shipped(outcome: &'static str) {
+pub(crate) fn record_shipped(outcome: &'static str) {
     metrics::counter!(SHIPPED_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_lag(records: u64) {
+pub(crate) fn record_lag(records: u64) {
     metrics::gauge!(LAG_RECORDS).set(records as f64);
 }
 
-pub fn record_halted(count: usize) {
+pub(crate) fn record_halted(count: usize) {
     metrics::gauge!(HALTED).set(count as f64);
 }
 
-pub fn record_mark_withheld() {
+pub(crate) fn record_mark_withheld() {
     metrics::counter!(MARKS_WITHHELD).increment(1);
 }
 
-pub fn record_drain_withheld(log: &'static str) {
+pub(crate) fn record_drain_withheld(log: &'static str) {
     metrics::counter!(DRAIN_WITHHELD, "log" => log).increment(1);
 }
 
-pub fn record_quorum_wait(waited: std::time::Duration) {
+pub(crate) fn record_quorum_wait(waited: std::time::Duration) {
     metrics::histogram!(QUORUM_WAIT_SECONDS).record(waited.as_secs_f64());
 }
 
-pub fn record_quorum(reason: &'static str) {
+pub(crate) fn record_quorum(reason: &'static str) {
     metrics::counter!(QUORUM_FAILED_TOTAL, "reason" => reason).increment(1);
 }

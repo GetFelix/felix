@@ -21,7 +21,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::halted::{HaltedReplica, HaltedReplicas};
-use super::promotion::{self, NoGate, Outcome, PromotionGate};
+#[cfg(test)]
+use super::promotion::NoGate;
+use super::promotion::{self, Outcome, PromotionGate};
 use super::quorum::QuorumMarks;
 use super::reporter::Reporter;
 use super::reporter::ShardReport;
@@ -164,7 +166,7 @@ impl Replication {
 /// A pass runs on each tick, after each durable append, and whenever
 /// `routes_changed` is notified.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
+pub(crate) fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
@@ -363,8 +365,10 @@ pub trait WriteFence: Send + Sync {
 }
 
 /// A fence that holds nothing back: every shard is quiet.
+#[cfg(test)]
 pub(crate) struct Unfenced;
 
+#[cfg(test)]
 impl WriteFence for Unfenced {
     fn quiesced(&self, _key: &crate::ShardKey) -> bool {
         true
@@ -379,7 +383,8 @@ impl WriteFence for Unfenced {
 // One cursor map per log kind the pass ships, plus the shared context: folding
 // the maps into a struct would move the argument list rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once<R: PeerRequester + Sync>(
+#[cfg(test)]
+pub(crate) async fn replicate_once<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,

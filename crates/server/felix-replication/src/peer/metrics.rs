@@ -11,41 +11,41 @@
 //! `timeout` is a peer that accepted the request and did not answer.
 
 /// Live peer connections this broker holds, as a gauge.
-pub const CONNECTIONS: &str = "felix_broker_peer_connections";
+pub(crate) const CONNECTIONS: &str = "felix_broker_peer_connections";
 /// Connection attempts, by `outcome`: `connected`, `unreachable`, `handshake`.
-pub const CONNECT_ATTEMPTS_TOTAL: &str = "felix_broker_peer_connect_attempts_total";
+pub(crate) const CONNECT_ATTEMPTS_TOTAL: &str = "felix_broker_peer_connect_attempts_total";
 /// Connections that dropped after being established, by `reason`.
-pub const CONNECTION_LOSSES_TOTAL: &str = "felix_broker_peer_connection_losses_total";
+pub(crate) const CONNECTION_LOSSES_TOTAL: &str = "felix_broker_peer_connection_losses_total";
 /// Reconnect attempts made after a loss, i.e. redials that were not the first.
-pub const RECONNECTS_TOTAL: &str = "felix_broker_peer_reconnects_total";
+pub(crate) const RECONNECTS_TOTAL: &str = "felix_broker_peer_reconnects_total";
 /// Request streams replaced because the peer stopped answering on them.
-pub const LANES_REPLACED_TOTAL: &str = "felix_broker_peer_lanes_replaced_total";
+pub(crate) const LANES_REPLACED_TOTAL: &str = "felix_broker_peer_lanes_replaced_total";
 /// Multiplexed request streams open across all peers, as a gauge.
-pub const STREAMS: &str = "felix_broker_peer_streams";
+pub(crate) const STREAMS: &str = "felix_broker_peer_streams";
 /// Requests sent to peers, by `outcome`.
-pub const REQUESTS_TOTAL: &str = "felix_broker_peer_requests_total";
+pub(crate) const REQUESTS_TOTAL: &str = "felix_broker_peer_requests_total";
 /// Requests refused before being sent because the peer was already at its
 /// in-flight limit. Distinct from a failure: nothing was attempted, and the
 /// caller can retry elsewhere or shed.
-pub const REQUESTS_SHED_TOTAL: &str = "felix_broker_peer_requests_shed_total";
+pub(crate) const REQUESTS_SHED_TOTAL: &str = "felix_broker_peer_requests_shed_total";
 /// Round-trip latency of a forwarded request, in seconds.
-pub const REQUEST_SECONDS: &str = "felix_broker_peer_request_seconds";
+pub(crate) const REQUEST_SECONDS: &str = "felix_broker_peer_request_seconds";
 /// Requests this broker served for a peer, by `outcome`.
-pub const SERVED_TOTAL: &str = "felix_broker_peer_served_total";
+pub(crate) const SERVED_TOTAL: &str = "felix_broker_peer_served_total";
 /// Inbound peer connections refused, by `reason`: `alpn`, `handshake`.
-pub const INBOUND_REJECTED_TOTAL: &str = "felix_broker_peer_inbound_rejected_total";
+pub(crate) const INBOUND_REJECTED_TOTAL: &str = "felix_broker_peer_inbound_rejected_total";
 
-pub const OUTCOME_CONNECTED: &str = "connected";
-pub const OUTCOME_UNREACHABLE: &str = "unreachable";
-pub const OUTCOME_HANDSHAKE: &str = "handshake";
+pub(crate) const OUTCOME_CONNECTED: &str = "connected";
+pub(crate) const OUTCOME_UNREACHABLE: &str = "unreachable";
+pub(crate) const OUTCOME_HANDSHAKE: &str = "handshake";
 pub const OUTCOME_OK: &str = "ok";
 pub const OUTCOME_ERROR: &str = "error";
 /// A frame kind this build does not know, refused without dropping the stream.
 /// Expected during a rolling upgrade and nowhere else — a steady non-zero rate
 /// means a peer is sending something this broker will never serve.
-pub const OUTCOME_UNSUPPORTED: &str = "unsupported_kind";
-pub const OUTCOME_TIMEOUT: &str = "timeout";
-pub const OUTCOME_DISCONNECTED: &str = "disconnected";
+pub(crate) const OUTCOME_UNSUPPORTED: &str = "unsupported_kind";
+pub(crate) const OUTCOME_TIMEOUT: &str = "timeout";
+pub(crate) const OUTCOME_DISCONNECTED: &str = "disconnected";
 /// This broker was asked for a shard it does not own, and said so.
 pub const OUTCOME_NOT_LEADER: &str = "not_leader";
 /// This broker refused before applying anything.
@@ -54,11 +54,11 @@ pub const OUTCOME_REFUSED: &str = "refused";
 pub const OUTCOME_UNAUTHORIZED: &str = "unauthorized";
 
 /// Publishes this broker forwarded to an owner, by `outcome`.
-pub const FORWARDS_TOTAL: &str = "felix_broker_forwards_total";
+pub(crate) const FORWARDS_TOTAL: &str = "felix_broker_forwards_total";
 /// Forward attempts that were not the first: a redirect followed, or a
 /// retryable refusal retried. Rising steadily means the routing view is
 /// churning, not that anything is broken.
-pub const FORWARD_RETRIES_TOTAL: &str = "felix_broker_forward_retries_total";
+pub(crate) const FORWARD_RETRIES_TOTAL: &str = "felix_broker_forward_retries_total";
 
 /// The attempt budget ran out while the owner kept refusing or moving.
 pub const OUTCOME_EXHAUSTED: &str = "exhausted";
@@ -73,83 +73,83 @@ pub const OUTCOME_INDETERMINATE: &str = "indeterminate";
 /// `fenced` are not: the first means two logs have diverged, the second that a
 /// superseded leader is still shipping. Either one standing is worth waking
 /// someone for.
-pub const REPLICATED_TOTAL: &str = "felix_broker_replicated_total";
+pub(crate) const REPLICATED_TOTAL: &str = "felix_broker_replicated_total";
 
 /// The sender named an epoch older than this broker's, so it is no longer the
 /// leader.
-pub const OUTCOME_FENCED: &str = "fenced";
+pub(crate) const OUTCOME_FENCED: &str = "fenced";
 /// This broker's routing view has not caught up with the epoch the sender
 /// named. Transient by nature.
-pub const OUTCOME_BEHIND: &str = "behind";
+pub(crate) const OUTCOME_BEHIND: &str = "behind";
 /// The batch starts past this broker's tail. The leader resumes from the offset
 /// in the answer.
-pub const OUTCOME_GAP: &str = "gap";
+pub(crate) const OUTCOME_GAP: &str = "gap";
 /// The batch disagrees with bytes already stored.
-pub const OUTCOME_CONFLICT: &str = "conflict";
+pub(crate) const OUTCOME_CONFLICT: &str = "conflict";
 /// A divergent suffix from a previous generation was dropped and replication
 /// resumed. Not an error — but worth watching, because a steady rate means
 /// leadership is changing more often than it should.
-pub const OUTCOME_TRUNCATED: &str = "truncated";
+pub(crate) const OUTCOME_TRUNCATED: &str = "truncated";
 /// The batch did not survive the trip.
-pub const OUTCOME_CORRUPT: &str = "corrupt";
+pub(crate) const OUTCOME_CORRUPT: &str = "corrupt";
 /// A batch named a writer generation below the one of the record before it.
 /// The leader halts the follower; it needs a person or a rebuild.
-pub const OUTCOME_BELOW_FLOOR: &str = "below_floor";
+pub(crate) const OUTCOME_BELOW_FLOOR: &str = "below_floor";
 /// A batch from a leader that did not say which generations wrote its
 /// records, refused by a follower that stamps them.
-pub const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
+pub(crate) const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
 /// This broker took a promoted leader's fence.
-pub const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
+pub(crate) const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
 /// A fence at the generation this replica had already accepted: the leader
 /// confirming, for a read, that nobody newer has reached it.
-pub const OUTCOME_FENCE_CONFIRMED: &str = "fence_confirmed";
+pub(crate) const OUTCOME_FENCE_CONFIRMED: &str = "fence_confirmed";
 /// This broker placed a shard log to begin where the leader's surviving log
 /// begins. Rare and deliberate: it happens once per replica per shard.
-pub const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
+pub(crate) const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
 /// This broker discarded its copy of a shard at the leader's request.
-pub const OUTCOME_REBUILT: &str = "rebuilt";
+pub(crate) const OUTCOME_REBUILT: &str = "rebuilt";
 /// A truncation or rebuild was refused because it would have discarded
 /// records this broker knows are committed. It means a leader holds a log
 /// that disagrees with an acknowledged record, so it always needs a person.
-pub const OUTCOME_BELOW_COMMIT: &str = "below_commit";
+pub(crate) const OUTCOME_BELOW_COMMIT: &str = "below_commit";
 
 /// A crashed leader's copy refused a fence it would have taken but for a
 /// copy the failover's fence ids name beside the set of two. With this
 /// control plane that is a staged or joining successor the failover left
 /// out (#1635). The shard stays closed until an operator acts.
-pub const FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL: &str =
+pub(crate) const FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL: &str =
     "felix_broker_fence_refused_ids_beyond_two_total";
 
-pub fn record_connect_attempt(outcome: &'static str) {
+pub(crate) fn record_connect_attempt(outcome: &'static str) {
     metrics::counter!(CONNECT_ATTEMPTS_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_reconnect() {
+pub(crate) fn record_reconnect() {
     metrics::counter!(RECONNECTS_TOTAL).increment(1);
 }
 
-pub fn record_lane_replaced() {
+pub(crate) fn record_lane_replaced() {
     metrics::counter!(LANES_REPLACED_TOTAL).increment(1);
 }
 
-pub fn record_connection_loss(reason: &'static str) {
+pub(crate) fn record_connection_loss(reason: &'static str) {
     metrics::counter!(CONNECTION_LOSSES_TOTAL, "reason" => reason).increment(1);
 }
 
-pub fn set_connections(count: usize) {
+pub(crate) fn set_connections(count: usize) {
     metrics::gauge!(CONNECTIONS).set(count as f64);
 }
 
-pub fn set_streams(count: usize) {
+pub(crate) fn set_streams(count: usize) {
     metrics::gauge!(STREAMS).set(count as f64);
 }
 
-pub fn record_request(outcome: &'static str, elapsed: std::time::Duration) {
+pub(crate) fn record_request(outcome: &'static str, elapsed: std::time::Duration) {
     metrics::counter!(REQUESTS_TOTAL, "outcome" => outcome).increment(1);
     metrics::histogram!(REQUEST_SECONDS, "outcome" => outcome).record(elapsed.as_secs_f64());
 }
 
-pub fn record_request_shed() {
+pub(crate) fn record_request_shed() {
     metrics::counter!(REQUESTS_SHED_TOTAL).increment(1);
 }
 
@@ -157,7 +157,7 @@ pub fn record_served(outcome: &'static str) {
     metrics::counter!(SERVED_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_inbound_rejected(reason: &'static str) {
+pub(crate) fn record_inbound_rejected(reason: &'static str) {
     metrics::counter!(INBOUND_REJECTED_TOTAL, "reason" => reason).increment(1);
 }
 
@@ -169,10 +169,10 @@ pub fn record_forward_retry() {
     metrics::counter!(FORWARD_RETRIES_TOTAL).increment(1);
 }
 
-pub fn record_replicated(outcome: &'static str) {
+pub(crate) fn record_replicated(outcome: &'static str) {
     metrics::counter!(REPLICATED_TOTAL, "outcome" => outcome).increment(1);
 }
 
-pub fn record_fence_refused_ids_beyond_two() {
+pub(crate) fn record_fence_refused_ids_beyond_two() {
     metrics::counter!(FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL).increment(1);
 }

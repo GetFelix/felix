@@ -1032,6 +1032,12 @@ unit, integration and simulator seed tests pass unchanged after each.
    fifteen replication kinds to `handle`. The tasks and their arguments are
    unchanged.
 7. Narrow `pub` items that only the engine now uses to `pub(crate)`.
+   Done as built: 228 `pub` items in `felix-replication` are now `pub(crate)`.
+   What stayed `pub` is what the broker service, the cluster harness or the
+   simulator names, or what a `pub` signature exposes. Items that only tests
+   call are `#[cfg(test)]`. `Elections::local_node_id`, `MarkTable::wait_for`
+   and the `CATCH_UP_BOUND`, `EngineHost` and `HybridHost` re-exports had no
+   user and are removed. No logic changed. No demo uses the crate.
 8. One shared engine: `node.rs` builds a single `Arc<StreamEngine>` and hands
    it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler` and Kafka. This
    removes the `(ingress, marks)` inputs on those constructors and the test

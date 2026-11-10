@@ -19,7 +19,8 @@ pub struct PeerIdentity {
 
 impl PeerIdentity {
     /// A peer that gave only a storage identity.
-    pub fn storage(storage: StorageId) -> Self {
+    #[cfg(test)]
+    pub(crate) fn storage(storage: StorageId) -> Self {
         Self {
             storage: Some(storage),
             incarnation: Incarnation::Unsent,

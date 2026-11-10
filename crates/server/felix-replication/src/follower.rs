@@ -17,11 +17,11 @@ use crate::peer::{Incarnation, PeerIdentity};
 /// leader only has to be momentarily idle. Loosening it is a change to make
 /// deliberately, with a measurement behind it, rather than a default nobody
 /// chose.
-pub const CATCH_UP_BOUND: u64 = 0;
+pub(crate) const CATCH_UP_BOUND: u64 = 0;
 
 /// How far a follower has got, as this leader understands it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FollowerCursor {
+pub(crate) struct FollowerCursor {
     pub node_id: String,
     pub addr: SocketAddr,
     /// The offset to send next. Moved only by the follower's own answers.
@@ -111,7 +111,7 @@ pub(crate) struct Vouched {
 }
 
 impl FollowerCursor {
-    pub fn new(node_id: impl Into<String>, addr: SocketAddr, next_offset: u64) -> Self {
+    pub(crate) fn new(node_id: impl Into<String>, addr: SocketAddr, next_offset: u64) -> Self {
         Self {
             node_id: node_id.into(),
             addr,
@@ -159,12 +159,12 @@ impl FollowerCursor {
 
     /// Whether this follower's `confirmed` counts toward a mark: not while it
     /// is halted, nor while its copy is a learner.
-    pub fn counts(&self) -> bool {
+    pub(crate) fn counts(&self) -> bool {
         self.halted.is_none() && !self.learner
     }
 
     /// The identity this cursor's positions were learned under.
-    pub fn identity(&self) -> PeerIdentity {
+    pub(crate) fn identity(&self) -> PeerIdentity {
         PeerIdentity {
             storage: self.storage_id,
             incarnation: self.incarnation,
@@ -179,7 +179,7 @@ impl FollowerCursor {
 /// is harmless, since a rebuild either keeps a follower's committed records or
 /// refuses, so the only cost of asking is the round trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RebuildBackoff {
+pub(crate) struct RebuildBackoff {
     /// Refusals in a row from this follower at this generation.
     pub refusals: u32,
     /// No rebuild is requested before this.
@@ -188,12 +188,12 @@ pub struct RebuildBackoff {
 
 impl RebuildBackoff {
     /// The first wait after a refusal. Doubles with each refusal in a row.
-    pub const FIRST: std::time::Duration = std::time::Duration::from_secs(5);
+    pub(crate) const FIRST: std::time::Duration = std::time::Duration::from_secs(5);
     /// The longest wait between two requests.
-    pub const MAX: std::time::Duration = std::time::Duration::from_secs(300);
+    pub(crate) const MAX: std::time::Duration = std::time::Duration::from_secs(300);
 
     /// The backoff after one more refusal than `previous`.
-    pub fn after(previous: Option<Self>, now: tokio::time::Instant) -> Self {
+    pub(crate) fn after(previous: Option<Self>, now: tokio::time::Instant) -> Self {
         let refusals = previous.map_or(0, |backoff| backoff.refusals) + 1;
         let wait = Self::FIRST
             .saturating_mul(1 << (refusals - 1).min(16))
@@ -207,7 +207,7 @@ impl RebuildBackoff {
 
 /// Why replication to a follower stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Halt {
+pub(crate) enum Halt {
     /// The follower holds different bytes at an offset both sides have. Records
     /// are never rewritten, so there is no repair.
     #[error("the follower's log has diverged from this one")]
@@ -247,7 +247,7 @@ impl Halt {
 // Written as a comparison because the bound is the thing meant to change: if it
 // is ever raised, this reads correctly without being rediscovered.
 #[allow(clippy::absurd_extreme_comparisons)]
-pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
+pub(crate) fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
     followers
         .iter()
         .filter(|follower| follower.halted.is_none())
@@ -293,7 +293,7 @@ pub(crate) fn refused_without_majority(
 /// A halted follower is excluded. It is not lagging, it has stopped, and
 /// folding "stopped" into a lag figure hides it behind a number that merely
 /// looks large.
-pub fn lag_records(tail: u64, followers: &[FollowerCursor]) -> Option<u64> {
+pub(crate) fn lag_records(tail: u64, followers: &[FollowerCursor]) -> Option<u64> {
     followers
         .iter()
         .filter(|follower| follower.halted.is_none())

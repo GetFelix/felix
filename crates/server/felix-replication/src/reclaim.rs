@@ -35,7 +35,7 @@ use crate::reporter::ShardReport;
 
 /// What a probe found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Probe {
+pub(crate) struct Probe {
     pub report: ShardReport,
     /// No follower's copy is ahead of this broker's on any of the shard's logs.
     pub reclaimable: bool,
@@ -64,7 +64,7 @@ type Answer = (String, felix_wire::internal::FenceOk, StorageId, u64);
 /// followers that do have one meet every majority of the route's set, and of
 /// the set a pending change leaves, the probe is a held report: nobody is
 /// named caught up and the copy is not reclaimable.
-pub async fn probe<R: PeerRequester>(
+pub(crate) async fn probe<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     local_node_id: &str,
@@ -281,7 +281,7 @@ fn caught_up(positions: &[LogPosition]) -> Vec<String> {
 /// nothing: the broker never opened the shard, and placement needs only the
 /// refusal. Without it the control plane, which still names this broker at
 /// that generation, would wait on silence.
-pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport {
+pub(crate) fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport {
     ShardReport {
         key: key.clone(),
         generation: refused.generation,
