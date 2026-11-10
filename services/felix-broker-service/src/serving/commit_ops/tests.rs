@@ -46,7 +46,10 @@ async fn a_drain_is_not_held_up_by_a_trim_waiting_on_commit() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -103,8 +106,10 @@ fn quorum_ctx(
             ..BrokerConfig::default()
         },
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     )

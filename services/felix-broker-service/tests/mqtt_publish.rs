@@ -88,8 +88,7 @@ async fn start(headers: bool) -> Result<Running> {
         Arc::new(BrokerMounts::new(Arc::clone(&broker), None)),
         Arc::new(BrokerWrites::new(
             Arc::clone(&broker),
-            None,
-            None,
+            Arc::new(felix_broker_service::shards::routing::StreamEngine::default()),
             Duration::from_secs(5),
         )),
     )?;

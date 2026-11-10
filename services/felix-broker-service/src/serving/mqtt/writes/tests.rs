@@ -52,7 +52,11 @@ async fn broker_with(
 }
 
 fn writes(broker: &Arc<Broker>) -> BrokerWrites {
-    BrokerWrites::new(Arc::clone(broker), None, None, Duration::from_secs(1))
+    BrokerWrites::new(
+        Arc::clone(broker),
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        Duration::from_secs(1),
+    )
 }
 
 fn batch(sequence: u64, producer_id: u64, topics: &[&str]) -> WriteBatch {

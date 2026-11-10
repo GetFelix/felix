@@ -290,8 +290,14 @@ async fn start_with(record_headers: bool) -> Felix {
                 auth_timeout_ms: 10_000,
                 record_headers,
             };
-            let cluster = BrokerCluster::new(Arc::clone(&auth), None, None, "felix", &advertise)
-                .expect("cluster");
+            let cluster = BrokerCluster::new(
+                Arc::clone(&auth),
+                Arc::new(felix_broker_service::shards::routing::StreamEngine::default()),
+                None,
+                "felix",
+                &advertise,
+            )
+            .expect("cluster");
             match KafkaListener::bind(
                 &config,
                 Some(Arc::clone(&tls)),

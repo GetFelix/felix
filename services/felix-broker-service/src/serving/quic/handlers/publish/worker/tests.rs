@@ -314,7 +314,10 @@ mod fence {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    None,
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );
@@ -416,7 +419,10 @@ mod fence {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    None,
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );
@@ -714,7 +720,10 @@ mod lane_claim {
         let publish_ctx = context(
             &leader.broker,
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    None,
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );
@@ -911,8 +920,10 @@ mod quorum_wait {
             Arc::clone(&leader.broker),
             &config,
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
-                marks: Some(Arc::clone(marks)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    Some(Arc::clone(marks)),
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );

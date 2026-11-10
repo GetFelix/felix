@@ -84,9 +84,10 @@ pub(super) async fn open_broker(
     cluster: &Option<ShardState>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
     quorum_marks: &Arc<QuorumMarks>,
+    engine: &Arc<crate::shards::routing::StreamEngine>,
 ) -> Result<Opened> {
     let stored = open_storage(config, durable, registered)?;
-    wire_broker(config, stored, cluster, fleet, quorum_marks).await
+    wire_broker(config, stored, cluster, fleet, quorum_marks, engine).await
 }
 
 /// Record this start in the quorum marks and the fence, and set the gates that
@@ -99,6 +100,7 @@ pub(super) async fn wire_broker(
     cluster: &Option<ShardState>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
     quorum_marks: &Arc<QuorumMarks>,
+    engine: &Arc<crate::shards::routing::StreamEngine>,
 ) -> Result<Opened> {
     let Stored {
         broker,
@@ -221,12 +223,9 @@ pub(super) async fn wire_broker(
     }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
     // has passed; see `replication::engine::Engine::committed_bound`.
-    if let Some(ingress) = &ingress_router {
+    if ingress_router.is_some() {
         broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
-            crate::shards::routing::StreamEngine::new(
-                Some(Arc::clone(quorum_marks)),
-                Some(Arc::clone(ingress)),
-            ),
+            Arc::clone(engine),
         )));
     }
     Ok(Opened {

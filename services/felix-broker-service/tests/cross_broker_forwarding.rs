@@ -228,12 +228,14 @@ impl Owner {
     fn handler(&self, advertise_addr: &str) -> Arc<ForwardingHandler> {
         Arc::new(ForwardingHandler::new(
             Arc::clone(&self.broker),
-            Arc::clone(&self.ingress),
-            Arc::clone(&self.router),
-            advertise_addr.to_string(),
             // No quorum marks: these exercise forwarding itself, and every
             // stream here is leader-acknowledged.
-            None,
+            Arc::new(felix_broker_service::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&self.ingress)),
+            )),
+            Arc::clone(&self.router),
+            advertise_addr.to_string(),
             std::time::Duration::from_secs(5),
             owner_auth(),
         ))

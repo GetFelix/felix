@@ -28,16 +28,24 @@ fn handler() -> BrokerPeerHandler<Hybrid<IngressRouter>> {
         "http://localhost".to_string(),
         Arc::new(TenantKeyCache::default()),
     ));
+    let engine = Arc::new(Hybrid::new(
+        None,
+        Some(Arc::new(IngressRouter::new(
+            Arc::clone(&router),
+            Arc::default(),
+        ))),
+    ));
     let forwarding = ForwardingHandler::new(
         Arc::clone(&broker),
-        Arc::new(IngressRouter::new(Arc::clone(&router), Arc::default())),
+        Arc::clone(&engine),
         Arc::clone(&router),
         "127.0.0.1:7001".to_string(),
-        None,
         Duration::from_millis(100),
         Arc::new(BrokerAuth::with_key_store(key_store)),
     );
-    let engine = Hybrid::new(None, None).with_replica(ReplicaHandler::new(broker, router));
+    engine
+        .set_replica(ReplicaHandler::new(broker, router))
+        .expect("set once");
     BrokerPeerHandler::new(forwarding, engine)
 }
 

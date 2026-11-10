@@ -533,7 +533,7 @@ fn the_hybrid_bounds_the_broker_cores_readers_at_the_mark_and_the_lease() {
     marks.publish(&key(), 4, 7);
     assert_eq!(engine.committed_bound(&key()), ReadBound::Committed(7));
 
-    let reads = super::CommittedReads::new(hybrid(&marks, served_at_4()));
+    let reads = super::CommittedReads::new(Arc::new(hybrid(&marks, served_at_4())));
     assert_eq!(
         reads.stream_bound("t1", "ns", "orders", 0),
         ReadBound::Committed(7)
@@ -760,6 +760,28 @@ mod start {
         assert_eq!(tasks, 3, "no election driver without elections");
         shutdown.cancel();
     }
+}
+
+/// The replica is set once; a second set must not replace the first.
+#[test]
+fn a_second_replica_is_an_error() {
+    use felix_broker::Broker;
+    use felix_router::{RegionRouter, ShardRouter};
+    use felix_storage::EphemeralCache;
+
+    let replica = || {
+        crate::ReplicaHandler::new(
+            Arc::new(Broker::new(EphemeralCache::new().into())),
+            Arc::new(ShardRouter::new(
+                "broker-a",
+                "local",
+                RegionRouter::new("local".to_string()),
+            )),
+        )
+    };
+    let engine = Hybrid::<ServedAt>::default();
+    assert_eq!(engine.set_replica(replica()), Ok(()));
+    assert_eq!(engine.set_replica(replica()), Err(super::ReplicaAlreadySet));
 }
 
 /// Without a replica handler a replication request is refused as

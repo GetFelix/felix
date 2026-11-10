@@ -64,7 +64,10 @@ async fn watch_after_admission(fixture: &Leader) -> Result<Message> {
         Arc::clone(&fixture.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&fixture.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&fixture.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -178,7 +181,10 @@ async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
         Arc::clone(&fixture.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&fixture.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&fixture.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );

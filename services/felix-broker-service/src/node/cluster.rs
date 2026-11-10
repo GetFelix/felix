@@ -126,6 +126,7 @@ pub(super) struct PeerListener {
 pub(super) fn bind_peer_listener(
     config: &BrokerConfig,
     cluster: &Option<ShardState>,
+    engine: &Arc<shard_routing::StreamEngine>,
     broker: &Arc<Broker>,
     quorum_marks: &Arc<QuorumMarks>,
     auth: &Arc<BrokerAuth>,
@@ -141,11 +142,11 @@ pub(super) fn bind_peer_listener(
 ) -> Result<PeerListener> {
     Ok(
         match (&config.peer_transport, &config.membership, cluster) {
-            (Some(peer_config), Some(membership_config), Some((router, ingress, _, _))) => {
+            (Some(peer_config), Some(membership_config), Some((router, _, _, _))) => {
                 let (handler, prefetch) = peer_handler(
                     config,
                     router,
-                    ingress,
+                    engine,
                     broker,
                     quorum_marks,
                     auth,
@@ -220,7 +221,7 @@ pub(super) fn bind_peer_listener(
 pub(super) fn peer_handler(
     config: &BrokerConfig,
     router: &Arc<ShardRouter>,
-    ingress: &Arc<shard_routing::IngressRouter>,
+    engine: &Arc<shard_routing::StreamEngine>,
     broker: &Arc<Broker>,
     quorum_marks: &Arc<QuorumMarks>,
     auth: &Arc<BrokerAuth>,
@@ -241,9 +242,9 @@ pub(super) fn peer_handler(
         // A leader retries a copy that refused it on its driver tick.
         Duration::from_millis(config.controlplane_sync_interval_ms),
     );
-    let engine =
-        shard_routing::StreamEngine::new(Some(Arc::clone(quorum_marks)), Some(Arc::clone(ingress)))
-            .with_replica(replicas);
+    engine
+        .set_replica(replicas)
+        .expect("the peer handler is built once per engine");
     let prefetch = engine.confirmed_prefetch();
     let advertise_addr = config
         .membership
@@ -253,14 +254,13 @@ pub(super) fn peer_handler(
     let handler = peer_dispatch::BrokerPeerHandler::new(
         crate::serving::forward::ForwardingHandler::new(
             Arc::clone(broker),
-            Arc::clone(ingress),
+            Arc::clone(engine),
             Arc::clone(router),
             advertise_addr,
-            Some(Arc::clone(quorum_marks)),
             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
             Arc::clone(auth),
         ),
-        engine,
+        Arc::clone(engine),
     );
     (handler, prefetch)
 }
@@ -520,3 +520,6 @@ where
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests;

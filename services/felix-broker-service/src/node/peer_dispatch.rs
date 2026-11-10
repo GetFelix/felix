@@ -22,7 +22,7 @@ use felix_replication::peer::server::PeerRequestHandler;
 pub(crate) struct BrokerPeerHandler<E> {
     forwarding: ForwardingHandler,
     /// Answers the replication requests; the rest are forwarded writes.
-    engine: E,
+    engine: Arc<E>,
     /// Until cancelled, a forwarded client request is refused as
     /// `Unavailable`, which the forwarder retries. Set only on a broker that
     /// started from its control-plane view: it serves no client until it has
@@ -31,12 +31,22 @@ pub(crate) struct BrokerPeerHandler<E> {
 }
 
 impl<E> BrokerPeerHandler<E> {
-    pub(crate) fn new(forwarding: ForwardingHandler, engine: E) -> Self {
+    pub(crate) fn new(forwarding: ForwardingHandler, engine: Arc<E>) -> Self {
         Self {
             forwarding,
             engine,
             clients: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<E> {
+        &self.engine
+    }
+
+    #[cfg(test)]
+    pub(crate) fn forwarding(&self) -> &ForwardingHandler {
+        &self.forwarding
     }
 
     /// Refuse forwarded client requests until `clients` is cancelled.

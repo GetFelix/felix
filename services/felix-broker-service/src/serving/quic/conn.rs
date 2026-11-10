@@ -19,7 +19,6 @@ use crate::config::BrokerConfig;
 use crate::observability::timings;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::limits::{ListenerLimits, admit_quic_connection};
-use crate::shards::routing::IngressRouter;
 
 /// Serve incoming QUIC connections: accept loop, one task per connection.
 ///
@@ -172,14 +171,12 @@ pub async fn serve_with_shutdown(
 /// single-node broker, which has neither.
 #[derive(Clone, Default)]
 pub struct ClusterContext {
-    pub ingress: Option<Arc<IngressRouter>>,
+    /// The broker's one engine: the quorum marks a publish to a `Quorum`
+    /// stream waits on, read against the shard routing it carries.
+    pub engine: Arc<crate::shards::routing::StreamEngine>,
     pub peers: Option<Arc<felix_replication::peer::PeerPool>>,
     /// This broker's authority to serve the shards it leads.
     pub lease: Option<Arc<crate::cluster::lease::LeaseState>>,
-    /// How far a majority of each shard's replica set has got. Read by a
-    /// publish to a `Quorum` stream, which cannot acknowledge until the
-    /// majority holds its records.
-    pub marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
     /// Where a client may connect, for answering `Topology`. `None` on a broker
     /// with no cluster behind it, which then advertises no such feature.
     pub client_endpoints: Option<Arc<crate::cluster::client_endpoints::ClientEndpoints>>,

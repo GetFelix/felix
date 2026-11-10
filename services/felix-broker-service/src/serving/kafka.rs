@@ -28,10 +28,10 @@ use crate::observability::tenants;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, IngressRouter, Reason, dispatch, dispatch_write};
+use crate::shards::routing::{Dispatch, Reason, StreamEngine, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
-use felix_replication::engine::{Engine, Hybrid};
-use felix_replication::quorum::{QuorumError, QuorumMarks};
+use felix_replication::engine::Engine;
+use felix_replication::quorum::QuorumError;
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
 /// that connects and sends nothing does not hold a connection slot.
@@ -43,11 +43,10 @@ pub const STANDALONE_NODE_ID: &str = "felix";
 /// [`Cluster`] for this broker.
 pub struct BrokerCluster {
     auth: Arc<BrokerAuth>,
-    ingress: Option<Arc<IngressRouter>>,
     endpoints: Option<Arc<ClientEndpoints>>,
     local: Endpoint,
     /// What a write waits on and how far a fetch may read.
-    replication: Hybrid<IngressRouter>,
+    replication: Arc<StreamEngine>,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
 }
@@ -57,7 +56,7 @@ impl BrokerCluster {
     /// outside a cluster; `advertise` is this broker's Kafka address.
     pub fn new(
         auth: Arc<BrokerAuth>,
-        ingress: Option<Arc<IngressRouter>>,
+        engine: Arc<StreamEngine>,
         endpoints: Option<Arc<ClientEndpoints>>,
         local_node_id: &str,
         advertise: &str,
@@ -66,13 +65,17 @@ impl BrokerCluster {
             .with_context(|| format!("Kafka advertise address {advertise:?}"))?;
         Ok(Self {
             auth,
-            replication: Hybrid::new(None, ingress.clone()),
-            ingress,
+            replication: engine,
             endpoints,
             local,
             quorum_timeout: Duration::from_secs(5),
             quotas: Arc::new(TenantRates::unlimited()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<StreamEngine> {
+        &self.replication
     }
 
     /// The tenant publish quotas a produce is charged to: the broker's own,
@@ -82,14 +85,9 @@ impl BrokerCluster {
         self
     }
 
-    /// What a write waits on, as the QUIC publish path does: the quorum marks
-    /// a `Quorum` stream's write waits for. `None` outside a cluster.
-    pub fn with_writes(
-        mut self,
-        marks: Option<Arc<QuorumMarks>>,
-        quorum_timeout: Duration,
-    ) -> Self {
-        self.replication = Hybrid::new(marks, self.ingress.clone());
+    /// How long a write waits on the quorum marks a `Quorum` stream's write
+    /// waits for, as the QUIC publish path does.
+    pub fn with_writes(mut self, quorum_timeout: Duration) -> Self {
         self.quorum_timeout = quorum_timeout;
         self
     }
@@ -172,8 +170,8 @@ impl Cluster for BrokerCluster {
     fn placement(&self, shard: &ShardRef<'_>) -> Placement {
         let key = Self::key(shard);
         let route = self
-            .ingress
-            .as_deref()
+            .replication
+            .serving()
             .and_then(|ingress| ingress.route(&key));
         let replicas = route
             .as_ref()
@@ -185,7 +183,7 @@ impl Cluster for BrokerCluster {
                     .collect()
             })
             .unwrap_or_default();
-        match dispatch(self.ingress.as_deref(), &key) {
+        match dispatch(self.replication.serving().map(|ingress| &**ingress), &key) {
             Dispatch::Local { .. } => Placement::Local { replicas },
             Dispatch::Forward { node_id, .. } => Placement::Remote {
                 leader: node_id,
@@ -210,7 +208,7 @@ impl Cluster for BrokerCluster {
         // so a move waits for this write. The fence checks the lease against
         // the clock, except on a shard whose followers decide its acks.
         let key = Self::key(shard);
-        let ingress = self.ingress.as_deref();
+        let ingress = self.replication.serving().map(|ingress| &**ingress);
         match dispatch_write(ingress, &key).await {
             (Dispatch::Local { generation }, held) => {
                 let mut held = held;
@@ -233,7 +231,7 @@ impl Cluster for BrokerCluster {
         outcome: &PublishOutcome,
         generation: u64,
     ) -> Result<(), WriteError> {
-        let key = self.ingress.as_ref().map(|_| Self::key(shard));
+        let key = self.replication.serving().map(|_| Self::key(shard));
         self.replication
             .await_commit(
                 handle,

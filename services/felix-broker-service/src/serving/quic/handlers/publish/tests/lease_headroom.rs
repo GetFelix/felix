@@ -44,7 +44,10 @@ impl Harness {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    None,
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 lease: Some(Arc::clone(&lease)),
                 ..ClusterContext::default()
             },

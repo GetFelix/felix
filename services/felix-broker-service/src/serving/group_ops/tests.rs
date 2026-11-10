@@ -23,7 +23,10 @@ fn context(leader: &Leader) -> PublishContext {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     )
@@ -296,8 +299,10 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -749,8 +754,10 @@ async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -804,8 +811,10 @@ async fn a_seek_to_latest_is_refused_until_the_new_generation_has_a_mark() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -1024,8 +1033,10 @@ impl ByRound {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
-                marks: Some(Arc::clone(&marks)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    Some(Arc::clone(&marks)),
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );
@@ -1223,8 +1234,10 @@ async fn a_group_read_bound_comes_from_the_mark_at_the_served_generation() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );

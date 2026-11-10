@@ -126,7 +126,12 @@ impl TwoShards {
             tokio_util::sync::CancellationToken::new(),
             tokio_util::task::TaskTracker::new(),
             felix_broker_service::serving::quic::ClusterContext {
-                ingress: Some(leading_both_shards()),
+                engine: std::sync::Arc::new(
+                    felix_broker_service::shards::routing::StreamEngine::new(
+                        None,
+                        Some(leading_both_shards()),
+                    ),
+                ),
                 ..Default::default()
             },
             limit,

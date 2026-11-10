@@ -6,7 +6,7 @@
 //! `docs/replication-engine.md`.
 
 use std::future::Future;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 mod host;
@@ -119,12 +119,24 @@ pub trait Engine: Send + Sync {
     ) -> impl Future<Output = InternalMessage> + Send;
 }
 
+/// [`Hybrid::set_replica`] was called a second time.
+#[derive(Debug, PartialEq, Eq)]
+pub struct ReplicaAlreadySet;
+
+impl std::fmt::Display for ReplicaAlreadySet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the replica handler is already set")
+    }
+}
+
+impl std::error::Error for ReplicaAlreadySet {}
+
 /// Felix's own replication protocol: the quorum marks the driver publishes,
 /// read against how this broker serves each shard.
 pub struct Hybrid<S: ?Sized> {
     marks: Option<Arc<QuorumMarks>>,
     serving: Option<Arc<S>>,
-    replica: Option<ReplicaHandler>,
+    replica: OnceLock<ReplicaHandler>,
 }
 
 impl<S: ?Sized> Hybrid<S> {
@@ -133,20 +145,28 @@ impl<S: ?Sized> Hybrid<S> {
         Self {
             marks,
             serving,
-            replica: None,
+            replica: OnceLock::new(),
         }
     }
 
     /// Answer peers' replication requests with `replica` ([`Engine::handle`]).
-    pub fn with_replica(mut self, replica: ReplicaHandler) -> Self {
-        self.replica = Some(replica);
-        self
+    ///
+    /// The replica needs the broker, which exists only after other users of
+    /// the engine are built, so it is set once, later. A second call is an
+    /// error and leaves the first replica in place.
+    pub fn set_replica(&self, replica: ReplicaHandler) -> Result<(), ReplicaAlreadySet> {
+        self.replica.set(replica).map_err(|_| ReplicaAlreadySet)
+    }
+
+    /// The shard routing the engine reads leadership from, when there is one.
+    pub fn serving(&self) -> Option<&Arc<S>> {
+        self.serving.as_ref()
     }
 
     /// Starts a copy's confirmed read early. See
     /// [`ReplicaHandler::confirmed_prefetch`].
     pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
-        self.replica.as_ref()?.confirmed_prefetch()
+        self.replica.get()?.confirmed_prefetch()
     }
 
     /// The quorum marks, for the waits that are not behind [`Engine`] yet.
@@ -303,7 +323,7 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
         request: InternalMessage,
     ) -> InternalMessage {
         use felix_broker::LogKind;
-        let Some(replica) = self.replica.as_ref() else {
+        let Some(replica) = self.replica.get() else {
             return InternalMessage::ForwardPublishError(ForwardPublishError {
                 correlation_id: request.correlation_id(),
                 code: ErrorCode::Unavailable,
@@ -366,11 +386,11 @@ fn not_replication(request: &InternalMessage) -> InternalMessage {
 /// [`Engine::committed_bound`] as the broker core asks for it
 /// (`felix_broker::ReadBounds`).
 pub struct CommittedReads<E> {
-    engine: E,
+    engine: Arc<E>,
 }
 
 impl<E> CommittedReads<E> {
-    pub fn new(engine: E) -> Self {
+    pub fn new(engine: Arc<E>) -> Self {
         Self { engine }
     }
 }
