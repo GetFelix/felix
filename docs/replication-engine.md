@@ -977,11 +977,17 @@ unit, integration and simulator seed tests pass unchanged after each.
    Done as built: each caller holds a `Hybrid` (`StreamEngine`) in place of
    `marks`, built once per QUIC connection, `BrokerWrites` and
    `ForwardingHandler` from the `(ingress, marks)` inputs they still take.
-   `ClusterContext` also still takes them. Cache and counter waits read the
-   marks through `Hybrid::marks()` until step 3.
+   `ClusterContext` also still takes them.
 3. Cache and counter waits (`await_cache_quorum`, `cache_write_at`,
    `await_counter_quorum`, `read_skips_lease`, `await_readable`) as engine
    methods.
+   Done as built: `Hybrid` implements each by calling the function of the
+   same name with its own marks and router, so a caller no longer passes
+   either. The cache and counter handlers (`cache_routing.rs`,
+   `direct_cache.rs`, forwarded cache ops, cache watches and the simulator's
+   direct cache client) take a `StreamEngine` in place of the marks.
+   `Hybrid::marks()` stays for the reads and group waits that are not behind
+   `Engine` yet (step 4).
 4. Read confirmation and bounds: `confirm_state_read` and the `ReadIndex`
    setup in `node/startup.rs` behind `confirm_read`, and the broker's
    `ReadBounds` answer (`CommittedReads`, `quorum.rs:1443`) behind

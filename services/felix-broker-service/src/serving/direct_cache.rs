@@ -5,9 +5,9 @@
 //! caller that has no peer transport go to the owner itself instead of being
 //! forwarded.
 
+use crate::shards::routing::StreamEngine;
 use bytes::Bytes;
 use felix_broker::Broker;
-use felix_replication::quorum::QuorumMarks;
 
 pub use super::direct_publish::Refusal;
 use super::forward::{CacheRequest, ForwardTarget};
@@ -79,7 +79,7 @@ pub async fn resolve_cache(
 pub async fn apply_direct(
     broker: &Broker,
     ingress: Option<&IngressRouter>,
-    marks: Option<&QuorumMarks>,
+    engine: &StreamEngine,
     quorum_timeout: std::time::Duration,
     tenant_id: &str,
     namespace: &str,
@@ -100,7 +100,7 @@ pub async fn apply_direct(
     } = target;
     apply_cache_local(
         broker,
-        (marks, quorum_timeout),
+        (engine, quorum_timeout),
         ingress,
         tenant_id,
         namespace,

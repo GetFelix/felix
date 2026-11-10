@@ -313,3 +313,40 @@ fn a_replay_delivers_no_change_for_records_that_are_not_data() {
         Some(Message::CacheEvent { offset: 5, .. })
     ));
 }
+
+/// A watch of a `Quorum` cache is held to the mark and the timeout of the
+/// engine it was built with. An engine without marks would release it at once.
+#[tokio::test]
+async fn a_quorum_cache_watch_waits_its_timeout_for_the_mark() {
+    use crate::test_support::leader::{self, GENERATION, Leader};
+    use felix_replication::engine::Hybrid;
+    use felix_replication::quorum::{QuorumError, QuorumMarks};
+
+    let leader = Leader::start().await;
+    let marks = Arc::new(QuorumMarks::new());
+    let timeout = std::time::Duration::from_millis(300);
+    let gate = CommitGate {
+        broker: Arc::clone(&leader.broker),
+        key: leader::quorum_cache_key(),
+        engine: Arc::new(Hybrid::new(
+            Some(Arc::clone(&marks)),
+            Some(Arc::clone(&leader.ingress)),
+        )),
+        timeout,
+    };
+
+    marks.publish(&leader::quorum_cache_key(), GENERATION, 4);
+    gate.wait(4).await.expect("the mark covers it");
+    let started = std::time::Instant::now();
+    let err = gate.wait(9).await.expect_err("the mark is short of it");
+    let waited = started.elapsed();
+    assert_eq!(
+        err,
+        QuorumError::TimedOut {
+            what: "read",
+            timeout
+        }
+    );
+    assert!(waited >= timeout, "ended early after {waited:?}");
+    assert!(waited < timeout * 6, "ended late after {waited:?}");
+}
