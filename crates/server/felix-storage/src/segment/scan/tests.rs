@@ -3,7 +3,9 @@ use tempfile::tempdir;
 
 use super::*;
 use crate::segment::cursor::READ_CHUNK_BYTES;
-use crate::segment::format::{OLDEST_READABLE_VERSION, TRIM_TAG_LEN, TRIM_VERSION, encode_record};
+use crate::segment::format::{
+    OLDEST_READABLE_VERSION, RECORD_HEADER_LEN, TRIM_TAG_LEN, TRIM_VERSION, encode_record,
+};
 use crate::segment::test_support::{read_all, scan, write_segment};
 
 #[test]
@@ -271,7 +273,7 @@ fn repairable_tail_rules() {
         },
         100,
         None,
-        102,
+        (102, RECORD_HEADER_LEN),
         false
     ));
     // A complete-but-unverifiable tail: repaired only when opted in,
@@ -283,7 +285,7 @@ fn repairable_tail_rules() {
         },
         100,
         Some(50),
-        150,
+        (150, RECORD_HEADER_LEN),
         true
     ));
     assert!(!is_repairable_tail(
@@ -293,7 +295,7 @@ fn repairable_tail_rules() {
         },
         100,
         Some(50),
-        150,
+        (150, RECORD_HEADER_LEN),
         false
     ));
     // Committed records follow it, so it is interior damage either way.
@@ -304,14 +306,14 @@ fn repairable_tail_rules() {
         },
         100,
         Some(50),
-        300,
+        (300, RECORD_HEADER_LEN),
         true
     ));
     assert!(!is_repairable_tail(
         &CorruptionKind::SegmentMagic { found: 0 },
         0,
         None,
-        100,
+        (100, RECORD_HEADER_LEN),
         true
     ));
 }
@@ -645,3 +647,5 @@ fn headers_that_do_not_fit_their_body_are_fatal() {
         ));
     }
 }
+
+mod generations;

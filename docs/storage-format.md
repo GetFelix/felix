@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v8)
+# Felix Durable Segment Format (v9)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -182,7 +182,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, or `8` for one that holds a record with a key and headers; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, `8` for one that holds a record with a key and headers, or `9` for one whose records carry a generation (see [Generations](#generations)); `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -225,6 +225,35 @@ proportional to record *count* rather than to bytes decoded.
 
 The checksum covers the header prefix as well as the payload, so a corrupted
 offset or timestamp is caught by the same check as a corrupted payload.
+
+### Generations
+
+From v9 every record header carries the generation of the leader that wrote
+the record: its Raft term. The 8-byte field sits between the timestamp and
+`header_crc`, so the header grows from 28 to 36 bytes and every later field
+moves up 8:
+
+| Offset | Size | Field | Notes |
+| --- | --- | --- | --- |
+| 0 | 20 | `payload_len`, `offset`, `timestamp_micros` | as above |
+| 20 | 8 | `generation` | `u64` |
+| 28 | 4 | `header_crc` | CRC-32 over bytes `0..28` |
+| 32 | 4 | `checksum` | CRC-32 over bytes `0..32`, the tag and the body |
+| 36 | | tag and body | as above |
+
+The generation is inside `header_crc`, so it is checked before any field is
+used and it is cut off with its record on a torn tail. A segment's version
+says which layout its records have; a v8 record and a v9 record never decode
+as each other, because the header checksum sits at a different place.
+
+Generations never fall along a log. The startup scan checks this, and a
+record whose generation is below the one before it is `GenerationFell`
+corruption: every checksum held, so it was written that way.
+
+No broker writes v9 yet. Once a fleet feature says every broker reads it,
+a log moves onto v9 at its next segment and stays there. A build that reads
+only up to v8 refuses a v9 segment with `SegmentVersion`, so a broker cannot
+roll back past the release that wrote one.
 
 ### Producer marks
 
@@ -479,6 +508,7 @@ the file is read up to the last whole entry.
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
+| A v9 record whose generation is below the record before it | `GenerationFell` |
 
 Every error carries a `CorruptionSite` naming the shard, segment id and byte
 position, because "corruption detected" is not enough to act on at 3am.
@@ -499,6 +529,11 @@ because only there can a record have been mid-write when the process died:
 - A `RecordChecksum` or `OffsetOutOfOrder` failure is likewise opt-in: the header
   verified, so the record is complete on disk and the damage is rot rather than a
   torn write.
+- A `GenerationFell` failure is never repaired, except past the durable mark
+  (below). Both checksums held, so no crash produced it.
+- In a v9 segment the header is 36 bytes, generation included. A file that
+  ends inside it is `Truncated`, and the zero-fill rule below measures the
+  damaged header at 36 bytes too.
 - A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
@@ -566,7 +601,7 @@ The full rules live in `is_repairable_tail` and `is_zero_filled_tail` in
 
 `format.rs` pins exact bytes for a segment header and a record. Changing either
 is a format change: bump `FORMAT_VERSION`, update this document, and state the
-migration path. It also pins the header CRC of every version from 2 to 8 and
+migration path. It also pins the header CRC of every version from 2 to 9 and
 every older record kind, and `writer.rs` pins the checksums of a segment and
 its index at each of v3 to v6 holding every kind that version allows, so a
 new kind cannot change what an older one writes.
@@ -607,6 +642,16 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", key and headers = "k"):
   7B A6 A5 A2
   00 00 00 01  6B  68 69
 
+encode_record_at(generation = 5, offset = 7, timestamp = 9, payload = "hi"),
+in a v9 segment (header crc D0 FE 7E 9D):
+  00 00 00 02
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  00 00 00 00 00 00 00 05
+  EC 4D 6F 2B
+  01 BF 2C E8
+  68 69
+
 encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
   30 00 00 02
   00 00 00 00 00 00 00 07
@@ -629,6 +674,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Read, not yet written by brokers; every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

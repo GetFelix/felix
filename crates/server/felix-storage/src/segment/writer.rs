@@ -28,8 +28,9 @@ use crate::Result;
 use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
-    BASELINE_VERSION, HEADERS_VERSION, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION, SEGMENT_HEADER_LEN,
-    SegmentHeader, TRIM_VERSION, body_fits, body_len, encode_record, record_len,
+    BASELINE_VERSION, GENERATION_VERSION, HEADERS_VERSION, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION,
+    SEGMENT_HEADER_LEN, SegmentHeader, TRIM_VERSION, body_fits, body_len, encode_record_at,
+    record_len_in,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
 use crate::segment::reservation::{Extension, Reservation};
@@ -73,6 +74,10 @@ pub struct SegmentWriter {
     /// older build is rolled before a record it cannot hold goes in: that
     /// build reading it would take the new flag bit for a bad length.
     version: u16,
+    /// The generation of the last record this writer appended to a v9
+    /// segment. A batch below it is refused, since the scan would then call
+    /// the segment corrupt.
+    last_generation: Option<u64>,
 }
 
 impl SegmentWriter {
@@ -221,6 +226,7 @@ impl SegmentWriter {
             #[cfg(test)]
             fail_next_sync: false,
             version,
+            last_generation: None,
         })
     }
 
@@ -272,6 +278,12 @@ impl SegmentWriter {
     /// Whether a trim record may be appended here.
     pub fn holds_trims(&self) -> bool {
         self.version >= TRIM_VERSION
+    }
+
+    /// Whether this segment's records carry a generation, so appends must
+    /// name one.
+    pub fn holds_generations(&self) -> bool {
+        self.version >= GENERATION_VERSION
     }
 
     /// The layout version in the segment header.
@@ -370,13 +382,14 @@ impl SegmentWriter {
     /// across two segments.
     pub fn projected_size(&self, records: &[AppendRecord]) -> u64 {
         records.iter().fold(self.size_bytes, |acc, record| {
-            acc + record_len(
+            acc + record_len_in(
                 body_len(
                     record.payload.len(),
                     record.headers.as_deref().map(|headers| &headers[..]),
                     record.publisher.as_deref(),
                 ),
                 &record.mark,
+                self.version,
             )
         })
     }
@@ -387,7 +400,18 @@ impl SegmentWriter {
     /// durable until [`SegmentWriter::sync`] succeeds. Callers that promise
     /// durability must sequence the two.
     pub fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
-        let staged = self.stage(records)?;
+        self.append_at(records, None)
+    }
+
+    /// [`Self::append`] with every record at `generation`, which a v9
+    /// segment needs and an older one cannot hold. A generation below the
+    /// last one appended is refused.
+    pub(crate) fn append_at(
+        &mut self,
+        records: &[AppendRecord],
+        generation: Option<u64>,
+    ) -> Result<(Offset, Offset)> {
+        let staged = self.stage_at(records, generation)?;
         let written = staged.write();
         let (offsets, index) = self.finish(staged, written)?;
         index.write(self.id);
@@ -399,6 +423,15 @@ impl SegmentWriter {
     /// for the end of the segment and change nothing. Nothing else may change
     /// this segment until [`Self::finish`].
     pub(crate) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
+        self.stage_at(records, None)
+    }
+
+    /// [`Self::stage`] at `generation`; see [`Self::append_at`].
+    pub(crate) fn stage_at(
+        &mut self,
+        records: &[AppendRecord],
+        generation: Option<u64>,
+    ) -> Result<StagedAppend> {
         debug_assert!(!records.is_empty());
 
         if self.poisoned {
@@ -413,6 +446,18 @@ impl SegmentWriter {
                 "the record's mark is newer than the segment's version; roll first",
             ));
         }
+        if generation.is_some() != self.holds_generations() {
+            return Err(StorageError::Unsupported(
+                "a v9 segment's records need a generation, and an older segment cannot hold one",
+            ));
+        }
+        if let (Some(generation), Some(last)) = (generation, self.last_generation)
+            && generation < last
+        {
+            return Err(StorageError::Unsupported(
+                "a record's generation is below the last one appended",
+            ));
+        }
 
         let mut bytes = std::mem::take(&mut self.staging);
         bytes.clear();
@@ -421,8 +466,9 @@ impl SegmentWriter {
         let mut boundaries = Vec::with_capacity(records.len());
         let mut position = self.size_bytes;
         for (offset, record) in (self.next_offset..).zip(records) {
-            let written = encode_record(
+            let written = encode_record_at(
                 &mut bytes,
+                generation,
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -437,6 +483,7 @@ impl SegmentWriter {
             bytes,
             boundaries,
             file: Arc::clone(&self.sync_handle),
+            generation,
         })
     }
 
@@ -449,7 +496,10 @@ impl SegmentWriter {
         written: std::io::Result<()>,
     ) -> Result<((Offset, Offset), UnwrittenEntries)> {
         let StagedAppend {
-            bytes, boundaries, ..
+            bytes,
+            boundaries,
+            generation,
+            ..
         } = staged;
         let len = bytes.len() as u64;
         self.staging = bytes;
@@ -472,6 +522,9 @@ impl SegmentWriter {
         }
 
         let first_offset = self.next_offset;
+        if generation.is_some() {
+            self.last_generation = generation;
+        }
         self.size_bytes += len;
         self.next_offset += boundaries.len() as u64;
         self.record_count += boundaries.len() as u64;
@@ -603,6 +656,7 @@ pub(crate) struct StagedAppend {
     boundaries: Vec<(Offset, u64, u64)>,
     /// Shares the writer's cursor, which `stage` left at the end of the file.
     file: Arc<File>,
+    generation: Option<u64>,
 }
 
 impl StagedAppend {
@@ -736,6 +790,7 @@ impl BlankSegment {
             #[cfg(test)]
             fail_next_sync: false,
             version,
+            last_generation: None,
         })
     }
 

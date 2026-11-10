@@ -18,10 +18,10 @@ use std::path::Path;
 use super::super::{offload, recovery};
 use super::{Action, Startup, label_of, verdict};
 use crate::log::{LogConfig, Offset, RecordMark, SegmentId};
-use crate::segment::format::{check_offset_continuity, decode_record};
+use crate::segment::format::{check_offset_continuity, decode_record_after};
 use crate::segment::{
-    RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader, SparseIndex,
-    index_file_name, read_segment_header, segment_file_name,
+    GENERATION_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader, SparseIndex,
+    index_file_name, read_segment_header, record_header_len, segment_file_name,
 };
 use crate::{Corruption, CorruptionKind, Result, StorageError};
 
@@ -441,11 +441,12 @@ impl<'a> Walk<'a> {
                 self.expected = Some(expected);
                 return Ok(());
             }
-            buf.resize(RECORD_HEADER_LEN as usize, 0);
+            let header_len = record_header_len(header.version);
+            buf.resize(header_len as usize, 0);
             let read = read_at(&file, &mut buf, position)?;
-            if (read as u64) < RECORD_HEADER_LEN {
+            if (read as u64) < header_len {
                 let cause = CorruptionKind::Truncated {
-                    needed: RECORD_HEADER_LEN,
+                    needed: header_len,
                     available: read as u64,
                 };
                 return self.fail(id, position, expected, cause);
@@ -479,7 +480,7 @@ impl<'a> Walk<'a> {
                 };
                 return self.fail(id, position, expected, cause);
             }
-            let decoded = match decode_record(&buf) {
+            let decoded = match decode_record_after(record_header, &buf) {
                 Ok((decoded, _)) => decoded,
                 Err(err) => return self.fail(id, position, expected, err.kind),
             };
@@ -522,9 +523,10 @@ impl<'a> Walk<'a> {
         }
         // The index is derived data, so the record it points at has to show
         // it is a record boundary at an offset the window can start from.
-        let mut buf = [0u8; RECORD_HEADER_LEN as usize];
-        let found = read_at(file, &mut buf, position).ok() == Some(buf.len());
-        match RecordHeader::decode_in(&buf, header.version) {
+        let mut buf = [0u8; GENERATION_HEADER_LEN as usize];
+        let buf = &mut buf[..record_header_len(header.version) as usize];
+        let found = read_at(file, buf, position).ok() == Some(buf.len());
+        match RecordHeader::decode_in(buf, header.version) {
             Ok(record) if found && (header.base_offset..=self.lo).contains(&record.offset) => {
                 (position, record.offset, true)
             }

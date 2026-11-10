@@ -9,8 +9,8 @@ use crate::io::read_at;
 use crate::log::{LogRecord, Offset, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
-    RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader,
-    decode_record_after,
+    RecordHeader, RecordKind, SEGMENT_HEADER_LEN, SegmentHeader, decode_record_after,
+    record_header_len,
 };
 use crate::segment::index::SparseIndex;
 use crate::{Corruption, Result, StorageError};
@@ -36,8 +36,8 @@ pub struct SegmentReader {
     id: SegmentId,
     base_offset: Offset,
     file: File,
-    /// The header's version, read the first time a trim record is met, so a
-    /// segment that holds none never pays for it.
+    /// The header's version, read on the first read: it says how long each
+    /// record header is and which kinds the segment may hold.
     version: OnceLock<u16>,
 }
 
@@ -103,11 +103,17 @@ impl SegmentReader {
             return Ok(());
         }
 
+        let version = self.version(shard_label)?;
+        let header_len = record_header_len(version) as usize;
         let mut cursor = SegmentCursor::new(&self.file);
 
         while position < valid_bytes && !budget.is_spent() {
-            let header_slice = cursor.slice_at(position, RECORD_HEADER_LEN as usize)?;
-            let record_header = RecordHeader::decode(header_slice).map_err(|err| {
+            let header_slice = cursor.slice_at(position, header_len)?;
+            // Decoded at the segment's version, so a trim before v7 or headers
+            // before v8, which no build wrote, are refused here. Recovery
+            // scans only the active segment, so a sealed one can reach here
+            // unchecked.
+            let record_header = RecordHeader::decode_in(header_slice, version).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
             let total_len = record_header.encoded_len();
@@ -115,9 +121,6 @@ impl SegmentReader {
             // Records before the requested start, and trims the caller does
             // not want, are skipped by arithmetic alone: their payloads are
             // never even read.
-            if record_header.kind == RecordKind::Trim || record_header.has_headers {
-                self.check_version(&record_header, position, shard_label)?;
-            }
             if record_header.kind == RecordKind::Trim {
                 if budget.trims == TrimRecords::Skip {
                     position += total_len;
@@ -173,15 +176,14 @@ impl SegmentReader {
         shard_label: &str,
     ) -> Result<u64> {
         let mut position = index.seek_position(offset);
+        let version = self.version(shard_label)?;
+        let header_len = record_header_len(version) as usize;
         let mut cursor = SegmentCursor::new(&self.file);
         while position < valid_bytes {
-            let header_slice = cursor.slice_at(position, RECORD_HEADER_LEN as usize)?;
-            let record_header = RecordHeader::decode(header_slice).map_err(|err| {
+            let header_slice = cursor.slice_at(position, header_len)?;
+            let record_header = RecordHeader::decode_in(header_slice, version).map_err(|err| {
                 StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
             })?;
-            if record_header.kind == RecordKind::Trim || record_header.has_headers {
-                self.check_version(&record_header, position, shard_label)?;
-            }
             if record_header.offset >= offset {
                 return Ok(position);
             }
@@ -190,29 +192,25 @@ impl SegmentReader {
         Ok(valid_bytes)
     }
 
-    /// Refuse a trim record in a segment older than v7, or headers in one
-    /// older than v8, which no build wrote. Recovery scans only the active
-    /// segment, so a sealed one can reach here unchecked.
+    /// The segment header's version, read once per reader.
+    fn version(&self, shard_label: &str) -> Result<u16> {
+        if let Some(version) = self.version.get() {
+            return Ok(*version);
+        }
+        self.read_version(shard_label)
+    }
+
     #[cold]
     #[inline(never)]
-    fn check_version(&self, header: &RecordHeader, position: u64, shard_label: &str) -> Result<()> {
-        let annotate = |err: Corruption, at: u64| {
-            StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(at))
-        };
-        let version = match self.version.get() {
-            Some(version) => *version,
-            None => {
-                let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
-                let read = read_at(&self.file, &mut buf, 0)?;
-                let version = SegmentHeader::decode(&buf[..read])
-                    .map_err(|err| annotate(err, 0))?
-                    .version;
-                *self.version.get_or_init(|| version)
-            }
-        };
-        header
-            .check_version(version)
-            .map_err(|err| annotate(err, position))
+    fn read_version(&self, shard_label: &str) -> Result<u16> {
+        let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
+        let read = read_at(&self.file, &mut buf, 0)?;
+        let version = SegmentHeader::decode(&buf[..read])
+            .map_err(|err: Corruption| {
+                StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(0))
+            })?
+            .version;
+        Ok(*self.version.get_or_init(|| version))
     }
 }
 

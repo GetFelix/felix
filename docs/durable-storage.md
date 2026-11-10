@@ -675,6 +675,11 @@ stale one is replaced by reading the sealed segments' marks, which
 `felix_storage_producer_state_rebuilt_total` counts. See
 the producer snapshot section of `docs/storage-format.md`.
 
+From segment format v9 each record also carries its leader's generation,
+and the scan refuses a log whose generations fall. A crash that cuts the
+longer v9 header, generation included, is a torn tail like any other. See
+`docs/storage-format.md`, "Generations".
+
 ### What is validated at startup
 
 Fully checksumming every segment is `O(bytes on disk)`: minutes for a large

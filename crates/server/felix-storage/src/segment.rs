@@ -18,9 +18,10 @@ mod cursor;
 mod test_support;
 
 pub use format::{
-    BASELINE_VERSION, DecodedRecord, FORMAT_VERSION, HEADERS_VERSION, IndexEntry, IndexHeader,
-    MAX_PAYLOAD_BYTES, OLDEST_READABLE_VERSION, PRODUCER_TAG_LEN, RECORD_HEADER_LEN, RecordHeader,
-    RecordKind, SEGMENT_HEADER_LEN, SegmentHeader, TRIM_TAG_LEN, TRIM_VERSION, record_len,
+    BASELINE_VERSION, DecodedRecord, FORMAT_VERSION, GENERATION_HEADER_LEN, GENERATION_VERSION,
+    HEADERS_VERSION, IndexEntry, IndexHeader, MAX_PAYLOAD_BYTES, OLDEST_READABLE_VERSION,
+    PRODUCER_TAG_LEN, RECORD_HEADER_LEN, RecordHeader, RecordKind, SEGMENT_HEADER_LEN,
+    SegmentHeader, TRIM_TAG_LEN, TRIM_VERSION, record_header_len, record_len,
 };
 pub use index::{IndexWriter, SparseIndex};
 pub use reader::{ReadBudget, SegmentReader, TrimRecords};
