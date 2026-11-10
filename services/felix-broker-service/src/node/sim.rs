@@ -652,6 +652,33 @@ impl SimBroker {
         self.membership.as_ref()
     }
 
+    /// The highest generation a leader of `key` was accepted at on this
+    /// broker's open copy, read without awaiting. `None` when no copy is open.
+    pub fn accepted_generation(&self, key: &ShardKey) -> Option<u64> {
+        use std::future::Future;
+        let kind = match key.kind {
+            ShardKind::Stream => LogKind::Stream,
+            ShardKind::Cache => LogKind::Cache,
+        };
+        let open = self.broker.opened_log(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+        );
+        // A stream shard's lookup never waits. A cache shard's may be pending,
+        // which reads as no generation and leaves the old leader a chance, so
+        // the checker errs toward failing.
+        let mut open = std::pin::pin!(open);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match open.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(log) => log.map(|log| log.accepted_generation()),
+            std::task::Poll::Pending => None,
+        }
+    }
+
     /// What this broker believes about `key` right now, without awaiting.
     pub fn shard_stand(&self, key: &ShardKey) -> ShardStand {
         use crate::shards::lifecycle::Phase;

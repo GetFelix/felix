@@ -50,7 +50,7 @@ pub(crate) mod kills;
 mod node;
 pub(crate) mod power;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
@@ -268,6 +268,7 @@ impl SimCluster {
             .map(|index| Node::new(index, &config))
             .collect::<Result<Vec<_>>>()?;
         let (stalled, done) = spawn_stall_watch(config.real_time_limit);
+        let reconcile = config.controlplane.reconcile_interval();
         let cluster = Arc::new(Self {
             config,
             seed,
@@ -279,7 +280,7 @@ impl SimCluster {
             starts: AtomicU64::new(0),
             stalled,
             done,
-            kills: Default::default(),
+            kills: parking_lot::Mutex::new(KillLog::new(reconcile)),
             power: Default::default(),
         });
         cluster.reset_links();
@@ -433,7 +434,7 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
-        self.note_serving();
+        self.note_state().await;
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -442,7 +443,7 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
-        self.note_serving();
+        self.note_state().await;
         let at = self.elapsed();
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
             self.kills.lock().kill(&self.nodes[index].id, at);
@@ -458,7 +459,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
-        self.note_serving();
+        self.note_state().await;
         let at = self.elapsed();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
@@ -535,7 +536,7 @@ impl SimCluster {
     /// The held shards, and the unserved ones with a copy still untrusted
     /// although a broker served the shard while it was up.
     pub(crate) async fn holds(&self) -> Holds {
-        self.note_serving();
+        self.note_state().await;
         let Ok(mut views) = self.cp.shard_views().await else {
             return Holds::default();
         };
@@ -559,14 +560,34 @@ impl SimCluster {
         let kills = self.kills.lock();
         Holds {
             held: kills.held(&views, &trust),
+            reasons: kills
+                .held(&views, &trust)
+                .into_iter()
+                .map(|shard| {
+                    let why = kills.explain(&shard, &views[&shard], &trust);
+                    (shard, why)
+                })
+                .collect(),
             vouchable: kills.vouchable_untrusted(&views, &trust),
         }
     }
 
+    /// Record who could vouch whom and which restarted copies are trusted
+    /// now. Called before each fault and by the sampler, so a stop or a loss
+    /// of trust in between is judged against what was seen just before it.
+    pub(crate) async fn note_state(&self) {
+        self.note_serving().await;
+        self.note_trusted().await;
+    }
+
     /// Record which running brokers are up beside a broker serving each
     /// shard, so the hold rule knows which copies a leader could have
-    /// vouched. Reads without awaiting, so it sees one instant.
-    pub(crate) fn note_serving(&self) {
+    /// vouched, and in what role (learner or voter) it reached each. The
+    /// brokers are read without awaiting, so they are seen at one instant.
+    async fn note_serving(&self) {
+        let Ok(views) = self.cp.shard_views().await else {
+            return;
+        };
         let at = self.elapsed();
         let mut kills = self.kills.lock();
         for key in self.shard_keys() {
@@ -575,8 +596,43 @@ impl SimCluster {
                 continue;
             }
             let shard = describe(&key);
+            // A voter is vouched over a link that is up; readmitting a
+            // learner also needs a control plane that answers.
+            let delay = kills::cp_delay(self.cp.fault());
+            let servers: Vec<(usize, u64)> = stands
+                .iter()
+                .filter(|(_, stand)| stand.serving)
+                .map(|(index, stand)| (*index, stand.generation.unwrap_or(0)))
+                .collect();
+            let link_up = |from: usize, to: usize| {
+                !self
+                    .net
+                    .link(&self.nodes[from].id, &self.nodes[to].id)
+                    .partitioned
+            };
             for (index, _) in &stands {
-                kills.served(&shard, &self.nodes[*index].id, at);
+                let accepted = self.nodes[*index].accepted_generation(&key);
+                let serving = kills::unsuperseded(&servers, accepted);
+                if kills::reaches(&serving, *index, &link_up) {
+                    let id = &self.nodes[*index].id;
+                    let learner = views
+                        .get(&shard)
+                        .is_some_and(|view| view.joining.contains(id));
+                    kills.served(&shard, id, at, delay, learner);
+                }
+            }
+        }
+    }
+
+    /// Note the copies of brokers that started unclean which are trusted
+    /// now, so a later loss of trust is not put down to that start.
+    async fn note_trusted(&self) {
+        let starts = self.kills.lock().unclean_nodes();
+        for node in self.nodes.iter().filter(|node| starts.contains(&node.id)) {
+            for key in self.shard_keys() {
+                if node.copy_trust(&key).await == Some(kills::Copy::Trusted) {
+                    self.kills.lock().trusted(&describe(&key), &node.id);
+                }
             }
         }
     }
@@ -793,6 +849,8 @@ fn spawn_stall_watch(limit: Duration) -> (CancellationToken, Arc<AtomicBool>) {
 pub(crate) struct Holds {
     /// Held on purpose: exempt from serving.
     pub(crate) held: BTreeSet<String>,
+    /// For each held shard, the injected faults that explain its copies.
+    pub(crate) reasons: BTreeMap<String, Vec<String>>,
     /// With a copy still untrusted although a leader could have vouched it.
     pub(crate) vouchable: BTreeSet<String>,
 }

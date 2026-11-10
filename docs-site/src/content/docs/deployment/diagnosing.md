@@ -127,6 +127,33 @@ a majority answers. `felix_broker_promotions_opened_total{path="fenced"}`
 counts promotions that opened this way, and
 `felix_broker_shard_phase{phase="fencing"}` how many shards wait now.
 
+### Two of three replicas lost power together
+
+**What you see.** A shard with three replicas stays in `fencing` after a
+power loss, kernel panic or reboot took two of its machines at about the same
+time, and the control plane was down or slow meanwhile. The leader's detail
+reads like `1 of 3 attest they hold what they acknowledged, half of each
+needed`, and a replica refuses with `this broker led the shard before a crash
+that may have cost it acknowledged records`. A broker that was only killed on
+Linux keeps its storage identity and is not affected.
+
+**How to read it.** A machine that lost power may have lost records it
+acknowledged, so its copy counts for nothing until a leader that is already
+serving ships it level. With two of three copies in that state, no new leader
+can show that the third copy holds everything acknowledged, and none can serve
+to vouch for the others. Felix holds the shard on purpose rather than risk
+serving a log that is short. Writes to it fail.
+
+**What to do.** If the failed machines come back and the control plane
+recovers, the shard may resolve on its own. If it does not, stop the broker
+the shard was promoted to, run
+[`felixctl placement abandon`](/deployment/moving-shards/#abandoning-a-shards-log)
+for the shard, and start the broker again. `abandon` deletes no copy. It
+writes a fresh replica set on live brokers, each opens the copy it already
+holds, and the new leader takes the copy furthest ahead. It loses only records
+that no copy in the new set holds. Records that the power loss really cost are
+gone, but nothing else is discarded.
+
 ## A shard lost its leader and waits for a replica
 
 **What you see.** Publishes fail with `owner_unavailable` or `not_assigned`

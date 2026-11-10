@@ -286,6 +286,12 @@ impl Checker for ElectionSettles {
                 holds.held.len(),
                 cluster.shard_keys().count(),
             );
+            for (shard, why) in &holds.reasons {
+                println!(
+                    "election-settles: warning: {shard} held on purpose, no attestation majority: {}",
+                    why.join("; "),
+                );
+            }
             if !holds.vouchable.is_empty() {
                 println!(
                     "election-settles: {} unserved shards have a copy still untrusted after a leader served beside it: {}",

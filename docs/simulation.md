@@ -306,17 +306,33 @@ only when no leader had the chance to vouch it:
 
 - its broker is down after an unclean kill, so its next start distrusts the
   copy whatever came before, or
-- its broker is up, and no broker served the shard while it was up since its
-  last unclean start.
+- its broker is up, restarted unclean (an injected kill or power loss), has
+  not been seen trusted since, and no serving broker had a real chance to
+  vouch it.
 
-The sim notes every second, and before each fault, which brokers are up while
-some broker serves each shard. A copy still untrusted after a broker served
-beside it is vouchable. Its shard is not exempt and fails the check, marked
-`vouchable` in the stuck list, and the run prints those shards on their own
-line. A broker down after a clean stop, or one with no copy, counts as
-trusted, so the rule errs towards exempting less. Reading the attestations
-rather than kill timing covers every order: a follower killed after the leader
-in the same term, or one restarted and still a learner when the leader died.
+The sim notes every second, and before each fault, which brokers a serving
+broker can reach. The copy must not have accepted a newer leader than the serving broker (a
+follower refuses a deposed leader by the generation it accepted, not by what
+the control plane routes), and the link to it must not be partitioned.
+A voting copy is vouched by that shipping alone, so a run of 2.5 seconds is a
+chance. A learner is readmitted by a control plane step, so it needs the
+control plane to answer (paused and down never do) for a run of the reconcile
+interval plus 2.5 seconds plus three calls at the current slow delay. A copy
+still untrusted after such a chance is vouchable: its shard is not exempt and
+fails the check, marked `vouchable` in the stuck list, and the run prints
+those shards on their own line. Each run is judged by the role the copy had
+while it lasted, so a promotion or demotion afterwards does not change it. A copy that is untrusted with no injected
+unclean start behind it, or that was seen trusted after the start, is not
+counted either, so a broker that loses a vouch fails the check. A broker down
+after a clean stop, or one with no copy, counts as trusted, so the rule errs
+towards exempting less.
+
+Each held shard is printed as a warning with the faults that explain its
+copies, by broker and time (for example `b3 restarted unclean at 12.1s; no
+serving leader reached it with the control plane up since`). A held shard is
+never silent. Reading the attestations rather than kill timing covers every
+order: a follower killed after the leader in the same term, or one restarted
+and still a learner when the leader died.
 
 A shard with a majority of trusted copies and no leader is not exempt. An
 elected leader that names a follower with an empty storage id, or a joint
