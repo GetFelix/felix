@@ -886,6 +886,14 @@ entries that must never be acknowledged and then lost) is the last place
 Felix should be inventive, and openraft's storage suite now enforces the
 semantics against the real store on every test run.
 
+That choice is planned to change. `replication-engine.md` ("Control-plane
+storage on the segment log") moves this log onto `felix-storage`'s `DiskLog`
+through one Raft log adapter shared with the shard replication engine. Both
+reasons above are answered there: the segment store now cuts an uncommitted
+suffix as a supported operation, and the vote, snapshot and entries reuse the
+write paths Felix already trusts for acknowledged records, held to the same
+storage suite plus crash-point tests. Until that lands, redb is what runs.
+
 Every redb commit fsyncs, so the store runs its writes on tokio's blocking
 pool. Run inline, a slow disk held an async worker for the whole flush, and
 other tasks queued on that worker waited with it: RPC handlers, timers, and
