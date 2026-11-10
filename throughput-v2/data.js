@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794291708317,
+  "lastUpdate": 1794292023522,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50908,6 +50908,58 @@ window.BENCHMARK_DATA = {
             "range": "35875.72",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1721350.23\nmean: 1705374.83\nstdev: 35875.72\ncv: 2.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5544b2ed15c4fae175862eb010c52eec52dfdb03",
+          "message": "feat(storage): read and write segment format v9 with a per-record generation (#2172)\n\n* feat(storage): read and write segment format v9 with a per-record generation\n\nA v9 record header is 36 bytes: the 8-byte generation (Raft term) of the\nleader that wrote it sits between the timestamp and the header checksum,\nwhich covers it. The scan, reader, writer and log inspector take the\nheader length from the segment's version. Recovery treats a v9 header cut\nshort, generation included, as a torn tail, measures the zero-fill and\nchecksum-tail rules against the 36-byte header, and refuses a log whose\ngenerations fall (GenerationFell). The writer refuses a generation on an\nolder segment, none on a v9 one, and a falling one.\n\nNothing moves a log onto v9 yet; the fleet-gated wiring comes later\n(#2167). A newer segment version now reports that a newer build wrote it.\n\nSpec-Unaffected: storage format only, not written by any broker yet; no protocol or replication change\n\n* fix(storage): v9 review follow-ups\n\nSay what the generation check covers, document that a resume scan cannot seed a\ngeneration floor, size compaction's payload count and the minimum segment from\nthe v9 header.\n\nSpec-Unaffected: storage format change, no protocol or TLA model touched",
+          "timestamp": "2026-11-10T06:22:11Z",
+          "tree_id": "6f296ff1a371b20c7bbc6e0a74b1160d6a3618cd",
+          "url": "https://github.com/GetFelix/felix/commit/5544b2ed15c4fae175862eb010c52eec52dfdb03"
+        },
+        "date": 1794292022711,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343454.7,
+            "range": "5197.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343454.70\nmean: 344804.83\nstdev: 5197.05\ncv: 1.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343454.7,
+            "range": "5197.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343454.70\nmean: 344804.83\nstdev: 5197.05\ncv: 1.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81792.76,
+            "range": "544.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81792.76\nmean: 81503.84\nstdev: 544.22\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817927.63,
+            "range": "5442.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817927.63\nmean: 815038.40\nstdev: 5442.19\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
