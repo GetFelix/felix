@@ -274,17 +274,56 @@ fn install_metrics_recorder() -> PrometheusHandle {
         if let Some(handle) = METRICS_HANDLE.get() {
             return handle.clone();
         }
-        let handle = builder()
-            .install_recorder()
-            .expect("install metrics recorder");
+        let handle = install_recorder_with_upkeep();
         let _ = METRICS_HANDLE.set(handle.clone());
         handle
     }
     #[cfg(not(test))]
     {
-        builder()
-            .install_recorder()
-            .expect("install metrics recorder")
+        install_recorder_with_upkeep()
+    }
+}
+
+/// Both builds go through here, so a test of this covers the production path.
+fn install_recorder_with_upkeep() -> PrometheusHandle {
+    let handle = builder()
+        .install_recorder()
+        .expect("install metrics recorder");
+    spawn_metrics_upkeep(handle.clone());
+    handle
+}
+
+/// Upkeep threads started by this process; lets a test see the recorder was wired.
+static UPKEEP_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How often the exporter's raw histogram samples are folded into summaries.
+const METRICS_UPKEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Folds the recorder's raw histogram samples into bounded summaries on a
+/// timer.
+///
+/// The exporter keeps every recorded sample until something renders or runs
+/// upkeep. Without this a broker nobody scrapes holds one `f64` per histogram
+/// record for as long as it runs, and a scraped one holds a scrape interval's
+/// worth.
+pub fn spawn_metrics_upkeep(handle: PrometheusHandle) {
+    spawn_metrics_upkeep_every(handle, METRICS_UPKEEP_INTERVAL);
+}
+
+/// [`spawn_metrics_upkeep`] with an explicit period. A plain thread, so it
+/// needs no runtime and keeps draining while the runtime is saturated.
+pub fn spawn_metrics_upkeep_every(handle: PrometheusHandle, every: std::time::Duration) {
+    UPKEEP_THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let spawned = std::thread::Builder::new()
+        .name("felix-metrics-upkeep".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(every);
+                handle.run_upkeep();
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(%err, "metrics upkeep thread did not start; histogram samples will accumulate");
     }
 }
 
@@ -334,3 +373,8 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn upkeep_threads_started() -> usize {
+    UPKEEP_THREADS.load(std::sync::atomic::Ordering::Relaxed)
+}
