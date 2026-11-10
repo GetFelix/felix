@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794283327545,
+  "lastUpdate": 1794283577745,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50804,6 +50804,58 @@ window.BENCHMARK_DATA = {
             "range": "35609.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 922451.58\nmean: 907978.10\nstdev: 35609.43\ncv: 3.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "174632488907de74c7f0b88a919763f79ca364cb",
+          "message": "fix(replication): an unheard broker confirms a Quorum read by lease and round (#2161) (#2166)\n\n* fix(replication): an unheard broker confirms a Quorum read by lease and round (#2161)\n\nA broker cut off before it heard the fleet finalize lease_free_reads kept\nconfirming Quorum reads on its lease alone, while a peer that had heard\ncould be elected without waiting that lease out (the candidate checks only\nits own view of the fleet). The read then missed the successor's writes.\n\nUntil a broker that reports lease_free_reads hears it was finalized, a read\nthere now needs both the lease and the round. The lease covers a fleet that\nhas not finalized, the round one that has, so the broker need not know which.\n\nSpec-Unaffected: FelixShardReads fixes ReadConfirm per run and does not model a broker learning the mode (gap filed as #2165); lease-and-round is a strictly stronger Confirmed than round, which FelixShardReadsRound already passes\n\n* fix(replication): require the extra read round only on brokers that stand for election (#2161)\n\nElection is the only promotion that skips an unheard leader's lease, and the\ncontrol plane refuses replica_election while a live broker does not report\nit. A broker that does not stand for election stays on the lease until it\nhears lease_free_reads, so default fleets pay no extra round.\n\nBeside the lease, a round also passes when the replicas that take the fence\nare short of a majority: no successor can have fenced one, and otherwise a\nleader whose replicas are mostly FELIX_INTERNAL_FENCE=false would refuse\nevery read.\n\nSpec-Unaffected: FelixShardReads fixes ReadConfirm per run and does not model a broker learning the mode or election (gap filed as #2165); the change only narrows when a stronger Confirmed than the lease is required\n\n* fix(replication): a fence-off replica never vouches for a read, even beside the lease (#2161)\n\nAn Unsupported answer describes the replica's current process, not the one\na successor fenced: a follower fenced by a successor and restarted with\nFELIX_INTERNAL_FENCE=false would have let the deposed leader count its\nround as unfenceable. Drop that escape. A broker that stands for election\nwhose replicas are mostly fence-off now refuses Quorum reads before the\nfinalize, which fails safe; such a fleet cannot finalize replica_election.\n\nSpec-Unaffected: removes a code path the model never had; reads confirm by lease and round as FelixShardReadsRound's stronger Confirmed (gap #2165)",
+          "timestamp": "2026-11-09T20:01:32-08:00",
+          "tree_id": "f8a964e4e32214c2b5115ff1060974b80a3e1e08",
+          "url": "https://github.com/GetFelix/felix/commit/174632488907de74c7f0b88a919763f79ca364cb"
+        },
+        "date": 1794283576845,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495384.66,
+            "range": "50737.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495384.66\nmean: 516782.87\nstdev: 50737.64\ncv: 9.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495384.66,
+            "range": "50737.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495384.66\nmean: 516782.87\nstdev: 50737.64\ncv: 9.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123291.84,
+            "range": "1237.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123291.84\nmean: 122813.39\nstdev: 1237.02\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1232918.38,
+            "range": "12370.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1232918.38\nmean: 1228133.86\nstdev: 12370.23\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
