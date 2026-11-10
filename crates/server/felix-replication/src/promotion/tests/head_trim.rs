@@ -34,6 +34,7 @@ async fn a_trim_in_a_taken_tail_is_stored_as_a_trim() {
             &[],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")

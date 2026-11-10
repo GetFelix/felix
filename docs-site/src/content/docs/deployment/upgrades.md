@@ -587,8 +587,10 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 
 Groundwork for running each shard on Raft, which needs the term of every
 entry in the log itself. It **cannot be finalized yet**: brokers do not
-report it and the control plane refuses it with 409, until replication
-carries the generation that wrote each record to followers. Once it can be
+report it and the control plane refuses it with 409. Replication now
+carries the generation that wrote each record to followers, so a follower
+stamps what the leader wrote; what is left is a performance check on
+replicated clusters before brokers report it. Once it can be
 finalized, each durable stream log will start its next segment in storage
 format v9, with an 8-byte generation in every record header. Clients will see
 nothing: reads, offsets and payloads are unchanged.

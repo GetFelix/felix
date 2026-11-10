@@ -9,6 +9,7 @@ use super::*;
 
 fn replicate() -> InternalMessage {
     InternalMessage::ReplicateRecords(ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id: 0,
         shard: shard(),

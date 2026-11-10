@@ -491,7 +491,10 @@ impl StreamLog {
     /// `times` is each record's time, as the leader that appended it stored
     /// it, or empty to stamp every record with this broker's clock. `headers`
     /// is one key-and-headers block per record, as the leader stored it, or
-    /// `None` when no record has one.
+    /// `None` when no record has one. `writers` names the generations that
+    /// wrote the records where they came from; a log that stamps them keeps
+    /// those.
+    #[allow(clippy::too_many_arguments)]
     pub async fn begin_append_marked_at(
         &self,
         first_offset: Offset,
@@ -500,6 +503,7 @@ impl StreamLog {
         publishers: &[Option<Bytes>],
         times: &[u64],
         headers: Option<&[Option<Bytes>]>,
+        writers: felix_storage::log::WrittenBy,
     ) -> Result<Option<PendingAppend>> {
         let mut records = records(payloads, marks, publishers, headers, append_time_now())?;
         if times.len() == records.len() {
@@ -508,7 +512,7 @@ impl StreamLog {
             }
         }
         self.log
-            .append_pending_at(first_offset, &records)
+            .append_pending_at(first_offset, &records, writers)
             .await
             .map_err(BrokerError::from)
     }
@@ -870,6 +874,18 @@ impl StreamLog {
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
         }
+    }
+
+    /// Note that this broker leads the log at `generation`. See
+    /// `DiskLog::lead_at`.
+    pub fn lead_at(&self, generation: u64) {
+        self.log.lead_at(generation);
+    }
+
+    /// Whether the log stamps records with their writer's generation, or may
+    /// soon. See `DiskLog::stamps_generations`.
+    pub fn stamps_generations(&self) -> bool {
+        self.log.stamps_generations()
     }
 
     /// The highest generation a leader of this shard was accepted at here.

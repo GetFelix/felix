@@ -28,7 +28,15 @@ async fn headered_leader(generation: u64) -> (Arc<Broker>, TempDir) {
     let log = stream_log(&broker).await;
     log.record_generation(generation, 0).expect("generation");
     let pending = log
-        .begin_append_marked_at(0, &payloads(), &[], &[], &TIMES, Some(&blocks()))
+        .begin_append_marked_at(
+            0,
+            &payloads(),
+            &[],
+            &[],
+            &TIMES,
+            Some(&blocks()),
+            felix_storage::log::WrittenBy::Leader,
+        )
         .await
         .expect("append")
         .expect("at the tail");
@@ -152,6 +160,7 @@ async fn a_fetch_that_did_not_ask_for_blocks_is_refused_a_page_that_has_one() {
         .await;
     assert!(matches!(fence, InternalMessage::FenceOk(_)), "{fence:?}");
     let fetch = |headers| ReplicateFetch {
+        writers: false,
         correlation_id: 3,
         shard: shard.clone(),
         log: ReplicaLog::Stream,

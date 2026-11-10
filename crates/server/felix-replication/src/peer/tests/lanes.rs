@@ -16,6 +16,7 @@ const STALL: u64 = 999;
 
 pub(super) fn record(correlation_id: u64, first_offset: u64) -> InternalMessage {
     InternalMessage::ReplicateRecords(ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id,
         shard: shard(),

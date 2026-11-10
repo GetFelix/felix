@@ -134,6 +134,7 @@ fn records() -> ReplicateRecords {
         generations: None,
         times: None,
         headers: None,
+        writers: None,
         set_generation: None,
     }
 }
@@ -181,6 +182,7 @@ fn replication_requests() -> Vec<InternalMessage> {
             labelled: false,
             timed: false,
             headers: false,
+            writers: false,
         }),
         InternalMessage::PreVote(PreVote {
             correlation_id: 16,

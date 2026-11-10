@@ -67,6 +67,21 @@ pub enum StorageError {
         expected: String,
         found: String,
     },
+    /// A record would be stamped at `generation`, below `floor`, the
+    /// generation of the record before it. A log's generations never fall,
+    /// so the record's writer and this log disagree about what precedes it:
+    /// refused, never raised to the floor, which would claim a generation
+    /// that did not write the record.
+    GenerationBelowFloor {
+        offset: u64,
+        generation: u64,
+        floor: u64,
+    },
+    /// A v9 segment needs the generation that wrote each record, and this
+    /// append cannot name it honestly: a copied batch whose sender did not
+    /// say, or a leader whose log accepted a generation other than the one it
+    /// leads at.
+    WriterUnknown(&'static str),
     /// The device or the quota is out of space. Nothing was written, so the
     /// same request can succeed once space is freed.
     Full(std::io::Error),
@@ -106,6 +121,20 @@ impl fmt::Display for StorageError {
                 f,
                 "shard directory {dir} belongs to {found}, not {expected}; refusing to open it"
             ),
+            StorageError::GenerationBelowFloor {
+                offset,
+                generation,
+                floor,
+            } => write!(
+                f,
+                "the record at {offset} was written at generation {generation}, below {floor}, the generation of the record before it"
+            ),
+            StorageError::WriterUnknown(detail) => {
+                write!(
+                    f,
+                    "cannot name the generation that wrote the record: {detail}"
+                )
+            }
             StorageError::Full(err) => write!(f, "storage full: {err}"),
             StorageError::Io(err) => write!(f, "io error: {err}"),
         }

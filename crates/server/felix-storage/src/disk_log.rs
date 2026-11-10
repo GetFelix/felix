@@ -87,7 +87,7 @@ use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
-    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
+    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor, WrittenBy,
 };
 use crate::segment::{ReadBudget, TrimRecords};
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
@@ -299,13 +299,19 @@ impl DiskLog {
     /// the write.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
-            .await
-            .map(|written| {
-                written
-                    .expect("an unconditional write is always written")
-                    .pending
-            })
+        Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            None,
+            WrittenBy::Leader,
+        )
+        .await
+        .map(|written| {
+            written
+                .expect("an unconditional write is always written")
+                .pending
+        })
     }
 
     /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
@@ -324,6 +330,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::Always,
             Some(order),
+            WrittenBy::Leader,
         )
         .await?
         .expect("an unconditional write is always written");
@@ -350,6 +357,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.map(append::Written::claimed))
@@ -363,10 +371,14 @@ impl DiskLog {
     /// such as a follower storing a leader's batch at the leader's offsets:
     /// another append landing in between would otherwise put these records
     /// at offsets their sender never assigned.
+    ///
+    /// `writers` names the generations that wrote the records where they
+    /// came from; a v9 segment stamps them with those, never its own.
     pub async fn append_pending_at(
         &self,
         first_offset: Offset,
         records: &[AppendRecord],
+        writers: WrittenBy,
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
         let written = Self::write_batch(
@@ -374,6 +386,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             None,
+            writers,
         )
         .await?;
         Ok(written.ok().map(|written| written.pending))
@@ -404,6 +417,7 @@ impl DiskLog {
                 sequence,
             },
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.ok().map(append::Written::claimed))
@@ -652,6 +666,28 @@ impl DiskLog {
             .lock()
             .clone()
             .record(generation, start_offset)
+    }
+
+    /// Note that this broker leads the log at `generation` from now on. A v9
+    /// segment stamps the leader's own appends with it, and refuses them once
+    /// the log accepts a newer generation: that belongs to another leader,
+    /// even after this log records where it begins (a deposed leader's
+    /// history takes the new leader's labels). Only rises; kept in memory,
+    /// since a broker opens a shard to lead it again after a restart.
+    pub fn lead_at(&self, generation: u64) {
+        self.inner
+            .led_generation
+            .fetch_max(generation.saturating_add(1), Ordering::AcqRel);
+    }
+
+    /// Whether this log stamps records with the generation that wrote them,
+    /// or may soon: its active segment is v9, or its gate has said yes or
+    /// would now. A sender ships the writers of a batch only then, so a
+    /// cluster that has not finalized `record_generations` sends what it
+    /// always did.
+    pub fn stamps_generations(&self) -> bool {
+        self.inner.config.generations.heard()
+            || self.inner.segments.read().active().holds_generations()
     }
 
     /// Note that the leader wrote `generation`'s start record at `offset`.
@@ -982,6 +1018,7 @@ impl DiskLog {
             epochs: Mutex::new(epochs),
             stint: Mutex::new(None),
             accepted_generation: AtomicU64::new(accepted.generation),
+            led_generation: AtomicU64::new(0),
             ballot: RwLock::new(accepted),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
@@ -1153,11 +1190,16 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending =
-                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
-                    .await?
-                    .expect("an unconditional write is always written")
-                    .pending;
+            let pending = Self::write_batch(
+                Arc::clone(&inner),
+                records,
+                append::WriteIf::Always,
+                None,
+                WrittenBy::Leader,
+            )
+            .await?
+            .expect("an unconditional write is always written")
+            .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
@@ -1370,6 +1412,10 @@ struct LogInner {
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
+    /// One past the generation this broker opened the log to lead at, zero
+    /// for none since it opened. A leader's appends are stamped with it. See
+    /// [`DiskLog::lead_at`].
+    led_generation: AtomicU64,
     /// The accepted generation with the leader it was accepted from, when one
     /// was named, and whether that vote is committed. Read together on every
     /// replicated batch, so a raise is seen with its own leader. Written only

@@ -156,6 +156,7 @@ impl SegmentReader {
                 mark: decoded.mark,
                 publisher: decoded.publisher,
                 headers: decoded.headers.map(Box::new),
+                generation: decoded.header.generation,
             });
             position += total_len;
         }

@@ -53,6 +53,7 @@ fn router(generation: u64) -> Arc<ShardRouter> {
 fn batch(generation: u64) -> ReplicateRecords {
     let payloads = vec![Bytes::from_static(b"a")];
     ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id: 1,
         shard: ShardRef {

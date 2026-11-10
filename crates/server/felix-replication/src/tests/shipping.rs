@@ -364,6 +364,7 @@ async fn log_with_trim() -> (StreamLog, TempDir) {
             &[],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")

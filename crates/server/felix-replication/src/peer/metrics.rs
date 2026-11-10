@@ -92,6 +92,12 @@ pub const OUTCOME_CONFLICT: &str = "conflict";
 pub const OUTCOME_TRUNCATED: &str = "truncated";
 /// The batch did not survive the trip.
 pub const OUTCOME_CORRUPT: &str = "corrupt";
+/// A batch named a writer generation below the one of the record before it.
+/// The leader halts the follower; it needs a person or a rebuild.
+pub const OUTCOME_BELOW_FLOOR: &str = "below_floor";
+/// A batch from a leader that did not say which generations wrote its
+/// records, refused by a follower that stamps them.
+pub const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
 /// This broker took a promoted leader's fence.
 pub const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
 /// A fence at the generation this replica had already accepted: the leader

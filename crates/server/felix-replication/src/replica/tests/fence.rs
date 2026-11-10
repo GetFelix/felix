@@ -416,6 +416,7 @@ async fn a_group_log_answers_the_fence_and_the_fetch() {
 
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
     felix_wire::internal::ReplicateFetch {
+        writers: false,
         timed: false,
         headers: false,
         correlation_id: 4,

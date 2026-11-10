@@ -135,6 +135,7 @@ fn a_reader_sees_a_commit_record_as_its_event() {
     }
     .encode();
     let record = |mark| LogRecord {
+        generation: None,
         offset: 7,
         timestamp_micros: 0,
         checksum: 0,

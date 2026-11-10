@@ -38,6 +38,9 @@ pub const OUTCOME_HEADERS_UNSUPPORTED: &str = "headers_unsupported";
 /// The next record is a membership or counter record, which this build
 /// cannot replicate, so nothing was sent. The follower stays behind it.
 pub const OUTCOME_KIND_UNSUPPORTED: &str = "kind_unsupported";
+/// The follower stamps records with their writer's generation and refused a
+/// batch that names none. It stays behind until the capability is negotiated.
+pub const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
 pub const OUTCOME_UNREACHABLE: &str = "unreachable";
 pub const OUTCOME_TIMEOUT: &str = "timeout";
 pub const OUTCOME_DISCONNECTED: &str = "disconnected";

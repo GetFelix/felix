@@ -2,12 +2,12 @@
 //! filesystem.
 //!
 //! A gated log writes v3 segments, rolls onto v9, raises its generation,
-//! rolls again, takes records above the accepted generation, is cut back by
+//! rolls again, takes records above the leader's generation, is cut back by
 //! a truncation and reopened. The power is cut
 //! after each of those steps, and during an append into a v9 segment, where
 //! the cut tears the 36-byte header, generation field included. Recovery
 //! must open what is left, keep every acknowledged record as a gap-free
-//! prefix, find generations that never fall, and take appends at the floor.
+//! prefix, find generations that never fall, and take appends from the leader.
 //!
 //! Built only with the `sim` feature; CI runs it in the coverage job
 //! (`--all-features`).
@@ -76,6 +76,16 @@ impl Drop for Sim {
     }
 }
 
+/// Make `generation` the log's leader: accepted, and recorded at the tail.
+async fn lead(log: &DiskLog, generation: u64) {
+    log.accept_generation(generation, Some("a"))
+        .await
+        .expect("accept");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
+}
+
 async fn append(log: &DiskLog, from: Offset, to: Offset) {
     for offset in from..to {
         log.append(&[record(offset)]).await.expect("append");
@@ -100,7 +110,7 @@ const STEPS: [Step; 4] = [Step::FirstV9, Step::Raised, Step::Truncated, Step::Re
 /// Run the workload up to `stop`, returning the log and the tail it wrote.
 async fn run_to(dir: &Path, stop: Step) -> (DiskLog, Offset) {
     let log = DiskLog::open(dir, KEY, config()).expect("open");
-    log.accept_generation(2, Some("a")).await.expect("accept");
+    lead(&log, 2).await;
     // Starts on v3: the gate moves only the next segment.
     append(&log, 0, 6).await;
     log.roll_now().await.expect("roll");
@@ -109,14 +119,14 @@ async fn run_to(dir: &Path, stop: Step) -> (DiskLog, Offset) {
         return (log, 8);
     }
     append(&log, 8, 20).await;
-    log.accept_generation(4, Some("a")).await.expect("accept");
+    lead(&log, 4).await;
     append(&log, 20, 38).await;
-    // Above the accepted generation, as after a raise whose `replica` file a
-    // crash lost: from here the floor, not the accepted generation, keeps
-    // the generations from falling.
+    // Above the leader's generation, as after a raise whose `replica` file a
+    // crash lost. A leader below this floor is refused until it leads above.
     log.append_v9_for_tests(&[record(38), record(39)], 6)
         .await
-        .expect("append above the accepted generation");
+        .expect("append above the leader's generation");
+    lead(&log, 6).await;
     // A background roll, then enough to roll inline.
     log.roll_now().await.expect("roll");
     append(&log, 40, 70).await;
@@ -139,6 +149,7 @@ async fn run_to(dir: &Path, stop: Step) -> (DiskLog, Offset) {
     log.shutdown().await.expect("shutdown");
     drop(log);
     let log = DiskLog::open(dir, KEY, config()).expect("reopen");
+    log.lead_at(6);
     append(&log, 62, 66).await;
     (log, 66)
 }
@@ -186,7 +197,9 @@ async fn recover(dir: &Path, acknowledged: Offset, written: Offset) -> Offset {
     }
     check_generations(dir, &log);
 
-    // The repaired log takes an append at its floor and opens again.
+    // The repaired log takes an append at its floor and opens again. Leading
+    // is not kept across the reopen, so the broker leads it again.
+    log.lead_at(log.accepted_generation());
     log.append(&[record(kept)])
         .await
         .expect("append after recovery");

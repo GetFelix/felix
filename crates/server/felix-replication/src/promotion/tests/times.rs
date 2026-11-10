@@ -63,7 +63,15 @@ pub(super) async fn timed_leader(generation: u64, values: &[&str]) -> (Arc<Broke
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     let pending = log
-        .begin_append_marked_at(0, &payloads, &[], &[], &TIMES[..values.len()], None)
+        .begin_append_marked_at(
+            0,
+            &payloads,
+            &[],
+            &[],
+            &TIMES[..values.len()],
+            None,
+            felix_storage::log::WrittenBy::Leader,
+        )
         .await
         .expect("append")
         .expect("at the tail");

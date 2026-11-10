@@ -399,6 +399,7 @@ mod durable {
             &[],
             &[],
             None,
+            None,
         )
         .await
         .expect("apply")

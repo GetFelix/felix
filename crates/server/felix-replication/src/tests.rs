@@ -12,6 +12,7 @@ mod quorum;
 mod rebuild;
 mod shipping;
 pub(crate) mod trimmed_history;
+mod writers;
 
 use std::net::SocketAddr;
 use std::sync::Mutex;

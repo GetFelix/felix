@@ -168,6 +168,7 @@ fn replica_router() -> StdArc<ShardRouter> {
 fn records() -> ReplicateRecords {
     let payloads = vec![Bytes::from_static(b"a")];
     ReplicateRecords {
+        writers: None,
         correlation_id: 1,
         shard: ShardRef {
             tenant_id: "t1".to_string(),

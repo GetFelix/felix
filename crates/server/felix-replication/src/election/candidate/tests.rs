@@ -1838,6 +1838,7 @@ async fn a_leader_the_control_plane_collided_with_fences_again_one_generation_up
         .apply(
             Some(LOCAL),
             felix_wire::internal::ReplicateRecords {
+                writers: None,
                 times: None,
                 correlation_id: 1,
                 shard: shard_at(4),

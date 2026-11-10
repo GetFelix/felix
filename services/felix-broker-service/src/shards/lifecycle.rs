@@ -2053,6 +2053,8 @@ pub async fn record_term_start(
     generation: u64,
     required: bool,
 ) -> anyhow::Result<()> {
+    // A v9 log stamps this leader's appends with it.
+    log.lead_at(generation);
     let tail = log
         .tail_offset()
         .await
@@ -2126,7 +2128,10 @@ async fn accept_led_generation(
             promised_to: leader,
         }
         .into()),
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            log.lead_at(generation);
+            Ok(())
+        }
         Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
     }
 }

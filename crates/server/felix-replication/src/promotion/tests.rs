@@ -136,6 +136,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id: 1,
         shard: ShardRef {
