@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794292019490,
+  "lastUpdate": 1794292644535,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64680,6 +64680,72 @@ window.BENCHMARK_DATA = {
             "range": "440.14",
             "unit": "us",
             "extra": "trials: 5\nmedian: 585.00\nmean: 818.60\nstdev: 440.14\ncv: 53.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "badda77a31034c0254f1bee07b78b2a05f5d5059",
+          "message": "refactor(controlplane): remove the Postgres metadata backend (#2173)\n\n* Remove the control plane's Postgres metadata backend\n\nRaft is the one production backend; the in-memory store stays for tests and\nlocal runs. Startup refuses leftover Postgres settings instead of falling back\nto an empty store. Drops the sqlx dependency, migrations, pg tests and tasks,\nCI Postgres services, felixctl's busy retry and export-postgres, and moves the\nHelm chart default to Raft.\n\n* docs: drop the last Postgres mentions from the demo pages\n\n* Spec-Unaffected: the diff only deletes the Postgres store and rewords comments in modelled files; no protocol or placement behaviour changes\n\n* Drop the migrate import tool and felixctl's controlplane delegate\n\nNothing writes the snapshot file any more. The ImportState command stays: the\nRaft tests seed state through it.\n\n* test: accept an answer the server reset the connection after",
+          "timestamp": "2026-11-10T06:33:00Z",
+          "tree_id": "4444cc2a2817e70c51ca1d399443681e80fc36c2",
+          "url": "https://github.com/GetFelix/felix/commit/badda77a31034c0254f1bee07b78b2a05f5d5059"
+        },
+        "date": 1794292636789,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 93,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 93.00\nmean: 92.80\nstdev: 2.28\ncv: 2.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "4.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 125.80\nstdev: 4.09\ncv: 3.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 175,
+            "range": "106.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 211.60\nstdev: 106.79\ncv: 50.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 112,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 114.80\nstdev: 5.81\ncv: 5.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 232,
+            "range": "518.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 232.00\nmean: 504.40\nstdev: 518.72\ncv: 102.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 381,
+            "range": "1357.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 381.00\nmean: 1348.60\nstdev: 1357.06\ncv: 100.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
