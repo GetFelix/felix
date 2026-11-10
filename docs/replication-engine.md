@@ -1,17 +1,22 @@
 # The replication engine interface
 
-Felix replicates each shard with a protocol of its own, described in
-[`replication-design.md`](replication-design.md). Release 0.8 tests whether a
-standard protocol, per-shard Raft, would do the same job with less code we
-have to prove correct ourselves (issue #2154). The plan ends with one
-protocol in the tree, not two options.
+Release 0.8 simplifies Felix around one storage engine, the `felix-storage`
+segment log, and one consensus protocol, Raft through openraft (issue #2167).
+Today shards replicate with a protocol of Felix's own, described in
+[`replication-design.md`](replication-design.md), and the control plane keeps
+its Raft log in redb. This page is the design for the first four tracks of
+that work:
 
-To compare the two fairly, both have to sit behind the same boundary. This
-page defines that boundary: the replication engine. It says what the engine
-does, what stays outside it, how today's code maps onto it, how a Raft engine
-would fit, and how we will decide between them. The refactor that introduces
-the boundary changes no behaviour. A second track moves the control plane's
-Raft log onto the same segment store, whatever the shard decision.
+1. **The replication engine interface.** One boundary between the broker and
+   shard replication, with today's protocol as its first implementation and
+   no change in behaviour.
+2. **Raft log storage on `DiskLog`.** One openraft log adapter over the
+   segment store, shared by shard groups and the control plane.
+3. **The control plane on the segment store.** redb goes.
+4. **Per-shard Raft** behind the engine interface.
+
+Before the bespoke protocol is deleted, Raft must pass a no-regression gate
+against it, written down below before any numbers exist.
 
 ## What the engine is
 
@@ -225,7 +230,7 @@ the existing `IngressRouter` plus `ShardFence`. Their extra hybrid callbacks
 `promoting`) stay on the hybrid's own host trait, which extends
 `EngineHost`, because no other engine has those states.
 
-## A per-shard Raft engine behind the same traits
+## Per-shard Raft behind the same traits
 
 One Raft group per shard, with openraft or an equivalent library. The
 control plane still places replicas and chooses the set. Raft elects the
@@ -243,6 +248,19 @@ leader lease.
 - `handle` routes AppendEntries, Vote and InstallSnapshot over the existing
   peer transport. Heartbeats are batched per broker pair, since a broker can
   hold thousands of groups.
+
+The leader's own append is the hardest fit. Felix's publish path appends
+first and then tells replication (`begin_append`, then `commit`, then
+`appended`), which keeps the commit order and the single encode per batch.
+openraft expects to append the leader's entries itself, through
+`client_write` and its log storage. The prototype has two ways to square
+this: the adapter's leader-side `append` finds the entries already durable at
+those indexes and returns at once, so the broker's write path stays as it is;
+or the publish path hands the batch to `client_write` and the adapter calls
+`begin_append` and `commit` from inside it. The first keeps the hot path
+untouched and is what the prototype tries first. If openraft cannot accept
+entries it did not append, the second is the fallback, and its cost shows up
+in the gate's latency cells.
 
 ### Raft log on the segment store
 
@@ -311,6 +329,11 @@ with one new record kind, where the first option keeps a bespoke
 reconfiguration path alive. Set changes are rare, so the skipped offsets cost
 nothing measurable.
 
+Neither the blank entry nor a membership record reaches a consumer: readers
+skip both, and the batch's `skipped_before` covers the offsets they hold. A
+client that did not negotiate event offsets (`0x0800`) still sees a gap at
+each one, as it does at a generation-start record today.
+
 ### One log adapter for shard groups and the control plane
 
 The control plane already runs openraft (0.9) for its metadata, on redb
@@ -365,10 +388,36 @@ openraft tasks cost too much memory or scheduling is the first thing the
 prototype measures; if they do, that is a reason to pick a different library,
 not to give up the design.
 
+### Hybrid behaviour that does not fit cleanly
+
+- **Control-plane leases.** A `Leader` shard (no `Quorum` acknowledgements)
+  serves only while the broker's lease is valid. Raft has no such mode. The
+  interface keeps the lease on the host side (`Serves::ByLease`), since it also
+  admits unreplicated shards. A Raft engine never returns `ByLease`, so
+  `Leader` consistency under Raft means "the Raft leader, durable locally".
+- **Vouching, copy trust and ballots on a wiped disk.** A copy that lost its
+  storage must not vote. Raft has the same problem when a node loses its vote
+  file. Both engines handle it internally with the storage identity; the
+  interface does not carry it.
+- **Quorum mark semantics.** `counted_offset` is Raft's current-term commit
+  rule. The mark is also kept per incarnation and leaves learners out. Those
+  are engine internals; `await_commit` hides them.
+- **Separate counter and cache logs.** A cache shard has its own counter log
+  with its own mark (`QuorumMarks::counters`). Raft has one log per group, so
+  counters need either their own group or a place in the shard's log. This is
+  a design call for the prototype.
+- **Confirmed reads through the control plane.** `confirmed.rs` reads the
+  assignment from the control plane. Under Raft the leader is not assigned,
+  so this becomes a read-index round and the code goes away.
+- **Halting on conflict.** The hybrid halts a follower on `LogConflict`. Raft
+  truncates the uncommitted suffix and continues. Both still refuse to drop a
+  committed record (`BelowCommit`). Halted replicas stay an operator status
+  only.
+
 ## Control-plane storage on the segment log
 
-This track is worth doing whatever the shard decision is, and is ordered so
-it does not hold up the engine refactor. It replaces redb in the control
+This track does not depend on the shard side, and is ordered so it does not
+hold up the engine refactor. It replaces redb in the control
 plane with a `DiskLog`, so a Felix node has one storage engine with one set
 of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
 
@@ -452,38 +501,18 @@ received snapshot is written, `metadata-raft-design.md`, "Snapshots,
 compaction, recovery") goes away if the adapter purges only after the
 snapshot file is renamed into place.
 
-### Hybrid behaviour that does not fit cleanly
+The control plane can also keep its metadata in Postgres or in memory instead
+of Raft. Whether those backends stay is an open decision in issue #2167, and
+this design does not depend on it.
 
-- **Control-plane leases.** A `Leader` shard (no `Quorum` acknowledgements)
-  serves only while the broker's lease is valid. Raft has no such mode. The
-  interface keeps the lease on the host side (`Serves::ByLease`), since it also
-  admits unreplicated shards. A Raft engine never returns `ByLease`, so
-  `Leader` consistency under Raft means "the Raft leader, durable locally".
-- **Vouching, copy trust and ballots on a wiped disk.** A copy that lost its
-  storage must not vote. Raft has the same problem when a node loses its vote
-  file. Both engines handle it internally with the storage identity; the
-  interface does not carry it.
-- **Quorum mark semantics.** `counted_offset` is Raft's current-term commit
-  rule. The mark is also kept per incarnation and leaves learners out. Those
-  are engine internals; `await_commit` hides them.
-- **Separate counter and cache logs.** A cache shard has its own counter log
-  with its own mark (`QuorumMarks::counters`). Raft has one log per group, so
-  counters need either their own group or a place in the shard's log. This is
-  a design call for the prototype.
-- **Confirmed reads through the control plane.** `confirmed.rs` reads the
-  assignment from the control plane. Under Raft the leader is not assigned,
-  so this becomes a read-index round and the code goes away.
-- **Halting on conflict.** The hybrid halts a follower on `LogConflict`. Raft
-  truncates the uncommitted suffix and continues. Both still refuse to drop a
-  committed record (`BelowCommit`). Halted replicas stay an operator status
-  only.
+## The no-regression gate
 
-## Decision criteria
-
-Written before any numbers exist. These decide the shard side only; the
-control-plane storage track above goes ahead either way. Raft for shards is
-adopted only if it meets all of them; otherwise the hybrid stays, the prototype is deleted, and the reason is
-recorded in `docs/`.
+Written before any numbers exist. Raft is the target, and this gate is what
+it must pass before the bespoke shard protocol and its models are deleted
+(issue #2167, track 5). It applies to the shard side only; the control-plane
+storage track goes ahead regardless. If Raft misses a criterion, the gap is
+fixed in the Raft engine, or the decision is reopened with the numbers in
+`docs/`. Until it passes, the hybrid stays the protocol that ships.
 
 1. **Correctness.** No history-checker violation, and no simulator stall the
    hybrid does not also have on the same seed.
