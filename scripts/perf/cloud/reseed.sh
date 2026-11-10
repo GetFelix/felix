@@ -20,6 +20,14 @@ SESSION="${session}"
 # shellcheck disable=SC1090
 source "${here}/sessions/${SESSION}.env"
 set +a
+# A caller that switches builds (run-ab.sh) names the build under test here. It
+# survives the inventory source above, whose ACTIVE_REF is always side A, and it
+# puts the control plane on the same build as the brokers.
+if [ -n "${AB_ACTIVE_REF:-}" ]; then
+  ACTIVE_REF="${AB_ACTIVE_REF}"
+  CONTROLPLANE_REF="${AB_ACTIVE_REF}"
+  export CONTROLPLANE_REF
+fi
 # The same IdP derivation session.sh does.
 if [ "${IDP_MODE:-}" != local ] && [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
   export IDP_SCOPE="${IDP_SCOPE:-${IDP_AUDIENCE:-}}"
@@ -40,6 +48,12 @@ for i in "${!broker_ip_list[@]}"; do
   run_on_str "$(broker_vm "${i}")" 'felix-agent wipe
 echo __RUNOK__' | grep '^wiped=' || { echo "!! could not wipe $(broker_vm "${i}")" >&2; exit 1; }
 done
+# The control plane keeps tenants, streams and shard assignments in memory
+# (FELIX_CONTROLPLANE_STORAGE_BACKEND is unset in controlplane.env, so the
+# default Memory backend), so stopping it drops the store; seed.sh then restarts
+# it empty on the build under test. There is no data directory to clear.
+agent_on "$(cp_vm)" 'systemctl stop felix-controlplane
+echo __RUNOK__' >/dev/null || { echo "!! could not stop the control plane" >&2; exit 1; }
 CONTROLPLANE_IP="${CONTROLPLANE_IP}" \
 BROKER_COUNT="${#broker_ip_list[@]}" \
 BOOTSTRAP_TOKEN="${BOOTSTRAP_TOKEN}" \

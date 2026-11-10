@@ -88,14 +88,17 @@ replicated_ready() {
 fresh_stream() {
   reset_streams "${AB_STREAM}" || return 1
   sleep 12
-  replicated_ready || return 1
+  # Stuck here means the cluster itself is wrong, not this cell: every later
+  # cell would burn REPL_WAIT_SECS and skip, so stop the run.
+  replicated_ready || { echo "!! ${AB_STREAM} did not replicate on ${AB_SEEDED}; stopping the run" >&2; exit 1; }
   leaders_even "${AB_REPL}" "${AB_STREAM}" || note "WARN ${AB_STREAM} leaders uneven (${AB_REPL})"
   echo "${AB_REPL}" > "${OUT}/system/last-replication.txt"
 }
 DURABLE_PREP=fresh_stream
 
 # switch_build <label>: a full reseed when the build changes (stop the brokers,
-# wipe them, reseed the control plane), then the new build on the clean cluster.
+# wipe them, stop and restart the control plane empty), with the control plane
+# and the brokers both on <label>'s build, then the new build on the clean cluster.
 AB_SEEDED=""
 switch_build() {
   local label="$1"
@@ -103,8 +106,15 @@ switch_build() {
   if [ -n "${AB_SEEDED}" ]; then
     log "switching ${AB_SEEDED} -> ${label}: reseed"
     par_on "${OUT}/system" stop "systemctl stop felix-broker" "${BROKER_VMS[@]}" >/dev/null 2>&1 || true
-    SESSION="${SESSION}" "${here}/reseed.sh" > "${OUT}/system/reseed-${label}.txt" 2>&1 \
+    # The inventory's ACTIVE_REF is side A; AB_ACTIVE_REF is the build under test.
+    AB_ACTIVE_REF="${label}" SESSION="${SESSION}" "${here}/reseed.sh" > "${OUT}/system/reseed-${label}.txt" 2>&1 \
       || { echo "!! reseed failed; see ${OUT}/system/reseed-${label}.txt" >&2; exit 1; }
+    # The first seed pass runs on an empty control plane; a 409 before the
+    # streams pass means the old tenant survived the reset.
+    if sed '/creating streams now that/q' "${OUT}/system/reseed-${label}.txt" | grep -q 'HTTP 409'; then
+      echo "!! control plane still holds the old tenant after the reseed; see ${OUT}/system/reseed-${label}.txt" >&2
+      exit 1
+    fi
     distribute_token || exit 1
     CURRENT_REF=""; CURRENT_OVERRIDES=""
   fi

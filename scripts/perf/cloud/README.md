@@ -144,6 +144,14 @@ in the machines does not favour one build. It exists to answer one question:
 does the 64 KiB steady p99 regression (#2148) appear when each broker has its
 own disk? `summary.md` in the results directory has the p99 per cell.
 
+Changing builds resets the whole cluster: the brokers are stopped and wiped, the
+control plane is stopped (its store is in memory, so it comes back empty), and
+`reseed.sh` reinstalls the control plane and the brokers from the build under
+test (`AB_ACTIVE_REF`). Each side therefore runs one build end to end, never a
+control plane from the other side. The run stops at once if the old tenant
+survives the reset or the stream does not replicate, instead of skipping every
+cell.
+
 What a run records (`session.json` and `system/`): machine types, kernel, CPU
 platform, provisioning model, local SSD sizes, the md device and mount options,
 NIC MTU, sysctls, RTT between VMs, both build SHAs, and a `fio` baseline of every
