@@ -440,8 +440,8 @@ subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
 "Event batch offsets") is told how many offsets before a batch held no event,
 so a jump it covers is not a drop and any other jump is. A consumer group's
 record reports the same count. A Kafka consumer is moved past a trailing run
-by an empty batch. Replication ships and compares every kind exactly as
-stored.
+by an empty batch. Replication reads every kind (`read_replicated_from`),
+but cannot yet ship membership and counter records (see above).
 
 | Kind | Bits | From | Data |
 | --- | --- | --- | --- |

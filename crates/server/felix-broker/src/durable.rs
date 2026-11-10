@@ -689,7 +689,7 @@ impl StreamLog {
     }
 
     /// See `DiskLog::append_v9_for_tests`. Not an API.
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     #[doc(hidden)]
     pub async fn append_v9_for_tests(
         &self,

@@ -439,8 +439,8 @@ Bounds that hold regardless of log size:
 
 `read_range` returns every record but trims, including a leader's
 generation-start records (`docs/storage-format.md`). Only replication and the
-paths that must see every offset read that way (`StreamLog::read_log_from`),
-since replication ships and compares the log exactly as stored. Every other
+paths that must see every offset read that way: replication through
+`StreamLog::read_replicated_from`, which ships and compares the log as stored. Every other
 reader goes through `StreamLog::read_from`, which keeps only data records
 (`RecordMark::is_data`) and reads on past the rest, so a page is empty only at
 the tail. The paths that read the raw log for a client (the replay ring,

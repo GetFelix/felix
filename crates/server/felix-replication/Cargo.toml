@@ -42,6 +42,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+felix-broker = { path = "../felix-broker", version = "0.8.0-preview.0", features = ["fault-injection"] }
 axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 tempfile = { workspace = true }
