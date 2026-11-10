@@ -42,6 +42,13 @@ impl DiskLog {
         // Digested here rather than where they are observed, which is under
         // the `segments` write lock every other append waits on.
         let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
+            // Refused before the roll, which would otherwise move the log
+            // onto v9 ahead of the fleet gate.
+            if records.iter().any(|r| r.mark.needs_generation()) {
+                return Err(StorageError::Unsupported(
+                    "membership and counter records need segment format v9, which this log does not write yet",
+                ));
+            }
             records
                 .iter()
                 .map(|r| producers::marked_digest(r.mark, &r.payload))
@@ -149,6 +156,56 @@ impl DiskLog {
         }
 
         Ok(Ok(written))
+    }
+}
+
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Append `records` at `generation` into a new v9 segment, the way a
+    /// build past the v9 fleet gate will. Normal appends are refused from
+    /// then on, since nothing else writes v9 yet. Not an API: tests use it to
+    /// put membership and counter records in a log.
+    #[doc(hidden)]
+    pub async fn append_v9_for_tests(
+        &self,
+        records: &[AppendRecord],
+        generation: u64,
+    ) -> Result<AppendResult> {
+        let inner = &self.inner;
+        let (result, target) = {
+            let _appends = inner.append_lock.lock();
+            let mut segments = inner.segments.write();
+            inner.sync_pending_seal()?;
+            // Taken right after the roll, as an inline roll does, so it
+            // covers only records already on the device.
+            let mut snapshot = None;
+            if segments.active().version() < crate::segment::format::GENERATION_VERSION {
+                segments.roll_to(crate::segment::format::GENERATION_VERSION)?;
+                inner.note_sealed_before(segments.active().id());
+                snapshot = Some(inner.snapshot(&segments));
+            }
+            let (first_offset, last_offset) =
+                segments.active_mut().append_at(records, Some(generation))?;
+            let digests: Vec<u64> = records
+                .iter()
+                .map(|r| producers::marked_digest(r.mark, &r.payload))
+                .collect();
+            inner.observe_marks(first_offset, records, &digests);
+            let target = segments.tail_offset();
+            drop(segments);
+            if let Some(snapshot) = snapshot {
+                inner.store_snapshot(snapshot);
+            }
+            (
+                AppendResult {
+                    first_offset,
+                    last_offset,
+                },
+                target,
+            )
+        };
+        inner.ensure_durable(target).await?;
+        Ok(result)
     }
 }
 

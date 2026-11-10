@@ -189,6 +189,35 @@ async fn lookups_step_over_a_generation_start_record() {
     assert_eq!(answer(&mut client, 0, -1, 7).await, (0, -1, 4));
 }
 
+/// Lookups step over trailing membership and counter records as over a
+/// generation-start record: the last record is the client record before
+/// them, and `latest` is past them.
+#[tokio::test]
+async fn lookups_step_over_membership_and_counter_records() {
+    use felix_storage::log::RecordMark;
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["a", "b"]).await;
+    fixture
+        .append_v9(
+            "orders",
+            "created",
+            0,
+            &[
+                (RecordMark::Membership, "set"),
+                (RecordMark::CounterDelta, "add"),
+                (RecordMark::CounterCheckpoint, "sums"),
+            ],
+        )
+        .await;
+    let mut client = fixture.connect();
+
+    let (code, time, offset) = answer(&mut client, 0, -3, 7).await;
+    assert_eq!((code, offset), (0, 1), "the last client record");
+    assert_eq!(answer(&mut client, 0, time + 1, 7).await, (0, -1, -1));
+    assert_eq!(answer(&mut client, 0, -1, 7).await, (0, -1, 5));
+}
+
 /// `earliest` is where reads start after a head trim, and lookups step over
 /// the trim record as over a generation-start record.
 #[tokio::test]

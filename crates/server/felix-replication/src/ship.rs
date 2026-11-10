@@ -363,6 +363,33 @@ async fn ship_batch<R: PeerRequester>(
         }
     }
 
+    // A kind the wire does not carry yet is never sent under another mark.
+    // The follower is held before it; what precedes it still goes.
+    if let Some(at) = records
+        .iter()
+        .position(|record| felix_broker::replication::mark_to_wire(record.mark).is_none())
+    {
+        records.truncate(at);
+        if records.is_empty() {
+            if KIND_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            )) {
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    "the next record is a membership or counter record, which this build cannot \
+                     replicate; the follower stays behind it",
+                );
+            }
+            metrics::record_shipped(metrics::OUTCOME_KIND_UNSUPPORTED);
+            cursor.stalled = true;
+            return Progress::Retry;
+        }
+    }
+
     let first_offset = records
         .first()
         .map_or(cursor.next_offset, |record| record.offset);
@@ -371,7 +398,7 @@ async fn ship_batch<R: PeerRequester>(
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
         records
             .iter()
-            .map(|record| felix_broker::replication::mark_to_wire(record.mark))
+            .filter_map(|record| felix_broker::replication::mark_to_wire(record.mark))
             .collect()
     } else {
         Vec::new()
@@ -794,6 +821,7 @@ static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_
 
 /// The same for the refusal to ship a record with headers.
 static HEADER_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+static KIND_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
 
 /// Most keys a [`LogLimit`] remembers.
 const LOG_LIMIT_KEYS: usize = 1024;

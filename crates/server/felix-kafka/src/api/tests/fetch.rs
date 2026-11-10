@@ -468,6 +468,45 @@ async fn fetch_skips_a_generation_start_record() {
     );
 }
 
+/// Membership and counter records are never fetched. Each holds its
+/// offset, and a fetch that starts on one gets the client record after them.
+#[tokio::test]
+async fn fetch_skips_membership_and_counter_records() {
+    use felix_storage::log::RecordMark;
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["r0"]).await;
+    let first = fixture
+        .append_v9(
+            "orders",
+            "created",
+            0,
+            &[
+                (RecordMark::Membership, "set"),
+                (RecordMark::CounterDelta, "add"),
+                (RecordMark::CounterCheckpoint, "sums"),
+                (RecordMark::None, "r4"),
+            ],
+        )
+        .await;
+    assert_eq!(first, 1);
+    let mut client = fixture.connect();
+
+    let response = client
+        .call(&request(&[("orders.created", 0, 0)], 1, 500), 11)
+        .await;
+    let partition = only(&response);
+    assert_eq!(partition.high_watermark, 5);
+    assert_eq!(
+        records(partition),
+        vec![(0, "r0".to_string()), (4, "r4".to_string())]
+    );
+    let response = client
+        .call(&request(&[("orders.created", 0, 2)], 1, 500), 11)
+        .await;
+    assert_eq!(records(only(&response)), vec![(4, "r4".to_string())]);
+}
+
 /// With a generation-start record last, a consumer caught up to it is moved
 /// past it by an empty batch rather than left one behind the high watermark.
 #[tokio::test]

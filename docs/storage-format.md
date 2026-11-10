@@ -370,8 +370,9 @@ The four kind bits were all taken, so this kind is the one code that uses two
 of them. Before v7 that pair was `RecordFlags` in every segment, so a segment
 older than v7 that holds it is still `RecordFlags`: recovery's scan refuses
 it at the same point an older build did, and the reader refuses it in a sealed
-segment the scan did not visit. Any other pair or triple of kind bits is
-`RecordFlags` in every version.
+segment the scan did not visit. Before v9, any other pair or triple of kind
+bits is `RecordFlags`; v9 gives three of them meaning (see "Membership and
+counter records" below).
 
 Recovery treats a trim like any other record. One cut short is a torn tail
 and is repaired. One whose floor or headers fail the checksum is fatal unless
@@ -393,6 +394,66 @@ byte for byte as before. As with commit and generation-start records, the
 roll happens before the record is written, so a crash or a failed append in
 between leaves an empty v7 active segment. An older build then refuses the
 log even though it holds no trim.
+
+### Membership and counter records
+
+v9 adds three kinds, each a code of two or three kind bits:
+
+| Bits | Kind | Body |
+| --- | --- | --- |
+| 30 and 29 | membership | a change to the shard's replica set, in the replication engine's layout |
+| 30 and 28 | counter delta | a signed add to one counter, in the counter store's layout |
+| 30, 29 and 28 | counter checkpoint | every counter's running sum, written when deltas are compacted |
+
+None of them has a tag, so the step to the next record is still
+`36 + payload_len`. Bit 30 alone means "continues a producer batch", so every
+build before v9 refuses these codes as `RecordFlags`, and so does a v9 reader
+in a segment older than v9. The pairs that include bit 31 (bits 31 and 30,
+31 and 29, 31 and 28) and the triples that include it stay `RecordFlags` in
+every version.
+
+Only a v9 segment holds them, and nothing writes them yet. An append that
+holds one is refused (`Unsupported`) before it can roll the log onto v9. They
+exist so the replication engine and the cache shard's single log (see
+`docs/replication-engine.md`, decisions 1 and 4) have kinds to write once the
+fleet reads v9. Recovery treats them like any other record: one cut short is a
+torn tail, and a damaged one in the middle of a log stops the open.
+
+Replication does not carry them yet either. A leader holds a follower before
+the first such record (`kind_unsupported` in
+`felix_broker_replication_shipped_total`) rather than send it under another
+mark.
+
+### Record kinds
+
+Every kind takes an offset, and offsets stay contiguous whatever the kind.
+Only **data** records reach a client: plain records, producer batch records
+and commit records (returned as their event). Generation-start, trim,
+membership and counter records are skipped by every client read:
+subscriptions and replay, `StreamRead`, Kafka fetch and offset lookups,
+consumer groups, cache watches, and the cache and counter projections. One
+predicate, `RecordMark::is_data`, makes that call at each of those sites, so
+a new kind must be decided once and cannot be missed at one site.
+
+A skipped record still holds its offset, so a reader sees a gap there. A
+subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
+"Event batch offsets") is told how many offsets before a batch held no event,
+so a jump it covers is not a drop and any other jump is. A consumer group's
+record reports the same count. A Kafka consumer is moved past a trailing run
+by an empty batch. Replication ships and compares every kind exactly as
+stored.
+
+| Kind | Bits | From | Data |
+| --- | --- | --- | --- |
+| plain | none | v2 | yes |
+| opens a producer batch | 31 | v3 | yes |
+| continues a producer batch | 30 | v3 | yes |
+| generation start | 29 | v4 | no |
+| commit | 28 | v5 | yes |
+| trim | 29 and 28 | v7 | no |
+| membership | 30 and 29 | v9 | no |
+| counter delta | 30 and 28 | v9 | no |
+| counter checkpoint | 30, 29 and 28 | v9 | no |
 
 ### Keys and headers
 
@@ -505,7 +566,7 @@ the file is read up to the last whole entry.
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one kind bit set, other than bits 29 and 28 together in a v7 segment | `RecordFlags` |
+| More than one kind bit set, other than bits 29 and 28 together from v7, or the membership and counter codes from v9 | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
@@ -675,7 +736,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Read, not yet written by brokers; every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Read, not yet written by brokers; every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the

@@ -293,6 +293,41 @@ async fn the_fold_steps_over_a_generation_start_record() {
     assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(10));
 }
 
+/// Membership and counter-kind records are not folded as deltas. A counter
+/// delta record would add 9 to `k` if the fold read it as one.
+#[tokio::test]
+async fn the_fold_steps_over_membership_and_counter_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = store(dir.path());
+    store.add(T, NS, C, 0, "k", 1).await.expect("add");
+
+    let log = store.shard_log(T, NS, C, 0).await.expect("log");
+    let delta = CounterOp::Delta {
+        key: "k".to_string(),
+        delta: 9,
+    }
+    .encode();
+    let records: Vec<_> = [
+        crate::log::RecordMark::Membership,
+        crate::log::RecordMark::CounterDelta,
+        crate::log::RecordMark::CounterCheckpoint,
+    ]
+    .into_iter()
+    .map(|mark| crate::log::AppendRecord {
+        payload: delta.clone(),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    })
+    .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("append behind the fold");
+
+    assert_eq!(store.get(T, NS, C, 0, "k").await.expect("get"), Some(1));
+}
+
 /// The forwarded-sum bytes round trip, and the wrong width is refused.
 #[test]
 fn a_forwarded_sum_round_trips() {

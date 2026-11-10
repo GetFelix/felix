@@ -570,40 +570,49 @@ async fn write_replayed_changes(
             if record.offset >= until {
                 return Ok(());
             }
-            if record.mark.is_generation_start() {
-                // Replication's, not a change; see the cache index.
-                continue;
+            if let Some(message) = replayed_change(record, filter)? {
+                write_message(event_send, message).await?;
             }
-            let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
-                Ok(op) => op,
-                Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),
-            };
-            if !filter.matches(op.key()) {
-                continue;
-            }
-            let message = match op {
-                felix_storage::cache::CacheOp::Put {
-                    key,
-                    value,
-                    expires_at_millis,
-                    ..
-                } => Message::CacheEvent {
-                    key,
-                    value: Some(value),
-                    offset: record.offset,
-                    expires_at_millis,
-                },
-                felix_storage::cache::CacheOp::Delete { key } => Message::CacheEvent {
-                    key,
-                    value: None,
-                    offset: record.offset,
-                    expires_at_millis: 0,
-                },
-            };
-            write_message(event_send, message).await?;
         }
     }
     Ok(())
+}
+
+/// The change a replayed record delivers, if it is data and matches.
+fn replayed_change(
+    record: felix_storage::log::LogRecord,
+    filter: &CacheWatchFilter,
+) -> Result<Option<Message>> {
+    if !record.mark.is_data() {
+        // Not a change; see the cache index.
+        return Ok(None);
+    }
+    let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
+        Ok(op) => op,
+        Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),
+    };
+    if !filter.matches(op.key()) {
+        return Ok(None);
+    }
+    Ok(Some(match op {
+        felix_storage::cache::CacheOp::Put {
+            key,
+            value,
+            expires_at_millis,
+            ..
+        } => Message::CacheEvent {
+            key,
+            value: Some(value),
+            offset: record.offset,
+            expires_at_millis,
+        },
+        felix_storage::cache::CacheOp::Delete { key } => Message::CacheEvent {
+            key,
+            value: None,
+            offset: record.offset,
+            expires_at_millis: 0,
+        },
+    }))
 }
 
 /// Each matching key's current value below `tail`, in offset order.

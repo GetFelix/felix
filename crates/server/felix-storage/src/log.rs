@@ -2,6 +2,8 @@
 //! [`AppendOnlyLog`] trait that [`crate::DiskLog`] implements.
 
 mod config;
+#[cfg(test)]
+mod tests;
 
 pub use config::{FsyncMode, LogConfig, OffloadTarget, Retention, RetentionHold};
 
@@ -119,6 +121,18 @@ pub enum RecordMark {
     /// segment, so a log moves onto v7 only when it writes one. See
     /// `docs/storage-format.md`, "Trim records".
     Trim { floor: Offset },
+    /// A change to the shard's replica set, committed through the log. The
+    /// payload is the engine's. Only a v9 segment holds one, and nothing
+    /// writes one yet.
+    Membership,
+    /// A signed add to a counter, for a cache shard whose counters share its
+    /// log. The payload is the counter store's. v9 only, and nothing writes
+    /// one yet.
+    CounterDelta,
+    /// The running sum of every counter, written when counter deltas are
+    /// compacted. The payload is the counter store's. v9 only, and nothing
+    /// writes one yet.
+    CounterCheckpoint,
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -131,6 +145,31 @@ pub struct ProducerBatch {
 }
 
 impl RecordMark {
+    /// Whether a client reads the record: an event or cache entry, or a
+    /// commit record holding one. Generation-start, trim, membership and
+    /// counter records belong to storage and replication, and every client
+    /// read skips them. A skipped record keeps its offset, so a reader sees
+    /// the gap and can tell it from a drop; see `docs/storage-format.md`,
+    /// "Record kinds".
+    pub fn is_data(&self) -> bool {
+        match self {
+            Self::None | Self::Opens(_) | Self::Continues | Self::Commit => true,
+            Self::GenerationStart
+            | Self::Trim { .. }
+            | Self::Membership
+            | Self::CounterDelta
+            | Self::CounterCheckpoint => false,
+        }
+    }
+
+    /// Whether only a v9 segment may hold the record.
+    pub fn needs_generation(&self) -> bool {
+        matches!(
+            self,
+            Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
+        )
+    }
+
     /// Whether the record is a generation-start record rather than a
     /// client's.
     pub fn is_generation_start(&self) -> bool {

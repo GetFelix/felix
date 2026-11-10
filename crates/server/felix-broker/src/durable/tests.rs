@@ -159,3 +159,85 @@ async fn offset_for_time_finds_the_first_record_at_or_after_a_time() {
     let times: Vec<u64> = records.iter().map(|r| r.timestamp_micros).collect();
     assert_eq!(times, [100, 200, 200, 300]);
 }
+
+/// One record of each v9 kind with a client record after it, in a v9
+/// segment.
+async fn append_v9_kinds(log: &StreamLog, after: &'static str) {
+    let records: Vec<AppendRecord> = [
+        (RecordMark::Membership, "set"),
+        (RecordMark::CounterDelta, "add"),
+        (RecordMark::CounterCheckpoint, "sums"),
+        (RecordMark::None, after),
+    ]
+    .into_iter()
+    .map(|(mark, payload)| AppendRecord {
+        payload: Bytes::from(payload),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    })
+    .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+}
+
+/// **A replay never returns a membership or counter record.** Each keeps its
+/// offset, so the records around them sit at their own offsets with a gap
+/// between, and a read that starts on one of them returns the next client
+/// record, not an empty page.
+#[tokio::test]
+async fn a_read_leaves_out_membership_and_counter_records() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    log.append(&payloads(&["a"])).await.expect("append");
+    append_v9_kinds(&log, "b").await;
+
+    let seen = |records: Vec<LogRecord>| -> Vec<(Offset, Bytes)> {
+        records.into_iter().map(|r| (r.offset, r.payload)).collect()
+    };
+    assert_eq!(
+        seen(log.read_from(0, usize::MAX).await.expect("read")),
+        vec![(0, Bytes::from("a")), (4, Bytes::from("b"))]
+    );
+    for start in 1..=3 {
+        assert_eq!(
+            seen(log.read_from(start, 1).await.expect("read")),
+            vec![(4, Bytes::from("b"))],
+            "from {start}"
+        );
+    }
+}
+
+/// The client records end before trailing membership and counter records,
+/// so a reader waiting for the tail is not left waiting on them.
+#[tokio::test]
+async fn the_event_end_steps_back_over_membership_and_counter_records() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    log.append(&payloads(&["a"])).await.expect("append");
+    append_v9_kinds(&log, "b").await;
+    let records: Vec<AppendRecord> = [RecordMark::Membership, RecordMark::CounterCheckpoint]
+        .into_iter()
+        .map(|mark| AppendRecord {
+            payload: Bytes::from_static(b"x"),
+            timestamp_micros: 1,
+            mark,
+            publisher: None,
+            headers: None,
+        })
+        .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+
+    assert_eq!(log.tail_offset().await.expect("tail"), 7);
+    assert_eq!(log.event_end(0, 7).await.expect("end"), 5);
+}

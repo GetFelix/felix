@@ -621,7 +621,7 @@ async fn a_batch_without_times_takes_this_brokers_clock() {
 /// arrival, a trim a later leader truncates would still hide records.
 #[tokio::test]
 async fn a_replicated_trim_applies_its_floor_only_at_commit() {
-    let trim = mark_to_wire(RecordMark::Trim { floor: 3 });
+    let trim = mark_to_wire(RecordMark::Trim { floor: 3 }).expect("ships");
     assert_eq!(trim, ProducerMark::Trim { floor: 3 });
     assert_eq!(mark_from_wire(trim), RecordMark::Trim { floor: 3 });
 
@@ -644,4 +644,18 @@ async fn a_replicated_trim_applies_its_floor_only_at_commit() {
         log.read_from(0, 1 << 20).await,
         Err(BrokerError::CursorTooOld { oldest: 3, .. })
     ));
+}
+
+/// The v9 kinds have no replication mark yet. Sending one under another mark
+/// would hand a follower a membership or counter record as an event.
+#[test]
+fn the_v9_kinds_have_no_wire_mark() {
+    for mark in [
+        RecordMark::Membership,
+        RecordMark::CounterDelta,
+        RecordMark::CounterCheckpoint,
+    ] {
+        assert_eq!(mark_to_wire(mark), None, "{mark:?}");
+    }
+    assert_eq!(mark_to_wire(RecordMark::Commit), Some(ProducerMark::Commit));
 }

@@ -437,13 +437,18 @@ Bounds that hold regardless of log size:
   page can also be empty below the tail when only trim records remain; its
   `next` says where to carry on (see [Conditional head trim](#conditional-head-trim)).
 
-`read_range` returns every record, including a leader's generation-start
-records (`docs/storage-format.md`). Only replication reads that way
-(`StreamLog::read_log_from`), since it ships and compares the log exactly as
-stored. Every other reader goes through `StreamLog::read_from`, which leaves
-them out and reads on past them, so a page is empty only at the tail. Their
-offsets stay taken: a reader sees the offset after one follow the offset before
-it.
+`read_range` returns every record but trims, including a leader's
+generation-start records (`docs/storage-format.md`). Only replication and the
+paths that must see every offset read that way (`StreamLog::read_log_from`),
+since replication ships and compares the log exactly as stored. Every other
+reader goes through `StreamLog::read_from`, which keeps only data records
+(`RecordMark::is_data`) and reads on past the rest, so a page is empty only at
+the tail. The paths that read the raw log for a client (the replay ring,
+consumer groups, Kafka, cache watches) apply the same predicate. Skipped
+offsets stay taken: a reader sees the offset after one follow the offset
+before it, and a subscriber with skip counts is told the gap held no event.
+The membership and counter records of format v9 are skipped the same way;
+nothing writes them yet (`docs/storage-format.md`, "Record kinds").
 
 Clients reach this read directly through `stream_read`
 ([protocol](protocol.md#streamread)), which `Broker::read_range` serves with

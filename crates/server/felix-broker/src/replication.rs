@@ -361,9 +361,12 @@ pub fn headers_to_wire(records: &[felix_storage::log::LogRecord]) -> Option<Vec<
     )
 }
 
-/// A record's mark as it travels between brokers.
-pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
-    match mark {
+/// A record's mark as it travels between brokers. `None` for the v9
+/// membership and counter kinds, which the replication wire does not carry
+/// yet: a leader must hold a follower before such a record, never send it
+/// with another mark.
+pub fn mark_to_wire(mark: RecordMark) -> Option<ProducerMark> {
+    Some(match mark {
         RecordMark::None => ProducerMark::None,
         RecordMark::Opens(batch) => ProducerMark::Opens {
             producer_id: batch.producer_id,
@@ -374,7 +377,10 @@ pub fn mark_to_wire(mark: RecordMark) -> ProducerMark {
         RecordMark::GenerationStart => ProducerMark::GenerationStart,
         RecordMark::Commit => ProducerMark::Commit,
         RecordMark::Trim { floor } => ProducerMark::Trim { floor },
-    }
+        RecordMark::Membership | RecordMark::CounterDelta | RecordMark::CounterCheckpoint => {
+            return None;
+        }
+    })
 }
 
 /// A shipped mark as the log stores it.

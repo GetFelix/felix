@@ -292,7 +292,8 @@ impl SegmentWriter {
     }
 
     /// The version a segment following this one is written at so that it
-    /// holds `records`: never below this one's, v8 when a record carries a
+    /// holds `records`: never below this one's, v9 for a membership or
+    /// counter record (which `DiskLog` refuses before it gets here), v8 when a record carries a
     /// key and headers, v7 when `records` include a
     /// trim record, v6 when a record carries its
     /// publisher, v5 when `records` include a commit record, v4 when they
@@ -303,6 +304,7 @@ impl SegmentWriter {
         let needed = records
             .iter()
             .map(|record| match record.mark {
+                mark if mark.needs_generation() => GENERATION_VERSION,
                 _ if record.headers.is_some() => HEADERS_VERSION,
                 RecordMark::Trim { .. } => TRIM_VERSION,
                 _ if record.publisher.is_some() => PUBLISHER_VERSION,
@@ -324,6 +326,9 @@ impl SegmentWriter {
                 RecordMark::GenerationStart => self.holds_generation_starts(),
                 RecordMark::Commit => self.holds_commits(),
                 RecordMark::Trim { .. } => self.holds_trims(),
+                RecordMark::Membership
+                | RecordMark::CounterDelta
+                | RecordMark::CounterCheckpoint => self.holds_generations(),
             };
             mark && (record.publisher.is_none() || self.holds_publishers())
                 && (record.headers.is_none() || self.holds_headers())
