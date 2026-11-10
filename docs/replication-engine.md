@@ -973,6 +973,11 @@ unit, integration and simulator seed tests pass unchanged after each.
 2. Route the other stream callers (QUIC publish, MQTT, atomic commits,
    forwarded writes, group reads) through one `Hybrid` built in the node
    wiring, in place of the `marks` and `ingress` pairs they thread today.
+   Done as built: each caller holds a `Hybrid` (`StreamEngine`) in place of
+   `marks`, built once per QUIC connection, `BrokerWrites` and
+   `ForwardingHandler` from the `(ingress, marks)` inputs they still take.
+   `ClusterContext` also still takes them. Cache and counter waits read the
+   marks through `Hybrid::marks()` until step 3.
 3. Cache and counter waits (`await_cache_quorum`, `cache_write_at`,
    `await_counter_quorum`, `read_skips_lease`, `await_readable`) as engine
    methods.
@@ -986,6 +991,11 @@ unit, integration and simulator seed tests pass unchanged after each.
    today (driver, replica handler, reporter, elections, suspicion), and
    `peer_dispatch.rs` routes replication requests to `Engine::handle`.
 7. Narrow `pub` items that only the engine now uses to `pub(crate)`.
+8. One shared engine: `node.rs` builds a single `Arc<StreamEngine>` and hands
+   it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler` and Kafka. This
+   removes the `(ingress, marks)` inputs on those constructors and the test
+   literals that set `marks` on `ClusterContext`, `BrokerWrites::new` and
+   `ForwardingHandler::new`.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.
