@@ -360,6 +360,51 @@ impl Fixture {
         offset
     }
 
+    /// Append `records` in a v9 segment, which membership and counter records
+    /// need. Returns the first one's offset. The log takes no ordinary
+    /// publish after this.
+    pub(super) async fn append_v9(
+        &self,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        records: &[(felix_storage::log::RecordMark, &'static str)],
+    ) -> u64 {
+        let log = self
+            .broker
+            .shard_log(
+                felix_broker::LogKind::Stream,
+                TENANT,
+                namespace,
+                stream,
+                shard,
+            )
+            .await
+            .expect("log");
+        let records: Vec<_> = records
+            .iter()
+            .map(|&(mark, payload)| felix_storage::log::AppendRecord {
+                payload: Bytes::from_static(payload.as_bytes()),
+                timestamp_micros: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("clock")
+                    .as_micros() as u64,
+                mark,
+                publisher: None,
+                headers: None,
+            })
+            .collect();
+        let appended = log
+            .append_v9_for_tests(&records, 1)
+            .await
+            .expect("v9 append");
+        self.broker
+            .adopt_replicated(TENANT, namespace, stream, shard, appended.last_offset + 1)
+            .await
+            .expect("adopt");
+        appended.first_offset
+    }
+
     /// Trim a shard's history below `before`, at the tail, with headers a
     /// Kafka consumer must never be handed. Returns the trim record's offset.
     pub(super) async fn trim(&self, namespace: &str, stream: &str, shard: u32, before: u64) -> u64 {

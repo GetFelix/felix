@@ -200,7 +200,10 @@ impl ProducerState {
             RecordMark::None
             | RecordMark::GenerationStart
             | RecordMark::Commit
-            | RecordMark::Trim { .. } => self.open = None,
+            | RecordMark::Trim { .. }
+            | RecordMark::Membership
+            | RecordMark::CounterDelta
+            | RecordMark::CounterCheckpoint => self.open = None,
         }
     }
 
@@ -503,7 +506,10 @@ pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
         RecordMark::None
         | RecordMark::GenerationStart
         | RecordMark::Commit
-        | RecordMark::Trim { .. } => 0,
+        | RecordMark::Trim { .. }
+        | RecordMark::Membership
+        | RecordMark::CounterDelta
+        | RecordMark::CounterCheckpoint => 0,
         RecordMark::Opens(_) | RecordMark::Continues => crate::log::record_digest(payload),
     }
 }

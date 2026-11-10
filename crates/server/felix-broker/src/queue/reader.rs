@@ -360,7 +360,7 @@ impl GroupReader {
                 {
                     // Not a client's record, so nothing to deliver. Settled like a
                     // trimmed one; left owed it would stall the group here.
-                    Some(record) if record.mark.is_generation_start() => {
+                    Some(record) if !record.mark.is_data() => {
                         tracker.lock().await.skip(offset);
                         self.settle(key, &held, offset).await?;
                     }

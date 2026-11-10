@@ -392,8 +392,8 @@ impl Broker {
             .max(log.readable_base());
         let mut window: VecDeque<felix_storage::log::LogRecord> = VecDeque::new();
         let mut bytes = 0usize;
-        // Offsets directly before `cursor` that hold generation-start or trim
-        // records. They never go in the ring, so the window reaches the tail
+        // Offsets directly before `cursor` that hold records that are not
+        // data. They never go in the ring, so the window reaches the tail
         // when the read does, not when its last client record does.
         let mut run = 0u64;
 
@@ -411,7 +411,7 @@ impl Broker {
             for record in page.records {
                 run += record.offset - expected;
                 expected = record.offset + 1;
-                if record.mark.is_generation_start() {
+                if !record.mark.is_data() {
                     run += 1;
                     continue;
                 }

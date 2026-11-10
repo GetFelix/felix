@@ -482,8 +482,8 @@ impl CounterShard {
                 break;
             }
             for record in &records {
-                if record.mark.is_generation_start() {
-                    // Replication's, not a counter op; see the cache index.
+                if !record.mark.is_data() {
+                    // Not a counter op; see the cache index.
                     offset = record.offset + 1;
                     continue;
                 }

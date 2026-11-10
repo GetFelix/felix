@@ -27,6 +27,7 @@ mod simulated_fs;
 mod stalled_write;
 mod trim;
 mod truncation;
+mod v9_kinds;
 
 use std::time::Duration;
 

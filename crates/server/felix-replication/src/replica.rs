@@ -1864,19 +1864,35 @@ impl ReplicaHandler {
             felix_broker::LogKind::GroupCursors => request.from_offset.max(log.physical_base()),
             _ => request.from_offset,
         };
-        let records = match log.read_replicated_from(from_offset, max_bytes).await {
+        let mut records = match log.read_replicated_from(from_offset, max_bytes).await {
             Ok(records) => records,
             Err(err) => {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
         };
+        // A kind the wire cannot carry ends the page, so the reader is never
+        // handed it under another mark.
+        if let Some(at) = records
+            .iter()
+            .position(|record| replication::mark_to_wire(record.mark).is_none())
+        {
+            if at == 0 {
+                return refused(
+                    correlation_id,
+                    ErrorCode::UnsupportedKind,
+                    0,
+                    "the next record is a kind replication does not carry yet".to_string(),
+                );
+            }
+            records.truncate(at);
+        }
         let marks: Vec<felix_wire::internal::ProducerMark> = if records
             .iter()
             .any(|record| record.mark != felix_storage::log::RecordMark::None)
         {
             records
                 .iter()
-                .map(|record| replication::mark_to_wire(record.mark))
+                .filter_map(|record| replication::mark_to_wire(record.mark))
                 .collect()
         } else {
             Vec::new()

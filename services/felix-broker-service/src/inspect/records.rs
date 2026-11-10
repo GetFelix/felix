@@ -424,6 +424,9 @@ fn kind(mark: &RecordMark) -> String {
         RecordMark::GenerationStart => "generation-start".to_string(),
         RecordMark::Commit => "commit".to_string(),
         RecordMark::Trim { floor } => format!("trim (floor {floor})"),
+        RecordMark::Membership => "membership".to_string(),
+        RecordMark::CounterDelta => "counter-delta".to_string(),
+        RecordMark::CounterCheckpoint => "counter-checkpoint".to_string(),
     }
 }
 

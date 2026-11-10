@@ -1132,3 +1132,103 @@ fn headers_longer_than_their_body_are_refused() {
         ));
     }
 }
+
+/// The v9 kinds: bits 30 and 29, 30 and 28, and 30, 29 and 28. Each round
+/// trips in a v9 segment with no tag and its body intact.
+#[test]
+fn the_v9_kinds_round_trip_in_a_v9_segment() {
+    for (mark, kind, bits) in [
+        (RecordMark::Membership, RecordKind::Membership, 0x60u8),
+        (RecordMark::CounterDelta, RecordKind::CounterDelta, 0x50),
+        (
+            RecordMark::CounterCheckpoint,
+            RecordKind::CounterCheckpoint,
+            0x70,
+        ),
+    ] {
+        let mut buf = Vec::new();
+        let len = encode_record_at(
+            &mut buf,
+            Some(3),
+            4,
+            5,
+            b"body",
+            Some(b"h"),
+            Some(b"p"),
+            &mark,
+        );
+        assert_eq!(buf[0] & 0xF0, bits, "{mark:?}");
+        assert_eq!(
+            len,
+            record_len_in(
+                body_len(4, Some(b"h"), Some(b"p")),
+                &mark,
+                GENERATION_VERSION
+            )
+        );
+        let (decoded, used) = decode_record_in(&buf, GENERATION_VERSION).expect("decode");
+        assert_eq!(used, len);
+        assert_eq!(decoded.header.kind, kind);
+        assert_eq!(decoded.header.kind.tag_len(), 0);
+        assert_eq!(decoded.header.generation, Some(3));
+        assert_eq!(decoded.mark, mark);
+        assert_eq!(decoded.payload, Bytes::from_static(b"body"));
+        assert_eq!(decoded.headers, Some(Bytes::from_static(b"h")));
+        assert_eq!(decoded.publisher, Some(Bytes::from_static(b"p")));
+        assert!(decoded.header.check_version(GENERATION_VERSION).is_ok());
+    }
+}
+
+/// Before v9 the new kinds' bits are `RecordFlags`, as every older build
+/// reads them, both when decoding and when checking a decoded header against
+/// an older version. The pairs v9 leaves unused stay refused in v9 too.
+#[test]
+fn the_v9_kinds_are_record_flags_before_v9() {
+    for mark in [
+        RecordMark::Membership,
+        RecordMark::CounterDelta,
+        RecordMark::CounterCheckpoint,
+    ] {
+        let mut buf = Vec::new();
+        encode_record(&mut buf, 4, 1, b"x", None, None, &mark);
+        for version in OLDEST_READABLE_VERSION..GENERATION_VERSION {
+            assert!(
+                matches!(
+                    RecordHeader::decode_in(&buf, version)
+                        .expect_err("older")
+                        .kind,
+                    CorruptionKind::RecordFlags { .. }
+                ),
+                "{mark:?} at v{version}"
+            );
+        }
+        let mut v9 = Vec::new();
+        encode_record_at(&mut v9, Some(1), 4, 1, b"x", None, None, &mark);
+        let header = RecordHeader::decode_in(&v9, GENERATION_VERSION).expect("v9");
+        for version in OLDEST_READABLE_VERSION..GENERATION_VERSION {
+            assert!(
+                matches!(
+                    header.check_version(version).expect_err("older").kind,
+                    CorruptionKind::RecordFlags { .. }
+                ),
+                "{mark:?} checked at v{version}"
+            );
+        }
+    }
+    for kinds in [0xC0u8, 0xA0, 0x90, 0xB0, 0xD0, 0xE0, 0xF0] {
+        let mut buf = Vec::new();
+        encode_record_at(&mut buf, Some(1), 4, 1, b"x", None, None, &RecordMark::None);
+        buf[0] |= kinds;
+        let crc = crc32(&[&buf[0..28]]);
+        buf[28..32].copy_from_slice(&crc.to_be_bytes());
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&buf, GENERATION_VERSION)
+                    .expect_err("kinds")
+                    .kind,
+                CorruptionKind::RecordFlags { .. }
+            ),
+            "{kinds:#x}"
+        );
+    }
+}

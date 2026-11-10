@@ -23,7 +23,7 @@
 //! cargo +nightly fuzz run segment_recovery -- -max_total_time=300
 //! ```
 
-use felix_storage::log::LogConfig;
+use felix_storage::log::{LogConfig, RecordMark};
 use felix_storage::segment::format::{
     GENERATION_HEADER_LEN, GENERATION_VERSION, MAX_PAYLOAD_BYTES, RECORD_HEADER_LEN,
     SEGMENT_HEADER_LEN, SegmentHeader, decode_record, decode_record_in, encode_record,
@@ -97,7 +97,20 @@ fn build_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> {
     bytes
 }
 
-/// [`build_segment`] at v9, with generations that rise at random.
+/// A kind for a v9 record: mostly plain, often one of the kinds only v9
+/// holds.
+fn v9_mark(rng: &mut Rng) -> RecordMark {
+    match rng.below(6) {
+        0 => RecordMark::Membership,
+        1 => RecordMark::CounterDelta,
+        2 => RecordMark::CounterCheckpoint,
+        3 => RecordMark::GenerationStart,
+        _ => RecordMark::None,
+    }
+}
+
+/// [`build_segment`] at v9, with generations that rise at random and some
+/// records of the v9 kinds.
 fn build_v9_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> {
     let mut bytes = SegmentHeader::at_version(0, 1, GENERATION_VERSION)
         .encode()
@@ -106,6 +119,7 @@ fn build_v9_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> 
     for offset in 0..count {
         let payload = rng.bytes_below(max_payload);
         generation += (rng.below(4) == 0) as u64;
+        let mark = v9_mark(rng);
         encode_record_at(
             &mut bytes,
             Some(generation),
@@ -114,7 +128,7 @@ fn build_v9_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> 
             &payload,
             None,
             None,
-            &Default::default(),
+            &mark,
         );
     }
     bytes
@@ -400,6 +414,7 @@ fn every_encoded_v9_record_round_trips() {
         let generation = rng.next_u64();
         let offset = rng.next_u64();
         let headers = (iteration % 2 == 1).then(|| rng.bytes_below(64));
+        let mark = v9_mark(&mut rng);
         let mut bytes = Vec::new();
         let written = encode_record_at(
             &mut bytes,
@@ -409,7 +424,7 @@ fn every_encoded_v9_record_round_trips() {
             &payload,
             headers.as_deref(),
             None,
-            &Default::default(),
+            &mark,
         );
         let (decoded, consumed) = decode_record_in(&bytes, GENERATION_VERSION)
             .unwrap_or_else(|err| panic!("iteration {iteration}: {err}"));
@@ -418,6 +433,7 @@ fn every_encoded_v9_record_round_trips() {
         assert_eq!(decoded.header.offset, offset);
         assert_eq!(decoded.payload.as_ref(), payload.as_slice());
         assert_eq!(decoded.headers.as_deref(), headers.as_deref());
+        assert_eq!(decoded.mark, mark);
     }
 }
 
@@ -427,6 +443,7 @@ fn a_single_flipped_bit_in_a_v9_record_is_always_detected() {
     for iteration in 0..2_000 {
         let payload_len = 1 + rng.below(64);
         let payload = rng.bytes(payload_len);
+        let mark = v9_mark(&mut rng);
         let mut bytes = Vec::new();
         encode_record_at(
             &mut bytes,
@@ -436,7 +453,7 @@ fn a_single_flipped_bit_in_a_v9_record_is_always_detected() {
             &payload,
             None,
             None,
-            &Default::default(),
+            &mark,
         );
         let position = rng.below(bytes.len());
         let bit = 1u8 << rng.below(8);

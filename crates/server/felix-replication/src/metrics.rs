@@ -35,6 +35,9 @@ pub const OUTCOME_TRIM_UNSUPPORTED: &str = "trim_unsupported";
 /// `record_headers`, so it was not sent bare. The follower stays behind that
 /// record until it is upgraded.
 pub const OUTCOME_HEADERS_UNSUPPORTED: &str = "headers_unsupported";
+/// The next record is a membership or counter record, which this build
+/// cannot replicate, so nothing was sent. The follower stays behind it.
+pub const OUTCOME_KIND_UNSUPPORTED: &str = "kind_unsupported";
 pub const OUTCOME_UNREACHABLE: &str = "unreachable";
 pub const OUTCOME_TIMEOUT: &str = "timeout";
 pub const OUTCOME_DISCONNECTED: &str = "disconnected";

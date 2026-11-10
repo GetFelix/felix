@@ -335,6 +335,72 @@ async fn history_across_a_generation_start_reports_the_skip() {
     assert_eq!(sink.skips(), vec![(3, 1)]);
 }
 
+/// **Membership and counter records are skips, not drops.** Each takes an
+/// offset and is never an event, so history across them delivers the next
+/// event at its own offset and reports exactly the offsets passed over. A
+/// consumer checking offsets sees a jump of 4 covered by a skip of 3, which
+/// is no drop.
+#[tokio::test]
+async fn history_across_membership_and_counter_records_reports_the_skip() {
+    use felix_storage::log::{AppendRecord, RecordMark};
+    let (broker, _dir) = durable_broker().await;
+    publish(&broker, &["a", "b"]).await;
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let records: Vec<AppendRecord> = [
+        (RecordMark::Membership, "set"),
+        (RecordMark::CounterDelta, "add"),
+        (RecordMark::CounterCheckpoint, "sums"),
+        (RecordMark::None, "c"),
+    ]
+    .into_iter()
+    .map(|(mark, value)| AppendRecord {
+        payload: payload(value),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    })
+    .collect();
+    let appended = log
+        .append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+    broker
+        .adopt_replicated(TENANT, NAMESPACE, STREAM, 0, appended.last_offset + 1)
+        .await
+        .expect("adopt");
+    let mut subscription = broker
+        .subscribe(TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("subscribe");
+    let mut sink = Recorder::default();
+
+    replay(
+        &mut sink,
+        &broker,
+        Some(HistoryRange {
+            from_offset: 0,
+            until_offset: 6,
+        }),
+        Vec::new(),
+        6,
+        &mut subscription,
+        64,
+    )
+    .await
+    .expect("replay");
+
+    assert_eq!(sink.offsets(), vec![0, 1, 5]);
+    assert_eq!(
+        sink.payloads(),
+        vec![payload("a"), payload("b"), payload("c")]
+    );
+    assert_eq!(sink.skips(), vec![(5, 3)]);
+}
+
 /// Resuming exactly at a generation start's offset starts at the next event.
 #[tokio::test]
 async fn a_resume_at_a_generation_start_begins_with_the_next_event() {

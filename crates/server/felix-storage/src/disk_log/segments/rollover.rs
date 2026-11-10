@@ -165,8 +165,12 @@ impl SegmentSet {
 
     /// [`Self::roll`] to a segment that can hold `records`.
     pub(crate) fn roll_for(&mut self, records: &[AppendRecord]) -> Result<()> {
+        self.roll_to(self.active.successor_version(records))
+    }
+
+    /// [`Self::roll`] to a segment at `version`.
+    pub(crate) fn roll_to(&mut self, version: u16) -> Result<()> {
         self.check_open()?;
-        let version = self.active.successor_version(records);
         let descriptor = self.active.seal()?;
         let base_offset = self.active.next_offset();
         let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);

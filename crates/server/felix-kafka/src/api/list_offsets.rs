@@ -121,8 +121,8 @@ fn settling(version: i16) -> ResponseError {
     }
 }
 
-/// The last client record below `tail`, stepping back over any
-/// generation-start and trim records at the end of the log.
+/// The last client record below `tail`, stepping back over any records
+/// that are not data at the end of the log.
 async fn last_record_before(
     log: &StreamLog,
     base: u64,
@@ -135,11 +135,7 @@ async fn last_record_before(
         // read past. `at` is at or above the readable base.
         let records = log.read_replicated_from(at, 1).await?;
         match records.first() {
-            Some(record)
-                if record.offset == at
-                    && !record.mark.is_generation_start()
-                    && !record.mark.is_trim() =>
-            {
+            Some(record) if record.offset == at && record.mark.is_data() => {
                 return Ok(Some((crate::records::timestamp_ms(record), record.offset)));
             }
             Some(record) if record.offset == at => {}

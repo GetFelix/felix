@@ -576,16 +576,16 @@ impl StreamLog {
     /// makes a trim landing *mid-replay* surface as well, rather than a short
     /// history that looks complete.
     ///
-    /// Generation-start and trim records are left out: they are not a
-    /// client's. A page is empty only at the tail, never because every record
-    /// it read was one of them.
-    /// A commit record is returned as its event.
+    /// Only data records are returned ([`RecordMark::is_data`]): the
+    /// offsets of generation-start, trim, membership and counter records are
+    /// gaps. A page is empty only at the tail, never because every record it
+    /// read was one of them. A commit record is returned as its event.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
         let mut start = start;
         loop {
             let page = self.read_log_from(start, max_bytes).await?;
             let mut records = page.records;
-            records.retain(|record| !record.mark.is_generation_start());
+            records.retain(|record| record.mark.is_data());
             if !records.is_empty() {
                 return Ok(records
                     .into_iter()
@@ -667,7 +667,7 @@ impl StreamLog {
     }
 
     /// Just past the last client record below `tail`, stepping back over the
-    /// generation-start and trim records the log ends with, but never below
+    /// records that are not data the log ends with, but never below
     /// `floor`.
     ///
     /// Those records hold offsets no reader is ever handed, so a reader
@@ -679,16 +679,27 @@ impl StreamLog {
         while end > floor {
             let records = self.read_replicated_from(end - 1, 1).await?;
             match records.first() {
-                Some(record)
-                    if record.offset == end - 1
-                        && (record.mark.is_generation_start() || record.mark.is_trim()) =>
-                {
+                Some(record) if record.offset == end - 1 && !record.mark.is_data() => {
                     end -= 1;
                 }
                 _ => break,
             }
         }
         Ok(end)
+    }
+
+    /// See `DiskLog::append_v9_for_tests`. Not an API.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+    #[doc(hidden)]
+    pub async fn append_v9_for_tests(
+        &self,
+        records: &[AppendRecord],
+        generation: u64,
+    ) -> Result<AppendResult> {
+        self.log
+            .append_v9_for_tests(records, generation)
+            .await
+            .map_err(BrokerError::from)
     }
 
     /// Append the generation-start record for `generation` at the tail,

@@ -52,8 +52,10 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 /// one.
 ///
 /// v9 adds a generation to every record header, so the header is 36 bytes
-/// instead of 28. An older build refuses the segment by its version. Nothing
-/// writes v9 yet: a log moves onto it only once the fleet can read it.
+/// instead of 28. An older build refuses the segment by its version. It also
+/// adds three kinds, each a pair or triple of kind bits no older segment may
+/// hold: membership, counter delta and counter checkpoint. Nothing writes v9
+/// yet: a log moves onto it only once the fleet can read it.
 pub const FORMAT_VERSION: u16 = 9;
 
 /// The first version whose records carry a generation.
@@ -254,7 +256,9 @@ impl SegmentHeader {
 /// batch and the tag follows; bit 30 says it continues the batch the record
 /// before it belongs to. Bit 29 marks a generation-start record and
 /// bit 28 a commit record (see `RecordMark::Commit`). Bits 29 and 28 together
-/// mark a trim record (see `RecordMark::Trim`). Bit 27 is not a kind:
+/// mark a trim record (see `RecordMark::Trim`). From v9, bits 30 and 29 mark
+/// a membership record, bits 30 and 28 a counter delta, and bits 30, 29 and 28
+/// a counter checkpoint. Bit 27 is not a kind:
 /// it says the body ends with the principal that published the record,
 /// followed by that principal's length in one byte. Bit 26 is not a kind
 /// either: it says the body starts with the record's key and headers. Bodies
@@ -302,6 +306,12 @@ pub enum RecordKind {
     Commit,
     /// Bits 29 and 28: a head trim, and the 8-byte floor follows.
     Trim,
+    /// Bits 30 and 29, from v9: a replica-set change.
+    Membership,
+    /// Bits 30 and 28, from v9: a counter add.
+    CounterDelta,
+    /// Bits 30, 29 and 28, from v9: every counter's running sum.
+    CounterCheckpoint,
 }
 
 impl RecordKind {
@@ -310,7 +320,13 @@ impl RecordKind {
         match self {
             Self::Opens => PRODUCER_TAG_LEN,
             Self::Trim => TRIM_TAG_LEN,
-            Self::Plain | Self::Continues | Self::GenerationStart | Self::Commit => 0,
+            Self::Plain
+            | Self::Continues
+            | Self::GenerationStart
+            | Self::Commit
+            | Self::Membership
+            | Self::CounterDelta
+            | Self::CounterCheckpoint => 0,
         }
     }
 }
@@ -321,6 +337,11 @@ const FLAG_GENERATION_START: u32 = 1 << 29;
 const FLAG_COMMIT: u32 = 1 << 28;
 /// The one two-bit kind. Only a v7 segment may hold it.
 const FLAG_TRIM: u32 = FLAG_GENERATION_START | FLAG_COMMIT;
+/// The v9 kinds. Bit 30 alone is a continuing record, so every older build
+/// refuses these as `RecordFlags`.
+const FLAG_MEMBERSHIP: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
+const FLAG_COUNTER_DELTA: u32 = FLAG_CONTINUES_BATCH | FLAG_COMMIT;
+const FLAG_COUNTER_CHECKPOINT: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
 const KIND_MASK: u32 =
     FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
 const FLAG_PUBLISHER: u32 = 1 << 27;
@@ -368,7 +389,10 @@ pub fn record_len_in(body_len: usize, mark: &RecordMark, version: u16) -> u64 {
         RecordMark::None
         | RecordMark::Continues
         | RecordMark::GenerationStart
-        | RecordMark::Commit => 0,
+        | RecordMark::Commit
+        | RecordMark::Membership
+        | RecordMark::CounterDelta
+        | RecordMark::CounterCheckpoint => 0,
     };
     record_header_len(version) + tag + body_len as u64
 }
@@ -421,8 +445,8 @@ impl RecordHeader {
             }));
         }
         let len_and_flags = read_u32(buf, 0);
-        // At most one bit: a record is one kind. The trim code, from v7, is
-        // the one exception.
+        // At most one bit: a record is one kind. The trim code, from v7, and
+        // the v9 codes are the exceptions.
         let kind = match len_and_flags & KIND_MASK {
             0 => RecordKind::Plain,
             FLAG_OPENS_BATCH => RecordKind::Opens,
@@ -430,6 +454,11 @@ impl RecordHeader {
             FLAG_GENERATION_START => RecordKind::GenerationStart,
             FLAG_COMMIT => RecordKind::Commit,
             FLAG_TRIM if version >= TRIM_VERSION => RecordKind::Trim,
+            FLAG_MEMBERSHIP if version >= GENERATION_VERSION => RecordKind::Membership,
+            FLAG_COUNTER_DELTA if version >= GENERATION_VERSION => RecordKind::CounterDelta,
+            FLAG_COUNTER_CHECKPOINT if version >= GENERATION_VERSION => {
+                RecordKind::CounterCheckpoint
+            }
             _ => {
                 return Err(Corruption::new(CorruptionKind::RecordFlags {
                     found: len_and_flags,
@@ -464,12 +493,19 @@ impl RecordHeader {
 
     /// Refuse a record whose kind a segment at `version` cannot hold.
     ///
-    /// Only the trim code and headers are checked, each the way an older
-    /// build judged it: before v7 the trim's bits are `RecordFlags` in any
-    /// segment, and before v8 bit 26 over a non-zero length is
-    /// `RecordTooLarge`.
+    /// Only the multi-bit kinds and headers are checked, each the way an
+    /// older build judged it: before v7 the trim's bits, and before v9 the
+    /// membership and counter bits, are `RecordFlags` in any segment, and
+    /// before v8 bit 26 over a non-zero length is `RecordTooLarge`.
     pub fn check_version(&self, version: u16) -> DecodeResult<()> {
-        if self.kind == RecordKind::Trim && version < TRIM_VERSION {
+        let needs = match self.kind {
+            RecordKind::Trim => TRIM_VERSION,
+            RecordKind::Membership | RecordKind::CounterDelta | RecordKind::CounterCheckpoint => {
+                GENERATION_VERSION
+            }
+            _ => 0,
+        };
+        if version < needs {
             return Err(Corruption::new(CorruptionKind::RecordFlags {
                 found: self.len_and_flags(),
             }));
@@ -492,6 +528,9 @@ impl RecordHeader {
             RecordKind::GenerationStart => FLAG_GENERATION_START,
             RecordKind::Commit => FLAG_COMMIT,
             RecordKind::Trim => FLAG_TRIM,
+            RecordKind::Membership => FLAG_MEMBERSHIP,
+            RecordKind::CounterDelta => FLAG_COUNTER_DELTA,
+            RecordKind::CounterCheckpoint => FLAG_COUNTER_CHECKPOINT,
         };
         let flag = |set: bool, bit: u32| if set { bit } else { 0 };
         self.payload_len
@@ -553,6 +592,9 @@ pub fn encode_record_at(
         RecordMark::GenerationStart => FLAG_GENERATION_START,
         RecordMark::Commit => FLAG_COMMIT,
         RecordMark::Trim { .. } => FLAG_TRIM,
+        RecordMark::Membership => FLAG_MEMBERSHIP,
+        RecordMark::CounterDelta => FLAG_COUNTER_DELTA,
+        RecordMark::CounterCheckpoint => FLAG_COUNTER_CHECKPOINT,
     };
     let flag = |set: bool, bit: u32| if set { bit } else { 0 };
     let flags =
@@ -583,7 +625,10 @@ pub fn encode_record_at(
         RecordMark::None
         | RecordMark::Continues
         | RecordMark::GenerationStart
-        | RecordMark::Commit => &[],
+        | RecordMark::Commit
+        | RecordMark::Membership
+        | RecordMark::CounterDelta
+        | RecordMark::CounterCheckpoint => &[],
     };
     let (publisher, publisher_len): (&[u8], &[u8]) = match publisher {
         Some(publisher) => (publisher, &[publisher.len() as u8][..]),
@@ -718,6 +763,9 @@ pub(crate) fn decode_record_after(
         RecordKind::Trim => RecordMark::Trim {
             floor: read_u64(tag, 0),
         },
+        RecordKind::Membership => RecordMark::Membership,
+        RecordKind::CounterDelta => RecordMark::CounterDelta,
+        RecordKind::CounterCheckpoint => RecordMark::CounterCheckpoint,
     };
     Ok((
         DecodedRecord {

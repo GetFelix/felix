@@ -117,7 +117,7 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
                 generation_starts.push((record.offset, generation_of(&record.payload)));
                 continue;
             }
-            if record.mark.is_trim() {
+            if !record.mark.is_data() {
                 continue;
             }
             if let Some(payload_bytes) = args.payload_bytes

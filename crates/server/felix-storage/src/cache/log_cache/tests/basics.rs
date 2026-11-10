@@ -252,6 +252,58 @@ async fn the_index_steps_over_a_generation_start_record() {
     );
 }
 
+/// Membership and counter records in a cache log are stepped over too: they
+/// keep their offsets, and none of them is decoded as a cache op.
+#[tokio::test]
+async fn the_index_steps_over_membership_and_counter_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let cache = cache(dir.path()).await;
+    cache
+        .put_checked(T, NS, C, 0, "first", Bytes::from_static(b"1"), None)
+        .await
+        .expect("put");
+
+    let log = cache.shard_log(T, NS, C, 0).await.expect("shard log");
+    let record = |mark, payload: Bytes| AppendRecord {
+        payload,
+        timestamp_micros: 0,
+        mark,
+        publisher: None,
+        headers: None,
+    };
+    let not_a_cache_op = || Bytes::from_static(b"\xffnot a cache op");
+    let shipped = CacheOp::Put {
+        key: "shipped".to_string(),
+        value: Bytes::from_static(b"2"),
+        expires_at_millis: 0,
+        version: None,
+    }
+    .encode();
+    log.append_v9_for_tests(
+        &[
+            record(crate::log::RecordMark::Membership, not_a_cache_op()),
+            record(crate::log::RecordMark::CounterDelta, not_a_cache_op()),
+            record(crate::log::RecordMark::CounterCheckpoint, not_a_cache_op()),
+            record(crate::log::RecordMark::None, shipped),
+        ],
+        1,
+    )
+    .await
+    .expect("append");
+
+    assert_eq!(
+        cache
+            .get_checked(T, NS, C, 0, "shipped")
+            .await
+            .expect("get"),
+        Some(Bytes::from_static(b"2")),
+    );
+    assert_eq!(
+        cache.get_checked(T, NS, C, 0, "first").await.expect("get"),
+        Some(Bytes::from_static(b"1")),
+    );
+}
+
 /// **Records cut from the log and written again leave no trace in the
 /// index once it is forgotten.** Replication cuts a superseded suffix and
 /// appends the winning log's records at the same offsets; an index caught up

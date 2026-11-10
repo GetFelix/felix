@@ -31,8 +31,11 @@ parking_lot = { workspace = true }
 default = []
 telemetry = []
 perf_debug = []
+# Exposes `StreamLog::append_v9_for_tests` to other crates' tests in release.
+fault-injection = ["felix-storage/fault-injection"]
 
 [dev-dependencies]
+felix-storage = { path = "../felix-storage", version = "0.8.0-preview.0", features = ["fault-injection"] }
 tempfile = { workspace = true }
 serial_test = { workspace = true }
 
