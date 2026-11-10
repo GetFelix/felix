@@ -865,12 +865,30 @@ from a named leader: that generation and the leader's node id.
 
 ```text
  0   4  magic        u32  "FLBL"
- 4   2  version      u16
+ 4   2  version      u16  1 or 2
  6   2  leader_len   u16  at most 1024
  8   8  generation   u64  the generation the leader was accepted at
-16   n  leader       utf-8 node id, leader_len bytes
-16+n 4  crc          u32  crc32 over bytes 0..16+n
+16   1  flags        u8   version 2 only; bit 0 = committed, other bits 0
+16+f n  leader       utf-8 node id, leader_len bytes (f = 1 in version 2, else 0)
+...  4  crc          u32  crc32 over every byte before it
 ```
+
+Version 2 adds `flags`. Its one bit says the vote is committed: a majority
+granted it, which is what openraft's `Vote::committed` records. A ballot
+without that bit is written as version 1, so only a committed vote produces a
+version 2 file. Brokers do not save committed votes yet; that waits for the
+same fleet gate as segment format v9 (see [Generations](#generations)). A
+build that predates version 2 reads only version 1, so it refuses a version 2
+file at open (the file "does not decode") and never ignores or rewrites it.
+A version newer than the build reads fails the open with a message naming a
+newer build. The crc is checked first, so a damaged version field reads as
+damage, not as a newer format. An unknown flag bit, or the committed bit with
+an empty leader, does not decode.
+
+The mark belongs to the vote in the same file, so it is on disk exactly when
+that vote is. The open reads it only when it takes the ballot's leader: a
+ballot behind `replica`, or behind a newer `replica-set`, belongs to an older
+generation, and the shard opens with no leader and no mark.
 
 Written the same way as `replica`, and before it when a generation is raised,
 so the ballot is on disk before anything from that leader is stored or

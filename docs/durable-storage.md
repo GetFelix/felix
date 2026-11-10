@@ -1421,6 +1421,13 @@ ahead of the other. The code that starts reading them must fix the order it
 writes them in and compare their generations when it loads, as the open does
 for `ballot` and `replica`.
 
+A ballot can also mark its vote committed, meaning a majority granted it.
+That bit is format v2 of the file, written only for a committed vote, and no
+broker saves one until the segment format v9 fleet gate. A save writes the
+ballot before `replica`, so a crash at any step of it opens with the vote
+from before the save or the vote it saved, never a mark on a vote that did
+not reach the disk. See `docs/storage-format.md`, "`ballot`".
+
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has
 answered that pass under the id its position was learned under. Placement

@@ -92,6 +92,20 @@ async fn a_set_newer_than_the_ballot_raises_the_accepted_generation_at_open() {
     );
 }
 
+#[tokio::test]
+async fn a_set_newer_than_a_committed_vote_opens_with_no_mark() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.commit_vote_for_tests(3, "a").await.expect("commit");
+    }
+    // As above, an order the writes rule out: the mark was for generation 3.
+    set::store(dir.path(), &set_at(7), None).expect("store");
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 7);
+    assert!(!log.accepted_vote_committed());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_sets_leave_the_newer_on_disk() {
     for _ in 0..20 {
