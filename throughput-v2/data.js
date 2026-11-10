@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794301323021,
+  "lastUpdate": 1794307735328,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51116,6 +51116,58 @@ window.BENCHMARK_DATA = {
             "range": "7705.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1203118.16\nmean: 1203223.56\nstdev: 7705.88\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb68f0e7e94519664f9acd757d0e856933b7083c",
+          "message": "feat(storage): ballot format v2 with the vote's committed flag (#2183)\n\n* feat(storage): ballot format v2 with the vote's committed flag\n\nThe ballot file gets format v2: a flags byte whose bit 0 marks the vote\ncommitted (openraft's Vote::committed). Only a committed vote is written as\nv2, and nothing outside tests saves one until the v9 fleet gate, so the\nprevious release, which reads v1 only and refuses v2 at open, still opens\nevery shard this build writes. A newer version fails the open naming a\nnewer build; the crc is checked before the version.\n\nThe save order is unchanged (ballot, then replica, each temp + fsync +\nrename + dir fsync). The open reads the flag only when it takes the\nballot's leader, and a raise or a newer replica-set clears it. Crash-point\ntests stop the writer before every step and cut the power on the\nsimulator's filesystem.\n\nPart of #2167.\n\nSpec-Unaffected: ballot file format only; the save order and the open's reconcile rule are unchanged, and nothing outside tests writes the committed flag.\n\n* fix(storage): refuse a committed vote with no leader before writing it\n\nThe decoder refuses a committed ballot with an empty leader, so writing\none (committing after give_up_generation) would fail the next open. store\nnow refuses it before anything is written, in every build.\n\nDocs: the previous release's refusal of a v2 ballot comes after the open's\nfirst repairs, which are in formats both builds read. Note that the vote\ncrash-point tests need the sim feature.\n\nSpec-Unaffected: refuses an input no caller sends; save order and reconcile unchanged.",
+          "timestamp": "2026-11-10T10:43:45Z",
+          "tree_id": "67ea5654934a4388eb6676c14d46c81be4f0f183",
+          "url": "https://github.com/GetFelix/felix/commit/eb68f0e7e94519664f9acd757d0e856933b7083c"
+        },
+        "date": 1794307734699,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 700209.85,
+            "range": "38160.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 700209.85\nmean: 693628.08\nstdev: 38160.38\ncv: 5.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 700209.85,
+            "range": "38160.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 700209.85\nmean: 693628.08\nstdev: 38160.38\ncv: 5.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158322.6,
+            "range": "3160.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158322.60\nmean: 158304.55\nstdev: 3160.20\ncv: 2.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1583225.97,
+            "range": "31602.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1583225.97\nmean: 1583045.51\nstdev: 31602.00\ncv: 2.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
