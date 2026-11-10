@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794299633629,
+  "lastUpdate": 1794301323021,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51064,6 +51064,58 @@ window.BENCHMARK_DATA = {
             "range": "57633.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1691027.85\nmean: 1684573.94\nstdev: 57633.25\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c868ba3614bbd0c7712c8614110141a9252d3a97",
+          "message": "feat(storage): membership and counter record kinds, and one is_data skip at every client read (#2181)\n\n* feat(storage): membership and counter record kinds, and one is_data skip at every client read\n\nFormat v9 stage 2 (#2167). Adds RecordMark::Membership, CounterDelta and\nCounterCheckpoint as v9-only kinds (bits 30+29, 30+28, 30+29+28; RecordFlags\nbefore v9). Nothing writes them: DiskLog refuses an append holding one before\nit can roll the log onto v9, and replication holds a follower before one\nrather than send it under another mark.\n\nRecordMark::is_data is the one predicate every client read uses to skip\nrecords that are not data: StreamLog::read_from and event_end, the replay\nring, consumer groups, Kafka fetch and offset lookups, cache watch replay,\nand the cache and counter projections. Skipped records keep their offsets,\nso skip counts cover them and drop detection stays exact.\n\nSpec-Unaffected: storage format and read filtering only; nothing writes the new kinds and no protocol or TLA model changes\n\n* fix(broker): build the v9 test append in release, and correct the kind docs\n\nSpec-Unaffected: storage and docs only",
+          "timestamp": "2026-11-10T08:57:50Z",
+          "tree_id": "963491f8bafe3d1afc60d38f495e4afe5612546f",
+          "url": "https://github.com/GetFelix/felix/commit/c868ba3614bbd0c7712c8614110141a9252d3a97"
+        },
+        "date": 1794301322282,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 538339.63,
+            "range": "33020.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538339.63\nmean: 534090.11\nstdev: 33020.59\ncv: 6.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 538339.63,
+            "range": "33020.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538339.63\nmean: 534090.11\nstdev: 33020.59\ncv: 6.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120311.82,
+            "range": "770.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120311.82\nmean: 120322.36\nstdev: 770.59\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203118.16,
+            "range": "7705.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203118.16\nmean: 1203223.56\nstdev: 7705.88\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
