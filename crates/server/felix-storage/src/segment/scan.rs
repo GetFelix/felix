@@ -11,8 +11,8 @@ use crate::io::read_at;
 use crate::log::{Offset, RecordMark, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
-    IndexEntry, RECORD_HEADER_LEN, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader,
-    check_offset_continuity, decode_record,
+    IndexEntry, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader, check_offset_continuity,
+    decode_record_after, record_header_len,
 };
 use crate::segment::index::SparseIndex;
 use crate::{Corruption, CorruptionKind, Result, StorageError};
@@ -60,6 +60,11 @@ pub struct ScanOutcome {
     /// payload's digest (its part of a `PayloadDigest`). Collected here
     /// so rebuilding producer state costs no second pass over the segment.
     pub marks: Vec<(Offset, RecordMark, u64)>,
+    /// The generation of the last intact record in the scanned span, or
+    /// `None` when that span holds no v9 record. A [`ScanStart::Resume`] scan
+    /// sees only the records after its resume point, so callers must not seed
+    /// a generation floor from it.
+    pub last_generation: Option<u64>,
 }
 
 impl ScanOutcome {
@@ -92,6 +97,7 @@ struct ScanState {
     rebuild_index: bool,
     repair: TailRepair,
     marks: Vec<(Offset, RecordMark, u64)>,
+    last_generation: Option<u64>,
 }
 
 impl ScanState {
@@ -104,6 +110,7 @@ impl ScanState {
             index: self.index,
             torn_tail,
             marks: self.marks,
+            last_generation: self.last_generation,
         }
     }
 
@@ -139,13 +146,14 @@ impl ScanState {
                 &err.kind,
                 self.position,
                 claimed_len,
-                file_len,
+                (file_len, record_header_len(self.header.version)),
                 self.repair.checksum_tail,
             )
         {
             return Ok(self.torn(file_len, err.kind));
         }
-        let damaged_end = self.position + claimed_len.unwrap_or(RECORD_HEADER_LEN);
+        let header_len = record_header_len(self.header.version);
+        let damaged_end = self.position + claimed_len.unwrap_or(header_len);
         if is_zero_filled_tail(file, self.position, damaged_end, file_len)? {
             return Ok(self.torn(file_len, err.kind));
         }
@@ -274,32 +282,37 @@ pub(crate) fn scan_segment_upto(
         rebuild_index,
         repair,
         marks: Vec::new(),
+        last_generation: None,
     };
+    let header_len = record_header_len(header.version);
 
     while state.position < file_len {
         let position = state.position;
 
         // Read the header first so the payload read is sized before it is
         // attempted; a corrupt length is caught here, not by a huge allocation.
-        let header_slice = cursor.slice_at(position, RECORD_HEADER_LEN as usize)?;
-        if (header_slice.len() as u64) < RECORD_HEADER_LEN {
+        // From v9 the header is longer, and a file that ends inside it,
+        // generation included, is cut short like any other torn write.
+        let header_slice = cursor.slice_at(position, header_len as usize)?;
+        if (header_slice.len() as u64) < header_len {
             let available = header_slice.len() as u64;
             return Ok(state.torn(
                 file_len,
                 CorruptionKind::Truncated {
-                    needed: RECORD_HEADER_LEN,
+                    needed: header_len,
                     available,
                 },
             ));
         }
         // A trim in a segment older than v7 is refused here, where an older
         // build's decode refused its bits, so damage is judged the same way.
-        let total_len = match RecordHeader::decode_in(header_slice, state.header.version) {
-            Ok(record_header) => record_header.encoded_len(),
+        let record_header = match RecordHeader::decode_in(header_slice, state.header.version) {
+            Ok(record_header) => record_header,
             Err(err) => {
                 return state.finish_or_fail(&file, err, None, file_len, shard_label, segment_id);
             }
         };
+        let total_len = record_header.encoded_len();
 
         let record_slice = cursor.slice_at(position, total_len as usize)?;
         if (record_slice.len() as u64) < total_len {
@@ -313,7 +326,7 @@ pub(crate) fn scan_segment_upto(
             ));
         }
 
-        let decoded = match decode_record(record_slice) {
+        let decoded = match decode_record_after(record_header, record_slice) {
             Ok((decoded, _)) => decoded,
             Err(err) => {
                 return state.finish_or_fail(
@@ -336,6 +349,25 @@ pub(crate) fn scan_segment_upto(
                 shard_label,
                 segment_id,
             );
+        }
+
+        // Generations only rise along a log. A verified record that breaks
+        // that was written wrong, not torn, so it is fatal unless it lies past
+        // the durable mark.
+        if let Some(found) = decoded.header.generation {
+            if let Some(previous) = state.last_generation
+                && found < previous
+            {
+                return state.finish_or_fail(
+                    &file,
+                    Corruption::new(CorruptionKind::GenerationFell { previous, found }),
+                    Some(total_len),
+                    file_len,
+                    shard_label,
+                    segment_id,
+                );
+            }
+            state.last_generation = Some(found);
         }
 
         state.observe(decoded.header.offset, position, total_len);
@@ -380,7 +412,7 @@ fn is_repairable_tail(
     kind: &CorruptionKind,
     position: u64,
     claimed_len: Option<u64>,
-    file_len: u64,
+    (file_len, header_len): (u64, u64),
     repair_checksum_tail: bool,
 ) -> bool {
     match kind {
@@ -400,7 +432,7 @@ fn is_repairable_tail(
         // indistinguishable from the bytes, so recovery refuses to choose
         // unless an operator has said which risk they prefer.
         CorruptionKind::RecordHeaderChecksum { .. } => {
-            repair_checksum_tail && position.saturating_add(RECORD_HEADER_LEN) >= file_len
+            repair_checksum_tail && position.saturating_add(header_len) >= file_len
         }
         // The header verified but the payload did not. The record is complete
         // on disk, so this is rot rather than a torn write, and under
@@ -414,7 +446,7 @@ fn is_repairable_tail(
         // treat it as ambiguous rather than assume a torn write.
         CorruptionKind::RecordTooLarge { payload_len, .. } => {
             repair_checksum_tail
-                && position.saturating_add(RECORD_HEADER_LEN + u64::from(*payload_len)) > file_len
+                && position.saturating_add(header_len + u64::from(*payload_len)) > file_len
         }
         _ => false,
     }

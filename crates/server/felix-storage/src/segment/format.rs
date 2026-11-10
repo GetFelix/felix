@@ -50,7 +50,14 @@ pub const INDEX_MAGIC: u32 = 0x464C_5349;
 ///
 /// v8 lets a record carry a key and headers (bit 26), written only to hold
 /// one.
-pub const FORMAT_VERSION: u16 = 8;
+///
+/// v9 adds a generation to every record header, so the header is 36 bytes
+/// instead of 28. An older build refuses the segment by its version. Nothing
+/// writes v9 yet: a log moves onto it only once the fleet can read it.
+pub const FORMAT_VERSION: u16 = 9;
+
+/// The first version whose records carry a generation.
+pub const GENERATION_VERSION: u16 = 9;
 
 /// The first version whose records may carry a key and headers.
 pub const HEADERS_VERSION: u16 = 8;
@@ -78,8 +85,11 @@ pub const OLDEST_READABLE_VERSION: u16 = 2;
 
 /// Bytes occupied by a segment file header.
 pub const SEGMENT_HEADER_LEN: u64 = 32;
-/// Bytes occupied by a record header, excluding its payload.
+/// Bytes occupied by a record header before v9, excluding its payload.
 pub const RECORD_HEADER_LEN: u64 = 28;
+/// Bytes occupied by a v9 record header: [`RECORD_HEADER_LEN`] plus the
+/// generation.
+pub const GENERATION_HEADER_LEN: u64 = RECORD_HEADER_LEN + 8;
 /// Bytes a record opening a producer batch carries after its header.
 pub const PRODUCER_TAG_LEN: u64 = 20;
 /// Bytes a trim record carries after its header: the floor.
@@ -159,6 +169,11 @@ impl SegmentHeader {
         self.version >= TRIM_VERSION
     }
 
+    /// Whether this segment's records carry a generation.
+    pub fn holds_generations(&self) -> bool {
+        self.version >= GENERATION_VERSION
+    }
+
     pub fn encode(&self) -> [u8; SEGMENT_HEADER_LEN as usize] {
         let mut buf = [0u8; SEGMENT_HEADER_LEN as usize];
         buf[0..4].copy_from_slice(&SEGMENT_MAGIC.to_be_bytes());
@@ -225,6 +240,16 @@ impl SegmentHeader {
 ///             then the payload, then with bit 27 the publisher and its u8 length
 /// ```
 ///
+/// From v9 the generation follows the timestamp, inside the header checksum,
+/// and everything after it moves up 8 bytes:
+///
+/// ```text
+/// 20   8  generation         u64  generation (Raft term) of the leader that wrote it
+/// 28   4  header_crc         u32  crc32 over bytes 0..28
+/// 32   4  checksum           u32  crc32 over bytes 0..32, the tag, and the payload
+/// 36      tag and body, as above
+/// ```
+///
 /// Bit 31 of `len_and_flags` says the record opens an idempotent producer's
 /// batch and the tag follows; bit 30 says it continues the batch the record
 /// before it belongs to. Bit 29 marks a generation-start record and
@@ -256,6 +281,9 @@ pub struct RecordHeader {
     pub has_publisher: bool,
     /// The body starts with the record's key and headers.
     pub has_headers: bool,
+    /// The generation of the leader that wrote the record. `None` before v9,
+    /// whose records do not carry one.
+    pub generation: Option<u64>,
 }
 
 /// What a record's kind bits say it is. See [`RecordMark`] for what each
@@ -317,8 +345,23 @@ pub fn body_fits(body_len: usize, has_headers: bool) -> bool {
     body_len <= MAX_PAYLOAD_BYTES as usize - usize::from(has_headers)
 }
 
-/// Bytes a record with this body and mark takes on disk. See [`body_len`].
+/// Bytes a record header takes in a segment at `version`.
+pub fn record_header_len(version: u16) -> u64 {
+    if version >= GENERATION_VERSION {
+        GENERATION_HEADER_LEN
+    } else {
+        RECORD_HEADER_LEN
+    }
+}
+
+/// Bytes a record with this body and mark takes on disk before v9. See
+/// [`body_len`].
 pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
+    record_len_in(body_len, mark, HEADERS_VERSION)
+}
+
+/// [`record_len`] for a segment at `version`.
+pub fn record_len_in(body_len: usize, mark: &RecordMark, version: u16) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
         RecordMark::Trim { .. } => TRIM_TAG_LEN,
@@ -327,13 +370,22 @@ pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
         | RecordMark::GenerationStart
         | RecordMark::Commit => 0,
     };
-    RECORD_HEADER_LEN + tag + body_len as u64
+    record_header_len(version) + tag + body_len as u64
 }
 
 impl RecordHeader {
     /// Total bytes this record occupies on disk, header included.
     pub fn encoded_len(&self) -> u64 {
-        RECORD_HEADER_LEN + self.kind.tag_len() + u64::from(self.payload_len)
+        self.header_len() + self.kind.tag_len() + u64::from(self.payload_len)
+    }
+
+    /// Bytes the fixed header takes: more from v9, which adds the generation.
+    pub fn header_len(&self) -> u64 {
+        if self.generation.is_some() {
+            GENERATION_HEADER_LEN
+        } else {
+            RECORD_HEADER_LEN
+        }
     }
 
     /// Where the payload starts, relative to the record.
@@ -341,24 +393,27 @@ impl RecordHeader {
         (self.encoded_len() - u64::from(self.payload_len)) as usize
     }
 
-    /// [`Self::decode_in`] for a segment at the newest version.
+    /// [`Self::decode_in`] for a segment at v8, the newest version whose
+    /// records carry no generation.
     pub fn decode(buf: &[u8]) -> DecodeResult<Self> {
-        Self::decode_in(buf, FORMAT_VERSION)
+        Self::decode_in(buf, HEADERS_VERSION)
     }
 
     /// Decode a record header from a segment at `version`. A trim's bits in
     /// a segment older than v7 are `RecordFlags`, judged before the length,
     /// exactly as an older build judged them.
     pub fn decode_in(buf: &[u8], version: u16) -> DecodeResult<Self> {
-        if (buf.len() as u64) < RECORD_HEADER_LEN {
-            return Err(truncated(RECORD_HEADER_LEN, buf.len() as u64));
+        let header_len = record_header_len(version);
+        if (buf.len() as u64) < header_len {
+            return Err(truncated(header_len, buf.len() as u64));
         }
         // The header checksum is verified first, before any field is used.
         // Everything downstream — the payload length, the offset, how far to
         // step to the next record — is only meaningful once the header is known
         // to be intact.
-        let header_crc = read_u32(buf, 20);
-        let found = crc32(&[&buf[0..20]]);
+        let crc_at = header_len as usize - 8;
+        let header_crc = read_u32(buf, crc_at);
+        let found = crc32(&[&buf[0..crc_at]]);
         if header_crc != found {
             return Err(Corruption::new(CorruptionKind::RecordHeaderChecksum {
                 expected: header_crc,
@@ -399,10 +454,11 @@ impl RecordHeader {
             offset: read_u64(buf, 4),
             timestamp_micros: read_u64(buf, 12),
             header_crc,
-            checksum: read_u32(buf, 24),
+            checksum: read_u32(buf, crc_at + 4),
             kind,
             has_publisher: len_and_flags & FLAG_PUBLISHER != 0,
             has_headers,
+            generation: (version >= GENERATION_VERSION).then(|| read_u64(buf, 20)),
         })
     }
 
@@ -445,7 +501,8 @@ impl RecordHeader {
     }
 }
 
-/// Serialize one record into `out`, returning the bytes appended.
+/// Serialize one record into `out` in the layout before v9, returning the
+/// bytes appended.
 ///
 /// Callers batch many of these into a single buffer so that one `write_all`
 /// covers a whole append. A `publisher` is at most [`MAX_PUBLISHER_BYTES`],
@@ -453,6 +510,31 @@ impl RecordHeader {
 /// headers, already encoded; storage does not look inside it.
 pub fn encode_record(
     out: &mut Vec<u8>,
+    offset: Offset,
+    timestamp_micros: u64,
+    payload: &[u8],
+    headers: Option<&[u8]>,
+    publisher: Option<&[u8]>,
+    mark: &RecordMark,
+) -> u64 {
+    encode_record_at(
+        out,
+        None,
+        offset,
+        timestamp_micros,
+        payload,
+        headers,
+        publisher,
+        mark,
+    )
+}
+
+/// [`encode_record`] with the record's generation: `Some` for a v9 segment,
+/// `None` for an older one.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_record_at(
+    out: &mut Vec<u8>,
+    generation: Option<u64>,
     offset: Offset,
     timestamp_micros: u64,
     payload: &[u8],
@@ -478,9 +560,13 @@ pub fn encode_record(
     out.extend_from_slice(&(body_len as u32 | flags).to_be_bytes());
     out.extend_from_slice(&offset.to_be_bytes());
     out.extend_from_slice(&timestamp_micros.to_be_bytes());
+    if let Some(generation) = generation {
+        out.extend_from_slice(&generation.to_be_bytes());
+    }
+    let crc_at = out.len() - start;
     // Header checksum first, so a reader can trust `payload_len` without having
     // read the payload it describes.
-    let header_crc = crc32(&[&out[start..start + 20]]);
+    let header_crc = crc32(&[&out[start..start + crc_at]]);
     out.extend_from_slice(&header_crc.to_be_bytes());
     let mut tag = [0u8; PRODUCER_TAG_LEN as usize];
     let tag: &[u8] = match mark {
@@ -507,14 +593,14 @@ pub fn encode_record(
     // headers pays for them.
     let checksum = match headers {
         None => crc32(&[
-            &out[start..start + 24],
+            &out[start..start + crc_at + 4],
             tag,
             payload,
             publisher,
             publisher_len,
         ]),
         Some(headers) => crc32(&[
-            &out[start..start + 24],
+            &out[start..start + crc_at + 4],
             tag,
             &(headers.len() as u32).to_be_bytes(),
             headers,
@@ -547,13 +633,19 @@ pub struct DecodedRecord {
     pub mark: RecordMark,
 }
 
-/// Decode the record at the front of `buf`, verifying its checksum.
+/// Decode the record at the front of `buf`, from a v8 segment, verifying its
+/// checksum.
 ///
 /// Returns the record and the number of bytes consumed. A `Truncated` error
 /// means "ask for more bytes"; every other error means the bytes present are
 /// not a valid record.
 pub fn decode_record(buf: &[u8]) -> DecodeResult<(DecodedRecord, u64)> {
     decode_record_after(RecordHeader::decode(buf)?, buf)
+}
+
+/// [`decode_record`] for a segment at `version`.
+pub fn decode_record_in(buf: &[u8], version: u16) -> DecodeResult<(DecodedRecord, u64)> {
+    decode_record_after(RecordHeader::decode_in(buf, version)?, buf)
 }
 
 /// [`decode_record`] for a caller that already decoded the record's header
@@ -567,9 +659,10 @@ pub(crate) fn decode_record_after(
         return Err(truncated(total, buf.len() as u64));
     }
     let payload_start = header.payload_start();
-    let tag = &buf[RECORD_HEADER_LEN as usize..payload_start];
+    let header_len = header.header_len() as usize;
+    let tag = &buf[header_len..payload_start];
     let body = &buf[payload_start..total as usize];
-    let found = crc32(&[&buf[0..24], tag, body]);
+    let found = crc32(&[&buf[0..header_len - 4], tag, body]);
     if found != header.checksum {
         return Err(Corruption::new(CorruptionKind::RecordChecksum {
             expected: header.checksum,

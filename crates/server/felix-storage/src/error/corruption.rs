@@ -147,6 +147,13 @@ pub enum CorruptionKind {
         expected: Offset,
         found: Offset,
     },
+    /// A record's generation is below the generation of the record before
+    /// it. A leader writes only at its own generation and generations only
+    /// rise, so the log was written wrong or spliced.
+    GenerationFell {
+        previous: u64,
+        found: u64,
+    },
     /// A cache record was shorter than its own fixed header.
     CacheRecordTooShort {
         len: usize,
@@ -186,6 +193,15 @@ impl fmt::Display for CorruptionKind {
         match self {
             CorruptionKind::SegmentMagic { found } => {
                 write!(f, "bad segment magic {found:#010x}")
+            }
+            CorruptionKind::SegmentVersion { found }
+                if *found > crate::segment::format::FORMAT_VERSION =>
+            {
+                write!(
+                    f,
+                    "segment version {found} was written by a newer build; this one reads up to {}, so it refuses to open the log rather than misread it",
+                    crate::segment::format::FORMAT_VERSION
+                )
             }
             CorruptionKind::SegmentVersion { found } => {
                 write!(f, "unsupported segment version {found}")
@@ -231,6 +247,12 @@ impl fmt::Display for CorruptionKind {
                 write!(
                     f,
                     "offset out of order (expected {expected}, found {found})"
+                )
+            }
+            CorruptionKind::GenerationFell { previous, found } => {
+                write!(
+                    f,
+                    "record generation fell (previous {previous}, found {found})"
                 )
             }
             CorruptionKind::CacheRecordTooShort { len, header_len } => write!(

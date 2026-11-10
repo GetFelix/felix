@@ -39,10 +39,11 @@ pub(crate) mod power_loss;
 #[cfg(target_os = "linux")]
 pub(crate) mod uring_fsync;
 #[cfg(any(
+    test,
     feature = "sim",
     all(
         target_os = "linux",
-        any(test, debug_assertions, feature = "fault-injection")
+        any(debug_assertions, feature = "fault-injection")
     )
 ))]
 pub(crate) mod writeback;

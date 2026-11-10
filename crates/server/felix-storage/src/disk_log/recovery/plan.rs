@@ -683,6 +683,7 @@ impl<'a> View<'a> {
                     base_offset,
                     last_offset: outcome.next_offset.saturating_sub(1).max(base_offset),
                     size_bytes: file_len,
+                    version: header.version,
                 },
                 holds_marks: header.holds_marks(),
                 holds_trims: header.holds_trims(),
