@@ -45,6 +45,7 @@ pub mod confirmed;
 pub mod controlplane_link;
 pub mod driver;
 pub mod election;
+pub mod engine;
 mod follower;
 pub mod halted;
 mod incarnation;
