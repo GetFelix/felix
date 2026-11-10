@@ -93,6 +93,18 @@ pub trait LeadershipCheck: Send + Sync {
     /// Whether a majority of `key`'s replicas, this broker included, answered
     /// at `generation` in a round that started after this call did.
     async fn confirm(&self, key: &ShardKey, generation: u64) -> Result<(), QuorumError>;
+
+    /// [`Self::confirm`] for a read the lease also confirms
+    /// ([`ReadConfirm::LeaseAndRound`]). It may also pass when the replicas
+    /// that take the fence are short of a majority, since no successor can
+    /// then have fenced one.
+    async fn confirm_beside_lease(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+    ) -> Result<(), QuorumError> {
+        self.confirm(key, generation).await
+    }
 }
 
 struct ReadRounds {
@@ -216,11 +228,22 @@ impl QuorumMarks {
     /// How a `Quorum` read confirms that this broker still leads, decided
     /// from one read of the fleet.
     ///
-    /// A broker that would read by round once told, but has not heard the
-    /// fleet enable `lease_free_reads`, needs both: the fleet may have
-    /// enabled it while this broker was cut off, and a peer may then have
-    /// been elected without waiting out this broker's lease. The round covers
-    /// that; the lease covers a fleet that still waits it out.
+    /// A broker that stands for election and would read by round once told,
+    /// but has not heard the fleet enable `lease_free_reads`, needs both: the
+    /// fleet may have finalized it and `replica_election` while this broker
+    /// was cut off, and a peer may then have been elected without waiting out
+    /// this broker's lease. The round covers that; the lease covers a fleet
+    /// that still waits it out.
+    ///
+    /// Any other broker is safe on the lease. Election is the only promotion
+    /// that skips an unheard leader's lease (placement acts on the followers'
+    /// word only once the leader reported `by_round`), and the control plane
+    /// refuses to finalize `replica_election` while a live broker does not
+    /// report it. One marked down has already lost its lease, which ends
+    /// before the control plane could expire it, and a restart registers
+    /// before it holds a lease again, where it is refused or hears the
+    /// enabled set. See "Before a broker hears of the finalize" in
+    /// `docs/replication-design.md`.
     pub(crate) fn read_confirm(&self) -> ReadConfirm<'_> {
         let Some(reads) = self.reads.get() else {
             return ReadConfirm::Lease;
@@ -228,12 +251,13 @@ impl QuorumMarks {
         if self.serving().reads_by_round {
             return ReadConfirm::Round(&reads.check);
         }
-        let may_be_told = !reads.by_lease
-            && self
-                .fleet
-                .as_ref()
-                .is_some_and(|fleet| fleet.view().reports(felix_common::fleet::LEASE_FREE_READS));
-        if may_be_told {
+        let may_be_elected_past = !reads.by_lease
+            && self.fleet.as_ref().is_some_and(|fleet| {
+                let view = fleet.view();
+                view.reports(felix_common::fleet::LEASE_FREE_READS)
+                    && view.reports(felix_common::fleet::REPLICA_ELECTION)
+            });
+        if may_be_elected_past {
             ReadConfirm::LeaseAndRound(&reads.check)
         } else {
             ReadConfirm::Lease
@@ -1620,12 +1644,12 @@ async fn confirm_read<S: ShardServing + ?Sized>(
     marks: &QuorumMarks,
     ingress: &S,
 ) -> Result<(), anyhow::Error> {
-    let check = match marks.read_confirm() {
+    let (check, beside_lease) = match marks.read_confirm() {
         ReadConfirm::Lease => return release(ingress, "read"),
-        ReadConfirm::Round(check) => check,
+        ReadConfirm::Round(check) => (check, false),
         ReadConfirm::LeaseAndRound(check) => {
             release(ingress, "read")?;
-            check
+            (check, true)
         }
     };
     let Some(generation) = ingress.generation(shard) else {
@@ -1635,7 +1659,11 @@ async fn confirm_read<S: ShardServing + ?Sized>(
         }
         .into());
     };
-    Ok(check.confirm(shard, generation).await?)
+    if beside_lease {
+        Ok(check.confirm_beside_lease(shard, generation).await?)
+    } else {
+        Ok(check.confirm(shard, generation).await?)
+    }
 }
 
 /// A `Quorum` shard with no replica set to wait for. A write is done. A read

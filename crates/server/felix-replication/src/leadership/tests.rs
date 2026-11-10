@@ -108,6 +108,9 @@ async fn broker_at(generation: u64) -> (Arc<Broker>, TempDir) {
 struct Replica {
     handler: ReplicaHandler,
     reachable: bool,
+    /// Runs with `FELIX_INTERNAL_FENCE=false`, so the pool never sends it a
+    /// fence.
+    fences: bool,
     _dir: TempDir,
 }
 
@@ -117,6 +120,7 @@ impl Replica {
         Self {
             handler: ReplicaHandler::new(broker, router_for(node_id)),
             reachable: true,
+            fences: true,
             _dir: dir,
         }
     }
@@ -182,6 +186,12 @@ impl PeerRequester for Replicas {
         message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
         let replica = &self.replicas[node_id];
+        if !replica.fences {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
+            });
+        }
         if !replica.reachable {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -374,5 +384,35 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
     assert!(
         matches!(&answer, InternalMessage::ReplicateError(err) if err.code == felix_wire::internal::ErrorCode::FencedEpoch),
         "{answer:?}"
+    );
+}
+
+/// **Replicas that never take a fence leave the lease in charge.** With both
+/// followers fence-off, no successor can have fenced a majority, so a round
+/// beside the lease passes, while a round alone still cannot confirm. One
+/// fence-off follower is not enough: the other, unreachable, may have been
+/// fenced. GetFelix/felix#2161.
+#[tokio::test]
+async fn a_round_beside_the_lease_passes_when_no_majority_takes_the_fence() {
+    let mut replicas = Replicas::new().await;
+    for replica in replicas.replicas.values_mut() {
+        replica.fences = false;
+    }
+    let replicas = Arc::new(replicas);
+    let (index, _dir) = read_index(&replicas, LEADING).await;
+    index
+        .confirm_beside_lease(&key(), LEADING)
+        .await
+        .expect("no majority takes the fence");
+    assert!(index.confirm(&key(), LEADING).await.is_err());
+
+    let mut replicas = Replicas::new().await;
+    replicas.replicas.get_mut("broker-b").unwrap().fences = false;
+    replicas.replicas.get_mut("broker-c").unwrap().reachable = false;
+    let replicas = Arc::new(replicas);
+    let (index, _dir) = read_index(&replicas, LEADING).await;
+    assert!(
+        index.confirm_beside_lease(&key(), LEADING).await.is_err(),
+        "the leader and broker-c take the fence, a majority"
     );
 }

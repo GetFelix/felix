@@ -514,14 +514,17 @@ impl LeadershipCheck for NeverConfirms {
     }
 }
 
-/// A leader cut off before it heard the fleet enable `lease_free_reads` may
-/// have been replaced without anyone waiting out its lease, so a read there
-/// needs the round as well as the lease. Its replicas refuse the round here
-/// for a newer leader, and the read with them. GetFelix/felix#2161.
+/// A leader that stands for election, cut off before it heard the fleet
+/// enable `lease_free_reads`, may have been replaced by an election that did
+/// not wait out its lease, so a read there needs the round as well as the
+/// lease. Its replicas refuse the round here for a newer leader, and the read
+/// with them. GetFelix/felix#2161.
 #[tokio::test]
 async fn a_read_on_a_leader_that_has_not_heard_the_fleet_needs_the_round_too() {
-    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
-    let names = [
+    use felix_common::fleet::{
+        FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    };
+    let enabled = [
         GENERATION_START.name(),
         MAJORITY_ACK.name(),
         LEASE_FREE_READS.name(),
@@ -529,7 +532,9 @@ async fn a_read_on_a_leader_that_has_not_heard_the_fleet_needs_the_round_too() {
     let stream = key("orders");
     let leased = Replicated { generation: 3 };
 
-    let fleet = Arc::new(FleetGate::new(names));
+    let fleet = Arc::new(FleetGate::new(
+        enabled.into_iter().chain([REPLICA_ELECTION.name()]),
+    ));
     fleet.restart(std::iter::empty());
     let unheard = QuorumMarks::with_fleet(Arc::clone(&fleet));
     unheard.set_read_check(Arc::new(NeverConfirms), false);
@@ -557,12 +562,92 @@ async fn a_read_on_a_leader_that_has_not_heard_the_fleet_needs_the_round_too() {
         .expect("the operator kept reads on the lease");
 
     // Once heard, the round alone decides.
-    fleet.observe(names);
+    fleet.observe(enabled);
     confirm_state_read(&stream, Some(&answered), Some(&Unleased))
         .await
         .expect("by round, the lease is not asked");
     assert!(
         confirm_state_read(&stream, Some(&unheard), Some(&leased))
+            .await
+            .is_err()
+    );
+}
+
+/// A broker that does not stand for election cannot be elected past while it
+/// holds its lease: the control plane refuses `replica_election` while it is
+/// live. Until it hears `lease_free_reads`, the lease alone decides.
+#[tokio::test]
+async fn a_leader_that_does_not_stand_for_election_reads_on_its_lease_until_it_hears() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let stream = key("orders");
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.restart(std::iter::empty());
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    marks.set_read_check(Arc::new(NeverConfirms), false);
+    confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
+        .await
+        .expect("the lease decides; no round is asked");
+    assert!(
+        confirm_state_read(&stream, Some(&marks), Some(&Unleased))
+            .await
+            .is_err()
+    );
+
+    fleet.observe(names);
+    assert!(
+        confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
+            .await
+            .is_err(),
+        "once heard, the round decides"
+    );
+}
+
+/// The round beside the lease passes where the replicas that take the fence
+/// are short of a majority; the round alone does not.
+#[tokio::test]
+async fn a_round_beside_the_lease_passes_where_no_majority_takes_the_fence() {
+    use felix_common::fleet::{
+        FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    };
+    struct Unfenceable;
+    #[async_trait::async_trait]
+    impl LeadershipCheck for Unfenceable {
+        async fn confirm(&self, _key: &ShardKey, _generation: u64) -> Result<(), QuorumError> {
+            Err(QuorumError::LeadershipLost {
+                what: "read",
+                detail: "no majority",
+            })
+        }
+        async fn confirm_beside_lease(
+            &self,
+            _key: &ShardKey,
+            _generation: u64,
+        ) -> Result<(), QuorumError> {
+            Ok(())
+        }
+    }
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+        REPLICA_ELECTION.name(),
+    ];
+    let stream = key("orders");
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.restart(std::iter::empty());
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    marks.set_read_check(Arc::new(Unfenceable), false);
+    confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
+        .await
+        .expect("lease, and no successor could have fenced a majority");
+    fleet.observe(names);
+    assert!(
+        confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
             .await
             .is_err()
     );
