@@ -350,6 +350,12 @@ by the same round before it is acknowledged.
   subscribers, watches and group consumers. A group operation on a broker
   whose replicas no longer answer it fails with `leadership_lost` instead of
   `shard_unavailable`, and each group write waits for one round.
+- **Before the finalize reaches a broker.** A broker that reports
+  `lease_free_reads` confirms each `Quorum` read with both the lease and the
+  round until it hears the feature was finalized. A broker cut off from the
+  control plane when you finalize never hears, and its replicas may elect a
+  successor without waiting out its lease, so the lease alone would not do.
+  Until then each read costs a round as well as the lease check.
 - **What clients see.** A read costs a round trip to the nearest majority
   (concurrent reads of a shard share rounds). A leader that loses the control
   plane keeps serving reads its replicas confirm. One cut off from its

@@ -2575,8 +2575,24 @@ feature only when it fences (`FELIX_INTERNAL_FENCE` not `false`), because the
 argument rests on every newer leader fencing before it serves, and only when
 its reads are not kept on the lease (`FELIX_QUORUM_READS=lease`), because
 placement reads the finalized feature as no leader serving reads on its lease.
-Only this build refuses a cache round on its counter log's generation. Until the
-feature is finalized every read is on the lease, as before.
+Only this build refuses a cache round on its counter log's generation.
+
+**Before a broker hears of the finalize.** A broker learns the fleet enabled
+`lease_free_reads` from a heartbeat. One cut off from the control plane
+before that never hears, and its replicas may elect a successor in the
+meantime: a candidate checks only its own view of the fleet, so it does not
+wait out the old leader's lease. That leader's lease is still good, so a read
+on the lease alone would miss the successor's writes. So until a broker
+reporting `lease_free_reads` hears it was finalized, a `Quorum` read there
+needs both the lease and the round (`QuorumMarks::read_confirm` in
+`crates/server/felix-replication/src/quorum.rs`). The lease covers a fleet
+that has not finalized, where every promotion waits it out. The round covers
+one that has, where the successor fenced a majority first. The broker does
+not have to know which. A fleet that has not finalized pays one round per
+`Quorum` read for this; a broker with `FELIX_QUORUM_READS=lease` does not
+report the feature, so it stays on the lease alone.
+`a_read_on_a_replaced_leader_that_never_heard_of_lease_free_reads_is_not_recorded`
+in `crates/testing/felix-sim/src/client/tests.rs` is the stale read without it.
 
 ### Readers and group sessions without the lease
 

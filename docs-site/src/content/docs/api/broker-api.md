@@ -722,8 +722,9 @@ match client.cache_get("acme", "prod", "sessions", session_id).await? {
 
 On a replicated `Quorum` cache, the broker confirms it still leads the shard
 before answering a get. `FELIX_QUORUM_READS` picks how: `majority` (the default)
-runs a round its replicas answer, and `lease` trusts the lease instead. Before
-the fleet has finalized `lease_free_reads`, every read uses the lease.
+runs a round its replicas answer, and `lease` trusts the lease instead. Until
+the broker hears that the fleet finalized `lease_free_reads`, a `majority`
+read needs both the lease and the round.
 
 ### Cache Delete
 

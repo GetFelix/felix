@@ -502,6 +502,72 @@ fn reads_by_round_need_the_fleet_and_no_lease_opt_in() {
     );
 }
 
+struct NeverConfirms;
+
+#[async_trait::async_trait]
+impl LeadershipCheck for NeverConfirms {
+    async fn confirm(&self, _key: &ShardKey, _generation: u64) -> Result<(), QuorumError> {
+        Err(QuorumError::LeadershipLost {
+            what: "read",
+            detail: "a newer leader fenced the majority",
+        })
+    }
+}
+
+/// A leader cut off before it heard the fleet enable `lease_free_reads` may
+/// have been replaced without anyone waiting out its lease, so a read there
+/// needs the round as well as the lease. Its replicas refuse the round here
+/// for a newer leader, and the read with them. GetFelix/felix#2161.
+#[tokio::test]
+async fn a_read_on_a_leader_that_has_not_heard_the_fleet_needs_the_round_too() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let stream = key("orders");
+    let leased = Replicated { generation: 3 };
+
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.restart(std::iter::empty());
+    let unheard = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    unheard.set_read_check(Arc::new(NeverConfirms), false);
+    let read = confirm_state_read(&stream, Some(&unheard), Some(&leased)).await;
+    assert!(read.is_err(), "a valid lease alone confirmed the read");
+    let read = confirm_state_read(&stream, Some(&unheard), Some(&Unleased)).await;
+    assert!(
+        format!("{:#}", read.expect_err("a lapsed lease")).contains("lease"),
+        "the lease is checked first"
+    );
+
+    // Its replicas still answer it: the read stands.
+    let answered = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    answered.set_read_check(Arc::new(AlwaysConfirms), false);
+    confirm_state_read(&stream, Some(&answered), Some(&leased))
+        .await
+        .expect("lease and round both hold");
+
+    // Kept on the lease, it never reads by round, and no peer is elected
+    // past its lease: the lease decides.
+    let kept = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    kept.set_read_check(Arc::new(NeverConfirms), true);
+    confirm_state_read(&stream, Some(&kept), Some(&leased))
+        .await
+        .expect("the operator kept reads on the lease");
+
+    // Once heard, the round alone decides.
+    fleet.observe(names);
+    confirm_state_read(&stream, Some(&answered), Some(&Unleased))
+        .await
+        .expect("by round, the lease is not asked");
+    assert!(
+        confirm_state_read(&stream, Some(&unheard), Some(&leased))
+            .await
+            .is_err()
+    );
+}
+
 /// A shard this broker leads at generation 3, with no lease.
 struct Unleased;
 
