@@ -55,6 +55,18 @@ async fn shards_that_cannot_elect_are_reported_with_a_census() {
     assert!(text.contains("down"), "{text}");
 }
 
+#[tokio::test(start_paused = true)]
+async fn shards_with_a_majority_of_doubted_copies_are_held_not_reported() {
+    let cluster = SimCluster::start(3, config()).await.unwrap();
+    // Two of three killed: every shard's set has two copies that restart
+    // doubted, so no attestation majority exists. The same two stopped
+    // cleanly (above) is a stall.
+    cluster.kill(0).await;
+    cluster.kill(1).await;
+    let found = ElectionSettles::default().check(&context(&cluster)).await;
+    assert!(found.is_empty(), "{}", found[0]);
+}
+
 #[test]
 fn a_finding_prints_its_checker_summary_and_detail() {
     let finding = Finding::new("example", "two leaders").with("table");

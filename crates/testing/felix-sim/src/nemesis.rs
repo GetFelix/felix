@@ -454,7 +454,6 @@ impl Nemesis {
     /// Undo every fault: links healed, control plane healthy, every broker
     /// running again.
     pub async fn heal(self: &Arc<Self>) {
-        self.cluster.note_serving();
         self.stopped.cancel();
         let drained: Vec<usize> = {
             let mut holds = self.holds.lock();
@@ -482,9 +481,6 @@ impl Nemesis {
         if self.stopped.is_cancelled() {
             return;
         }
-        // A partition or placement move can end a serving window without a
-        // stop; note who was up beside it first, for the hold rule.
-        self.cluster.note_serving();
         match &fault {
             Fault::Crash {
                 node,
@@ -649,8 +645,6 @@ impl Nemesis {
             () = self.stopped.cancelled() => {}
             () = tokio::time::sleep(lasts) => {}
         }
-        // What follows a lapse may end a serving window that began in it.
-        self.cluster.note_serving();
     }
 
     /// Every directed link into and out of `node`.

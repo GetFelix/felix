@@ -71,12 +71,11 @@ A seed fails when any check reports a problem, except a warning.
   `AtMostOneServing`, `AckedHeldByLeader`, `AdoptedMatchesOpened`,
   `TornTailRepaired` and `GenerationBurn`.
 - `ElectionSettles` skips a shard the broker holds on purpose: nobody serves
-  it and a majority of its copies attest untrusted, as each broker would
-  answer a fence, where no leader could have vouched them. A copy counts if
-  its broker is down after an unclean kill, or is up and no broker served the
-  shard while it was up since its last unclean start. A copy still untrusted
-  after a broker served beside it is vouchable: its shard fails, marked
-  `vouchable`. The broker waits for `felixctl placement abandon`. A shard with a trusted
+  it and a majority of its copies attest untrusted or doubted, as each broker
+  would answer a fence, so no attestation majority exists. A copy counts if
+  its broker is down after an unclean kill or attests untrusted. The run
+  prints a warning naming each held shard. The broker waits for
+  `felixctl placement abandon`. A shard with a trusted
   majority and no leader still fails. Every other check still covers an
   exempt shard. If its final read cannot be taken, only the lost-write rule
   is skipped and a warning names it. The run prints how many shards were

@@ -109,38 +109,29 @@ fn abandoning_the_log_ends_the_hold_until_the_next_unclean_stop() {
 }
 
 #[test]
-fn a_copy_up_while_a_leader_served_and_still_untrusted_is_a_stall() {
-    // b2 and b3 restarted unclean, then b1 served beside them before it was
-    // killed: a leader had the chance to vouch both, so their doubt is the
-    // broker's to clear, not a reason to hold the shard.
-    let mut log = KillLog::default();
-    log.started_unclean("b2", secs(10));
-    log.started_unclean("b3", secs(12));
-    log.served("stream/0", "b2", secs(20));
-    log.served("stream/0", "b3", secs(20));
+fn copies_untrusted_beside_a_leader_that_never_vouched_them_hold_the_shard() {
+    // b2 and b3 came back from a power loss, and b1 led beside them but was
+    // cut off or never readmitted b3 before it was killed. Two of three
+    // copies are untrusted, so no attestation majority exists.
+    let log = KillLog::default();
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::DownAfterKill);
-    let views = view("b1", &THREE);
-    assert!(held(&log, &views, &copies).is_empty());
-    assert_eq!(
-        log.vouchable_untrusted(&views, &copies)
-            .into_iter()
-            .collect::<Vec<_>>(),
-        ["stream/0"]
-    );
-    // Served only before b3's latest unclean start: b3 had no leader since.
-    log.started_unclean("b3", secs(30));
-    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
+    assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
 }
 
 #[test]
-fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() {
-    // b2 restarted unclean, a leader served beside it, then b2 and the
-    // leader b1 were killed. b2's next start distrusts the copy anyway.
+fn one_untrusted_copy_of_three_does_not_hold_the_shard() {
+    let log = KillLog::default();
+    let mut copies = trust(&[("b2", false), ("b3", true)]);
+    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
+    assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
+}
+
+#[test]
+fn a_copy_down_after_a_kill_counts_untrusted() {
+    // b2 and the leader b1 were killed. b2's next start distrusts the copy
+    // whatever a leader shipped it before.
     let mut log = KillLog::default();
-    log.started_unclean("b2", secs(10));
-    log.served("stream/0", "b1", secs(20));
-    log.served("stream/0", "b2", secs(20));
     log.kill("b2", secs(25));
     log.kill("b1", secs(30));
     let copies = Trust::from([

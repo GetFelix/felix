@@ -349,15 +349,13 @@ async fn drive(
     let sampled = Arc::new(Mutex::new(Vec::new()));
     let sampler = tokio::spawn({
         let (checkers, sampled, stop) = (checkers.clone(), sampled.clone(), stop.clone());
-        let (context, recorder, cluster) = (context.clone(), recorder.clone(), cluster.clone());
+        let (context, recorder) = (context.clone(), recorder.clone());
         async move {
             loop {
                 tokio::select! {
                     () = stop.cancelled() => return,
                     () = tokio::time::sleep(SAMPLE_EVERY) => {}
                 }
-                // Which copies a leader could vouch, for the hold rule.
-                cluster.note_serving();
                 let ctx = context(Point::Quiet, Duration::ZERO, recorder.history());
                 for checker in &checkers {
                     if let Ok(mut checker) = checker.try_lock() {

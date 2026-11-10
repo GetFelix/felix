@@ -11,19 +11,14 @@
 //! operator runs `felixctl placement abandon` (`docs/replication-design.md`,
 //! "A leader's own crash").
 //!
-//! The attestation alone is not enough: a broker that fails to vouch a copy
-//! it could have would make its own exemption. So an untrusted copy counts
-//! only when no leader had the chance to vouch it:
-//!
-//! - it is down after an unclean kill, so its next start distrusts it
-//!   whatever happened before, or
-//! - it is up, and no broker served the shard while it was up since its last
-//!   unclean restart.
-//!
-//! An up copy that is still untrusted after a broker served the shard beside
-//! it is vouchable: its shard stays a stall. A broker down after a clean stop,
-//! or a copy that does not exist, counts as trusted, and so does a shard with
-//! trusted copies and no leader: the rule errs towards holding fewer shards.
+//! A copy counts as untrusted when its broker attests so, as it would answer
+//! a fence, or when it is down after an unclean kill (its next start distrusts
+//! it whatever happened before). That includes a copy a serving leader sat
+//! beside: a leader vouches only by shipping the copy level, which a leader
+//! cut off from it, or one that has not readmitted a learner, never does. A
+//! broker down after a clean stop, or a copy that does not exist, counts as
+//! trusted, and so does a shard with trusted copies and no leader: the rule
+//! errs towards holding fewer shards.
 //!
 //! An operator's `placement abandon` ends the hold: the shard is not held
 //! again until a member is stopped uncleanly after it.
@@ -71,11 +66,6 @@ pub(crate) struct KillLog {
     stops: Vec<Unclean>,
     /// When an operator last abandoned each shard's log.
     abandoned: BTreeMap<String, Duration>,
-    /// When each broker last started unclean.
-    unclean_starts: BTreeMap<String, Duration>,
-    /// When each copy (shard, node) was last seen up while a broker served
-    /// the shard.
-    served: BTreeMap<(String, String), Duration>,
 }
 
 impl KillLog {
@@ -85,51 +75,6 @@ impl KillLog {
             node: node.to_string(),
             at,
         });
-    }
-
-    /// `node`'s broker came up at `at` after a start that doubted its copies.
-    pub(crate) fn started_unclean(&mut self, node: &str, at: Duration) {
-        self.unclean_starts.insert(node.to_string(), at);
-    }
-
-    /// `node` was up at `at` while some broker served `shard`.
-    pub(crate) fn served(&mut self, shard: &str, node: &str, at: Duration) {
-        self.served
-            .insert((shard.to_string(), node.to_string()), at);
-    }
-
-    /// Whether a leader had the chance to vouch `node`'s copy of `shard`:
-    /// some broker served the shard while `node` was up, since its last
-    /// unclean start.
-    pub(crate) fn vouchable(&self, shard: &str, node: &str) -> bool {
-        let since = self.unclean_starts.get(node).copied().unwrap_or_default();
-        self.served
-            .get(&(shard.to_string(), node.to_string()))
-            .is_some_and(|at| *at >= since)
-    }
-
-    /// Whether `copy` counts as untrusted towards holding `shard`.
-    fn counts_untrusted(&self, shard: &str, node: &str, copy: Copy) -> bool {
-        match copy {
-            Copy::Trusted => false,
-            Copy::DownAfterKill => true,
-            Copy::Untrusted => !self.vouchable(shard, node),
-        }
-    }
-
-    /// The shards in `unserved` with a member copy that attests untrusted
-    /// although a leader had the chance to vouch it.
-    pub(crate) fn vouchable_untrusted(&self, unserved: &Views, trust: &Trust) -> BTreeSet<String> {
-        unserved
-            .iter()
-            .filter(|(shard, view)| {
-                members(view).iter().any(|node| {
-                    trust.get(&(shard.to_string(), node.to_string())) == Some(&Copy::Untrusted)
-                        && self.vouchable(shard, node)
-                })
-            })
-            .map(|(shard, _)| shard.clone())
-            .collect()
     }
 
     /// An operator abandoned `shard`'s log at `at`.
@@ -158,7 +103,7 @@ impl KillLog {
                     .filter(|node| {
                         trust
                             .get(&(shard.to_string(), node.to_string()))
-                            .is_some_and(|copy| self.counts_untrusted(shard, node, *copy))
+                            .is_some_and(|copy| *copy != Copy::Trusted)
                     })
                     .count();
                 untrusted > set.len() / 2
