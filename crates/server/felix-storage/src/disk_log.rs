@@ -50,6 +50,7 @@ pub mod layout;
 
 mod append;
 mod ballot;
+mod crash_point;
 mod durable_mark;
 mod epochs;
 mod flush;
@@ -925,7 +926,7 @@ impl DiskLog {
             replica.hold_at_commit = hold;
             replica_state::store(&dir, &replica)?;
         }
-        let (kept_set, (accepted_generation, accepted_leader)) =
+        let (kept_set, accepted) =
             set::reconcile(&dir, &label, ballot::reconcile(&dir, &replica)?)?;
         let (replica_set, wiped) = kept_set.map_or((None, None), |(set, wiped)| (Some(set), wiped));
         let set_generation = replica_set.as_ref().map_or(0, |set| set.current.generation);
@@ -980,8 +981,8 @@ impl DiskLog {
             offloader,
             epochs: Mutex::new(epochs),
             stint: Mutex::new(None),
-            accepted_generation: AtomicU64::new(accepted_generation),
-            ballot: RwLock::new((accepted_generation, accepted_leader)),
+            accepted_generation: AtomicU64::new(accepted.generation),
+            ballot: RwLock::new(accepted),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
@@ -1370,9 +1371,10 @@ struct LogInner {
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
     /// The accepted generation with the leader it was accepted from, when one
-    /// was named. Read together on every replicated batch, so a raise is seen
-    /// with its own leader. Written only under `replica_persisted`.
-    ballot: RwLock<(u64, Option<Arc<str>>)>,
+    /// was named, and whether that vote is committed. Read together on every
+    /// replicated batch, so a raise is seen with its own leader. Written only
+    /// under `replica_persisted`.
+    ballot: RwLock<ballot::Accepted>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,

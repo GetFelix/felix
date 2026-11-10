@@ -72,9 +72,7 @@ const FILE_NAME: &str = "replica-set";
 /// Prefix of the temporaries `store` writes: `replica-set.tmp.<pid>.<n>`.
 const TEMPORARY_PREFIX: &str = "replica-set.tmp";
 
-/// The accepted generation and the leader it was accepted from, as the open
-/// reads them from the ballot.
-type Accepted = (u64, Option<Arc<str>>);
+use super::ballot::Accepted;
 
 /// What the file holds: the set and this copy's wiped mark.
 pub(super) type Kept = (ReplicaSet, Option<WipedMark>);
@@ -394,8 +392,12 @@ impl DiskLog {
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
             if let Some((generation, leader)) = &from
-                && let Some(refused) =
-                    super::ballot::check(&inner.ballot.read(), *generation, leader.as_deref())
+                && let Some(refused) = super::ballot::check(
+                    &inner.ballot.read(),
+                    *generation,
+                    leader.as_deref(),
+                    false,
+                )
                 && matches!(
                     refused,
                     GenerationCheck::Superseded { .. } | GenerationCheck::Promised { .. }
@@ -623,14 +625,19 @@ pub(super) fn reconcile(
     }
     let set = load(dir)?;
     let accepted = match &set {
-        Some((set, _)) if set.current.generation > accepted.0 => {
+        Some((set, _)) if set.current.generation > accepted.generation => {
             tracing::warn!(
                 shard = %label,
                 set_generation = set.current.generation,
-                accepted_generation = accepted.0,
+                accepted_generation = accepted.generation,
                 "the replica set is newer than the accepted generation; raising it with no leader named"
             );
-            (set.current.generation, None)
+            // The ballot's committed mark was for the older generation.
+            Accepted {
+                generation: set.current.generation,
+                leader: None,
+                committed: false,
+            }
         }
         _ => accepted,
     };

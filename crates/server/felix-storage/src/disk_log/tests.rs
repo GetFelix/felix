@@ -28,6 +28,8 @@ mod stalled_write;
 mod trim;
 mod truncation;
 mod v9_kinds;
+#[cfg(feature = "sim")]
+mod vote_crash_points;
 
 use std::time::Duration;
 

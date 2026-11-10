@@ -138,7 +138,7 @@ broker through `WriteFence` callbacks (`driver.rs:296` onward): `deposed`,
 `withheld`, `serve_without_lease`, `passed`.
 
 Around that core sit the parts that make it safe across crashes and lost
-disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:110`),
+disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:191`),
 vouching and copy trust (`replica.rs:1764` `record_vouch`, `follower.rs:107`),
 unclean starts (`unclean.rs`), reclaim (`reclaim.rs`), and opt-in election
 without the control plane (`election.rs:31`, `election/candidate.rs:403`,
@@ -290,7 +290,7 @@ engine that writes through `DiskLog` keeps all of them.
 | `purge(log_id)` of a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
 | `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
 | Term of each entry (`LogId` with `leader_id_std::LeaderId`) | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
-| `save_vote` / `read_vote` (`Vote` with its `committed` flag) | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:155-164`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file, which bumps the ballot format (see Format version 9). Storage errors reach openraft as `io::Error`. |
+| `save_vote` / `read_vote` (`Vote` with its `committed` flag) | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:250-263`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file, which bumps the ballot format (see Format version 9). Storage errors reach openraft as `io::Error`. |
 | `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:703`). |
 
 The offset is the Raft index: one record is one entry. The startup scan, the
@@ -499,8 +499,9 @@ section below and refined decision 5, and both were approved.
 **What it adds.** A generation field (8 bytes) in every record header, the
 membership record kind, the counter record kinds of decision 4, and the vote's
 `committed` flag in the ballot file. The last raises the ballot format from
-version 1 (`crates/server/felix-storage/src/disk_log/ballot.rs:31`). A ballot
-that does not decode fails the open (`ballot.rs:14-15`), so a broker that
+version 1 to 2 (`crates/server/felix-storage/src/disk_log/ballot.rs:41`), and
+only a committed vote is written as version 2. A ballot
+that does not decode fails the open (`ballot.rs:15-16`), so a broker that
 predates the new ballot cannot open a shard that has one. It falls under the
 same fleet gate and rollback rule as the segment format. With
 openraft's `single-term-leader` feature turned on, a log id is just
@@ -846,7 +847,7 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
 - **The vote.** Saved as shard replicas save it today, in two files: the
   ballot (`disk_log/ballot.rs`, the generation and the leader it was given to)
   is written first and the replica state second, each to a temporary name,
-  fsynced and renamed (`ballot.rs:155-164`). The open takes the higher
+  fsynced and renamed (`ballot.rs:250-263`). The open takes the higher
   generation, so a crash between the two never lowers the vote. It is not one
   atomic file, and it does not need to be. openraft's `committed` flag is
   added to the ballot file, so it is saved in the same rename as the leader.

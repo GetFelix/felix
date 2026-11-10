@@ -36,8 +36,9 @@ pub(crate) fn sidecars(data: &[u8]) {
     // The ballot's CRC closes the file, wherever its length puts the end.
     let ballot_crc = data.len().saturating_sub(4);
     for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
-        if let Some(ballot) = Ballot::decode(&bytes) {
-            assert_eq!(Ballot::decode(&ballot.encode()), Some(ballot));
+        if let Ok(ballot) = Ballot::decode(&bytes) {
+            assert!(!ballot.committed || !ballot.leader.is_empty());
+            assert_eq!(Ballot::decode(&ballot.encode()), Ok(ballot));
         }
     }
 

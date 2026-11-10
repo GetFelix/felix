@@ -98,6 +98,7 @@ async fn a_ballot_written_before_a_crash_is_taken_at_open() {
         &super::super::ballot::Ballot {
             generation: 5,
             leader: "broker-b".to_string(),
+            committed: false,
         },
     )
     .expect("store");
@@ -521,4 +522,120 @@ async fn a_closed_log_writes_no_replica_state() {
             .commit_offset,
         0
     );
+}
+
+fn ballot_version(dir: &TempDir) -> u16 {
+    let bytes = std::fs::read(dir.path().join("ballot")).expect("read the ballot");
+    u16::from_be_bytes([bytes[4], bytes[5]])
+}
+
+#[tokio::test]
+async fn a_committed_vote_survives_a_restart() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept");
+        assert!(!log.accepted_vote_committed());
+        assert_eq!(
+            log.commit_vote_for_tests(5, "broker-a")
+                .await
+                .expect("commit"),
+            GenerationCheck::Current
+        );
+        assert!(log.accepted_vote_committed());
+    }
+    assert_eq!(ballot_version(&dir), 2);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    assert!(log.accepted_vote_committed());
+    // Accepting the same vote again keeps the mark.
+    assert_eq!(
+        log.accept_generation(5, Some("broker-a"))
+            .await
+            .expect("accept"),
+        GenerationCheck::Current
+    );
+    assert!(log.accepted_vote_committed());
+}
+
+#[tokio::test]
+async fn a_vote_without_the_mark_is_kept_in_the_old_format() {
+    // Nothing but a committed vote writes format v2, so the previous release
+    // opens every shard until the gated caller saves one.
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(5, Some("broker-a"))
+        .await
+        .expect("accept");
+    assert_eq!(ballot_version(&dir), 1);
+    log.give_up_generation().await.expect("give up");
+    assert_eq!(ballot_version(&dir), 1);
+}
+
+#[tokio::test]
+async fn a_vote_promised_to_another_leader_is_not_committed() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(5, Some("broker-a"))
+        .await
+        .expect("accept");
+    assert_eq!(
+        log.commit_vote_for_tests(5, "broker-b")
+            .await
+            .expect("commit"),
+        GenerationCheck::Promised {
+            leader: "broker-a".to_string()
+        }
+    );
+    assert!(!log.accepted_vote_committed());
+    assert_eq!(ballot_version(&dir), 1);
+}
+
+#[tokio::test]
+async fn a_raise_clears_the_committed_mark() {
+    for leader in [None, Some("broker-b")] {
+        let dir = tempdir().expect("tempdir");
+        {
+            let log = open(&dir, FsyncMode::OnCommit);
+            log.commit_vote_for_tests(5, "broker-a")
+                .await
+                .expect("commit");
+            log.accept_generation(6, leader).await.expect("accept");
+            assert!(!log.accepted_vote_committed(), "{leader:?}");
+        }
+        // Without a leader the ballot on disk still marks generation 5.
+        let log = open(&dir, FsyncMode::OnCommit);
+        assert_eq!(log.accepted_generation(), 6);
+        assert_eq!(log.accepted_leader().as_deref(), leader);
+        assert!(!log.accepted_vote_committed(), "{leader:?} after a reopen");
+    }
+}
+
+#[tokio::test]
+async fn a_committed_vote_for_no_leader_is_refused_and_writes_nothing() {
+    // A given-up generation names the empty leader; marking it committed
+    // would write a ballot the next open cannot decode.
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(5, Some("broker-a"))
+        .await
+        .expect("accept");
+    log.give_up_generation().await.expect("give up");
+    let before = std::fs::read(dir.path().join("ballot")).expect("read");
+    for generation in [5, 6] {
+        assert!(log.commit_vote_for_tests(generation, "").await.is_err());
+    }
+    assert!(!log.accepted_vote_committed());
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(
+        std::fs::read(dir.path().join("ballot")).expect("read"),
+        before
+    );
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert!(log.gave_up());
 }
