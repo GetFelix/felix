@@ -35,7 +35,7 @@ impl ShardServing for Serving {
     }
 
     fn lease_valid(&self) -> bool {
-        true
+        false
     }
 
     fn record_ack_refusal(&self) {
@@ -129,13 +129,22 @@ fn host() -> (Host<Serving, Fence>, Arc<Serving>, Arc<Fence>) {
 
 #[test]
 fn the_serving_state_comes_from_the_serving_side() {
-    let (host, serving, _) = host();
+    let (host, _, _) = host();
 
     assert_eq!(EngineHost::generation(&host, &key()), Some(7));
     assert!(EngineHost::replicated(&host, &key()));
-    assert!(HybridHost::lease_valid(&host));
+    assert!(!HybridHost::lease_valid(&host));
+}
+
+#[test]
+fn an_ack_refusal_is_counted_on_the_serving_side_through_either_trait() {
+    let (host, serving, fence) = host();
+
     HybridHost::record_ack_refusal(&host);
     assert_eq!(serving.refusals.load(SeqCst), 1);
+    ShardServing::record_ack_refusal(&host);
+    assert_eq!(serving.refusals.load(SeqCst), 2);
+    assert!(fence.calls.lock().is_empty());
 }
 
 #[test]
@@ -191,6 +200,7 @@ fn the_host_stands_in_for_the_fence_and_the_serving_state() {
     // existing traits.
     assert_eq!(ShardServing::generation(&host, &key), Some(7));
     assert!(ShardServing::replicated(&host, &key));
+    assert!(!ShardServing::lease_valid(&host));
     ShardServing::record_ack_refusal(&host);
     assert_eq!(serving.refusals.load(SeqCst), 1);
     assert!(!WriteFence::quiesced(&host, &key));
