@@ -11,6 +11,24 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-10
+
+### Fixed
+- A newly started broker sends its first heartbeat at once instead of an interval later (#2150).
+  It no longer refuses every publish until the first lease arrives.
+- A broker no longer holds every histogram sample until its metrics endpoint is
+  scraped (#2152). The recorder kept one value per `felix_sub_conn_queue_depth`
+  record, so resident memory climbed with each connection's traffic and the weekly
+  soak failed its peak-RSS check. The broker now folds samples into summaries every
+  five seconds, scraped or not.
+  The control plane's recorder gets the same timer.
+- A broker that stands for election and was cut off from the control plane
+  before it heard the fleet finalize `lease_free_reads` no longer confirms a
+  `Quorum` read on its lease alone (#2161). Its replicas could elect a
+  successor without waiting out that lease, so the read could miss the
+  successor's writes. Until it hears, a read there needs both the lease and a
+  round of fences. Brokers that do not stand for election keep the lease alone.
+
 ## [0.7.0] - 2026-11-08
 
 0.7.0 makes replicated shards sturdier and widens what a broker accepts. It also

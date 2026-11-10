@@ -23,11 +23,11 @@ Later releases follow the same naming with their own tag. With the GitHub CLI:
 gh release download -R GetFelix/felix -p 'libfelix-*-linux-x64.*'
 ```
 
-Or with a plain URL, here for v0.7.0 on Linux x64:
+Or with a plain URL, here for v0.7.1 on Linux x64:
 
 ```bash
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0/libfelix-v0.7.0-linux-x64.tar.gz
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0/libfelix-v0.7.0-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.1/libfelix-v0.7.0-linux-x64.tar.gz
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.1/libfelix-v0.7.0-linux-x64.tar.gz.sha256
 ```
 
 Check the checksum, then unpack (on macOS use `shasum -a 256 -c`; on Windows

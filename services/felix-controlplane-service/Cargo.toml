@@ -19,10 +19,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
-felix-common = { path = "../../crates/server/felix-common", version = "0.7.0", features = ["hasher", "lifecycle", "openapi", "tls", "yaml"] }
-felix-router = { path = "../../crates/server/felix-router", version = "0.7.0" }
+felix-common = { path = "../../crates/server/felix-common", version = "0.7.1", features = ["hasher", "lifecycle", "openapi", "tls", "yaml"] }
+felix-router = { path = "../../crates/server/felix-router", version = "0.7.1" }
 # The name grammar and lease templates, shared with the brokers that expand them.
-felix-authz = { path = "../../crates/server/felix-authz", version = "0.7.0" }
+felix-authz = { path = "../../crates/server/felix-authz", version = "0.7.1" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true }

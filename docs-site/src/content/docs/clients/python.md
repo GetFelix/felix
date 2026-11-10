@@ -13,7 +13,7 @@ what the conformance suite does about it.
 ## Installing
 
 ```bash
-pip install felix-client==0.7.0
+pip install felix-client==0.7.1
 ```
 
 This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.
