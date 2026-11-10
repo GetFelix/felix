@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ShardKey;
+use crate::peer::PeerRequester;
 use crate::quorum::{Access, CacheWrite, QuorumError, QuorumMarks, ShardServing, Unreadable};
 
 /// What a durable write and a read ask of a shard's replication.
@@ -37,6 +38,16 @@ pub trait Engine: Send + Sync {
         consistency: Option<felix_broker::ConsistencyLevel>,
         shard: &ShardKey,
     ) -> Result<Option<u64>, Unreadable>;
+
+    /// How far the broker core's readers of stream `shard` (subscribe fanout,
+    /// cursor replay) may see. Unlike [`Engine::read_bound`] it also refuses
+    /// a broker whose lease no longer lets it serve the shard. Asked only for
+    /// `Quorum` streams. See [`crate::quorum::committed_bound`].
+    fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound;
+
+    /// Confirm, after a read of `shard`'s state took its value, that this
+    /// broker still leads `shard`. See [`crate::quorum::confirm_state_read`].
+    fn confirm_read(&self, shard: &ShardKey) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Where a cache write landed, for [`Engine::await_cache_quorum`]. Call it
     /// inside the write's fence, right before the write.
@@ -151,6 +162,18 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
         )
     }
 
+    fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
+        match (self.marks.as_deref(), self.serving.as_deref()) {
+            (Some(marks), Some(serving)) => crate::quorum::committed_bound(shard, marks, serving),
+            _ => felix_broker::ReadBound::Unbounded,
+        }
+    }
+
+    async fn confirm_read(&self, shard: &ShardKey) -> anyhow::Result<()> {
+        crate::quorum::confirm_state_read(shard, self.marks.as_deref(), self.serving.as_deref())
+            .await
+    }
+
     async fn cache_write_at(
         &self,
         broker: &felix_broker::Broker,
@@ -236,6 +259,66 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
         )
         .await
     }
+}
+
+/// [`Engine::committed_bound`] as the broker core asks for it
+/// (`felix_broker::ReadBounds`).
+pub struct CommittedReads<E> {
+    engine: E,
+}
+
+impl<E> CommittedReads<E> {
+    pub fn new(engine: E) -> Self {
+        Self { engine }
+    }
+}
+
+impl<E> std::fmt::Debug for CommittedReads<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommittedReads").finish_non_exhaustive()
+    }
+}
+
+impl<E: Engine> felix_broker::ReadBounds for CommittedReads<E> {
+    fn stream_bound(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> felix_broker::ReadBound {
+        let key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: crate::ShardKind::Stream,
+        };
+        self.engine.committed_bound(&key)
+    }
+}
+
+/// Let `Quorum` reads on `marks` confirm leadership by a round of fences sent
+/// through `requester`, each round waiting up to `round_timeout` for a
+/// majority, unless `by_lease` keeps them on the lease. Only the first call
+/// counts. See [`crate::leadership::ReadIndex`].
+pub fn bind_read_rounds<R: PeerRequester + Send + Sync + 'static>(
+    marks: &QuorumMarks,
+    requester: R,
+    broker: Arc<felix_broker::Broker>,
+    router: Arc<felix_router::ShardRouter>,
+    round_timeout: Duration,
+    by_lease: bool,
+) {
+    marks.set_read_check(
+        Arc::new(crate::leadership::ReadIndex::new(
+            requester,
+            broker,
+            router,
+            round_timeout,
+        )),
+        by_lease,
+    );
 }
 
 #[cfg(test)]

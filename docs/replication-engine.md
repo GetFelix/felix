@@ -89,8 +89,8 @@ through traits the service implements:
 `ReplicaHandler::new` for the follower side (`:269`), the promotion gate
 (`:389`, `:401`), `election::Elections::new` (`:444`), `driver::spawn` with the
 shard fence as its `WriteFence` (`:491`, `:495`), `reporter::Reporter::spawn`
-(`:509`) and `suspicion::spawn` (`:539`). `node/startup.rs:252` installs
-`ReadIndex` as the read check, and `node/peer_dispatch.rs` hands peer requests
+(`:509`) and `suspicion::spawn` (`:539`). `node/startup.rs` binds the read
+rounds through `engine::bind_read_rounds`, and `node/peer_dispatch.rs` hands peer requests
 to the `ReplicaHandler`. The simulator builds nodes through the same service
 code (`services/felix-broker-service/src/node/sim.rs`).
 
@@ -157,14 +157,14 @@ notifies `routes_changed` (`driver.rs:176`).
 
 ### 5. Read bound
 
-`read_bound` (`quorum.rs:1250`) and `committed_bound` (`quorum.rs:1404`) give
-the highest offset a reader may see; `CommittedReads` (`quorum.rs:1443`)
-answers the broker's `ReadBounds` trait
-(`crates/server/felix-broker/src/stream/committed.rs:58`). A reader confirms
-the broker still leads either by its control-plane lease or by a read round
-(`leadership.rs:34` `ReadIndex`, chosen by `FELIX_QUORUM_READS`).
-`confirm_state_read` (`quorum.rs:1566`) and `read_skips_lease`
-(`quorum.rs:1545`) are the entry points. Callers: `serving/kafka.rs:257`,
+`read_bound` (`quorum.rs:1298`) and `committed_bound` (`quorum.rs:1452`) give
+the highest offset a reader may see; `engine::CommittedReads` answers the
+broker's `ReadBounds` trait
+(`crates/server/felix-broker/src/stream/committed.rs:58`) from
+`Engine::committed_bound`. A reader confirms the broker still leads either by
+its control-plane lease or by a read round (`leadership.rs:34` `ReadIndex`,
+chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`quorum.rs:1574`) and
+`read_skips_lease` (`quorum.rs:1553`) are the entry points. Callers: `serving/kafka.rs:257`,
 `serving/group_ops.rs:370`, `serving/commit_ops.rs:305`,
 `serving/quic/handlers/cache_watch.rs:515`.
 
@@ -975,7 +975,8 @@ unit, integration and simulator seed tests pass unchanged after each.
    forwarded writes, group reads) through one `Hybrid` built in the node
    wiring, in place of the `marks` and `ingress` pairs they thread today.
    Done as built: each caller holds a `Hybrid` (`StreamEngine`) in place of
-   `marks`, built once per QUIC connection, `BrokerWrites` and
+   `marks`, built once per publish context (`build_tracked_publish_context`),
+   `BrokerWrites` and
    `ForwardingHandler` from the `(ingress, marks)` inputs they still take.
    `ClusterContext` also still takes them.
 3. Cache and counter waits (`await_cache_quorum`, `cache_write_at`,
@@ -992,6 +993,15 @@ unit, integration and simulator seed tests pass unchanged after each.
    setup in `node/startup.rs` behind `confirm_read`, and the broker's
    `ReadBounds` answer (`CommittedReads`, `quorum.rs:1443`) behind
    `read_bound`, so every read path takes its bound from the engine.
+   Done as built: `Engine::confirm_read` calls `confirm_state_read`, and atomic
+   commits, group reads and the simulator's state reads call it.
+   `engine::bind_read_rounds` builds the `ReadIndex` that `node/startup.rs`
+   used to build. The broker's `ReadBounds` answer is a separate method,
+   `Engine::committed_bound`, because it adds the lease check that the commit
+   hold relies on and answers `Refused` where `read_bound` answers
+   `NotServed`; `engine::CommittedReads` asks it. The two merge into one
+   `read_bound` with the delivery rule of decision 5, which is a behaviour
+   change of its own. Bounds and lease rules are unchanged.
 5. `EngineHost`: one trait over `ShardServing` and the generic part of
    `WriteFence`, with the hybrid-only callbacks on an extension trait.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns

@@ -303,13 +303,11 @@ pub(crate) async fn confirm_read_leader(
     publish_ctx: &PublishContext,
     shard: &ShardKey,
 ) -> Result<(), ClientError> {
-    felix_replication::quorum::confirm_state_read(
-        shard,
-        publish_ctx.engine.marks(),
-        publish_ctx.ingress.as_deref(),
-    )
-    .await
-    .map_err(|err| ClientError::from_anyhow(&err))
+    publish_ctx
+        .engine
+        .confirm_read(shard)
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))
 }
 
 fn shard_key(

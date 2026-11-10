@@ -220,11 +220,13 @@ pub(super) async fn wire_broker(
         });
     }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
-    // has passed; see `replication::quorum::committed_bound`.
+    // has passed; see `replication::engine::Engine::committed_bound`.
     if let Some(ingress) = &ingress_router {
-        broker.set_read_bounds(Arc::new(replication::quorum::CommittedReads::new(
-            Arc::clone(quorum_marks),
-            Arc::clone(ingress) as Arc<dyn replication::quorum::ShardServing>,
+        broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
+            crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(quorum_marks)),
+                Some(Arc::clone(ingress)),
+            ),
         )));
     }
     Ok(Opened {
@@ -249,14 +251,14 @@ pub(super) fn bind_read_check<R: PeerRequester + Send + Sync + 'static>(
     if let (Some((router, ..)), Some(pool)) = (cluster, peers)
         && pool.offers_fence()
     {
-        quorum_marks.set_read_check(
-            Arc::new(replication::leadership::ReadIndex::new(
-                Arc::clone(pool),
-                Arc::clone(broker),
-                Arc::clone(router),
-                Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-            )),
-            reads_by_lease()?,
+        let by_lease = reads_by_lease()?;
+        replication::engine::bind_read_rounds(
+            quorum_marks,
+            Arc::clone(pool),
+            Arc::clone(broker),
+            Arc::clone(router),
+            Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
+            by_lease,
         );
     }
     Ok(())

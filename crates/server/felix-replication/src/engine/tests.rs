@@ -519,3 +519,120 @@ async fn the_hybrid_holds_a_cache_watcher_to_the_mark_for_its_timeout() {
         .await
         .expect("no marks, nothing to wait on");
 }
+
+/// The broker core's readers stop at the mark for the served generation and
+/// are refused once the lease no longer lets this broker serve, through
+/// [`super::CommittedReads`] as well.
+#[test]
+fn the_hybrid_bounds_the_broker_cores_readers_at_the_mark_and_the_lease() {
+    use felix_broker::{ReadBound, ReadBounds};
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&key(), 3, 5);
+    let engine = hybrid(&marks, served_at_4());
+    assert_eq!(engine.committed_bound(&key()), ReadBound::Settling);
+    marks.publish(&key(), 4, 7);
+    assert_eq!(engine.committed_bound(&key()), ReadBound::Committed(7));
+
+    let reads = super::CommittedReads::new(hybrid(&marks, served_at_4()));
+    assert_eq!(
+        reads.stream_bound("t1", "ns", "orders", 0),
+        ReadBound::Committed(7)
+    );
+    assert_eq!(
+        reads.stream_bound("t1", "ns", "orders", 1),
+        ReadBound::Settling,
+        "another shard has no mark"
+    );
+
+    let unleased = Hybrid::new(Some(Arc::clone(&marks)), Some(Arc::new(Unleased)));
+    assert_eq!(unleased.committed_bound(&key()), ReadBound::Refused);
+    let not_served = hybrid(
+        &marks,
+        ServedAt {
+            generation: None,
+            replicated: true,
+        },
+    );
+    assert_eq!(not_served.committed_bound(&key()), ReadBound::Refused);
+    let unreplicated = hybrid(
+        &marks,
+        ServedAt {
+            generation: Some(4),
+            replicated: false,
+        },
+    );
+    assert_eq!(unreplicated.committed_bound(&key()), ReadBound::Unbounded);
+    let bare: Hybrid<ServedAt> = Hybrid::default();
+    assert_eq!(bare.committed_bound(&key()), ReadBound::Unbounded);
+}
+
+/// A round that refuses every read, remembering the generations it was asked at.
+#[derive(Default)]
+struct Refuses(parking_lot::Mutex<Vec<u64>>);
+
+#[async_trait::async_trait]
+impl crate::quorum::LeadershipCheck for Refuses {
+    async fn confirm(&self, _key: &ShardKey, generation: u64) -> Result<(), QuorumError> {
+        self.0.lock().push(generation);
+        Err(QuorumError::LeadershipLost {
+            what: "read",
+            detail: "a newer leader fenced the majority",
+        })
+    }
+}
+
+/// A state read on a broker that stands for election but has not heard the
+/// fleet enable `lease_free_reads` needs the lease, then the round at the
+/// served generation (GetFelix/felix#2161). An unreplicated shard asks only
+/// the lease.
+#[tokio::test]
+async fn the_hybrid_confirms_a_state_read_by_the_lease_then_the_round() {
+    use felix_common::fleet::{
+        FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    };
+    let fleet = Arc::new(FleetGate::new([
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+        REPLICA_ELECTION.name(),
+    ]));
+    fleet.restart(std::iter::empty());
+    let marks = Arc::new(QuorumMarks::with_fleet(fleet));
+    let round = Arc::new(Refuses::default());
+    marks.set_read_check(Arc::clone(&round) as _, false);
+
+    let unleased = Hybrid::new(Some(Arc::clone(&marks)), Some(Arc::new(Unleased)));
+    let err = unleased
+        .confirm_read(&key())
+        .await
+        .expect_err("a lapsed lease");
+    assert!(format!("{err:#}").contains("lease"), "{err:#}");
+    assert!(round.0.lock().is_empty(), "the lease is checked first");
+
+    hybrid(&marks, served_at_3())
+        .confirm_read(&key())
+        .await
+        .expect_err("the round refuses");
+    assert_eq!(
+        *round.0.lock(),
+        vec![3],
+        "one round, at the served generation"
+    );
+
+    hybrid(
+        &marks,
+        ServedAt {
+            generation: Some(3),
+            replicated: false,
+        },
+    )
+    .confirm_read(&key())
+    .await
+    .expect("no replicas to ask: the lease decides");
+    assert_eq!(round.0.lock().len(), 1);
+
+    let bare: Hybrid<ServedAt> = Hybrid::default();
+    bare.confirm_read(&key())
+        .await
+        .expect("no marks, nothing to confirm");
+}

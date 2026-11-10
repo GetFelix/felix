@@ -1487,46 +1487,6 @@ fn sessions_skip_lease(key: &crate::ShardKey, generation: u64, marks: &QuorumMar
         && (key.kind == crate::ShardKind::Cache || marks.decided_by_followers(key, generation))
 }
 
-/// [`committed_bound`] for the broker core's stream readers.
-pub struct CommittedReads {
-    marks: std::sync::Arc<QuorumMarks>,
-    ingress: std::sync::Arc<dyn ShardServing>,
-}
-
-impl CommittedReads {
-    pub fn new(
-        marks: std::sync::Arc<QuorumMarks>,
-        ingress: std::sync::Arc<dyn ShardServing>,
-    ) -> Self {
-        Self { marks, ingress }
-    }
-}
-
-impl std::fmt::Debug for CommittedReads {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CommittedReads").finish_non_exhaustive()
-    }
-}
-
-impl felix_broker::ReadBounds for CommittedReads {
-    fn stream_bound(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-    ) -> felix_broker::ReadBound {
-        let key = crate::ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            shard,
-            kind: crate::ShardKind::Stream,
-        };
-        committed_bound(&key, &self.marks, &*self.ingress)
-    }
-}
-
 /// Wait until every offset below `end` of a `Quorum` shard is committed, for
 /// a reader about to hand out something that `end` bounds. Returns at once
 /// when the shard is unbounded.

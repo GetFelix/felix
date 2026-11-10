@@ -316,9 +316,8 @@ async fn a_promoted_leader_with_no_majority_yet_refuses_reads() {
         let fleet = FleetGate::new(features.clone());
         fleet.observe(features.clone());
         let marks = Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)));
-        broker.set_read_bounds(Arc::new(crate::quorum::CommittedReads::new(
-            marks.clone(),
-            Arc::new(LedAt(4)),
+        broker.set_read_bounds(Arc::new(crate::engine::CommittedReads::new(
+            crate::engine::Hybrid::new(Some(marks.clone()), Some(Arc::new(LedAt(4)))),
         )));
         let router = router(LOCAL, &["broker-b", "broker-c"], 4);
         let followers = HoldUpTo {
@@ -1140,9 +1139,8 @@ async fn a_leader_on_an_emptied_log_is_not_left_settling() {
     );
 
     let marks = Arc::new(finalized_marks());
-    broker.set_read_bounds(Arc::new(crate::quorum::CommittedReads::new(
-        marks.clone(),
-        Arc::new(LedAt(4)),
+    broker.set_read_bounds(Arc::new(crate::engine::CommittedReads::new(
+        crate::engine::Hybrid::new(Some(marks.clone()), Some(Arc::new(LedAt(4)))),
     )));
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     let followers = HoldAt(5);
