@@ -446,8 +446,8 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
 
-With power loss on, seed 1 cuts the power during an append, and
-`seed_1_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
+With power loss on, seed 3 cuts the power during an append, and
+`seed_3_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
 the same and that recovery repairs the torn tail.
 
 Seeds 1 to 8 with placement faults on, built with the flag, as of the change
@@ -460,13 +460,11 @@ that added them. None breaks a history rule or a cluster check other than
 | 1, 2, 5, 6, 7 | A few shards (3 to 7) are served by nobody after the heal (`ElectionSettles`, `final-reads`). Seed 6 passes without placement faults. | not filed yet |
 | 3, 4 | Most shards are served by nobody after the heal: all 178 on seed 3, where the control plane keeps a failed leader with a move to `b2` that never ends, and 103 on seed 4. | not filed yet |
 
-Seed 33, which `seed_33_abandoning_held_shards_replays_the_same_twice` pins,
-stops `b3` at 58 s, the broker the control plane has promoted for the two
-held shards `stream/12` and `stream/35`. The control plane refuses the abandon
-(`not_stranded`) at first and accepts it once `b3` has been down long
-enough; both are abandoned at 78 s. The seed still fails `ElectionSettles`:
-about 48 of 156 shards are served by nobody after the heal, with the control
-plane naming a leader in `Assigning` that never opens.
+Seed 44, which `seed_44_abandoning_held_shards_replays_the_same_twice` pins,
+stops `b1` at 76 s, the broker the control plane has promoted for 30 held
+shards, and abandons their logs one by one from 78 s. The seed still fails
+`ElectionSettles`: 33 of 121 shards are served by nobody after the heal, with
+the control plane naming a leader in `Assigning` that never opens.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference

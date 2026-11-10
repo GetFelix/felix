@@ -42,17 +42,18 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let (incarnation, fleet) = {
+                    let (incarnation, fleet, interval) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
                         (
                             calls.registrations.len() as u64 - 1,
                             calls.fleet_features.clone(),
+                            calls.heartbeat_interval_ms.unwrap_or(20),
                         )
                     };
                     Json(json!({
                         "node": { "status": { "incarnation": incarnation, "lifecycle": "live" } },
-                        "heartbeat_interval_ms": 20,
+                        "heartbeat_interval_ms": interval,
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
                     }))
@@ -362,6 +363,56 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let _ = handle.await;
 }
 
+/// **The first beat goes out at startup, not an interval later.** The lease is
+/// invalid until a beat is answered, so waiting an interval would have the
+/// broker refuse every publish for that long.
+#[tokio::test]
+async fn the_first_heartbeat_does_not_wait_an_interval() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        heartbeat_interval_ms: Some(60_000),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let mut registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    registration.heartbeat_interval_ms = 60_000;
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(
+        std::time::Duration::from_secs(30),
+    ));
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+    ));
+
+    for _ in 0..300 {
+        if lease.is_valid_now() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let valid = lease.is_valid_now();
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    assert!(valid, "the lease stayed invalid well before one interval");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
 /// **A new suspicion goes out at once, not an interval later.** The control
 /// plane promotes on it, so waiting for the next beat would add the whole
 /// interval to a failover. With nothing suspected the field is left out.
@@ -397,20 +448,12 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
         Arc::clone(&suspects),
     ));
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(calls.lock().expect("lock").heartbeat_bodies.is_empty());
+    // Only the startup beat, which has nothing to report.
+    let startup = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(startup.len(), 1, "{startup:?}");
+    assert!(startup[0].get("suspects").is_none(), "{startup:?}");
 
     suspects.publish(["broker-b".to_string()].into_iter().collect());
-    for _ in 0..200 {
-        if !calls.lock().expect("lock").heartbeat_bodies.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
-    assert_eq!(bodies.len(), 1, "{bodies:?}");
-    assert_eq!(bodies[0]["suspects"], json!(["broker-b"]));
-
-    suspects.publish(Default::default());
     for _ in 0..200 {
         if calls.lock().expect("lock").heartbeat_bodies.len() > 1 {
             break;
@@ -419,7 +462,18 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     }
     let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
     assert_eq!(bodies.len(), 2, "{bodies:?}");
-    assert!(bodies[1].get("suspects").is_none(), "{bodies:?}");
+    assert_eq!(bodies[1]["suspects"], json!(["broker-b"]));
+
+    suspects.publish(Default::default());
+    for _ in 0..200 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() > 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(bodies.len(), 3, "{bodies:?}");
+    assert!(bodies[2].get("suspects").is_none(), "{bodies:?}");
 
     shutdown.cancel();
     beating.await.expect("heartbeat task");
@@ -613,6 +667,53 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
     assert!(
         matches!(err, MembershipError::Unavailable(_)),
         "a 5xx must stay retryable",
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that answers down at once must not be re-registered with
+/// at round-trip speed: re-registrations stay about one interval apart.
+#[tokio::test]
+async fn a_control_plane_answering_down_is_not_hammered() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        down_through_incarnation: Some(u64::MAX),
+        heartbeat_interval_ms: Some(300),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let data = tempfile::tempdir().expect("tempdir");
+
+    let task = spawn(
+        link(&client, &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        Some(data.path().to_path_buf()),
+        None,
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+
+    let registrations = calls.lock().expect("lock").registrations.len();
+    assert!(
+        registrations <= 7,
+        "re-registered {registrations} times in 1.5 s with a 300 ms interval",
     );
 
     let _ = stop.send(());
