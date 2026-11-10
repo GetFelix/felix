@@ -26,7 +26,7 @@ Commands:
   Groups         group, counter
   Control plane  tenant, namespace, stream, cache ls|info|create|set|rm,
                  node, shard, placement, features, rbac
-  Operators      inspect shard|subs, backup-point, data, controlplane migrate
+  Operators      inspect shard|subs, backup-point, data
   Tools          context, bench, completions
 
 Run `felixctl help <command>` or `felixctl <command> --help` for details.
@@ -39,9 +39,8 @@ Run `felixctl help <command>` or `felixctl <command> --help` for details.
     about = "Work with a Felix cluster from the terminal",
     long_about = "Publish and subscribe to streams, read and watch caches, see where shards \
                   live, list what the control plane knows, steer placement and run \
-                  benchmarks. It is the one operator command line: `data` and \
-                  `controlplane migrate` run the broker's and the control plane's own \
-                  tools on the host that holds their data.\n\n\
+                  benchmarks. It is the one operator command line: `data` runs the broker's \
+                  own tools on the host that holds its data.\n\n\
                   Connection settings come from a named context (see `felixctl context`), \
                   overridden by FELIX_* environment variables, overridden by flags.",
     after_long_help = "Examples:
@@ -57,11 +56,6 @@ pub(crate) struct Cli {
     /// felix-broker on PATH]. Goes before the command
     #[arg(long, value_name = "PATH", help_heading = "Tools")]
     pub(crate) broker_bin: Option<PathBuf>,
-    /// The felix-controlplane binary `controlplane` runs [env:
-    /// FELIX_CONTROLPLANE_BIN] [default: felix-controlplane on PATH]. Goes
-    /// before the command
-    #[arg(long, value_name = "PATH", help_heading = "Tools")]
-    pub(crate) controlplane_bin: Option<PathBuf>,
     /// Print JSON instead of human-readable output. Errors go to stderr as
     /// JSON too.
     #[arg(long, global = true, help_heading = "Output")]
@@ -410,22 +404,6 @@ pub(crate) enum Command {
   felixctl data restore-point --point nightly.backup-point.json --node broker-1"
     )]
     Data(DataCommand),
-
-    /// Run control-plane maintenance tools (runs felix-controlplane)
-    #[command(
-        subcommand,
-        name = "controlplane",
-        long_about = "Run the maintenance tools in the felix-controlplane binary. They \
-                      talk to a Raft group's peer listener, so they run on a host that can \
-                      reach it, with felix-controlplane installed there: felixctl \
-                      finds it with --controlplane-bin (before `controlplane`), then \
-                      $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` \
-                      through unchanged, --help included, and ends with its exit status. \
-                      `migrate import` loads an exported metadata file into a Raft group.",
-        after_long_help = "Examples:
-  felixctl controlplane migrate import state.json http://cp-0:8444"
-    )]
-    Controlplane(ControlplaneCommand),
 
     /// Run a load test against the cluster
     #[command(
@@ -1409,13 +1387,6 @@ pub(crate) enum PlacementCommand {
 /// broker unchanged.
 #[derive(Debug, Subcommand)]
 pub(crate) enum DataCommand {
-    #[command(external_subcommand)]
-    Run(Vec<OsString>),
-}
-
-/// `controlplane migrate ...`, passed through the same way.
-#[derive(Debug, Subcommand)]
-pub(crate) enum ControlplaneCommand {
     #[command(external_subcommand)]
     Run(Vec<OsString>),
 }

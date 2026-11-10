@@ -117,7 +117,7 @@ listener and background task and owns the shutdown order. The rest groups into f
 
 ### `felix-controlplane-service`: the metadata service
 
-`server.rs` is the entry point, and `migrate.rs` the second one (loading an exported snapshot into a Raft group). `model/` is the vocabulary; the rules about an assignment or a node's lifecycle are
+`server.rs` is the entry point. `model/` is the vocabulary; the rules about an assignment or a node's lifecycle are
 stated on those types. `api/` is the REST layer and `auth/` token exchange and JWKS. `store/`
 is the `ControlPlaneStore` trait with two backends, in memory and embedded Raft
 (`raft/` is the consensus seam), held to one shared contract test. `cluster/` makes the

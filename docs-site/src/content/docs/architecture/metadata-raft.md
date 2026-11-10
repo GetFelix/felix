@@ -101,8 +101,7 @@ listener, not its API port. Every peer request must name the cluster and
 carry the peer token, or it is refused before any route runs. That token is
 the cluster-admin credential (the `propose` route behind it can replace the
 whole store), so keep it in a Secret, expose the peer port to the other
-members only, and give the token to nothing but the members and the
-`migrate import` tool. A member refuses to start without one unless
+members only, and give the token to nothing but the members. A member refuses to start without one unless
 `FELIX_RAFT_INSECURE_PEERS=true`, which is for a throwaway local group. Add
 `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` for peer
 mTLS on top.
@@ -244,40 +243,20 @@ ordinal and the peers map from the replica count. It lets empty members
 start with `new` only until a post-install hook has seen the group form and
 recorded that in a ConfigMap; every start after that is `existing`.
 
-## Loading a snapshot file
+## Restoring beyond quorum loss
 
-`felixctl controlplane migrate import` loads a metadata snapshot file into a
-Raft group as one atomic log entry, proposed to any member's peer listener as a
-peer (it forwards to the leader):
+The group can load a state-machine snapshot with the `ImportState` command on
+its peer listener, refused unless the group is empty or `overwrite` is set.
+No shipped command writes or proposes such a snapshot, so a restore beyond
+quorum loss has no operator path today; recover by bringing members back.
 
-```
-FELIX_RAFT_CLUSTER_ID=prod-metadata FELIX_RAFT_PEER_TOKEN=... \
-  felixctl controlplane migrate import state.json http://cp-0:8444
-```
-
-The group refuses the import unless it is empty, or you pass `--overwrite`.
-Change feeds carry their sequence high-water marks, so a broker at the head
-continues without noticing and one behind the head resnapshots exactly once,
-which is the ordinary signal it already honours.
-
-The file uses the state machine's own snapshot format. No command writes one
-yet, so today this is for restoring a file produced by other tooling, and for
-the tests.
-
-`--overwrite` discards whatever the target holds, checkpoints included, so it
-belongs in a runbook and should only be run deliberately. A broker kept running
-across a restore to an earlier point refuses a stream whose restored
-incarnation is below the one it holds, since it never moves a name back; run
-`felixctl data restore-point` with the matching backup point, or delete and
-recreate the stream (see `docs/durable-storage.md`, "Deleting a stream"). A
-restore also rewinds node incarnations and replica reports together, which lets
-placement replace a running leader on an old report while it still serves on
-its lease, so stop every broker before the import.
-
-The file is a credential. It holds every tenant's Ed25519 signing-key seeds in
-plaintext JSON, enough to mint tokens for any tenant. Keep it encrypted and
-access-controlled. Refresh tokens are not in it, so they do not survive a
-restore.
+A broker kept running across a restore to an earlier point refuses a stream
+whose restored incarnation is below the one it holds, since it never moves a
+name back; run `felixctl data restore-point` with the matching backup point, or
+delete and recreate the stream (see `docs/durable-storage.md`, "Deleting a
+stream"). A restore also rewinds node incarnations and replica reports
+together, which lets placement replace a running leader on an old report while
+it still serves on its lease, so stop every broker before an import.
 
 ## How it is built
 

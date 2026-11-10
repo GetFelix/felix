@@ -5,7 +5,7 @@ description: "Every felixctl command, subcommand and flag, with defaults and exa
 
 Every felixctl command and flag. This page is generated from the command definitions, and `felixctl help <command>` prints the same text. For installing felixctl, setting up a context and a first session, see [felixctl](/getting-started/felixctl/).
 
-Publish and subscribe to streams, read and watch caches, see where shards live, list what the control plane knows, steer placement and run benchmarks. It is the one operator command line: `data` and `controlplane migrate` run the broker's and the control plane's own tools on the host that holds their data.
+Publish and subscribe to streams, read and watch caches, see where shards live, list what the control plane knows, steer placement and run benchmarks. It is the one operator command line: `data` runs the broker's own tools on the host that holds its data.
 
 Connection settings come from a named context (see `felixctl context`), overridden by FELIX_\* environment variables, overridden by flags.
 
@@ -40,7 +40,6 @@ felixctl stream ls --json
 | [`felixctl rbac`](#felixctl-rbac) | List, grant and revoke RBAC policies and role assignments (control plane) |
 | [`felixctl inspect`](#felixctl-inspect) | Look at a cluster's live state, read-only (operators) |
 | [`felixctl data`](#felixctl-data) | Inspect and restore a broker's data directory (runs felix-broker) |
-| [`felixctl controlplane`](#felixctl-controlplane) | Run control-plane maintenance tools (runs felix-controlplane) |
 | [`felixctl bench`](#felixctl-bench) | Run a load test against the cluster |
 | [`felixctl completions`](#felixctl-completions) | Print a shell completion script |
 
@@ -1893,20 +1892,6 @@ Examples:
 felixctl data inspect segments /var/lib/felix/data
 felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --offset 1500
 felixctl data restore-point --point nightly.backup-point.json --node broker-1
-```
-
-## `felixctl controlplane`
-
-Run the maintenance tools in the felix-controlplane binary. They talk to a Raft group's peer listener, so they run on a host that can reach it, with felix-controlplane installed there: felixctl finds it with --controlplane-bin (before `controlplane`), then $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` through unchanged, --help included, and ends with its exit status. `migrate import` loads an exported metadata file into a Raft group.
-
-```text
-felixctl controlplane [OPTIONS] <COMMAND>
-```
-
-Examples:
-
-```bash
-felixctl controlplane migrate import state.json http://cp-0:8444
 ```
 
 ## `felixctl bench`

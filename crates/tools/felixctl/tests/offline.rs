@@ -51,7 +51,6 @@ fn help_works_both_ways_for_every_command() {
         "features",
         "backup-point",
         "data",
-        "controlplane",
         "bench",
         "completions",
     ] {
@@ -320,17 +319,6 @@ fn server_tools_get_their_arguments_unchanged_and_their_exit_status_back() {
     assert_eq!(
         std::fs::read_to_string(&seen).unwrap(),
         "inspect\nsegments\n--json\n--help\n/data\n"
-    );
-
-    let output = run(
-        &["controlplane", "migrate", "import", "s.json"],
-        Some(("FELIX_CONTROLPLANE_BIN", &stub)),
-        "7",
-    );
-    assert_eq!(output.status.code(), Some(7));
-    assert_eq!(
-        std::fs::read_to_string(&seen).unwrap(),
-        "migrate\nimport\ns.json\n"
     );
 }
 

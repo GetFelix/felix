@@ -4,9 +4,8 @@
 //! streams, caches, the node catalog, and which broker leads each shard.
 //! Brokers read it and act; it never reaches into a broker.
 //!
-//! There are two entry points, both reached from the `felix-controlplane`
-//! binary: [`server::run`] serves the API and runs the background loops, and
-//! [`migrate::run`] loads an exported snapshot into a Raft group. The
+//! The entry point, reached from the `felix-controlplane` binary, is
+//! [`server::run`]: it serves the API and runs the background loops. The
 //! operator's commands over the API are in `felixctl`.
 //!
 //! # Vocabulary
@@ -41,8 +40,7 @@
 //! # Running
 //!
 //! [`config`] reads the environment and YAML, [`server`] wires everything
-//! together and drains it in order, [`migrate`] is the snapshot import tool,
-//! and [`clock`] is the wall clock the stored timestamps use.
+//! together and drains it in order, and [`clock`] is the wall clock the stored timestamps use.
 //!
 //! Each module keeps its unit tests at `<module>/tests.rs`.
 
@@ -58,7 +56,6 @@ pub mod cluster;
 
 pub mod clock;
 pub mod config;
-pub mod migrate;
 pub mod server;
 
 #[cfg(test)]

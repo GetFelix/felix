@@ -225,7 +225,7 @@ threshold, truncate the log behind it. An instance that lost its volume
 rejoins empty and is caught up by snapshot install plus log replay, without
 a vote until it has (see [Rejoining after a lost volume](#rejoining-after-a-lost-volume)).
 For disaster recovery beyond quorum loss, the snapshot format is what
-[Loading a snapshot file](#loading-a-snapshot-file) reads.
+[Restoring beyond quorum loss](#restoring-beyond-quorum-loss) reads.
 
 Each member keeps one snapshot on disk, and it only moves forward. Openraft
 builds snapshots in a background task, so a member can capture its state for a
@@ -307,30 +307,23 @@ another id. Every peer request carries it and is refused (403) when it
 names another cluster, so a member whose peers map points at some other
 group's members never counts them as empty or as holding the group.
 
-### Loading a snapshot file
+### Restoring beyond quorum loss
 
-`felixctl controlplane migrate import <file> <raft-peer-url> [--overwrite]`
-loads a state-machine snapshot file into a Raft group. It proposes one
-`ImportState` command through the group, atomic on every member and forwarded
-to the leader from whichever peer address you gave. The group refuses it if
-it already holds state, unless `--overwrite` is given, which discards what the
-group holds, consumers' checkpoints included. The tool talks to the peer
-listener as a peer, so run it with the group's `FELIX_RAFT_CLUSTER_ID` and
-`FELIX_RAFT_PEER_TOKEN` (and `FELIX_RAFT_TLS_*` under peer mTLS; the URL is
-then `https://`).
-
-No command writes such a file today. The format is the state machine's own
-snapshot format.
+The state machine's snapshot format can be loaded into a group with the
+`ImportState` command, which the peer listener's `propose` route accepts. The
+group refuses it if it already holds state, unless `overwrite` is set, which
+discards what the group holds, consumers' checkpoints included. No shipped
+command or tool writes or proposes such a file, so a restore beyond quorum loss
+has no operator path today; the tests use the command.
 
 - **Restore under stopped brokers.** A restore rewinds node incarnations and
   replica reports together, so an old report can again name the incarnation a
   running broker's later process holds, and placement may replace that leader
   on its followers' word while it still serves on its lease. Stop every broker
   before the import.
-- **The file is a credential.** It holds every tenant's Ed25519 signing-key
+- **A snapshot is a credential.** It holds every tenant's Ed25519 signing-key
   seeds, current and previous, as plaintext JSON: whoever reads it can mint a
-  valid token for any tenant. Store and transfer it the way you would the
-  signing keys themselves.
+  valid token for any tenant.
 
 ### Probes
 
@@ -377,7 +370,7 @@ Every peer request must carry:
   time (401 otherwise).
 
 The token is the cluster-admin credential. Members hold it, and so does the
-operator running `migrate import`; brokers and API clients never see it.
+operator holding it; brokers and API clients never see it.
 `propose` needs nothing more because holding the token already is
 cluster-admin. A member refuses to start in Raft mode without a token of at
 least 32 characters unless `FELIX_RAFT_INSECURE_PEERS=true` says otherwise,
@@ -760,7 +753,7 @@ leader's snapshot as in
 | A majority loses its volumes | The empty members wait rather than form a new, empty group, unless `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`; recovery is the snapshot restore |
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
-| Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances, or load a snapshot file with `migrate import --overwrite` (see [Loading a snapshot file](#loading-a-snapshot-file)) |
+| Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances (see [Restoring beyond quorum loss](#restoring-beyond-quorum-loss)) |
 | Clock skew between instances | Irrelevant to Raft safety (term-based). Liveness expiry does not depend on it either: heartbeats are stamped and judged by one clock (the store's), so two instances comparing their own `SystemTime` is not a thing that can happen |
 | Disk full on one instance | That instance fails writes → falls out of quorum participation → fails readiness; group continues on the majority |
 
@@ -812,7 +805,7 @@ is the umbrella.
 | Raft core: seam, redb log/vote/snapshot store, HTTP transport, group lifecycle | [#337](https://github.com/GetFelix/felix/issues/337) | **Landed**: `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
 | Metadata state machine | [#338](https://github.com/GetFelix/felix/issues/338) | **Landed**: `store/raft/command.rs` (the versioned, API-shaped command set) and `store/raft/state_machine.rs` (`MetadataStateMachine`, the in-memory store behind the seam). The determinism harness applies a full-coverage script to two machines and requires byte-identical snapshots; a real three-node group settles eight concurrent bootstraps by log order alone with byte-identical replicas. Landing it surfaced and fixed real iteration-order leaks: multi-node expiry and cascading deletes published change events in HashMap order. Nothing serves API traffic from it yet. |
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
-| Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. `felixctl controlplane migrate import` and the `ImportState` command (used-store guard, `--overwrite`) remain for loading a snapshot file; no command writes one. |
+| Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 

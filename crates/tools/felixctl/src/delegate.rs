@@ -1,28 +1,21 @@
-//! `data` and `controlplane migrate`: the server-side tools, run through the
-//! binary that owns them.
+//! `data`: the server-side tools, run through the binary that owns them.
 //!
-//! They work on a data directory or a database that only the server crates
-//! know how to read, and felixctl stays free of those crates. So it runs
-//! `felix-broker` or `felix-controlplane`, passes the arguments through and
-//! ends with the same exit status.
+//! They work on a data directory that only the server crates know how to
+//! read, and felixctl stays free of those crates. So it runs `felix-broker`,
+//! passes the arguments through and ends with the same exit status.
 
 use std::ffi::OsString;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::cli::{ControlplaneCommand, DataCommand};
+use crate::cli::DataCommand;
 use crate::error::{Exit, fail};
 
 const BROKER: Tool = Tool {
     binary: "felix-broker",
     flag: "--broker-bin",
     env: "FELIX_BROKER_BIN",
-};
-const CONTROLPLANE: Tool = Tool {
-    binary: "felix-controlplane",
-    flag: "--controlplane-bin",
-    env: "FELIX_CONTROLPLANE_BIN",
 };
 
 /// A server binary felixctl can run, and how an operator points at it.
@@ -36,15 +29,6 @@ struct Tool {
 pub(crate) fn data(command: &DataCommand, broker_bin: Option<PathBuf>) -> anyhow::Result<()> {
     let DataCommand::Run(words) = command;
     run(&BROKER, broker_bin, &["inspect", "restore-point"], words)
-}
-
-/// `controlplane migrate ARGS...`.
-pub(crate) fn controlplane(
-    command: &ControlplaneCommand,
-    controlplane_bin: Option<PathBuf>,
-) -> anyhow::Result<()> {
-    let ControlplaneCommand::Run(words) = command;
-    run(&CONTROLPLANE, controlplane_bin, &["migrate"], words)
 }
 
 /// Run `tool subcommand args...` with this process's stdio, and exit with its

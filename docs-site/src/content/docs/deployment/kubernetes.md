@@ -139,7 +139,7 @@ kubectl -n felix rollout status statefulset/felix-controlplane
 The chart's default backend is Raft with three members.
 
 The peer token authenticates every Raft request between members, and it is
-also what the `migrate import` tool needs, so treat it as the cluster-admin
+also what a peer needs to replace the store, so treat it as the cluster-admin
 credential it is. Empty members may form the group only until it has formed
 once: a post-install hook Job waits for the API to be ready, then creates the
 `<release>-felix-controlplane-raft-formed` ConfigMap, and every member start
@@ -449,14 +449,10 @@ serving fine.
 
 ### Backups
 
-The control plane's metadata lives in the database (back it up whole, restore
-it whole) or, under Raft, in the members' volumes: snapshot those at the
-storage layer, and keep the state file the group was seeded from, since
-`felixctl controlplane migrate import --overwrite` onto a fresh group is the
-recovery beyond quorum loss (see [Metadata Raft](/architecture/metadata-raft/)).
-That state file holds every tenant's signing-key seeds in plaintext, so keep it
-as secret as the keys, and an export taken while metadata is being written is not
-a consistent point.
+The control plane's metadata lives in the Raft members' volumes: snapshot
+those at the storage layer. The volumes hold every tenant's signing-key seeds,
+so keep the snapshots as secret as the keys. There is no export tool; see
+[Metadata Raft](/architecture/metadata-raft/#restoring-beyond-quorum-loss).
 Broker volumes hold the streams themselves. Volume snapshots are not a
 consistent backup: nothing coordinates them with each other or with the
 metadata, and a leader's copy can hold records no majority acknowledged. Take a

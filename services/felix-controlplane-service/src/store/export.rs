@@ -1,6 +1,6 @@
 //! The whole metadata state as one serializable value.
 //!
-//! This is the Raft state machine's snapshot format and what `migrate import` loads
+//! This is the Raft state machine's snapshot format and the shape `ImportState` loads
 //! into a group, so its serialized shape is a compatibility surface.
 use crate::auth::felix_token::TenantSigningKeys;
 use crate::auth::idp_registry::IdpIssuerConfig;
@@ -61,7 +61,7 @@ pub struct ExportedState {
     /// Refresh tokens, by hash only. In a Raft snapshot because a follower
     /// that installs one must agree with the leader on which tokens exist and
     /// which are spent or revoked. Absent from older snapshots, and from a
-    /// `migrate` export, which has no store-wide way to list them.
+    /// store-trait export, which has no store-wide way to list them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) refresh_tokens: Vec<crate::auth::refresh_token::RefreshToken>,
     /// Fleet features an operator finalized. Absent from older snapshots and

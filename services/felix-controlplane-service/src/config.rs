@@ -15,7 +15,6 @@ pub use api_ui::{ApiUi, DEFAULT_API_UI_PATH};
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
 pub use storage::{RaftBackendConfig, StorageBackend};
-pub(crate) use storage::{insecure_peers_from_env, peer_security_from_env};
 
 use std::fs;
 use std::net::SocketAddr;

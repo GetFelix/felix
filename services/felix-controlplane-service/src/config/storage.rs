@@ -110,10 +110,10 @@ impl RaftBackendConfig {
 
 /// How this process authenticates Raft peer traffic, from the environment.
 ///
-/// Shared with the migration tool, which proposes to a group as a peer.
+/// Shared with the peer-listener checks.
 /// Missing values are left for validation to report, so the message names
 /// the variable rather than a parse step.
-pub(crate) fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
+fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
     let cert = std::env::var("FELIX_RAFT_TLS_CERT").ok();
     let key = std::env::var("FELIX_RAFT_TLS_KEY").ok();
     let ca = std::env::var("FELIX_RAFT_TLS_CA").ok();
@@ -141,7 +141,7 @@ pub(crate) fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
 }
 
 /// `FELIX_RAFT_INSECURE_PEERS`: the explicit opt-out from a peer token.
-pub(crate) fn insecure_peers_from_env() -> bool {
+fn insecure_peers_from_env() -> bool {
     std::env::var("FELIX_RAFT_INSECURE_PEERS")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)

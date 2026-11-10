@@ -20,8 +20,7 @@
 //! - `rbac`: listing, granting and revoking RBAC policies and role
 //!   assignments.
 //! - `inspect`: operators' read-only views of what the brokers hold.
-//! - `delegate`: `data` and `controlplane migrate`, which run the server
-//!   binaries' own tools.
+//! - `delegate`: `data`, which runs the broker binary's own tools.
 //! - `bench`: the load-test front end.
 //! - `reference`: the Markdown command reference rendered from `cli`.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
@@ -96,9 +95,6 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         }
         // Run on the host holding the data, so no context is read.
         Command::Data(command) => return delegate::data(command, cli.broker_bin.clone()),
-        Command::Controlplane(command) => {
-            return delegate::controlplane(command, cli.controlplane_bin.clone());
-        }
         _ => {}
     }
     let path = context::config_path(cli.connection.config.as_deref(), &env)?;
@@ -130,8 +126,7 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         | Command::Completions(_)
         | Command::Man(_)
         | Command::Reference
-        | Command::Data(_)
-        | Command::Controlplane(_) => {
+        | Command::Data(_) => {
             unreachable!("handled above")
         }
     }

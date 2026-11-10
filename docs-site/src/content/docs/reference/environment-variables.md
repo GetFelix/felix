@@ -2482,4 +2482,3 @@ variable, and the variable overrides the context. See
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
 | `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |
-| `FELIX_CONTROLPLANE_BIN` | `felix-controlplane` on `PATH` | The `felix-controlplane` binary that `felixctl controlplane migrate` runs. `--controlplane-bin` overrides it. |

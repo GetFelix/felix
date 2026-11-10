@@ -19,25 +19,21 @@ fn the_flag_beats_the_environment_beats_the_path() {
         program(&BROKER, None, Some(OsString::new())),
         PathBuf::from("felix-broker")
     );
-    assert_eq!(
-        program(&CONTROLPLANE, None, None),
-        PathBuf::from("felix-controlplane")
-    );
 }
 
 #[test]
 fn a_missing_binary_says_how_to_point_at_it() {
     let err = run(
-        &CONTROLPLANE,
-        Some(PathBuf::from("/nonexistent/felix-controlplane")),
-        &["migrate"],
-        &[OsString::from("migrate")],
+        &BROKER,
+        Some(PathBuf::from("/nonexistent/felix-broker")),
+        &["inspect"],
+        &[OsString::from("inspect")],
     )
     .expect_err("nothing to run");
     assert_eq!(crate::error::exit_for(&err), Exit::Usage);
     let message = format!("{err:#}");
-    assert!(message.contains("--controlplane-bin"), "{message}");
-    assert!(message.contains("FELIX_CONTROLPLANE_BIN"), "{message}");
+    assert!(message.contains("--broker-bin"), "{message}");
+    assert!(message.contains("FELIX_BROKER_BIN"), "{message}");
 }
 
 #[cfg(unix)]

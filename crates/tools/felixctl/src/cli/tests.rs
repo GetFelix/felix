@@ -309,12 +309,6 @@ fn the_server_tools_take_everything_after_their_name_verbatim() {
         ]
     );
     assert!(!cli.json, "--json after the subcommand is the broker's");
-
-    let cli = parse(&["controlplane", "migrate", "import", "s.json", "--json"]).expect("parse");
-    let Some(Command::Controlplane(ControlplaneCommand::Run(words))) = cli.command else {
-        panic!("not controlplane");
-    };
-    assert_eq!(words, ["migrate", "import", "s.json", "--json"]);
 }
 
 #[test]
