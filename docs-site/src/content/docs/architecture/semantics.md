@@ -488,7 +488,10 @@ brokers' clocks. Once an operator finalizes `lease_free_reads` (with
 `majority_ack` and `generation_start`), a read of a replicated `Quorum` cache
 confirms instead with one round of fences at the owner's generation, answered
 by a majority after the read began. That makes the read linearizable without
-relying on clocks. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
+relying on clocks. A broker that stands for election
+(`FELIX_INTERNAL_ELECTION=true`) checks both the lease and the round until it
+hears of that finalize, because its replicas could elect a successor without
+waiting out its lease. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
 reads on the lease. Cache writes keep the lease in every mode: `majority_ack`
 applies to `Quorum` streams only. Cache watches on a replicated `Quorum` cache
 keep going through a lapsed lease once `lease_free_reads` is finalized, since
