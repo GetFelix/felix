@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794331682857,
+  "lastUpdate": 1794335761909,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51636,6 +51636,58 @@ window.BENCHMARK_DATA = {
             "range": "6764.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 795966.40\nmean: 792974.55\nstdev: 6764.29\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12e6c7a4bea34f5e7ab51bdd8e5d14ca46f7902c",
+          "message": "fix(sim): hold a shard on purpose when a majority of its copies are untrusted (#2192)\n\n* fix(sim): hold a shard on purpose when a majority of its copies are untrusted\n\nA leader vouches a copy only by shipping it level, so a copy a leader\nserved beside can still be untrusted when it was cut off or the learner\nwas never readmitted. ElectionSettles now holds any unserved shard whose\nset has a majority of untrusted or doubted copies and reports each as a\nwarning. Other unserved shards still fail.\n\nRefs #2184\n\nSpec-Unaffected: simulator checker and docs only\n\n* fix(sim): hold a shard only when injected faults explain its untrusted copies\n\nRestore the vouchable guard. A chance to vouch now needs a serving broker\nover an unpartitioned link with a healthy control plane for five seconds,\nand a copy counts as untrusted only with an injected unclean stop or start\nbehind it. Each held shard is reported with those faults.\n\nRefs #2184\n\nSpec-Unaffected: simulator checker and docs only\n\n* fix(sim): tie the held-shard evidence to the control plane, the leader and the unclean start\n\nA learner needs a control plane that answers for the reconcile interval\nplus slack plus three slow calls; a voter is vouched by shipping alone. A\ndeposed leader is no chance to vouch, and a copy seen trusted after its\nunclean start no longer counts as explained.\n\nRefs #2184\n\nSpec-Unaffected: simulator checker and docs only\n\n* fix(sim): supersede a leader per copy by the generation the copy accepted\n\nA follower refuses a leader by its own accepted generation, so a newer\ngeneration routed elsewhere that a copy never accepted leaves the old\nleader a chance to vouch it.\n\nRefs #2184\n\nSpec-Unaffected: simulator checker and docs only\n\n* test(sim): note trust before each fault and judge each reach by its role then\n\nSpec-Unaffected: simulator checker only",
+          "timestamp": "2026-11-10T10:30:58-08:00",
+          "tree_id": "9d98c5d291ddeb3cc2b28c1593650997e2eba7fe",
+          "url": "https://github.com/GetFelix/felix/commit/12e6c7a4bea34f5e7ab51bdd8e5d14ca46f7902c"
+        },
+        "date": 1794335760929,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344733.02,
+            "range": "19467.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344733.02\nmean: 352128.88\nstdev: 19467.59\ncv: 5.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344733.02,
+            "range": "19467.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344733.02\nmean: 352128.88\nstdev: 19467.59\ncv: 5.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81929.8,
+            "range": "697.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81929.80\nmean: 81640.38\nstdev: 697.85\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819297.98,
+            "range": "6978.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819297.98\nmean: 816403.79\nstdev: 6978.53\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
