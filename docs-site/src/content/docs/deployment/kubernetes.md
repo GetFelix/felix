@@ -55,9 +55,8 @@ cosign verify ghcr.io/getfelix/felix-broker:0.7.0 \
 | --- | --- | --- |
 | Broker identity | A StatefulSet whose pod name is `FELIX_NODE_ID` | The name is what the broker registers as, what shards are assigned to, and under peer mTLS the DNS name its certificate must carry. A replaced pod keeps all three and the volume behind them, so a replacement is a rejoin. |
 | Addresses | Peers get `$(POD_IP):5001`; clients get `<pod>.<headless>.<ns>.svc:5000` | The broker requires an IP for `FELIX_NODE_ADVERTISE_ADDR` and re-registers a new one on its first heartbeat. Clients are told a name, which survives the pod being replaced. |
-| Control plane over Postgres | A Deployment rolling with `maxUnavailable: 0` | Instances are stateless. A new one is ready before an old one goes, and readiness is what the Service routes on. Migrations are additive and run under an advisory lock, so mixed versions serve during the roll. |
-| Control plane under Raft | A StatefulSet with a volume per member | Each member's id is its pod ordinal plus one, and every member is handed the same peers map, derived from the replica count. Odd, and at least three. |
-| Credentials | Secret references only | The Postgres URL, the bootstrap token and the broker credential are read from Secrets you create. The chart never renders one, and never puts one in a ConfigMap. |
+| Control plane (Raft) | A StatefulSet with a volume per member | Each member's id is its pod ordinal plus one, and every member is handed the same peers map, derived from the replica count. Odd, and at least three. |
+| Credentials | Secret references only | The Raft peer token, the bootstrap token and the broker credential are read from Secrets you create. The chart never renders one, and never puts one in a ConfigMap. |
 | Shutdown | A preStop sleep, then the drain, inside a derived grace period | The endpoints controller gets a head start before SIGTERM, and the drain budget fits before SIGKILL. An explicit grace period that is too short refuses to render. |
 | Disruption | PodDisruptionBudgets | At most one broker at a time, which is what keeps a replication-factor-three shard's quorum through node maintenance. A wider budget refuses to render. |
 | Placement | Anti-affinity by node, spread by zone | `soft` prefers, `hard` refuses to co-locate. |
@@ -70,8 +69,7 @@ cosign verify ghcr.io/getfelix/felix-broker:0.7.0 \
 
 | Component | Runs as | Listens on | Reached by |
 | --- | --- | --- | --- |
-| Control plane | Deployment over Postgres, or a StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; under Raft, members reach each other on `8444`, token-authenticated, which nothing else needs |
-| Postgres | Outside the chart | Whatever you run it on | The control plane only |
+| Control plane | StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; under Raft, members reach each other on `8444`, token-authenticated, which nothing else needs |
 | Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`, `/replication/halted`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
 
 The `8080` metrics ports have no authentication. They expose names of tenants,
@@ -85,8 +83,8 @@ What depends on what, in the order it matters during an incident:
   from the catalog it has and retries heartbeats while the control plane is
   away. A lease that cannot be renewed does lapse, so a long control-plane
   outage does end in shards stopping.
-- **The control plane depends on its store.** Postgres unreachable, or under
-  Raft fewer than a majority of members, means no writes: no placement, no
+- **The control plane depends on its store.** Under Raft, fewer than a majority of
+  members means no writes: no placement, no
   moves, no failover.
 - **Brokers depend on each other** for forwarding and replication. Nothing
   but brokers should reach `5001`. The NetworkPolicy and peer mTLS are what
@@ -110,10 +108,8 @@ clients are.
 - Kubernetes 1.25 or later and Helm 3.8 or later.
 - A StorageClass for broker volumes. Brokers fsync, and a network disk with
   provisioned IOPS is the usual choice (`gp3`, `pd-ssd`, `Premium_LRS`).
-- **A Postgres** with one writable endpoint and synchronous replication, or
-  the Raft backend. What the database must provide, and what a failover looks
-  like from Felix, is on [Control-plane HA](/deployment/control-plane-ha/).
-  The chart does not deploy a database.
+- A StorageClass for the control plane's Raft volumes. What a failover looks
+  like from Felix is on [Control-plane HA](/deployment/control-plane-ha/).
 - A CNI that enforces `NetworkPolicy`, or the policy is inert.
 - For peer mTLS: cert-manager and
   [cert-manager-csi-driver](https://cert-manager.io/docs/usage/csi-driver/).
@@ -127,31 +123,23 @@ credential comes out of the control plane's day-0 bootstrap.
 
 ```bash
 kubectl create namespace felix
-kubectl -n felix create secret generic felix-postgres \
-  --from-literal=url='postgres://felix:...@postgres-rw.db.svc:5432/felix'
+kubectl -n felix create secret generic felix-raft-peer \
+  --from-literal=token="$(openssl rand -hex 32)"
 kubectl -n felix create secret generic felix-bootstrap \
   --from-literal=token="$(openssl rand -hex 32)"
 
 helm install felix deploy/helm/felix -n felix \
-  --set controlplane.storage.postgres.existingSecret=felix-postgres \
+  --set controlplane.storage.raft.peerToken.existingSecret=felix-raft-peer \
   --set controlplane.bootstrap.enabled=true \
   --set controlplane.bootstrap.existingSecret=felix-bootstrap \
   --set broker.enabled=false
-kubectl -n felix rollout status deployment/felix-controlplane
+kubectl -n felix rollout status statefulset/felix-controlplane
 ```
 
-For the Raft backend instead of Postgres:
-
-```bash
-kubectl -n felix create secret generic felix-raft-peer \
-  --from-literal=token="$(openssl rand -hex 32)"
-# ...the install command above, plus:
-  --set controlplane.storage.backend=raft --set controlplane.replicas=3 \
-  --set controlplane.storage.raft.peerToken.existingSecret=felix-raft-peer
-```
+The chart's default backend is Raft with three members.
 
 The peer token authenticates every Raft request between members, and it is
-also what the `migrate import` tool needs, so treat it as the cluster-admin
+also what a peer needs to replace the store, so treat it as the cluster-admin
 credential it is. Empty members may form the group only until it has formed
 once: a post-install hook Job waits for the API to be ready, then creates the
 `<release>-felix-controlplane-raft-formed` ConfigMap, and every member start
@@ -391,7 +379,7 @@ replica sets:
 ```bash
 helm upgrade felix deploy/helm/felix -n felix --reuse-values \
   --set controlplane.image.digest=sha256:... --set broker.image.digest=sha256:...
-kubectl -n felix rollout status deployment/felix-controlplane
+kubectl -n felix rollout status statefulset/felix-controlplane
 kubectl -n felix rollout status statefulset/felix-broker
 # Between brokers, and after: nothing halted.
 kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/replication/halted
@@ -461,14 +449,10 @@ serving fine.
 
 ### Backups
 
-The control plane's metadata lives in the database (back it up whole, restore
-it whole) or, under Raft, in the members' volumes: snapshot those at the
-storage layer, and keep the state file the group was seeded from, since
-`felixctl controlplane migrate import --overwrite` onto a fresh group is the
-recovery beyond quorum loss (see [Metadata Raft](/architecture/metadata-raft/)).
-That state file holds every tenant's signing-key seeds in plaintext, so keep it
-as secret as the keys, and an export taken while metadata is being written is not
-a consistent point.
+The control plane's metadata lives in the Raft members' volumes: snapshot
+those at the storage layer. The volumes hold every tenant's signing-key seeds,
+so keep the snapshots as secret as the keys. There is no export tool; see
+[Metadata Raft](/architecture/metadata-raft/#restoring-beyond-quorum-loss).
 Broker volumes hold the streams themselves. Volume snapshots are not a
 consistent backup: nothing coordinates them with each other or with the
 metadata, and a leader's copy can hold records no majority acknowledged. Take a
@@ -483,7 +467,7 @@ restore-point` on restore. See [Backup and restore](/deployment/backup-and-resto
 | Broker pod in `CrashLoopBackOff`, log says a node id needs a credential | `broker.credential.existingSecret` is missing the key the pod reads (`tokenKey`, or the pod's name with `perBroker`). |
 | Broker registers, then heartbeats are refused with 403 | The token lacks `node.manage` over `node:<pod name>` or `cluster:*`. |
 | Broker never becomes ready | It cannot reach the control plane (`FELIX_CONTROLPLANE_URL`), or the token lacks `node.view:cluster:*`, so it never seeds a catalog. Check its log. A broker with durable storage does not open its storage until the control plane tells it the node's incarnation; meanwhile `/live` answers `200` and `/ready` answers `503` saying it is waiting, so liveness does not restart it. |
-| Control plane not ready, liveness fine | The store: Postgres unreachable, or the database is behind the build's migrations. That is readiness doing its job. |
+| Control plane not ready, liveness fine | The store: the Raft group has no leader or has lost its quorum. That is readiness doing its job. |
 | Raft group never forms | Fewer members than the peers map names, or the headless Service was changed. Every member must carry the same map. A log line saying a majority is empty and none holds the group means the members were started with `existing` and no data: the `-raft-formed` ConfigMap is left from an earlier release whose volumes are gone. Delete it and restart the members, or set `controlplane.storage.raft.initialClusterState=new` for one upgrade. |
 | Raft members log `raft peer request ... refused` | The members disagree on the peer token or the cluster id; both must be the same on every member. |
 | Leader logs `error replication to target=N` with `peer answered 404` (or another status) | Member N's peer address points at something that is not its peer listener, or member N rejects the leader (401/403). The leader retries it about once a second until it answers. |

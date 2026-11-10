@@ -41,7 +41,6 @@ utoipa = { workspace = true, features = ["axum_extras"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
-sqlx = { workspace = true }
 casbin = { workspace = true }
 dashmap = { workspace = true }
 base64 = { workspace = true }
@@ -81,18 +80,12 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = "0.5"
 tempfile = { workspace = true }
 serial_test = { workspace = true }
-sqlx = { workspace = true }
 base64 = { workspace = true }
-testcontainers = "0.15"
-testcontainers-modules = { version = "0.3", features = ["postgres"] }
 # Certificate fixtures for the bootstrap mTLS tests.
 rcgen = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-pg-tests = []
 
 [lints]
 workspace = true

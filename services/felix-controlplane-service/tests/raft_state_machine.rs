@@ -126,8 +126,7 @@ async fn concurrent_bootstraps_are_settled_by_log_order_alone() {
         .expect("create tenant");
 
     // Eight bootstraps proposed concurrently, each carrying its own candidate
-    // keys — the race the Postgres backend settles with a row lock, now
-    // settled by nothing but the order the log assigns.
+    // keys — the race is settled by nothing but the order the log assigns.
     let mut proposals = Vec::new();
     for seed_id in 0..8u8 {
         let leader = leader.clone();

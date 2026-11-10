@@ -114,36 +114,6 @@ fn api(base: String) -> Api {
     }
 }
 
-const BUSY: (&str, &str) = (
-    "503 Service Unavailable",
-    r#"{"code":"busy","message":"too many concurrent writes; nothing was written, retry"}"#,
-);
-
-#[tokio::test]
-async fn a_503_busy_is_retried() {
-    let (base, seen) = scripted(vec![BUSY, BUSY, ("201 Created", r#"{"tenant_id":"t1"}"#)]).await;
-    let answer = api(base)
-        .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
-        .await
-        .expect("the third attempt succeeds");
-    assert!(answer.created);
-    assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), 3);
-}
-
-#[tokio::test]
-async fn retries_of_a_503_busy_are_bounded() {
-    let (base, seen) = scripted(vec![BUSY; 10]).await;
-    let err = api(base)
-        .post("/v1/tenants", &[], Some(&json!({"tenant_id": "t1"})))
-        .await
-        .expect_err("the control plane stays busy");
-    assert_eq!(exit_for(&err), Exit::Server);
-    assert_eq!(
-        seen.load(std::sync::atomic::Ordering::SeqCst),
-        BUSY_RETRIES.len() + 1
-    );
-}
-
 #[tokio::test]
 async fn another_503_is_not_retried() {
     let (base, seen) = scripted(vec![

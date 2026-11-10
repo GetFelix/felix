@@ -9,8 +9,7 @@ Every control-plane instance embeds a Raft node; three instances form a
 group. Metadata (tenants, streams, shard assignments, membership, auth
 configuration) becomes a Raft-replicated state machine, persisted as a log
 and snapshots on each instance's own volume. No external database is needed.
-Postgres remains a fully supported backend, and
-[Control-plane HA](/deployment/control-plane-ha/) covers how to choose.
+[Control-plane HA](/deployment/control-plane-ha/) covers running it.
 
 The failure handling is covered by tests. Three instances under continuous
 broker traffic come through rolling restarts, a leader killed with SIGKILL, a
@@ -38,13 +37,13 @@ flowchart LR
 
 - **The broker contract is frozen.** Snapshots, change feeds, heartbeats and
   leases keep their shape. The design lives entirely behind the store
-  traits where the Postgres/memory split already lives, and the same
-  contract test suites run against all three backends.
+  traits where the memory/Raft split already lives, and the same
+  contract test suites run against both backends.
 - **The state machine is the in-memory store.** `InMemoryStore` already
   implements every store trait; Raft puts a command log in front of it.
   Commands are API-shaped (`CreateStream`, `RegisterNode`,
-  `BootstrapTenantAuth`), so every check-then-act race the Postgres backend
-  closes with row locks, the log closes with total ordering.
+  `BootstrapTenantAuth`), so every check-then-act race is closed by the log's
+  total ordering.
 - **Apply is deterministic.** Timestamps are stamped at propose time and
   generated values are carried in the command, so three instances applying
   the same log reach byte-identical state. A test asserts exactly that.
@@ -70,7 +69,6 @@ flowchart LR
 | One instance of three dies | Writes pause for one election timeout; reads keep serving; no broker call fails |
 | An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. Caught up by snapshot install; no data surgery |
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
-| Migration from Postgres | A minutes-long metadata write freeze: import a consistent snapshot as the group's first state, repoint, verify, retire the database. Brokers tolerate the freeze by design |
 
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to the
 stable 0.9 line, wrapped behind a seam so its pre-1.0 API churn stays
@@ -78,8 +76,8 @@ contained.
 
 ## Configuring it
 
-Three environment variables select the backend, the same way a Postgres URL
-selects Postgres, and three more are required with them: the peer listener,
+Three environment variables select the backend, and three more are required
+with them: the peer listener,
 the cluster id and the peer token. `FELIX_RAFT_INITIAL_CLUSTER_STATE` is
 optional and defaults to `existing`.
 
@@ -103,8 +101,7 @@ listener, not its API port. Every peer request must name the cluster and
 carry the peer token, or it is refused before any route runs. That token is
 the cluster-admin credential (the `propose` route behind it can replace the
 whole store), so keep it in a Secret, expose the peer port to the other
-members only, and give the token to nothing but the members and the
-`migrate import` tool. A member refuses to start without one unless
+members only, and give the token to nothing but the members. A member refuses to start without one unless
 `FELIX_RAFT_INSECURE_PEERS=true`, which is for a throwaway local group. Add
 `FELIX_RAFT_TLS_CERT`, `FELIX_RAFT_TLS_KEY` and `FELIX_RAFT_TLS_CA` for peer
 mTLS on top.
@@ -246,54 +243,20 @@ ordinal and the peers map from the replica count. It lets empty members
 start with `new` only until a post-install hook has seen the group form and
 recorded that in a ConfigMap; every start after that is `existing`.
 
-## Migrating from Postgres
+## Restoring beyond quorum loss
 
-Migration is an offline cutover that takes minutes. Brokers tolerate it
-(they keep serving on their catalogs and leases, as during any
-control-plane blip):
+The group can load a state-machine snapshot with the `ImportState` command on
+its peer listener, refused unless the group is empty or `overwrite` is set.
+No shipped command writes or proposes such a snapshot, so a restore beyond
+quorum loss has no operator path today; recover by bringing members back.
 
-```
-# 1. Stand up the fresh Raft group (its import guard refuses a used one).
-# 2. Freeze writes: take the Postgres-backed instances out of rotation.
-# 3. Export through the store traits (exactly what the API serves):
-FELIX_CONTROLPLANE_POSTGRES_URL=postgres://... \
-  felixctl controlplane migrate export-postgres state.json
-
-# 4. One atomic command, proposed to any member's peer listener as a peer
-#    (it forwards to the leader):
-FELIX_RAFT_CLUSTER_ID=prod-metadata FELIX_RAFT_PEER_TOKEN=... \
-  felixctl controlplane migrate import state.json http://cp-0:8444
-
-# 5. Compare the printed summaries, spot-check, repoint, retire Postgres.
-```
-
-Each step before the repoint has a clean abort: nothing is half-migrated,
-because the import is a single log entry applied atomically everywhere.
-Change feeds carry their sequence high-water marks, so a broker at the head
-continues without noticing and one behind the head resnapshots exactly once,
-which is the ordinary signal it already honours.
-
-**Disaster recovery** is the same mechanism: the export file is the DR
-artifact, and `migrate import … --overwrite` onto a fresh group is the
-restore. `--overwrite` discards whatever the target holds, checkpoints
-included, so it belongs in a runbook and should only be run deliberately. A
-broker kept running across a restore to an earlier point refuses a stream
+A broker kept running across a restore to an earlier point refuses a stream
 whose restored incarnation is below the one it holds, since it never moves a
 name back; run `felixctl data restore-point` with the matching backup point, or
 delete and recreate the stream (see `docs/durable-storage.md`, "Deleting a
 stream"). A restore also rewinds node incarnations and replica reports
 together, which lets placement replace a running leader on an old report while
-it still serves on its lease, so stop every broker before the import.
-
-Two things to know before relying on an export as a backup:
-
-- The export is not a consistent read. It is many separate queries rather
-  than one transaction, so it reflects a state the cluster was actually in
-  only if metadata writes were frozen while it ran.
-- The file is a credential. It holds every tenant's Ed25519 signing-key seeds
-  in plaintext JSON, enough to mint tokens for any tenant. Keep it encrypted and
-  access-controlled. Refresh tokens are not exported, so they do not survive a
-  restore.
+it still serves on its lease, so stop every broker before an import.
 
 ## How it is built
 

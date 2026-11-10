@@ -269,8 +269,7 @@ load balancer.
 
 **Availability and operations**
 
-- [ ] A highly available control plane: three or five Raft members, or two or
-      more instances over a highly available Postgres.
+- [ ] A highly available control plane: three or five Raft members.
       [Control-plane HA](/deployment/control-plane-ha/)
 - [ ] An odd number of brokers at least as large as RF, spread over at least RF
       zones, with PodDisruptionBudgets left at one broker at a time.

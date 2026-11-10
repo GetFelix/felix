@@ -1487,38 +1487,10 @@ async fn a_snapshot_and_the_changes_after_it_lose_nothing(store: &dyn ControlPla
     assert_eq!(reconstructed, actual);
 }
 
-/// Seeding exposed for the restart test, which needs the catalog in place
-/// across two store handles.
-///
-/// Gated to match its only caller: `postgres::tests::database` is `pg-tests`-only, so
-/// without that feature this has no users and is dead code.
-#[cfg(feature = "pg-tests")]
-pub(crate) async fn seed_for_restart(store: &dyn ControlPlaneStore) {
-    seed(store).await;
-}
-
-/// Write one assignment and hand it back, for the restart test to compare.
-///
-/// `pg-tests`-only for the same reason as [`seed_for_restart`].
-#[cfg(feature = "pg-tests")]
-pub(crate) async fn assign_for_restart(store: &dyn ControlPlaneStore) -> ShardAssignment {
-    clear(store).await;
-    let first = store
-        .put_shard_assignment(assignment(0, "broker-x"))
-        .await
-        .expect("put");
-    let mut active = assignment(0, "broker-x");
-    active.state = ShardState::Active;
-    let _ = first;
-    store.put_shard_assignment(active).await.expect("activate")
-}
-
 /// Deleting a stream or a cache must not leave its shards owned.
 ///
-/// Postgres enforces this with `ON DELETE CASCADE`; the point of running it
-/// here is that the in-memory store must do the same thing, and the divergence
-/// runs the dangerous way — a suite in memory that kept the rows would be
-/// asserting against ghosts the deployed system has already cleaned up.
+/// A store that kept the rows would leave placement chasing ghosts of shards
+/// that no longer exist.
 ///
 /// Uses names of its own rather than the shared fixtures, because the cases
 /// after it still need those to exist.
@@ -1786,7 +1758,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
 }
 
 /// A namespace or tenant delete takes its streams' and caches' assignments and
-/// reports, as a stream delete does (and as Postgres's cascade does). Left
+/// reports, as a stream delete does. Left
 /// behind, a stream created again under the name would be "updated" from the
 /// deleted one's assignment, and its first report weighed against the old log's.
 async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn ControlPlaneStore) {

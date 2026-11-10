@@ -314,9 +314,7 @@ is at metadata level 19; before that a patch moves no token.
 
 Reports carry the incarnation the broker last registered,
 and the control plane stamps `leader_incarnation` only when it matches. A
-Postgres member that predates the column updates a report without it, so the
-flag is read as true only while `by_round_at` matches the row's
-`reported_at_millis`. A report without the
+report without the
 field, from an older broker or a Raft group not yet at level 11, reads as the
 lease, and the leader is replaced only once its lease has lapsed. `FelixShardSuspicion.cfg` lets placement promote on any read
 before the lease lapses, the old leader alive and renewing, and loses
@@ -336,7 +334,7 @@ follower's node list has no address for yet is not watched either: not being
 able to reach it says nothing about whether it is up.
 
 **The control plane's half.** It keeps the names as soft state, like a
-heartbeat: in the store under the memory and Postgres backends, and in the
+heartbeat: in the store under the memory backend, and in the
 Raft leader's memory under Raft. A name counts for two heartbeat intervals,
 since a broker that still suspects says so on every beat and one that has
 stopped says nothing. Placement then treats a live leader as gone when the
@@ -1281,8 +1279,8 @@ Evidence (`replica/tests/fence.rs`):
 A control plane
 that does not serve the read (404, or 501 while its Raft leader predates
 it) leaves the view to answer alone, as before, so a mixed-version cluster
-behaves as it did until every control-plane member has the route. A
-Postgres or in-memory control plane answers from its one store, which is
+behaves as it did until every control-plane member has the route. An
+in-memory control plane answers from its one store, which is
 already current.
 
 It also does not cover elections: a candidate's generation is
@@ -2144,8 +2142,7 @@ control plane.
   under the test switch `FELIX_INTERNAL_ELECTION`.
 - *Control plane.* Adoption, the pending set a cut-over records beside the
   current one, and the flip to it after the joint fence are new store
-  writes, so under Raft they need metadata level 21 on every member, and a
-  Postgres control plane gets migration 0038. Below that the control plane
+  writes, so under Raft they need metadata level 21 on every member. Below that the control plane
   ignores election reports and goes on promoting on suspicion. All three are
   built.
 - *The fleet feature.* Finalizing `replica_election` is refused while a
@@ -3081,7 +3078,7 @@ that shard's entry says `accepted` and names the shard and generation it sent.
 
 Stored reports only move forward. A report replaces the held one at a later
 generation, or at the same generation with a leader tail at least as far along
-(`ReplicaReport::supersedes`, applied the same way by the memory, Postgres and
+(`ReplicaReport::supersedes`, applied the same way by the memory and
 Raft stores). A slow request can otherwise land after a newer one and put back
 a view in which a follower that has since fallen behind still looks caught up.
 A report from a generation older than the assignment's is refused as stale.
@@ -3615,8 +3612,7 @@ tail, whether it drained, which copies halted) is read for as long as the
 report is believed, so promotion can work from a dead leader's report.
 
 The registered identity is the current registration's: a registration without
-one clears it, and the Postgres store reads it only while it was written at the
-node's current incarnation. A registration cleared that way leaves the
+one clears it. A registration cleared that way leaves the
 follower unverified, and the incarnation check above keeps every report from
 before it out. Under Raft a member that has not answered since the leader
 restarted counts at the group's floor rather than at 0, so a restart with one
@@ -4750,7 +4746,7 @@ it always sent, and a control plane that predates the field ignores it.
 The control plane stores the halts with the report, in every backend: in
 memory, in the Raft log (metadata level 4, so a group with an older member
 records the rest of the report and drops the halts until every member is
-upgraded), and in Postgres (`replica_reports.halted`, migration 0023). Stored,
+upgraded), and in the memory store. Stored,
 a halt gains two things the broker does not send:
 
 - **When it began**, on the store's clock. A report that names the same node

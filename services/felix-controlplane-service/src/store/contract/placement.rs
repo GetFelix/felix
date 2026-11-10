@@ -1,8 +1,7 @@
 //! Placement's fencing token and lease, which every backend must honour.
 //!
 //! Each case takes two handles, `a` and `b`, standing for two control-plane
-//! instances. For Postgres they are separate connection pools over one
-//! database; in memory and under Raft they share one store.
+//! instances. In memory and under Raft they share one store.
 use std::sync::Arc;
 use std::time::Duration;
 

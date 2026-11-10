@@ -4,7 +4,7 @@
 //! by `tokio::sync::RwLock`. It exists for:
 //! - local development and tests (no external dependencies)
 //! - deployments where durability is not required
-//! - as a fallback when a durable backend (e.g., Postgres) is not configured
+//! - the state machine under the Raft backend, which replicates it
 //!
 //! # Durability and consistency
 //! - **Not durable**: all state is lost on process restart.
@@ -151,8 +151,8 @@ pub struct InMemoryStore {
     rbac_groupings: Arc<RwLock<HashMap<String, Vec<GroupingRule>>>>,
     /// Per-tenant auth bootstrap completion.
     auth_bootstrapped: Arc<RwLock<HashMap<String, bool>>>,
-    /// Serializes `bootstrap_tenant_auth`, standing in for the row lock the
-    /// Postgres backend takes. Held across the whole operation; nothing else
+    /// Serializes `bootstrap_tenant_auth`, making the check and the write one
+    /// step. Held across the whole operation; nothing else
     /// acquires it, so it cannot deadlock against the field locks above.
     bootstrap_serial: Arc<tokio::sync::Mutex<()>>,
     /// Refresh tokens keyed by `(tenant_id, token_id)`.
@@ -353,19 +353,14 @@ impl InMemoryStore {
     /// Forget every shard assignment belonging to a stream or cache that has
     /// just been deleted.
     ///
-    /// Postgres does this with `ON DELETE CASCADE`, and the reason is in the
-    /// migration: ownership records for shards that no longer exist leave
-    /// placement chasing ghosts. Doing it only there would be the more
-    /// dangerous divergence of the two — a suite running in memory would see
-    /// stale assignments the deployed system never produces, so a placement bug
-    /// that needs orphaned rows is invisible in memory and real in Postgres.
+    /// Ownership records for shards that no longer exist leave placement
+    /// chasing ghosts.
     ///
-    /// [`ShardCleanup::Unassign`] records an unassignment for each shard, as
-    /// Postgres does: a broker follows the shard change log, not the stream's,
+    /// [`ShardCleanup::Unassign`] records an unassignment for each shard: a broker follows the shard change log, not the stream's,
     /// and without one keeps leading a shard of a stream that is gone (#1435).
     ///
     /// Anything but [`ShardCleanup::Legacy`] also drops the shards' replica
-    /// reports, as Postgres cascades them: a name created again can start at
+    /// reports: a name created again can start at
     /// the same generation after a restore, and the old log's report would
     /// read as the new one's.
     async fn drop_shard_assignments_for(

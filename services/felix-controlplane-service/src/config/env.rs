@@ -1,21 +1,20 @@
 //! Reading the configuration from `FELIX_*` environment variables.
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 
 use super::api_tls::api_tls_from_env;
 use super::api_ui::{api_ui_from_env, api_ui_path_from_env};
 use super::bootstrap::bootstrap_tls_from_env;
-use super::storage::raft_from_env;
+use super::storage::{POSTGRES_REMOVED, raft_from_env};
 use super::{
     BootstrapConfig, ControlPlaneConfig, DEFAULT_BOOTSTRAP_BIND_ADDR,
     DEFAULT_CHANGE_RETENTION_MAX_ROWS, DEFAULT_CHANGES_LIMIT,
     DEFAULT_NODE_EXPIRY_SWEEP_INTERVAL_MS, DEFAULT_NODE_EXPIRY_TIMEOUT_MS,
-    DEFAULT_NODE_HEARTBEAT_INTERVAL_MS, DEFAULT_PG_ACQUIRE_TIMEOUT_MS,
-    DEFAULT_PG_CONNECT_TIMEOUT_MS, DEFAULT_PG_MAX_CONNECTIONS, DEFAULT_READINESS_CACHE_TTL_MS,
+    DEFAULT_NODE_HEARTBEAT_INTERVAL_MS, DEFAULT_READINESS_CACHE_TTL_MS,
     DEFAULT_READINESS_TIMEOUT_MS, DEFAULT_SHARD_RECONCILE_INTERVAL_MS,
     DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS, DEFAULT_SHUTDOWN_PREDRAIN_MS, NodeLivenessConfig,
-    PostgresConfig, StorageBackend, parse_oidc_allowed_algorithms_csv, parse_positive_env,
+    StorageBackend, parse_oidc_allowed_algorithms_csv, parse_positive_env,
 };
 
 impl ControlPlaneConfig {
@@ -77,29 +76,13 @@ impl ControlPlaneConfig {
                 .and_then(|v| v.parse::<i64>().ok())
                 .or(Some(DEFAULT_CHANGE_RETENTION_MAX_ROWS));
 
-        let pg_url = std::env::var("FELIX_CONTROLPLANE_POSTGRES_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .ok();
-        let mut postgres = None;
-        if let Some(url) = pg_url {
-            postgres = Some(PostgresConfig {
-                url,
-                max_connections: std::env::var("FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS")
-                    .ok()
-                    .and_then(|v| v.parse::<u32>().ok())
-                    .unwrap_or(DEFAULT_PG_MAX_CONNECTIONS),
-                connect_timeout_ms: std::env::var("FELIX_CONTROLPLANE_POSTGRES_CONNECT_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_PG_CONNECT_TIMEOUT_MS),
-                acquire_timeout_ms: std::env::var("FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(DEFAULT_PG_ACQUIRE_TIMEOUT_MS),
-            });
-            if matches!(storage, StorageBackend::Memory) {
-                storage = StorageBackend::Postgres;
-            }
+        // Without this, a leftover Postgres setup would silently start an
+        // empty in-memory store.
+        if std::env::var_os("FELIX_CONTROLPLANE_POSTGRES_URL").is_some()
+            || std::env::var("FELIX_CONTROLPLANE_STORAGE_BACKEND")
+                .is_ok_and(|v| v.eq_ignore_ascii_case("postgres"))
+        {
+            return Err(anyhow!(POSTGRES_REMOVED));
         }
 
         let raft = raft_from_env()?;
@@ -115,7 +98,6 @@ impl ControlPlaneConfig {
             metrics_bind,
             region_id,
             storage,
-            postgres,
             raft,
             changes_limit,
             change_retention_max_rows,

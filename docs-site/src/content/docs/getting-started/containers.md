@@ -41,37 +41,22 @@ under it. `podman compose version` shows which provider it picked.
 
 ## Choosing the engine for tasks
 
-`task test`, `task coverage`, `task pg:up`, `task pg:down`, `task pg:sweep` and
-`task tla:check` pick the engine once, in `scripts/container_engine.sh`:
+`task tla:check` picks the engine once, in `scripts/container_engine.sh`:
 `CONTAINER_ENGINE` if it is set, otherwise the first of `docker` and `podman`
-whose `version` succeeds. With neither, they skip the Postgres tests the same
-way they always have. To force one:
+whose `version` succeeds. To force one:
 
 ```bash
-CONTAINER_ENGINE=podman task test
+CONTAINER_ENGINE=podman task tla:check
 ```
 
-`task test` passes the choice on to the tests that start a `kcat` container
-(the Kafka listener tests), which read the same variable and fall back to the
-same detection when run with `cargo test` directly.
-
-The control plane's Postgres tests are the exception when run without `task`.
-Given no `FELIX_TEST_DATABASE_URL`, they start Postgres through the
-testcontainers library, which runs the `docker` CLI and nothing else. With
-Podman, start the database first and point the tests at it:
-
-```bash
-task pg:up
-FELIX_TEST_DATABASE_URL=postgres://postgres:postgres@127.0.0.1:55432/postgres \
-  cargo test -p felix-controlplane-service --features pg-tests
-task pg:down
-```
+The tests that start a `kcat` container (the Kafka listener tests) read the
+same variable and fall back to the same detection.
 
 ## Where Podman differs
 
 | Area | Docker | Podman |
 |------|--------|--------|
-| Image names | `postgres:16-alpine` resolves to Docker Hub | A short name can be refused or ambiguous, depending on `unqualified-search-registries` in `registries.conf`. The repository's Dockerfiles, compose file and tasks use fully qualified names (`docker.io/library/postgres:16-alpine`), which work in both. Do the same in your own files. |
+| Image names | `eclipse-temurin:21-jre` resolves to Docker Hub | A short name can be refused or ambiguous, depending on `unqualified-search-registries` in `registries.conf`. The repository's Dockerfiles, compose file and scripts use fully qualified names (`ghcr.io/getfelix/felix-broker`, `docker.io/library/eclipse-temurin:21-jre`), which work in both. Do the same in your own files. |
 | Reaching the host from a container | `host.docker.internal` | `host.containers.internal` |
 | Compose | `docker compose` | `podman compose`, with `docker-compose` 2.20+ as the provider (see above) |
 | Building the images | `docker build` keeps the `HEALTHCHECK` | `podman build` writes OCI images by default, which drop `HEALTHCHECK`. Pass `--format docker` so `service_healthy` and the image's `/ready` probe still work. |

@@ -155,7 +155,7 @@ routing, `restore.rs` is the `felix-broker restore-point` subcommand, and
 `observability/` serves metrics. It also builds the `demos/broker/*` binaries and the `soak` harness.
 
 `services/felix-controlplane-service` is the REST control plane: `api/`,
-`store/` (memory, Postgres or Raft), `raft/`, `cluster/` (membership and
+`store/` (memory or Raft), `raft/`, `cluster/` (membership and
 placement) and `auth/`. The operator commands over its API are in `felixctl`.
 
 ## Demos

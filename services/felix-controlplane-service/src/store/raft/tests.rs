@@ -44,8 +44,8 @@ pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
     Arc::new(RaftStore::new(handle, machine))
 }
 
-/// The same suite memory and Postgres run: the Raft backend is a fourth
-/// implementation of the same contract, not a new contract.
+/// The same suite memory runs: the Raft backend is a second implementation
+/// of the same contract, not a new contract.
 #[tokio::test]
 async fn satisfies_the_node_store_contract() {
     let dir = tempfile::tempdir().expect("tempdir");

@@ -113,10 +113,8 @@ any log. See
    be cut back to a committed point.
 
 4. **Back up the control plane's metadata** from a state taken at or after the
-   point, so every stream and assignment the point names exists in it. Over
-   Postgres that is the platform's backup of the whole database (see
-   [Control-plane HA](/deployment/control-plane-ha/)); under the Raft
-   backend, a storage-layer snapshot of the members' volumes (see
+   point, so every stream and assignment the point names exists in it. That is
+   a storage-layer snapshot of the members' volumes (see
    [Metadata Raft](/architecture/metadata-raft/) and the Kubernetes
    [Backups](/deployment/kubernetes/#backups) notes). The manifest's
    `metadata_version` is the assignment change sequence the point was read

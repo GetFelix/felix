@@ -32,24 +32,15 @@ controlplane:
     # Pin by digest in production: images are signed by digest, and a tag can
     # be moved. When set, the tag is ignored.
     digest: ""
-  # Instances. Under the postgres backend this is a Deployment that rolls one
-  # at a time with none unavailable; under raft it is a StatefulSet whose
-  # members must be an odd number, three or more.
-  replicas: 2
+  # Instances. Under raft this is a StatefulSet whose members must be an odd
+  # number, three or more; under memory it is a single Deployment.
+  replicas: 3
   storage:
-    # memory | postgres | raft
+    # raft | memory
     #
-    # `memory` keeps nothing across a restart and is for trying the chart out.
-    # `postgres` is stateless instances over one HA database the platform
-    # provides. `raft` keeps the metadata in the instances themselves.
-    backend: postgres
-    postgres:
-      # A Secret holding the connection URL, e.g. created with
-      #   kubectl create secret generic felix-postgres --from-literal=url=postgres://...
-      # The chart never renders the URL into a ConfigMap.
-      existingSecret: ""
-      urlKey: url
-      maxConnections: 10
+    # `raft` keeps the metadata in the instances themselves. `memory` keeps
+    # nothing across a restart and is for trying the chart out.
+    backend: raft
     raft:
       volume:
         size: 1Gi

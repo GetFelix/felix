@@ -9,10 +9,9 @@
 {{- $peerPort := int $cp.storage.raft.peerPort }}
 {{- $image := include "felix.image" (dict "root" . "image" $cp.image) }}
 {{- /*
-The control plane's shape follows its store. Over Postgres the instances are
-stateless and a Deployment rolls them one at a time with none unavailable.
-Under Raft each member has an identity and a volume, so it is a StatefulSet
-whose pod names are the peer names every member is told.
+The control plane's shape follows its store. Under Raft each member has an
+identity and a volume, so it is a StatefulSet whose pod names are the peer
+names every member is told. The memory store is one stateless Deployment.
 */}}
 apiVersion: apps/v1
 kind: {{ if $raft }}StatefulSet{{ else }}Deployment{{ end }}
@@ -38,9 +37,8 @@ spec:
   updateStrategy:
     type: RollingUpdate
   {{- else }}
-  # Instances roll independently: a new one is ready before an old one goes,
-  # and readiness is what the Service routes on. Migrations are additive and
-  # run under an advisory lock, so mixed versions serve during the roll.
+  # A new instance is ready before the old one goes, and readiness is what
+  # the Service routes on.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -135,15 +133,6 @@ spec:
               value: "0.0.0.0:{{ $metricsPort }}"
             - name: FELIX_CONTROLPLANE_STORAGE_BACKEND
               value: {{ $cp.storage.backend | quote }}
-            {{- if eq $cp.storage.backend "postgres" }}
-            - name: FELIX_CONTROLPLANE_POSTGRES_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $cp.storage.postgres.existingSecret }}
-                  key: {{ $cp.storage.postgres.urlKey }}
-            - name: FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS
-              value: {{ $cp.storage.postgres.maxConnections | quote }}
-            {{- end }}
             {{- if $raft }}
             - name: FELIX_RAFT_DATA_DIR
               value: /var/lib/felix/raft

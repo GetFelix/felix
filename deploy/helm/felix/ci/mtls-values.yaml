@@ -3,11 +3,12 @@
 # external name, verifying a real certificate and presenting their own, and
 # brokers reaching the control plane over TLS.
 controlplane:
-  replicas: 2
+  replicas: 3
   storage:
-    backend: postgres
-    postgres:
-      existingSecret: felix-postgres
+    backend: raft
+    raft:
+      peerToken:
+        existingSecret: felix-raft-peer
   tls:
     enabled: true
     existingSecret: felix-controlplane-tls

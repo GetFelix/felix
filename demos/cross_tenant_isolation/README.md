@@ -1,7 +1,7 @@
 # Cross-Tenant Isolation Demo
 
 This demo proves that Felix enforces tenant boundaries end-to-end. It boots a
-real control plane backed by Postgres, a real broker, a fake ES256 OIDC IdP, and
+real control plane (with its in-memory store), a real broker, a fake ES256 OIDC IdP, and
 uses real Felix token exchange. It then shows that a principal with RBAC in
 `t1` cannot access resources in `t2`.
 

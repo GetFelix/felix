@@ -693,7 +693,7 @@ In a clustered deployment:
   under `majority_ack` acknowledges on its followers' answers instead, and a
   `Quorum` cache read under `lease_free_reads` confirms with a round (see
   [How `Quorum` is enforced](#how-quorum-is-enforced))
-- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
+- **Metadata consistency**: strongly consistent, because it lives in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
 - **Cross-shard ordering**: Not guaranteed. Ordering is per key, because a key
   always resolves to the same shard and a shard is one log on one leader
 - **Cache consistency**: One owner per key, with `Leader` or `Quorum`

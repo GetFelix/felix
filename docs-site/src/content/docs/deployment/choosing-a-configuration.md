@@ -341,8 +341,7 @@ See [Adding and removing brokers](/deployment/scaling/) and
 
 ## Riding out a control-plane outage
 
-Run the control plane highly available, with three or five Raft members or
-two or more instances over a highly available Postgres
+Run the control plane highly available, with three or five Raft members
 ([Control-plane HA](/deployment/control-plane-ha/)). That is the main
 defence.
 

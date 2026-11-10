@@ -8,9 +8,9 @@ Rust 1.99, edition 2024. The `Taskfile.yml` shortcuts are the source of truth. C
 
 ```bash
 task lint          # cargo fmt --check + clippy --workspace --all-targets --all-features -D warnings
-task test          # cargo test --workspace (with Postgres when Docker is available)
+task test          # cargo test --workspace
 task demo:check    # build/clippy/test the demo crates that are OUTSIDE the workspace
-task coverage      # llvm-cov; spins up a Postgres container unless CI or FELIX_TEST_DATABASE_URL is set
+task coverage      # llvm-cov
 task conformance   # wire-protocol conformance runner
 ```
 

@@ -244,9 +244,8 @@ answer there. It is designed in
 [`metadata-raft-design.md`](metadata-raft-design.md) and tracked
 under [#333](https://github.com/GetFelix/felix/issues/333), and shipped:
 `FELIX_CONTROLPLANE_STORAGE_BACKEND=raft` selects it and the instances hold
-the metadata themselves, with no external database. Postgres remains fully
-supported: any number of stateless instances over one HA database, whose
-required properties are spelled out in [`ha-postgres.md`](ha-postgres.md).
+the metadata themselves, with no external database. The earlier Postgres backend was removed, so Raft is the only production
+backend.
 
 Resolving an owner is an atomic load of a routing snapshot the broker already
 holds, with no lock and no network call, because it is the hottest question a broker

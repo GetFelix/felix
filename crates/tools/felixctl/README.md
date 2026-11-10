@@ -63,11 +63,9 @@ API is enough to build tools on. The control-plane commands use the REST API.
 `bench` links `felix-loadgen` and runs its scenarios in process, so its
 numbers measure what the perf suite measures.
 
-`data inspect`, `data restore-point` and `controlplane migrate` need the
-data directory or the control plane's database, which only the server
-programs can read, and felixctl does not link them. It runs `felix-broker` or
-`felix-controlplane` (found with `--broker-bin` or `--controlplane-bin`, then
-`FELIX_BROKER_BIN` or `FELIX_CONTROLPLANE_BIN`, then `PATH`), passes the
+`data inspect` and `data restore-point` need the data directory, which only
+the broker can read, and felixctl does not link it. It runs `felix-broker`
+(found with `--broker-bin`, then `FELIX_BROKER_BIN`, then `PATH`), passes the
 arguments through and exits with the program's status.
 
 Unit tests cover argument parsing, every command's help text, context

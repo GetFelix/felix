@@ -16,10 +16,9 @@ the data plane and does not carry user payloads.
 ## RAFT Scope (Control Plane Only)
 
 > **This section is the original sketch; the real thing now exists.** The
-> control plane runs one of two production-shaped backends: a stateless REST
-> service over a highly available Postgres (what that database must provide
-> is [ha-postgres.md](ha-postgres.md)), or a Raft group embedded in the
-> instances themselves, with no external database. The embedded Raft backend is complete, chaos
+> control plane runs as a Raft group embedded in the instances themselves
+> (the `memory` backend is for tests and dev only), with no external database.
+> The embedded Raft backend is complete, chaos
 > pass included: three instances survive rolling restarts, a SIGKILLed
 > leader, a frozen leader, and a wiped volume without losing an
 > acknowledged write. The implemented design, which differs from the
@@ -326,15 +325,11 @@ the operator as an upgraded one is.
 
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds
-its node lock across the check and the write, Postgres takes the same
-advisory lock in both, and Raft applies both in the log (`finalize_fleet_feature`
+its node lock across the check and the write, and Raft applies both in the log (`finalize_fleet_feature`
 and `register_node_in_fleet`, metadata version 2, or 3 to finalize
 `jump_hash_routing`; see
-`docs/metadata-raft-design.md`). On Postgres a test holds each one between its
-check and its commit and fails without the lock
-(`a_finalize_waits_for_a_registration_in_flight`,
-`a_registration_waits_for_a_finalize_in_flight`). The enabled set is stored in
-the `fleet_features` table on Postgres and in the snapshot on Raft.
+`docs/metadata-raft-design.md`). The enabled set is stored in the snapshot on
+Raft.
 
 **On the broker.** A `FleetGate` holds what this broker reported and which of
 those are enabled, and `fleet.supports(FEATURE)` is one atomic load. It is
@@ -783,9 +778,7 @@ one. The single create endpoints use the
 same comparison, so creating a stream or cache that already exists as asked
 answers `200` with it, and `409` only when it differs.
 
-The new items are written by one store operation. Under Postgres that is one
-transaction, so a unique-key violation on any row, including one a concurrent
-create committed first, rolls the whole batch back. Under Raft it is one log
+The new items are written by one store operation. Under Raft it is one log
 entry (`create_resources`), applied whole or refused whole on every member.
 When a concurrent create of the same name wins the race, the batch looks
 again, up to three times: a winner with the same configuration becomes
@@ -862,10 +855,6 @@ for overlapping prefixes cannot both succeed:
 
 - **Memory and Raft** check inside the apply, under the store's lock, so every
   member refuses the same entry.
-- **Postgres** checks in the same transaction as the write, under the streams
-  feed lock every stream write takes. Migration `0041_stream_mount.sql` adds the
-  nullable `streams.mount` column, and a unique index on `(tenant_id, mount)`
-  backs the check up for two streams with the same prefix.
 - **Batches** (`POST .../resources`) check every mount against the stored ones
   and against each other first, and a refusal creates nothing.
 
@@ -935,12 +924,8 @@ Not paged, because each is bounded by something other than growth:
 progress, which the move limits cap), and a tenant's `idp-issuers` and
 `signing-keys`.
 
-The store implements pages natively on every backend: Postgres as an index
-range scan (`WHERE key > $cursor ORDER BY key LIMIT n + 1`), memory and Raft
-by sorting what is past the cursor. Postgres orders names by the database's
-collation, so the order of names differing only in punctuation can differ
-between backends; within one backend it is stable, which is all a cursor
-needs.
+The store implements pages natively on every backend: memory and Raft sort
+what is past the cursor.
 
 ### Snapshot and change feeds
 
@@ -953,20 +938,12 @@ consumer that applies the snapshot and then follows the feed from its
 
 Four properties make that hold on every backend:
 
-1. The snapshot's items and its `next_seq` are read at one point: one
-   `REPEATABLE READ` transaction on Postgres, and the resource's lock held
-   across both reads in memory and on Raft. Read separately, a delete landing
+1. The snapshot's items and its `next_seq` are read at one point: the
+   resource's lock is held across both reads in memory and on Raft. Read separately, a delete landing
    between them leaves the item in the snapshot while `next_seq` is already
    past the delete.
-2. A `seq` is handed out in commit order. On Postgres each change table's
-   writers take that feed's advisory lock before anything else and hold it
-   until they commit, so a writer cannot take seq 11 and commit while seq 10
-   is still in flight. Without that, a reader could pass 10 and never see it.
-   Nodes and shard assignments get the same property from a locked counter
-   row. Writers in one instance queue in memory before they take a pooled
-   connection, so a long cascade does not starve reads of connections, and a
-   writer that waits more than 5 s for its feed gives up with a 503
-   `busy` that is safe to retry: nothing was written.
+2. A `seq` is handed out in commit order, so a reader cannot pass
+   seq 10 while it is still in flight and never see it.
 3. A page holds at most `FELIX_CONTROLPLANE_CHANGES_LIMIT` changes (1000 by
    default). A full page's `next_seq` is the seq after its last change, and a
    shorter page's is the feed's tail. A consumer further behind than one page
@@ -1007,8 +984,7 @@ An assignment that promotes a follower on failover also carries
 `fence_storage_ids`: the storage id the replica report it was decided on named
 for each replica, by node id. The promoted leader's fence counts a replica only
 from that copy (`docs/replication-design.md`, "Fencing a promotion"). Every
-other write leaves it out. Postgres keeps it only for the generation that wrote
-it, and the Raft store writes it only at metadata level 16.
+other write leaves it out. The Raft store writes it only at metadata level 16.
 
 Every placement write, including creation, moves and operator steps, also
 carries `member_storage_ids`: the storage id each member of the set has
@@ -1017,13 +993,11 @@ uses it to tell that it lost its storage: if the set names a different id
 for it, it stops voting until it has caught up (`docs/replication-design.md`,
 "A copy that lost its storage does not vote"). The promotion fence never
 reads it, because a registered id is not the id a report vouched for.
-Postgres keeps it only for the generation that wrote it (migration 0039), and
-the Raft store writes it only at metadata level 22.
+The Raft store writes it only at metadata level 22.
 
 Under `joint_fence` an assignment also carries `learners`: the members the
 control plane holds as learners because their storage was replaced. Empty
-otherwise, so a write is what it was before. Postgres keeps it only for the
-generation that wrote it (migration 0040), and the Raft store writes it only
+otherwise, so a write is what it was before. The Raft store writes it only
 at metadata level 23, which also carries a report's `holds_start`.
 
 A placement write that lands more than one generation up, which only a rename
@@ -1031,8 +1005,7 @@ past a refusal's ballot does, also carries `previous_generation`: the
 generation of the assignment it replaced. Nothing was recorded in between, so a
 broker that watched that assignment takes its set as the one the new
 generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
-sets it; a caller's value is ignored. Postgres keeps it only
-for the generation that wrote it (migration 0045), and the Raft store writes it
+sets it; a caller's value is ignored. The Raft store writes it
 only at metadata level 29.
 
 A snapshot item also carries `previous`, the set of the assignment the change
@@ -1089,7 +1062,7 @@ report claims no less), carries entries to every later write while the
 member stays in the set under that id, and drops one once the set names the
 member by another id or leaves it out. Recording an entry does not change
 the generation and writes no change: brokers see it in the next assignment
-write or a snapshot. Postgres stores it from migration `0046`; under Raft it
+write or a snapshot. Under Raft it
 is recorded only once every member is at metadata level 30, and below that
 nothing is written. A report from a leader that elected itself records
 nothing: it may have opened before the copy was replaced, at a generation
@@ -1127,16 +1100,7 @@ checks the first four itself.
 4. Under Raft, every member is at metadata level 25: 23 for learners and
    start holders, 25 for the refusal report that renames a shard whose fence
    cannot learn the set it leaves.
-5. On Postgres, every control-plane instance runs a release with learners
-   (migration 0040) and refusal reports (migration 0042) before the
-   finalize. Without 0042 an instance drops the refusal a restarted leader
-   sends, and that shard waits. Nothing checks this: an older
-   instance that writes an assignment leaves its learners unmarked for that
-   generation, and they read as none, so placement could count a learner.
-   The same holds after the finalize: no control-plane instance may be rolled
-   back to, or started on, a release without learners, since nothing on
-   Postgres stops it and it drops learners the same way.
-6. The model's re-admission configurations pass with `PlacementKnowsLearners`
+5. The model's re-admission configurations pass with `PlacementKnowsLearners`
    (`docs/formal/README.md`).
 
 The cluster test `failures/learners.rs` runs the whole sequence with joint
@@ -1200,9 +1164,8 @@ those that gave a storage id. A given-up leader's probe report lists the
 followers whose fence answer ends at that generation on every log.
 Placement re-admits a replaced copy on it
 ([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)). It is left
-out when empty and by brokers that predate it. Postgres keeps it only for the
-report that wrote it (migration 0040), and under Raft it is recorded only once
-every member is at metadata level 23.
+out when empty and by brokers that predate it. Under Raft it is recorded only
+once every member is at metadata level 23.
 
 The answer is per shard, in request order: each entry names the shard and
 generation and says `accepted`, `stale`, `not_leader`, `unassigned` or
@@ -1212,12 +1175,11 @@ because a `Quorum` acknowledgement must rest on a report failover will read.
 Control planes before this answered 204 whatever they did with each shard.
 
 **Reports live in the store**, keyed like the assignment they describe and
-cascading from it, not in the memory of the instance that received them. With
-several instances over one Postgres, the instance a report reaches and the
-instance that runs placement need not be the same process, and a report only
-one of them had seen was a position no promoter could use: a `Quorum`
-acknowledgement released on it could not be made good at failover. Under Raft
-the report is a log command, restamped with the leader's clock as a heartbeat
+cascading from it, not in the memory of the instance that received them. The
+instance a report reaches and the instance that runs placement need not be the
+same process, and a report only one of them had seen was a position no
+promoter could use: a `Quorum` acknowledgement released on it could not be
+made good at failover. Under Raft the report is a log command, restamped with the leader's clock as a heartbeat
 is. Reports only move forward: one replaces the held report at a later
 generation, or at the same generation with a leader tail at least as far
 along, so a slow request cannot put back an older view of who is caught up.
@@ -1229,8 +1191,7 @@ exist.
 against the assignment it read, and a promotion can land between that read and
 the write. So every backend stores a report only if the reporting node still
 leads the shard at the report's generation, checked in the same step as the
-write: under the store lock in memory, against the assignment row held
-`FOR SHARE` in the same Postgres transaction, and in the Raft state machine as
+write: under the store lock in memory, and in the Raft state machine as
 the command applies, against the replicated assignment rather than the
 proposing instance's copy. A report refused there answers `not_leader` (another
 node leads) or `stale` (another generation), so a deposed leader never sees
@@ -1241,7 +1202,7 @@ so finish the roll before relying on the check.
 
 **One clock on both sides.** A report is stamped with the store's clock and its
 freshness is judged, by whichever instance plans, against the store's clock
-(`clock_timestamp()` under Postgres, the leader's process clock under Raft). A
+(the leader's process clock under Raft). A
 report is believed for twice the expiry timeout plus one heartbeat interval:
 long enough to outlive the detection of the leader that made it, since a
 report that expired sooner would leave a shard unpromotable forever, and no
@@ -1265,12 +1226,7 @@ same incarnation, is still the assignment's leader and is `down` or `left`, a
 matching follower's report is aged to the leader's last heartbeat instead of
 now, through any move steps since, so a dead leader's last report does not
 expire while placement is slow (#1250). All of these are plain data written as
-received. Under Postgres each has a marker: the node's
-`storage_id_incarnation` and the report's `follower_storage_at` (migration
-0030), and the report's `stamped_at` (0031). A member that predates the
-columns writes the row without them, and what it leaves behind reads as
-missing while the marker no longer matches the row's `incarnation` or
-`reported_at_millis`. Under Raft they need metadata levels 12 and 13 and are
+received. Under Raft they need metadata levels 12 and 13 and are
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
@@ -1283,8 +1239,7 @@ dropped). A leader that stood for election inherits none, so for a member
 the report names no identity for and inherits none for, the control plane
 stores the one the shard's previous report named it by. The next failover names such a follower by it in the assignment's
 `fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574, #1922). It never makes a follower caught up. Under Postgres its marker
-is `inherited_storage_at` (migration 0037); under Raft it needs metadata
+count (#1574, #1922). It never makes a follower caught up. Under Raft it needs metadata
 level 20 and is dropped below it, which names the follower by none, as
 before. See
 [replication-design.md](replication-design.md#fencing-a-promotion).
@@ -1452,7 +1407,7 @@ running it on a timer does not churn rows or flood the changefeed.
 The lease is one record in the store naming a holder and an expiry. Every
 instance tries to take it on each tick, and the holder renews it every pass;
 it lasts three reconcile intervals (15 s by default), judged by the store's
-clock (Postgres's `clock_timestamp()`), so instances never compare their own.
+clock, so instances never compare their own.
 An instance that stops gives it up on the way out and another takes it on its
 next tick. One that dies holds it until it expires, and meanwhile no timed
 pass runs: moves already started carry on, since brokers act on assignments,
@@ -1492,9 +1447,8 @@ checks do that, both compared under the same lock or log entry as the write:
   takeover, before it has written anything. A pass that read a stream as
   `Quorum` and finds it changed to `Leader` is fenced the same way, so it
   cannot replace a leader on its followers' word once that leader may be
-  serving on its lease (#1253). On Postgres a trigger (migration 0036)
-  advances it, so an instance from before it is held to this too; under Raft
-  the patch entry does, once every member is at metadata level 19.
+  serving on its lease (#1253). Under Raft the patch entry advances it,
+  once every member is at metadata level 19.
 
 An occasional conflict or fenced pass is expected with several instances; a
 steady rate means instances keep planning from reads that are already old. A shard with
@@ -1609,10 +1563,7 @@ Under Raft the pending set and the joint start need metadata level 21. Below
 it a write carrying a pending set is refused with 409 before it reaches the
 log, rather than written as a cut-over that takes the new set at once, and a
 report's joint start is dropped, which keeps a change pending; finalizing
-`replica_election` itself needs level 26. Under Postgres both come with
-migration 0038 (`pending_set`, `joint_start_acked`), each with a marker
-(`pending_set_generation`, `joint_start_acked_at`): what a member that
-predates the columns leaves behind reads as none.
+`replica_election` itself needs level 26.
 
 #### Adopting an elected leader
 
@@ -1756,8 +1707,7 @@ lease changes hands. Promotion on a lapsed lease is unchanged.
 
 Under Raft adoption needs metadata level 21, like the pending set. Below it
 the write is refused before it reaches the log, so every member keeps the
-assignment it had and the report is judged as before. Postgres needs no
-migration for it.
+assignment it had and the report is judged as before.
 
 **When the election is recorded and not adopted**, the assignment still names
 the old leader, now at the elected generation. That leader cannot serve there,
@@ -1859,27 +1809,13 @@ leader learns it only from a snapshot.
 Without a refusal report for a promise, the shard waits for the pending-set
 timeout or a lease lapse, as before. Without one for an unknown set, it waits
 until something else writes the assignment. Under Raft the field is stored
-from metadata level 25 and dropped below it; under Postgres it is migration
-0042 (`refused_generation`, `refused_to`), with `refused_at` as the marker
-that keeps what a member that predates the columns leaves behind from
-reading as a refusal.
+from metadata level 25 and dropped below it.
 
 A refusal can carry the ballot the leader's own copy holds for another node
 above its generation. Placement then names the leader one past that ballot
 instead of one up, as long as the ballot is at most 16 generations (the
 election window) above the shard's. Under Raft the ballot needs metadata level 28 and is dropped
-below it, so the leader is named one up on every member. Under Postgres it
-is migration 0043 (`refused_ballot`), with `refused_ballot_at` as its
-marker.
-
-**Postgres: finish the control-plane upgrade before finalizing
-`replica_election`.** The finalize check runs on the instance that receives
-it, and the store records no version for the other instances (only who holds
-the placement lease), so nothing can refuse it while an older instance runs.
-That instance does not read `pending_set`, and a write it makes drops the
-pending set, so a change reads as abandoned there while the leader goes on as
-if it were not. It is an operator precondition: every instance must run this
-release first.
+below it, so the leader is named one up on every member.
 
 Two things start a move. A **draining node** (`POST /v1/nodes/{id}/drain`)
 gives up everything it leads, one shard per free move slot, preferring a
@@ -2126,7 +2062,7 @@ the instance itself wrote; the start an assignment carries is for the move
 timeout, not for these. A move is observed
 only by the instance that wrote both its fence and its cut-over, and its full
 duration only if that instance staged it too. With one instance, or under
-Raft, that is every move; with several instances over Postgres, most steps
+Raft, that is every move; with several instances, most steps
 are written by the lease holder, but a step written by a pass that a report
 woke elsewhere, or across a change of holder, leaves that move missing from
 some or all of them.
@@ -2282,8 +2218,7 @@ learns a new shard from a snapshot knows nothing came before it, and its
 joint fence fences the new set alone. The control plane finds it in its
 shard change log. The in-memory and Raft stores keep the last
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so there an item
-whose `assigned` change has been trimmed is left unmarked; Postgres keeps
-every shard change. Only a stream or cache with an incarnation is marked. Absent never means "not first", only "not known", and a
+whose `assigned` change has been trimmed is left unmarked. Only a stream or cache with an incarnation is marked. Absent never means "not first", only "not known", and a
 broker treats it as unknown. A control plane that predates the field sends
 none.
 
@@ -2490,7 +2425,7 @@ a single-shard stream keeps total order. The key rides the binary frame under
 path; JSON remains the fallback for a broker that predates the bit.
 
 **Stream routing.** A stream records how its keys map to shards, and the
-choice is fixed when the stream is created (`streams.routing`, migration 0022).
+choice is fixed when the stream is created (`streams.routing`).
 `modulo` is `hash(key) % shards`, the mapping every stream had before there was
 a choice. `jump_hash` is jump consistent hashing of the same key hash: growing
 a stream from `n - 1` to `n` shards would move about `1/n` of its keys instead
@@ -2518,12 +2453,11 @@ which every answer leaves out.
 
 A name's incarnations only increase. The creating request proposes one, the
 control plane's clock in microseconds (kept below 2^53), whenever the store can
-carry one: always on memory and Postgres, and on Raft once every member is at
+carry one: always on memory, and on Raft once every member is at
 metadata level 10, whether or not the instance handling the request has seen
 the finalize yet. The store decides inside the write that
 creates the stream: the memory store under its locks, Raft in the applied
-command, which carries the proposal so every member decides alike, and
-Postgres in a trigger. Before the finalize the stream gets 0 whatever was
+command, which carries the proposal so every member decides alike. Before the finalize the stream gets 0 whatever was
 proposed. After it, the stream gets the proposal or one above the name's
 tombstone, whichever is higher, and never 0, so a create that read the fleet
 just before the finalize still gets an incarnation. The clock is what keeps a
@@ -2569,14 +2503,9 @@ cannot be created again. Give the new stream another name. Names are kept for go
 its locks; Raft in the applied command, from the entry's `names` flag, which
 the proposer sets only once every member is at metadata level 18 (an entry
 without it records nothing and refuses nothing, as an older member applies
-it, `deleted_names_wait_for_every_member`); and Postgres in triggers
-(migration 0035), so an instance from before it records deletes too and is
-held to the refusal. Migration 0035 also
-backfills the names of `Deleted` changes still in the change tables whose
-name does not exist now. The memory and Raft stores have no such history to
-backfill from, so on them a name deleted before the store recorded names (on
-Raft, before every member reached level 18) is not refused, nor is one whose
-change Postgres had already trimmed. The contract is
+it, `deleted_names_wait_for_every_member`). Nothing backfills the names of
+deletes from before the store recorded them, so a name deleted before then (on
+Raft, before every member reached level 18) is not refused. The contract is
 `before_the_finalize_a_deleted_name_is_not_created_again` and
 `after_the_finalize_a_deleted_name_is_created_again`, and the API answer
 `a_deleted_stream_name_is_refused_before_the_finalize`.
@@ -2608,45 +2537,6 @@ the stream it was written for. The first assignment of an incarnated stream's
 shard takes the shard change's sequence number as its generation, so a
 recreated stream never repeats a generation of the deleted one.
 
-**On Postgres** migration 0028 adds `streams.incarnation`,
-`shard_assignments.incarnation`, the `stream_tombstones` table and
-`stream_changes.deleted_through`, and puts the rules in triggers, so they hold
-for every instance writing the database, one from before the migration's
-release included:
-
-- a `BEFORE INSERT` trigger on `streams` decides the incarnation as above, and
-  refuses a 0 after the finalize with `check_violation`, so an instance that
-  predates incarnations, which inserts the column's default 0, cannot create
-  streams after the finalize;
-- an `AFTER DELETE` trigger on `streams` writes the tombstone, which covers
-  cascades and older instances;
-- a `BEFORE INSERT` trigger on `stream_changes` fills a `Deleted` change's
-  `deleted_through` from the tombstone;
-- a `BEFORE INSERT` trigger on `shard_assignments` gives a new stream shard's
-  assignment written without an incarnation (by an older instance) its
-  stream's incarnation and, as generation, the seq of the shard change the
-  writer records next, and one on `shard_assignment_changes` copies both into
-  that change's payload
-  (`an_instance_before_incarnations_assigns_the_live_incarnation`);
-- the triggers read whether the feature is finalized under a shared advisory
-  lock that an `AFTER INSERT` trigger on `fleet_features` takes exclusively
-  for `stream_incarnations`, so a create that read "not finalized" commits
-  before the finalize does
-  (`a_create_waits_for_a_finalize_in_flight`).
-
-The migration runs once per database, when the first upgraded instance
-starts, so it is in place for the finalize. Instances still on an older
-release may keep running across it: their stream creates fail
-(`an_instance_before_incarnations_cannot_create_at_0_after_the_finalize`),
-their deletes still write tombstones, and their assignments get the
-incarnation and generation from the triggers. Their catalog reads leave
-incarnations out, though, and brokers refuse those records rather than misread
-them, so a broker polling an older instance serves no incarnated stream until
-it reaches an upgraded one. Finish upgrading every instance before the
-finalize to avoid that. The rules are checked for every
-store by one contract (`run_incarnation_contract` in
-`store/contract/incarnations.rs`).
-
 **Caches have incarnations too**, under their own fleet feature,
 `cache_incarnations`, finalized separately because a broker that has
 `stream_incarnations` but predates this one would open an incarnated cache in
@@ -2666,10 +2556,7 @@ exported and imported with the state, served by `GET /v1/caches/snapshot` as
 when its incarnation is not 0, as for streams. A cache shard's assignment
 stores the cache's incarnation, and an incarnated cache's first shard
 generation is the change seq. `POST /v1/resources` answers with the caches as
-stored, incarnations included. On Postgres, migration 0032 adds
-`caches.incarnation`, `cache_tombstones` and `cache_changes.deleted_through`
-with the same triggers as 0028, under an advisory lock of their own, so a
-cache write never waits on a stream finalize. The rules are checked for every
+stored, incarnations included. The rules are checked for every
 store by `run_cache_incarnation_contract` in `store/contract/cache_incarnations.rs`.
 
 Brokers learn the mapping from the shard assignments, not from the stream
@@ -2684,7 +2571,7 @@ passes it on to clients, which is how `Client` keys its owner cache.
 
 Two references, two different policies, chosen rather than inherited:
 
-- **Stream**: a foreign key with `ON DELETE CASCADE`. Deleting a stream removes
+- **Stream**: a cascading reference. Deleting a stream removes
   its assignments and their replica reports, because the shards no longer exist
   and keeping ownership records for them leaves placement chasing ghosts. Each
   assignment taken is recorded as `unassigned` on the shard change log, which is
@@ -2698,9 +2585,7 @@ Two references, two different policies, chosen rather than inherited:
 - **Node**: deliberately **no** foreign key. Deleting a node that still leads or
   replicates a shard is **rejected**, not cascaded. A cascade would delete the
   only record of where that shard's data lives, turning an operator's tidy-up
-  into silent data orphaning. Reassign the shard first. On Postgres the delete
-  locks the node row `FOR UPDATE` and an assignment write locks each node it
-  names `FOR SHARE`, so a delete racing a write cannot both pass their checks.
+  into silent data orphaning. Reassign the shard first.
 
 Shard numbers are validated against the stream's `shards` count on every write.
 Streams cannot currently be resized (`StreamPatchRequest` has no `shards` field),
@@ -2915,9 +2800,7 @@ advisory reports cannot deliver.
 - Object store access is configured per broker (later), not in the control plane.
 
 ### Storage
-- Under the Postgres backend, control-plane pods are stateless: all metadata
-  is in the database, and an instance holds nothing worth a volume.
-- Under the raft backend, each pod carries a PVC for the Raft log and
+- Each control-plane pod carries a PVC for the Raft log and
   snapshots; that volume is what makes a pod restart a rejoin. The
   reference StatefulSet shape is on the docs-site Metadata Raft page.
 - Dataplane brokers use PVCs for durable log segments (when enabled).
@@ -2925,16 +2808,13 @@ advisory reports cannot deliver.
 ### Services
 - Headless Service for control-plane peer discovery, required by the raft
   backend (stable per-pod names feed `FELIX_RAFT_PEERS`, on the separate,
-  token-authenticated Raft peer port), unused by the Postgres backend, whose
-  instances do not know about each other.
+  token-authenticated Raft peer port).
 - ClusterIP Service for control plane client API (watch/snapshot/health).
 - Separate Service for broker QUIC ingress.
 
 ### Scheduling + Ops
-- Control plane replicas: two or more. An odd count matters only for the Raft
-  end state; instances share nothing today, so any number works and two is
-  enough to survive losing one. The database is the half that actually holds
-  state; run it HA per [ha-postgres.md](ha-postgres.md).
+- Control plane replicas: three, so the Raft group keeps a quorum through
+  losing one.
 - Use PodDisruptionBudgets so a rolling deploy cannot take every instance at
   once.
 - Prefer anti-affinity for control plane pods to avoid single-node failure.
@@ -2947,13 +2827,13 @@ Two endpoints, because they drive different actions.
 
 | Path | Question | What fails it | Wire it to |
 | --- | --- | --- | --- |
-| `/v1/system/live` | Should this process be restarted? | Nothing outside the process. It touches no database and answers `200` whenever the runtime can answer at all. | liveness probe |
-| `/v1/system/ready` | Should this instance get traffic? | The store not answering, answering an error, or being on an older schema than this build expects. `503` with a reason. | readiness probe |
+| `/v1/system/live` | Should this process be restarted? | Nothing outside the process. It answers `200` whenever the runtime can answer at all. | liveness probe |
+| `/v1/system/ready` | Should this instance get traffic? | The store not answering or answering an error. `503` with a reason. | readiness probe |
 | `/v1/system/health` | n/a | The same check as `/v1/system/ready`. Kept because deployments already point at it. | nothing new |
 
-**Liveness must not check the database.** A liveness probe drives restarts, and
-an external database outage that fails one restarts every instance, repeatedly,
-for a fault none of them caused and no restart can fix. That is the single most
+**Liveness must not check the store.** A liveness probe drives restarts, and
+a store fault that fails one restarts every instance, repeatedly,
+for a fault no restart can fix. That is the single most
 important line here.
 
 Recommended settings, and why:
@@ -2962,32 +2842,17 @@ Recommended settings, and why:
 | --- | --- | --- |
 | readiness `periodSeconds` | `2`–`5` | The answer is cached for `FELIX_READINESS_CACHE_TTL_MS` (1s), so polling faster costs nothing extra but gains nothing either. |
 | readiness `timeoutSeconds` | `3` | Above `FELIX_READINESS_TIMEOUT_MS` (2s), so the service answers before the prober gives up and the reason is reported rather than lost. |
-| readiness `failureThreshold` | `2`–`3` | One slow answer during a Postgres failover should not pull an instance out. |
+| readiness `failureThreshold` | `2`–`3` | One slow answer during an election should not pull an instance out. |
 | liveness `periodSeconds` | `10` | It answers from memory; there is nothing to poll hard for. |
 | liveness `failureThreshold` | `3` | A restart is the most expensive response available. |
 
-The readiness check is bounded and cached, so its cost is one query per second
+The readiness check is bounded and cached, so its cost is one store check per second
 per instance no matter how many probers there are. A transient outage clears on
 its own: readiness returns as soon as the store answers again, within the cache
 window.
 
-Every claim in this section is exercised against a real Postgres reached through
-a proxy the test can cut, black-hole, and restore, in
-`tests/pg_readiness.rs` (`cargo test -p felix-controlplane-service --features pg-tests --test
-pg_readiness`):
-
-| Claim | What the test does |
-| --- | --- |
-| An instance that cannot reach its database leaves rotation | Cuts connectivity; `/v1/system/ready` turns `503` |
-| …and is *not* restarted for it | Asserts `/v1/system/live` stays `200` through the same outage |
-| A transient outage recovers with no intervention | Restores connectivity; readiness returns on its own |
-| A database older than this build does not get traffic | Hides the newest applied migration row; readiness turns `503`, and returns when it is put back |
-| A probe answers rather than hangs | Black-holes the connection (established, then silent), and the probe still comes back inside its own bound |
-
-The mechanism itself (cache window, timeout, draining short-circuit) is covered
-separately in `src/api/readiness/tests.rs` against a probe that fails on command;
-the tests above are what make those the *database's* behaviour rather than a
-fake's.
+The mechanism (cache window, timeout, draining short-circuit) is covered in
+`src/api/readiness/tests.rs` against a probe that fails on command.
 
 ### During a shutdown
 
@@ -3006,8 +2871,8 @@ operator restarting by hand is not waiting on a load balancer.
 
 Draining is answered before the store is consulted and before the cache is read:
 
-- **Before the store**, because nothing a database says changes whether this
-  process is shutting down, and a struggling database must not delay an instance
+- **Before the store**, because nothing the store says changes whether this
+  process is shutting down, and a struggling store must not delay an instance
   leaving rotation.
 - **Before the cache**, because an instance that had just cached a healthy
   answer would otherwise keep taking traffic for a whole cache window after it
@@ -3036,11 +2901,6 @@ What a drain looks like on the metrics endpoint, which outlives it:
 | `felix_inflight_requests` | requests currently being served, so "waiting on what?" has an answer |
 | `felix_drain_duration_ms` | how long the last drain took |
 | `felix_drain_forced_total{subsystem}` | subsystems cut off by the deadline; non-zero means work was dropped, and it is the counter to alert on because the warning log dies with the pod |
-
-The rolling-restart guarantee (two instances over one Postgres, every broker
-heartbeat and watch served across a restart of each) is exercised end to end
-by `tests/rolling_restart.rs` (`cargo test -p felix-controlplane-service --features pg-tests
---test rolling_restart`).
 
 ## Open Questions
 - Snapshot cadence and maximum delta size.

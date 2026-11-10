@@ -158,11 +158,8 @@ applies.
 {{- $cp := .Values.controlplane -}}
 {{- $b := .Values.broker -}}
 {{- if $cp.enabled -}}
-{{- if not (has $cp.storage.backend (list "memory" "postgres" "raft")) -}}
-{{- fail (printf "controlplane.storage.backend must be memory, postgres or raft, not %q" $cp.storage.backend) -}}
-{{- end -}}
-{{- if and (eq $cp.storage.backend "postgres") (not $cp.storage.postgres.existingSecret) -}}
-{{- fail "controlplane.storage.backend=postgres needs controlplane.storage.postgres.existingSecret: a Secret holding the connection URL" -}}
+{{- if not (has $cp.storage.backend (list "memory" "raft")) -}}
+{{- fail (printf "controlplane.storage.backend must be memory or raft, not %q" $cp.storage.backend) -}}
 {{- end -}}
 {{- if eq $cp.storage.backend "raft" -}}
 {{- if lt (int $cp.replicas) 3 -}}

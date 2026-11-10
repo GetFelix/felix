@@ -61,14 +61,14 @@ eastus2: runners there would leave the perf cells no room.
   machines. Fork PRs also need approval from a
   maintainer before any workflow runs (repo setting
   `approval_policy=all_external_contributors`).
-- The `runner` user has no sudo, but it is in the `docker` group because the
-  test and coverage jobs use a Postgres service container. That is root on the
+- The `runner` user has no sudo, but it is in the `docker` group because jobs
+  run containers (the compose smoke test, TLC). That is root on the
   host in practice, which is one more reason for the rule above.
 
 ## What is installed
 
 `cloud-init.yaml`: build-essential, clang, lld, cmake, libssl-dev, Java 21,
-Docker, Node 20, Python 3 with PyYAML, `gh`, `postgresql-client`, rustup with
+Docker, Node 20, Python 3 with PyYAML, `gh`, rustup with
 1.99.1 (clippy, rustfmt, llvm-tools) and nightly, `cargo-llvm-cov`, and the
 Actions runner under `/home/runner/actions-runner`. The runner updates itself.
 Bump `RUST_TOOLCHAIN` there when `rust-toolchain.toml` moves; the workflows'

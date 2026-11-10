@@ -44,7 +44,7 @@ QUIC and peers over a second QUIC endpoint with its own protocol. It leads some
 shards, forwards what it does not lead, and replicates what it leads.
 
 **The control plane** (`services/felix-controlplane-service`) is a REST service whose
-metadata lives in an embedded Raft group, in Postgres, or in memory for
+metadata lives in an embedded Raft group, or in memory for
 development. It owns tenants, namespaces, streams, caches, the node catalog, and
 **shard assignments**, and it runs placement on a timer.
 

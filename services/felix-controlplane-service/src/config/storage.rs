@@ -3,19 +3,19 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, anyhow};
 
-use super::{
-    DEFAULT_PG_ACQUIRE_TIMEOUT_MS, DEFAULT_PG_CONNECT_TIMEOUT_MS, DEFAULT_PG_MAX_CONNECTIONS,
-    parse_positive_env,
-};
+use super::parse_positive_env;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageBackend {
     Memory,
-    Postgres,
     /// Metadata replicated by the control-plane instances themselves —
     /// no external database. See `docs/metadata-raft-design.md`.
     Raft,
 }
+
+/// Said when a leftover Postgres setting would otherwise fall back to an empty store.
+pub(super) const POSTGRES_REMOVED: &str = "the Postgres metadata backend was removed; \
+     use the Raft backend (FELIX_RAFT_NODE_ID, FELIX_RAFT_DATA_DIR, FELIX_RAFT_PEERS)";
 
 impl FromStr for StorageBackend {
     type Err = anyhow::Error;
@@ -23,8 +23,8 @@ impl FromStr for StorageBackend {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.to_lowercase().as_str() {
             "memory" => Ok(StorageBackend::Memory),
-            "postgres" => Ok(StorageBackend::Postgres),
             "raft" => Ok(StorageBackend::Raft),
+            "postgres" => Err(anyhow!(POSTGRES_REMOVED)),
             other => Err(anyhow!("invalid storage backend: {other}")),
         }
     }
@@ -108,43 +108,12 @@ impl RaftBackendConfig {
     }
 }
 
-#[derive(Clone)]
-pub struct PostgresConfig {
-    /// Carries the password, so `Debug` prints it redacted.
-    pub url: String,
-    pub max_connections: u32,
-    pub connect_timeout_ms: u64,
-    pub acquire_timeout_ms: u64,
-}
-
-impl Default for PostgresConfig {
-    fn default() -> Self {
-        Self {
-            url: String::new(),
-            max_connections: DEFAULT_PG_MAX_CONNECTIONS,
-            connect_timeout_ms: DEFAULT_PG_CONNECT_TIMEOUT_MS,
-            acquire_timeout_ms: DEFAULT_PG_ACQUIRE_TIMEOUT_MS,
-        }
-    }
-}
-
-impl std::fmt::Debug for PostgresConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PostgresConfig")
-            .field("url", &redact_postgres_url(&self.url))
-            .field("max_connections", &self.max_connections)
-            .field("connect_timeout_ms", &self.connect_timeout_ms)
-            .field("acquire_timeout_ms", &self.acquire_timeout_ms)
-            .finish()
-    }
-}
-
 /// How this process authenticates Raft peer traffic, from the environment.
 ///
-/// Shared with the migration tool, which proposes to a group as a peer.
+/// Shared with the peer-listener checks.
 /// Missing values are left for validation to report, so the message names
 /// the variable rather than a parse step.
-pub(crate) fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
+fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
     let cert = std::env::var("FELIX_RAFT_TLS_CERT").ok();
     let key = std::env::var("FELIX_RAFT_TLS_KEY").ok();
     let ca = std::env::var("FELIX_RAFT_TLS_CA").ok();
@@ -172,7 +141,7 @@ pub(crate) fn peer_security_from_env() -> Result<crate::raft::PeerSecurity> {
 }
 
 /// `FELIX_RAFT_INSECURE_PEERS`: the explicit opt-out from a peer token.
-pub(crate) fn insecure_peers_from_env() -> bool {
+fn insecure_peers_from_env() -> bool {
     std::env::var("FELIX_RAFT_INSECURE_PEERS")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -263,45 +232,4 @@ fn parse_raft_peers(value: &str) -> Result<std::collections::BTreeMap<u64, Strin
         return Err(anyhow!("FELIX_RAFT_PEERS is empty"));
     }
     Ok(peers)
-}
-
-/// A Postgres URL with its password replaced, for logs and `Debug`.
-///
-/// Covers both places libpq takes one: the userinfo
-/// (`postgres://user:secret@host`) and a `password` query parameter. It errs
-/// towards hiding too much: the userinfo ends at the last `@`, so a password
-/// holding an unencoded `/` or `@` is still hidden. Anything that is not a
-/// URL is withheld whole, since a key/value connection string can put the
-/// password anywhere.
-pub(crate) fn redact_postgres_url(url: &str) -> String {
-    const REDACTED: &str = "<redacted>";
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return if url.is_empty() {
-            String::new()
-        } else {
-            REDACTED.to_string()
-        };
-    };
-    let rest = match rest.rsplit_once('@') {
-        Some((userinfo, host)) => match userinfo.split_once(':') {
-            Some((user, _)) => format!("{user}:{REDACTED}@{host}"),
-            None => format!("{userinfo}@{host}"),
-        },
-        None => rest.to_string(),
-    };
-    let mut out = format!("{scheme}://");
-    // The first part is the host and path; the rest are query parameters.
-    for (i, part) in rest.split_inclusive(['?', '&']).enumerate() {
-        let body = part.strip_suffix(['?', '&']).unwrap_or(part);
-        match body.split_once('=') {
-            Some((key, _)) if i > 0 && key.eq_ignore_ascii_case("password") => {
-                out.push_str(key);
-                out.push('=');
-                out.push_str(REDACTED);
-            }
-            _ => out.push_str(body),
-        }
-        out.push_str(&part[body.len()..]);
-    }
-    out
 }

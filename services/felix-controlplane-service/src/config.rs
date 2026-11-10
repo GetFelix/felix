@@ -14,8 +14,7 @@ pub use api_tls::ApiTlsConfig;
 pub use api_ui::{ApiUi, DEFAULT_API_UI_PATH};
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
-pub use storage::{PostgresConfig, RaftBackendConfig, StorageBackend};
-pub(crate) use storage::{insecure_peers_from_env, peer_security_from_env};
+pub use storage::{RaftBackendConfig, StorageBackend};
 
 use std::fs;
 use std::net::SocketAddr;
@@ -60,9 +59,6 @@ pub const DEFAULT_SHARD_RECONCILE_INTERVAL_MS: u64 = 5_000;
 /// How often the expiry sweep runs. Finer than the timeout so a node is marked
 /// down close to when it actually expires rather than a whole timeout later.
 pub const DEFAULT_NODE_EXPIRY_SWEEP_INTERVAL_MS: u64 = 2_000;
-const DEFAULT_PG_MAX_CONNECTIONS: u32 = 10;
-const DEFAULT_PG_CONNECT_TIMEOUT_MS: u64 = 5_000;
-const DEFAULT_PG_ACQUIRE_TIMEOUT_MS: u64 = 5_000;
 const DEFAULT_BOOTSTRAP_BIND_ADDR: &str = "127.0.0.1:9095";
 
 /// Everything the control plane is configured with.
@@ -78,7 +74,6 @@ pub struct ControlPlaneConfig {
     pub metrics_bind: SocketAddr,
     pub region_id: String,
     pub storage: StorageBackend,
-    pub postgres: Option<PostgresConfig>,
     pub raft: Option<RaftBackendConfig>,
     pub changes_limit: u64,
     pub change_retention_max_rows: Option<i64>,
@@ -126,11 +121,6 @@ impl ControlPlaneConfig {
     }
 
     fn validate(&self) -> Result<()> {
-        if matches!(self.storage, StorageBackend::Postgres) && self.postgres.is_none() {
-            return Err(anyhow!(
-                "postgres backend requested but FELIX_CONTROLPLANE_POSTGRES_URL / postgres.url is not set"
-            ));
-        }
         if matches!(self.storage, StorageBackend::Raft) {
             let raft = self.raft.as_ref().ok_or_else(|| {
                 anyhow!(

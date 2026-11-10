@@ -114,8 +114,8 @@ or the `publisher_principal` fleet feature is finalized in a cluster. It
 vouches for who wrote, not for what.
 
 Streams and caches for a namespace are created in one call. The control plane's
-batch endpoint (up to 256 items) creates them together, in one Postgres
-transaction or one Raft log entry, and is safe to retry: items that already exist as asked come
+batch endpoint (up to 256 items) creates them together, in one Raft log
+entry, and is safe to retry: items that already exist as asked come
 back `unchanged`.
 
 ```http

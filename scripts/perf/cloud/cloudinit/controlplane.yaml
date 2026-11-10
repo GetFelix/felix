@@ -12,7 +12,7 @@
 #
 # Memory-backed store, deliberately: this suite measures the data plane, and
 # a session's metadata fits in memory and dies with the session. The
-# control-plane-HA story has its own Postgres-backed tests.
+# control-plane-HA story has its own Raft-backed tests.
 package_update: true
 write_files:
   # The control plane is REST/TCP, not QUIC, so it does not need the UDP-buffer

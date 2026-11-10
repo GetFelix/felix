@@ -108,7 +108,7 @@ cache, and consumer groups all landed afterwards.
       the log, not by Raft.
 
 ## Data durability and persistence
-- [X] Add durable backend for control plane: Postgres, with `sqlx::migrate!`.
+- [X] Add durable backend for control plane (now the embedded Raft group; the Postgres backend was removed).
 - [X] Add durable backend for data plane: a segmented, checksummed, crash-safe
       log behind `StreamMetadata::durable`. See
       [Durable Storage](durable-storage.md).

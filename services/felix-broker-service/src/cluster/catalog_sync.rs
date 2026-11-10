@@ -23,7 +23,7 @@
 //!   and bubble up, because they indicate an invariant mismatch or corrupted input.
 //!
 //! NOTE: This file is a *client* of the control-plane. Persisting control-plane data
-//! (e.g., in Postgres) is implemented on the **control-plane service**, not here.
+//! is implemented on the **control-plane service**, not here.
 
 mod apply;
 mod fetch;

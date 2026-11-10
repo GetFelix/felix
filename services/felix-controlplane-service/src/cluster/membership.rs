@@ -153,8 +153,8 @@ async fn expire_before(store: &dyn ControlPlaneStore, expiry_before: u64) -> usi
 /// Sweep for expired nodes until `shutdown` fires.
 ///
 /// `gate` decides whether this instance sweeps at all this tick. For the
-/// memory/Postgres backends it is `Always` — duplicate sweeps are safe by
-/// store contract. Under Raft it holds only on the leader, freshly
+/// memory backend it is `Always`: duplicate sweeps are safe by store
+/// contract. Under Raft it holds only on the leader, freshly
 /// confirmed, replacing cross-instance claim coordination with something
 /// strictly simpler: one sweep because there is one leader.
 ///
