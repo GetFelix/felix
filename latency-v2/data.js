@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794277570554,
+  "lastUpdate": 1794281895740,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64350,6 +64350,72 @@ window.BENCHMARK_DATA = {
             "range": "23.87",
             "unit": "us",
             "extra": "trials: 5\nmedian: 358.00\nmean: 348.00\nstdev: 23.87\ncv: 6.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "369aee2b2168cdaf99c9a50d084fd376f80abbe7",
+          "message": "spec(shard): fit main's full TLA+ run into hosted runners' six hours (#2159)\n\n* wip: candidate bounds for ContinuingDoubted\n\n* wip: candidate bounds for NoOwnBallotRefused\n\n* wip: more candidates\n\n* wip: more candidates 2\n\n* spec(shard): fit main's full TLA+ run into hosted runners' six hours\n\nFelixShardElectUncleanContinuingDoubted drops its one client write (MaxWrites 0):\n19.6M distinct states, 48 min in CI, against more than six hours. The old\nbound is FelixShardElectUncleanContinuingDoubtedFull, unregistered.\nFelixShardCpLiveNoOwnBallotRefused leaves the registered set: no cut that\nstill violates liveness fit. check_tla.sh weights now come from the measured\ntimes of main's run, and the full set runs in twenty shards so the two\nlongest configurations get a job each.\n\nSpec-Unaffected: no change to FelixShard.tla; only a configuration bound, the registered set, weights and the shard count\n\n* spec(shard): drop the candidate bounds tried\n\nSpec-Unaffected: removes configurations that were never registered\n\n* spec(shard): walk the one-write Doubted case nightly\n\nSpec-Unaffected: no change to FelixShard.tla; a workflow family, a walk registration and docs",
+          "timestamp": "2026-11-10T03:30:57Z",
+          "tree_id": "e9c4a6623d099d3917bb5070f7f9eba4bfecca60",
+          "url": "https://github.com/GetFelix/felix/commit/369aee2b2168cdaf99c9a50d084fd376f80abbe7"
+        },
+        "date": 1794281885778,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 118,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 117.80\nstdev: 0.84\ncv: 0.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 162,
+            "range": "2.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 162.00\nmean: 161.00\nstdev: 2.35\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 225,
+            "range": "70.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 249.40\nstdev: 70.56\ncv: 28.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 309,
+            "range": "22.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 316.00\nstdev: 22.05\ncv: 6.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 449,
+            "range": "634.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 449.00\nmean: 730.80\nstdev: 634.65\ncv: 86.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
