@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794326709565,
+  "lastUpdate": 1794327569640,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -65406,6 +65406,72 @@ window.BENCHMARK_DATA = {
             "range": "501.95",
             "unit": "us",
             "extra": "trials: 5\nmedian: 551.00\nmean: 752.80\nstdev: 501.95\ncv: 66.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e28fc8475c18e58287dbc9116984e5fb2128a47e",
+          "message": "build(deps): bump the out-of-workspace-crates group across 5 directories with 6 updates (#2179)\n\n* build(deps): bump the out-of-workspace-crates group across 5 directories with 6 updates\n\nBumps the out-of-workspace-crates group with 2 updates in the /crates/sdk/felix-python directory: [serde-saphyr](https://github.com/bourumir-wyngs/serde-saphyr) and [crc32fast](https://github.com/srijs/rust-crc32fast).\nBumps the out-of-workspace-crates group with 5 updates in the /demos/cross_tenant_isolation directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [crc32fast](https://github.com/srijs/rust-crc32fast) | `1.5.3` | `1.5.4` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.29.0` | `1.29.1` |\n| [redb](https://github.com/cberner/redb) | `4.4.0` | `4.5.0` |\n| [crc32c](https://github.com/zowens/crc32c) | `0.6.8` | `0.6.9` |\n| [flate2](https://github.com/rust-lang/flate2-rs) | `1.1.10` | `1.1.11` |\n\nBumps the out-of-workspace-crates group with 5 updates in the /demos/rbac-live directory:\n\n| Package | From | To |\n| --- | --- | --- |\n| [crc32fast](https://github.com/srijs/rust-crc32fast) | `1.5.3` | `1.5.4` |\n| [uuid](https://github.com/uuid-rs/uuid) | `1.29.0` | `1.29.1` |\n| [redb](https://github.com/cberner/redb) | `4.4.0` | `4.5.0` |\n| [crc32c](https://github.com/zowens/crc32c) | `0.6.8` | `0.6.9` |\n| [flate2](https://github.com/rust-lang/flate2-rs) | `1.1.10` | `1.1.11` |\n\nBumps the out-of-workspace-crates group with 4 updates in the /demos/slow-consumer directory: [crc32fast](https://github.com/srijs/rust-crc32fast), [uuid](https://github.com/uuid-rs/uuid), [crc32c](https://github.com/zowens/crc32c) and [flate2](https://github.com/rust-lang/flate2-rs).\nBumps the out-of-workspace-crates group with 4 updates in the /demos/state-divergence directory: [crc32fast](https://github.com/srijs/rust-crc32fast), [uuid](https://github.com/uuid-rs/uuid), [crc32c](https://github.com/zowens/crc32c) and [flate2](https://github.com/rust-lang/flate2-rs).\n\n\nUpdates `serde-saphyr` from 2.0.0 to 2.1.1\n- [Release notes](https://github.com/bourumir-wyngs/serde-saphyr/releases)\n- [Changelog](https://github.com/bourumir-wyngs/serde-saphyr/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/bourumir-wyngs/serde-saphyr/compare/2.0.0...2.1.1)\n\nUpdates `crc32fast` from 1.5.3 to 1.5.4\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.3...v1.5.4)\n\nUpdates `crc32fast` from 1.5.3 to 1.5.4\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.3...v1.5.4)\n\nUpdates `uuid` from 1.29.0 to 1.29.1\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.1)\n\nUpdates `redb` from 4.4.0 to 4.5.0\n- [Release notes](https://github.com/cberner/redb/releases)\n- [Changelog](https://github.com/cberner/redb/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/cberner/redb/compare/v4.4.0...v4.5.0)\n\nUpdates `crc32c` from 0.6.8 to 0.6.9\n- [Commits](https://github.com/zowens/crc32c/compare/v0.6.8...v0.6.9)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\nUpdates `crc32fast` from 1.5.3 to 1.5.4\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.3...v1.5.4)\n\nUpdates `uuid` from 1.29.0 to 1.29.1\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.1)\n\nUpdates `redb` from 4.4.0 to 4.5.0\n- [Release notes](https://github.com/cberner/redb/releases)\n- [Changelog](https://github.com/cberner/redb/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/cberner/redb/compare/v4.4.0...v4.5.0)\n\nUpdates `crc32c` from 0.6.8 to 0.6.9\n- [Commits](https://github.com/zowens/crc32c/compare/v0.6.8...v0.6.9)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\nUpdates `crc32fast` from 1.5.3 to 1.5.4\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.3...v1.5.4)\n\nUpdates `uuid` from 1.29.0 to 1.29.1\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.1)\n\nUpdates `crc32c` from 0.6.8 to 0.6.9\n- [Commits](https://github.com/zowens/crc32c/compare/v0.6.8...v0.6.9)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\nUpdates `crc32fast` from 1.5.3 to 1.5.4\n- [Commits](https://github.com/srijs/rust-crc32fast/compare/v1.5.3...v1.5.4)\n\nUpdates `uuid` from 1.29.0 to 1.29.1\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.1)\n\nUpdates `crc32c` from 0.6.8 to 0.6.9\n- [Commits](https://github.com/zowens/crc32c/compare/v0.6.8...v0.6.9)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\n---\nupdated-dependencies:\n- dependency-name: serde-saphyr\n  dependency-version: 2.1.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32fast\n  dependency-version: 1.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32fast\n  dependency-version: 1.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: uuid\n  dependency-version: 1.29.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: redb\n  dependency-version: 4.5.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32c\n  dependency-version: 0.6.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32fast\n  dependency-version: 1.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: uuid\n  dependency-version: 1.29.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: redb\n  dependency-version: 4.5.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32c\n  dependency-version: 0.6.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32fast\n  dependency-version: 1.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: uuid\n  dependency-version: 1.29.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32c\n  dependency-version: 0.6.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32fast\n  dependency-version: 1.5.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: uuid\n  dependency-version: 1.29.1\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: crc32c\n  dependency-version: 0.6.9\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: out-of-workspace-crates\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* build: refresh the root and TypeScript lockfiles for serde-saphyr 2.1\n\n* build: hold serde-saphyr at 2.0, whose parser treats a bare --- file as empty\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Gabriel Loewen <gabrielloewen@outlook.com>",
+          "timestamp": "2026-11-10T16:15:08Z",
+          "tree_id": "7d1aa876343c02a1592fdff3758e4a163b6cc396",
+          "url": "https://github.com/GetFelix/felix/commit/e28fc8475c18e58287dbc9116984e5fb2128a47e"
+        },
+        "date": 1794327561703,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 100,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 99.20\nstdev: 1.10\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 134,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 133.60\nstdev: 1.52\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "19.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 182.60\nstdev: 19.97\ncv: 10.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 139,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 138.60\nstdev: 0.55\ncv: 0.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 273,
+            "range": "5.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 274.60\nstdev: 5.13\ncv: 1.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 407,
+            "range": "81.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 407.00\nmean: 421.80\nstdev: 81.84\ncv: 19.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
