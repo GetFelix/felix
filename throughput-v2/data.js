@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794281899319,
+  "lastUpdate": 1794283327545,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50752,6 +50752,58 @@ window.BENCHMARK_DATA = {
             "range": "51397.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 879194.67\nmean: 856184.27\nstdev: 51397.96\ncv: 6.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "73701220034e93dc0d8fdeca1bdfae696bbe311c",
+          "message": "perf: RF 3 A/B runs recreate the stream per cell instead of wiping brokers (#2163)\n\n* perf: A/B runs recreate the stream per cell instead of wiping RF 3 brokers\n\n* perf: let reseed.sh use a session env its caller already loaded\n\nrun-ab.sh can keep session.env outside the harness directory; reseed.sh\ninsisted on its own copy, so the first build switch of a GCP A/B failed.\n\n* perf: give a GCP ssh connect failure about four minutes to recover\n\nA banner-exchange timeout outlasted four attempts (55 s) and ended an A/B\nrun before its first cell. Six attempts with up to 60 s between them.\n\n* perf: run both A/B sides on their own control plane and brokers, stop on a bad reseed",
+          "timestamp": "2026-11-09T19:57:05-08:00",
+          "tree_id": "7ac8c17a2ef92f1301e6cd3b480fc49159f5a98d",
+          "url": "https://github.com/GetFelix/felix/commit/73701220034e93dc0d8fdeca1bdfae696bbe311c"
+        },
+        "date": 1794283326578,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 403909.9,
+            "range": "16218.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 403909.90\nmean: 405374.96\nstdev: 16218.81\ncv: 4.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 403909.9,
+            "range": "16218.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 403909.90\nmean: 405374.96\nstdev: 16218.81\ncv: 4.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92245.16,
+            "range": "3560.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92245.16\nmean: 90797.81\nstdev: 3560.94\ncv: 3.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 922451.58,
+            "range": "35609.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 922451.58\nmean: 907978.10\nstdev: 35609.43\ncv: 3.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
