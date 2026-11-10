@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794292647137,
+  "lastUpdate": 1794299633629,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51012,6 +51012,58 @@ window.BENCHMARK_DATA = {
             "range": "13288.93",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1138065.22\nmean: 1131931.82\nstdev: 13288.93\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b62049292c73c55fd8de331c2b35be3d520067a",
+          "message": "refactor(replication): route the stream write and read callers through the engine (#2180)\n\n* refactor(replication): route the stream write and read callers through the engine (#2154)\n\nQUIC publish (claimed, idempotent and in-memory waits), MQTT writes,\natomic commits, forwarded writes and group reads call Engine::await_commit\nand Engine::read_bound on one Hybrid in place of the marks and ingress pair\nthey threaded. Arguments, order, timeouts and error mapping are unchanged.\nAdds tests that hold the generation and the quorum timeout of the QUIC\nworker and conditional-write waits.\n\nSpec-Unaffected: no protocol or state-machine change\n\n* docs: record engine step 2 as built and add the shared-engine step\n\nSpec-Unaffected: docs only\n\n* test(replication): hold the marks and timeout of the MQTT, forwarded and group read waits\n\nSpec-Unaffected: tests and a doc comment only",
+          "timestamp": "2026-11-10T08:28:45Z",
+          "tree_id": "89dfd3b4601d550ea6799a409283e370cf40a467",
+          "url": "https://github.com/GetFelix/felix/commit/8b62049292c73c55fd8de331c2b35be3d520067a"
+        },
+        "date": 1794299632988,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 739222.74,
+            "range": "56402.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 739222.74\nmean: 717005.59\nstdev: 56402.01\ncv: 7.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 739222.74,
+            "range": "56402.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 739222.74\nmean: 717005.59\nstdev: 56402.01\ncv: 7.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 169102.78,
+            "range": "5763.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 169102.78\nmean: 168457.39\nstdev: 5763.33\ncv: 3.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1691027.85,
+            "range": "57633.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1691027.85\nmean: 1684573.94\nstdev: 57633.25\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
