@@ -260,7 +260,7 @@ or the publish path hands the batch to `client_write` and the adapter calls
 `begin_append` and `commit` from inside it. The first keeps the hot path
 untouched and is what the prototype tries first. If openraft cannot accept
 entries it did not append, the second is the fallback, and its cost shows up
-in the gate's latency cells.
+in the gate's latency cells. Decided: adopt first, see Decisions, 2.
 
 ### Raft log on the segment store
 
@@ -324,8 +324,8 @@ Membership has two options:
   it. As with versions 4 to 8, a broker that predates version 9 refuses a
   segment holding one, so rollback is blocked once one is written.
 
-We recommend the typed membership record. It is the standard Raft algorithm
-with one new record kind, where the first option keeps a bespoke
+Decided: the typed membership record (see Decisions, 1). It is the standard
+Raft algorithm with one new record kind, where the first option keeps a bespoke
 reconfiguration path alive. Set changes are rare, so the skipped offsets cost
 nothing measurable.
 
@@ -404,8 +404,7 @@ not to give up the design.
   are engine internals; `await_commit` hides them.
 - **Separate counter and cache logs.** A cache shard has its own counter log
   with its own mark (`QuorumMarks::counters`). Raft has one log per group, so
-  counters need either their own group or a place in the shard's log. This is
-  a design call for the prototype.
+  counters fold into the shard's one group (Decisions, 4).
 - **Confirmed reads through the control plane.** `confirmed.rs` reads the
   assignment from the control plane. Under Raft the leader is not assigned,
   so this becomes a read-index round and the code goes away.
@@ -413,6 +412,191 @@ not to give up the design.
   truncates the uncommitted suffix and continues. Both still refuse to drop a
   committed record (`BelowCommit`). Halted replicas stay an operator status
   only.
+
+## Decisions
+
+These were open design calls on this page and are now decided. Each has a
+note on what it costs in performance and what it risks for safety, and on
+what the gate measures to check it.
+
+### 1. Membership is a typed record that readers skip
+
+**Decision.** The Raft leader commits a replica-set change as a new record
+kind in the shard's log. The control plane still chooses the set. Readers
+skip the record the way they skip a generation-start record.
+
+**Performance.** The skip is one check of the record's mark, made on records
+already decoded for the read. Today that check sits at several read sites:
+`crates/server/felix-broker/src/durable.rs:588`, `crates/server/felix-broker/src/queue/reader.rs:363`,
+and in the Kafka layer at `felix-kafka/src/records.rs:43` and
+`api/list_offsets.rs:140`. One predicate on `RecordMark` (in
+`crates/server/felix-storage/src/log.rs`) replaces those checks, so a new kind
+cannot be missed at one site. Set changes are rare, so the bytes and skipped
+offsets do not show in any A/B cell.
+
+Drop detection stays exact. A delivered batch's `skipped_before`
+(`crates/server/felix-broker/src/stream/delivery.rs:38`) counts offsets that
+hold no event. A membership record is one of those, so a client using event
+offsets still reads any other jump as a drop. A client without event offsets
+(`0x0800`) sees a gap there, as it already does at a generation-start record
+(`docs/protocol.md`, Event batch offsets).
+
+**Safety.** All four record-kind bits are in use
+(`crates/server/felix-storage/src/segment/format.rs:290-297`). The new kind
+takes an unused pair, the way the trim record did in version 7, and it raises
+the segment version to 9. It is written only after a fleet feature says every
+broker reads version 9. Rollback: a broker that predates version 9 refuses a
+segment holding one, so after the first membership record is written, the only
+way back is a fresh replica. The upgrade docs say so.
+
+A membership record cut short by a crash is a torn tail. The open-time scan
+(`crates/server/felix-storage/src/segment/scan.rs`) cuts it off, and the
+replica's configuration reverts to the previous record. That is safe, because
+Raft treats an uncommitted configuration entry as one that can be truncated.
+A damaged membership record in the middle of a log is interior corruption and
+stops the open, like any other record. openraft reads the latest
+configuration back from the log on start, so the adapter keeps a derived list
+of membership offsets, rebuilt by the same scan. That keeps opening a log from
+reading it in full.
+
+**Checked by.** The storage format fuzz and crash-recovery tests
+(`crates/server/felix-storage/tests/format_fuzz.rs`, `crash_recovery.rs`) with
+the new kind. A test that no client read path returns it. A rollback test
+where a version 8 reader refuses the segment.
+
+### 2. The leader's entries are adopted from disk first
+
+**Decision.** The broker keeps appending on the leader (`begin_append`, then
+`commit`). openraft adopts entries already durable at their offsets. If
+openraft cannot do that cleanly, the fallback is `client_write`.
+
+**Safety.** Every entry needs the right term. The broker writes only while its
+write fence is open at the generation it serves
+(`services/felix-broker-service/src/shards/lifecycle/fence.rs`). The engine
+opens that fence only on Raft's leader event for that term, and closes it on
+step-down. So a record's generation in `disk_log/epochs.rs` is the term of the
+leader that wrote it. When the adapter adopts an entry, it checks the
+`(term, index)` openraft names against the generation list and the tail, and
+stops the group on any mismatch rather than guessing.
+
+A crash between the broker's append and openraft's adoption leaves records
+past the last index openraft knew. On restart openraft reads the log's last
+`(term, index)` from storage, so those records are uncommitted entries of
+that term. A new leader keeps them or truncates them. Either way no client
+was told they were committed, because `await_commit` returned only on the
+commit index. Truncation goes through `DiskLog`'s truncate, which refuses to
+go below the commit offset (`disk_log.rs:1242`). Raft never asks it to, so a
+refusal there is a bug to stop on, not a case to handle.
+
+One ordering rule matters. The broker and openraft must agree on the next
+index, so the leader's blank entry and membership entries also go through the
+broker's commit order (`CommitSequencer`). They do not get their own path.
+
+**Performance.** The hot path stays as it is: one encode, one group-commit
+fsync and one fanout per batch. What adoption adds is a call into the Raft
+task per batch. openraft gives each entry one index, while a Felix batch
+holds many records with one offset each. So either each record is its own
+entry (more per-entry work in the Raft core), or one entry covers a batch and
+the adapter maps entries to offset ranges. The prototype measures both. The
+gate's single-node and RF 3 steady cells at 1 KiB, where per-record overhead
+shows most, decide.
+
+With the `client_write` fallback the payload `Bytes` move into the entry by
+reference, so nothing is copied. The adapter's `append` calls the same
+`append_claimed_at` and `wait_durable` (`disk_log.rs:340`, `:414`), so group
+commit is kept and there is no second fsync. The costs are a channel hop to
+the group's Raft task before the append, and openraft's single task per group
+setting the order in place of `CommitSequencer`. The gate's p99 cells measure
+that.
+
+### 3. The adapter lives in `felix-storage`, behind a feature
+
+**Decision.** A `raft_log` module in `felix-storage`, compiled only with a
+`raft` cargo feature that brings in openraft.
+
+**Performance and build.** `felix-broker` does not turn on the feature, so the
+broker library builds without openraft. The control plane and
+`felix-replication` turn it on. Cargo merges features across a binary, so the
+broker binary links openraft once the Raft engine lands, and does not before.
+Nothing in `DiskLog`'s append, flush or read path changes when the feature is
+on. The adapter only calls `DiskLog`'s public methods.
+
+**Safety.** The control plane gains a dependency on `felix-storage`, never on
+the broker. One adapter means one storage suite run and one set of
+crash-point tests for both users.
+
+### 4. Counter and cache logs fold into one group per shard
+
+**Decision.** A cache shard's Raft group has one log, holding cache puts and
+deletes and counter adds. Stream shards already have one log and do not
+change (`ShardKind`, `crates/server/felix-replication/src/shard.rs:18`).
+
+**Performance.** Today a cache shard writes two logs, the cache log and the
+counter log, each with its own group commit, fsync and quorum mark
+(`QuorumMarks::counters`, `quorum.rs:37`). One log means one fsync per group
+commit for both kinds of write. Under mixed load that is fewer fsyncs per
+write, never more. Write amplification does not rise as long as the counter
+store becomes a projection of the group log, rebuilt from a snapshot plus the
+log the way the cache index already is (`crates/server/felix-storage/src/cache/log_cache.rs`).
+It does not rise as a second durable log. Cache compaction already copies
+live records forward to the tail (`docs/cache-on-log.md`, "Compaction"). Under
+Raft those copies are entries the leader proposes, and dropping the old
+segments is Raft's purge. A follower no longer compacts on its own. The
+copies cost what they cost today. The gate adds a cache cell with mixed puts
+and counter adds, to measure the fsync count.
+
+**Safety.** Puts and counter adds on one shard get one total order, where
+today they are ordered separately. That is a stronger guarantee, and nothing
+relied on the two being independent. One commit index replaces two marks,
+which removes the case where counters and cache data were acknowledged at
+different points after a failover.
+
+### 5. `Leader` consistency is "Raft leader, durable locally"
+
+**Decision.** Under Raft, a `Leader` stream acknowledges once the Raft leader
+has the batch on its own disk. Reads by the control-plane lease
+(`FELIX_QUORUM_READS=lease`) and the lease admission for `Leader` shards are
+removed.
+
+**Performance.** A `Quorum` read already confirms leadership with a read round
+once the fleet finalizes lease-free reads, and rounds are shared: at most one is in flight per shard, with
+one more queued (`crates/server/felix-replication/src/leadership.rs:15`). A
+lease read skipped that round. Removing it costs a deployment that opted into
+lease reads one majority round trip per round, shared across concurrent reads.
+The gate's read latency at p99 measures it. `Leader` reads stay local, with no
+round.
+
+**Safety.** This removes the clock assumption in reads ("The clock assumption,
+stated precisely" in `replication-design.md`). It also removes a class of bug
+that lease reads have had: a broker that has not heard the control plane
+confirming a `Quorum` read by its lease. Issue #2161 is a current example. The
+`Leader` loss window, a write acknowledged by a leader that is then deposed
+before it replicates, is unchanged in kind. It is now bounded by Raft's
+election instead of lease expiry.
+
+### 6. Code size is reported, not a criterion
+
+The gate reports lines of replication code and TLA+ kept for each protocol,
+and does not pass or fail on them. See the gate below.
+
+### 7. The control plane starts fresh and refuses an old redb directory
+
+**Decision.** No migration. A control plane that finds a redb store in its
+data directory refuses to start. The message names the file and says to move
+it aside, or to start from a snapshot export.
+
+**Safety.** The check runs before anything writes to the directory: before
+`DiskLog` opens there, because opening creates files. Today the store is opened
+with redb's `Database::create`
+(`services/felix-controlplane-service/src/raft/store.rs:120`), which creates
+the file if it is missing. The new open path tests for that file first and
+returns the error with the directory untouched. A test checks that the
+directory's listing is identical before and after the refusal. redb also holds
+the control plane's cluster id claim and its vote-withheld flag
+(`store.rs:83`, `:103`). Both move to small rename-into-place files with the
+vote, so a fresh start does not lose the rule that a wiped member does not vote.
+
+**Performance.** One file-existence check at start.
 
 ## Control-plane storage on the segment log
 
@@ -444,8 +628,8 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
   existing control-plane data directory is not read. Operators start the control plane
   fresh, or import a snapshot export (the import path in
   `metadata-raft-design.md` reads one). A control plane that finds a redb
-  file refuses to start with a message saying so, rather than silently
-  starting empty.
+  file refuses to start, before it writes anything, with a message saying so
+  (Decisions, 7).
 
 ### Why redb was chosen, and why that no longer holds
 
@@ -522,11 +706,11 @@ fixed in the Raft engine, or the decision is reopened with the numbers in
 4. **Failover time** no worse than the hybrid in any cell.
 5. **Control plane down.** A leader crash while the control plane is down
    still fails over and keeps serving.
-6. **Size.** Lines of replication code and TLA+ specs and configs we would
-   keep. Baseline today: `felix-replication/src` has about 26,000 lines of
-   non-test code, and `docs/formal/FelixShard*.tla` is about 8,000 lines across
-   425 configs. Raft should cut both substantially; if it does not, the
-   simplification case fails even with the other criteria met.
+6. **Size, reported only.** Lines of replication code and TLA+ specs and
+   configs each protocol keeps. Baseline today: `felix-replication/src` has
+   about 26,000 lines of non-test code, and `docs/formal/FelixShard*.tla` is
+   about 8,000 lines across 425 configs. This is reported with the results and
+   is not pass or fail.
 
 ### The test set
 
@@ -539,6 +723,8 @@ Both engines run the same tests, on the same commit, on the same runners:
 - **History checker** (`history.yml`): the process, all-faults, adversarial
   and election nemeses, including the control plane down.
 - **Failover scale** (`scale-nightly.yml`) and felixd at its scale.
+- **Cache cell** with mixed puts and counter adds, reporting fsyncs per write
+  (Decisions, 4), and `Quorum` read p99 (Decisions, 5).
 
 ## Refactor plan
 
@@ -579,3 +765,18 @@ none of which touch the engine:
 4. Remove redb from the workspace.
 
 The shard Raft prototype then uses the same adapter.
+
+### Performance and safety checks per stage
+
+Each stage is held to the checks that can see what it changes. "A/B" means
+the cells in the test set above, run against the commit before the stage.
+
+| Stage | Benchmark cells | Simulator, history, TLA+ |
+| --- | --- | --- |
+| Engine steps 1 to 7 (behaviour-neutral) | Per-PR perf subset (`perf-pr.yml`); single node and RF 3 steady at 1 KiB must not move | Per-PR seeds and history run; nightly sweep unchanged; TLA+ unaffected (no protocol change) |
+| Remove the Postgres backend | None (no data path) | Control-plane tests on the in-memory and Raft backends |
+| `raft_log` adapter | `felix-storage` group-commit and fan-in tests (`crates/server/felix-storage/tests/group_commit_fanin.rs`) unchanged | openraft storage suite; power-loss crash points at every append, vote, snapshot and purge step; format fuzz |
+| Control plane on the adapter | Metadata write latency and control-plane failover time no worse than redb | `raft_chaos.rs`; history control-plane-down nemesis; simulator restart-after-crash seeds |
+| Membership record (format v9) | None (rare writes) | Format fuzz and crash recovery with the new kind; rollback refusal test; no client read returns it |
+| Per-shard Raft prototype | Every A/B cell, the cache mixed cell and `Quorum` read p99, against the gate | 2000 seeds in every simulator mode; every history nemesis; `scale-nightly.yml`; a standard Raft TLA+ model with Felix's log mapping in place of the `FelixShard*` set |
+| Delete the bespoke protocol | Same cells, no change from the prototype result | Same as above; `FelixShard*` specs and configs retired |
