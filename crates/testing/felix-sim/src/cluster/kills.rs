@@ -21,7 +21,7 @@
 //!   unclean restart.
 //!
 //! A chance to vouch needs a way to vouch. The sim records a copy as reached
-//! only by a serving broker that is not superseded, over a link that is not
+//! only by a serving broker the copy has not accepted a newer leader over, on a link that is not
 //! partitioned. A voter is vouched by that shipping; a learner also needs the
 //! control plane to answer (not paused or down) for the reconcile interval
 //! plus slack plus three slow calls. And a copy counts as untrusted only when
@@ -38,8 +38,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
-
-use felix_broker_service::sim::ShardStand;
 
 /// A shard as the control plane held it at one instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,23 +104,15 @@ const SHIP_WINDOW: Duration = RUN_GAP;
 /// reads and the write), so a run counts after `reconcile + RUN_GAP + 3d`.
 const READMIT_CALLS: u32 = 3;
 
-/// The brokers that serve a shard and are not superseded: a leader whose
-/// generation is behind what a broker routes to has been deposed, and its
-/// ships are refused, so it vouches nothing.
-pub(crate) fn current_servers(stands: &[(usize, ShardStand)]) -> Vec<usize> {
-    let newest = stands
+/// The serving brokers (index and generation) that can still vouch a copy
+/// that has accepted a leader at `accepted`: a follower refuses a leader
+/// below the generation it accepted, so only that copy's own record says a
+/// leader was superseded for it. A newer generation routed elsewhere that the
+/// copy never accepted supersedes nothing.
+pub(crate) fn unsuperseded(servers: &[(usize, u64)], accepted: Option<u64>) -> Vec<usize> {
+    servers
         .iter()
-        .filter_map(|(_, stand)| {
-            stand
-                .routed_leader
-                .as_ref()
-                .map(|(_, generation)| *generation)
-        })
-        .max()
-        .unwrap_or(0);
-    stands
-        .iter()
-        .filter(|(_, stand)| stand.serving && stand.generation.unwrap_or(0) >= newest)
+        .filter(|(_, generation)| accepted.is_none_or(|accepted| accepted <= *generation))
         .map(|(index, _)| *index)
         .collect()
 }

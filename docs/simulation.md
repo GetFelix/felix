@@ -311,8 +311,9 @@ only when no leader had the chance to vouch it:
   vouch it.
 
 The sim notes every second, and before each fault, which brokers a serving
-broker can reach. The serving broker must not be superseded (a deposed
-leader's ships are refused) and its link to the copy must not be partitioned.
+broker can reach. The copy must not have accepted a newer leader than the serving broker (a
+follower refuses a deposed leader by the generation it accepted, not by what
+the control plane routes), and the link to it must not be partitioned.
 A voting copy is vouched by that shipping alone, so a run of 2.5 seconds is a
 chance. A learner is readmitted by a control plane step, so it needs the
 control plane to answer (paused and down never do) for a run of the reconcile

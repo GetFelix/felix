@@ -588,7 +588,11 @@ impl SimCluster {
             // A voter is vouched over a link that is up; readmitting a
             // learner also needs a control plane that answers.
             let delay = kills::cp_delay(self.cp.fault());
-            let serving = kills::current_servers(&stands);
+            let servers: Vec<(usize, u64)> = stands
+                .iter()
+                .filter(|(_, stand)| stand.serving)
+                .map(|(index, stand)| (*index, stand.generation.unwrap_or(0)))
+                .collect();
             let link_up = |from: usize, to: usize| {
                 !self
                     .net
@@ -596,6 +600,8 @@ impl SimCluster {
                     .partitioned
             };
             for (index, _) in &stands {
+                let accepted = self.nodes[*index].accepted_generation(&key);
+                let serving = kills::unsuperseded(&servers, accepted);
                 if kills::reaches(&serving, *index, &link_up) {
                     kills.served(&shard, &self.nodes[*index].id, at, delay);
                 }

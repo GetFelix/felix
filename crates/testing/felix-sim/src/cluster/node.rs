@@ -409,6 +409,13 @@ impl Node {
         Some(clock::as_owner(self.owner(), || broker.shard_stand(key)))
     }
 
+    /// The highest generation the running broker's copy of `key` accepted a
+    /// leader at, read at one instant.
+    pub(crate) fn accepted_generation(&self, key: &ShardKey) -> Option<u64> {
+        let broker = self.broker()?;
+        clock::as_owner(self.owner(), || broker.accepted_generation(key))
+    }
+
     pub(crate) async fn snapshot(&self, key: &ShardKey) -> Option<ShardSnapshot> {
         let broker = self.broker()?;
         let snapshot = clock::on(self.owner(), broker.shard_snapshot(key));

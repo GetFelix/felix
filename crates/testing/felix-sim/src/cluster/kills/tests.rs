@@ -306,21 +306,29 @@ fn only_a_paused_or_down_control_plane_answers_nothing() {
     assert_eq!(cp_delay(CpFault::Down), None);
 }
 
-fn stand(serving: bool, generation: u64, routes: u64) -> ShardStand {
-    ShardStand {
-        serving,
-        generation: serving.then_some(generation),
-        routed_leader: Some(("b1".into(), routes)),
-        opened_generation: None,
-        acks_by_followers: false,
-    }
+#[test]
+fn a_leader_a_copy_accepted_a_newer_one_over_is_no_chance_to_vouch() {
+    // b2 serves at generation 15; this copy accepted 21.
+    assert!(unsuperseded(&[(1, 15)], Some(21)).is_empty());
+    assert_eq!(unsuperseded(&[(1, 15), (0, 21)], Some(21)), [0]);
 }
 
 #[test]
-fn a_deposed_leader_that_still_serves_is_not_a_chance_to_vouch() {
-    // b2 serves at generation 15 but b1 routes the shard at 21.
-    let stands = vec![(0, stand(false, 0, 21)), (1, stand(true, 15, 15))];
-    assert!(current_servers(&stands).is_empty());
-    let stands = vec![(0, stand(true, 21, 21)), (1, stand(true, 15, 15))];
-    assert_eq!(current_servers(&stands), [0]);
+fn a_newer_generation_the_copy_never_accepted_leaves_the_old_leader_a_chance() {
+    // The control plane routes 21 to b1, which never fenced this copy: the
+    // copy still accepts b2 at 15, so b2 could vouch it and an untrusted
+    // copy is a stall, not a hold.
+    let servers = [(1, 15)];
+    for accepted in [Some(15), Some(3), None] {
+        assert_eq!(unsuperseded(&servers, accepted), [1]);
+    }
+    let (mut log, copies) = two_restarted();
+    for at in 20..24 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), Some(Duration::ZERO));
+        }
+    }
+    let views = view("b1", &THREE);
+    assert!(held(&log, &views, &copies).is_empty());
+    assert_eq!(log.vouchable_untrusted(&views, &copies).len(), 1);
 }
