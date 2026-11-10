@@ -495,6 +495,10 @@ expectations=(
 # comparison) and beside a staged copy, voting or not. So is the unprobed
 # crash, which no longer finishes in a runner's six hours exhaustively (#1584);
 # ci.yml walks it per push, with its twin, which also stays an exhaustive check.
+# FelixShardElectUncleanContinuingDoubtedFull (the registered Doubted with one
+# client write) is walked too: exhaustively it passed 178M distinct states
+# unfinished in six hours, so the write case is sampled nightly while Doubted
+# (MaxWrites 0) stays exhaustive.
 walks=(
   "FelixShardWalkSpares pass"
   "FelixShardWalkMoves pass"
@@ -520,6 +524,7 @@ walks=(
   "FelixShardShortCopyStagedVotesSetOnly violates AckedHeldByLeader"
   "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
+  "FelixShardElectUncleanContinuingDoubtedFull pass"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi

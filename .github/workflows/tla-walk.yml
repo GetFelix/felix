@@ -44,6 +44,7 @@ on:
       - docs/formal/FelixShardFenced*NamesByInheritance.cfg
       - docs/formal/FelixShardFenced*InheritedCounts.cfg
       - docs/formal/FelixShardShortCopy*.cfg
+      - docs/formal/FelixShardElectUncleanContinuingDoubtedFull.cfg
       - docs/formal/FelixShard.tla
 
 permissions:
@@ -88,6 +89,10 @@ jobs:
           # A crashed leader's refusal and its set-of-two exception: past 30M
           # distinct states exhaustively.
           # Split so each job's pass configurations fit its hour.
+          # The registered Doubted with one client write: past six hours
+          # exhaustively, so sampled.
+          - family: unclean-continuing
+            configs: FelixShardElectUncleanContinuingDoubtedFull
           - family: short-copy-seat
             configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet
           - family: short-copy-keys
