@@ -296,6 +296,7 @@ where
         storage_id,
         unclean,
     } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks).await?;
+    gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
         .controlplane_url
@@ -639,6 +640,23 @@ where
     };
     let membership_rejected = running.wait(shutdown).await;
     running.drain(membership_rejected).await
+}
+
+/// A v9 segment, or a committed vote, is a format an older build refuses, so
+/// a cluster member writes one only once its fleet has finalized
+/// `record_generations`. Asked when a log rolls, so the gate may be set after
+/// the logs open. A lone broker has no fleet and stays on the older formats.
+fn gate_record_generations(
+    config: &config::BrokerConfig,
+    broker: &felix_broker::Broker,
+    fleet: &Arc<felix_common::fleet::FleetGate>,
+) {
+    if config.membership.is_some() {
+        let fleet = Arc::clone(fleet);
+        broker.record_generations_when(move || {
+            fleet.supports(felix_common::fleet::RECORD_GENERATIONS)
+        });
+    }
 }
 
 #[cfg(test)]

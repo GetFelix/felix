@@ -281,6 +281,7 @@ impl SimBroker {
         )
         .await
         .context("open the broker")?;
+        super::gate_record_generations(&broker_config, &broker, &fleet);
         let (router, ingress, _, _) = cluster.as_ref().expect("a cluster member has shard state");
         // Peers are not authenticated in the simulator; nothing here presents
         // a client credential.

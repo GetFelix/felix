@@ -43,10 +43,11 @@ impl DiskLog {
         // the `segments` write lock every other append waits on.
         let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
             // Refused before the roll, which would otherwise move the log
-            // onto v9 ahead of the fleet gate.
+            // onto v9 ahead of the fleet gate, and refused past the gate too:
+            // replication cannot carry these kinds yet.
             if records.iter().any(|r| r.mark.needs_generation()) {
                 return Err(StorageError::Unsupported(
-                    "membership and counter records need segment format v9, which this log does not write yet",
+                    "membership and counter records are not written yet",
                 ));
             }
             records
@@ -325,7 +326,8 @@ impl LogInner {
             return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
-        let staged = segments.active_mut().stage(records)?;
+        let generation = self.generation_for(segments.active());
+        let staged = segments.active_mut().stage_at(records, generation)?;
         drop(segments);
 
         self.hold_append_at(HoldAt::Write);
@@ -364,6 +366,21 @@ impl LogInner {
             index,
             segment,
         }))
+    }
+
+    /// The generation a batch appended to `active` carries: none before v9,
+    /// and otherwise the generation this log accepted, never below the
+    /// newest record's. A leader has accepted its own generation. Read under
+    /// the append lock, and the accepted generation only rises, so the
+    /// generations along the log never fall.
+    #[inline]
+    fn generation_for(&self, active: &SegmentWriter) -> Option<u64> {
+        active.holds_generations().then(|| {
+            let accepted = self.accepted_generation.load(Ordering::Acquire);
+            active
+                .last_generation()
+                .map_or(accepted, |floor| floor.max(accepted))
+        })
     }
 
     /// Build the next segment and swap it in, with every fsync off the lock.

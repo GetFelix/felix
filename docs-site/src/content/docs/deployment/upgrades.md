@@ -145,7 +145,8 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id, and `joint_fence` and `replica_election`, which an operator
+its publisher's id, `record_generations` (not finalizable yet; see
+[`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
 finalizes (see [Failover without the control
 plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
@@ -156,7 +157,7 @@ control-plane member is still starting when the brokers register, the
 control plane retries the finalize in the background until every member
 answers, for up to ten minutes. If it gives up, it logs a warning, and the
 features are finalized as on an upgraded cluster, with the runbook below. Everything below applies to a cluster upgraded from an older
-release, and to `publisher_principal`.
+release, and to `publisher_principal` and `record_generations`.
 
 #### A new cluster: the first broker's configuration wins
 
@@ -582,6 +583,33 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 - **What clients see.** Nothing changes for a client that never sends headers.
   One that does learns at connect time whether the cluster accepts them.
 
+#### `record_generations`
+
+Groundwork for running each shard on Raft, which needs the term of every
+entry in the log itself. It **cannot be finalized yet**: brokers do not
+report it and the control plane refuses it with 409, until replication
+carries the generation that wrote each record to followers. Once it can be
+finalized, each durable stream log will start its next segment in storage
+format v9, with an 8-byte generation in every record header. Clients will see
+nothing: reads, offsets and payloads are unchanged.
+
+- **It is the one-way step.** A broker older than this release refuses to
+  open a v9 segment, so after the finalize no broker can be rolled back to
+  one. Take a backup first. Nothing changes on disk until you finalize: the
+  feature turns nothing on by being supported.
+- **Only new segments move.** The segment a log is writing when the broker
+  hears of the finalize is never rewritten. The log moves at its next roll,
+  so a quiet stream can stay on the older format for a while.
+- **Committed votes.** The same gate lets a shard save a committed vote,
+  which the previous release also refuses. Nothing commits a vote yet.
+- **A data directory that has a v9 segment** joins a cluster only once that
+  cluster has finalized `record_generations`. The broker writes a
+  `record-generations` marker in the data directory before the first v9
+  segment, and a broker holding it that registers with a fleet that has not
+  finalized the feature deregisters and stops with an error saying so.
+- **A new cluster** does not finalize it. A single broker has no fleet and
+  stays on the older format.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -648,7 +676,7 @@ accepted.
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 8 but writes 3, which the previous release
+The current build reads format 9 but writes 3, which the previous release
 reads, so upgrading to it is still reversible. It moves a log to a newer
 version only to hold a record that needs it, and writes each such record only
 once something enables it: a v4 segment for a generation-start record, once
@@ -660,7 +688,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 `head_trim` is, or from the start on a single broker (see
 [`head_trim`](#head_trim)); and v8 for a record with a key or headers, once
 `record_headers` is, or from the start on a single broker (see
-[`record_headers`](#record_headers)). Every MQTT message carries headers, so an
+[`record_headers`](#record_headers)); and v9 for every new segment of a
+stream log, once `record_generations` is (see
+[`record_generations`](#record_generations)), and never on a single
+broker. Every MQTT message carries headers, so an
 MQTT publish to a mounted stream is what moves that stream's logs to v8;
 mounting the stream is the explicit step that opts in, and a broker that
 refuses headers refuses the MQTT publish too. Each of those is the one-way

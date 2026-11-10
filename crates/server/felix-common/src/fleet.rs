@@ -165,6 +165,20 @@ pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 /// headers").
 pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 
+/// A stream log starts its next segment in storage format v9, whose record
+/// headers carry a generation, and stamps each record with the generation it
+/// accepted. A committed vote may then be saved too, in ballot format v2. An
+/// older build refuses both, so a broker moves onto them only once the whole
+/// fleet has finalized this, and an existing segment is never rewritten. A
+/// lone broker has no fleet and stays on the older formats. See
+/// `docs/storage-format.md` ("Generations").
+///
+/// Kept out of [`IMPLEMENTED`] until replication carries the generation that
+/// wrote each record to followers: a follower would stamp its own, and
+/// replicas would disagree on a record's term. A feature no broker reports
+/// cannot be finalized by a control plane of any release.
+pub const RECORD_GENERATIONS: FleetFeature = FleetFeature::new("record_generations");
+
 /// Every change of a shard's replica set, and the next generation a leader
 /// opens for a replacement, is fenced jointly: a majority of the set being
 /// left and of the one replacing it must take the fence before the new set

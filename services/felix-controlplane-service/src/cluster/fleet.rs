@@ -132,10 +132,22 @@ where
 /// broker states them so the control plane can gate other finalizes, and
 /// enabling one would make [`admit`] refuse every broker that predates it.
 ///
+/// Also refuse [`felix_common::fleet::RECORD_GENERATIONS`]: no broker reports
+/// it, and this refuses it anyway: replication does not yet carry the
+/// generation that wrote a record, so a follower would stamp its own and
+/// replicas would disagree on an entry's term.
+///
 /// Checked when the operator asks, like [`check_prerequisites`], so a Raft
 /// member applying the finalize decides the same as one on an older release.
 pub(crate) fn check_operator_finalizable(feature: &str) -> Result<(), StoreError> {
-    use felix_common::fleet::{NON_VOTING, PEER_ELECTION, START_HOLDERS};
+    use felix_common::fleet::{NON_VOTING, PEER_ELECTION, RECORD_GENERATIONS, START_HOLDERS};
+    if feature == RECORD_GENERATIONS.name() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature} yet: replication does not carry the generation that \
+             wrote each record, so followers would stamp their own and replicas would \
+             disagree on a record's term"
+        )));
+    }
     if [PEER_ELECTION, START_HOLDERS, NON_VOTING]
         .iter()
         .any(|report| feature == report.name())
@@ -269,7 +281,8 @@ pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 /// Every implemented feature but `publisher_principal`, which stays the
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
-/// `FELIX_RECORD_PUBLISHERS` asks for it.
+/// `FELIX_RECORD_PUBLISHERS` asks for it. `record_generations` is not implemented yet
+/// ([`felix_common::fleet::RECORD_GENERATIONS`]).
 pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,

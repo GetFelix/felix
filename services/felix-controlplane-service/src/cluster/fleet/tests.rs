@@ -132,7 +132,7 @@ fn follower_features_wait_for_generation_start() {
 /// A new cluster starts with every feature this build implements but
 /// `publisher_principal`; a feature added later fails this until it picks.
 #[test]
-fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
+fn a_new_cluster_leaves_publisher_principal_to_the_operator() {
     let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
         .iter()
         .filter(|feature| !NEW_CLUSTER.contains(feature))
@@ -377,4 +377,19 @@ fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
 fn other_features_pass_the_election_check() {
     let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
     assert!(check_election(&nodes, "majority_ack", false).is_ok());
+}
+
+/// Replication does not yet carry the writer's generation, so finalizing
+/// `record_generations` would let replicas disagree on a record's term.
+#[test]
+fn record_generations_cannot_be_finalized_until_the_writer_generation_replicates() {
+    let err = check_operator_finalizable("record_generations").expect_err("refused");
+    let StoreError::Conflict(message) = err else {
+        panic!("expected a conflict");
+    };
+    assert!(
+        message.contains("generation that wrote each record"),
+        "{message}"
+    );
+    assert!(check_operator_finalizable("head_trim").is_ok());
 }

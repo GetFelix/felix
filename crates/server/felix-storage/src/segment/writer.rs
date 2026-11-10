@@ -189,6 +189,7 @@ impl SegmentWriter {
             record_count,
             index,
             version,
+            generation_floor,
         } = resume;
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new().write(true).open(&path)?;
@@ -226,7 +227,7 @@ impl SegmentWriter {
             #[cfg(test)]
             fail_next_sync: false,
             version,
-            last_generation: None,
+            last_generation: generation_floor,
         })
     }
 
@@ -289,6 +290,19 @@ impl SegmentWriter {
     /// The layout version in the segment header.
     pub fn version(&self) -> u16 {
         self.version
+    }
+
+    /// The lowest generation the next record may carry: that of the newest
+    /// record in the log, in this segment or before it. `None` when the log
+    /// holds no v9 record.
+    pub(crate) fn last_generation(&self) -> Option<u64> {
+        self.last_generation
+    }
+
+    /// Carry the generation floor over from the segment this one follows, so
+    /// a new segment cannot start below the one it continues.
+    pub(crate) fn continue_generations(&mut self, floor: Option<u64>) {
+        self.last_generation = floor;
     }
 
     /// The version a segment following this one is written at so that it
@@ -424,15 +438,10 @@ impl SegmentWriter {
         Ok(offsets)
     }
 
-    /// The first step of [`Self::append`], split out so a log can write a
+    /// The first step of [`Self::append_at`], split out so a log can write a
     /// batch without holding the lock around this writer: encode `records`
-    /// for the end of the segment and change nothing. Nothing else may change
-    /// this segment until [`Self::finish`].
-    pub(crate) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
-        self.stage_at(records, None)
-    }
-
-    /// [`Self::stage`] at `generation`; see [`Self::append_at`].
+    /// at `generation` for the end of the segment and change nothing. Nothing
+    /// else may change this segment until [`Self::finish`].
     pub(crate) fn stage_at(
         &mut self,
         records: &[AppendRecord],
@@ -493,7 +502,7 @@ impl SegmentWriter {
         })
     }
 
-    /// Take in a batch from [`Self::stage`] once its write has returned
+    /// Take in a batch from [`Self::stage_at`] once its write has returned
     /// `written`. Returns its first and last offsets, and the index entries
     /// it added, for the caller to write once it has released the lock.
     pub(crate) fn finish(
@@ -653,14 +662,14 @@ impl SegmentWriter {
     }
 }
 
-/// A batch [`SegmentWriter::stage`] has encoded, to write and then hand to
+/// A batch [`SegmentWriter::stage_at`] has encoded, to write and then hand to
 /// [`SegmentWriter::finish`].
 #[derive(Debug)]
 pub(crate) struct StagedAppend {
     bytes: Vec<u8>,
     /// `(offset, position, length)` of each record.
     boundaries: Vec<(Offset, u64, u64)>,
-    /// Shares the writer's cursor, which `stage` left at the end of the file.
+    /// Shares the writer's cursor, which `stage_at` left at the end of the file.
     file: Arc<File>,
     generation: Option<u64>,
 }
@@ -852,6 +861,11 @@ pub struct ResumeState {
     pub index: SparseIndex,
     /// From the segment header: see [`SegmentWriter::holds`].
     pub version: u16,
+    /// The generation of the newest record in the log, which appends here
+    /// must not fall below. From a full scan of this segment, or the segment
+    /// before it when this one holds no v9 record; a resume scan sees only
+    /// part of a segment and must not supply it.
+    pub generation_floor: Option<u64>,
 }
 
 /// Refuse a record too large to write. A log checks this before it rolls for

@@ -81,7 +81,7 @@ pub(crate) struct FinalizeQuery {
 /// - 409 when a serving broker lacks the feature, no broker is serving, a
 ///   feature it needs is not enabled yet, or the name is `peer_election`,
 ///   `start_holders` or `non_voting`, which brokers report but operators
-///   cannot enable.
+///   cannot enable, or `record_generations`, which cannot be finalized yet.
 /// - 500 when the store cannot be read or written.
 pub(crate) async fn finalize_fleet_feature(
     State(state): State<AppState>,

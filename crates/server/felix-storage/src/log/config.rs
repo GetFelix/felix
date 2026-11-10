@@ -141,7 +141,91 @@ pub struct LogConfig {
     /// opens, before retention first runs. The default keeps what the log's
     /// replica state recorded. See `DiskLog::hold_retention_at_commit`.
     pub retention_hold: RetentionHold,
+    /// Whether a new segment may be started in format v9, whose records
+    /// carry a generation. Off unless a [`crate::DiskLogProvider`] is told
+    /// otherwise; see [`GenerationGate`].
+    pub generations: GenerationGate,
 }
+
+/// Whether logs may start new segments in format v9, shared by every log a
+/// provider opens.
+///
+/// Off until [`Self::open_when`] is given a check, and then only while it
+/// says yes. A broker in a cluster asks whether the fleet has finalized
+/// `record_generations`, since a build that predates v9 refuses the segment.
+/// Once it has said yes it stays yes, as a finalize is never undone, and a
+/// log already on v9 stays there whatever it says. With a root, the first
+/// yes writes the `record-generations` marker there before any v9 segment
+/// exists (`crate::run_state::record_generations_written`).
+#[derive(Clone, Default)]
+pub struct GenerationGate(std::sync::Arc<GateState>);
+
+#[derive(Default)]
+struct GateState {
+    check: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
+    root: Option<std::path::PathBuf>,
+    open: std::sync::atomic::AtomicBool,
+    marking: parking_lot::Mutex<()>,
+}
+
+impl GenerationGate {
+    /// A gate whose first yes marks the data directory at `root`.
+    pub fn under(root: impl Into<std::path::PathBuf>) -> Self {
+        Self(std::sync::Arc::new(GateState {
+            root: Some(root.into()),
+            ..GateState::default()
+        }))
+    }
+
+    /// Ask `check` from now on. Only the first call counts.
+    pub fn open_when(&self, check: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.0.check.set(Box::new(check));
+    }
+
+    /// Whether a new segment may be v9. Asked only when a log rolls onto a
+    /// segment that would otherwise be older, so the marker's write, once,
+    /// lands on a roll rather than on an append. A marker that cannot be
+    /// written keeps the log where it is.
+    pub(crate) fn allows(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.0.open.load(Ordering::Acquire) {
+            return true;
+        }
+        if !self.0.check.get().is_some_and(|check| check()) {
+            return false;
+        }
+        let _first = self.0.marking.lock();
+        if self.0.open.load(Ordering::Acquire) {
+            return true;
+        }
+        if let Some(root) = &self.0.root
+            && let Err(err) = crate::run_state::record_generations_written(root)
+        {
+            tracing::warn!(error = %err, "could not mark the data directory for segment format v9; staying on the older format");
+            return false;
+        }
+        self.0.open.store(true, Ordering::Release);
+        true
+    }
+}
+
+impl std::fmt::Debug for GenerationGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenerationGate")
+            .field("open", &self.0.open)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wiring rather than a setting, so two configs that differ only in their
+/// gate compare equal.
+impl PartialEq for GenerationGate {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for GenerationGate {}
 
 /// What a log does at open with the retention hold its replica state recorded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -342,6 +426,7 @@ impl Default for LogConfig {
             max_open_sealed_segments: 256,
             offload: None,
             retention_hold: RetentionHold::AsSaved,
+            generations: GenerationGate::default(),
         }
     }
 }

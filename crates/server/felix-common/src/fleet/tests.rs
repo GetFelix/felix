@@ -91,6 +91,19 @@ fn this_build_reports_what_it_implements() {
 }
 
 #[test]
+fn record_generations_is_not_reported_until_the_writer_generation_replicates() {
+    // Reported, any control plane's finalize check would pass and followers
+    // would write wrong terms.
+    assert!(!IMPLEMENTED.contains(&RECORD_GENERATIONS));
+    assert!(
+        !FleetGate::for_this_build()
+            .reported()
+            .contains(RECORD_GENERATIONS.name())
+    );
+    assert!(prerequisites(RECORD_GENERATIONS.name()).is_empty());
+}
+
+#[test]
 fn record_headers_is_implemented() {
     assert!(IMPLEMENTED.contains(&RECORD_HEADERS));
     assert!(
@@ -254,6 +267,8 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "group_cursor_dependencies"
         // Off, a clustered broker refuses records with headers.
         | "record_headers"
+        // Off, a log stays on the format every broker reads.
+        | "record_generations"
         // Off, a broker does not stand or re-send kept sets.
         | "replica_election" => Off::FailsClosed,
         "jump_hash_routing" | "peer_election" | "start_holders" | "non_voting" => Off::NotRead,

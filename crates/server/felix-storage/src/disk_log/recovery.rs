@@ -216,6 +216,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
         active_id,
         active: mut outcome,
         sealed_index_rebuilds,
+        generation_floor,
     } = resume;
     let truncated_bytes = outcome
         .torn_tail
@@ -247,6 +248,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             record_count: outcome.record_count,
             index: outcome.index,
             version: outcome.header.version,
+            generation_floor,
         },
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
@@ -257,6 +259,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             .into_iter()
             .map(|planned| {
                 SealedEntry::new(planned.descriptor, planned.holds_marks, planned.holds_trims)
+                    .with_last_generation(planned.last_generation)
             })
             .collect(),
         active,

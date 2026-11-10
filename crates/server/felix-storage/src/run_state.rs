@@ -26,6 +26,9 @@
 //! headers block (storage format v8) and `record_headers`. See
 //! [`record_headers_stored`].
 //!
+//! `<durable root>/record-generations` says the same of a v9 segment and
+//! `record_generations`. See [`record_generations_written`].
+//!
 //! `<durable root>/replaced-storage` says the control plane once registered
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
@@ -320,6 +323,28 @@ pub fn record_headers_stored(root: &Path) -> Result<()> {
 /// file's presence counts: it is renamed into place whole, and never removed.
 pub fn has_record_headers(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(RECORD_HEADERS_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The record-generations marker's name under the durable root. Not a
+/// directory, so shard discovery passes over it.
+pub const RECORD_GENERATIONS_FILE_NAME: &str = "record-generations";
+
+/// Record, durably, that a log under `root` is about to start a segment in
+/// format v9. Call before the first such segment is created, for the same
+/// reason as [`record_headers_stored`].
+pub fn record_generations_written(root: &Path) -> Result<()> {
+    write_atomically(
+        root,
+        RECORD_GENERATIONS_FILE_NAME,
+        b"record_generations\n",
+        true,
+    )
+}
+
+/// Whether a log under `root` may hold a v9 segment. Only the file's presence
+/// counts: it is renamed into place whole, and never removed.
+pub fn has_record_generations(root: &Path) -> Result<bool> {
+    crate::fs::try_exists(root.join(RECORD_GENERATIONS_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The replaced-storage marker's name under the durable root.

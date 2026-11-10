@@ -5,7 +5,7 @@ mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{FsyncMode, LogConfig, OffloadTarget, Retention, RetentionHold};
+pub use config::{FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold};
 
 use std::future::Future;
 use std::pin::Pin;

@@ -1187,20 +1187,21 @@ async fn record_registration(root: &std::path::Path, incarnation: u64) {
 /// Why this broker must not serve in a fleet whose enabled features are
 /// `enabled`, or `None` when it may.
 ///
-/// A data directory under `root` that took a head trim, or stored a record
-/// with headers, holds records an older broker cannot decode: an older leader
-/// promoted over it would fail to read them and stall that shard, and an
-/// older follower would be held at the first. So once a log here has done
-/// either (`felix_storage::run_state::head_trimmed`, `has_record_headers`),
-/// the fleet must have finalized `head_trim`, `record_headers`. A marker that
-/// cannot be read counts as present.
+/// A data directory under `root` that took a head trim, stored a record
+/// with headers, or started a v9 segment holds records an older broker cannot
+/// decode: an older leader promoted over it would fail to read them and stall
+/// that shard, and an older follower would be held at the first. So once a
+/// log here has done any of them (`felix_storage::run_state::head_trimmed`,
+/// `has_record_headers`, `has_record_generations`), the fleet must have
+/// finalized `head_trim`, `record_headers`, `record_generations`. A marker
+/// that cannot be read counts as present.
 pub(crate) async fn join_refusal(
     root: Option<&std::path::Path>,
     enabled: &BTreeSet<String>,
 ) -> Option<String> {
     let root = root?;
     type Marker = fn(&std::path::Path) -> felix_storage::Result<bool>;
-    let markers: [(felix_common::fleet::FleetFeature, &str, Marker); 2] = [
+    let markers: [(felix_common::fleet::FleetFeature, &str, Marker); 3] = [
         (
             felix_common::fleet::HEAD_TRIM,
             "has taken a head trim",
@@ -1210,6 +1211,11 @@ pub(crate) async fn join_refusal(
             felix_common::fleet::RECORD_HEADERS,
             "has stored a record with headers",
             felix_storage::run_state::has_record_headers,
+        ),
+        (
+            felix_common::fleet::RECORD_GENERATIONS,
+            "holds storage format v9 data or a v2 ballot",
+            felix_storage::run_state::has_record_generations,
         ),
     ];
     let shown = root.display().to_string();
