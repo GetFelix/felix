@@ -73,7 +73,13 @@ fn http_with_headers(
     stream.write_all(request.as_bytes()).ok()?;
     stream.write_all(&payload).ok()?;
     let mut response = Vec::new();
-    stream.read_to_end(&mut response).ok()?;
+    // A route that refuses the request answers and closes without reading the
+    // body, so the kernel may reset the connection after the answer arrived.
+    // The answer is what the test asks about; only a reset with nothing read
+    // is a failure.
+    if stream.read_to_end(&mut response).is_err() && response.is_empty() {
+        return None;
+    }
     let text = String::from_utf8_lossy(&response).into_owned();
     let status: u16 = text.split_whitespace().nth(1)?.parse().ok()?;
     Some((status, text))
