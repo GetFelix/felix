@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794283323219,
+  "lastUpdate": 1794283574545,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64482,6 +64482,72 @@ window.BENCHMARK_DATA = {
             "range": "415.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 453.00\nmean: 637.60\nstdev: 415.12\ncv: 65.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "174632488907de74c7f0b88a919763f79ca364cb",
+          "message": "fix(replication): an unheard broker confirms a Quorum read by lease and round (#2161) (#2166)\n\n* fix(replication): an unheard broker confirms a Quorum read by lease and round (#2161)\n\nA broker cut off before it heard the fleet finalize lease_free_reads kept\nconfirming Quorum reads on its lease alone, while a peer that had heard\ncould be elected without waiting that lease out (the candidate checks only\nits own view of the fleet). The read then missed the successor's writes.\n\nUntil a broker that reports lease_free_reads hears it was finalized, a read\nthere now needs both the lease and the round. The lease covers a fleet that\nhas not finalized, the round one that has, so the broker need not know which.\n\nSpec-Unaffected: FelixShardReads fixes ReadConfirm per run and does not model a broker learning the mode (gap filed as #2165); lease-and-round is a strictly stronger Confirmed than round, which FelixShardReadsRound already passes\n\n* fix(replication): require the extra read round only on brokers that stand for election (#2161)\n\nElection is the only promotion that skips an unheard leader's lease, and the\ncontrol plane refuses replica_election while a live broker does not report\nit. A broker that does not stand for election stays on the lease until it\nhears lease_free_reads, so default fleets pay no extra round.\n\nBeside the lease, a round also passes when the replicas that take the fence\nare short of a majority: no successor can have fenced one, and otherwise a\nleader whose replicas are mostly FELIX_INTERNAL_FENCE=false would refuse\nevery read.\n\nSpec-Unaffected: FelixShardReads fixes ReadConfirm per run and does not model a broker learning the mode or election (gap filed as #2165); the change only narrows when a stronger Confirmed than the lease is required\n\n* fix(replication): a fence-off replica never vouches for a read, even beside the lease (#2161)\n\nAn Unsupported answer describes the replica's current process, not the one\na successor fenced: a follower fenced by a successor and restarted with\nFELIX_INTERNAL_FENCE=false would have let the deposed leader count its\nround as unfenceable. Drop that escape. A broker that stands for election\nwhose replicas are mostly fence-off now refuses Quorum reads before the\nfinalize, which fails safe; such a fleet cannot finalize replica_election.\n\nSpec-Unaffected: removes a code path the model never had; reads confirm by lease and round as FelixShardReadsRound's stronger Confirmed (gap #2165)",
+          "timestamp": "2026-11-09T20:01:32-08:00",
+          "tree_id": "f8a964e4e32214c2b5115ff1060974b80a3e1e08",
+          "url": "https://github.com/GetFelix/felix/commit/174632488907de74c7f0b88a919763f79ca364cb"
+        },
+        "date": 1794283565673,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.40\nstdev: 1.52\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "15.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 137.80\nstdev: 15.06\ncv: 10.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 175,
+            "range": "248.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 288.80\nstdev: 248.67\ncv: 86.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.00\nstdev: 0.71\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 254,
+            "range": "8.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 254.00\nmean: 254.60\nstdev: 8.05\ncv: 3.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 364,
+            "range": "30.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 364.00\nmean: 357.00\nstdev: 30.74\ncv: 8.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
