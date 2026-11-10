@@ -31,7 +31,7 @@ use crate::quorum::{LeadershipCheck, QuorumError};
 use crate::{ShardKey, ShardKind};
 
 /// Confirms leadership for reads over the peer transport.
-pub struct ReadIndex<R> {
+pub(crate) struct ReadIndex<R> {
     inner: Arc<Inner<R>>,
 }
 
@@ -68,7 +68,7 @@ struct Finished {
 }
 
 impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
-    pub fn new(
+    pub(crate) fn new(
         requester: R,
         broker: Arc<Broker>,
         router: Arc<ShardRouter>,

@@ -24,7 +24,7 @@ use tokio::time::Instant;
 
 mod candidate;
 
-pub use candidate::spawn;
+pub(crate) use candidate::spawn;
 
 /// Elected leaderships this broker knows of, by shard.
 #[derive(Debug)]
@@ -166,7 +166,7 @@ impl Elections {
     /// that took its fence does not stand, only this long. Without a bound a
     /// leader stuck fencing, or one that dropped the shard, holds the shard
     /// until the control plane names a new generation.
-    pub fn with_defer_for(mut self, defer_for: Duration) -> Self {
+    pub(crate) fn with_defer_for(mut self, defer_for: Duration) -> Self {
         self.defer_for = defer_for;
         self
     }
@@ -199,7 +199,7 @@ impl Elections {
 
     /// Forget `key`'s leadership at `generation`, if it is still the one
     /// recorded.
-    pub fn withdraw(&self, key: &ShardKey, generation: u64) {
+    pub(crate) fn withdraw(&self, key: &ShardKey, generation: u64) {
         let removed = {
             let mut entries = self.entries.lock();
             let current = entries
@@ -473,10 +473,6 @@ impl Elections {
                 set_generation: elected.set.generation,
             }
         })
-    }
-
-    pub fn local_node_id(&self) -> &str {
-        &self.local_node_id
     }
 }
 

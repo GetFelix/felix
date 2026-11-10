@@ -360,7 +360,7 @@ impl<R> Ctx<R> {
 /// With `leads_after`, it stands and restores standings only once that is
 /// cancelled; until then it only votes.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
+pub(crate) fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,

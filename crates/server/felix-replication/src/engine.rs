@@ -12,7 +12,7 @@ use std::time::Duration;
 mod host;
 mod start;
 
-pub use host::{EngineHost, Host, HybridHost};
+pub(crate) use host::Host;
 pub use start::{StartDeps, Started, elections, replica_handler};
 
 use crate::ShardKey;

@@ -28,7 +28,7 @@ use tokio::time::Instant;
 const REREAD_AFTER: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
-pub struct PartitionInjector {
+pub(crate) struct PartitionInjector {
     path: PathBuf,
     cached: Mutex<Cached>,
 }
@@ -40,7 +40,7 @@ struct Cached {
 }
 
 impl PartitionInjector {
-    pub fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         tracing::warn!(
             path = %path.display(),
             "peer partition injection is ENABLED; this is a test-only facility",
@@ -55,7 +55,7 @@ impl PartitionInjector {
     }
 
     /// Whether this broker is currently cut off from `node_id`.
-    pub fn blocks(&self, node_id: &str) -> bool {
+    pub(crate) fn blocks(&self, node_id: &str) -> bool {
         let mut cached = self.cached.lock();
         let stale = cached
             .read_at

@@ -81,7 +81,8 @@ impl PeerTls {
 
     /// Re-read the certificate and key. A file that is mid-write or missing
     /// leaves the current identity in place; the next check tries again.
-    pub fn reload(&self) -> Result<bool> {
+    #[cfg(test)]
+    pub(crate) fn reload(&self) -> Result<bool> {
         Ok(self.identity.reload()?)
     }
 
@@ -104,7 +105,7 @@ impl PeerTls {
     /// The chain was verified at the handshake; this is the binding between
     /// what the certificate says and what the peer *claims*, so a broker
     /// holding a valid certificate for one name cannot speak as another.
-    pub fn verify_identity(
+    pub(crate) fn verify_identity(
         &self,
         peer_certs: Option<&[CertificateDer<'_>]>,
         node_id: &str,

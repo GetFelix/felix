@@ -49,13 +49,13 @@ pub mod engine;
 mod follower;
 pub mod halted;
 mod incarnation;
-pub mod leadership;
-pub mod metrics;
+pub(crate) mod leadership;
+pub(crate) mod metrics;
 pub mod promotion;
 pub mod quorum;
 mod rebuild;
-pub mod reclaim;
-pub mod replica;
+pub(crate) mod reclaim;
+pub(crate) mod replica;
 mod replica_set;
 pub mod reporter;
 mod shard;
@@ -65,12 +65,18 @@ pub mod suspicion;
 mod throttle;
 pub mod unclean;
 
-pub use follower::{CATCH_UP_BOUND, FollowerCursor, Halt, RebuildBackoff, caught_up, lag_records};
-pub use quorum::{majority_of, quorum_offset, quorum_offset_without};
+#[cfg(test)]
+pub(crate) use follower::RebuildBackoff;
+pub(crate) use follower::{FollowerCursor, Halt, caught_up, lag_records};
+#[cfg(test)]
+pub(crate) use quorum::quorum_offset;
+pub(crate) use quorum::{majority_of, quorum_offset_without};
 pub use rebuild::{RebuildPolicy, Rebuilds};
 pub use replica::ReplicaHandler;
 pub use shard::{ShardKey, ShardKind};
-pub use ship::{Progress, read_answer, ship_once, ship_once_with};
+pub(crate) use ship::{Progress, ship_once};
+#[cfg(test)]
+pub(crate) use ship::{read_answer, ship_once_with};
 pub use throttle::MoveThrottle;
 
 #[cfg(test)]

@@ -10,7 +10,7 @@ use crate::driver::WriteFence;
 use crate::quorum::ShardServing;
 
 /// What any engine needs from the broker about a shard.
-pub trait EngineHost: Send + Sync {
+pub(crate) trait EngineHost: Send + Sync {
     /// The generation this broker serves `key` at, or `None` when it does not
     /// serve it here.
     fn generation(&self, key: &ShardKey) -> Option<u64>;
@@ -24,7 +24,7 @@ pub trait EngineHost: Send + Sync {
 
 /// The callbacks only the hybrid engine makes: the lease, and the states of a
 /// leader that gave a generation up or has not opened it yet.
-pub trait HybridHost: EngineHost {
+pub(crate) trait HybridHost: EngineHost {
     /// Whether this broker's lease is valid right now, against the clock.
     fn lease_valid(&self) -> bool;
     /// Count a `Quorum` write held back because the lease lapsed while it waited.
@@ -50,13 +50,13 @@ pub trait HybridHost: EngineHost {
 }
 
 /// A broker's serving state and its write fence, as one host.
-pub struct Host<S: ?Sized, F: ?Sized> {
+pub(crate) struct Host<S: ?Sized, F: ?Sized> {
     serving: Arc<S>,
     fence: Arc<F>,
 }
 
 impl<S: ?Sized, F: ?Sized> Host<S, F> {
-    pub fn new(serving: Arc<S>, fence: Arc<F>) -> Self {
+    pub(crate) fn new(serving: Arc<S>, fence: Arc<F>) -> Self {
         Self { serving, fence }
     }
 }

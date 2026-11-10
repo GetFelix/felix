@@ -26,18 +26,18 @@ use tokio_util::sync::CancellationToken;
 use crate::peer::PeerRequester;
 
 /// How long a leader may go without answering before this broker names it.
-pub const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
 /// How long an elected leader that has not started its generation holds the
 /// shard. Generous: a fence or catch-up under load can take many seconds,
 /// and giving up on one costs a generation.
-pub const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
+pub(crate) const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
 const MIN_DEFER_FOR: Duration = Duration::from_secs(1);
 /// How long a copy may go without hearing its leader, with that leader's
 /// generation not started here, before it may stand for the shard though the
 /// leader's broker answers pings. Above the control plane's stuck-leader
 /// backstop (70 s by default), so with the control plane up its rename comes
 /// first and restarts the clock.
-pub const DEFAULT_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(120);
+pub(crate) const DEFAULT_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(120);
 const MIN_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(1);
 
 /// The shortest gap between pings, whatever `suspect_after` is.
@@ -45,7 +45,7 @@ const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
 
 /// When this broker suspects a leader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SuspicionConfig {
+pub(crate) struct SuspicionConfig {
     /// Silence past this names the leader. Zero turns the watch off.
     pub suspect_after: Duration,
     /// How long a copy defers to an elected leader that has not started its
@@ -70,7 +70,7 @@ impl Default for SuspicionConfig {
 impl SuspicionConfig {
     /// `FELIX_LEADER_SUSPECT_AFTER_MS`, `FELIX_ELECTION_DEFER_FOR_MS` and
     /// `FELIX_SHARD_SUSPECT_AFTER_MS`, or the defaults.
-    pub fn from_env() -> Self {
+    pub(crate) fn from_env() -> Self {
         let millis = |name: &str, default: Duration| {
             std::env::var(name)
                 .ok()
@@ -125,7 +125,7 @@ impl Default for Suspects {
 }
 
 impl Suspects {
-    pub fn current(&self) -> BTreeSet<String> {
+    pub(crate) fn current(&self) -> BTreeSet<String> {
         self.names.borrow().clone()
     }
 
@@ -259,7 +259,7 @@ pub(crate) fn leaders_followed(router: &ShardRouter) -> Vec<(String, SocketAddr)
 
 /// Ping the leaders of every shard this broker follows until `shutdown`, and
 /// keep `suspects` current. `None` when the config turns the watch off.
-pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
+pub(crate) fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     router: Arc<ShardRouter>,
     suspects: Arc<Suspects>,

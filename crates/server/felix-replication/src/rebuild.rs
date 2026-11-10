@@ -43,7 +43,7 @@ pub struct Rebuilds {
 }
 
 impl Rebuilds {
-    pub fn new(policy: RebuildPolicy) -> Self {
+    pub(crate) fn new(policy: RebuildPolicy) -> Self {
         Self {
             policy,
             in_flight: std::sync::Mutex::new(0),
@@ -58,14 +58,14 @@ impl Rebuilds {
         })
     }
 
-    pub fn policy(&self) -> RebuildPolicy {
+    pub(crate) fn policy(&self) -> RebuildPolicy {
         self.policy
     }
 
     /// Reconcile the count with the cursors that actually carry a rebuild,
     /// once per pass: a cursor discarded on a generation change takes its
     /// slot with it, and nothing else would give it back.
-    pub fn set_in_flight(&self, count: usize) {
+    pub(crate) fn set_in_flight(&self, count: usize) {
         *self.in_flight.lock().expect("rebuild slots") = count;
         metrics::record_rebuilding(count);
     }

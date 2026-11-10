@@ -85,7 +85,7 @@ impl UncleanStart {
     }
 
     /// Whether every ballot this directory took survived the crash.
-    pub fn kept_promises(&self) -> bool {
+    pub(crate) fn kept_promises(&self) -> bool {
         self.kept_promises
     }
 
@@ -231,7 +231,7 @@ impl UncleanStart {
     /// says nothing of the crash; what the copy said before it does. Nor does
     /// a newer leader's ballot taken from a batch before the copy is vouched
     /// for ([`Self::accepting`]).
-    pub fn led_before(
+    pub(crate) fn led_before(
         &self,
         key: &ShardKey,
         log: &felix_broker::StreamLog,
@@ -255,7 +255,7 @@ impl UncleanStart {
     }
 
     /// This broker's node id.
-    pub fn node_id(&self) -> &str {
+    pub(crate) fn node_id(&self) -> &str {
         &self.node_id
     }
 }

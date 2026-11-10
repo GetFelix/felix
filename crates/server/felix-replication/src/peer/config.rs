@@ -14,7 +14,7 @@ use std::time::Duration;
 /// roles at the TLS layer rather than at the first frame. A connection that
 /// reaches the internal listener without it is refused before any broker state
 /// is touched.
-pub const INTERNAL_ALPN: &[u8] = b"felix-internal/1";
+pub(crate) const INTERNAL_ALPN: &[u8] = b"felix-internal/1";
 
 /// How many connections the pool may hold to one peer.
 ///
@@ -442,7 +442,7 @@ impl PeerTransportConfig {
     /// for seconds, and closing its peer connections on that basis would make
     /// replication churn exactly when the machine can least afford it. Three
     /// quarters still leaves a quarter of the request's patience to spare.
-    pub fn peer_idle_timeout(&self) -> Duration {
+    pub(crate) fn peer_idle_timeout(&self) -> Duration {
         self.request_timeout / 4 * 3
     }
 
@@ -450,7 +450,7 @@ impl PeerTransportConfig {
     /// between rebalances, so they need a keep-alive to survive the idle window
     /// above at all. A fifth of it leaves four chances to be heard from before a
     /// healthy but quiet connection would be closed.
-    pub fn quic_transport(&self) -> felix_transport::TransportConfig {
+    pub(crate) fn quic_transport(&self) -> felix_transport::TransportConfig {
         felix_transport::TransportConfig {
             max_idle_timeout: Some(self.peer_idle_timeout()),
             keep_alive_interval: Some(self.peer_idle_timeout() / 5),
@@ -463,7 +463,7 @@ impl PeerTransportConfig {
     /// Jitter is not decoration here: every broker in a cluster notices the same
     /// peer restart at the same moment, and an unjittered backoff would have all
     /// of them redial it in step.
-    pub fn reconnect_delay(&self, attempt: u32) -> Duration {
+    pub(crate) fn reconnect_delay(&self, attempt: u32) -> Duration {
         let exponential = self
             .reconnect_base
             .saturating_mul(1u32 << attempt.min(16))

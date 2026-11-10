@@ -17,7 +17,7 @@ use crate::peer::{PeerError, PeerRequester};
 ///
 /// Returns what the exchange concluded. The cursor is advanced, rewound, or
 /// halted here, so a caller only has to decide whether to go round again.
-pub async fn ship_once<R: PeerRequester>(
+pub(crate) async fn ship_once<R: PeerRequester>(
     requester: &R,
     log: &StreamLog,
     shard: &ShardRef,
@@ -42,7 +42,7 @@ pub async fn ship_once<R: PeerRequester>(
 /// [`ship_once`], telling the follower that everything below `commit_offset`
 /// is committed, so it refuses to discard any of it later.
 #[allow(clippy::too_many_arguments)]
-pub async fn ship_once_with<R: PeerRequester>(
+pub(crate) async fn ship_once_with<R: PeerRequester>(
     requester: &R,
     log: &StreamLog,
     shard: &ShardRef,
@@ -670,7 +670,7 @@ async fn ship_batch<R: PeerRequester>(
 
 /// What one exchange with a follower concluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Progress {
+pub(crate) enum Progress {
     /// The follower stored the batch and is now at this offset.
     Stored { durable_offset: u64 },
     /// The follower wants a different offset. Not an error: it is how a
@@ -688,7 +688,7 @@ pub enum Progress {
 ///
 /// Separate from the exchange so the table in this module's documentation is
 /// testable without a follower on the other end.
-pub fn read_answer(answer: &InternalMessage) -> Progress {
+pub(crate) fn read_answer(answer: &InternalMessage) -> Progress {
     match answer {
         InternalMessage::ReplicateOk(ok) => Progress::Stored {
             durable_offset: ok.durable_offset,

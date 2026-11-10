@@ -54,7 +54,7 @@ pub struct Joint<'a> {
 }
 
 impl<'a> Joint<'a> {
-    pub fn new(
+    pub(crate) fn new(
         addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
         prior: Option<PriorSet>,
     ) -> Self {
@@ -73,7 +73,7 @@ impl<'a> Joint<'a> {
     /// answer attests a kept ballot naming this broker at the generation
     /// before: nothing it acknowledged can be missing here, and that copy
     /// promised this generation to no one else.
-    pub fn with_continuing(mut self, continuing: bool) -> Self {
+    pub(crate) fn with_continuing(mut self, continuing: bool) -> Self {
         self.continuing = continuing;
         self
     }
@@ -89,14 +89,14 @@ impl<'a> Joint<'a> {
 
     /// This broker's storage identity, so a promotion can tell a copy a set
     /// named another id for (a wipe) from one staged as a learner.
-    pub fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
+    pub(crate) fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
         self.local_storage = storage;
         self
     }
 
     /// Whether the control plane last registered this node under another
     /// storage id, so a copy here with no set may be one it lost.
-    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+    pub(crate) fn with_replaced_storage(mut self, replaced: bool) -> Self {
         self.replaced = replaced;
         self
     }
