@@ -9,6 +9,10 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod host;
+
+pub use host::{EngineHost, Host, HybridHost};
+
 use crate::ShardKey;
 use crate::peer::PeerRequester;
 use crate::quorum::{Access, CacheWrite, QuorumError, QuorumMarks, ShardServing, Unreadable};
