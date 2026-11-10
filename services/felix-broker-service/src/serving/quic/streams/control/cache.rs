@@ -102,7 +102,7 @@ pub(super) async fn cache_put(
     // second copy nothing reconciles.
     let applied = crate::serving::cache_routing::apply_cache_op(
         broker,
-        (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
+        (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
         session
@@ -255,7 +255,7 @@ pub(super) async fn cache_get(
         felix_wire::supports_feature(session.peer_features, felix_wire::FEATURE_CACHE_CONDITIONAL);
     let read = crate::serving::cache_routing::apply_cache_request(
         broker,
-        (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
+        (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
         session
@@ -406,7 +406,7 @@ pub(super) async fn cache_delete(
 
     let removed = crate::serving::cache_routing::apply_cache_op(
         broker,
-        (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
+        (&publish_ctx.engine, publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
         session
@@ -554,7 +554,7 @@ pub(super) async fn cache_conditional(
         };
         let applied = crate::serving::cache_routing::apply_cache_request(
             broker,
-            (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
+            (&publish_ctx.engine, publish_ctx.quorum_timeout),
             publish_ctx.ingress.as_deref(),
             publish_ctx.peers.as_deref(),
             session

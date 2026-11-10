@@ -1384,3 +1384,156 @@ async fn a_forwarded_quorum_publish_waits_its_timeout_then_is_released_by_the_ma
     );
     assert!(started.elapsed() < timeout, "waited though the mark passed");
 }
+
+/// A forwarded cache or counter op makes the same quorum waits as a local
+/// one, on the marks and timeout the owner holds. Without marks each of these
+/// would be answered at once.
+mod quorum_waits {
+    use super::*;
+    use crate::test_support::leader::{self, GENERATION, Leader, NAMESPACE, QUORUM_CACHE, TENANT};
+
+    const TIMEOUT: Duration = Duration::from_millis(300);
+
+    fn owner(
+        leader: &Leader,
+        credentials: &Credentials,
+        marks: &Arc<QuorumMarks>,
+    ) -> ForwardingHandler {
+        ForwardingHandler::new(
+            Arc::clone(&leader.broker),
+            Arc::clone(&leader.ingress),
+            Arc::clone(&leader.router),
+            "10.0.0.1:7001".to_string(),
+            Some(Arc::clone(marks)),
+            TIMEOUT,
+            Arc::clone(&credentials.auth),
+        )
+    }
+
+    fn op(credentials: &Credentials, op: CacheOpKind, value: Bytes) -> ForwardCacheOp {
+        ForwardCacheOp {
+            correlation_id: 2,
+            shard: ShardRef {
+                tenant_id: TENANT.to_string(),
+                namespace: NAMESPACE.to_string(),
+                stream: QUORUM_CACHE.to_string(),
+                shard: 0,
+                generation: GENERATION,
+                incarnation: None,
+            },
+            op,
+            key: "session:abc".to_string(),
+            value,
+            ttl_ms: 0,
+            credential: credentials.token(&[
+                &format!("cache.write:cache:{TENANT}/{NAMESPACE}/{QUORUM_CACHE}"),
+                &format!("cache.read:cache:{TENANT}/{NAMESPACE}/{QUORUM_CACHE}"),
+            ]),
+            condition: None,
+        }
+    }
+
+    fn ops(credentials: &Credentials) -> Vec<(&'static str, ForwardCacheOp)> {
+        let add = felix_storage::counter_log::encode_sum(2);
+        vec![
+            (
+                "put",
+                op(credentials, CacheOpKind::Put, Bytes::from_static(b"v")),
+            ),
+            ("delete", op(credentials, CacheOpKind::Delete, Bytes::new())),
+            ("get", op(credentials, CacheOpKind::Get, Bytes::new())),
+            ("counter add", op(credentials, CacheOpKind::CounterAdd, add)),
+            (
+                "counter get",
+                op(credentials, CacheOpKind::CounterGet, Bytes::new()),
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_forwarded_quorum_cache_op_waits_its_timeout_then_is_released_by_the_mark() {
+        let leader = Leader::start().await;
+        let _lease = leader.hold_lease();
+        let credentials = Credentials::new();
+        let marks = Arc::new(QuorumMarks::new());
+        let handler = owner(&leader, &credentials, &marks);
+
+        for (what, forwarded) in ops(&credentials) {
+            let started = std::time::Instant::now();
+            let answer = handler.apply_cache_op(forwarded).await;
+            let waited = started.elapsed();
+            assert!(
+                matches!(answer, InternalMessage::ForwardCacheError(_)),
+                "{what}: {:?}",
+                answer.kind()
+            );
+            assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
+            assert!(waited < TIMEOUT * 6, "{what} ended late after {waited:?}");
+        }
+
+        let cache = leader::quorum_cache_key();
+        marks.publish(&cache, GENERATION, 1 << 20);
+        marks.counters().publish(&cache, GENERATION, 1 << 20);
+        for (what, forwarded) in ops(&credentials) {
+            let started = std::time::Instant::now();
+            let answer = handler.apply_cache_op(forwarded).await;
+            assert!(
+                matches!(answer, InternalMessage::ForwardCacheOk(_)),
+                "{what}: {:?}",
+                answer.kind()
+            );
+            assert!(
+                started.elapsed() < TIMEOUT,
+                "{what} waited though the mark passed"
+            );
+        }
+    }
+
+    /// Where the fleet reads by round, a read does not need the lease before
+    /// its value; the round confirms leadership after it.
+    #[tokio::test]
+    async fn a_forwarded_read_by_round_is_not_refused_for_a_lapsed_lease() {
+        use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+        struct Confirms;
+        #[async_trait::async_trait]
+        impl felix_replication::quorum::LeadershipCheck for Confirms {
+            async fn confirm(
+                &self,
+                _key: &crate::shards::ShardKey,
+                _generation: u64,
+            ) -> Result<(), felix_replication::quorum::QuorumError> {
+                Ok(())
+            }
+        }
+
+        let leader = Leader::start().await;
+        let lease = leader.hold_lease();
+        let credentials = Credentials::new();
+        let names = [
+            GENERATION_START.name(),
+            MAJORITY_ACK.name(),
+            LEASE_FREE_READS.name(),
+        ];
+        let fleet = Arc::new(FleetGate::new(names));
+        let marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
+        marks.set_read_check(Arc::new(Confirms), false);
+        fleet.observe(names);
+        let cache = leader::quorum_cache_key();
+        marks.publish(&cache, GENERATION, 1 << 20);
+        marks.counters().publish(&cache, GENERATION, 1 << 20);
+        let handler = owner(&leader, &credentials, &marks);
+
+        lease.surrender();
+        for (what, forwarded) in ops(&credentials)
+            .into_iter()
+            .filter(|(what, _)| what.ends_with("get"))
+        {
+            let answer = handler.apply_cache_op(forwarded).await;
+            assert!(
+                matches!(answer, InternalMessage::ForwardCacheOk(_)),
+                "{what}: {:?}",
+                answer.kind()
+            );
+        }
+    }
+}

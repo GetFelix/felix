@@ -445,7 +445,7 @@ impl SimClient {
                 apply_direct(
                     &handles.broker,
                     Some(&handles.ingress),
-                    Some(&handles.marks),
+                    &handles.engine,
                     quorum_timeout,
                     TENANT,
                     NAMESPACE,

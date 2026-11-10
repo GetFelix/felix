@@ -371,13 +371,7 @@ impl ForwardingHandler {
         // instead.
         if matches!(op.op, CacheOpKind::Get | CacheOpKind::CounterGet)
             && !self.ingress.fence().lease_valid()
-            && !felix_replication::quorum::read_skips_lease(
-                &self.broker,
-                &key,
-                self.engine.marks(),
-                Some(self.ingress.as_ref()),
-            )
-            .await
+            && !self.engine.read_skips_lease(&self.broker, &key).await
         {
             crate::cluster::lease::metrics::record_refusal(
                 crate::cluster::lease::metrics::BOUNDARY_READ,
@@ -404,14 +398,9 @@ impl ForwardingHandler {
             None
         };
         let at = if writes {
-            felix_replication::quorum::cache_write_at(
-                &self.broker,
-                &key,
-                op.shard.generation,
-                self.engine.marks(),
-                Some(self.ingress.as_ref()),
-            )
-            .await
+            self.engine
+                .cache_write_at(&self.broker, &key, op.shard.generation)
+                .await
         } else {
             None
         };
@@ -542,20 +531,20 @@ impl ForwardingHandler {
         // The same wait the requester's own path makes for a local write or
         // read: the client asked for the cache's guarantee, wherever the key
         // happens to live.
-        if let Err(err) = felix_replication::quorum::await_cache_quorum(
-            &self.broker,
-            &key,
-            self.engine.marks(),
-            Some(self.ingress.as_ref()),
-            self.quorum_timeout,
-            if writes {
-                felix_replication::quorum::Access::Write
-            } else {
-                felix_replication::quorum::Access::Read
-            },
-            at,
-        )
-        .await
+        if let Err(err) = self
+            .engine
+            .await_cache_quorum(
+                &self.broker,
+                &key,
+                self.quorum_timeout,
+                if writes {
+                    felix_replication::quorum::Access::Write
+                } else {
+                    felix_replication::quorum::Access::Read
+                },
+                at,
+            )
+            .await
         {
             metrics::record_served(metrics::OUTCOME_ERROR);
             return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -907,7 +896,7 @@ impl ForwardingHandler {
         }
     }
 
-    /// [`felix_replication::quorum::await_counter_quorum`] for a forwarded
+    /// [`Engine::await_counter_quorum`] for a forwarded
     /// counter op, as the requester's own path waits for a local one.
     async fn counter_quorum(
         &self,
@@ -916,18 +905,17 @@ impl ForwardingHandler {
         generation: u64,
         what: &'static str,
     ) -> Result<(), String> {
-        felix_replication::quorum::await_counter_quorum(
-            &self.broker,
-            key,
-            self.engine.marks(),
-            Some(self.ingress.as_ref()),
-            self.quorum_timeout,
-            end,
-            generation,
-            what,
-        )
-        .await
-        .map_err(|err| err.to_string())
+        self.engine
+            .await_counter_quorum(
+                &self.broker,
+                key,
+                self.quorum_timeout,
+                end,
+                generation,
+                what,
+            )
+            .await
+            .map_err(|err| err.to_string())
     }
 }
 

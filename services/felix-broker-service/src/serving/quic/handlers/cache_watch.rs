@@ -323,7 +323,6 @@ pub(crate) async fn handle_cache_watch_message(
         broker: Arc::clone(&broker),
         key: shard_key,
         engine: Arc::clone(&publish_ctx.engine),
-        ingress: publish_ctx.ingress.clone(),
         timeout: publish_ctx.quorum_timeout,
     };
     if let Err(err) = gate.wait(tail).await {
@@ -500,7 +499,6 @@ struct CommitGate {
     broker: Arc<Broker>,
     key: crate::shards::ShardKey,
     engine: Arc<crate::shards::routing::StreamEngine>,
-    ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
     timeout: std::time::Duration,
 }
 
@@ -508,19 +506,14 @@ impl CommitGate {
     /// Wait until every change below `end` is committed. Returns at once for
     /// a cache that is not `Quorum`, or a broker with no replicas to wait for.
     async fn wait(&self, end: u64) -> Result<(), felix_replication::quorum::QuorumError> {
+        use felix_replication::engine::Engine;
         let consistency = self
             .broker
             .cache_consistency(&self.key.tenant_id, &self.key.namespace, &self.key.stream)
             .await;
-        felix_replication::quorum::await_readable(
-            consistency,
-            &self.key,
-            self.engine.marks(),
-            self.ingress.as_deref(),
-            end,
-            self.timeout,
-        )
-        .await
+        self.engine
+            .await_readable(consistency, &self.key, end, self.timeout)
+            .await
     }
 
     /// [`Self::wait`] for as long as it takes, for a live change. False once

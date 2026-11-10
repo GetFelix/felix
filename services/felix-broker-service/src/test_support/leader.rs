@@ -32,6 +32,9 @@ pub(crate) const EPHEMERAL: &str = "events";
 /// commit point is the quorum mark rather than the local tail.
 pub(crate) const QUORUM: &str = "ledger";
 pub(crate) const CACHE: &str = "sessions";
+/// A `Quorum` cache placed with a follower ([`SUCCESSOR`]), so its writes and
+/// reads wait on the quorum marks.
+pub(crate) const QUORUM_CACHE: &str = "sessions-quorum";
 pub(crate) const GENERATION: u64 = 1;
 const NODE: &str = "broker-a";
 /// Where [`Leader::cut_over`] moves a shard.
@@ -111,18 +114,31 @@ impl Leader {
             .register_cache(TENANT, NAMESPACE, CACHE, CacheMetadata::default())
             .await
             .expect("cache");
+        broker
+            .register_cache(
+                TENANT,
+                NAMESPACE,
+                QUORUM_CACHE,
+                CacheMetadata {
+                    consistency: felix_broker::ConsistencyLevel::Quorum,
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("quorum cache");
 
         let keys = [
             stream_key(DURABLE),
             stream_key(EPHEMERAL),
             stream_key(QUORUM),
             cache_key(),
+            quorum_cache_key(),
         ];
         let assignments: HashMap<ShardKey, ShardAssignment> = keys
             .iter()
             .map(|key| {
                 let mut placed = assignment(key, "active");
-                if key.stream == QUORUM {
+                if key.stream == QUORUM || key.stream == QUORUM_CACHE {
                     placed.replicas = vec![SUCCESSOR.to_string()];
                 }
                 (key.clone(), placed)
@@ -234,6 +250,13 @@ pub(crate) fn cache_key() -> ShardKey {
     ShardKey {
         kind: ShardKind::Cache,
         ..stream_key(CACHE)
+    }
+}
+
+pub(crate) fn quorum_cache_key() -> ShardKey {
+    ShardKey {
+        kind: ShardKind::Cache,
+        ..stream_key(QUORUM_CACHE)
     }
 }
 
