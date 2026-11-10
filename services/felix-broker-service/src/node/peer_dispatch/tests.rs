@@ -4,15 +4,20 @@ use std::time::Duration;
 
 use felix_authz::TenantKeyCache;
 use felix_broker::Broker;
+use felix_replication::ReplicaHandler;
+use felix_replication::engine::Hybrid;
 use felix_router::{RegionRouter, ShardRouter};
 use felix_storage::EphemeralCache;
-use felix_wire::internal::{AckMode, CacheOpKind, ForwardCacheOp, ForwardPublish, ShardRef};
+use felix_wire::internal::{
+    AckMode, CacheOpKind, Fence, ForwardCacheOp, ForwardPublish, PreVote, ReplicaLog,
+    ReplicateBootstrap, ReplicateFetch, ReplicateRebuild, ReplicateRecords, ShardRef,
+};
 
 use super::*;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use crate::shards::routing::IngressRouter;
 
-fn handler() -> BrokerPeerHandler {
+fn handler() -> BrokerPeerHandler<Hybrid<IngressRouter>> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let router = Arc::new(ShardRouter::new(
         "broker-a",
@@ -32,7 +37,8 @@ fn handler() -> BrokerPeerHandler {
         Duration::from_millis(100),
         Arc::new(BrokerAuth::with_key_store(key_store)),
     );
-    BrokerPeerHandler::new(forwarding, ReplicaHandler::new(broker, router))
+    let engine = Hybrid::new(None, None).with_replica(ReplicaHandler::new(broker, router));
+    BrokerPeerHandler::new(forwarding, engine)
 }
 
 fn shard() -> ShardRef {
@@ -113,4 +119,108 @@ async fn forwarded_client_requests_wait_for_registration() {
 async fn without_the_gate_nothing_waits() {
     let answer = handler().handle(publish()).await;
     assert!(!refused_before_registration(&answer), "{answer:?}");
+}
+
+fn records() -> ReplicateRecords {
+    ReplicateRecords {
+        correlation_id: 11,
+        shard: shard(),
+        first_offset: 0,
+        checksum: 0,
+        payloads: Vec::new(),
+        marks: Vec::new(),
+        publishers: Vec::new(),
+        commit_offset: None,
+        generations: None,
+        times: None,
+        headers: None,
+        set_generation: None,
+    }
+}
+
+fn bootstrap() -> ReplicateBootstrap {
+    ReplicateBootstrap {
+        correlation_id: 12,
+        shard: shard(),
+        base_offset: 0,
+    }
+}
+
+/// Every request the replication engine answers.
+fn replication_requests() -> Vec<InternalMessage> {
+    vec![
+        InternalMessage::ReplicateRecords(records()),
+        InternalMessage::ReplicateMarkedRecords(records()),
+        InternalMessage::ReplicateCacheRecords(records()),
+        InternalMessage::ReplicateGroupRecords(records()),
+        InternalMessage::ReplicateDeadLetterRecords(records()),
+        InternalMessage::ReplicateCounterRecords(records()),
+        InternalMessage::ReplicateBootstrap(bootstrap()),
+        InternalMessage::ReplicateCacheBootstrap(bootstrap()),
+        InternalMessage::ReplicateGroupBootstrap(bootstrap()),
+        InternalMessage::ReplicateDeadLetterBootstrap(bootstrap()),
+        InternalMessage::ReplicateCounterBootstrap(bootstrap()),
+        InternalMessage::ReplicateRebuild(ReplicateRebuild {
+            correlation_id: 13,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            base_offset: 0,
+        }),
+        InternalMessage::Fence(Fence {
+            correlation_id: 14,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            election: None,
+        }),
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 15,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 0,
+            max_bytes: 1024,
+            labelled: false,
+            timed: false,
+            headers: false,
+        }),
+        InternalMessage::PreVote(PreVote {
+            correlation_id: 16,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            last_generation: 0,
+            log_end: 0,
+            set_generation: 0,
+        }),
+    ]
+}
+
+/// A replication request reaches the engine, which answers it as a replica
+/// would; one dropped from the routing falls through to the refusal of a
+/// message that is not a request at all.
+#[tokio::test]
+async fn every_replication_request_reaches_the_engine() {
+    let handler = handler();
+    for request in replication_requests() {
+        let kind = request.kind();
+        let answer = handler.handle(request).await;
+        let text = format!("{answer:?}");
+        assert!(
+            !text.contains("is not a"),
+            "{kind:?} was not routed: {text}"
+        );
+    }
+}
+
+/// A forwarded write never reaches the engine, and a response is no request.
+#[tokio::test]
+async fn the_engine_refuses_what_is_not_replication() {
+    let answer = handler()
+        .engine
+        .handle(None, PeerCapabilities::NONE, publish())
+        .await;
+    assert!(
+        matches!(&answer, InternalMessage::ForwardPublishError(error)
+        if error.code == ErrorCode::Malformed
+            && error.detail.ends_with("is not a replication request")),
+        "{answer:?}"
+    );
 }
