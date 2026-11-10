@@ -296,3 +296,11 @@ fn install_metrics_recorder_is_cached_in_tests() {
     // This verifies the caching mechanism works correctly in tests
     let _ = (handle1.render(), handle2.render());
 }
+
+#[test]
+#[serial]
+fn installing_the_recorder_starts_histogram_upkeep() {
+    // Cached after the first install, so this holds whichever test ran first.
+    let _handle = install_metrics_recorder();
+    assert!(upkeep_threads_started() >= 1);
+}
