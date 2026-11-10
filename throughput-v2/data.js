@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794292023522,
+  "lastUpdate": 1794292647137,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50960,6 +50960,58 @@ window.BENCHMARK_DATA = {
             "range": "5442.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817927.63\nmean: 815038.40\nstdev: 5442.19\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "badda77a31034c0254f1bee07b78b2a05f5d5059",
+          "message": "refactor(controlplane): remove the Postgres metadata backend (#2173)\n\n* Remove the control plane's Postgres metadata backend\n\nRaft is the one production backend; the in-memory store stays for tests and\nlocal runs. Startup refuses leftover Postgres settings instead of falling back\nto an empty store. Drops the sqlx dependency, migrations, pg tests and tasks,\nCI Postgres services, felixctl's busy retry and export-postgres, and moves the\nHelm chart default to Raft.\n\n* docs: drop the last Postgres mentions from the demo pages\n\n* Spec-Unaffected: the diff only deletes the Postgres store and rewords comments in modelled files; no protocol or placement behaviour changes\n\n* Drop the migrate import tool and felixctl's controlplane delegate\n\nNothing writes the snapshot file any more. The ImportState command stays: the\nRaft tests seed state through it.\n\n* test: accept an answer the server reset the connection after",
+          "timestamp": "2026-11-10T06:33:00Z",
+          "tree_id": "4444cc2a2817e70c51ca1d399443681e80fc36c2",
+          "url": "https://github.com/GetFelix/felix/commit/badda77a31034c0254f1bee07b78b2a05f5d5059"
+        },
+        "date": 1794292646461,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 507920.13,
+            "range": "22345.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 507920.13\nmean: 514353.69\nstdev: 22345.79\ncv: 4.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 507920.13,
+            "range": "22345.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 507920.13\nmean: 514353.69\nstdev: 22345.79\ncv: 4.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 113806.52,
+            "range": "1328.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 113806.52\nmean: 113193.18\nstdev: 1328.89\ncv: 1.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1138065.22,
+            "range": "13288.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1138065.22\nmean: 1131931.82\nstdev: 13288.93\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
