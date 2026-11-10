@@ -320,7 +320,8 @@ control plane to answer (paused and down never do) for a run of the reconcile
 interval plus 2.5 seconds plus three calls at the current slow delay. A copy
 still untrusted after such a chance is vouchable: its shard is not exempt and
 fails the check, marked `vouchable` in the stuck list, and the run prints
-those shards on their own line. A copy that is untrusted with no injected
+those shards on their own line. Each run is judged by the role the copy had
+while it lasted, so a promotion or demotion afterwards does not change it. A copy that is untrusted with no injected
 unclean start behind it, or that was seen trusted after the start, is not
 counted either, so a broker that loses a vouch fails the check. A broker down
 after a clean stop, or one with no copy, counts as trusted, so the rule errs

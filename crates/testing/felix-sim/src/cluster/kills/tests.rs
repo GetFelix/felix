@@ -128,8 +128,8 @@ fn a_copy_up_while_a_leader_served_and_still_untrusted_is_a_stall() {
     log.started_unclean("b2", secs(10));
     log.started_unclean("b3", secs(12));
     for at in [20, 21, 22, 23, 24, 25, 26] {
-        log.served("stream/0", "b2", secs(at), Some(Duration::ZERO));
-        log.served("stream/0", "b3", secs(at), Some(Duration::ZERO));
+        log.served("stream/0", "b2", secs(at), Some(Duration::ZERO), false);
+        log.served("stream/0", "b3", secs(at), Some(Duration::ZERO), false);
     }
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::DownAfterKill);
@@ -152,8 +152,8 @@ fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() 
     // leader b1 were killed. b2's next start distrusts the copy anyway.
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
-    log.served("stream/0", "b1", secs(20), Some(Duration::ZERO));
-    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO));
+    log.served("stream/0", "b1", secs(20), Some(Duration::ZERO), false);
+    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO), false);
     log.kill("b2", secs(25));
     log.kill("b1", secs(30));
     let copies = Trust::from([
@@ -197,10 +197,10 @@ fn a_blip_of_service_beside_a_copy_is_not_a_chance_to_vouch() {
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
     log.started_unclean("b3", secs(12));
-    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO));
-    log.served("stream/0", "b3", secs(20), Some(Duration::ZERO));
-    log.served("stream/0", "b2", secs(21), Some(Duration::ZERO));
-    log.served("stream/0", "b3", secs(21), Some(Duration::ZERO));
+    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO), false);
+    log.served("stream/0", "b3", secs(20), Some(Duration::ZERO), false);
+    log.served("stream/0", "b2", secs(21), Some(Duration::ZERO), false);
+    log.served("stream/0", "b3", secs(21), Some(Duration::ZERO), false);
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
     assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
@@ -243,7 +243,7 @@ fn a_voter_a_leader_reached_over_a_link_is_vouchable_whatever_the_control_plane_
     let (mut log, copies) = two_restarted();
     for at in 20..24 {
         for node in ["b2", "b3"] {
-            log.served("stream/0", node, secs(at), None);
+            log.served("stream/0", node, secs(at), None, false);
         }
     }
     let views = view("b1", &THREE);
@@ -256,7 +256,7 @@ fn a_learner_is_not_readmittable_while_the_control_plane_answers_nothing() {
     let (mut log, copies) = two_restarted();
     for at in 20..60 {
         for node in ["b2", "b3"] {
-            log.served("stream/0", node, secs(at), None);
+            log.served("stream/0", node, secs(at), None, true);
         }
     }
     let views = learners(view("b1", &THREE), &["b2", "b3"]);
@@ -271,13 +271,13 @@ fn a_learner_needs_a_run_as_long_as_reconcile_and_three_slow_calls() {
     // Reconcile is 5 s by default: 5 + 2.5 + 12 = 19.5 s.
     for at in 20..38 {
         for node in ["b2", "b3"] {
-            log.served("stream/0", node, secs(at), delay);
+            log.served("stream/0", node, secs(at), delay, true);
         }
     }
     assert_eq!(held(&log, &views, &copies), ["stream/0"]);
     for at in 38..=40 {
         for node in ["b2", "b3"] {
-            log.served("stream/0", node, secs(at), delay);
+            log.served("stream/0", node, secs(at), delay, true);
         }
     }
     assert!(held(&log, &views, &copies).is_empty());
@@ -325,10 +325,34 @@ fn a_newer_generation_the_copy_never_accepted_leaves_the_old_leader_a_chance() {
     let (mut log, copies) = two_restarted();
     for at in 20..24 {
         for node in ["b2", "b3"] {
-            log.served("stream/0", node, secs(at), Some(Duration::ZERO));
+            log.served("stream/0", node, secs(at), Some(Duration::ZERO), false);
         }
     }
     let views = view("b1", &THREE);
     assert!(held(&log, &views, &copies).is_empty());
     assert_eq!(log.vouchable_untrusted(&views, &copies).len(), 1);
+}
+
+#[test]
+fn a_run_is_judged_by_the_role_the_copy_had_then() {
+    // b2 and b3 shipped for 6 s as voters, long enough to vouch a voter,
+    // then became learners. The runs happened as voters and still count.
+    let (mut log, copies) = two_restarted();
+    for at in 20..27 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), Some(Duration::ZERO), false);
+        }
+    }
+    let views = learners(view("b1", &THREE), &["b2", "b3"]);
+    assert!(held(&log, &views, &copies).is_empty());
+    // The other way: learner samples too short for readmission do not
+    // become a voter's shipping window when the copy is promoted.
+    let (mut log, copies) = two_restarted();
+    for at in 20..27 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), Some(Duration::ZERO), true);
+        }
+    }
+    let views = view("b1", &THREE);
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
 }

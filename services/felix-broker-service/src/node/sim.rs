@@ -668,7 +668,9 @@ impl SimBroker {
             key.shard,
             None,
         );
-        // The lookup never waits, so one poll finishes it.
+        // A stream shard's lookup never waits. A cache shard's may be pending,
+        // which reads as no generation and leaves the old leader a chance, so
+        // the checker errs toward failing.
         let mut open = std::pin::pin!(open);
         let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
         match open.as_mut().poll(&mut cx) {

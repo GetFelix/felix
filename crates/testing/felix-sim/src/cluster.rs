@@ -434,7 +434,7 @@ impl SimCluster {
     /// still starting, and record the stop as clean. A no-op on one that is
     /// down.
     pub async fn crash(&self, index: usize) {
-        self.note_serving();
+        self.note_state().await;
         self.nodes[index].crash(&self.net, Stop::Clean).await;
     }
 
@@ -443,7 +443,7 @@ impl SimCluster {
     /// takes a new storage id and runs its unclean-start handling. Only a
     /// run that does not fsync on commit (the default) can be left that way.
     pub async fn kill(&self, index: usize) {
-        self.note_serving();
+        self.note_state().await;
         let at = self.elapsed();
         if self.nodes[index].crash(&self.net, Stop::Kill).await {
             self.kills.lock().kill(&self.nodes[index].id, at);
@@ -459,7 +459,7 @@ impl SimCluster {
         if self.nodes[index].is_down() {
             return false;
         }
-        self.note_serving();
+        self.note_state().await;
         let at = self.elapsed();
         let node = &self.nodes[index];
         let seed = self.seed ^ self.power.lock().next_seed();
@@ -536,8 +536,7 @@ impl SimCluster {
     /// The held shards, and the unserved ones with a copy still untrusted
     /// although a broker served the shard while it was up.
     pub(crate) async fn holds(&self) -> Holds {
-        self.note_serving();
-        self.note_trusted().await;
+        self.note_state().await;
         let Ok(mut views) = self.cp.shard_views().await else {
             return Holds::default();
         };
@@ -573,10 +572,22 @@ impl SimCluster {
         }
     }
 
+    /// Record who could vouch whom and which restarted copies are trusted
+    /// now. Called before each fault and by the sampler, so a stop or a loss
+    /// of trust in between is judged against what was seen just before it.
+    pub(crate) async fn note_state(&self) {
+        self.note_serving().await;
+        self.note_trusted().await;
+    }
+
     /// Record which running brokers are up beside a broker serving each
     /// shard, so the hold rule knows which copies a leader could have
-    /// vouched. Reads without awaiting, so it sees one instant.
-    pub(crate) fn note_serving(&self) {
+    /// vouched, and in what role (learner or voter) it reached each. The
+    /// brokers are read without awaiting, so they are seen at one instant.
+    async fn note_serving(&self) {
+        let Ok(views) = self.cp.shard_views().await else {
+            return;
+        };
         let at = self.elapsed();
         let mut kills = self.kills.lock();
         for key in self.shard_keys() {
@@ -603,7 +614,11 @@ impl SimCluster {
                 let accepted = self.nodes[*index].accepted_generation(&key);
                 let serving = kills::unsuperseded(&servers, accepted);
                 if kills::reaches(&serving, *index, &link_up) {
-                    kills.served(&shard, &self.nodes[*index].id, at, delay);
+                    let id = &self.nodes[*index].id;
+                    let learner = views
+                        .get(&shard)
+                        .is_some_and(|view| view.joining.contains(id));
+                    kills.served(&shard, id, at, delay, learner);
                 }
             }
         }
@@ -611,7 +626,7 @@ impl SimCluster {
 
     /// Note the copies of brokers that started unclean which are trusted
     /// now, so a later loss of trust is not put down to that start.
-    pub(crate) async fn note_trusted(&self) {
+    async fn note_trusted(&self) {
         let starts = self.kills.lock().unclean_nodes();
         for node in self.nodes.iter().filter(|node| starts.contains(&node.id)) {
             for key in self.shard_keys() {

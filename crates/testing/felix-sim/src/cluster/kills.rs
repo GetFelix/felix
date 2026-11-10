@@ -219,17 +219,20 @@ impl KillLog {
 
     /// `node` was up at `at` with a link from a broker serving `shard`.
     /// `delay` is how long a control plane call takes now, `None` when it
-    /// answers nothing.
+    /// answers nothing. `learner` is the role the copy has now: the sample
+    /// joins the run for that role, so a role change later does not move it.
     pub(crate) fn served(
         &mut self,
         shard: &str,
         node: &str,
         at: Duration,
         delay: Option<Duration>,
+        learner: bool,
     ) {
         let key = (shard.to_string(), node.to_string());
-        sample(self.shipped.entry(key.clone()), at, SHIP_WINDOW);
-        if let Some(delay) = delay {
+        if !learner {
+            sample(self.shipped.entry(key), at, SHIP_WINDOW);
+        } else if let Some(delay) = delay {
             let need = self.reconcile + RUN_GAP + delay * READMIT_CALLS;
             sample(self.readmittable.entry(key), at, need);
         }
@@ -250,30 +253,35 @@ impl KillLog {
     }
 
     /// Whether a leader had the chance to vouch `node`'s copy of `shard`
-    /// since its last unclean start. A learner needs the control plane to
-    /// readmit it; a voter is vouched by a leader shipping over a link.
-    pub(crate) fn vouchable(&self, shard: &str, node: &str, learner: bool) -> bool {
+    /// since its last unclean start. Each run is judged by the role the copy
+    /// had during it: a learner needs the control plane to readmit it, a
+    /// voter is vouched by a leader shipping over a link.
+    pub(crate) fn vouchable(&self, shard: &str, node: &str) -> bool {
         let key = (shard.to_string(), node.to_string());
-        let runs = if learner {
-            &self.readmittable
-        } else {
-            &self.shipped
-        };
-        runs.get(&key).is_some_and(Reach::long_enough)
+        [&self.shipped, &self.readmittable]
+            .iter()
+            .any(|runs| runs.get(&key).is_some_and(Reach::long_enough))
+    }
+
+    /// Whether `node`'s copy of `shard` was seen trusted since its last
+    /// unclean start.
+    #[cfg(test)]
+    pub(crate) fn is_vouched(&self, shard: &str, node: &str) -> bool {
+        self.vouched
+            .contains(&(shard.to_string(), node.to_string()))
     }
 
     /// Whether `copy` counts as untrusted towards holding `shard`.
-    fn counts_untrusted(&self, shard: &str, node: &str, copy: Copy, view: &ShardView) -> bool {
+    fn counts_untrusted(&self, shard: &str, node: &str, copy: Copy) -> bool {
         match copy {
             Copy::Trusted => false,
             Copy::DownAfterKill => true,
             Copy::Untrusted => {
-                let learner = view.joining.contains(node);
                 self.unclean_starts.contains_key(node)
                     && !self
                         .vouched
                         .contains(&(shard.to_string(), node.to_string()))
-                    && !self.vouchable(shard, node, learner)
+                    && !self.vouchable(shard, node)
             }
         }
     }
@@ -286,7 +294,7 @@ impl KillLog {
             .filter(|(shard, view)| {
                 members(view).iter().any(|node| {
                     trust.get(&(shard.to_string(), node.to_string())) == Some(&Copy::Untrusted)
-                        && self.vouchable(shard, node, view.joining.contains(*node))
+                        && self.vouchable(shard, node)
                 })
             })
             .map(|(shard, _)| shard.clone())
@@ -300,7 +308,7 @@ impl KillLog {
             .into_iter()
             .filter_map(|node| {
                 let copy = *trust.get(&(shard.to_string(), node.to_string()))?;
-                if !self.counts_untrusted(shard, node, copy, view) {
+                if !self.counts_untrusted(shard, node, copy) {
                     return None;
                 }
                 Some(match copy {
@@ -349,7 +357,7 @@ impl KillLog {
                     .filter(|node| {
                         trust
                             .get(&(shard.to_string(), node.to_string()))
-                            .is_some_and(|copy| self.counts_untrusted(shard, node, *copy, view))
+                            .is_some_and(|copy| self.counts_untrusted(shard, node, *copy))
                     })
                     .count();
                 untrusted > set.len() / 2

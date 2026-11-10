@@ -308,3 +308,19 @@ async fn a_copy_on_disk_but_not_open_after_a_kill_is_untrusted() {
     }
     assert!(unopened > 0, "no copy was on disk and closed");
 }
+
+/// A fault notes the restarted copies that are trusted by then, so one that
+/// loses trust before the next sample is not put down to its old start.
+#[tokio::test(start_paused = true)]
+async fn a_fault_notes_a_copy_vouched_since_its_unclean_start() {
+    log();
+    let cluster = Arc::new(SimCluster::start(1, small()).await.unwrap());
+    let (shard, follower, leader) = a_shard_and_its_two_brokers(&cluster).await;
+    cluster.kill(follower).await;
+    restarted(&cluster, follower).await;
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    let id = cluster.node_id(follower).to_string();
+    assert!(!cluster.kills.lock().is_vouched(&shard, &id));
+    cluster.crash(leader).await;
+    assert!(cluster.kills.lock().is_vouched(&shard, &id));
+}
