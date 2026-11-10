@@ -368,6 +368,7 @@ impl SegmentWriter {
             // is empty rather than wrapping below zero.
             last_offset: self.next_offset.saturating_sub(1).max(self.base_offset),
             size_bytes: self.size_bytes,
+            version: self.version,
         }
     }
 

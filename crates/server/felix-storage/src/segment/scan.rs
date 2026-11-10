@@ -60,8 +60,10 @@ pub struct ScanOutcome {
     /// payload's digest (its part of a `PayloadDigest`). Collected here
     /// so rebuilding producer state costs no second pass over the segment.
     pub marks: Vec<(Offset, RecordMark, u64)>,
-    /// The generation of the last intact record, or `None` when the segment
-    /// is older than v9 or holds no records.
+    /// The generation of the last intact record in the scanned span, or
+    /// `None` when that span holds no v9 record. A [`ScanStart::Resume`] scan
+    /// sees only the records after its resume point, so callers must not seed
+    /// a generation floor from it.
     pub last_generation: Option<u64>,
 }
 

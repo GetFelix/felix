@@ -246,8 +246,9 @@ used and it is cut off with its record on a torn tail. A segment's version
 says which layout its records have; a v8 record and a v9 record never decode
 as each other, because the header checksum sits at a different place.
 
-Generations never fall along a log. The startup scan checks this, and a
-record whose generation is below the one before it is `GenerationFell`
+Generations never fall along a log. The startup scan checks this within the
+scanned part of a segment; across segments is checked once brokers write v9.
+A record whose generation is below the one before it is `GenerationFell`
 corruption: every checksum held, so it was written that way.
 
 No broker writes v9 yet. Once a fleet feature says every broker reads it,

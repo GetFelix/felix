@@ -252,7 +252,12 @@ impl LogConfig {
     pub fn validate(&self) -> Result<()> {
         // A segment must have room for its header plus at least one record, or
         // rollover would loop without ever making progress.
-        let minimum = crate::segment::SEGMENT_HEADER_LEN + crate::segment::RECORD_HEADER_LEN;
+        let minimum = crate::segment::SEGMENT_HEADER_LEN
+            + crate::segment::format::record_len_in(
+                1,
+                &crate::log::RecordMark::None,
+                crate::segment::format::GENERATION_VERSION,
+            );
         if self.segment_size_bytes < minimum {
             return Err(StorageError::InvalidConfig(
                 "segment_size_bytes is too small to hold a single record",

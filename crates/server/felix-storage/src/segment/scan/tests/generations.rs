@@ -276,3 +276,26 @@ fn every_power_loss_of_a_v9_segment_recovers_a_prefix() {
         }
     }
 }
+
+/// A resume scan reports only the span it scanned, so it cannot seed a floor.
+#[test]
+fn a_resume_scan_reports_only_its_own_span() {
+    let (bytes, starts) = v9_segment(&[1, 2, 5]);
+    let (_dir, path) = write(&bytes);
+    let resume = |position, next_offset| {
+        scan_segment(
+            &path,
+            0,
+            "t/ns/s/0",
+            4096,
+            ScanStart::Resume {
+                position,
+                next_offset,
+            },
+            false,
+        )
+        .expect("scan")
+    };
+    assert_eq!(resume(starts[1], 1).last_generation, Some(5));
+    assert_eq!(resume(bytes.len() as u64, 3).last_generation, None);
+}

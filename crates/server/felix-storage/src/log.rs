@@ -271,6 +271,8 @@ pub struct SegmentDescriptor {
     pub base_offset: Offset,
     pub last_offset: Offset,
     pub size_bytes: u64,
+    /// The layout version in the segment header, which sets the record header size.
+    pub version: u16,
 }
 
 /// Names one shard's log. Caches and counters reuse it, with the cache or
