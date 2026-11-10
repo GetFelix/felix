@@ -3,14 +3,13 @@
 
 use felix_broker::{ConsistencyLevel, DurableStorage, StreamMetadata};
 use felix_replication::quorum::QuorumMarks;
-
-use crate::shards::routing::StreamEngine;
 use felix_storage::log::{FsyncMode, LogConfig};
 
 use super::*;
 use crate::serving::quic::handlers::publish::direct::{
     DirectPublishError, LocalTarget, Resolution, publish_direct, resolve_publish,
 };
+use crate::shards::routing::StreamEngine;
 
 async fn durable_broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> Broker {
     let config = LogConfig {

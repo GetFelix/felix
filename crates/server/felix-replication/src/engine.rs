@@ -60,7 +60,9 @@ impl<S: ?Sized> Hybrid<S> {
 }
 
 impl<S: ?Sized> Default for Hybrid<S> {
-    /// Outside a cluster: nothing is replicated.
+    /// For tests only: an engine with no marks and no router, so a `Quorum`
+    /// wait has nothing to wait on and returns at once. Production code builds
+    /// it with [`Hybrid::new`].
     fn default() -> Self {
         Self::new(None, None)
     }
