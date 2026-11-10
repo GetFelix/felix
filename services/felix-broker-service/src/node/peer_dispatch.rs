@@ -1,8 +1,8 @@
 //! Routing a peer request to the half of this broker that answers it.
 //!
-//! Two halves, because a broker plays two roles at once and they are not the
-//! same role for the same shard: it is the leader of some shards and a follower
-//! of others. A forwarded publish is a request to *order* a record, and only a
+//! Two halves (a forwarding handler and the replication engine), because a
+//! broker plays two roles at once and they are not the same role for the same
+//! shard: it is the leader of some shards and a follower of others. A forwarded publish is a request to *order* a record, and only a
 //! leader may answer it; a replication batch is a request to *store* one
 //! already ordered, and only a follower should. Keeping them apart is what
 //! stops either check standing in for the other.
@@ -15,13 +15,14 @@ use felix_wire::internal::{
 use tokio_util::sync::CancellationToken;
 
 use crate::serving::forward::owner::ForwardingHandler;
+use felix_replication::engine::Engine;
 use felix_replication::peer::server::PeerRequestHandler;
-use felix_replication::replica::ReplicaHandler;
 
 /// Answers every request a peer may send this broker.
-pub(crate) struct BrokerPeerHandler {
+pub(crate) struct BrokerPeerHandler<E> {
     forwarding: ForwardingHandler,
-    replica: ReplicaHandler,
+    /// Answers the replication requests; the rest are forwarded writes.
+    engine: E,
     /// Until cancelled, a forwarded client request is refused as
     /// `Unavailable`, which the forwarder retries. Set only on a broker that
     /// started from its control-plane view: it serves no client until it has
@@ -29,11 +30,11 @@ pub(crate) struct BrokerPeerHandler {
     clients: Option<CancellationToken>,
 }
 
-impl BrokerPeerHandler {
-    pub(crate) fn new(forwarding: ForwardingHandler, replica: ReplicaHandler) -> Self {
+impl<E> BrokerPeerHandler<E> {
+    pub(crate) fn new(forwarding: ForwardingHandler, engine: E) -> Self {
         Self {
             forwarding,
-            replica,
+            engine,
             clients: None,
         }
     }
@@ -56,7 +57,7 @@ impl BrokerPeerHandler {
 const NOT_REGISTERED: &str = "this broker has not registered with the control plane yet";
 
 #[async_trait]
-impl PeerRequestHandler for BrokerPeerHandler {
+impl<E: Engine + 'static> PeerRequestHandler for BrokerPeerHandler<E> {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
         self.handle_from(None, PeerCapabilities::NONE, request)
             .await
@@ -93,65 +94,21 @@ impl PeerRequestHandler for BrokerPeerHandler {
             InternalMessage::LeaseForwardCacheOp(op) => {
                 self.forwarding.apply_lease_cache_op(op).await
             }
-            InternalMessage::ReplicateRecords(batch)
-            | InternalMessage::ReplicateMarkedRecords(batch) => {
-                self.replica
-                    .apply(sender, batch, felix_broker::LogKind::Stream)
-                    .await
-            }
-            InternalMessage::ReplicateCacheRecords(batch) => {
-                self.replica
-                    .apply(sender, batch, felix_broker::LogKind::Cache)
-                    .await
-            }
-            InternalMessage::ReplicateGroupRecords(batch) => {
-                self.replica
-                    .apply(sender, batch, felix_broker::LogKind::GroupCursors)
-                    .await
-            }
-            InternalMessage::ReplicateDeadLetterRecords(batch) => {
-                self.replica
-                    .apply(sender, batch, felix_broker::LogKind::GroupDeadLetters)
-                    .await
-            }
-            InternalMessage::ReplicateCounterRecords(batch) => {
-                self.replica
-                    .apply(sender, batch, felix_broker::LogKind::Counters)
-                    .await
-            }
-            InternalMessage::ReplicateBootstrap(request) => {
-                self.replica
-                    .bootstrap(sender, request, felix_broker::LogKind::Stream)
-                    .await
-            }
-            InternalMessage::ReplicateCacheBootstrap(request) => {
-                self.replica
-                    .bootstrap(sender, request, felix_broker::LogKind::Cache)
-                    .await
-            }
-            InternalMessage::ReplicateGroupBootstrap(request) => {
-                self.replica
-                    .bootstrap(sender, request, felix_broker::LogKind::GroupCursors)
-                    .await
-            }
-            InternalMessage::ReplicateDeadLetterBootstrap(request) => {
-                self.replica
-                    .bootstrap(sender, request, felix_broker::LogKind::GroupDeadLetters)
-                    .await
-            }
-            InternalMessage::ReplicateCounterBootstrap(request) => {
-                self.replica
-                    .bootstrap(sender, request, felix_broker::LogKind::Counters)
-                    .await
-            }
-            InternalMessage::ReplicateRebuild(request) => {
-                self.replica.rebuild(sender, request).await
-            }
-            InternalMessage::Fence(request) => {
-                self.replica.fence_from(sender, caller, request).await
-            }
-            InternalMessage::ReplicateFetch(request) => self.replica.fetch(sender, request).await,
-            InternalMessage::PreVote(request) => self.replica.pre_vote(request).await,
+            request @ (InternalMessage::ReplicateRecords(_)
+            | InternalMessage::ReplicateMarkedRecords(_)
+            | InternalMessage::ReplicateCacheRecords(_)
+            | InternalMessage::ReplicateGroupRecords(_)
+            | InternalMessage::ReplicateDeadLetterRecords(_)
+            | InternalMessage::ReplicateCounterRecords(_)
+            | InternalMessage::ReplicateBootstrap(_)
+            | InternalMessage::ReplicateCacheBootstrap(_)
+            | InternalMessage::ReplicateGroupBootstrap(_)
+            | InternalMessage::ReplicateDeadLetterBootstrap(_)
+            | InternalMessage::ReplicateCounterBootstrap(_)
+            | InternalMessage::ReplicateRebuild(_)
+            | InternalMessage::Fence(_)
+            | InternalMessage::ReplicateFetch(_)
+            | InternalMessage::PreVote(_)) => self.engine.handle(sender, caller, request).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => InternalMessage::ForwardPublishError(ForwardPublishError {

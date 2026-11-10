@@ -85,13 +85,13 @@ through traits the service implements:
 
 ### Wiring
 
-`services/felix-broker-service/src/node/cluster.rs` builds the engine:
-`ReplicaHandler::new` for the follower side (`:269`), the promotion gate
-(`:389`, `:401`), `election::Elections::new` (`:444`), `driver::spawn` with the
-shard fence as its `WriteFence` (`:491`, `:495`), `reporter::Reporter::spawn`
-(`:509`) and `suspicion::spawn` (`:539`). `node/startup.rs` binds the read
-rounds through `engine::bind_read_rounds`, and `node/peer_dispatch.rs` hands peer requests
-to the `ReplicaHandler`. The simulator builds nodes through the same service
+`services/felix-broker-service/src/node/cluster.rs` wires the engine: the
+follower side through `engine::replica_handler` when the peer listener binds,
+the promotion gate, `engine::elections`, and `Hybrid::start`, which spawns the
+reporter, driver, suspicion heartbeat and election driver (step 6 below).
+`node/startup.rs` binds the read rounds through `engine::bind_read_rounds`, and
+`node/peer_dispatch.rs` hands peer replication requests to `Engine::handle`. The
+simulator builds nodes through the same service
 code (`services/felix-broker-service/src/node/sim.rs`).
 
 ### 1. Append
@@ -1018,12 +1018,27 @@ unit, integration and simulator seed tests pass unchanged after each.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns
    today (driver, replica handler, reporter, elections, suspicion), and
    `peer_dispatch.rs` routes replication requests to `Engine::handle`.
+   Done as built: `Hybrid::start` spawns, in this order, the replica reporter
+   (when the broker is a cluster member), the driver, the suspicion heartbeat
+   and the election driver, and returns the driver's handle. The order is the
+   one `node/cluster.rs` had: the driver is handed the reporter, and the
+   election driver reads the suspicions. Two pieces stay outside it because
+   they must exist earlier. `engine::elections` builds the elected-leadership
+   table before the routing feed starts, since the feed reads it, and
+   `engine::replica_handler` builds the follower side when the peer listener
+   binds, before the shard tasks run. `Hybrid::with_replica` hands that
+   handler to the engine, and `Engine::handle` answers every replication
+   request with it. `BrokerPeerHandler` keeps forwarded writes and sends the
+   fifteen replication kinds to `handle`. The tasks and their arguments are
+   unchanged.
 7. Narrow `pub` items that only the engine now uses to `pub(crate)`.
 8. One shared engine: `node.rs` builds a single `Arc<StreamEngine>` and hands
    it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler` and Kafka. This
    removes the `(ingress, marks)` inputs on those constructors and the test
    literals that set `marks` on `ClusterContext`, `BrokerWrites::new` and
-   `ForwardingHandler::new`.
+   `ForwardingHandler::new`. Until then `cluster.rs` `peer_handler` builds a
+   second `StreamEngine` with `with_replica` beside the shared one in `node.rs`;
+   this step folds it into the shared engine.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.

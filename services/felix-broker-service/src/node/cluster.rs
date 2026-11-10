@@ -228,13 +228,23 @@ pub(super) fn peer_handler(
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
 ) -> (
-    peer_dispatch::BrokerPeerHandler,
+    peer_dispatch::BrokerPeerHandler<shard_routing::StreamEngine>,
     Option<replication::confirmed::Prefetch>,
 ) {
-    let replicas = replica_handler(broker, router, quorum_marks, storage_id, unclean, confirmed)
+    let replicas = replication::engine::replica_handler(
+        broker,
+        router,
+        quorum_marks,
+        storage_id,
+        unclean,
+        confirmed,
         // A leader retries a copy that refused it on its driver tick.
-        .with_leader_retry(Duration::from_millis(config.controlplane_sync_interval_ms));
-    let prefetch = replicas.confirmed_prefetch();
+        Duration::from_millis(config.controlplane_sync_interval_ms),
+    );
+    let engine =
+        shard_routing::StreamEngine::new(Some(Arc::clone(quorum_marks)), Some(Arc::clone(ingress)))
+            .with_replica(replicas);
+    let prefetch = engine.confirmed_prefetch();
     let advertise_addr = config
         .membership
         .as_ref()
@@ -250,35 +260,9 @@ pub(super) fn peer_handler(
             Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
             Arc::clone(auth),
         ),
-        replicas,
+        engine,
     );
     (handler, prefetch)
-}
-
-/// What answers the peer listener's replication requests.
-fn replica_handler(
-    broker: &Arc<Broker>,
-    router: &Arc<ShardRouter>,
-    quorum_marks: &Arc<QuorumMarks>,
-    storage_id: felix_storage::StorageId,
-    unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
-) -> replication::ReplicaHandler {
-    // A replica refuses a candidate for as long as it would take to suspect
-    // its leader, so the two windows agree.
-    let handler = replication::ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
-        .with_stickiness(replication::suspicion::SuspicionConfig::from_env().suspect_after)
-        .with_fleet(Arc::clone(quorum_marks))
-        .with_local_storage(storage_id)
-        .with_replaced_storage(quorum_marks.replaced_storage());
-    let handler = match unclean {
-        Some(unclean) => handler.with_unclean_start(unclean),
-        None => handler,
-    };
-    match confirmed {
-        Some(confirmed) => handler.with_confirmed_routes(confirmed),
-        None => handler,
-    }
 }
 
 /// The shard watch, the routing feed, and shipping to followers.
@@ -436,22 +420,12 @@ where
             let routes_changed = Arc::new(tokio::sync::Notify::new());
             // Leaderships the replicas elect, only where this broker checks
             // sets: the routing feed lays them over the control plane's.
-            let elections = peers
-                .as_ref()
-                .filter(|pool| pool.offers_election())
-                .map(|_| {
-                    let elections = Arc::new(
-                        replication::election::Elections::new(
-                            router.local_node_id(),
-                            Arc::clone(&assignments_changed),
-                        )
-                        .with_defer_for(
-                            replication::suspicion::SuspicionConfig::from_env().defer_for,
-                        ),
-                    );
-                    quorum_marks.set_elections(Arc::clone(&elections));
-                    elections
-                });
+            let elections = replication::engine::elections(
+                peers.as_ref().is_some_and(|pool| pool.offers_election()),
+                router,
+                Arc::clone(&assignments_changed),
+                quorum_marks,
+            );
             let watch = tokio::spawn(shard_watch::run(
                 link.clone(),
                 // The assignment feed is cluster metadata, so it is read with
@@ -484,32 +458,30 @@ where
                 Duration::from_millis(config.controlplane_sync_interval_ms),
                 sync_shutdown.clone(),
             );
-            // Shipping to followers, for the shards this broker leads. Only
-            // when there is a peer transport to ship over: without one the
-            // replica set is a plan nobody can act on.
+            // Shipping to followers, for the shards this broker leads, the
+            // suspicion heartbeat over the same pool and the election driver
+            // standing on it. Only when there is a peer transport: without
+            // one the replica set is a plan nobody can act on.
             let replication = peers.as_ref().map(|pool| {
-                replication::driver::spawn(
-                    Arc::clone(pool),
-                    Arc::clone(broker),
-                    Arc::clone(router),
-                    Arc::new(replication::engine::Host::new(
-                        Arc::clone(ingress),
-                        Arc::clone(ingress.fence()),
-                    )) as Arc<dyn replication::driver::WriteFence>,
-                    Arc::clone(&gate),
-                    replication::driver::Published {
-                        marks: Arc::clone(quorum_marks),
-                        halted: Arc::clone(halted_replicas),
-                        status: Arc::clone(shard_status),
-                    },
-                    // Only a broker that is a cluster member reports: the
-                    // report is about shards the control plane assigned, and a
-                    // broker it has never registered leads none of them.
-                    //
-                    // Reports from every shard in a pass share one request —
-                    // see `replication::reporter`.
-                    config.membership.as_ref().map(|membership| {
-                        let (reporter, _task) = replication::reporter::Reporter::spawn(
+                replication::engine::Hybrid::<shard_routing::IngressRouter>::start(
+                    replication::engine::StartDeps {
+                        requester: Arc::clone(pool),
+                        broker: Arc::clone(broker),
+                        router: Arc::clone(router),
+                        serving: Arc::clone(ingress),
+                        fence: Arc::clone(ingress.fence()),
+                        gate: Arc::clone(&gate),
+                        published: replication::driver::Published {
+                            marks: Arc::clone(quorum_marks),
+                            halted: Arc::clone(halted_replicas),
+                            status: Arc::clone(shard_status),
+                        },
+                        // Only a broker that is a cluster member reports: the
+                        // report is about shards the control plane assigned,
+                        // and a broker it has never registered leads none of
+                        // them. Reports from every shard in a pass share one
+                        // request; see `replication::reporter`.
+                        report: config.membership.as_ref().map(|membership| {
                             replication::reporter::ReportTo {
                                 link: link.clone(),
                                 node_id: membership.node_id.clone(),
@@ -520,46 +492,25 @@ where
                                 incarnation: Arc::clone(incarnation),
                                 storage_id,
                                 held: reports_held.clone(),
-                            },
-                            sync_shutdown.clone(),
-                        );
-                        reporter
-                    }),
-                    Duration::from_millis(config.controlplane_sync_interval_ms),
-                    routes_changed,
-                    replication::RebuildPolicy {
-                        max_concurrent: config.replication_rebuild_max_concurrent,
-                        bytes_per_sec: config.replication_rebuild_bytes_per_sec,
+                            }
+                        }),
+                        interval: Duration::from_millis(config.controlplane_sync_interval_ms),
+                        routes_changed,
+                        rebuild: replication::RebuildPolicy {
+                            max_concurrent: config.replication_rebuild_max_concurrent,
+                            bytes_per_sec: config.replication_rebuild_bytes_per_sec,
+                        },
+                        move_throttle: replication::MoveThrottle::new(
+                            config.shard_move_bytes_per_sec,
+                        ),
+                        suspects: Arc::clone(suspects),
+                        leads_after: leads_after.clone(),
+                        unclean: unclean.clone(),
+                        shutdown: sync_shutdown.clone(),
                     },
-                    replication::MoveThrottle::new(config.shard_move_bytes_per_sec),
-                    sync_shutdown.clone(),
                 )
+                .replication
             });
-            // Which leaders this broker cannot reach, for the heartbeat. Over
-            // the same pool, so a peer it cannot ship to or forward to is one
-            // it cannot ping either.
-            if let Some(pool) = peers {
-                drop(replication::suspicion::spawn(
-                    Arc::clone(pool),
-                    Arc::clone(router),
-                    Arc::clone(suspects),
-                    replication::suspicion::SuspicionConfig::from_env(),
-                    sync_shutdown.clone(),
-                ));
-                // Standing for election on those suspicions, once the fleet
-                // finalized `replica_election`.
-                drop(replication::election::spawn(
-                    Arc::clone(pool),
-                    Arc::clone(broker),
-                    Arc::clone(router),
-                    Arc::clone(quorum_marks),
-                    Arc::clone(suspects),
-                    replication::suspicion::SuspicionConfig::from_env(),
-                    leads_after.clone(),
-                    unclean.clone(),
-                    sync_shutdown.clone(),
-                ));
-            }
             Some(ShardTasks {
                 watch,
                 feed,
