@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794319419177,
+  "lastUpdate": 1794323353487,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51376,6 +51376,58 @@ window.BENCHMARK_DATA = {
             "range": "10435.09",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1587819.06\nmean: 1593097.15\nstdev: 10435.09\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "092300a466739723acdbdb7c78ca64109ca67029",
+          "message": "build(deps): bump the base-images group in /docker with 2 updates (#2175)\n\nBumps the base-images group in /docker with 2 updates: otel/opentelemetry-collector-contrib and prom/prometheus.\n\n\nUpdates `otel/opentelemetry-collector-contrib` from 0.164.0 to 0.165.0\n\nUpdates `prom/prometheus` from v3.15.1 to v3.16.0\n\n---\nupdated-dependencies:\n- dependency-name: otel/opentelemetry-collector-contrib\n  dependency-version: 0.165.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: base-images\n- dependency-name: prom/prometheus\n  dependency-version: v3.16.0\n  dependency-type: direct:production\n  dependency-group: base-images\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-10T07:05:08-08:00",
+          "tree_id": "5fa5c1affcd7446ca7e7f6d103dfd74eb0f20955",
+          "url": "https://github.com/GetFelix/felix/commit/092300a466739723acdbdb7c78ca64109ca67029"
+        },
+        "date": 1794323352580,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 479586.68,
+            "range": "37671.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479586.68\nmean: 494311.95\nstdev: 37671.68\ncv: 7.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 479586.68,
+            "range": "37671.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479586.68\nmean: 494311.95\nstdev: 37671.68\ncv: 7.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120352.12,
+            "range": "777.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120352.12\nmean: 120653.33\nstdev: 777.41\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203521.2,
+            "range": "7774.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203521.20\nmean: 1206533.33\nstdev: 7774.14\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
