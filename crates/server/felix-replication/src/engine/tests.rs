@@ -636,3 +636,123 @@ async fn the_hybrid_confirms_a_state_read_by_the_lease_then_the_round() {
         .await
         .expect("no marks, nothing to confirm");
 }
+
+mod start {
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use felix_broker::Broker;
+    use felix_router::{RegionRouter, ShardRouter};
+    use felix_storage::EphemeralCache;
+    use felix_wire::internal::InternalMessage;
+    use tokio::sync::Notify;
+    use tokio_util::sync::CancellationToken;
+
+    use super::ServedAt;
+    use crate::controlplane_link::HttpControlPlaneLink;
+    use crate::driver::{Published, Unfenced};
+    use crate::engine::{Hybrid, StartDeps, elections};
+    use crate::peer::{PeerError, PeerRequester};
+    use crate::promotion::NoGate;
+    use crate::quorum::QuorumMarks;
+    use crate::reporter::ReportTo;
+    use crate::suspicion::Suspects;
+    use crate::{MoveThrottle, RebuildPolicy};
+
+    /// A transport that offers election and reaches nobody.
+    struct Silent;
+
+    impl PeerRequester for Silent {
+        async fn request(
+            &self,
+            node_id: &str,
+            _addr: SocketAddr,
+            _message: InternalMessage,
+        ) -> Result<InternalMessage, PeerError> {
+            Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "nobody answers".to_string(),
+            })
+        }
+
+        fn offers_election(&self) -> bool {
+            true
+        }
+    }
+
+    fn alive() -> usize {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
+    }
+
+    /// Tasks `Hybrid::start` leaves running, with or without a reporter and
+    /// elections.
+    async fn started(report: bool, with_elections: bool) -> (usize, CancellationToken) {
+        let router = Arc::new(ShardRouter::new(
+            "broker-a",
+            "local",
+            RegionRouter::new("local".to_string()),
+        ));
+        let marks = Arc::new(QuorumMarks::new());
+        if with_elections {
+            drop(elections(true, &router, Arc::default(), &marks));
+        }
+        let shutdown = CancellationToken::new();
+        let before = alive();
+        let started = Hybrid::<ServedAt>::start(StartDeps {
+            requester: Arc::new(Silent),
+            broker: Arc::new(Broker::new(EphemeralCache::new().into())),
+            router,
+            serving: Arc::new(ServedAt {
+                generation: None,
+                replicated: false,
+            }),
+            fence: Arc::new(Unfenced),
+            gate: Arc::new(NoGate),
+            published: Published {
+                marks,
+                halted: Arc::default(),
+                status: Arc::default(),
+            },
+            report: report.then(|| ReportTo {
+                link: HttpControlPlaneLink::new(reqwest::Client::new(), "http://127.0.0.1:1"),
+                node_id: "broker-a".to_string(),
+                token: None,
+                incarnation: Arc::default(),
+                storage_id: None,
+                held: None,
+            }),
+            interval: Duration::from_secs(300),
+            routes_changed: Arc::new(Notify::new()),
+            rebuild: RebuildPolicy::default(),
+            move_throttle: MoveThrottle::unlimited(),
+            suspects: Arc::new(Suspects::default()),
+            leads_after: None,
+            unclean: None,
+            shutdown: shutdown.clone(),
+        });
+        drop(started);
+        (alive() - before, shutdown)
+    }
+
+    /// The tasks `node/cluster.rs` spawned for replication before this
+    /// existed: the driver, the replica reporter on a cluster member, the
+    /// suspicion heartbeat, and the election driver where the broker checks
+    /// sets.
+    #[tokio::test]
+    async fn spawns_the_driver_reporter_suspicion_and_election_tasks() {
+        let (tasks, shutdown) = started(true, true).await;
+        assert_eq!(tasks, 4, "driver, reporter, suspicion, election");
+        shutdown.cancel();
+
+        let (tasks, shutdown) = started(false, true).await;
+        assert_eq!(tasks, 3, "no reporter outside a cluster");
+        shutdown.cancel();
+
+        let (tasks, shutdown) = started(true, false).await;
+        assert_eq!(tasks, 3, "no election driver without elections");
+        shutdown.cancel();
+    }
+}

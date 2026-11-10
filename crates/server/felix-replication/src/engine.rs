@@ -10,12 +10,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod host;
+mod start;
 
 pub use host::{EngineHost, Host, HybridHost};
+pub use start::{StartDeps, Started, elections, replica_handler};
 
 use crate::ShardKey;
 use crate::peer::PeerRequester;
 use crate::quorum::{Access, CacheWrite, QuorumError, QuorumMarks, ShardServing, Unreadable};
+use crate::replica::ReplicaHandler;
+use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage, PeerCapabilities};
 
 /// What a durable write and a read ask of a shard's replication.
 pub trait Engine: Send + Sync {
@@ -102,6 +106,17 @@ pub trait Engine: Send + Sync {
         end: u64,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), QuorumError>> + Send;
+
+    /// Answer a peer's replication request, follower side: a batch to store,
+    /// a bootstrap or rebuild, a fence, a fetch or a pre-vote. `from` is the
+    /// peer's node id when it named itself, `caller` what it advertised.
+    /// Anything else is refused as malformed.
+    fn handle(
+        &self,
+        from: Option<&str>,
+        caller: PeerCapabilities,
+        request: InternalMessage,
+    ) -> impl Future<Output = InternalMessage> + Send;
 }
 
 /// Felix's own replication protocol: the quorum marks the driver publishes,
@@ -109,12 +124,29 @@ pub trait Engine: Send + Sync {
 pub struct Hybrid<S: ?Sized> {
     marks: Option<Arc<QuorumMarks>>,
     serving: Option<Arc<S>>,
+    replica: Option<ReplicaHandler>,
 }
 
 impl<S: ?Sized> Hybrid<S> {
     /// `None` for either outside a cluster, where nothing is replicated.
     pub fn new(marks: Option<Arc<QuorumMarks>>, serving: Option<Arc<S>>) -> Self {
-        Self { marks, serving }
+        Self {
+            marks,
+            serving,
+            replica: None,
+        }
+    }
+
+    /// Answer peers' replication requests with `replica` ([`Engine::handle`]).
+    pub fn with_replica(mut self, replica: ReplicaHandler) -> Self {
+        self.replica = Some(replica);
+        self
+    }
+
+    /// Starts a copy's confirmed read early. See
+    /// [`ReplicaHandler::confirmed_prefetch`].
+    pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
+        self.replica.as_ref()?.confirmed_prefetch()
     }
 
     /// The quorum marks, for the waits that are not behind [`Engine`] yet.
@@ -263,6 +295,68 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
         )
         .await
     }
+
+    async fn handle(
+        &self,
+        from: Option<&str>,
+        caller: PeerCapabilities,
+        request: InternalMessage,
+    ) -> InternalMessage {
+        use felix_broker::LogKind;
+        let Some(replica) = self.replica.as_ref() else {
+            return not_replication(&request);
+        };
+        match request {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => {
+                replica.apply(from, batch, LogKind::Stream).await
+            }
+            InternalMessage::ReplicateCacheRecords(batch) => {
+                replica.apply(from, batch, LogKind::Cache).await
+            }
+            InternalMessage::ReplicateGroupRecords(batch) => {
+                replica.apply(from, batch, LogKind::GroupCursors).await
+            }
+            InternalMessage::ReplicateDeadLetterRecords(batch) => {
+                replica.apply(from, batch, LogKind::GroupDeadLetters).await
+            }
+            InternalMessage::ReplicateCounterRecords(batch) => {
+                replica.apply(from, batch, LogKind::Counters).await
+            }
+            InternalMessage::ReplicateBootstrap(request) => {
+                replica.bootstrap(from, request, LogKind::Stream).await
+            }
+            InternalMessage::ReplicateCacheBootstrap(request) => {
+                replica.bootstrap(from, request, LogKind::Cache).await
+            }
+            InternalMessage::ReplicateGroupBootstrap(request) => {
+                replica
+                    .bootstrap(from, request, LogKind::GroupCursors)
+                    .await
+            }
+            InternalMessage::ReplicateDeadLetterBootstrap(request) => {
+                replica
+                    .bootstrap(from, request, LogKind::GroupDeadLetters)
+                    .await
+            }
+            InternalMessage::ReplicateCounterBootstrap(request) => {
+                replica.bootstrap(from, request, LogKind::Counters).await
+            }
+            InternalMessage::ReplicateRebuild(request) => replica.rebuild(from, request).await,
+            InternalMessage::Fence(request) => replica.fence_from(from, caller, request).await,
+            InternalMessage::ReplicateFetch(request) => replica.fetch(from, request).await,
+            InternalMessage::PreVote(request) => replica.pre_vote(request).await,
+            other => not_replication(&other),
+        }
+    }
+}
+
+fn not_replication(request: &InternalMessage) -> InternalMessage {
+    InternalMessage::ForwardPublishError(ForwardPublishError {
+        correlation_id: request.correlation_id(),
+        code: ErrorCode::Malformed,
+        detail: format!("{:?} is not a replication request", request.kind()),
+    })
 }
 
 /// [`Engine::committed_bound`] as the broker core asks for it
