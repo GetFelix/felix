@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794277573555,
+  "lastUpdate": 1794281899319,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -50700,6 +50700,58 @@ window.BENCHMARK_DATA = {
             "range": "11204.25",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1211058.42\nmean: 1210395.80\nstdev: 11204.25\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "369aee2b2168cdaf99c9a50d084fd376f80abbe7",
+          "message": "spec(shard): fit main's full TLA+ run into hosted runners' six hours (#2159)\n\n* wip: candidate bounds for ContinuingDoubted\n\n* wip: candidate bounds for NoOwnBallotRefused\n\n* wip: more candidates\n\n* wip: more candidates 2\n\n* spec(shard): fit main's full TLA+ run into hosted runners' six hours\n\nFelixShardElectUncleanContinuingDoubted drops its one client write (MaxWrites 0):\n19.6M distinct states, 48 min in CI, against more than six hours. The old\nbound is FelixShardElectUncleanContinuingDoubtedFull, unregistered.\nFelixShardCpLiveNoOwnBallotRefused leaves the registered set: no cut that\nstill violates liveness fit. check_tla.sh weights now come from the measured\ntimes of main's run, and the full set runs in twenty shards so the two\nlongest configurations get a job each.\n\nSpec-Unaffected: no change to FelixShard.tla; only a configuration bound, the registered set, weights and the shard count\n\n* spec(shard): drop the candidate bounds tried\n\nSpec-Unaffected: removes configurations that were never registered\n\n* spec(shard): walk the one-write Doubted case nightly\n\nSpec-Unaffected: no change to FelixShard.tla; a workflow family, a walk registration and docs",
+          "timestamp": "2026-11-10T03:30:57Z",
+          "tree_id": "e9c4a6623d099d3917bb5070f7f9eba4bfecca60",
+          "url": "https://github.com/GetFelix/felix/commit/369aee2b2168cdaf99c9a50d084fd376f80abbe7"
+        },
+        "date": 1794281898659,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 402169.71,
+            "range": "11134.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 402169.71\nmean: 401221.08\nstdev: 11134.24\ncv: 2.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 402169.71,
+            "range": "11134.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 402169.71\nmean: 401221.08\nstdev: 11134.24\ncv: 2.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 87919.47,
+            "range": "5139.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 87919.47\nmean: 85618.43\nstdev: 5139.80\ncv: 6.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 879194.67,
+            "range": "51397.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 879194.67\nmean: 856184.27\nstdev: 51397.96\ncv: 6.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
