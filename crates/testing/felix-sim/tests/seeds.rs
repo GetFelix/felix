@@ -477,8 +477,8 @@ fn seed_12_a_node_removal_replays_the_same_twice() {
     not(tokio_unstable),
     ignore = "replays this seed's run only under --cfg tokio_unstable"
 )]
-fn seed_33_abandoning_held_shards_replays_the_same_twice() {
-    placement_shape_runs_the_same_twice(33, &["abandoned the log of stream/*: 200"]);
+fn seed_44_abandoning_held_shards_replays_the_same_twice() {
+    placement_shape_runs_the_same_twice(44, &["abandoned the log of stream/*: 200"]);
 }
 
 #[test]
