@@ -137,6 +137,13 @@ impl Serving {
     }
 }
 
+/// [`QuorumMarks::read_confirm`].
+pub(crate) enum ReadConfirm<'a> {
+    Lease,
+    Round(&'a Arc<dyn LeadershipCheck>),
+    LeaseAndRound(&'a Arc<dyn LeadershipCheck>),
+}
+
 /// What a quorum wait is for: a write is released on the lease, or on its
 /// followers' answers; a read on the lease or on a round
 /// ([`QuorumMarks::reads_by_round`]).
@@ -204,6 +211,47 @@ impl QuorumMarks {
     pub fn reads_by_round(&self) -> Option<&Arc<dyn LeadershipCheck>> {
         let reads = self.reads.get()?;
         self.serving().reads_by_round.then_some(&reads.check)
+    }
+
+    /// How a `Quorum` read confirms that this broker still leads, decided
+    /// from one read of the fleet.
+    ///
+    /// A broker that stands for election and would read by round once told,
+    /// but has not heard the fleet enable `lease_free_reads`, needs both: the
+    /// fleet may have finalized it and `replica_election` while this broker
+    /// was cut off, and a peer may then have been elected without waiting out
+    /// this broker's lease. The round covers that; the lease covers a fleet
+    /// that still waits it out.
+    ///
+    /// Any other broker is safe on the lease. Election is the only promotion
+    /// that skips an unheard leader's lease (placement acts on the followers'
+    /// word only once the leader reported `by_round`), and the control plane
+    /// refuses to finalize `replica_election` while a live broker does not
+    /// report it. One marked down has already lost its lease, which ends
+    /// before the control plane could expire it, and a restart registers
+    /// before it holds a lease again, where it is refused or hears the
+    /// enabled set. A replica that does not take the fence never vouches,
+    /// even beside the lease: it may have restarted that way after a
+    /// successor fenced it. See "Before a broker hears of the finalize" in
+    /// `docs/replication-design.md`.
+    pub(crate) fn read_confirm(&self) -> ReadConfirm<'_> {
+        let Some(reads) = self.reads.get() else {
+            return ReadConfirm::Lease;
+        };
+        if self.serving().reads_by_round {
+            return ReadConfirm::Round(&reads.check);
+        }
+        let may_be_elected_past = !reads.by_lease
+            && self.fleet.as_ref().is_some_and(|fleet| {
+                let view = fleet.view();
+                view.reports(felix_common::fleet::LEASE_FREE_READS)
+                    && view.reports(felix_common::fleet::REPLICA_ELECTION)
+            });
+        if may_be_elected_past {
+            ReadConfirm::LeaseAndRound(&reads.check)
+        } else {
+            ReadConfirm::Lease
+        }
     }
 
     /// How a pass over a `Quorum` shard serves it, decided from one read of
@@ -1561,8 +1609,8 @@ pub async fn read_skips_lease<S: ShardServing + ?Sized>(
 
 /// Confirm, after a read of a stream shard's state took its value, that this
 /// broker still leads the shard, as [`await_cache_quorum`] does for a cache
-/// read: by a round when the fleet reads without the lease and the shard has
-/// replicas to ask, and by the lease otherwise.
+/// read: as [`confirm_read`] says when the shard has replicas to ask, and by
+/// the lease otherwise.
 pub async fn confirm_state_read<S: ShardServing + ?Sized>(
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1578,15 +1626,21 @@ pub async fn confirm_state_read<S: ShardServing + ?Sized>(
 }
 
 /// Confirm, after a `Quorum` read took its value, that this broker still
-/// leads the shard: by a round when the fleet reads without the lease, and
-/// by the lease otherwise.
+/// leads the shard: by a round when the fleet reads without the lease, by
+/// the lease when it never will, and by both until this broker hears which
+/// ([`QuorumMarks::read_confirm`]).
 async fn confirm_read<S: ShardServing + ?Sized>(
     shard: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
 ) -> Result<(), anyhow::Error> {
-    let Some(check) = marks.reads_by_round() else {
-        return release(ingress, "read");
+    let check = match marks.read_confirm() {
+        ReadConfirm::Lease => return release(ingress, "read"),
+        ReadConfirm::Round(check) => check,
+        ReadConfirm::LeaseAndRound(check) => {
+            release(ingress, "read")?;
+            check
+        }
     };
     let Some(generation) = ingress.generation(shard) else {
         return Err(QuorumError::LeadershipLost {

@@ -11,7 +11,8 @@
 //! 1. A tenant, a namespace, one durable `Quorum` stream of 50 to 200 shards
 //!    and one `Quorum` cache, all replicated three ways.
 //! 2. Every broker started and registered.
-//! 3. The fence and election features finalized, as an operator would.
+//! 3. The fence and election features finalized, as an operator would
+//!    (unless [`SimConfig::finalize_election`] is off).
 //! 4. Every shard served by some broker.
 //!
 //! After that the nemesis and the clients take over (see [`crate::run`]).
@@ -133,6 +134,9 @@ pub struct SimConfig {
     /// A clock plan to use instead of drawing one from the seed under
     /// `clocks`, to pin a particular skew.
     pub clock_plan: Option<ClockPlan>,
+    /// Whether startup finalizes the fence and election features. A test
+    /// that finalizes them itself, at a moment it picks, turns this off.
+    pub finalize_election: bool,
 }
 
 impl SimConfig {
@@ -157,6 +161,7 @@ impl SimConfig {
             controlplane: CpConfig::default(),
             clocks: ClockSkew::Off,
             clock_plan: None,
+            finalize_election: true,
         }
     }
 
@@ -285,11 +290,13 @@ impl SimCluster {
             .wait_registered(Duration::from_secs(120))
             .await
             .context("the brokers did not all register")?;
-        cluster
-            .cp
-            .finalize_election()
-            .await
-            .context("finalize the election features")?;
+        if cluster.config.finalize_election {
+            cluster
+                .cp
+                .finalize_election()
+                .await
+                .context("finalize the election features")?;
+        }
         cluster
             .wait_every_shard_served(Duration::from_secs(180))
             .await
