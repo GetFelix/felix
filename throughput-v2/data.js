@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794315962862,
+  "lastUpdate": 1794319419177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51324,6 +51324,58 @@ window.BENCHMARK_DATA = {
             "range": "126633.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1714453.94\nmean: 1671523.98\nstdev: 126633.68\ncv: 7.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "899ab82e80d5b794b6f846ea99c41fa19c59b31d",
+          "message": "refactor(replication): put the shard's serving state and write fence behind EngineHost (#2188)\n\n* refactor(replication): put the shard's serving state and write fence behind EngineHost (#2154)\n\nEngineHost holds the generic callbacks (generation, replicated, quiesced,\ndeposed) and HybridHost the lease and the fence's hybrid-only ones. Host\npairs an IngressRouter with a ShardFence and implements both by delegating,\nand stands in for the fence the driver is spawned with. ShardServing and\nWriteFence and their implementors are unchanged. Adds a delegation test per\ncallback. Fixes two stale citations and the read bound wording in\ndocs/replication-engine.md.\n\nRefs #2167, #2154.\n\nSpec-Unaffected: no protocol or state-machine change\n\n* test(replication): cover Host's lease_valid and ack refusal delegations (#2154)\n\nSpec-Unaffected: tests only",
+          "timestamp": "2026-11-10T13:59:53Z",
+          "tree_id": "4c849a6a3d8d1edba5808c30c928d83ecffe859a",
+          "url": "https://github.com/GetFelix/felix/commit/899ab82e80d5b794b6f846ea99c41fa19c59b31d"
+        },
+        "date": 1794319418295,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 633393.21,
+            "range": "66177.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 633393.21\nmean: 642538.74\nstdev: 66177.07\ncv: 10.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 633393.21,
+            "range": "66177.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 633393.21\nmean: 642538.74\nstdev: 66177.07\ncv: 10.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158781.91,
+            "range": "1043.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158781.91\nmean: 159309.72\nstdev: 1043.51\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1587819.06,
+            "range": "10435.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1587819.06\nmean: 1593097.15\nstdev: 10435.09\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
