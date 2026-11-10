@@ -35,13 +35,23 @@ fn held(log: &KillLog, views: &Views, trust: &Trust) -> Vec<String> {
     log.held(views, trust).into_iter().collect()
 }
 
+/// A log that saw every broker start unclean, so an untrusted copy has the
+/// injected fault that explains it.
+fn restarted_unclean() -> KillLog {
+    let mut log = KillLog::default();
+    for node in ["b1", "b2", "b3", "b4"] {
+        log.started_unclean(node, secs(1));
+    }
+    log
+}
+
 const THREE: [&str; 3] = ["b1", "b2", "b3"];
 
 #[test]
 fn a_leader_and_a_follower_killed_later_in_its_term_hold_the_shard() {
     // b1 led and was killed, then b3: both come back untrusted, whichever
     // died first.
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let copies = trust(&[("b1", false), ("b2", true), ("b3", false)]);
     assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
 }
@@ -50,7 +60,7 @@ fn a_leader_and_a_follower_killed_later_in_its_term_hold_the_shard() {
 fn a_learner_awaiting_readmission_counts_as_untrusted() {
     // b3 restarted unclean and is still a learner when its leader b2 is
     // killed: two of three copies cannot cover.
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let copies = trust(&[("b1", true), ("b2", false), ("b3", false)]);
     assert_eq!(held(&log, &view("b2", &THREE), &copies), ["stream/0"]);
 }
@@ -59,7 +69,7 @@ fn a_learner_awaiting_readmission_counts_as_untrusted() {
 fn an_unserved_shard_with_trusted_copies_is_still_a_stall() {
     // An elected leader that cannot open (an empty storage id in its set, a
     // joint fence short of the old set) leaves the copies trusted.
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let copies = trust(&[("b1", true), ("b2", true), ("b3", false)]);
     assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
     assert!(held(&log, &view("b1", &THREE), &Trust::new()).is_empty());
@@ -68,7 +78,7 @@ fn an_unserved_shard_with_trusted_copies_is_still_a_stall() {
 #[test]
 fn the_leader_counts_in_the_set_when_the_view_leaves_it_out() {
     // The control plane's replicas never name the leader.
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let copies = trust(&[("b1", false), ("b2", false), ("b3", true)]);
     assert_eq!(
         held(&log, &view("b1", &["b2", "b3"]), &copies),
@@ -79,7 +89,7 @@ fn the_leader_counts_in_the_set_when_the_view_leaves_it_out() {
 #[test]
 fn a_seat_replacement_in_flight_needs_a_majority_of_the_wider_set() {
     // b4 is joining: four copies, so two untrusted are not enough.
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let four = ["b2", "b3", "b4"];
     let copies = trust(&[("b1", false), ("b2", false), ("b3", true), ("b4", true)]);
     assert!(held(&log, &view("b1", &four), &copies).is_empty());
@@ -89,14 +99,14 @@ fn a_seat_replacement_in_flight_needs_a_majority_of_the_wider_set() {
 
 #[test]
 fn a_broker_outside_the_set_does_not_count() {
-    let log = KillLog::default();
+    let log = restarted_unclean();
     let copies = trust(&[("b1", false), ("b4", false), ("b2", true), ("b3", true)]);
     assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
 }
 
 #[test]
 fn abandoning_the_log_ends_the_hold_until_the_next_unclean_stop() {
-    let mut log = KillLog::default();
+    let mut log = restarted_unclean();
     let copies = trust(&[("b1", false), ("b2", false), ("b3", true)]);
     log.kill("b2", secs(10));
     log.kill("b1", secs(15));
@@ -109,29 +119,40 @@ fn abandoning_the_log_ends_the_hold_until_the_next_unclean_stop() {
 }
 
 #[test]
-fn copies_untrusted_beside_a_leader_that_never_vouched_them_hold_the_shard() {
-    // b2 and b3 came back from a power loss, and b1 led beside them but was
-    // cut off or never readmitted b3 before it was killed. Two of three
-    // copies are untrusted, so no attestation majority exists.
-    let log = KillLog::default();
+fn a_copy_up_while_a_leader_served_and_still_untrusted_is_a_stall() {
+    // b2 and b3 restarted unclean, then b1 served beside them before it was
+    // killed: a leader had the chance to vouch both, so their doubt is the
+    // broker's to clear, not a reason to hold the shard.
+    let mut log = KillLog::default();
+    log.started_unclean("b2", secs(10));
+    log.started_unclean("b3", secs(12));
+    for at in [20, 21, 22, 23, 24, 25, 26] {
+        log.served("stream/0", "b2", secs(at));
+        log.served("stream/0", "b3", secs(at));
+    }
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::DownAfterKill);
-    assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
+    let views = view("b1", &THREE);
+    assert!(held(&log, &views, &copies).is_empty());
+    assert_eq!(
+        log.vouchable_untrusted(&views, &copies)
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ["stream/0"]
+    );
+    // Served only before b3's latest unclean start: b3 had no leader since.
+    log.started_unclean("b3", secs(30));
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
 }
 
 #[test]
-fn one_untrusted_copy_of_three_does_not_hold_the_shard() {
-    let log = KillLog::default();
-    let mut copies = trust(&[("b2", false), ("b3", true)]);
-    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
-    assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
-}
-
-#[test]
-fn a_copy_down_after_a_kill_counts_untrusted() {
-    // b2 and the leader b1 were killed. b2's next start distrusts the copy
-    // whatever a leader shipped it before.
+fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() {
+    // b2 restarted unclean, a leader served beside it, then b2 and the
+    // leader b1 were killed. b2's next start distrusts the copy anyway.
     let mut log = KillLog::default();
+    log.started_unclean("b2", secs(10));
+    log.served("stream/0", "b1", secs(20));
+    log.served("stream/0", "b2", secs(20));
     log.kill("b2", secs(25));
     log.kill("b1", secs(30));
     let copies = Trust::from([
@@ -139,5 +160,47 @@ fn a_copy_down_after_a_kill_counts_untrusted() {
         (("stream/0".into(), "b2".into()), Copy::DownAfterKill),
         (("stream/0".into(), "b3".into()), Copy::Trusted),
     ]);
+    assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
+}
+
+#[test]
+fn an_untrusted_copy_with_no_injected_fault_behind_it_is_a_stall() {
+    // Nothing the sim injected explains b2 and b3 being untrusted, as a
+    // broker that lost a vouch would leave them: the shard must fail.
+    let log = KillLog::default();
+    let mut copies = trust(&[("b2", false), ("b3", false)]);
+    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
+    assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
+}
+
+#[test]
+fn a_copy_a_leader_could_not_reach_is_held_and_explained() {
+    // b2 and b3 restarted unclean while b1 served only with the control
+    // plane paused or over a partitioned link, so it never had the chance to
+    // vouch them. Nothing is recorded as served.
+    let mut log = KillLog::default();
+    log.started_unclean("b2", secs(10));
+    log.started_unclean("b3", secs(12));
+    let mut copies = trust(&[("b2", false), ("b3", false)]);
+    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
+    let views = view("b1", &THREE);
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
+    let why = log.explain("stream/0", &views["stream/0"], &copies);
+    assert_eq!(why.len(), 2, "{why:?}");
+    assert!(why[0].starts_with("b2 restarted unclean at 10"), "{why:?}");
+}
+
+#[test]
+fn a_blip_of_service_beside_a_copy_is_not_a_chance_to_vouch() {
+    // b1 served beside b2 and b3 for a second: too short for a vouch.
+    let mut log = KillLog::default();
+    log.started_unclean("b2", secs(10));
+    log.started_unclean("b3", secs(12));
+    log.served("stream/0", "b2", secs(20));
+    log.served("stream/0", "b3", secs(20));
+    log.served("stream/0", "b2", secs(21));
+    log.served("stream/0", "b3", secs(21));
+    let mut copies = trust(&[("b2", false), ("b3", false)]);
+    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
     assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
 }

@@ -252,12 +252,11 @@ impl Digest {
 /// valid. A shard that has none, or more than one, for the whole window fails.
 /// The finding carries a census of the first few stuck shards.
 ///
-/// A shard held after unclean kills is left out: a majority of its set holds
-/// copies attested untrusted or doubted, so no leader can gather an
-/// attestation majority, and the broker holds it on purpose until an operator
-/// abandons a member (see [`SimCluster::held_shards`]). The run reports each
-/// as a warning with that reason. Only this check skips them; the history
-/// checks and the other cluster checks still cover them.
+/// A shard held after unclean kills is left out:
+/// the broker holds it on purpose until an operator abandons a member (see
+/// [`SimCluster::held_shards`]). One with a copy still untrusted although a
+/// leader served beside it is not held, and is marked `vouchable`. Only this check skips it; the history checks
+/// and the other cluster checks still cover it.
 pub struct ElectionSettles {
     /// How many stuck shards to print a census for.
     pub show: usize,
@@ -281,16 +280,28 @@ impl Checker for ElectionSettles {
         }
         let cluster = &ctx.cluster;
         let deadline = ctx.healed_at + cluster.config.settle_within;
-        let report = |held: &BTreeSet<String>| {
+        let report = |holds: &crate::cluster::Holds| {
             println!(
                 "election-settles: {} of {} shards exempt, held on purpose after unclean kills",
-                held.len(),
+                holds.held.len(),
                 cluster.shard_keys().count(),
             );
-            if !held.is_empty() {
+            for (shard, why) in &holds.reasons {
                 println!(
-                    "election-settles: warning: held shards have a majority of their set attested untrusted or doubted, so no attestation majority exists; the operator's way out is `felixctl placement abandon`: {}",
-                    held.iter().cloned().collect::<Vec<_>>().join(", "),
+                    "election-settles: warning: {shard} held on purpose, no attestation majority: {}",
+                    why.join("; "),
+                );
+            }
+            if !holds.vouchable.is_empty() {
+                println!(
+                    "election-settles: {} unserved shards have a copy still untrusted after a leader served beside it: {}",
+                    holds.vouchable.len(),
+                    holds
+                        .vouchable
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", "),
                 );
             }
         };
@@ -298,7 +309,7 @@ impl Checker for ElectionSettles {
             // Read again each pass: a copy a leader vouches meanwhile is
             // trusted again, and its shard stops being exempt.
             let holds = cluster.holds().await;
-            let stuck = without_held(cluster.unserved().await, &holds);
+            let stuck = without_held(cluster.unserved().await, &holds.held);
             if stuck.is_empty() {
                 report(&holds);
                 return Vec::new();
@@ -308,7 +319,15 @@ impl Checker for ElectionSettles {
                 let names: Vec<String> = stuck
                     .iter()
                     .take(12)
-                    .map(|(key, serving)| format!("{} ({} serving)", describe(key), serving.len()))
+                    .map(|(key, serving)| {
+                        let shard = describe(key);
+                        let vouchable = if holds.vouchable.contains(&shard) {
+                            ", vouchable"
+                        } else {
+                            ""
+                        };
+                        format!("{shard} ({} serving{vouchable})", serving.len())
+                    })
                     .collect();
                 let mut finding = Finding::new(
                     self.name(),
