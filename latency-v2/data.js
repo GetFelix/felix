@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794299631048,
+  "lastUpdate": 1794301318687,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64812,6 +64812,72 @@ window.BENCHMARK_DATA = {
             "range": "881.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 413.00\nmean: 848.20\nstdev: 881.65\ncv: 103.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c868ba3614bbd0c7712c8614110141a9252d3a97",
+          "message": "feat(storage): membership and counter record kinds, and one is_data skip at every client read (#2181)\n\n* feat(storage): membership and counter record kinds, and one is_data skip at every client read\n\nFormat v9 stage 2 (#2167). Adds RecordMark::Membership, CounterDelta and\nCounterCheckpoint as v9-only kinds (bits 30+29, 30+28, 30+29+28; RecordFlags\nbefore v9). Nothing writes them: DiskLog refuses an append holding one before\nit can roll the log onto v9, and replication holds a follower before one\nrather than send it under another mark.\n\nRecordMark::is_data is the one predicate every client read uses to skip\nrecords that are not data: StreamLog::read_from and event_end, the replay\nring, consumer groups, Kafka fetch and offset lookups, cache watch replay,\nand the cache and counter projections. Skipped records keep their offsets,\nso skip counts cover them and drop detection stays exact.\n\nSpec-Unaffected: storage format and read filtering only; nothing writes the new kinds and no protocol or TLA model changes\n\n* fix(broker): build the v9 test append in release, and correct the kind docs\n\nSpec-Unaffected: storage and docs only",
+          "timestamp": "2026-11-10T08:57:50Z",
+          "tree_id": "963491f8bafe3d1afc60d38f495e4afe5612546f",
+          "url": "https://github.com/GetFelix/felix/commit/c868ba3614bbd0c7712c8614110141a9252d3a97"
+        },
+        "date": 1794301310739,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 127.60\nstdev: 2.07\ncv: 1.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "6.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 170.40\nstdev: 6.50\ncv: 3.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.80\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 269,
+            "range": "11.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 271.00\nstdev: 11.75\ncv: 4.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 376,
+            "range": "1487.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 376.00\nmean: 1332.60\nstdev: 1487.94\ncv: 111.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
