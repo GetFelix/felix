@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794323691814,
+  "lastUpdate": 1794326714115,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51480,6 +51480,58 @@ window.BENCHMARK_DATA = {
             "range": "53124.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 952953.50\nmean: 935430.27\nstdev: 53124.11\ncv: 5.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa7fd2d45b0ed520c2221fe1a20dd0db4d1c1825",
+          "message": "refactor(replication): start the hybrid engine in one call and route peer requests through it (#2167, #2154) (#2189)\n\n* refactor(replication): start the hybrid engine in one call and route peer replication requests through it (#2167, #2154)\n\nHybrid::start spawns the replica reporter, the driver, the suspicion\nheartbeat and the election driver in the order node/cluster.rs did.\nEngine::handle answers the fifteen replication request kinds, and\npeer_dispatch sends them there.\n\nSpec-Unaffected: no change to the protocol or its model; the same tasks start in the same order.\n\n* test(replication): pin the start order, name the unrouted error, and say when no replica handler is set (#2189)\n\nSpec-Unaffected: tests, an error detail for an unconfigured handler, and docs only.",
+          "timestamp": "2026-11-10T15:57:56Z",
+          "tree_id": "fd2e8e6371384f698b45afec2b83cb28801c36d8",
+          "url": "https://github.com/GetFelix/felix/commit/fa7fd2d45b0ed520c2221fe1a20dd0db4d1c1825"
+        },
+        "date": 1794326713263,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351450.13,
+            "range": "7497.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351450.13\nmean: 349558.64\nstdev: 7497.65\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351450.13,
+            "range": "7497.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351450.13\nmean: 349558.64\nstdev: 7497.65\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81971,
+            "range": "590.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81971.00\nmean: 81847.95\nstdev: 590.86\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819709.98,
+            "range": "5908.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819709.98\nmean: 818479.45\nstdev: 5908.63\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
