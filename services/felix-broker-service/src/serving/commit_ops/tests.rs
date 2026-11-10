@@ -181,3 +181,56 @@ async fn a_conditional_publish_without_a_mark_times_out_at_the_configured_wait()
         "ended late after {waited:?}"
     );
 }
+
+/// A round that refuses every read, as one would for a newer leader.
+struct Refuses;
+
+#[async_trait::async_trait]
+impl felix_replication::quorum::LeadershipCheck for Refuses {
+    async fn confirm(
+        &self,
+        _key: &ShardKey,
+        _generation: u64,
+    ) -> Result<(), felix_replication::quorum::QuorumError> {
+        Err(felix_replication::quorum::QuorumError::LeadershipLost {
+            what: "read",
+            detail: "a newer leader fenced the majority",
+        })
+    }
+}
+
+/// **A state read confirms leadership through the engine's marks and
+/// router.** In a fleet that reads by round, the round decides a replicated
+/// shard and the lease an unreplicated one; on the lease, a lapsed lease
+/// refuses the read.
+#[tokio::test]
+async fn a_state_read_confirms_leadership_through_the_engine() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let leader = Leader::start().await;
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.observe(names);
+    let by_round = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(fleet));
+    by_round.set_read_check(Arc::new(Refuses), false);
+    let publish_ctx = quorum_ctx(&leader, &by_round);
+    confirm_read_leader(&publish_ctx, &leader::stream_key(QUORUM))
+        .await
+        .expect_err("the round refuses");
+    confirm_read_leader(&publish_ctx, &leader::stream_key(leader::DURABLE))
+        .await
+        .expect("no replicas to ask: the lease decides");
+
+    let by_lease = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let publish_ctx = quorum_ctx(&leader, &by_lease);
+    confirm_read_leader(&publish_ctx, &leader::stream_key(QUORUM))
+        .await
+        .expect("the lease holds");
+    leader.hold_lease().surrender();
+    confirm_read_leader(&publish_ctx, &leader::stream_key(QUORUM))
+        .await
+        .expect_err("the lease lapsed");
+}

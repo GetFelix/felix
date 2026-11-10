@@ -53,6 +53,7 @@ use felix_cluster::history::model::{
 };
 use felix_cluster::history::register::{RegisterAction, RegisterOp};
 use felix_cluster::history::rng::Rng;
+use felix_replication::engine::Engine;
 use parking_lot::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -617,12 +618,7 @@ async fn read_all(handles: &NodeHandles, shard: u32) -> Option<Vec<Element>> {
 /// value. See the module docs for why.
 async fn confirm_leader(handles: &NodeHandles, shard: u32, generation: u64) -> bool {
     let key = crate::cluster::stream_key(shard);
-    let confirmed = felix_replication::quorum::confirm_state_read(
-        &key,
-        Some(&handles.marks),
-        Some(&*handles.ingress),
-    )
-    .await;
+    let confirmed = handles.engine.confirm_read(&key).await;
     let now = handles.ingress.generation(&key);
     let led = confirmed.is_ok() && now == Some(generation);
     if !led {

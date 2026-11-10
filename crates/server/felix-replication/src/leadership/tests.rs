@@ -410,3 +410,82 @@ async fn followers_that_restarted_without_the_fence_do_not_confirm_a_read() {
         "{refused:?}"
     );
 }
+
+/// The leader serving the shard at [`LEADING`], with a valid lease.
+struct Leads;
+
+impl crate::quorum::ShardServing for Leads {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(LEADING)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// **`engine::bind_read_rounds` gives a state read its round.** In a fleet
+/// that reads by round, a read on a leader whose replicas took a newer fence
+/// is refused once the round is bound, waits out the round's timeout when
+/// the replicas do not answer, and is left to the lease when the operator
+/// kept reads there.
+#[tokio::test]
+async fn bound_read_rounds_confirm_a_state_read_against_the_replicas() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.observe(names);
+    let replicas = Arc::new(Replicas::new().await);
+    for replica in replicas.replicas.values() {
+        replica.fenced_at(LEADING + 1).await;
+    }
+    let (broker, _dir) = broker_at(LEADING).await;
+    let bind = |marks: &crate::quorum::QuorumMarks, timeout: Duration, by_lease: bool| {
+        crate::engine::bind_read_rounds(
+            marks,
+            Arc::clone(&replicas),
+            Arc::clone(&broker),
+            router_for(LEADER),
+            timeout,
+            by_lease,
+        );
+    };
+    let confirm = crate::quorum::confirm_state_read::<Leads>;
+
+    let marks = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    confirm(&key(), Some(&marks), Some(&Leads))
+        .await
+        .expect("no round bound: the lease decides");
+    bind(&marks, Duration::from_secs(5), false);
+    confirm(&key(), Some(&marks), Some(&Leads))
+        .await
+        .expect_err("the replicas follow a newer leader");
+
+    let kept = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    bind(&kept, Duration::from_secs(5), true);
+    confirm(&key(), Some(&kept), Some(&Leads))
+        .await
+        .expect("kept on the lease");
+
+    let silent = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    let timeout = Duration::from_millis(300);
+    bind(&silent, timeout, false);
+    replicas.open.send_replace(false);
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    confirm(&key(), Some(&silent), Some(&Leads))
+        .await
+        .expect_err("no replica answered");
+    assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+    assert!(started.elapsed() < timeout * 2, "{:?}", started.elapsed());
+}
