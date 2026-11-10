@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794308171711,
+  "lastUpdate": 1794313892522,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51220,6 +51220,58 @@ window.BENCHMARK_DATA = {
             "range": "47946.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798281.21\nmean: 779507.86\nstdev: 47946.06\ncv: 6.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4fcb4c6cf66c25ec448697e3ccd7fe1e13a6eba9",
+          "message": "refactor(replication): put read confirmation and the readers' bound behind the engine (#2154) (#2186)\n\nEngine::confirm_read calls confirm_state_read, and atomic commits, group\nreads and the simulator's state reads call it on the engine in place of\nthe marks and router. engine::bind_read_rounds builds the ReadIndex that\nnode/startup.rs built. The broker's ReadBounds answer moves to\nengine::CommittedReads, which asks Engine::committed_bound. That is a\nseparate method from read_bound because it adds the lease check the commit\nhold relies on. Arguments, order, timeouts, error mapping and the #2161\nlease-and-round rule are unchanged. Adds a forwarding test per moved path.\n\nRefs #2167, #2154.\n\nSpec-Unaffected: no protocol or state-machine change",
+          "timestamp": "2026-11-10T04:27:22-08:00",
+          "tree_id": "4e8364689cd6b3f352137fb8ada919ef2903db83",
+          "url": "https://github.com/GetFelix/felix/commit/4fcb4c6cf66c25ec448697e3ccd7fe1e13a6eba9"
+        },
+        "date": 1794313891645,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 528224.64,
+            "range": "23461.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528224.64\nmean: 521893.92\nstdev: 23461.21\ncv: 4.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 528224.64,
+            "range": "23461.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528224.64\nmean: 521893.92\nstdev: 23461.21\ncv: 4.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120796.71,
+            "range": "590.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120796.71\nmean: 120712.96\nstdev: 590.42\ncv: 0.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1207967.11,
+            "range": "5904.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1207967.11\nmean: 1207129.63\nstdev: 5904.14\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
