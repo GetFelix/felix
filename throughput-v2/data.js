@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794327573063,
+  "lastUpdate": 1794331682857,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51584,6 +51584,58 @@ window.BENCHMARK_DATA = {
             "range": "16029.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1123994.84\nmean: 1127165.33\nstdev: 16029.06\ncv: 1.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7b0562bc2fbdb55b49612c5d0b8cfd59c81dbd2f",
+          "message": "feat(replication): replication carries the generation that wrote each record (#2190)\n\n* feat(replication): replication carries the generation that wrote each record\n\nA new peer capability, WRITER_GENERATIONS, adds the writers of a batch (runs\nof the generation that wrote each record) to replication batches and tail\nfetches. A follower on segment format v9 stamps records with them, never its\nown accepted generation, and refuses a batch that does not name them\n(UnsupportedKind). The floor raise is gone: a stamp below the log's floor is\nrefused (GenerationBelowFloor, answered LogConflict), and a leader whose\naccepted generation is not the one it recorded is refused instead of stamping\nthe newer one. record_generations stays unreported.\n\nPart of #2167.\n\nSpec-Unaffected: the v9 per-record generation field is not modelled; no change to leases, fencing, the quorum mark, promotion, divergence repair or the vote save order. The only new follower behaviour is refusing batches it previously stamped wrongly, on a format no cluster writes yet.\n\n* storage, replication: ship writers only once stamps exist; stamp a leader's own generation\n\n- Kinds 55/56 and the writers go only when the leader's log is on v9 or its\n  record_generations gate says yes; otherwise the old kinds, byte for byte,\n  with no extra work. writers_to_wire walks the history once, and the fetch\n  answer reads the history once.\n- A leader append is stamped with the generation the broker opened the log\n  to lead at (DiskLog::lead_at) and refused once the log accepted a newer\n  one, even after its history takes the new leader's labels.\n- One encoding per message: a fetch asking for writers without headers is\n  refused by the encoder; stamped headers holding no block are no headers.\n\nSpec-Unaffected: the v9 per-record generation is not modelled; leases, fencing, the quorum mark, promotion, divergence repair and the vote save order are unchanged.",
+          "timestamp": "2026-11-10T17:20:34Z",
+          "tree_id": "23a3918dc83f26a2eb31dd0e6b776702e21dee08",
+          "url": "https://github.com/GetFelix/felix/commit/7b0562bc2fbdb55b49612c5d0b8cfd59c81dbd2f"
+        },
+        "date": 1794331681813,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347483.94,
+            "range": "7422.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347483.94\nmean: 346557.53\nstdev: 7422.62\ncv: 2.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347483.94,
+            "range": "7422.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347483.94\nmean: 346557.53\nstdev: 7422.62\ncv: 2.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79596.64,
+            "range": "676.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79596.64\nmean: 79297.46\nstdev: 676.43\ncv: 0.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 795966.4,
+            "range": "6764.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 795966.40\nmean: 792974.55\nstdev: 6764.29\ncv: 0.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
