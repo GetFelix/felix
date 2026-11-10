@@ -1,8 +1,8 @@
 apiVersion: v2
 name: felix
 description: >-
-  The Felix control plane and a stateful broker cluster: a Deployment (Postgres)
-  or StatefulSet (Raft) for the control plane, a StatefulSet for the brokers,
+  The Felix control plane and a stateful broker cluster: a Raft StatefulSet
+  for the control plane, a StatefulSet for the brokers,
   and the budgets, probes, and network policy that keep a rolling operation
   from taking a shard's replicas with it.
 type: application

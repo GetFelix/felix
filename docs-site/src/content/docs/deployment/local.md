@@ -53,8 +53,8 @@ built first. Set `FELIX_CLUSTER_VERBOSE=1` to see the brokers' own logs.
 
 ## Running a broker by hand
 
-Start a control plane. It keeps its metadata in memory unless you give it
-`FELIX_CONTROLPLANE_POSTGRES_URL`. Both processes serve metrics on port 8080 by
+Start a control plane. It keeps its metadata in memory unless you select the Raft backend
+(see [Metadata Raft](/architecture/metadata-raft/#configuring-it)). Both processes serve metrics on port 8080 by
 default, so move one:
 
 ```bash
@@ -246,7 +246,7 @@ plane with token exchange:
 # Live RBAC changes, against an in-memory control plane
 cargo run --manifest-path demos/rbac-live/Cargo.toml
 
-# Tokens for one tenant cannot reach another's data. Needs Postgres (task pg:up)
+# Tokens for one tenant cannot reach another's data
 cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 ```
 

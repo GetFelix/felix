@@ -23,12 +23,6 @@ fn store_config_change_window_clamps() {
 
 #[test]
 fn store_error_from_conversions_wrap_unexpected() {
-    let err = StoreError::from(sqlx::Error::RowNotFound);
-    assert!(matches!(err, StoreError::Unexpected(_)));
-
-    let err = StoreError::from(sqlx::migrate::MigrateError::VersionMissing(42));
-    assert!(matches!(err, StoreError::Unexpected(_)));
-
     let json_err = serde_json::from_str::<serde_json::Value>("not json").unwrap_err();
     let err = StoreError::from(json_err);
     assert!(matches!(err, StoreError::Unexpected(_)));

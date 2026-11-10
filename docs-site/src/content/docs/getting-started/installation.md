@@ -108,9 +108,8 @@ cargo build -p felix-loadgen
 cargo test --workspace
 ```
 
-The control plane's Postgres tests sit behind a feature and do not run in a
-plain `cargo test`. `task test` starts a Postgres container, when Docker or
-Podman is available, and runs them too. See [Docker or Podman](/getting-started/containers/).
+`task test` needs no database or container. See
+[Docker or Podman](/getting-started/containers/) for the tasks that do use one.
 
 ### Run the Conformance Suite
 
@@ -183,8 +182,6 @@ cargo run --release -p felix-broker-service --bin pubsub-demo-orders
 cargo run --manifest-path demos/rbac-live/Cargo.toml
 cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml
 ```
-
-The cross-tenant isolation demo needs Postgres (`task pg:up`).
 
 See the [Demos Overview](/demos/overview/) for details and expected output.
 

@@ -1,19 +1,12 @@
-//! The migration tool: Postgres out, Raft group in.
+//! The import tool: load an exported metadata snapshot into a Raft group.
 //!
-//! Two subcommands, deliberately dumb, because the intelligence lives
-//! elsewhere: the export reuses the store traits (so it reads exactly what
-//! the API serves), and the import is one `ImportState` command proposed to
-//! the running group (so it is atomic, replicated, and refused by a group
-//! that already holds state unless the operator says `--overwrite`). The
-//! import speaks to a member's Raft peer listener as a peer, so it needs the
-//! cluster's `FELIX_RAFT_CLUSTER_ID` and `FELIX_RAFT_PEER_TOKEN` (and the
-//! `FELIX_RAFT_TLS_*` files under peer mTLS): replacing the store is a
-//! cluster-admin act, and that token is the cluster-admin credential. The
-//! ceremony that wraps these — freeze, export, import, verify, retire — is
-//! documented in `docs/metadata-raft-design.md#migration-from-postgres`.
-//!
-//! The exported file doubles as the disaster-recovery artifact: restoring
-//! beyond quorum loss is a fresh group plus `import --overwrite`.
+//! The import is one `ImportState` command proposed to the running group (so
+//! it is atomic, replicated, and refused by a group that already holds state
+//! unless the operator says `--overwrite`). It speaks to a member's Raft peer
+//! listener as a peer, so it needs the cluster's `FELIX_RAFT_CLUSTER_ID` and
+//! `FELIX_RAFT_PEER_TOKEN` (and the `FELIX_RAFT_TLS_*` files under peer mTLS):
+//! replacing the store is a cluster-admin act, and that token is the
+//! cluster-admin credential.
 use anyhow::{Context, Result, bail};
 
 use crate::store::raft::command::{MetaCommand, MetaResult, decode_result, encode_command};
@@ -21,12 +14,6 @@ use crate::store::raft::command::{MetaCommand, MetaResult, decode_result, encode
 /// Run one `migrate` subcommand; `args` starts after the word `migrate`.
 pub async fn run(args: Vec<String>) -> Result<()> {
     match args.first().map(String::as_str) {
-        Some("export-postgres") => {
-            let out = args
-                .get(1)
-                .context("usage: felix-controlplane migrate export-postgres <out.json>")?;
-            export_postgres(out).await
-        }
         Some("import") => {
             let file = args
                 .get(1)
@@ -40,49 +27,13 @@ pub async fn run(args: Vec<String>) -> Result<()> {
             import(file, target, overwrite).await
         }
         _ => bail!(
-            "usage: felix-controlplane migrate <export-postgres <out.json> | import <file.json> <http(s)://raft-peer-addr> [--overwrite]>"
+            "usage: felix-controlplane migrate import <file.json> <http(s)://raft-peer-addr> [--overwrite]"
         ),
     }
 }
 
 const IMPORT_USAGE: &str = "usage: felix-controlplane migrate import <file.json> <http(s)://raft-peer-addr> [--overwrite] \
      (with FELIX_RAFT_CLUSTER_ID and FELIX_RAFT_PEER_TOKEN set)";
-
-/// Read everything from Postgres — through the same store traits the API
-/// serves from — and write the state machine's snapshot format.
-///
-/// Run this only against a frozen database (the ceremony's first step): the
-/// reads span many queries, and consistency is the freeze's job.
-async fn export_postgres(out: &str) -> Result<()> {
-    let url = std::env::var("FELIX_CONTROLPLANE_POSTGRES_URL")
-        .or_else(|_| std::env::var("DATABASE_URL"))
-        .context("set FELIX_CONTROLPLANE_POSTGRES_URL (or DATABASE_URL) to the source database")?;
-    let store = crate::store::postgres::PostgresStore::connect(
-        &crate::config::PostgresConfig {
-            url,
-            ..Default::default()
-        },
-        crate::store::StoreConfig {
-            changes_limit: crate::config::DEFAULT_CHANGES_LIMIT,
-            change_retention_max_rows: Some(crate::config::DEFAULT_CHANGE_RETENTION_MAX_ROWS),
-        },
-    )
-    .await
-    .context("connect to the source database")?;
-
-    let state = crate::store::export::export_state_from(&store)
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))
-        .context("export state")?;
-    let summary = state.summary();
-    write_private(
-        std::path::Path::new(out),
-        &serde_json::to_vec_pretty(&state).context("serialize state")?,
-    )
-    .with_context(|| format!("write {out}"))?;
-    println!("exported {summary} to {out}");
-    Ok(())
-}
 
 /// Propose the snapshot to a running group as one `ImportState` command.
 ///
@@ -131,23 +82,3 @@ async fn import(file: &str, target: &str, overwrite: bool) -> Result<()> {
         Err(err) => bail!("the state machine refused the import: {err}"),
     }
 }
-
-/// Write a file only its owner can read.
-///
-/// An export holds every tenant's signing-key seed, so anyone who can read
-/// it can mint tokens for any tenant. Created with the mode rather than
-/// chmodded after, so there is no moment it is readable by others. A file
-/// that already exists keeps its mode.
-fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    use std::io::Write as _;
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()
-}
-
-#[cfg(test)]
-mod tests;

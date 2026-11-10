@@ -573,12 +573,9 @@ watch. An operator credential comes out of bootstrap the same way a broker's
 does: a policy granting the cluster actions to a role, and an exchange.
 
 A create, update or delete of a tenant, namespace, stream or cache can answer
-`503`. Code `busy` means other writes to the same feed held it for more than
-5 s, for example a large tenant delete, and nothing was written, so retry it.
-Code
-`unavailable` is Raft: no quorum committed the write in time and it may still
-land, so a retried create can answer `409` and a retried delete `404`.
-`felixctl` retries only `busy`, a few times before failing.
+`503`. Code `unavailable` means no Raft quorum committed the write in time and
+it may still land, so a retried create can answer `409` and a retried delete
+`404`.
 
 #### Creating several at once
 
@@ -606,13 +603,12 @@ Content-Type: application/json
 | `404` | the tenant or namespace does not exist | nothing |
 | `409` | an item exists with a different configuration (the message names it), `jump_hash` routing before the finalize, or a `mount` that overlaps another stream's | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
-| `503` | `busy`: on Postgres, other writes to the stream or cache feed held it for more than 5 s; safe to retry | nothing |
-| `503` | `unavailable`: on Raft, no quorum committed the write in time; it may still land | unknown |
+| `503` | `unavailable`: no quorum committed the write in time; it may still land | unknown |
 
 A success lists every item in request order with `"status": "created"` or
 `"unchanged"`, so a caller that failed part-way sends the same batch again.
 Permission is checked for every item before anything is read. The new items
-are written in one Postgres transaction, or one Raft log entry, so a concurrent
+are written in one Raft log entry, so a concurrent
 create of the same name cannot leave part of a batch behind. See
 [Creating streams and caches together](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#creating-streams-and-caches-together)
 for the details.
@@ -692,15 +688,11 @@ Errors share one body: `{"code": "...", "message": "...", "request_id": ...}`.
 
 ## Storage backends
 
-The control plane keeps its metadata in one of three backends, chosen with
-`FELIX_CONTROLPLANE_STORAGE_BACKEND`. The API is the same on all of them.
+The control plane keeps its metadata in one of two backends, chosen with
+`FELIX_CONTROLPLANE_STORAGE_BACKEND`. The API is the same on both.
 
-- `memory` is the default. It keeps everything in the process and loses it on
-  restart, so it is for tests and local runs.
-- `postgres` keeps the metadata in a shared database. The instances are
-  stateless and don't know about each other, so you run several against one
-  highly available database. Each answers `/v1/system/ready` only when it can
-  reach a database whose schema matches its build.
+- `memory` is the default when no Raft variables are set. It keeps everything
+  in the process and loses it on restart, so it is for tests and local runs.
 - `raft` keeps the metadata in an openraft group embedded in the instances
   (`FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR`, `FELIX_RAFT_PEERS`). Writes go
   through the Raft leader, and a follower forwards the writes it receives. The
@@ -715,7 +707,7 @@ graph TB
         CP2["controlplane-1"]
         CP3["controlplane-2"]
     end
-    Store[("Postgres, or the Raft group<br/>the instances form")]
+    Store[("The Raft group<br/>the instances form")]
     Brokers["Brokers"]
     Operators["Operators<br/>(felixctl, curl)"]
 
@@ -771,8 +763,8 @@ again.
 
 ## Consistency
 
-A write is acknowledged once the backend has it: committed in Postgres, or
-committed by a majority of the Raft group. On Raft, reads are answered by the
+A write is acknowledged once the backend has it: committed by a
+majority of the Raft group. On Raft, reads are answered by the
 instance that receives them, so a follower can be a moment behind the leader.
 Brokers see changes later still, by up to the poll interval above.
 
@@ -782,12 +774,10 @@ operations are traced but not audit-logged.
 
 ## Running it well
 
-On Raft, run an odd number of instances (3 or 5) so the group keeps a
-majority through a failure, give them persistent volumes, and keep them off
-the broker nodes so data-plane load can't starve consensus. On Postgres, run
-two or more instances and make the database itself highly available. The
-workload is metadata only and light. Disruption budgets, failover drills and
-the Postgres-to-Raft migration are in
+Run an odd number of instances (3 or 5) so the group keeps a majority through
+a failure, give them persistent volumes, and keep them off the broker nodes so
+data-plane load can't starve consensus. The workload is metadata only and
+light. Disruption budgets and failover drills are in
 [Control-plane HA](/deployment/control-plane-ha/).
 
 ## Viewing the API document

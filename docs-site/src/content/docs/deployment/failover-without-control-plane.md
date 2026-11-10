@@ -239,8 +239,7 @@ You need:
   and with `FELIX_LEADER_SUSPECT_AFTER_MS` not `0`;
 - every control-plane member on 0.7.0. Under Raft the control plane checks
   this: `joint_fence` needs metadata level 25 on every member, and
-  `replica_election` level 26. Under Postgres it cannot see other instances'
-  versions, so finish the control-plane upgrade before you start.
+  `replica_election` level 26.
 
 Then finalize these fleet features, in this order:
 

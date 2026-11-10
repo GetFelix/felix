@@ -274,8 +274,8 @@ possible; see [Data residency](/use-cases/data-residency/).
 
 **Follower reads.** Every read goes to the shard's leader.
 
-**Deployment.** A Felix deployment has brokers and a control plane, backed by
-Postgres or its Raft backend, so it takes more to run than a single NATS binary.
+**Deployment.** A Felix deployment has brokers and a control plane, with
+its Raft backend, so it takes more to run than a single NATS binary.
 
 ## Related
 

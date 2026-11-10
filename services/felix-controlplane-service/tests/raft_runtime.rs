@@ -79,13 +79,36 @@ fn http_with_headers(
     Some((status, text))
 }
 
+/// Kills the child when dropped, so a failing assertion does not leave a
+/// control plane running after the test.
+struct Reaped(std::process::Child);
+
+impl std::ops::Deref for Reaped {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 fn command(addr: SocketAddr, peer: SocketAddr, data_dir: &std::path::Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_felix-controlplane"));
     command
         .env("FELIX_CONTROLPLANE_BIND", addr.to_string())
         .env("FELIX_CONTROLPLANE_METRICS_BIND", "127.0.0.1:0")
-        // The three raft variables select the backend on their own, the same
-        // way a postgres URL selects postgres.
+        // The three raft variables select the backend on their own.
         .env("FELIX_RAFT_NODE_ID", "1")
         .env("FELIX_RAFT_DATA_DIR", data_dir)
         .env("FELIX_RAFT_PEERS", format!("1={peer}"))
@@ -146,7 +169,7 @@ fn the_binary_serves_and_survives_a_restart_with_no_database() {
     let peer = common::reserve_port();
     let data_dir = tempfile::tempdir().expect("tempdir");
 
-    let mut first = spawn(addr, peer, data_dir.path(), "new");
+    let mut first = Reaped(spawn(addr, peer, data_dir.path(), "new"));
     wait_ready(&mut first, addr);
 
     // The catalog API needs an operator credential, and a fresh binary has no
@@ -168,7 +191,7 @@ fn the_binary_serves_and_survives_a_restart_with_no_database() {
 
     // Same data directory: the metadata must come back from the Raft log
     // and snapshot — there is no database holding it.
-    let mut second = spawn(addr, peer, data_dir.path(), "existing");
+    let mut second = Reaped(spawn(addr, peer, data_dir.path(), "existing"));
     wait_ready(&mut second, addr);
     let (status, body) =
         http(addr, "GET", "/v1/tenants", Some(&bearer), None).expect("list tenants");

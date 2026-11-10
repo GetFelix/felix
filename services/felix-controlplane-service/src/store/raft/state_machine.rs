@@ -3,7 +3,7 @@
 //! This is the application half of the Raft seam
 //! ([`crate::raft::AppStateMachine`]), exactly as the design promised: no
 //! new state container, just [`InMemoryStore`] — already implementing every
-//! store trait, already contract-tested against Postgres — fed committed
+//! store trait, already contract-tested — fed committed
 //! [`MetaCommand`]s in log order. Its snapshot is the store's deterministic
 //! export, so two replicas that applied the same log serialize
 //! byte-identical state; the harness in `state_machine/tests.rs` holds it

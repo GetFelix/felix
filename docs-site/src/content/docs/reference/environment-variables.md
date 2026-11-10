@@ -2293,13 +2293,9 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_API_UI_PATH` | `/api` | Where the reference page is served. A plain path that is not under `/v1`. Read only when the page is on. Config file key: `api_ui_path`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
 | `FELIX_CONTROLPLANE_CONFIG` | unset | Path to a YAML config file. Values in the file override the environment. |
-| `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory`, `postgres` or `raft`. Unset, it is `postgres` when `FELIX_CONTROLPLANE_POSTGRES_URL` is set, `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. An unrecognised value is treated as unset. |
-| `FELIX_CONTROLPLANE_POSTGRES_URL` | unset | Connection string. Required when the backend is `postgres`. |
-| `FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS` | `10` | Pool size. Caps concurrent database work. |
-| `FELIX_CONTROLPLANE_POSTGRES_CONNECT_TIMEOUT_MS` | `5000` | Bounds establishing a new physical connection. |
-| `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS` | `5000` | Bounds waiting for a pooled connection before failing fast. |
+| `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory` or `raft`. Unset, it is `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. The removed `postgres` value, like `FELIX_CONTROLPLANE_POSTGRES_URL` being set at all, stops startup with an error; any other unrecognised value is treated as unset. |
 | `FELIX_CONTROLPLANE_CHANGES_LIMIT` | `1000` | Maximum changes returned by one changefeed page. |
-| `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the append-only change tables. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
+| `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the retained change feeds. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256,RS256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. Setting it replaces the default, so it can narrow it. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` | `false` | Allow plain-HTTP IdP discovery and JWKS URLs on any host. Without it only `https` is accepted, plus `http` on a loopback host. For development: a JWKS fetched over plain HTTP can be replaced in transit, and whoever replaces it can mint tokens for the tenant. Also implies `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` | `false` | Allow IdP discovery and JWKS URLs that are, or resolve to, private, link-local or unique-local addresses. Without it those are refused (loopback is always allowed), so an issuer config cannot make the control plane fetch from internal services or a cloud metadata endpoint. |

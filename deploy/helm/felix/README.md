@@ -6,15 +6,14 @@ What it renders:
 
 | Component | Shape | Why |
 | --- | --- | --- |
-| Control plane, Postgres backend | Deployment, `maxUnavailable: 0`, `maxSurge: 1` | Instances are stateless over one HA database; a new one is ready before an old one goes, and readiness is what the Service routes on. |
-| Control plane, Raft backend | StatefulSet with a volume per member and a headless Service | Members have identities; the peers map is derived from the replica count and each member's id from its pod ordinal. |
+| Control plane, Raft backend (default) | StatefulSet with a volume per member and a headless Service | Members have identities; the peers map is derived from the replica count and each member's id from its pod ordinal. |
 | Brokers | StatefulSet with a volume each, `OrderedReady` | The pod name is the node id: what the broker registers as, what shards are assigned to, and under peer mTLS the DNS name its certificate carries. Replacing a pod keeps all of it. |
 | Budgets | PodDisruptionBudgets | Voluntary disruption takes at most one broker at a time, which keeps a replication-factor-three shard's quorum. |
 | Network policy | Internal port admitted from broker pods only | Without peer mTLS reachability is the boundary; with it, this is the second fence. The internal port is never on a Service. |
 | Peer mTLS | A cert-manager CSI volume per pod, or an explicit opt-out | Each broker needs a certificate issued to its own name; the CSI driver is what can vary a volume per pod of one StatefulSet. Brokers refuse to start with neither, so the chart refuses to render with neither. |
 | Client and control-plane TLS (optional) | Secrets you provide, mounted as directories | One certificate for every broker, and one for the control-plane API. Renewals reach the running processes without a restart. |
 
-Secrets are referenced, never rendered: the Postgres URL, the bootstrap token
+Secrets are referenced, never rendered: the Raft peer token, the bootstrap token
 and the broker credential come from Secrets the operator creates. Value
 combinations that are each fine alone and wrong together refuse to render
 (see [Refusals](#refusals)).
@@ -25,7 +24,7 @@ The chart is in this repository; there is no published index yet.
 
 ```bash
 helm install felix deploy/helm/felix -n felix --create-namespace \
-  --set controlplane.storage.postgres.existingSecret=felix-postgres \
+  --set controlplane.storage.raft.peerToken.existingSecret=felix-raft-peer \
   --set broker.enabled=false \
   --set controlplane.bootstrap.enabled=true \
   --set controlplane.bootstrap.existingSecret=felix-bootstrap
@@ -56,9 +55,8 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 
 | Value | Default | Meaning |
 | --- | --- | --- |
-| `controlplane.replicas` | `2` | Instances. Odd and at least three under `raft`; exactly one under `memory`. |
-| `controlplane.storage.backend` | `postgres` | `memory`, `postgres` or `raft`. |
-| `controlplane.storage.postgres.existingSecret` | — | Secret holding the connection URL under `urlKey` (`url`). Required for `postgres`. |
+| `controlplane.replicas` | `3` | Instances. Odd and at least three under `raft`; exactly one under `memory`. |
+| `controlplane.storage.backend` | `raft` | `raft` or `memory`. |
 | `controlplane.storage.raft.volume` | `1Gi` | The volume each Raft member keeps its log and snapshots on. |
 | `controlplane.storage.raft.peerToken.existingSecret` | — | Secret holding the Raft peer token (32+ characters) under `tokenKey` (`token`). Required for `raft`: whoever holds the token can replace the metadata store. |
 | `controlplane.storage.raft.peerPort` | `8444` | The members' Raft peer listener, on the headless Service only. Must differ from the API port. |
@@ -102,7 +100,7 @@ and `values.schema.json` rejects a misspelt key rather than ignoring it.
 
 `helm template` fails, with the reason, when:
 
-- `postgres` has no `existingSecret`, or `bootstrap` is on without one.
+- `bootstrap` is on without a Secret.
 - `raft` has fewer than three members, or an even number, or no peer token Secret, or a peer port equal to the API port, or peer `tls` on without a Secret.
 - `memory` has more than one replica.
 - brokers are enabled with no credential Secret, or with no control plane and no `controlplaneUrl`.
@@ -122,9 +120,6 @@ these refusals still refuses.
 
 - Kubernetes 1.25 or later, Helm 3.8 or later.
 - A StorageClass for the broker volumes, and for Raft members.
-- For the Postgres backend: a database with one writable endpoint and
-  synchronous replication, as [Control-plane HA](https://docs.getfelix.dev/deployment/control-plane-ha/)
-  sets out. The chart does not deploy one.
 - For peer mTLS: cert-manager, cert-manager-csi-driver, and an Issuer or
   ClusterIssuer for the peer CA.
 - For the NetworkPolicy to mean anything: a CNI that enforces it.

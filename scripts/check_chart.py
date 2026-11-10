@@ -198,10 +198,7 @@ def check_controlplane(docs: list[dict], label: str, backend: str) -> None:
     if env["FELIX_CONTROLPLANE_STORAGE_BACKEND"]["value"] != backend:
         fail(f"{label}: backend is not {backend}")
 
-    if backend == "postgres":
-        url = env.get("FELIX_CONTROLPLANE_POSTGRES_URL", {})
-        if "valueFrom" not in url or "secretKeyRef" not in url["valueFrom"]:
-            fail(f"{label}: the Postgres URL is not a Secret reference")
+    if backend == "memory":
         strategy = workload["spec"]["strategy"]["rollingUpdate"]
         if strategy["maxUnavailable"] != 0:
             fail(f"{label}: control-plane instances do not roll one at a time")
@@ -305,7 +302,7 @@ def check_no_secret_material(docs: list[dict], label: str) -> None:
             fail(f"{label}: the chart rendered a Secret ({doc['metadata']['name']}); it must only reference them")
         if doc.get("kind") == "ConfigMap":
             text = yaml.safe_dump(doc.get("data", {}))
-            if "postgres://" in text or "TOKEN" in text.upper():
+            if "TOKEN" in text.upper():
                 fail(f"{label}: ConfigMap {doc['metadata']['name']} carries a credential")
 
 
@@ -320,35 +317,28 @@ def lint(values: pathlib.Path | None) -> None:
 
 def main() -> int:
     ci = CHART / "ci"
-    postgres = ci / "postgres-values.yaml"
     raft = ci / "raft-values.yaml"
     mtls = ci / "mtls-values.yaml"
     memory = ci / "memory-values.yaml"
 
     print("lint")
-    for values in (postgres, raft, mtls, memory):
+    for values in (raft, mtls, memory):
         lint(values)
-
-    print("render: postgres")
-    docs = render(postgres)
-    check_controlplane(docs, "postgres", "postgres")
-    check_broker(docs, "postgres")
-    check_no_secret_material(docs, "postgres")
-    if one(docs, "ConfigMap", "-broker") is None:
-        fail("postgres: broker.config did not render a ConfigMap")
-    if len(by_kind(docs, "ServiceMonitor")) != 2:
-        fail("postgres: expected a ServiceMonitor per workload")
-    rules = by_kind(docs, "PrometheusRule")
-    if len(rules) != 1 or not rules[0].get("spec", {}).get("groups"):
-        fail("postgres: expected one PrometheusRule carrying the alert groups")
-    if by_kind(render(postgres, "prometheusRule.enabled=false"), "PrometheusRule"):
-        fail("a PrometheusRule rendered with prometheusRule.enabled off")
 
     print("render: raft")
     docs = render(raft)
     check_controlplane(docs, "raft", "raft")
     check_broker(docs, "raft")
     check_no_secret_material(docs, "raft")
+    if one(docs, "ConfigMap", "-broker") is None:
+        fail("raft: broker.config did not render a ConfigMap")
+    if len(by_kind(docs, "ServiceMonitor")) != 2:
+        fail("raft: expected a ServiceMonitor per workload")
+    rules = by_kind(docs, "PrometheusRule")
+    if len(rules) != 1 or not rules[0].get("spec", {}).get("groups"):
+        fail("raft: expected one PrometheusRule carrying the alert groups")
+    if by_kind(render(raft, "prometheusRule.enabled=false"), "PrometheusRule"):
+        fail("a PrometheusRule rendered with prometheusRule.enabled off")
     sts = one(docs, "StatefulSet", "-broker")
     env = env_of(containers(sts)[0]) if sts else {}
     if env.get("FELIX_NODE_TOKEN_FILE", {}).get("value") != "/etc/felix/credential/$(POD_NAME)":
@@ -380,7 +370,7 @@ def main() -> int:
 
     print("render: mtls")
     docs = render(mtls)
-    check_controlplane(docs, "mtls", "postgres")
+    check_controlplane(docs, "mtls", "raft")
     check_broker(docs, "mtls")
     check_no_secret_material(docs, "mtls")
     sts = one(docs, "StatefulSet", "-broker")
@@ -397,8 +387,8 @@ def main() -> int:
         fail("mtls: brokers are not given the control plane's CA")
 
     print("render: one StatefulSet per zone")
-    docs = render(postgres, "broker.zones={za,zb,zc}", "broker.replicas=1")
-    check_controlplane(docs, "zones", "postgres")
+    docs = render(raft, "broker.zones={za,zb,zc}", "broker.replicas=1")
+    check_controlplane(docs, "zones", "raft")
     brokers = [sts for sts in by_kind(docs, "StatefulSet") if "-broker-z" in sts["metadata"]["name"]]
     if len(brokers) != 3:
         fail(f"zones: expected a broker StatefulSet per zone, got {len(brokers)}")
@@ -417,9 +407,9 @@ def main() -> int:
     pdbs = [pdb for pdb in by_kind(docs, "PodDisruptionBudget") if pdb["metadata"]["name"].endswith("-broker")]
     if len(pdbs) != 1 or "felix/zone" in pdbs[0]["spec"]["selector"]["matchLabels"]:
         fail("zones: the broker budget does not span every zone")
-    docs = render(postgres)
+    docs = render(raft)
     if any("FELIX_NODE_ZONE" in env_of(containers(sts)[0]) for sts in by_kind(docs, "StatefulSet")):
-        fail("postgres: a broker reports a zone although none is set")
+        fail("raft: a broker reports a zone although none is set")
 
     print("render: memory (brokers off)")
     docs = render(memory)
@@ -428,28 +418,28 @@ def main() -> int:
         fail("memory: brokers rendered while disabled")
     check_no_secret_material(docs, "memory")
 
-    print("render: defaults with the two required secrets")
+    print("render: defaults with the required secrets")
     docs = render(
         None,
-        "controlplane.storage.postgres.existingSecret=pg",
+        "controlplane.storage.raft.peerToken.existingSecret=peer",
         "broker.credential.existingSecret=cred",
         "broker.peerTls.allowUnauthenticated=true",
     )
-    check_controlplane(docs, "defaults", "postgres")
+    check_controlplane(docs, "defaults", "raft")
     check_broker(docs, "defaults")
 
     print("refusals")
     must_refuse("broker.credential.existingSecret is empty", None,
-                "controlplane.storage.postgres.existingSecret=pg")
+                "controlplane.storage.raft.peerToken.existingSecret=peer")
     must_refuse("brokers refuse to start without peer mTLS", None,
-                "controlplane.storage.postgres.existingSecret=pg",
+                "controlplane.storage.raft.peerToken.existingSecret=peer",
                 "broker.credential.existingSecret=cred")
-    must_refuse("needs broker.clientTls.existingSecret", postgres,
+    must_refuse("needs broker.clientTls.existingSecret", raft,
                 "broker.clientTls.enabled=true")
-    must_refuse("needs controlplane.tls.existingSecret", postgres,
+    must_refuse("needs controlplane.tls.existingSecret", raft,
                 "controlplane.tls.enabled=true")
 
-    must_refuse("needs controlplane.storage.postgres.existingSecret", None,
+    must_refuse("needs controlplane.storage.raft.peerToken.existingSecret", None,
                 "broker.credential.existingSecret=cred")
     must_refuse("odd number of members", raft, "controlplane.replicas=4")
     must_refuse("at least three members", raft, "controlplane.replicas=1")
@@ -460,30 +450,30 @@ def main() -> int:
     must_refuse("needs controlplane.storage.raft.tls.existingSecret", raft,
                 "controlplane.storage.raft.tls.enabled=true")
     must_refuse("memory keeps metadata in one process", memory, "controlplane.replicas=2")
-    must_refuse("share a port", postgres, "broker.ports.internal=5000")
-    must_refuse("permit evicting every broker", postgres,
+    must_refuse("share a port", raft, "broker.ports.internal=5000")
+    must_refuse("permit evicting every broker", raft,
                 "broker.replicas=1", "broker.podDisruptionBudget.maxUnavailable=1")
-    must_refuse("loses its quorum when two", postgres,
+    must_refuse("loses its quorum when two", raft,
                 "broker.podDisruptionBudget.maxUnavailable=2")
-    must_refuse("no voluntary disruption could ever proceed", postgres,
-                "controlplane.podDisruptionBudget.minAvailable=2")
-    must_refuse("SIGKILL would arrive mid-drain", postgres,
+    must_refuse("no voluntary disruption could ever proceed", raft,
+                "controlplane.podDisruptionBudget.minAvailable=3")
+    must_refuse("SIGKILL would arrive mid-drain", raft,
                 "broker.shutdown.terminationGracePeriodSeconds=30")
-    must_refuse("needs controlplane.bootstrap.existingSecret", postgres,
+    must_refuse("needs controlplane.bootstrap.existingSecret", raft,
                 "controlplane.bootstrap.enabled=true")
-    must_refuse("cannot advertise a control plane", postgres,
+    must_refuse("cannot advertise a control plane", raft,
                 "controlplane.enabled=false")
-    must_refuse("values don't meet the specifications of the schema", postgres,
+    must_refuse("values don't meet the specifications of the schema", raft,
                 "controlplane.storage.backend=sqlite")
-    must_refuse("values don't meet the specifications of the schema", postgres,
+    must_refuse("values don't meet the specifications of the schema", raft,
                 "broker.replicaCount=3")
 
-    must_refuse("lists a zone twice", postgres, "broker.zones={za,za}")
-    must_refuse("remove topology.kubernetes.io/zone from broker.nodeSelector", postgres,
+    must_refuse("lists a zone twice", raft, "broker.zones={za,za}")
+    must_refuse("remove topology.kubernetes.io/zone from broker.nodeSelector", raft,
                 "broker.zones={za}", "broker.nodeSelector.topology\\.kubernetes\\.io/zone=za")
-    must_refuse("permit evicting every broker", postgres,
+    must_refuse("permit evicting every broker", raft,
                 "broker.zones={za}", "broker.replicas=1")
-    must_refuse("values don't meet the specifications of the schema", postgres,
+    must_refuse("values don't meet the specifications of the schema", raft,
                 "broker.zones={US_East}")
 
     if failures:

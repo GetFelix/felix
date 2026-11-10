@@ -23,3 +23,10 @@ broker:
   antiAffinity: hard
   topologySpread:
     whenUnsatisfiable: DoNotSchedule
+  config:
+    event_batch_max_events: 64
+    event_batch_max_delay_us: 250
+serviceMonitor:
+  enabled: true
+prometheusRule:
+  enabled: true

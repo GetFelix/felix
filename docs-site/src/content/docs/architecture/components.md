@@ -491,30 +491,18 @@ The control plane stores authoritative information about:
 
 ### Consistency Model
 
-The control plane has three storage backends: Postgres, an embedded Raft group,
-and memory for tests and single-node development. Either production backend
-gives one order to every metadata write.
+The control plane has two storage backends: an embedded Raft group, and memory
+for tests and single-node development. Raft gives one order to every metadata
+write: every instance holds the metadata, writes are proposed to the Raft
+leader (a follower forwards them) and apply in log order on every member.
+Reads, including broker watches, are served from the member's local state.
+See [Metadata Raft](/architecture/metadata-raft/).
 
-- **Postgres**: instances are stateless and do not know about each other. Every
-  write and every read goes to the database.
-- **Raft**: every instance holds the metadata. Writes are proposed to the Raft
-  leader (a follower forwards them) and apply in log order on every member.
-  Reads, including broker watches, are served from the member's local state.
-  See [Metadata Raft](/architecture/metadata-raft/).
-
-Under Postgres:
-
-- Writes are transactions, so a shard has one current assignment
-- Change feeds are sequenced from a locked row rather than a sequence, because a
-  sequence hands out numbers in request order, not commit order. A snapshot
-  taken between two commits would resume past a change it never saw
-- Placement is conditional writes, not a shared snapshot: a pass reads its inputs
-  separately, and each assignment write is refused if the generation or placement
-  token it was planned from has moved, so instances need not agree on one
-
-Under Raft the log gives the same guarantees: a write applies once, in one
-order, and placement's writes are still conditional on the generation they
-were planned from.
+The log gives these guarantees: a write applies once, in one order, so a shard
+has one current assignment, and a change feed's sequence follows commit order.
+Placement's writes are conditional: a pass reads its inputs separately, and
+each assignment write is refused if the generation or placement token it was
+planned from has moved, so instances need not agree on one snapshot.
 
 ### Broker Synchronization
 
@@ -646,7 +634,7 @@ Each component exposes its own configuration surface:
 | **felix-broker** | Queue depths, worker counts, batching parameters |
 | **felix-storage** | Retention policies, cache sizes, durability modes |
 | **felix-replication** | Peer transport, quorum publish timeout, replica rebuild concurrency and rate |
-| **Control Plane** | Storage backend (Postgres pool or Raft group), readiness probe timings, reconcile interval |
+| **Control Plane** | Storage backend (Raft group or memory), readiness probe timings, reconcile interval |
 
 See the [Performance Tuning](/features/performance/) guide for detailed configuration examples.
 

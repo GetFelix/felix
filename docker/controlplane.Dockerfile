@@ -28,8 +28,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # --- runtime -------------------------------------------------------------
 FROM ${BASE_REGISTRY}/debian:bookworm-slim AS runtime
 
-# ca-certificates: two reasons, not one — the control plane fetches an IdP's
-#   JWKS over TLS, and it connects to Postgres, which is usually TLS too.
+# ca-certificates: the control plane fetches an IdP's JWKS over TLS.
 # tini: see the broker image.
 # wget: the healthcheck below.
 RUN apt-get update \
@@ -41,7 +40,7 @@ RUN groupadd --gid 65532 felix \
 
 COPY --from=build /usr/local/bin/felix-controlplane /usr/local/bin/felix-controlplane
 
-# No VOLUME: the control plane's state lives in Postgres, or in a Raft log
+# No VOLUME: the control plane's state lives in a Raft log
 # directory an operator names explicitly. Declaring one would imply a default
 # path it does not have.
 WORKDIR /var/lib/felix

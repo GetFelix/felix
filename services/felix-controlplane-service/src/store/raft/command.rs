@@ -65,7 +65,7 @@ pub enum MetaCommand {
         tenant: Tenant,
     },
     /// `take_shards`: also take the tenant's streams' and caches' shard
-    /// assignments and replica reports, as Postgres's cascade does. Level 10,
+    /// assignments and replica reports, Level 10,
     /// and set only once every member is there: a member that ignored it
     /// would keep what the others dropped, so the field decides the delete on
     /// every member, and an older member refuses an entry carrying it.
@@ -366,8 +366,8 @@ pub enum MetaCommand {
         tenant_id: String,
         seed: TenantAuthSeed,
     },
-    /// Replace the entire store with an exported state — the migration
-    /// cutover from Postgres, and the beyond-quorum-loss restore.
+    /// Replace the entire store with an exported state — the beyond-quorum-loss
+    /// restore.
     ///
     /// One command, so the whole import is one log entry applied atomically
     /// on every member; sequence high-water marks inside the state are what

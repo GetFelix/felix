@@ -187,8 +187,8 @@ early to keep p99/p999 predictable.
 - Consumer groups: poll, acknowledge, redeliver, bound the redelivery,
   dead-letter and redrive
 - A control plane over REST, tenant-scoped tokens with RBAC, and capability
-  negotiation on the wire. Its metadata store is Postgres or an embedded Raft
-  group (`FELIX_CONTROLPLANE_STORAGE_BACKEND=raft`), so availability need not
+  negotiation on the wire. Its metadata lives in an embedded Raft
+  group (`FELIX_CONTROLPLANE_STORAGE_BACKEND=raft`), so availability does not
   rest on an external database
 - Online rebalancing: a shard with a live leader is moved by staging the
   destination as a replica, fencing the leader and cutting over once the copy
@@ -226,7 +226,7 @@ is kept current per capability. Trust it when another page disagrees.
 ## Getting Started
 
 You need Rust 1.99.1 and [Task](https://taskfile.dev). Docker or Podman is
-optional: `task test` uses one to run the Postgres tests (see
+optional: the compose stack and the TLA+ checker use one (see
 [Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
 
 Build the workspace:
@@ -271,7 +271,7 @@ incomplete.
 Done: QUIC transport with backpressure, the durable log, the control plane and
 placement, intra-region clustering with replication and failover, the log-backed
 cache, consumer groups, tenant-scoped RBAC, control-plane high availability
-over either Postgres or an embedded Raft group, broker-to-broker mTLS, moving a
+over an embedded Raft group, broker-to-broker mTLS, moving a
 shard without pausing its publishes or ending its subscriptions, a Helm chart,
 per-stream retention, offload of sealed segments to a directory, and Python
 and TypeScript clients over the Rust one.

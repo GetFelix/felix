@@ -175,7 +175,7 @@ tenant configuration, performs publish/subscribe/cache operations that are
 initially denied, then applies RBAC updates via the control plane API and shows
 the same operations succeed without restarting services.
 
-This demo uses an in-memory control-plane store (no Postgres required).
+This demo uses an in-memory control-plane store.
 
 Run:
 
@@ -201,7 +201,7 @@ STEP 17 cache allowed: PASS
 ### Cross-Tenant Isolation (`demo-cross-tenant-isolation`)
 
 Demonstrates that Felix enforces tenant boundaries end-to-end. The demo boots a
-Postgres-backed control plane, a real broker, a fake ES256 OIDC IdP, and then
+control plane with an in-memory store, a real broker, a fake ES256 OIDC IdP, and then
 shows that a token minted for `t1` cannot access `t2` resources. It also shows
 that a `t2` token without RBAC grants is denied in `t2`.
 

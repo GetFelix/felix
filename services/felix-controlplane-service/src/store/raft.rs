@@ -9,8 +9,7 @@
 //! majority, applied everywhere, with the response decoded back into the
 //! store vocabulary. A write sent to a follower forwards to the leader
 //! inside the seam; callers cannot tell which instance they hit — the same
-//! promise the HTTP API makes for the Postgres backend behind a load
-//! balancer.
+//! promise the HTTP API makes behind a load balancer.
 //!
 //! Heartbeats, expiry and the placement lease are the exception: they are
 //! the leader's soft state (`soft_state`), asked of the leader rather than
@@ -1336,8 +1335,8 @@ impl ControlPlaneStore for RaftStore {
         self.local().namespace_exists(key).await
     }
 
-    /// Ready when this member can serve — the same question readiness asks
-    /// the Postgres backend, answered from consensus state: a leader is
+    /// Ready when this member can serve — the question readiness asks,
+    /// answered from consensus state: a leader is
     /// known, this member is applying what its log holds, and a leader
     /// answers only while a quorum has recently acknowledged it. All from
     /// local metrics; a probe must never cost a consensus round trip.

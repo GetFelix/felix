@@ -3,9 +3,8 @@
 //! Tenants, nodes and assignments are global, and other contracts share the
 //! store, so those are checked against the unpaged listing rather than
 //! against what this suite created. Only the suite's own names are compared
-//! in order: Postgres orders by its collation, so the order of arbitrary
-//! names is the backend's business, but plain lowercase ones sort alike
-//! everywhere.
+//! in order: the order of arbitrary names is the backend's business, but
+//! plain lowercase ones sort alike everywhere.
 use std::collections::BTreeSet;
 use std::sync::Arc;
 

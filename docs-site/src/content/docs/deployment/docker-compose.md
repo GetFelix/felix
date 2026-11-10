@@ -194,26 +194,24 @@ ownership from the image. A bind mount must be writable by that uid.
 
 ## Broker and control plane
 
-A control plane over Postgres and one durable broker:
+A one-member Raft control plane and one durable broker. One member keeps its
+metadata on a volume but cannot survive losing that instance; production runs
+three (see [Control-plane HA](/deployment/control-plane-ha/)):
 
 ```yaml
 services:
-  postgres:
-    image: docker.io/library/postgres:16-alpine
-    environment:
-      POSTGRES_USER: felix
-      POSTGRES_PASSWORD: felix
-      POSTGRES_DB: felix
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U felix -d felix"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   felix-controlplane:
     image: ghcr.io/getfelix/felix-controlplane:0.7.0
     environment:
-      - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
+      - FELIX_RAFT_NODE_ID=1
+      - FELIX_RAFT_DATA_DIR=/var/lib/felix/raft
+      - FELIX_RAFT_PEERS=1=felix-controlplane:8444
+      - FELIX_RAFT_BIND_ADDR=0.0.0.0:8444
+      - FELIX_RAFT_CLUSTER_ID=compose
+      # At least 32 random characters, from a secret in anything but a demo.
+      - FELIX_RAFT_PEER_TOKEN=change-me-change-me-change-me-change-me
+      # First start only matters: it lets an empty member form the group.
+      - FELIX_RAFT_INITIAL_CLUSTER_STATE=new
       # Day 0 only: the bootstrap API is how the broker credential is made.
       # Remove these three once it exists.
       - FELIX_BOOTSTRAP_ENABLED=true
@@ -223,9 +221,8 @@ services:
     ports:
       - "8443:8443"            # REST API
       - "127.0.0.1:9095:9095"  # bootstrap, loopback only
-    depends_on:
-      postgres:
-        condition: service_healthy
+    volumes:
+      - felix-controlplane-data:/var/lib/felix
 
   felix-broker:
     image: ghcr.io/getfelix/felix-broker:0.7.0
@@ -252,10 +249,11 @@ secrets:
 
 volumes:
   felix-data:
+  felix-controlplane-data:
 ```
 
-Without `FELIX_CONTROLPLANE_POSTGRES_URL` the control plane keeps its metadata
-in memory and loses it on restart.
+Without the `FELIX_RAFT_*` variables the control plane keeps its metadata in
+memory and loses it on restart.
 
 Outside Compose, mount the token file read-only, for example
 `-v /path/to/node.token:/etc/felix/node.token:ro` with

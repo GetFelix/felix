@@ -416,15 +416,13 @@ pub(crate) enum Command {
         subcommand,
         name = "controlplane",
         long_about = "Run the maintenance tools in the felix-controlplane binary. They \
-                      read or write the control plane's own database, so they run on a host \
-                      that can reach it, with felix-controlplane installed there: felixctl \
+                      talk to a Raft group's peer listener, so they run on a host that can \
+                      reach it, with felix-controlplane installed there: felixctl \
                       finds it with --controlplane-bin (before `controlplane`), then \
                       $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` \
                       through unchanged, --help included, and ends with its exit status. \
-                      `migrate export-postgres` writes the metadata to a file; `migrate \
-                      import` loads a file into a Raft group.",
+                      `migrate import` loads an exported metadata file into a Raft group.",
         after_long_help = "Examples:
-  felixctl controlplane migrate export-postgres state.json
   felixctl controlplane migrate import state.json http://cp-0:8444"
     )]
     Controlplane(ControlplaneCommand),

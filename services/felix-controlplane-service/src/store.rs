@@ -1,13 +1,12 @@
 //! The metadata store: the traits every backend implements, and the types
 //! they share.
 //!
-//! Three backends implement them (`memory`, `postgres` and `raft`) and all
-//! three run the same contract tests. Callers cannot tell which backend they
+//! Two backends implement them (`memory` and `raft`) and both
+//! run the same contract tests. Callers cannot tell which backend they
 //! are talking to, so change ordering, conflicts and not-found must behave
 //! the same on each.
 pub mod export;
 pub mod memory;
-pub mod postgres;
 pub mod raft;
 
 #[cfg(test)]
@@ -248,14 +247,12 @@ pub trait ControlPlaneStore: Send + Sync {
     /// the bound on drift *rate* the design assumes, and one NTP steps break
     /// outright.
     ///
-    /// Backends with a shared clock return it — Postgres answers with
-    /// `clock_timestamp()`. The default is the process clock, which is
+    /// The default is the process clock, which is
     /// correct for a single-process store and for the Raft backend, where
     /// the leader overwrites a proposer's reading before the command enters
     /// the log (`store::raft::command::restamp`) and the sweep that reads it back
     /// runs only on that same leader. Both sides of the comparison are one
-    /// process's clock either way; the two backends just reach that
-    /// differently.
+    /// process's clock.
     async fn now_millis(&self) -> StoreResult<u64> {
         Ok(crate::clock::now_millis())
     }
@@ -924,18 +921,6 @@ pub(crate) fn upgrade_refusal(err: &StoreError) -> Option<&str> {
     match err {
         StoreError::Conflict(message) if message.ends_with(UPGRADE_HINT) => Some(message),
         _ => None,
-    }
-}
-
-impl From<sqlx::Error> for StoreError {
-    fn from(err: sqlx::Error) -> Self {
-        StoreError::Unexpected(err.into())
-    }
-}
-
-impl From<sqlx::migrate::MigrateError> for StoreError {
-    fn from(err: sqlx::migrate::MigrateError) -> Self {
-        StoreError::Unexpected(err.into())
     }
 }
 

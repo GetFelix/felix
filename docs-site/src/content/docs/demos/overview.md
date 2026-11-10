@@ -16,8 +16,7 @@ first.
 - The Leader vs Quorum demo runs a real three-node cluster of `felix-broker`
   processes through the cluster harness.
 - The RBAC live and cross-tenant demos start a control plane, a broker and a
-  fake IdP on local ports. The cross-tenant demo also needs Postgres, which its
-  Task target starts and stops.
+  fake IdP on local ports.
 - Demo auth helpers are enabled for convenience (not production-safe).
 - All commands are run from the repository root.
 - With Task: `task demo:slow-consumer`, `task demo:state-divergence`, `task demo:queues`, `task cluster:consistency`, `task demo:pubsub`, `task demo:cache`, `task demo:latency`, `task demo:notifications`, `task demo:orders`, `task demo:rbac-live`, or `task demo:cross-tenant-isolation`. The durable-restart demo has no Task target; run it with `cargo run`.
@@ -121,7 +120,7 @@ STEP 16 publish allowed: PASS
 ### Cross-Tenant Isolation (`demo-cross-tenant-isolation`)
 
 - Proves tenant boundaries are enforced end-to-end by the broker.
-- Uses a Postgres-backed control plane, a fake ES256 IdP, and real token exchange.
+- Uses an in-memory control-plane store, a fake ES256 IdP, and real token exchange.
 - Demonstrates that a `t1` token cannot access `t2` resources.
 
 ```bash

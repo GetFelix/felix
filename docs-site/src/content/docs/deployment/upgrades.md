@@ -79,16 +79,6 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
-**Catalog feeds on Postgres during a control-plane roll.** A control plane
-hands out each tenant, namespace, stream and cache change's `seq` in commit
-order only when every instance writing to the database takes the feed's lock.
-While older and newer control-plane instances share one database, a write
-through an older instance can still commit out of order, and a broker can skip
-that change until it restarts. The guarantee holds once
-every control-plane instance runs a release that has it, so finish the roll
-before relying on it, and keep catalog writes to a minimum while it is under
-way.
-
 **Storage identities during a roll.** A broker now registers the identity of
 its data directory, and its replica reports name the identity each follower
 was counted under. Placement never promotes a follower whose two identities
@@ -96,8 +86,7 @@ differ, and keeps a dead leader's last report believed past the usual window
 for one whose identities match. The control plane also stamps each report
 with the leader that made it and the incarnation of every node it names, and
 counts a follower without an identity only from a fresh report taken since it
-last registered. A Postgres control plane runs migrations `0030` and `0031` on
-start. Until every instance runs this release, a registration or report
+last registered. Until every instance runs this release, a registration or report
 written through an older instance carries neither identity nor stamp: that
 follower is judged by the report's age alone, as on the previous release,
 until a current instance takes the broker's next registration or the leader's
@@ -324,14 +313,12 @@ by the same round before it is acknowledged.
 - **Change a stream's consistency with every control-plane member
   upgraded.** A pass that read a stream as `Quorum` must not replace its
   leader on its followers' word after the stream became `Leader`, so the
-  change fences placement. On Postgres migration 0036 does that for every
-  instance. Under Raft it takes every member at metadata level 19; until
+  change fences placement. It takes every member at metadata level 19; until
   then a change of consistency fences nothing, as before.
 - **A second failover in a row needs every control-plane member upgraded.**
   A leader promoted by a failover reports the identity that failover named
   each follower by until it reaches the follower, so the next failover can
-  count that follower's fence answer. On Postgres migration 0037 adds the
-  column. Under Raft the report keeps it only once every member is at
+  count that follower's fence answer. The report keeps it only once every member is at
   metadata level 20; until then such a follower's answer does not count, as
   before, and a shard that needs it waits.
 - **Finalize with every control-plane member upgraded.** The order is checked
@@ -458,13 +445,6 @@ is deleted again after the finalize.
   every member. A cluster that ran an unreleased build between versions 10
   and 13 may need members rebuilt from a snapshot; see
   `docs/metadata-raft-design.md`.
-  With Postgres, the first upgraded instance runs migration 0028 for the whole
-  database. An instance from before this release that is still running after
-  the finalize cannot create streams (the database refuses a stream without an
-  incarnation), its deletes still record tombstones, and the database stamps
-  its shard assignments with the incarnation. Its catalog answers leave
-  incarnations out, which brokers refuse rather than misread, so upgrade every
-  instance before finalizing.
 - **Under Raft, deletes keep shard state until every member is at metadata
   version 10.** Before that, deleting a namespace or tenant keeps its streams'
   and caches' shard assignments and replica reports, and deleting a stream or
@@ -504,10 +484,7 @@ was down for the delete.
   every entry alike. Until every member is at version 14, caches are created
   at incarnation 0 and no cache delete records a tombstone; a cache create
   through an upgraded member is refused with 409 meanwhile. Finalize through
-  an upgraded member anyway. With Postgres, the first upgraded instance runs migration 0032. An older
-  instance still running after the finalize cannot create caches, its deletes
-  still record tombstones, and the database stamps its cache shard
-  assignments with the incarnation.
+  an upgraded member anyway.
 - **Every broker must report it.** A broker that predates it would open a new
   cache in the directories a deleted cache of that name used.
 - **Nothing moves on disk.** Existing caches keep incarnation 0, their

@@ -191,8 +191,7 @@ fn one_pass_judges_every_shard_at_the_same_instant() {
 ///
 /// Freshness is a subtraction: the stamp a report was recorded with, against
 /// the instant the placement pass reads. `ReplicaPositions::load` takes both
-/// from the store, which is what makes the subtraction single-clock under
-/// Postgres, where the instance that recorded the report and the one planning
+/// from the store, which is what makes the subtraction single-clock where the instance that recorded the report and the one planning
 /// may be different hosts. This is what a skew would cost, in the direction
 /// that matters: a report stamped by a clock behind the reader's reads as older
 /// than it is, so a replica that is level with its leader is called stale and

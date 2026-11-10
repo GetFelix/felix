@@ -54,8 +54,7 @@ where
         build_state(config.clone(), readiness.clone(), &api_shutdown).await?;
     let _backend_name = state.store.backend_name();
     // Under Raft, singleton background work runs only on the (freshly
-    // confirmed) leader; the other backends keep every instance sweeping,
-    // which their stores make safe.
+    // confirmed) leader; the memory backend has one instance, so it always runs.
     let leadership = match &raft_handle {
         Some(handle) => LeadershipGate::Leader(handle.clone()),
         None => LeadershipGate::Always,

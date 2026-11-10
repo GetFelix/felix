@@ -6,8 +6,8 @@
 //!
 //! There are two entry points, both reached from the `felix-controlplane`
 //! binary: [`server::run`] serves the API and runs the background loops, and
-//! [`migrate::run`] moves metadata between backends. The operator's commands
-//! over the API are in `felixctl`.
+//! [`migrate::run`] loads an exported snapshot into a Raft group. The
+//! operator's commands over the API are in `felixctl`.
 //!
 //! # Vocabulary
 //!
@@ -24,9 +24,9 @@
 //!
 //! # Keeping
 //!
-//! [`store::ControlPlaneStore`] has three implementations: in memory, over
-//! Postgres, and over an embedded Raft group ([`store::raft`], built on the
-//! consensus seam in [`raft`]). All three are held to one shared contract
+//! [`store::ControlPlaneStore`] has two implementations: in memory (for tests
+//! and development), and over an embedded Raft group ([`store::raft`], built on
+//! the consensus seam in [`raft`]). Both are held to one shared contract
 //! test, because a rule that holds only in memory is a rule the deployed
 //! system does not have.
 //!
@@ -41,7 +41,7 @@
 //! # Running
 //!
 //! [`config`] reads the environment and YAML, [`server`] wires everything
-//! together and drains it in order, [`migrate`] is the backend migration tool,
+//! together and drains it in order, [`migrate`] is the snapshot import tool,
 //! and [`clock`] is the wall clock the stored timestamps use.
 //!
 //! Each module keeps its unit tests at `<module>/tests.rs`.

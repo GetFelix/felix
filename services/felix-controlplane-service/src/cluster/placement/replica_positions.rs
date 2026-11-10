@@ -13,7 +13,7 @@
 //! # Why the reports live in the store
 //!
 //! The instance a report reaches and the instance that later promotes a
-//! replica need not be the same process. Under Postgres every instance
+//! replica need not be the same process. Where every instance
 //! serves, so a report held in one instance's memory was a position no other
 //! promoter could use — an acknowledgement resting on it could not be made
 //! good at failover. Reports go through [`ControlPlaneStore`] like every

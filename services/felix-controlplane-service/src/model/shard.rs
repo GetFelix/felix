@@ -163,8 +163,7 @@ impl ShardKey {
         })
     }
 
-    /// The order assignments are paged in: Postgres's primary-key order, so a
-    /// page there is an index range, with kind compared by its stored name.
+    /// The order assignments are paged in: key order, with kind compared by its stored name.
     /// Every backend must page alike.
     pub(crate) fn page_order(&self) -> (String, String, &'static str, String, u32) {
         (
@@ -947,8 +946,8 @@ pub enum ShardAssignmentChangeOp {
 /// Promotion is gated on this. It lives in the store rather than in one
 /// control-plane instance's memory because the instance a report reaches and
 /// the instance that later promotes a replica need not be the same process --
-/// under Postgres every instance serves, and a report only one of them had
-/// seen was a position no promoter could use.
+/// every instance serves, and a report only one of them had seen was a
+/// position no promoter could use.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReplicaReport {
     pub key: ShardKey,
@@ -1163,7 +1162,7 @@ pub(crate) fn first_generation(incarnation: u64, change_seq: u64, from_seq: bool
 pub(crate) use felix_common::membership::ELECTION_GENERATION_WINDOW;
 
 /// The generation after `current`, or why there is none. Generations are
-/// bound as signed integers by Postgres, so the top is `i64::MAX`; a store
+/// bound as signed integers, so the top is `i64::MAX`; a store
 /// at it refuses to issue instead of repeating one.
 pub(crate) fn next_generation(current: u64) -> Result<u64, String> {
     current

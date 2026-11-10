@@ -195,8 +195,8 @@ pub struct RaftStatus {
 /// Whether a background task that must run on exactly one instance should
 /// run here, now.
 ///
-/// `Always` is the non-Raft deployments' answer — the Postgres and in-memory
-/// stores make duplicate sweeps safe, so every instance runs them. Under Raft the gate is a
+/// `Always` is the non-Raft answer: the in-memory store makes duplicate
+/// sweeps safe, so every instance runs them. Under Raft the gate is a
 /// **linearizable leadership check** (openraft's read-index), which answers
 /// two questions at once: this instance is the leader, *and* its applied
 /// state is current enough to decide from — a deposed leader that has not

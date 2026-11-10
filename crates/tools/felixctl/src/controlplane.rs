@@ -21,15 +21,6 @@ use crate::placement;
 /// Page size asked for when listing; the CLI follows `next_cursor` either way.
 const PAGE_LIMIT: &str = "1000";
 
-/// Waits before each retry of a 503 `busy`: the write gave up waiting for its
-/// catalog feed and nothing was written. Short and bounded, so a control plane
-/// that stays busy fails the command in a few seconds.
-const BUSY_RETRIES: [Duration; 3] = [
-    Duration::from_millis(250),
-    Duration::from_millis(500),
-    Duration::from_secs(1),
-];
-
 /// A column of a listing: its header and where its value is.
 pub(crate) type Column = (&'static str, &'static str);
 
@@ -144,8 +135,7 @@ impl Api {
     }
 
     /// Send one request. A non-2xx answer is an error: 404 is
-    /// [`Exit::NotFound`], anything else [`Exit::Server`]. A 503 `busy`
-    /// is retried a few times first.
+    /// [`Exit::NotFound`], anything else [`Exit::Server`].
     ///
     /// A 503 `unavailable` is never retried: on Raft the write may still have
     /// committed, so a retried create would answer 409 and a delete 404.
@@ -157,33 +147,22 @@ impl Api {
         body: Option<&Value>,
     ) -> anyhow::Result<Answer> {
         let url = format!("{}{path}", self.base);
-        let mut retries = BUSY_RETRIES.iter();
-        let (status, text) = loop {
-            let mut request = self.http.request(method.clone(), &url).query(query);
-            if let Some(token) = &self.token {
-                request = request.bearer_auth(token);
-            }
-            if let Some(body) = body {
-                request = request.json(body);
-            }
-            let response = request.send().await.mark(
-                Exit::Connection,
-                format!("reach the control plane at {}", self.base),
-            )?;
-            let status = response.status();
-            let text = response.text().await.mark(
-                Exit::Connection,
-                format!("read the answer to {method} {path}"),
-            )?;
-            if status == reqwest::StatusCode::SERVICE_UNAVAILABLE
-                && error_code(&text).as_deref() == Some("busy")
-                && let Some(wait) = retries.next()
-            {
-                tokio::time::sleep(*wait).await;
-                continue;
-            }
-            break (status, text);
-        };
+        let mut request = self.http.request(method.clone(), &url).query(query);
+        if let Some(token) = &self.token {
+            request = request.bearer_auth(token);
+        }
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.mark(
+            Exit::Connection,
+            format!("reach the control plane at {}", self.base),
+        )?;
+        let status = response.status();
+        let text = response.text().await.mark(
+            Exit::Connection,
+            format!("read the answer to {method} {path}"),
+        )?;
         if !status.is_success() {
             let exit = if status == reqwest::StatusCode::NOT_FOUND {
                 Exit::NotFound
@@ -493,15 +472,6 @@ pub(crate) fn segment(value: &str) -> String {
 }
 
 /// The `message` of an error answer, or the body itself.
-/// The `code` of an error body, if it has one.
-fn error_code(body: &str) -> Option<String> {
-    serde_json::from_str::<Value>(body)
-        .ok()?
-        .get("code")?
-        .as_str()
-        .map(str::to_string)
-}
-
 fn error_message(body: &str) -> String {
     serde_json::from_str::<Value>(body)
         .ok()

@@ -682,11 +682,11 @@ through what to look for, symptom by symptom.
 ```bash
 felixctl data inspect segments /var/lib/felix/data
 felixctl data restore-point --point nightly.backup-point.json --node broker-1
-felixctl controlplane migrate export-postgres state.json
+felixctl controlplane migrate import state.json http://cp-0:8444
 ```
 
-Some tools have to read a broker's data directory or the control plane's
-database, which only the server programs know how to do. `felixctl` runs them
+Some tools have to read a broker's data directory or reach a Raft group's
+peer listener, which only the server programs know how to do. `felixctl` runs them
 for you so there is one command line to learn: `data inspect` and `data
 restore-point` run `felix-broker inspect` and `felix-broker restore-point`, and
 `controlplane migrate` runs `felix-controlplane migrate`. Everything after the

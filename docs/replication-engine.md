@@ -1000,7 +1000,7 @@ The control-plane storage track runs alongside, in its own pull requests,
 none of which touch the engine:
 
 1. Remove the Postgres metadata backend and its tests, configuration and
-   docs. It does not depend on anything else here, so it can go first.
+   docs (done). It did not depend on anything else here, so it went first.
 2. Format version 9 in `felix-storage`, read and written, gated for brokers.
 3. The `raft_log` adapter in `felix-storage`, passing openraft's storage
    suite, with no users yet.

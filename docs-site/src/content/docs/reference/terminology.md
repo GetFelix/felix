@@ -147,8 +147,8 @@ through the control plane.
 ### Metadata Raft
 
 A Raft group built into the control-plane instances, so the control plane can
-store its metadata without an external database. Memory and Postgres are the
-other storage backends. Records in streams are not replicated through Raft. See
+store its metadata without an external database. Memory is the
+other storage backend. Records in streams are not replicated through Raft. See
 [Metadata Raft](/architecture/metadata-raft/).
 
 ### Fleet

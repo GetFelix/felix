@@ -80,8 +80,8 @@ work with its own status row.
 ### Phase 0: correctness
 
 - **Conditional assignment writes** (merged, #660). A placement write lands only
-  if the assignment is still at the generation it was planned from, in memory,
-  Postgres and Raft. `FelixShardStalePlanner` and `FelixShardStalePromotion`
+  if the assignment is still at the generation it was planned from, in memory
+  and Raft. `FelixShardStalePlanner` and `FelixShardStalePromotion`
   show the race without the check.
 - **Readers end when their shard moves** (merged, #664). A broker ends a shard's subscriptions
   and cache watches whenever it stops serving it, after what was already queued
@@ -246,7 +246,7 @@ conformance runner checks the frame on the wire, offered and not.
 - `max_shards` is compared against roles, not leaders, when choosing a
   destination.
 - **The limits hold across instances.** Each write was conditional on its
-  own shard's generation only, so two Postgres-backed instances, or a pass
+  own shard's generation only, so two instances, or a pass
   and an operator's request on another instance, could each read one free
   slot and start moves on two different shards. Now one instance runs the
   timed passes, the holder of a lease in the store (three reconcile
@@ -259,8 +259,8 @@ conformance runner checks the frame on the wire, offered and not.
   fast and is safe for the same reason. `FelixPlacementPacingTwoPlanners`
   passes with two planners and an operator; `FelixPlacementPacingUnfenced`
   breaks the limit without the token.
-  `two_instances_cannot_both_take_the_last_move_slot` runs against memory,
-  Postgres (two pools over one database) and Raft;
+  `two_instances_cannot_both_take_the_last_move_slot` runs against memory
+  and Raft;
   `an_ex_holders_pass_is_fenced_after_a_takeover` and
   `an_expired_lease_is_taken_over_and_fences_the_old_holder` cover an
   instance that paused past its lease.

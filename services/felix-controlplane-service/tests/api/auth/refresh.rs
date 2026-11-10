@@ -5,7 +5,7 @@
 //! costs, and whether a refresh answers from RBAC as it stands rather than as
 //! it stood when the token was minted.
 //! The store's own guarantees have their own suite
-//! (`src/store/contract/refresh_tokens.rs`, run against memory and Postgres alike).
+//! (`src/store/contract/refresh_tokens.rs`, run against memory and Raft alike).
 use std::sync::Arc;
 use std::time::Duration;
 

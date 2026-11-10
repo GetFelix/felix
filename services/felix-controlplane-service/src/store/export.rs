@@ -1,7 +1,7 @@
 //! The whole metadata state as one serializable value.
 //!
-//! This is the Raft state machine's snapshot format and what `migrate` moves
-//! between backends, so its serialized shape is a compatibility surface.
+//! This is the Raft state machine's snapshot format and what `migrate import` loads
+//! into a group, so its serialized shape is a compatibility surface.
 use crate::auth::felix_token::TenantSigningKeys;
 use crate::auth::idp_registry::IdpIssuerConfig;
 use crate::auth::rbac::policy_store::{GroupingRule, PolicyRule};
@@ -128,21 +128,19 @@ pub struct ExportedLog<T> {
     pub(super) items: Vec<T>,
 }
 
-/// Export any store — Postgres included — through the traits it already
+/// Export any store through the traits it already
 /// implements, into the Raft state machine's snapshot format.
 ///
-/// This is the migration's whole read side, and it deliberately reuses the
-/// snapshot endpoints (`*_snapshot()` returns records **and** the feed
+/// It deliberately reuses the snapshot endpoints (`*_snapshot()` returns records **and** the feed
 /// position as one value) so the exported change feeds carry the source's
 /// sequence high-water marks with **empty retained windows**. A broker whose
 /// checkpoint equals the head continues without noticing; one behind the
 /// head gets the ordinary "your checkpoint predates the window, resnapshot"
-/// signal — the at-most-one-resnapshot cost the migration accepts instead
-/// of dragging Postgres's change rows along.
+/// signal — the at-most-one-resnapshot cost an import accepts instead
+/// of carrying the change rows along.
 ///
 /// Consistency is the caller's job: run this only against a store whose
-/// writes are frozen (the cutover ceremony's first step), because the reads
-/// span many calls.
+/// writes are frozen, because the reads span many calls.
 pub async fn export_state_from(
     store: &(dyn crate::store::ControlPlaneAuthStore + Send + Sync),
 ) -> StoreResult<ExportedState> {

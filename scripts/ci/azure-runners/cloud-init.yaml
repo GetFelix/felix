@@ -23,16 +23,15 @@ packages:
   - python3-yaml
   - openjdk-21-jdk-headless
   - docker.io
-  - postgresql-client
   - gh
   - ca-certificates
   - gnupg
 
 users:
   - default
-  # Unprivileged: no sudo. It is in the docker group because the test and
-  # coverage jobs use a Postgres service container, which is root-equivalent
-  # on this host; that is why only trusted events are routed here.
+  # Unprivileged: no sudo. It is in the docker group because jobs run
+  # containers (the compose smoke test, TLC), which is root-equivalent on this
+  # host; that is why only trusted events are routed here.
   - name: runner
     shell: /bin/bash
     groups: [docker]

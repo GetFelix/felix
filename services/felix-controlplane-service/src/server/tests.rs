@@ -3,7 +3,7 @@ use serial_test::serial;
 use super::*;
 use crate::config::{
     BootstrapConfig, DEFAULT_READINESS_CACHE_TTL_MS, DEFAULT_READINESS_TIMEOUT_MS,
-    NodeLivenessConfig, PostgresConfig, StorageBackend,
+    NodeLivenessConfig, StorageBackend,
 };
 
 /// Memory-backed, bootstrap off, every port ephemeral.
@@ -16,7 +16,6 @@ fn config() -> ControlPlaneConfig {
         metrics_bind: "127.0.0.1:0".parse().expect("metrics"),
         region_id: "local".to_string(),
         storage: StorageBackend::Memory,
-        postgres: None,
         raft: None,
         changes_limit: 10,
         change_retention_max_rows: Some(20),
@@ -51,39 +50,6 @@ async fn build_state_memory_backend() {
         .expect("state");
     assert_eq!(state.region.region_id, "local");
     assert!(!state.features.durable_storage);
-}
-
-#[tokio::test]
-async fn build_state_postgres_requires_config() {
-    let config = ControlPlaneConfig {
-        storage: StorageBackend::Postgres,
-        ..config()
-    };
-    let err = build_state(config, Readiness::ready(), &Default::default())
-        .await
-        .err()
-        .expect("missing postgres");
-    assert!(err.to_string().contains("postgres configuration missing"));
-}
-
-#[tokio::test]
-async fn build_state_postgres_attempts_connection_when_config_present() {
-    let config = with_bootstrap(ControlPlaneConfig {
-        storage: StorageBackend::Postgres,
-        postgres: Some(PostgresConfig {
-            url: "postgres://postgres:postgres@127.0.0.1:1/postgres".to_string(),
-            max_connections: 1,
-            connect_timeout_ms: 500,
-            acquire_timeout_ms: 500,
-        }),
-        ..config()
-    });
-    let err = build_state(config, Readiness::ready(), &Default::default())
-        .await
-        .err()
-        .expect("connect should fail");
-    let text = err.to_string();
-    assert!(text.contains("pool") || text.contains("connect") || text.contains("Connection"));
 }
 
 #[tokio::test]

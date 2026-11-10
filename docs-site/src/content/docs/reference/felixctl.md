@@ -1897,7 +1897,7 @@ felixctl data restore-point --point nightly.backup-point.json --node broker-1
 
 ## `felixctl controlplane`
 
-Run the maintenance tools in the felix-controlplane binary. They read or write the control plane's own database, so they run on a host that can reach it, with felix-controlplane installed there: felixctl finds it with --controlplane-bin (before `controlplane`), then $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` through unchanged, --help included, and ends with its exit status. `migrate export-postgres` writes the metadata to a file; `migrate import` loads a file into a Raft group.
+Run the maintenance tools in the felix-controlplane binary. They talk to a Raft group's peer listener, so they run on a host that can reach it, with felix-controlplane installed there: felixctl finds it with --controlplane-bin (before `controlplane`), then $FELIX_CONTROLPLANE_BIN, then PATH, passes every argument after `migrate` through unchanged, --help included, and ends with its exit status. `migrate import` loads an exported metadata file into a Raft group.
 
 ```text
 felixctl controlplane [OPTIONS] <COMMAND>
@@ -1906,7 +1906,6 @@ felixctl controlplane [OPTIONS] <COMMAND>
 Examples:
 
 ```bash
-felixctl controlplane migrate export-postgres state.json
 felixctl controlplane migrate import state.json http://cp-0:8444
 ```
 

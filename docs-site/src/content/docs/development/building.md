@@ -11,9 +11,8 @@ tasks, so a green local run of the ones below predicts a green CI run.
 - **Rust 1.99.1**, pinned in `rust-toolchain.toml` with `rustfmt` and `clippy`.
   The workspace is edition 2024 with `rust-version = "1.97"`.
 - **[Task](https://taskfile.dev)** for the shortcuts.
-- **Docker or Podman**, optional. `task test` uses one to start Postgres for
-  the control plane's Postgres tests and skips them without either.
-  `CONTAINER_ENGINE` picks one; see [Docker or Podman](/getting-started/containers/).
+- **Docker or Podman**, optional. The compose smoke test, `task tla:check` and
+  the Kafka listener tests use one. `CONTAINER_ENGINE` picks one; see [Docker or Podman](/getting-started/containers/).
 - For the extras only: nightly Rust and `cargo-fuzz` for
   [fuzzing](/development/fuzzing/), Java, Docker or Podman for `task tla:check`,
   Node for the docs site, and `helm` with PyYAML for `task chart:check`.
@@ -48,20 +47,12 @@ cargo test -p felix-broker --test durable_streams <name>   # one integration tes
 cargo test -p felix-broker-service --test quic_subscribe   # one QUIC integration test
 ```
 
-`task test` does more than `cargo test --workspace`:
+`task test` does one thing more than `cargo test --workspace`:
 
 1. It builds `felix-loadgen` first. A test in `felix-cluster` shells out to that
    binary, and `cargo test` would not build it.
-2. Outside CI it runs `task pg:up`, a `postgres:16-alpine` container named
-   `felix-pg-tests` on port 55432.
-3. With `FELIX_TEST_DATABASE_URL` set, or Docker or Podman available, it runs the
-   workspace tests with `--features felix-controlplane-service/pg-tests`, so the
-   Postgres store tests run too. Otherwise it runs plain `cargo test --workspace`.
-4. Outside CI it runs `task pg:down`.
-
-To point the Postgres tests at a database of your own, set
-`FELIX_TEST_DATABASE_URL`. CI does this with a Postgres service container. If an
-interrupted run leaves test containers behind, `task pg:sweep` removes them.
+2. It runs `cargo test --workspace`. No database is needed: the control
+   plane's tests run against its in-memory and Raft stores.
 
 Cluster and distributed tests are covered in
 [How Felix Is Tested](/architecture/testing/).
@@ -113,7 +104,7 @@ task coverage
 ```
 
 This needs `cargo-llvm-cov`. It builds `felix-loadgen` into
-`target/llvm-cov-target`, starts Postgres the same way `task test` does, and
+`target/llvm-cov-target` and
 writes `lcov.info` for the whole workspace with `--all-features`. It ignores
 `demos/` and `src/bin/`. `task coverage:demos` covers only the demos.
 `.github/workflows/coverage.yml` runs `task coverage` on pushes to main and on
