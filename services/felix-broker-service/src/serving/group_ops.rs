@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, GroupKey};
+use felix_replication::engine::Engine;
 use felix_replication::quorum::Unreadable;
 use felix_wire::{GroupRecord, StartPosition};
 use tokio::sync::Notify;
@@ -367,21 +368,21 @@ async fn committed_bound(
     owned: &Owned,
 ) -> Result<Option<u64>, ClientError> {
     let key = &owned.key;
-    felix_replication::quorum::read_bound(
-        broker
-            .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
-            .await,
-        key,
-        publish_ctx.marks.as_deref(),
-        publish_ctx.ingress.as_deref(),
-    )
-    .map_err(|unreadable| match unreadable {
-        Unreadable::NotServed => crate::shards::lifecycle::fence::Fenced::NotServing.into(),
-        Unreadable::Settling => ClientError::unavailable(
-            &Reason::NotReady,
-            "this broker has no committed mark for the shard yet",
-        ),
-    })
+    publish_ctx
+        .engine
+        .read_bound(
+            broker
+                .stream_consistency(&key.tenant_id, &key.namespace, &key.stream)
+                .await,
+            key,
+        )
+        .map_err(|unreadable| match unreadable {
+            Unreadable::NotServed => crate::shards::lifecycle::fence::Fenced::NotServing.into(),
+            Unreadable::Settling => ClientError::unavailable(
+                &Reason::NotReady,
+                "this broker has no committed mark for the shard yet",
+            ),
+        })
 }
 
 /// What a consumer does with a record it was handed.
@@ -569,8 +570,8 @@ impl Owned {
         ingress: &crate::shards::routing::IngressRouter,
     ) -> bool {
         publish_ctx
-            .marks
-            .as_deref()
+            .engine
+            .marks()
             .is_some_and(|marks| marks.reads_by_round().is_some())
             && ingress.replicated(&self.key)
             && !ingress.fence().has_passed(&self.key, self.generation)
@@ -584,8 +585,8 @@ impl Owned {
                 .fence()
                 .confirms_by_round(&self.key, self.generation)
         }) && publish_ctx
-            .marks
-            .as_deref()
+            .engine
+            .marks()
             .is_some_and(|marks| marks.reads_by_round().is_some())
     }
 
@@ -599,8 +600,8 @@ impl Owned {
             return Ok(());
         }
         let Some(check) = publish_ctx
-            .marks
-            .as_deref()
+            .engine
+            .marks()
             .and_then(|marks| marks.reads_by_round())
         else {
             return match publish_ctx.ingress.as_deref() {

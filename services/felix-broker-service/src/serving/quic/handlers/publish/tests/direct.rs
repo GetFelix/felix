@@ -9,6 +9,7 @@ use super::*;
 use crate::serving::quic::handlers::publish::direct::{
     DirectPublishError, LocalTarget, Resolution, publish_direct, resolve_publish,
 };
+use crate::shards::routing::StreamEngine;
 
 async fn durable_broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> Broker {
     let config = LogConfig {
@@ -71,7 +72,7 @@ async fn a_leader_with_an_open_fence_publishes() {
         let offset = publish_direct(
             &broker,
             Some(&ingress),
-            None,
+            &StreamEngine::default(),
             target,
             &payloads,
             None,
@@ -129,7 +130,7 @@ async fn a_closed_fence_is_not_written() {
     let err = publish_direct(
         &broker,
         Some(&closed),
-        None,
+        &StreamEngine::default(),
         target,
         &[Bytes::from_static(b"a")],
         None,
@@ -147,14 +148,17 @@ async fn a_closed_fence_is_not_written() {
 async fn a_quorum_timeout_is_outcome_unknown() {
     let dir = tempfile::tempdir().expect("dir");
     let broker = durable_broker(dir.path(), ConsistencyLevel::Quorum).await;
-    let ingress = ingress_with_follower();
-    let marks = QuorumMarks::new();
+    let ingress = Arc::new(ingress_with_follower());
+    let engine = StreamEngine::new(
+        Some(Arc::new(QuorumMarks::new())),
+        Some(Arc::clone(&ingress)),
+    );
     let target = local(&broker, &ingress).await;
 
     let err = publish_direct(
         &broker,
         Some(&ingress),
-        Some(&marks),
+        &engine,
         target,
         &[Bytes::from_static(b"a")],
         None,

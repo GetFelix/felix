@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{Broker, ClaimedPublish, ConsistencyLevel, PublishOutcome, StreamHandle};
-use felix_replication::quorum::QuorumMarks;
+use felix_replication::engine::Engine;
 
 use super::route::{Authority, PublishRoute, publish_shard_at, resolve_route, shard_key_at};
 use super::{PublishResult, StreamHandleCache};
@@ -17,7 +17,7 @@ use crate::cluster::lease::LeaseState;
 use crate::serving::forward::ForwardTarget;
 use crate::shards::ShardKey;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
-use crate::shards::routing::IngressRouter;
+use crate::shards::routing::{IngressRouter, StreamEngine};
 
 /// A stream this broker serves, at the generation it was admitted under.
 pub struct LocalTarget {
@@ -119,7 +119,7 @@ pub async fn resolve_publish(
 pub async fn publish_direct(
     broker: &Broker,
     ingress: Option<&IngressRouter>,
-    marks: Option<&QuorumMarks>,
+    engine: &StreamEngine,
     target: LocalTarget,
     payloads: &[Bytes],
     publisher: Option<&Bytes>,
@@ -146,8 +146,7 @@ pub async fn publish_direct(
         claimed,
         fences,
         generation,
-        marks,
-        ingress,
+        engine,
         quorum_timeout,
         |result| answer = Some(result),
     )
@@ -176,8 +175,7 @@ pub(crate) async fn finish_claimed(
     claimed: ClaimedPublish,
     fences: impl Send,
     generation: u64,
-    marks: Option<&QuorumMarks>,
-    ingress: Option<&IngressRouter>,
+    engine: &StreamEngine,
     quorum_timeout: Duration,
     answer: impl FnOnce(PublishResult),
 ) {
@@ -199,17 +197,10 @@ pub(crate) async fn finish_claimed(
     let result = match completed {
         // One wait for the last offset: the mark is monotonic, so it covers
         // every record in the claim.
-        Ok(outcome) => felix_replication::quorum::await_quorum(
-            handle,
-            shard,
-            &outcome,
-            generation,
-            marks,
-            ingress,
-            quorum_timeout,
-        )
-        .await
-        .map(|()| first_offset(&outcome)),
+        Ok(outcome) => engine
+            .await_commit(handle, shard, &outcome, generation, quorum_timeout)
+            .await
+            .map(|()| first_offset(&outcome)),
         Err(err) => Err(err.into()),
     };
     answer(result);

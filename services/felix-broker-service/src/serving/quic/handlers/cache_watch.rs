@@ -322,7 +322,7 @@ pub(crate) async fn handle_cache_watch_message(
     let gate = CommitGate {
         broker: Arc::clone(&broker),
         key: shard_key,
-        marks: publish_ctx.marks.clone(),
+        engine: Arc::clone(&publish_ctx.engine),
         ingress: publish_ctx.ingress.clone(),
         timeout: publish_ctx.quorum_timeout,
     };
@@ -499,7 +499,7 @@ pub(crate) async fn handle_cache_watch_message(
 struct CommitGate {
     broker: Arc<Broker>,
     key: crate::shards::ShardKey,
-    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
     ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
     timeout: std::time::Duration,
 }
@@ -515,7 +515,7 @@ impl CommitGate {
         felix_replication::quorum::await_readable(
             consistency,
             &self.key,
-            self.marks.as_deref(),
+            self.engine.marks(),
             self.ingress.as_deref(),
             end,
             self.timeout,

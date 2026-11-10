@@ -437,3 +437,37 @@ async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
         })
     );
 }
+
+/// The write waits the configured time while the mark is below the batch and
+/// is released at once when the mark passes it. Built without marks it would
+/// answer both at once.
+#[tokio::test]
+async fn a_quorum_batch_waits_its_timeout_then_is_released_by_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_with(true, ConsistencyLevel::Quorum, dir.path()).await;
+    broker.record_headers_when(|| true);
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&shard(), GENERATION, 0);
+    let timeout = Duration::from_millis(300);
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Some(ingress(LOCAL)),
+        Some(Arc::clone(&marks)),
+        timeout,
+    );
+
+    let started = std::time::Instant::now();
+    let result = writes.write(batch(0, 41, &["plant/a"])).await;
+    let waited = started.elapsed();
+    assert_eq!(result, Err(WriteError::OutcomeUnknown("quorum_timeout")));
+    assert!(waited >= timeout, "ended early after {waited:?}");
+    assert!(waited < timeout * 6, "ended late after {waited:?}");
+
+    marks.publish(&shard(), GENERATION, 1_000);
+    let started = std::time::Instant::now();
+    writes
+        .write(batch(0, 41, &["plant/a"]))
+        .await
+        .expect("released by the mark");
+    assert!(started.elapsed() < timeout, "waited though the mark passed");
+}

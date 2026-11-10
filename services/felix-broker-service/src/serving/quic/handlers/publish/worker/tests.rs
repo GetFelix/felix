@@ -882,3 +882,123 @@ async fn a_headered_forward_to_an_owner_without_the_capability_is_not_enabled() 
         .expect_err("refused");
     assert!(plain.downcast_ref::<ClientError>().is_none(), "{plain}");
 }
+
+/// The wait on a `Quorum` stream, from each place the worker makes it: held
+/// to the mark at the generation the publish was admitted at, for the
+/// configured time.
+mod quorum_wait {
+    use felix_replication::quorum::QuorumMarks;
+
+    use super::*;
+    use crate::test_support::leader::{GENERATION, Leader, QUORUM, stream_key};
+
+    #[derive(Clone, Copy)]
+    enum Path {
+        Claimed,
+        Idempotent,
+    }
+
+    async fn send(
+        leader: &Leader,
+        path: Path,
+        marks: &Arc<QuorumMarks>,
+    ) -> (Result<Option<u64>>, Duration) {
+        let config = BrokerConfig {
+            publish_quorum_timeout_ms: 300,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(
+            Arc::clone(&leader.broker),
+            &config,
+            ClusterContext {
+                ingress: Some(Arc::clone(&leader.ingress)),
+                marks: Some(Arc::clone(marks)),
+                ..ClusterContext::default()
+            },
+        );
+        let handle = leader
+            .broker
+            .resolve_stream_handle("t1", "ns", QUORUM, 0)
+            .await
+            .expect("handle");
+        let key = stream_key(QUORUM);
+        let (response_tx, response_rx) = oneshot::channel();
+        let target = match path {
+            Path::Claimed => PublishTarget::Resolved {
+                handle,
+                shard: Some(key),
+                generation: GENERATION,
+                fenced: None,
+            },
+            Path::Idempotent => PublishTarget::Idempotent {
+                handle,
+                shard: Some(key),
+                generation: GENERATION,
+                fenced: None,
+                producer_id: 7,
+                sequence: 0,
+                reuse: felix_broker::SequenceReuse::Refuse,
+            },
+        };
+        let started = std::time::Instant::now();
+        publish_ctx
+            .scheduler
+            .send(PublishJob {
+                headers: None,
+                target,
+                payloads: vec![Bytes::from_static(b"a")],
+                response: Some(response_tx.into()),
+                acked_on_enqueue: false,
+                admission_permit: None,
+                fenced: None,
+                publisher: None,
+            })
+            .await;
+        let answer = response_rx.await.expect("worker response");
+        (answer, started.elapsed())
+    }
+
+    async fn acknowledged_at_its_own_generation(path: Path) {
+        let leader = Leader::start().await;
+        let marks = Arc::new(QuorumMarks::new());
+        marks.publish(&stream_key(QUORUM), GENERATION, 1_000);
+        let (answer, _) = send(&leader, path, &marks).await;
+        assert_eq!(answer.expect("acknowledged"), Some(0));
+    }
+
+    async fn held_by_another_generation_for_the_timeout(path: Path) {
+        let leader = Leader::start().await;
+        let marks = Arc::new(QuorumMarks::new());
+        marks.publish(&stream_key(QUORUM), GENERATION + 1, 1_000);
+        let (answer, waited) = send(&leader, path, &marks).await;
+        answer.expect_err("a mark at another generation released it");
+        assert!(
+            waited >= Duration::from_millis(300),
+            "ended early after {waited:?}"
+        );
+        assert!(
+            waited < Duration::from_secs(3),
+            "ended late after {waited:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_claimed_publish_is_acknowledged_at_its_own_generation() {
+        acknowledged_at_its_own_generation(Path::Claimed).await;
+    }
+
+    #[tokio::test]
+    async fn an_idempotent_publish_is_acknowledged_at_its_own_generation() {
+        acknowledged_at_its_own_generation(Path::Idempotent).await;
+    }
+
+    #[tokio::test]
+    async fn a_claimed_publish_is_not_released_by_another_generation() {
+        held_by_another_generation_for_the_timeout(Path::Claimed).await;
+    }
+
+    #[tokio::test]
+    async fn an_idempotent_publish_is_not_released_by_another_generation() {
+        held_by_another_generation_for_the_timeout(Path::Idempotent).await;
+    }
+}

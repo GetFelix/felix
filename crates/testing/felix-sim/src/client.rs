@@ -328,7 +328,7 @@ impl SimClient {
                 publish_direct(
                     &handles.broker,
                     Some(&handles.ingress),
-                    Some(&handles.marks),
+                    &handles.engine,
                     target,
                     &payloads,
                     None,

@@ -137,9 +137,9 @@ pub(crate) struct PublishContext {
     /// is the per-connection bundle of what the cluster makes available, beside
     /// `ingress` and `peers`.
     pub(crate) client_endpoints: Option<Arc<crate::cluster::client_endpoints::ClientEndpoints>>,
-    /// How far a majority of each shard's replica set has got, for a write
-    /// that must not be acknowledged before it does. `None` off a cluster.
-    pub(crate) marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    /// What a write waits on before it is acknowledged and how far a read may
+    /// see. Replicates nothing off a cluster.
+    pub(crate) engine: Arc<crate::shards::routing::StreamEngine>,
     /// What replication last knew of each shard led here. Nothing on the
     /// publish path reads it; it rides here with the rest of the cluster view
     /// for `shard_inspect`.

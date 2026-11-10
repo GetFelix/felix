@@ -815,7 +815,7 @@ async fn handle_stream_drain_timeout_sleep_branch() -> Result<()> {
             peers: None,
             lease: None,
             lease_headroom: std::time::Duration::ZERO,
-            marks: None,
+            engine: Default::default(),
             quorum_timeout: Duration::from_secs(1),
             scheduler,
             wait_timeout: Duration::from_millis(50),

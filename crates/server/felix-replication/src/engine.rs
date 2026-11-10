@@ -51,6 +51,21 @@ impl<S: ?Sized> Hybrid<S> {
     pub fn new(marks: Option<Arc<QuorumMarks>>, serving: Option<Arc<S>>) -> Self {
         Self { marks, serving }
     }
+
+    /// The quorum marks, for the waits that are not behind [`Engine`] yet
+    /// (caches and counters).
+    pub fn marks(&self) -> Option<&QuorumMarks> {
+        self.marks.as_deref()
+    }
+}
+
+impl<S: ?Sized> Default for Hybrid<S> {
+    /// For tests only: an engine with no marks and no router, so a `Quorum`
+    /// wait has nothing to wait on and returns at once. Production code builds
+    /// it with [`Hybrid::new`].
+    fn default() -> Self {
+        Self::new(None, None)
+    }
 }
 
 impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {

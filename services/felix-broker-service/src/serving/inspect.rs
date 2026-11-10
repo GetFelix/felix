@@ -93,7 +93,7 @@ pub(crate) async fn inspect(
         valid: lease.is_valid_now(),
         remaining: lease.remaining(),
     });
-    if let (Some(marks), Some(route)) = (&publish_ctx.marks, &observed.route) {
+    if let (Some(marks), Some(route)) = (publish_ctx.engine.marks(), &observed.route) {
         observed.committed = marks.offset(key, route.generation);
     }
     // Only a log this broker has open: opening one would create it.

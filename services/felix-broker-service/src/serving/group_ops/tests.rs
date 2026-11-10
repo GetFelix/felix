@@ -1211,3 +1211,29 @@ async fn a_deposed_leader_refuses_group_reads_in_a_fleet_that_reads_by_round() {
         .expect_err("a deposed leader listed dead letters");
     assert_eq!(refused.code(), &felix_wire::ErrorCode::LeadershipLost);
 }
+
+/// A group read is bounded by the engine's mark at the served generation.
+/// Built without marks the bound would be `None` and a group could read past
+/// what a majority holds.
+#[tokio::test]
+async fn a_group_read_bound_comes_from_the_mark_at_the_served_generation() {
+    let leader = Leader::start().await;
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(&marks)),
+            ..ClusterContext::default()
+        },
+    );
+    let owned = Owned {
+        key: leader::stream_key(leader::QUORUM),
+        generation: leader::GENERATION,
+        by_round: std::sync::atomic::AtomicBool::new(false),
+    };
+    marks.publish(&owned.key, leader::GENERATION, 5);
+    let bound = committed_bound(&leader.broker, &publish_ctx, &owned).await;
+    assert_eq!(bound.expect("readable"), Some(5));
+}

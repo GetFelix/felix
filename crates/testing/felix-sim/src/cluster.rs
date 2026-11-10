@@ -207,6 +207,8 @@ pub struct NodeHandles {
     pub ingress: Arc<IngressRouter>,
     pub lease: Arc<LeaseState>,
     pub marks: Arc<QuorumMarks>,
+    /// The same marks read against this node's router.
+    pub engine: Arc<felix_broker_service::shards::routing::StreamEngine>,
     /// Cancelled when this incarnation crashes.
     pub crashed: CancellationToken,
     /// Whether the run cuts the power ([`SimConfig::power_loss`]).

@@ -75,7 +75,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         peers: None,
         lease: None,
         lease_headroom: Duration::ZERO,
-        marks: None,
+        engine: Default::default(),
         quorum_timeout: Duration::from_secs(1),
         scheduler,
         wait_timeout: Duration::from_millis(100),

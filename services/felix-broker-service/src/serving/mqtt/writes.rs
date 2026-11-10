@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_broker::{Broker, BrokerError, PublishOutcome, SequenceReuse, StreamHandle};
 use felix_mqtt::{Refusal, WriteBatch, WriteError, Writes};
+use felix_replication::engine::{Engine, Hybrid};
 use felix_replication::peer::{PeerPool, PeerRequester};
 use felix_replication::quorum::{QuorumError, QuorumMarks};
 use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer};
@@ -27,7 +28,7 @@ use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
 use crate::serving::limits::TenantRates;
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, IngressRouter, dispatch_write};
+use crate::shards::routing::{Dispatch, IngressRouter, StreamEngine, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest wait between two sends of a batch whose answer was lost. A
@@ -38,7 +39,7 @@ const MAX_RESEND_DELAY: Duration = Duration::from_millis(500);
 pub struct BrokerWrites<P = PeerPool> {
     broker: Arc<Broker>,
     ingress: Option<Arc<IngressRouter>>,
-    marks: Option<Arc<QuorumMarks>>,
+    engine: StreamEngine,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
     forwarding: Option<Forwarding<P>>,
@@ -76,8 +77,8 @@ impl BrokerWrites<PeerPool> {
     ) -> Self {
         Self {
             broker,
+            engine: Hybrid::new(marks, ingress.clone()),
             ingress,
-            marks,
             quorum_timeout,
             quotas: Arc::new(TenantRates::unlimited()),
             forwarding: None,
@@ -93,7 +94,7 @@ impl<P> BrokerWrites<P> {
         BrokerWrites {
             broker: self.broker,
             ingress: self.ingress,
-            marks: self.marks,
+            engine: self.engine,
             quorum_timeout: self.quorum_timeout,
             quotas: self.quotas,
             forwarding: Some(Forwarding { peers, budget }),
@@ -273,16 +274,10 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 self.quorum_timeout
                     .min(deadline.saturating_duration_since(Instant::now()))
             });
-            let quorum = felix_replication::quorum::await_quorum(
-                handle,
-                shard,
-                &outcome,
-                generation,
-                self.marks.as_deref(),
-                ingress,
-                wait,
-            )
-            .await;
+            let quorum = self
+                .engine
+                .await_commit(handle, shard, &outcome, generation, wait)
+                .await;
             if let Err(err) = quorum {
                 return match err.downcast_ref::<QuorumError>() {
                     Some(QuorumError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),

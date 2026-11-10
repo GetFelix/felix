@@ -1344,3 +1344,43 @@ async fn a_forward_for_another_incarnation_is_refused_and_writes_nothing() {
     }
     assert_eq!(tail().await, 2);
 }
+
+/// The forwarded wait lasts the handler's timeout when the mark is below the
+/// batch, and ends at once when the mark passes it. A handler built without
+/// marks would answer both at once.
+#[tokio::test]
+async fn a_forwarded_quorum_publish_waits_its_timeout_then_is_released_by_the_mark() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
+    let marks = Arc::new(QuorumMarks::new());
+    let key = crate::shards::ShardKey {
+        tenant_id: TENANT.to_string(),
+        namespace: NAMESPACE.to_string(),
+        stream: STREAM.to_string(),
+        shard: 0,
+        kind: crate::shards::ShardKind::Stream,
+    };
+    marks.publish(&key, GENERATION, 0);
+    let timeout = Duration::from_millis(300);
+    let handler = handler(broker, Some(Arc::clone(&marks)), timeout);
+
+    let started = std::time::Instant::now();
+    let answer = handler.apply(forwarded()).await;
+    let waited = started.elapsed();
+    assert!(
+        matches!(answer, InternalMessage::ForwardPublishError(_)),
+        "{:?}",
+        answer.kind()
+    );
+    assert!(waited >= timeout, "ended early after {waited:?}");
+    assert!(waited < timeout * 6, "ended late after {waited:?}");
+
+    marks.publish(&key, GENERATION, 1_000);
+    let started = std::time::Instant::now();
+    let answer = handler.apply(forwarded()).await;
+    assert!(
+        matches!(answer, InternalMessage::ForwardPublishOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+    assert!(started.elapsed() < timeout, "waited though the mark passed");
+}

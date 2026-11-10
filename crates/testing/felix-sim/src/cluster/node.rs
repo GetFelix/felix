@@ -207,6 +207,10 @@ impl Node {
             ingress: Arc::clone(broker.ingress()),
             lease: Arc::clone(broker.lease()),
             marks: Arc::clone(broker.quorum_marks()),
+            engine: Arc::new(felix_replication::engine::Hybrid::new(
+                Some(Arc::clone(broker.quorum_marks())),
+                Some(Arc::clone(broker.ingress())),
+            )),
             crashed: token,
             power_loss: config.power_loss,
         };
