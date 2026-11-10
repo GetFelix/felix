@@ -373,6 +373,14 @@ openraft. 0.10 is in alpha and may still change. This work lands over weeks,
 so it is designed against the 0.10 API, and a version change is a reviewed
 update, never a side effect of refreshing the lockfile.
 
+**Release rule (decided).** Everything is built and tested on the pinned
+0.10 alpha. A Felix release ships a control plane on 0.10 only if 0.10 is
+final by then, or the pinned alpha has passed the full control-plane
+simulator, crash-point and history checks. Otherwise that release keeps the
+control plane on 0.9.25, and everything else stays on 0.10. The control
+plane's openraft types stay inside `src/raft/` either way, so switching it
+between the two versions touches only that module.
+
 What the adapter absorbs from 0.9 to 0.10:
 
 - The `single-term-leader` feature is gone. The type config sets
