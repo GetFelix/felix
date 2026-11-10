@@ -2575,8 +2575,46 @@ feature only when it fences (`FELIX_INTERNAL_FENCE` not `false`), because the
 argument rests on every newer leader fencing before it serves, and only when
 its reads are not kept on the lease (`FELIX_QUORUM_READS=lease`), because
 placement reads the finalized feature as no leader serving reads on its lease.
-Only this build refuses a cache round on its counter log's generation. Until the
-feature is finalized every read is on the lease, as before.
+Only this build refuses a cache round on its counter log's generation.
+
+**Before a broker hears of the finalize.** A broker learns the fleet enabled
+`lease_free_reads` from a heartbeat. One cut off from the control plane
+before that never hears, and its replicas may elect a successor meanwhile: a
+candidate checks only its own view of the fleet, so it does not wait out the
+old leader's lease. A read on that still-good lease would miss the
+successor's writes. So until it hears, a broker that stands for election
+confirms a `Quorum` read with both the lease and the round
+(`QuorumMarks::read_confirm` in
+`crates/server/felix-replication/src/quorum.rs`).
+The lease covers a fleet that has not finalized, where every promotion waits
+it out. The round covers one that has, where the successor fenced a majority
+first. The broker does not have to know which.
+
+Every other broker stays on the lease until it hears, and that is safe:
+
+- Election is the only promotion that skips an unheard leader's lease.
+  Placement fails over on the followers' word only against a leader whose
+  own report says `by_round`, which it sends only after it heard.
+- `replica_election` cannot be finalized while a live broker does not report
+  it (`check_finalize` and `check_election` in
+  `services/felix-controlplane-service/src/cluster/fleet.rs`), so no
+  election passes such a broker while it holds its lease.
+- A broker the control plane marked down has already lost its lease, which
+  ends a margin before the control plane could expire it
+  (`services/felix-broker-service/src/cluster/lease.rs`).
+- A restarted broker holds no lease until it registers, and registration
+  either refuses it for lacking an enabled feature or answers with the
+  enabled set, so it has heard.
+
+A replica that does not take the fence (`FELIX_INTERNAL_FENCE=false`) never
+vouches, even beside the lease: it may have restarted that way after a
+successor fenced it. So before the finalize, a broker that stands for election
+whose replicas are mostly fence-off refuses `Quorum` reads with
+`leadership_lost`. That fails safe, and such a fleet could never finalize
+`replica_election` anyway: turn election on across the whole fleet.
+`a_read_on_a_replaced_leader_that_never_heard_of_lease_free_reads_is_not_recorded`
+in `crates/testing/felix-sim/src/client/tests.rs` is the stale read without the
+round.
 
 ### Readers and group sessions without the lease
 

@@ -55,6 +55,11 @@ scrape_configs:
       - targets: ['broker-1:8080', 'broker-2:8080', 'broker-3:8080']
 ```
 
+Histogram metrics (such as `felix_sub_conn_queue_depth`) hold their raw samples
+only until the next fold into a summary. The broker folds every five seconds
+whether or not anything scrapes it, so memory stays flat on a broker that
+Prometheus never visits.
+
 The metrics below are grouped by the question they answer. The list is not
 exhaustive; the [Metrics reference](/reference/metrics/) has every metric the
 code registers, with its type, labels and meaning.

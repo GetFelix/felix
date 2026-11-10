@@ -232,7 +232,9 @@ the rows it reads, and control-plane instances do not coordinate a shared
 snapshot: every assignment write is conditional on the generation and placement
 token it was planned from, so a write planned from stale reads is refused. Durability across a leader change
 comes from log shipping and leader leases instead; `replication-design.md` argues
-that choice in full, including why per-shard Raft was rejected. The only
+that choice in full, including why per-shard Raft was rejected.
+[`replication-engine.md`](replication-engine.md) sets up the test that
+revisits it. The only
 agreement between brokers is the leader election among a shard's replicas, when
 replica election is enabled.
 

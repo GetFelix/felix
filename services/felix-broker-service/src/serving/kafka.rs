@@ -30,6 +30,7 @@ use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
 use crate::shards::routing::{Dispatch, IngressRouter, Reason, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
+use felix_replication::engine::{Engine, Hybrid};
 use felix_replication::quorum::{QuorumError, QuorumMarks};
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
@@ -45,7 +46,8 @@ pub struct BrokerCluster {
     ingress: Option<Arc<IngressRouter>>,
     endpoints: Option<Arc<ClientEndpoints>>,
     local: Endpoint,
-    marks: Option<Arc<QuorumMarks>>,
+    /// What a write waits on and how far a fetch may read.
+    replication: Hybrid<IngressRouter>,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
 }
@@ -64,10 +66,10 @@ impl BrokerCluster {
             .with_context(|| format!("Kafka advertise address {advertise:?}"))?;
         Ok(Self {
             auth,
+            replication: Hybrid::new(None, ingress.clone()),
             ingress,
             endpoints,
             local,
-            marks: None,
             quorum_timeout: Duration::from_secs(5),
             quotas: Arc::new(TenantRates::unlimited()),
         })
@@ -87,7 +89,7 @@ impl BrokerCluster {
         marks: Option<Arc<QuorumMarks>>,
         quorum_timeout: Duration,
     ) -> Self {
-        self.marks = marks;
+        self.replication = Hybrid::new(marks, self.ingress.clone());
         self.quorum_timeout = quorum_timeout;
         self
     }
@@ -232,20 +234,19 @@ impl Cluster for BrokerCluster {
         generation: u64,
     ) -> Result<(), WriteError> {
         let key = self.ingress.as_ref().map(|_| Self::key(shard));
-        felix_replication::quorum::await_quorum(
-            handle,
-            key.as_ref(),
-            outcome,
-            generation,
-            self.marks.as_deref(),
-            self.ingress.as_deref(),
-            self.quorum_timeout,
-        )
-        .await
-        .map_err(|err| match err.downcast_ref::<QuorumError>() {
-            Some(QuorumError::TimedOut { .. }) => WriteError::QuorumTimeout,
-            _ => WriteError::LeadershipLost,
-        })
+        self.replication
+            .await_commit(
+                handle,
+                key.as_ref(),
+                outcome,
+                generation,
+                self.quorum_timeout,
+            )
+            .await
+            .map_err(|err| match err.downcast_ref::<QuorumError>() {
+                Some(QuorumError::TimedOut { .. }) => WriteError::QuorumTimeout,
+                _ => WriteError::LeadershipLost,
+            })
     }
 
     fn committed_until(
@@ -254,16 +255,16 @@ impl Cluster for BrokerCluster {
         handle: &StreamHandle,
     ) -> Result<Option<u64>, felix_kafka::Unreadable> {
         let key = Self::key(shard);
-        felix_replication::quorum::read_bound(
-            Some(handle.consistency()),
-            &key,
-            self.marks.as_deref(),
-            self.ingress.as_deref(),
-        )
-        .map_err(|unreadable| match unreadable {
-            felix_replication::quorum::Unreadable::NotServed => felix_kafka::Unreadable::NotServed,
-            felix_replication::quorum::Unreadable::Settling => felix_kafka::Unreadable::Settling,
-        })
+        self.replication
+            .read_bound(Some(handle.consistency()), &key)
+            .map_err(|unreadable| match unreadable {
+                felix_replication::quorum::Unreadable::NotServed => {
+                    felix_kafka::Unreadable::NotServed
+                }
+                felix_replication::quorum::Unreadable::Settling => {
+                    felix_kafka::Unreadable::Settling
+                }
+            })
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration {

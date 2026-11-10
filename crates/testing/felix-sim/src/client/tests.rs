@@ -105,29 +105,65 @@ async fn an_append_with_no_broker_to_take_it_fails_definitely() {
 #[tokio::test(start_paused = true)]
 async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
     let cluster = SimCluster::start(5, config()).await.unwrap();
-    let (mut client, recorder) = client(&cluster).await;
     let shard = 2;
-    let key = crate::cluster::stream_key(shard);
-    let old = cluster.servers_of(&key).await[0];
-    let old_generation = cluster.snapshot(old, &key).await.unwrap().generation;
-    // The broker's first beat lands before the fleet features are finalized,
-    // so it reads by lease until a later beat tells it otherwise. This test
-    // is about reads by round, so wait for that beat before cutting it off.
-    let heard = Instant::now() + Duration::from_secs(60);
-    while cluster
-        .handles(old)
-        .unwrap()
-        .marks
-        .reads_by_round()
-        .is_none()
+    let old = cluster.servers_of(&crate::cluster::stream_key(shard)).await[0];
+    cluster.cut_controlplane(old, true);
+    read_on_the_replaced_leader(&cluster, old, shard, false).await;
+}
+
+/// The same, with the leader cut off from the control plane before the fleet
+/// finalized `lease_free_reads`: it never hears, so it still reads on its
+/// lease, while its peers heard and elect a successor without waiting that
+/// lease out. The lease alone must not confirm its read. GetFelix/felix#2161.
+#[tokio::test(start_paused = true)]
+async fn a_read_on_a_replaced_leader_that_never_heard_of_lease_free_reads_is_not_recorded() {
+    use felix_common::fleet::{LEASE_FREE_READS, REPLICA_ELECTION};
+    let cluster = SimCluster::start(
+        5,
+        SimConfig {
+            finalize_election: false,
+            ..config()
+        },
+    )
+    .await
+    .unwrap();
+    let shard = 2;
+    let old = cluster.servers_of(&crate::cluster::stream_key(shard)).await[0];
+    cluster.cut_controlplane(old, true);
+    cluster.cp().finalize_election().await.unwrap();
+    let give_up = Instant::now() + Duration::from_secs(60);
+    while !(0..cluster.broker_count())
+        .filter(|index| *index != old)
+        .all(|index| {
+            cluster
+                .handles(index)
+                .is_some_and(|peer| peer.marks.fleet_supports(REPLICA_ELECTION))
+        })
     {
         assert!(
-            Instant::now() < heard,
-            "the old leader never heard the finalized features"
+            Instant::now() < give_up,
+            "the peers never heard the finalize"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    cluster.cut_controlplane(old, true);
+    let stale = cluster.handles(old).unwrap();
+    assert!(!stale.marks.fleet_supports(LEASE_FREE_READS));
+    read_on_the_replaced_leader(&cluster, old, shard, true).await;
+}
+
+/// Partition `old`, already cut off from the control plane, from its peers,
+/// wait for a successor to acknowledge an append to `shard`, then read on
+/// `old` and check the read is not recorded. `leased` asks that `old` still
+/// holds its lease when it reads, so only the read's own check can refuse it.
+async fn read_on_the_replaced_leader(
+    cluster: &Arc<SimCluster>,
+    old: usize,
+    shard: u32,
+    leased: bool,
+) {
+    let (mut client, recorder) = client(cluster).await;
+    let key = crate::cluster::stream_key(shard);
+    let old_generation = cluster.snapshot(old, &key).await.unwrap().generation;
     for other in (0..cluster.broker_count()).filter(|index| *index != old) {
         cluster
             .net()
@@ -170,6 +206,12 @@ async fn a_read_on_a_replaced_leader_that_has_not_heard_is_not_recorded() {
         check_readable(Some(&stale.ingress), &key).is_ok(),
         "the old leader already stopped serving reads, so this tests nothing"
     );
+    if leased {
+        assert!(
+            felix_replication::quorum::ShardServing::lease_valid(&*stale.ingress),
+            "the old leader's lease already ran out, so this tests nothing"
+        );
+    }
     client.hints.insert(shard, old);
     // The old leader is the only one the client asks, and it reads fine but
     // cannot confirm, so nothing is recorded.

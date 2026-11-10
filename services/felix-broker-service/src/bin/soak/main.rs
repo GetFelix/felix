@@ -60,6 +60,9 @@ async fn main() -> Result<()> {
     let metrics = metrics_exporter_prometheus::PrometheusBuilder::new()
         .install_recorder()
         .context("install metrics recorder")?;
+    // The broker runs this in production; without it the recorder holds every
+    // histogram sample and the soak reports that as a memory leak.
+    felix_broker_service::observability::spawn_metrics_upkeep(metrics.clone());
 
     println!("== Felix soak harness ==");
     println!(

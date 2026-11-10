@@ -108,6 +108,9 @@ async fn broker_at(generation: u64) -> (Arc<Broker>, TempDir) {
 struct Replica {
     handler: ReplicaHandler,
     reachable: bool,
+    /// Runs with `FELIX_INTERNAL_FENCE=false`, so the pool never sends it a
+    /// fence.
+    fences: bool,
     _dir: TempDir,
 }
 
@@ -117,6 +120,7 @@ impl Replica {
         Self {
             handler: ReplicaHandler::new(broker, router_for(node_id)),
             reachable: true,
+            fences: true,
             _dir: dir,
         }
     }
@@ -182,6 +186,12 @@ impl PeerRequester for Replicas {
         message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
         let replica = &self.replicas[node_id];
+        if !replica.fences {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
+            });
+        }
         if !replica.reachable {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -374,5 +384,29 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
     assert!(
         matches!(&answer, InternalMessage::ReplicateError(err) if err.code == felix_wire::internal::ErrorCode::FencedEpoch),
         "{answer:?}"
+    );
+}
+
+/// **A replica that no longer takes the fence does not vouch.** A successor
+/// fenced both followers, which then restarted with
+/// `FELIX_INTERNAL_FENCE=false`. Their refusal to take the round says nothing
+/// about the processes the successor fenced, so the deposed leader must not
+/// read it as "no majority could have been fenced". GetFelix/felix#2161.
+#[tokio::test]
+async fn followers_that_restarted_without_the_fence_do_not_confirm_a_read() {
+    let mut replicas = Replicas::new().await;
+    for replica in replicas.replicas.values_mut() {
+        replica.fenced_at(LEADING + 1).await;
+        replica.fences = false;
+    }
+    let replicas = Arc::new(replicas);
+    let (index, _dir) = read_index(&replicas, LEADING).await;
+    let refused = index
+        .confirm(&key(), LEADING)
+        .await
+        .expect_err("a read confirmed by followers that never took the round");
+    assert!(
+        matches!(refused, QuorumError::LeadershipLost { .. }),
+        "{refused:?}"
     );
 }
