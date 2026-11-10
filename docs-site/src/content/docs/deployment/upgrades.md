@@ -586,8 +586,8 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every
-entry in the log itself. Brokers report the feature, but it **cannot be
-finalized yet**: the control plane refuses it with 409 until replication
+entry in the log itself. It **cannot be finalized yet**: brokers do not
+report it and the control plane refuses it with 409, until replication
 carries the generation that wrote each record to followers. Once it can be
 finalized, each durable stream log will start its next segment in storage
 format v9, with an 8-byte generation in every record header. Clients will see

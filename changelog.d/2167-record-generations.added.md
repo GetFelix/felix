@@ -1,7 +1,6 @@
-- New fleet feature `record_generations` (#2167). Once an operator finalizes
-  it, each durable stream log starts its next segment in format v9, with every
-  record stamped with a generation, and a shard may save a committed vote.
-  Both are formats the previous release refuses, so rollback after the
-  finalize is refused; nothing changes on disk before it. A new cluster does
-  not finalize it on its own, and a single broker stays on the older format.
-  A data directory with a v9 segment joins only a fleet that has finalized it.
+- New fleet feature `record_generations` (#2167), groundwork for per-shard
+  Raft: it moves durable stream logs onto segment format v9, with every record
+  stamped with a generation, and lets a shard save a committed vote. It exists
+  but cannot be finalized yet: brokers do not report it and the control plane
+  refuses it, until replication carries the generation that wrote each record.
+  Nothing changes on disk, and a single broker stays on the older format.

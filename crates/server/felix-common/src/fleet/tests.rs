@@ -91,8 +91,15 @@ fn this_build_reports_what_it_implements() {
 }
 
 #[test]
-fn record_generations_is_implemented_and_needs_nothing_first() {
-    assert!(IMPLEMENTED.contains(&RECORD_GENERATIONS));
+fn record_generations_is_not_reported_until_the_writer_generation_replicates() {
+    // Reported, any control plane's finalize check would pass and followers
+    // would write wrong terms.
+    assert!(!IMPLEMENTED.contains(&RECORD_GENERATIONS));
+    assert!(
+        !FleetGate::for_this_build()
+            .reported()
+            .contains(RECORD_GENERATIONS.name())
+    );
     assert!(prerequisites(RECORD_GENERATIONS.name()).is_empty());
 }
 

@@ -79,7 +79,6 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     CACHE_INCARNATIONS,
     HEAD_TRIM,
     RECORD_HEADERS,
-    RECORD_GENERATIONS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -173,6 +172,11 @@ pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 /// fleet has finalized this, and an existing segment is never rewritten. A
 /// lone broker has no fleet and stays on the older formats. See
 /// `docs/storage-format.md` ("Generations").
+///
+/// Kept out of [`IMPLEMENTED`] until replication carries the generation that
+/// wrote each record to followers: a follower would stamp its own, and
+/// replicas would disagree on a record's term. A feature no broker reports
+/// cannot be finalized by a control plane of any release.
 pub const RECORD_GENERATIONS: FleetFeature = FleetFeature::new("record_generations");
 
 /// Every change of a shard's replica set, and the next generation a leader
