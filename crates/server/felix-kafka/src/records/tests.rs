@@ -6,6 +6,7 @@ use super::{encode_batch, encode_page};
 
 fn record(offset: u64, value: &'static str) -> LogRecord {
     LogRecord {
+        generation: None,
         offset,
         timestamp_micros: 1_700_000_000_000_000 + offset * 1_000,
         checksum: 0,

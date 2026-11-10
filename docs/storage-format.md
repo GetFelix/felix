@@ -254,25 +254,43 @@ generation is below the one before it is `GenerationFell` corruption: every
 checksum held, so it was written that way.
 
 **When a log moves onto v9.** A broker in a cluster writes v9 only once its
-fleet has finalized `record_generations`. The control plane refuses that
-finalize until replication carries the generation that wrote each record, so
-no cluster writes v9 yet. Once it can be finalized, each stream log starts its next segment at v9 and stays there; the
-segment that was active is never rewritten. A lone broker has no fleet and
-stays on the older formats. Cache and counter logs stay on them too.
+fleet has finalized `record_generations`. No broker reports that feature yet,
+so no cluster writes v9 yet. Once it can be finalized, each stream log starts
+its next segment at v9 and stays there; the segment that was active is never
+rewritten. A lone broker has no fleet and stays on the older formats. Cache
+and counter logs stay on them too.
 
 **What goes in the field.** Every record in a v9 segment carries one: events,
-generation-start, commit and trim records alike. It is the generation the
-log had accepted when the record was written, which on a leader is its own,
-and never below the newest record's (the floor). A follower would stamp its own
-accepted generation, because replication does not ship each record's
-generation yet; that is why the feature cannot be finalized. Membership and counter records are still not written.
+generation-start, commit and trim records alike. It is the generation of the
+leader that wrote the record, the same on every replica:
 
-**The floor.** The writer refuses a record below the newest record's
-generation, and the log keeps that floor across a roll, a reopen and a
-truncation. A reopen takes it from the active segment's full scan, or from
-the last record of the segment before it when the active one is empty. A cut
-takes it from the header of the record just below the cut. It never comes
-from a resume scan, which sees only the end of a segment.
+- A leader stamps its own records with the generation it accepted, and only
+  while that is the newest generation its history records. A leader records
+  where its generation begins before it serves, so a newer accepted
+  generation means a fence from another leader landed. The append is then
+  refused (`WriterUnknown`), never stamped with the newer generation.
+- A follower stamps a replicated record with the generation the leader sent
+  for it (`writer_generations` on the peer wire, see
+  `docs/internal-protocol.md`), never its own. The same holds for a promoted
+  leader taking a replica's tail, and for a follower being rebuilt or caught
+  up, since all of them copy through the same batches.
+- A follower on v9 refuses a batch that does not name its writers
+  (`WriterUnknown`, answered as `UnsupportedKind`) and stores nothing.
+
+Membership and counter records are still not written.
+
+**The floor.** Generations along a log never fall. The writer refuses a
+record below the newest record's generation (`GenerationBelowFloor`) instead
+of raising it, because a raised stamp would name a generation that did not
+write the record. On a follower that refusal means its record before the
+batch disagrees with the leader's, so it answers `LogConflict` and the
+leader stops shipping to it, as for any divergence; the rebuild policy may
+then rebuild it. It is not truncated automatically, since the stamps do not
+say where the disagreement starts. The log keeps the floor across a roll, a
+reopen and a truncation. A reopen takes it from the active segment's full
+scan, or from the last record of the segment before it when the active one
+is empty. A cut takes it from the header of the record just below the cut. It
+never comes from a resume scan, which sees only the end of a segment.
 
 **Rollback.** A build that reads only up to v8 refuses a v9 segment with
 `SegmentVersion`, so a broker cannot roll back past the release that wrote

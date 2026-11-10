@@ -33,8 +33,8 @@
 //! survived a failure it would not have survived — and under
 //! `ConsistencyLevel::Quorum` that belief is the guarantee.
 use bytes::Bytes;
-use felix_storage::log::{ProducerBatch, RecordMark};
-use felix_wire::internal::ProducerMark;
+use felix_storage::log::{Epoch, LogRecord, ProducerBatch, RecordMark, WrittenBy};
+use felix_wire::internal::{GenerationStart, ProducerMark};
 
 use crate::durable::StreamLog;
 use crate::error::{BrokerError, Result};
@@ -66,6 +66,18 @@ pub enum Divergence {
     /// The batch did not survive the trip.
     #[error("batch checksum mismatch (leader {leader:#x}, computed {computed:#x})")]
     Corrupt { leader: u64, computed: u64 },
+    /// The batch names a writer generation below the one of the record
+    /// before it here. The logs disagree about what precedes the batch, but
+    /// not where, so nothing is truncated for it: the leader halts this
+    /// follower instead.
+    #[error(
+        "the record at {offset} was written at generation {generation}, below {floor}, the generation of the record before it"
+    )]
+    GenerationBelowFloor {
+        offset: u64,
+        generation: u64,
+        floor: u64,
+    },
 }
 
 impl Divergence {
@@ -74,7 +86,7 @@ impl Divergence {
         match self {
             Self::Gap { expected, .. } => *expected,
             Self::Conflict { expected, .. } => *expected,
-            Self::Corrupt { .. } => 0,
+            Self::Corrupt { .. } | Self::GenerationBelowFloor { .. } => 0,
         }
     }
 }
@@ -91,6 +103,9 @@ impl Divergence {
 /// broker's own.
 /// `headers` are the records' key-and-headers blocks, stored with them and
 /// covered by the checksum, or `None` when no record has one.
+/// `writers` are the generations that wrote the records on the leader, stored
+/// with them by a log that stamps each record; `None` is a leader that did not
+/// say, which such a log refuses with [`BrokerError::WriterUnknown`].
 /// Returns once the batch is durable.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply(
@@ -102,6 +117,7 @@ pub async fn apply(
     publishers: &[Option<Bytes>],
     times: &[u64],
     headers: Option<&[Option<Bytes>]>,
+    writers: Option<&[GenerationStart]>,
 ) -> Result<std::result::Result<Applied, Divergence>> {
     // Everything below is decided from one reading of the tail, and the write
     // is made only if the tail is still there. A resend on a second lane can
@@ -119,6 +135,7 @@ pub async fn apply(
             publishers,
             times,
             headers,
+            writers,
         )
         .await?
         {
@@ -147,6 +164,7 @@ async fn apply_at_tail(
     publishers: &[Option<Bytes>],
     times: &[u64],
     headers: Option<&[Option<Bytes>]>,
+    writers: Option<&[GenerationStart]>,
 ) -> Result<Option<std::result::Result<Applied, Divergence>>> {
     let tail = log.tail_offset().await?;
 
@@ -232,7 +250,19 @@ async fn apply_at_tail(
         })));
     }
 
-    let Some(pending) = log
+    // Runs that begin before the fresh suffix still cover its first records.
+    let written_by = match writers {
+        Some(runs) => WrittenBy::Writers(
+            runs.iter()
+                .map(|run| Epoch {
+                    generation: run.generation,
+                    start_offset: run.start_offset,
+                })
+                .collect(),
+        ),
+        None => WrittenBy::Unknown,
+    };
+    let pending = match log
         .begin_append_marked_at(
             tail,
             fresh,
@@ -240,10 +270,24 @@ async fn apply_at_tail(
             publishers.get(overlap..).unwrap_or_default(),
             times.get(overlap..).unwrap_or_default(),
             headers.map(|headers| &headers[overlap..]),
+            written_by,
         )
-        .await?
-    else {
-        return Ok(None);
+        .await
+    {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return Ok(None),
+        Err(BrokerError::GenerationBelowFloor {
+            offset,
+            generation,
+            floor,
+        }) => {
+            return Ok(Some(Err(Divergence::GenerationBelowFloor {
+                offset,
+                generation,
+                floor,
+            })));
+        }
+        Err(err) => return Err(err),
     };
     log.commit(&pending).await?;
 
@@ -251,6 +295,42 @@ async fn apply_at_tail(
         durable_offset: tail + fresh.len() as u64,
         appended: fresh.len(),
     })))
+}
+
+/// The runs of generations that wrote `records`, for the wire, and how many
+/// leading records they cover.
+///
+/// A record's own stamp is its writer; one without a stamp (an older segment)
+/// has the generation `history` assigns its offset, the last epoch starting at
+/// or before it, or 0. Equal neighbours merge, and the first run starts at the
+/// first record.
+///
+/// Generations only rise along a log. If they fall (a bad history mixed with
+/// stamps), the batch is cut before the fall: the frame's runs must strictly
+/// increase, and sending a malformed frame would halt the follower on a batch
+/// the next, shorter one can carry. The caller ships only the covered prefix.
+pub fn writers_to_wire(records: &[LogRecord], history: &[Epoch]) -> (Vec<GenerationStart>, usize) {
+    let mut runs: Vec<GenerationStart> = Vec::new();
+    let mut covered = 0;
+    for record in records {
+        let generation = record.generation.unwrap_or_else(|| {
+            history
+                .iter()
+                .rev()
+                .find(|epoch| epoch.start_offset <= record.offset)
+                .map_or(0, |epoch| epoch.generation)
+        });
+        match runs.last() {
+            Some(last) if generation < last.generation => break,
+            Some(last) if generation == last.generation => {}
+            _ => runs.push(GenerationStart {
+                generation,
+                start_offset: record.offset,
+            }),
+        }
+        covered += 1;
+    }
+    (runs, covered)
 }
 
 /// Compare a batch's overlapping prefix against what is already stored.

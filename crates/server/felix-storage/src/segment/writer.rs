@@ -431,7 +431,7 @@ impl SegmentWriter {
         records: &[AppendRecord],
         generation: Option<u64>,
     ) -> Result<(Offset, Offset)> {
-        let staged = self.stage_at(records, generation)?;
+        let staged = self.stage_at(records, generation.map(Stamps::All))?;
         let written = staged.write();
         let (offsets, index) = self.finish(staged, written)?;
         index.write(self.id);
@@ -440,12 +440,12 @@ impl SegmentWriter {
 
     /// The first step of [`Self::append_at`], split out so a log can write a
     /// batch without holding the lock around this writer: encode `records`
-    /// at `generation` for the end of the segment and change nothing. Nothing
+    /// with `stamps` for the end of the segment and change nothing. Nothing
     /// else may change this segment until [`Self::finish`].
     pub(crate) fn stage_at(
         &mut self,
         records: &[AppendRecord],
-        generation: Option<u64>,
+        stamps: Option<Stamps<'_>>,
     ) -> Result<StagedAppend> {
         debug_assert!(!records.is_empty());
 
@@ -461,17 +461,14 @@ impl SegmentWriter {
                 "the record's mark is newer than the segment's version; roll first",
             ));
         }
-        if generation.is_some() != self.holds_generations() {
+        if stamps.is_some() != self.holds_generations() {
             return Err(StorageError::Unsupported(
                 "a v9 segment's records need a generation, and an older segment cannot hold one",
             ));
         }
-        if let (Some(generation), Some(last)) = (generation, self.last_generation)
-            && generation < last
-        {
-            return Err(StorageError::Unsupported(
-                "a record's generation is below the last one appended",
-            ));
+        let last_offset = self.next_offset + records.len() as u64 - 1;
+        if let Some(stamps) = stamps {
+            stamps.check(self.next_offset, last_offset, self.last_generation)?;
         }
 
         let mut bytes = std::mem::take(&mut self.staging);
@@ -483,7 +480,7 @@ impl SegmentWriter {
         for (offset, record) in (self.next_offset..).zip(records) {
             let written = encode_record_at(
                 &mut bytes,
-                generation,
+                stamps.map(|stamps| stamps.at(offset)),
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -498,7 +495,7 @@ impl SegmentWriter {
             bytes,
             boundaries,
             file: Arc::clone(&self.sync_handle),
-            generation,
+            generation: stamps.map(|stamps| stamps.at(last_offset)),
         })
     }
 
@@ -671,7 +668,62 @@ pub(crate) struct StagedAppend {
     boundaries: Vec<(Offset, u64, u64)>,
     /// Shares the writer's cursor, which `stage_at` left at the end of the file.
     file: Arc<File>,
+    /// The last record's generation, the floor for the next append.
     generation: Option<u64>,
+}
+
+/// The generations a batch is stamped with in a v9 segment.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Stamps<'a> {
+    /// Every record at one generation.
+    All(u64),
+    /// Runs, oldest first, each covering its records up to the next run's
+    /// start. The first starts at or before the batch.
+    Runs(&'a [crate::log::Epoch]),
+}
+
+impl Stamps<'_> {
+    /// The generation of the record at `offset`.
+    pub(crate) fn at(self, offset: Offset) -> u64 {
+        match self {
+            Self::All(generation) => generation,
+            Self::Runs(runs) => runs
+                .iter()
+                .rev()
+                .find(|run| run.start_offset <= offset)
+                .or(runs.first())
+                .map_or(0, |run| run.generation),
+        }
+    }
+
+    /// Refuse stamps that do not cover `first..=last`, that fall within it,
+    /// or that start below `floor`, the generation of the record before.
+    fn check(self, first: Offset, last: Offset, floor: Option<u64>) -> Result<()> {
+        if let Self::Runs(runs) = self {
+            let covers = runs.first().is_some_and(|run| run.start_offset <= first);
+            let rising = runs.windows(2).all(|pair| {
+                pair[0].start_offset < pair[1].start_offset
+                    && pair[0].generation < pair[1].generation
+            });
+            if !covers || !rising {
+                return Err(StorageError::WriterUnknown(
+                    "the batch's generations do not cover it in order",
+                ));
+            }
+        }
+        let generation = self.at(first);
+        match floor {
+            Some(floor) if generation < floor => Err(StorageError::GenerationBelowFloor {
+                offset: first,
+                generation,
+                floor,
+            }),
+            _ => {
+                debug_assert!(self.at(last) >= generation);
+                Ok(())
+            }
+        }
+    }
 }
 
 impl StagedAppend {

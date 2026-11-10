@@ -240,6 +240,13 @@ pub enum Kind {
     /// older leader refuses the kind rather than reading the answer without
     /// it.
     FenceAttestedOk = 54,
+    /// `ReplicateHeaderedRecords` followed by a `u32` count and that many
+    /// (generation, start offset) pairs: the generation that wrote each run of
+    /// records. An older follower refuses it rather than labelling the records
+    /// with the sender's generation.
+    ReplicateStampedRecords = 55,
+    /// `ReplicateHeaderedFetch`, answered with `ReplicateStampedRecords`.
+    ReplicateStampedFetch = 56,
 }
 
 impl Kind {
@@ -301,6 +308,8 @@ impl Kind {
             52 => Ok(Kind::SequencedForwardPublish),
             53 => Ok(Kind::FenceKeptOk),
             54 => Ok(Kind::FenceAttestedOk),
+            55 => Ok(Kind::ReplicateStampedRecords),
+            56 => Ok(Kind::ReplicateStampedFetch),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

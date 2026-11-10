@@ -689,7 +689,7 @@ fn a_v9_writer_stamps_each_record_with_its_generation() {
 }
 
 /// A batch at a lower generation than the last is refused before anything
-/// is written: the scan would call the segment corrupt.
+/// is written, naming the floor: the scan would call the segment corrupt.
 #[test]
 fn a_v9_writer_refuses_a_falling_generation() {
     let dir = tempdir().expect("dir");
@@ -698,7 +698,11 @@ fn a_v9_writer_refuses_a_falling_generation() {
     let before = writer.size_bytes();
     assert!(matches!(
         writer.append_at(&[record("b")], Some(4)),
-        Err(StorageError::Unsupported(_))
+        Err(StorageError::GenerationBelowFloor {
+            offset: 1,
+            generation: 4,
+            floor: 5
+        })
     ));
     assert_eq!(writer.size_bytes(), before);
     assert_eq!(writer.next_offset(), 1);

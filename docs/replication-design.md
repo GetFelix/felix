@@ -3411,6 +3411,33 @@ generation, from where the batch appended. That fallback is the overclaim
 above, so a cluster is only as safe as its oldest broker until every one
 offers the capability.
 
+**Writer generations.** The labels are the sender's history, which can lag
+or overclaim. A segment in storage format v9 keeps the generation that wrote
+each record in the record itself (see `docs/storage-format.md`,
+"Generations"), and every replica must hold the same one at each offset. So a
+leader also sends, to a follower that offered `WRITER_GENERATIONS`, the
+writers of the batch (`ReplicateStampedRecords`): runs of the generation that
+wrote each record, taken from the records' own stamps, or from the history
+for a record in an older segment. A tail fetch asks for them the same way
+(`ReplicateStampedFetch`), and a rebuild or catch-up copies through the same
+batches, so a copy keeps the original stamps rather than the sender's
+current generation.
+
+The follower stamps the records with those writers, never with its own
+accepted generation. Take a leader L at generation 3 that wrote 0..10, a
+follower F that holds 0..4, and a new leader N at 4 that ships F 5..10: F
+stamps 5..10 with 3, as L did. Two refusals keep a replica from inventing a
+stamp:
+
+- A follower on v9 refuses a batch without writers (`UnsupportedKind`),
+  storing nothing. The leader holds it there until it offers the capability.
+- A writer below the generation of the follower's newest record breaks the
+  rule that generations along a log never fall. It shows the follower's
+  record before the batch disagrees with the leader's, so the follower
+  answers `LogConflict` and the leader halts it, to be rebuilt under the
+  rebuild policy. It is not truncated on its own: the stamps say that the
+  logs disagree, not where they start to.
+
 Each record's append time travels the same way, as a time per record on a
 labelled batch, to a follower that offered `RECORD_TIMES`, and a fence's tail
 fetch asks for them too. The follower stores the leader's times rather than

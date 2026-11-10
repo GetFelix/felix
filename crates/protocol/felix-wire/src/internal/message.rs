@@ -77,7 +77,9 @@ pub enum InternalMessage {
 /// `ReplicateCommittedRecords` once they carry a commit offset.
 fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
     let timed = records.generations.is_some() && records.times.is_some();
-    if timed
+    if records.writers.is_some() {
+        Kind::ReplicateStampedRecords
+    } else if timed
         && records
             .headers
             .as_deref()
@@ -154,6 +156,7 @@ impl InternalMessage {
             Self::FenceOk(m) if m.attestation.is_some() => Kind::FenceAttestedOk,
             Self::FenceOk(m) if m.kept_ballot => Kind::FenceKeptOk,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(m) if m.writers => Kind::ReplicateStampedFetch,
             Self::ReplicateFetch(m) if m.labelled && m.timed && m.headers => {
                 Kind::ReplicateHeaderedFetch
             }
@@ -188,7 +191,12 @@ impl InternalMessage {
                 | Kind::HeaderedForwardPublish
         )
         .then_some(PeerCapabilities::RECORD_HEADERS);
-        let headers = if self.kind() == Kind::SequencedForwardPublish {
+        let headers = if matches!(
+            self.kind(),
+            Kind::ReplicateStampedRecords | Kind::ReplicateStampedFetch
+        ) {
+            Some(PeerCapabilities::WRITER_GENERATIONS)
+        } else if self.kind() == Kind::SequencedForwardPublish {
             Some(PeerCapabilities::RECORD_HEADERS.union(PeerCapabilities::SEQUENCED_FORWARDS))
         } else {
             headers

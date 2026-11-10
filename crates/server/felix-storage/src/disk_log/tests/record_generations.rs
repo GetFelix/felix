@@ -1,11 +1,14 @@
 //! Moving a log onto segment format v9 once its gate allows it: only new
-//! segments move, every record in one carries a generation, and the
-//! generations never fall across a roll, a reopen or a truncation.
+//! segments move, and every record in one carries the generation that wrote
+//! it. A leader writes the generation it recorded as its own, a copied batch
+//! the generations it came with, and a record below the one before it is
+//! refused, across a roll, a reopen and a truncation.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
+use crate::log::{Epoch, WrittenBy};
 use crate::segment::format::{decode_record_in, encode_record_at};
 use crate::segment::{
     GENERATION_VERSION, HEADERS_VERSION, OLDEST_READABLE_VERSION, SEGMENT_HEADER_LEN,
@@ -59,6 +62,79 @@ fn flat(dir: &TempDir, log: &DiskLog) -> Vec<Option<u64>> {
         .collect()
 }
 
+/// Make `generation` this log's leader: accepted, and recorded as starting at
+/// the tail, as a leader does before it serves.
+async fn lead(log: &DiskLog, generation: u64) {
+    log.accept_generation(generation, Some(LEADER))
+        .await
+        .expect("accept");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("record");
+}
+
+/// A log holding one older record, at offset 0, whose active segment is v9.
+async fn v9_log(dir: &TempDir) -> DiskLog {
+    let log = open_gated(dir);
+    log.append(&records(&["old"])).await.expect("append");
+    log.roll_now().await.expect("roll");
+    assert_eq!(
+        log.segments().last().expect("active").version,
+        GENERATION_VERSION
+    );
+    log
+}
+
+/// The generation of every record from `start`, as a reader sees it.
+async fn read_generations(log: &DiskLog, start: Offset) -> Vec<Option<u64>> {
+    log.read_range(ReadRange {
+        start,
+        max_bytes: usize::MAX,
+    })
+    .await
+    .expect("read")
+    .records
+    .into_iter()
+    .map(|record| record.generation)
+    .collect()
+}
+
+fn run(generation: u64, start_offset: Offset) -> Epoch {
+    Epoch {
+        generation,
+        start_offset,
+    }
+}
+
+fn names(from: usize, count: usize) -> Vec<AppendRecord> {
+    let payloads: Vec<String> = (from..from + count).map(|n| format!("r{n}")).collect();
+    let refs: Vec<&str> = payloads.iter().map(String::as_str).collect();
+    records(&refs)
+}
+
+/// Copy `batch` in at `first` as `writers` wrote it.
+async fn copy_in(
+    log: &DiskLog,
+    first: Offset,
+    batch: &[AppendRecord],
+    writers: WrittenBy,
+) -> Result<()> {
+    log.append_pending_at(first, batch, writers)
+        .await
+        .map(|written| assert!(written.is_some(), "the tail moved"))
+}
+
+/// Appending below the floor `floor` as a leader at `generation` is refused.
+fn assert_below(error: Option<StorageError>, generation: u64, floor: u64) {
+    match error {
+        Some(StorageError::GenerationBelowFloor {
+            generation: found,
+            floor: held,
+            ..
+        }) => assert_eq!((found, held), (generation, floor)),
+        other => panic!("expected GenerationBelowFloor, got {other:?}"),
+    }
+}
+
 async fn reopen(dir: &TempDir, log: DiskLog) -> DiskLog {
     log.shutdown().await.expect("shutdown");
     drop(log);
@@ -90,15 +166,13 @@ fn restamp_first(dir: &TempDir, segment: u64, generation: u64) {
 
 /// Until the gate opens nothing is written at v9. Once it does, the segment
 /// already active is left as it is and the next one is v9, with every record
-/// at the accepted generation.
+/// at the leader's generation.
 #[tokio::test]
 async fn only_a_new_segment_moves_onto_v9_once_the_gate_opens() {
     let dir = tempdir().expect("dir");
     let open = Arc::new(AtomicBool::new(false));
     let log = DiskLog::open(dir.path(), "t/ns/s/0", gated(&open)).expect("open");
-    log.accept_generation(3, Some(LEADER))
-        .await
-        .expect("accept");
+    lead(&log, 3).await;
     for payload in ["a", "b", "c", "d", "e", "f"] {
         log.append(&records(&[payload])).await.expect("append");
     }
@@ -136,30 +210,25 @@ async fn only_a_new_segment_moves_onto_v9_once_the_gate_opens() {
     );
 }
 
-/// A record takes the generation the log accepted when it was written, and a
-/// raise takes effect from the next append.
+/// A leader's record takes the generation it recorded as its own, and a newer
+/// one takes effect from the next append.
 #[tokio::test]
-async fn a_record_carries_the_accepted_generation() {
+async fn a_leader_stamps_the_generation_it_recorded() {
     let dir = tempdir().expect("dir");
     let log = open_gated(&dir);
     log.append(&records(&["v3"])).await.expect("append");
     log.roll_now().await.expect("roll");
-    log.accept_generation(4, Some(LEADER))
-        .await
-        .expect("accept");
+    lead(&log, 4).await;
     log.append(&records(&["a", "b"])).await.expect("append");
-    log.accept_generation(6, Some(LEADER))
-        .await
-        .expect("accept");
+    lead(&log, 6).await;
     log.append(&records(&["c"])).await.expect("append");
     assert_eq!(flat(&dir, &log), [None, Some(4), Some(4), Some(6)]);
 }
 
-/// A record written above the accepted generation (here by the test hook; in
-/// a broker, by a raise a crash lost before its file was stored) sets a floor
-/// the next append keeps to after a reopen. The floor comes from the active
-/// segment's full scan; without it the append goes in at 0 and the next open
-/// refuses the log.
+/// A record written above the leader's generation (here by the test hook)
+/// sets a floor that holds after a reopen: a leader below it is refused,
+/// and one at it writes at its own generation. The floor comes from the
+/// active segment's full scan.
 #[tokio::test]
 async fn the_floor_survives_a_reopen() {
     let dir = tempdir().expect("dir");
@@ -168,6 +237,10 @@ async fn the_floor_survives_a_reopen() {
         .await
         .expect("append");
     let log = reopen(&dir, log).await;
+    lead(&log, 3).await;
+    assert_below(log.append(&records(&["b"])).await.err(), 3, 7);
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
+    lead(&log, 7).await;
     log.append(&records(&["b"])).await.expect("append");
     let log = reopen(&dir, log).await;
     assert_eq!(flat(&dir, &log), [Some(7), Some(7)]);
@@ -184,12 +257,28 @@ async fn the_floor_survives_a_roll() {
         .await
         .expect("append");
     log.roll_now().await.expect("background roll");
+    lead(&log, 4).await;
+    assert_below(log.append(&records(&["b"])).await.err(), 4, 7);
+    lead(&log, 7).await;
     log.append(&records(&["b"])).await.expect("append");
     for payload in ["c", "d", "e", "f"] {
         log.append(&records(&[payload])).await.expect("append");
     }
     log.roll_now().await.expect("background roll");
     let log = reopen(&dir, log).await;
+    // Copied from a generation below the floor, on the empty active segment.
+    let tail = log.tail_offset().await.expect("tail");
+    let below = copy_in(
+        &log,
+        tail,
+        &names(0, 1),
+        WrittenBy::Writers(vec![run(3, 0)]),
+    )
+    .await;
+    assert!(matches!(
+        below,
+        Err(StorageError::GenerationBelowFloor { floor: 7, .. })
+    ));
     log.append(&records(&["g"])).await.expect("append");
     let log = reopen(&dir, log).await;
     let found = generations(&dir, &log);
@@ -219,8 +308,11 @@ async fn the_floor_survives_a_truncation() {
         .await
         .expect("append");
 
-    // Inside the active segment, below the records at 9.
+    // Inside the active segment, below the records at 9: the floor is 5.
     log.truncate(3).await.expect("truncate");
+    lead(&log, 2).await;
+    assert_below(log.append(&records(&["e"])).await.err(), 2, 5);
+    lead(&log, 5).await;
     log.append(&records(&["e"])).await.expect("append");
     let log = reopen(&dir, log).await;
     assert_eq!(flat(&dir, &log), [None, Some(5), Some(5), Some(5)]);
@@ -233,6 +325,18 @@ async fn the_floor_survives_a_truncation() {
         .expect("append");
     let base = log.segments().last().expect("active").base_offset;
     log.truncate(base).await.expect("truncate");
+    let tail = log.tail_offset().await.expect("tail");
+    let below = copy_in(
+        &log,
+        tail,
+        &names(0, 1),
+        WrittenBy::Writers(vec![run(4, 0)]),
+    )
+    .await;
+    assert!(matches!(
+        below,
+        Err(StorageError::GenerationBelowFloor { floor: 5, .. })
+    ));
     log.append(&records(&["g"])).await.expect("append");
     let log = reopen(&dir, log).await;
     assert_eq!(flat(&dir, &log).last(), Some(&Some(5)));
@@ -243,6 +347,20 @@ async fn the_floor_survives_a_truncation() {
         .await
         .expect("append");
     log.truncate(2).await.expect("truncate");
+    let tail = log.tail_offset().await.expect("tail");
+    let below = copy_in(
+        &log,
+        tail,
+        &names(0, 1),
+        WrittenBy::Writers(vec![run(4, 0)]),
+    )
+    .await;
+    assert!(matches!(
+        below,
+        Err(StorageError::GenerationBelowFloor { floor: 5, .. })
+    ));
+    // The cut dropped the record of where 5 began.
+    lead(&log, 5).await;
     log.append(&records(&["i"])).await.expect("append");
     let log = reopen(&dir, log).await;
     assert_eq!(flat(&dir, &log), [None, Some(5), Some(5)]);
@@ -340,10 +458,8 @@ async fn the_previous_release_refuses_a_log_past_the_gate() {
     let log = open_gated(&dir);
     log.append(&records(&["a"])).await.expect("append");
     log.roll_now().await.expect("roll");
+    lead(&log, 2).await;
     log.append(&records(&["b"])).await.expect("append");
-    log.accept_generation(2, Some(LEADER))
-        .await
-        .expect("accept");
     log.commit_vote(2, LEADER).await.expect("commit");
     let previous_reads = OLDEST_READABLE_VERSION..=PREVIOUS_FORMAT_VERSION;
     let versions: Vec<u16> = generations(&dir, &log)
@@ -401,7 +517,7 @@ async fn the_first_v9_segment_marks_the_data_directory() {
     provider.shutdown().await.expect("shutdown");
 }
 
-/// Random appends, raises, writes above the accepted generation, rolls, cuts
+/// Random appends, new leaders, writes above the leader's generation, rolls, cuts
 /// and reopens. After each reopen the log opens, holds what it acknowledged,
 /// and its generations never fall.
 #[tokio::test]
@@ -413,15 +529,15 @@ async fn random_rolls_cuts_and_reopens_keep_generations_from_falling() {
         let mut log = open_gated(&dir);
         let mut accepted = 0;
         let mut highest = 0;
+        let mut led = None;
         let mut expected: Vec<String> = Vec::new();
         for step in 0..40 {
             let payload = format!("{seed}-{step}");
             match rng.below(8) {
                 0 => {
-                    accepted += 1 + rng.below(3);
-                    log.accept_generation(accepted, Some(LEADER))
-                        .await
-                        .expect("accept");
+                    accepted = accepted.max(highest) + 1 + rng.below(3);
+                    lead(&log, accepted).await;
+                    led = Some(accepted);
                 }
                 1 => {
                     // Above anything written so far, so never below the floor.
@@ -439,11 +555,19 @@ async fn random_rolls_cuts_and_reopens_keep_generations_from_falling() {
                     let keep = rng.below(expected.len() as u64 + 1) as usize;
                     log.truncate(keep as u64).await.expect("truncate");
                     expected.truncate(keep);
+                    led = None;
                 }
                 4 => {
                     log = reopen(&dir, log).await;
                 }
                 _ => {
+                    // A cut can drop the leader's record of its start, and
+                    // a write above leaves a floor over the accepted one.
+                    accepted = accepted.max(highest);
+                    if led != Some(accepted) {
+                        lead(&log, accepted).await;
+                        led = Some(accepted);
+                    }
                     log.append(&records(&[&payload])).await.expect("append");
                     expected.push(payload);
                 }
@@ -458,5 +582,145 @@ async fn random_rolls_cuts_and_reopens_keep_generations_from_falling() {
             "seed {seed}: {found:?}"
         );
         log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// A follower stamps a copied record with the generation that wrote it, not
+/// the one it has accepted since, whatever its history says.
+#[tokio::test]
+async fn a_copied_batch_keeps_the_generations_that_wrote_it() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    log.accept_generation(4, None).await.expect("accept");
+    log.record_generation(4, 1).expect("record");
+    copy_in(&log, 1, &names(0, 5), WrittenBy::Writers(vec![run(3, 1)]))
+        .await
+        .expect("copy");
+    assert_eq!(read_generations(&log, 1).await, [Some(3); 5]);
+
+    // Two runs in one batch at 6..10: 6..8 at 3, then 9 and 10 at 4.
+    let runs = WrittenBy::Writers(vec![run(3, 6), run(4, 9)]);
+    copy_in(&log, 6, &names(5, 5), runs).await.expect("copy");
+    assert_eq!(
+        read_generations(&log, 6).await,
+        [Some(3), Some(3), Some(3), Some(4), Some(4)]
+    );
+
+    // Records held at 3, then more arrive after this log accepted 4, with
+    // runs that start before the batch: the stamps a leader at 3 would write.
+    let follower = tempdir().expect("dir");
+    let f = v9_log(&follower).await;
+    f.accept_generation(3, None).await.expect("accept");
+    copy_in(&f, 1, &names(0, 5), WrittenBy::Writers(vec![run(3, 0)]))
+        .await
+        .expect("copy");
+    f.accept_generation(4, None).await.expect("accept");
+    copy_in(&f, 6, &names(5, 6), WrittenBy::Writers(vec![run(3, 0)]))
+        .await
+        .expect("copy");
+
+    let leader = tempdir().expect("dir");
+    let l = v9_log(&leader).await;
+    lead(&l, 3).await;
+    l.append(&names(0, 11)).await.expect("append");
+    let from_follower = read_generations(&f, 1).await;
+    assert_eq!(from_follower, [Some(3); 11]);
+    assert_eq!(from_follower, read_generations(&l, 1).await);
+}
+
+/// A copied record below the generation of the one before it is refused, and
+/// nothing is written.
+#[tokio::test]
+async fn a_copied_record_below_the_floor_is_refused() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    lead(&log, 5).await;
+    log.append(&names(0, 2)).await.expect("append");
+    let refused = copy_in(&log, 3, &names(2, 2), WrittenBy::Writers(vec![run(3, 3)])).await;
+    assert!(matches!(
+        refused,
+        Err(StorageError::GenerationBelowFloor {
+            offset: 3,
+            generation: 3,
+            floor: 5
+        })
+    ));
+    assert_eq!(log.tail_offset().await.expect("tail"), 3);
+    assert_eq!(read_generations(&log, 1).await, [Some(5), Some(5)]);
+}
+
+/// A v9 segment will not take a batch whose writers nobody named; an older
+/// one has nowhere to keep them and takes it.
+#[tokio::test]
+async fn a_v9_log_refuses_a_batch_that_names_no_writer() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    lead(&log, 3).await;
+    let refused = copy_in(&log, 1, &names(0, 2), WrittenBy::Unknown).await;
+    assert!(matches!(refused, Err(StorageError::WriterUnknown(_))));
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
+
+    let closed = tempdir().expect("dir");
+    let log = DiskLog::open(
+        closed.path(),
+        "t/ns/s/0",
+        gated(&Arc::new(AtomicBool::new(false))),
+    )
+    .expect("open");
+    copy_in(&log, 0, &names(0, 2), WrittenBy::Unknown)
+        .await
+        .expect("an older segment ignores who wrote it");
+    assert_eq!(read_generations(&log, 0).await, [None, None]);
+}
+
+/// A leader stamps only a generation it recorded as its own. One accepted
+/// from a fence since belongs to another leader, so the append is refused
+/// until this log records where that generation begins.
+#[tokio::test]
+async fn a_leader_whose_accepted_generation_moved_on_is_refused() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    lead(&log, 3).await;
+    log.append(&names(0, 1)).await.expect("append");
+
+    log.accept_generation(4, Some("b")).await.expect("accept");
+    let refused = log.append(&names(1, 1)).await.err();
+    assert!(matches!(refused, Some(StorageError::WriterUnknown(_))));
+    assert_eq!(log.tail_offset().await.expect("tail"), 2);
+
+    log.record_generation(4, 2).expect("record");
+    log.append(&names(1, 1)).await.expect("append");
+    assert_eq!(read_generations(&log, 1).await, [Some(3), Some(4)]);
+}
+
+/// A record read back carries its generation when its segment keeps one.
+#[tokio::test]
+async fn read_back_carries_each_records_generation() {
+    let dir = tempdir().expect("dir");
+    let log = open_gated(&dir);
+    log.append(&records(&["old"])).await.expect("append");
+    log.roll_now().await.expect("roll");
+    lead(&log, 2).await;
+    log.append(&records(&["new"])).await.expect("append");
+    assert_eq!(read_generations(&log, 0).await, [None, Some(2)]);
+    let log = reopen(&dir, log).await;
+    assert_eq!(read_generations(&log, 0).await, [None, Some(2)]);
+}
+
+/// Runs that do not cover the batch in order are refused, nothing written.
+#[tokio::test]
+async fn malformed_runs_are_refused() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    lead(&log, 3).await;
+    log.append(&names(0, 2)).await.expect("append");
+    let cases: [Vec<Epoch>; 3] = [vec![], vec![run(3, 6)], vec![run(4, 3), run(3, 4)]];
+    for runs in cases {
+        let refused = copy_in(&log, 3, &names(2, 2), WrittenBy::Writers(runs.clone())).await;
+        assert!(
+            matches!(refused, Err(StorageError::WriterUnknown(_))),
+            "{runs:?}"
+        );
+        assert_eq!(log.tail_offset().await.expect("tail"), 3, "{runs:?}");
     }
 }

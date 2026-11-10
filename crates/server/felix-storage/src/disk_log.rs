@@ -87,7 +87,7 @@ use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
-    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
+    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor, WrittenBy,
 };
 use crate::segment::{ReadBudget, TrimRecords};
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
@@ -299,13 +299,19 @@ impl DiskLog {
     /// the write.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
-            .await
-            .map(|written| {
-                written
-                    .expect("an unconditional write is always written")
-                    .pending
-            })
+        Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            None,
+            WrittenBy::Leader,
+        )
+        .await
+        .map(|written| {
+            written
+                .expect("an unconditional write is always written")
+                .pending
+        })
     }
 
     /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
@@ -324,6 +330,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::Always,
             Some(order),
+            WrittenBy::Leader,
         )
         .await?
         .expect("an unconditional write is always written");
@@ -350,6 +357,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.map(append::Written::claimed))
@@ -363,10 +371,14 @@ impl DiskLog {
     /// such as a follower storing a leader's batch at the leader's offsets:
     /// another append landing in between would otherwise put these records
     /// at offsets their sender never assigned.
+    ///
+    /// `writers` names the generations that wrote the records where they
+    /// came from; a v9 segment stamps them with those, never its own.
     pub async fn append_pending_at(
         &self,
         first_offset: Offset,
         records: &[AppendRecord],
+        writers: WrittenBy,
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
         let written = Self::write_batch(
@@ -374,6 +386,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             None,
+            writers,
         )
         .await?;
         Ok(written.ok().map(|written| written.pending))
@@ -404,6 +417,7 @@ impl DiskLog {
                 sequence,
             },
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.ok().map(append::Written::claimed))
@@ -1153,11 +1167,16 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending =
-                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
-                    .await?
-                    .expect("an unconditional write is always written")
-                    .pending;
+            let pending = Self::write_batch(
+                Arc::clone(&inner),
+                records,
+                append::WriteIf::Always,
+                None,
+                WrittenBy::Leader,
+            )
+            .await?
+            .expect("an unconditional write is always written")
+            .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely

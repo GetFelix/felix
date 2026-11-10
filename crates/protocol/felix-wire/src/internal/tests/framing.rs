@@ -164,6 +164,7 @@ fn every_body_begins_with_its_correlation_id() {
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
             headers: false,
+            writers: false,
             correlation_id: id,
             shard: shard.clone(),
             log: ReplicaLog::Stream,
@@ -183,6 +184,7 @@ fn every_body_begins_with_its_correlation_id() {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateOk(ReplicateOk {

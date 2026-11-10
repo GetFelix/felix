@@ -39,6 +39,7 @@ fn a_cache_batch_with_a_start_record_travels_in_a_layout_with_marks() {
             .expect("ships"),
     ];
     let mut batch = ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id: 1,
         shard: ShardRef {

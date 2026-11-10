@@ -343,6 +343,7 @@ fn blocks_count_toward_the_per_ring_bound() {
 fn recovered_blocks_count_toward_the_budget() {
     let stream = ring_stream(0, 20);
     let record = |offset| felix_storage::log::LogRecord {
+        generation: None,
         offset,
         timestamp_micros: 0,
         checksum: 0,

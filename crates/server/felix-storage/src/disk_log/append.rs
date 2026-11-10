@@ -12,16 +12,18 @@ use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
-use crate::log::{AppendRecord, AppendResult, Offset, RecordMark};
+use crate::log::{AppendRecord, AppendResult, Offset, RecordMark, WrittenBy};
 use crate::segment::SegmentWriter;
 use crate::segment::reservation::Extension;
+use crate::segment::writer::Stamps;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 impl DiskLog {
     /// Roll if needed, then assign offsets and write the batch, if `condition`
     /// holds; `Err` with the log's tail, and nothing written, when it does
     /// not. With `order`, the batch's range is claimed there as soon as its
-    /// offsets are assigned.
+    /// offsets are assigned. `writers` names the generations a v9 segment
+    /// stamps the records with.
     ///
     /// The work runs on the log's append thread. A batch whose caller gives
     /// up before the thread starts on it is skipped. Once started it is
@@ -34,6 +36,7 @@ impl DiskLog {
         records: Vec<AppendRecord>,
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
+        writers: WrittenBy,
     ) -> Result<std::result::Result<Written, Offset>> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
@@ -66,8 +69,14 @@ impl DiskLog {
                 // `gone` turns true once this future is dropped: a batch the
                 // thread has not started on is then skipped.
                 move |gone| {
-                    let kept =
-                        appender.append_now(&records, &digests, condition, order.as_ref(), gone);
+                    let kept = appender.append_now(
+                        &records,
+                        &digests,
+                        condition,
+                        order.as_ref(),
+                        &writers,
+                        gone,
+                    );
                     let (reply, index) = match kept {
                         Ok(Ok(kept)) => (
                             Ok(Ok((kept.written, kept.prepare_roll, kept.extension))),
@@ -289,6 +298,7 @@ impl LogInner {
         digests: &[u64],
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
+        writers: &WrittenBy,
         gone: &dyn Fn() -> bool,
     ) -> Result<std::result::Result<Kept, Offset>> {
         let _appends = self.append_lock.lock();
@@ -326,8 +336,8 @@ impl LogInner {
             return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
-        let generation = self.generation_for(segments.active());
-        let staged = segments.active_mut().stage_at(records, generation)?;
+        let stamps = self.stamps_for(segments.active(), writers)?;
+        let staged = segments.active_mut().stage_at(records, stamps)?;
         drop(segments);
 
         self.hold_append_at(HoldAt::Write);
@@ -368,19 +378,38 @@ impl LogInner {
         }))
     }
 
-    /// The generation a batch appended to `active` carries: none before v9,
-    /// and otherwise the generation this log accepted, never below the
-    /// newest record's. A leader has accepted its own generation. Read under
-    /// the append lock, and the accepted generation only rises, so the
-    /// generations along the log never fall.
+    /// The generations a batch appended to `active` is stamped with: none
+    /// before v9, and otherwise the ones that wrote it. A leader's is the
+    /// generation it accepted, and only while that is the newest its history
+    /// records: a newer one accepted from a fence means another leader now
+    /// holds it, and stamping it here would claim that leader wrote this
+    /// record. Never raised to the floor; the writer refuses a stamp below
+    /// it. Read under the append lock.
     #[inline]
-    fn generation_for(&self, active: &SegmentWriter) -> Option<u64> {
-        active.holds_generations().then(|| {
-            let accepted = self.accepted_generation.load(Ordering::Acquire);
-            active
-                .last_generation()
-                .map_or(accepted, |floor| floor.max(accepted))
-        })
+    fn stamps_for<'a>(
+        &self,
+        active: &SegmentWriter,
+        writers: &'a WrittenBy,
+    ) -> Result<Option<Stamps<'a>>> {
+        if !active.holds_generations() {
+            return Ok(None);
+        }
+        match writers {
+            WrittenBy::Leader => {
+                let accepted = self.accepted_generation.load(Ordering::Acquire);
+                let recorded = self.epochs.lock().entries().last().map(|e| e.generation);
+                if recorded != Some(accepted) {
+                    return Err(StorageError::WriterUnknown(
+                        "the leader's accepted generation is not the one it recorded as its own",
+                    ));
+                }
+                Ok(Some(Stamps::All(accepted)))
+            }
+            WrittenBy::Writers(runs) => Ok(Some(Stamps::Runs(runs))),
+            WrittenBy::Unknown => Err(StorageError::WriterUnknown(
+                "the sender did not say which generations wrote the batch",
+            )),
+        }
     }
 
     /// Build the next segment and swap it in, with every fsync off the lock.

@@ -4,7 +4,9 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::replicate::GenerationStart;
-use super::replicate::{ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks};
+use super::replicate::{
+    ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks, writers_well_formed,
+};
 use super::{
     AckMode, CacheOpKind, ErrorCode, Fence, FenceAttestation, FenceElection, FenceOk,
     ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome,
@@ -234,7 +236,10 @@ impl InternalMessage {
                 // Blocks ride only the headered kind. Sending the batch as
                 // another would store its records without them.
                 if m.headers.as_deref().is_some_and(any_block)
-                    && self.kind() != Kind::ReplicateHeaderedRecords
+                    && !matches!(
+                        self.kind(),
+                        Kind::ReplicateHeaderedRecords | Kind::ReplicateStampedRecords
+                    )
                 {
                     return Err(Error::InvalidRecordHeaders(
                         "headers need generations and times",
@@ -300,7 +305,13 @@ impl InternalMessage {
                         None => body.put_u64(m.commit_offset.unwrap_or(0)),
                     }
                 }
-                let headered = self.kind() == Kind::ReplicateHeaderedRecords;
+                let stamped = self.kind() == Kind::ReplicateStampedRecords;
+                if stamped && (m.generations.is_none() || m.times.is_none()) {
+                    return Err(Error::InvalidRecordHeaders(
+                        "writers need generations and times",
+                    ));
+                }
+                let headered = stamped || self.kind() == Kind::ReplicateHeaderedRecords;
                 if headered || self.kind() == Kind::ReplicateTimedRecords {
                     let times = m.times.as_deref().unwrap_or_default();
                     debug_assert_eq!(times.len(), m.payloads.len(), "one time per record");
@@ -309,13 +320,34 @@ impl InternalMessage {
                     }
                 }
                 if headered {
-                    let headers = m.headers.as_deref().unwrap_or_default();
+                    let none;
+                    let headers = match m.headers.as_deref() {
+                        Some(headers) => headers,
+                        None if stamped => {
+                            none = vec![None; m.payloads.len()];
+                            &none
+                        }
+                        None => &[],
+                    };
                     if headers.len() != m.payloads.len() {
                         return Err(Error::InvalidRecordHeaders(
                             "headers count differs from payloads",
                         ));
                     }
                     put_blocks(&mut body, headers);
+                }
+                if stamped {
+                    let writers = m.writers.as_deref().unwrap_or_default();
+                    if writers.len() > MAX_GENERATIONS
+                        || !writers_well_formed(m.first_offset, m.payloads.len(), writers)
+                    {
+                        return Err(Error::InvalidRecordHeaders("writers are malformed"));
+                    }
+                    body.put_u32(writers.len() as u32);
+                    for run in writers {
+                        body.put_u64(run.generation);
+                        body.put_u64(run.start_offset);
+                    }
                 }
             }
             Self::ReplicateOk(m) => {
@@ -568,7 +600,7 @@ impl InternalMessage {
                 };
                 let sequenced = kind == Kind::SequencedForwardPublish;
                 let headers = if kind == Kind::HeaderedForwardPublish || sequenced {
-                    Some(take_blocks(&mut body, payloads.len())?)
+                    Some(take_blocks(&mut body, payloads.len(), true)?)
                 } else {
                     None
                 };
@@ -763,7 +795,8 @@ impl InternalMessage {
             Kind::ReplicateFetch
             | Kind::ReplicateLabelledFetch
             | Kind::ReplicateTimedFetch
-            | Kind::ReplicateHeaderedFetch => {
+            | Kind::ReplicateHeaderedFetch
+            | Kind::ReplicateStampedFetch => {
                 let message = ReplicateFetch {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -780,9 +813,15 @@ impl InternalMessage {
                     labelled: kind != Kind::ReplicateFetch,
                     timed: matches!(
                         kind,
-                        Kind::ReplicateTimedFetch | Kind::ReplicateHeaderedFetch
+                        Kind::ReplicateTimedFetch
+                            | Kind::ReplicateHeaderedFetch
+                            | Kind::ReplicateStampedFetch
                     ),
-                    headers: kind == Kind::ReplicateHeaderedFetch,
+                    headers: matches!(
+                        kind,
+                        Kind::ReplicateHeaderedFetch | Kind::ReplicateStampedFetch
+                    ),
+                    writers: kind == Kind::ReplicateStampedFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -832,7 +871,8 @@ impl InternalMessage {
             | Kind::ReplicateCommittedRecords
             | Kind::ReplicateLabelledRecords
             | Kind::ReplicateTimedRecords
-            | Kind::ReplicateHeaderedRecords => {
+            | Kind::ReplicateHeaderedRecords
+            | Kind::ReplicateStampedRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -856,7 +896,8 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let headered = kind == Kind::ReplicateHeaderedRecords;
+                let stamped = kind == Kind::ReplicateStampedRecords;
+                let headered = kind == Kind::ReplicateHeaderedRecords || stamped;
                 let timed = kind == Kind::ReplicateTimedRecords || headered;
                 let labelled = kind == Kind::ReplicateLabelledRecords || timed;
                 let committed = kind == Kind::ReplicateCommittedRecords || labelled;
@@ -909,7 +950,28 @@ impl InternalMessage {
                     None
                 };
                 let headers = if headered {
-                    Some(take_blocks(&mut body, payloads.len())?)
+                    // A stamped batch may hold no block; that reads as none.
+                    let blocks = take_blocks(&mut body, payloads.len(), !stamped)?;
+                    any_block(&blocks).then_some(blocks)
+                } else {
+                    None
+                };
+                let writers = if stamped {
+                    let declared = take_u32(&mut body)? as usize;
+                    if declared > MAX_GENERATIONS || declared > body.remaining() / 16 {
+                        return Err(Error::Incomplete);
+                    }
+                    let mut runs = Vec::with_capacity(declared);
+                    for _ in 0..declared {
+                        runs.push(GenerationStart {
+                            generation: take_u64(&mut body)?,
+                            start_offset: take_u64(&mut body)?,
+                        });
+                    }
+                    if !writers_well_formed(first_offset, payloads.len(), &runs) {
+                        return Err(Error::Incomplete);
+                    }
+                    Some(runs)
                 } else {
                     None
                 };
@@ -941,6 +1003,7 @@ impl InternalMessage {
                     generations,
                     times,
                     headers,
+                    writers,
                     set_generation: None,
                 };
                 if let Some(log) = log {

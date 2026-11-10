@@ -274,7 +274,8 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::PING)
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
-            .union(PeerCapabilities::SEQUENCED_FORWARDS);
+            .union(PeerCapabilities::SEQUENCED_FORWARDS)
+            .union(PeerCapabilities::WRITER_GENERATIONS);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)

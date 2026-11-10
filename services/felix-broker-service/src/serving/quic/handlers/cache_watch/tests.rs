@@ -280,6 +280,7 @@ fn a_replay_delivers_no_change_for_records_that_are_not_data() {
     use felix_storage::log::{LogRecord, RecordMark};
     let filter = CacheWatchFilter::Prefix(String::new());
     let record = |offset, mark, payload: Bytes| LogRecord {
+        generation: None,
         offset,
         timestamp_micros: 1,
         checksum: 0,

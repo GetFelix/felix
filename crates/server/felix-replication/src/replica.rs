@@ -843,6 +843,7 @@ impl ReplicaHandler {
                     &batch.publishers,
                     batch.times.as_deref().unwrap_or_default(),
                     batch.headers.as_deref(),
+                    batch.writers.as_deref(),
                 )
                 .await
             }
@@ -921,6 +922,7 @@ impl ReplicaHandler {
                             &batch.publishers,
                             batch.times.as_deref().unwrap_or_default(),
                             batch.headers.as_deref(),
+                            batch.writers.as_deref(),
                         )
                         .await;
                     }
@@ -1132,12 +1134,41 @@ impl ReplicaHandler {
                 })
             }
             Ok(Err(divergence)) => {
+                if let Divergence::GenerationBelowFloor { .. } = &divergence {
+                    // No truncation: the stamps show the records before the
+                    // batch disagree with the leader's, not where.
+                    tracing::error!(
+                        stream = %key.stream,
+                        shard = key.shard,
+                        sender_generation = batch.shard.generation,
+                        error = %divergence,
+                        "the leader's records disagree with this copy's generations; \
+                         replication stops here",
+                    );
+                }
                 metrics::record_replicated(divergence_outcome(&divergence));
                 refused(
                     correlation_id,
                     divergence_code(&divergence),
                     divergence.expected_offset(),
                     divergence.to_string(),
+                )
+            }
+            Err(felix_broker::BrokerError::WriterUnknown(_)) => {
+                tracing::error!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    sender_generation = batch.shard.generation,
+                    "the leader did not say which generations wrote its records; refusing the batch",
+                );
+                metrics::record_replicated(metrics::OUTCOME_WRITERS_UNKNOWN);
+                refused(
+                    correlation_id,
+                    ErrorCode::UnsupportedKind,
+                    0,
+                    "this follower stamps records with the generation that wrote them; \
+                     the leader must offer writer_generations"
+                        .to_string(),
                 )
             }
             Err(err) => {
@@ -1886,6 +1917,12 @@ impl ReplicaHandler {
             }
             records.truncate(at);
         }
+        // Cut before any fall in the generations; the reader asks again.
+        let writers = (request.writers && request.labelled && request.timed).then(|| {
+            let (runs, covered) = replication::writers_to_wire(&records, &log.generations());
+            records.truncate(covered);
+            runs
+        });
         let marks: Vec<felix_wire::internal::ProducerMark> = if records
             .iter()
             .any(|record| record.mark != felix_storage::log::RecordMark::None)
@@ -1938,6 +1975,7 @@ impl ReplicaHandler {
             publishers,
             times,
             headers,
+            writers,
             set_generation: None,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);
@@ -3063,6 +3101,8 @@ fn divergence_code(divergence: &Divergence) -> ErrorCode {
         // A batch that did not survive the trip is a transport problem, and
         // resending the same records is the repair.
         Divergence::Corrupt { .. } => ErrorCode::Malformed,
+        // The leader halts this follower as diverged.
+        Divergence::GenerationBelowFloor { .. } => ErrorCode::LogConflict,
     }
 }
 
@@ -3071,6 +3111,7 @@ fn divergence_outcome(divergence: &Divergence) -> &'static str {
         Divergence::Gap { .. } => metrics::OUTCOME_GAP,
         Divergence::Conflict { .. } => metrics::OUTCOME_CONFLICT,
         Divergence::Corrupt { .. } => metrics::OUTCOME_CORRUPT,
+        Divergence::GenerationBelowFloor { .. } => metrics::OUTCOME_BELOW_FLOOR,
     }
 }
 

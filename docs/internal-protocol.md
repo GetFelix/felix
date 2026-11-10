@@ -122,6 +122,7 @@ never have dialled the one that shipped to it.
 | `1 << 19` | `REFUSAL_REASONS` | offered by a caller: it reads a `ReplicateError`'s reason fields, so a refusal to it carries them after the detail (see "Refusal reasons" under "Errors") |
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
+| `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 
 #### Storage identity
 
@@ -750,6 +751,27 @@ leader's only in its block answers `LogConflict` on a resend, and a block
 altered in transit is refused as corrupt. A batch with no block anywhere
 travels as before and checksums as before.
 
+**The generation that wrote each record** rides with a batch to a follower
+that offered `WRITER_GENERATIONS`. Such a batch travels as
+`ReplicateStampedRecords` (kind 55): the kind 49 body, then `count u32` and
+`count` pairs of `generation u64` and `start_offset u64`. Each pair is a run:
+it covers the records from its `start_offset` up to the next pair's, the last
+to the end of the batch. A batch with no block anywhere sends the blocks
+section as all absent, which a decoder accepts on this kind only. A decoder
+refuses a `count` over 512 or over what the body could hold; on a batch with
+records, a `count` of zero, a first `start_offset` other than `first_offset`,
+offsets that do not strictly increase or reach past the last record, and
+generations that do not strictly increase; and on an empty batch, any run. The
+encoder refuses a shape the decoder would. The runs are not covered by the
+checksum. A batch without them travels as before, byte for byte.
+
+A follower whose log stamps each record with its writer's generation never
+stamps its own. It refuses a batch without runs with `UnsupportedKind`, storing
+nothing, since such a leader never offered the capability. It answers
+`LogConflict` to a run below the generation of the record before it, storing
+nothing and truncating nothing: the leader halts that follower as diverged, and
+a rebuild is the way back.
+
 A follower stores each block with its record, so its log reads back what the
 leader's does. Only a stream's log carries blocks; a headered batch for any
 other log is refused as `Malformed`. A leader whose follower did not offer
@@ -937,7 +959,10 @@ the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind
 and is answered with `ReplicateTimedRecords`, so the tail keeps its times
 too. `ReplicateHeaderedFetch` (kind 50) goes to a replica that also offered
 `RECORD_HEADERS` and is answered with `ReplicateHeaderedRecords` when any
-record in the page has a block, so the tail keeps its keys and headers. A
+record in the page has a block, so the tail keeps its keys and headers. `ReplicateStampedFetch` (kind 56), the same body again, goes to a replica that
+also offered `WRITER_GENERATIONS` and is answered with
+`ReplicateStampedRecords`, so the tail keeps the generation that wrote each
+record. A
 replica refuses with `UnsupportedKind` a fetch that did not ask for blocks
 when its page holds one: the leader would take those records bare.
 
@@ -1156,7 +1181,8 @@ back to the detail whenever the fields are absent.
 `ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
 `ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
-`FenceAttestedOk` 54. A peer
+`FenceAttestedOk` 54, `ReplicateStampedRecords` 55 and
+`ReplicateStampedFetch` 56. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

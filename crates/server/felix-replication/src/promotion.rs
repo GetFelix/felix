@@ -557,6 +557,7 @@ async fn newest_ballot<R: PeerRequester>(
             labelled: false,
             timed: false,
             headers: false,
+            writers: false,
         });
         async move { requester.request(&node_id, addr, request).await }
     });
@@ -1588,6 +1589,7 @@ async fn read_all<R: PeerRequester>(
             labelled: false,
             timed: false,
             headers: false,
+            writers: false,
         });
         let batch = match requester.request(node_id, addr, request).await {
             Ok(
@@ -1889,6 +1891,10 @@ async fn catch_up<R: PeerRequester>(
     // that differ from the replica's once it serves.
     let headers =
         timed && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_HEADERS));
+    // And the generation that wrote each record, or a log that stamps them
+    // would refuse the batch.
+    let writers = headers
+        && offered.is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS));
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {
@@ -1900,6 +1906,7 @@ async fn catch_up<R: PeerRequester>(
             labelled,
             timed,
             headers,
+            writers,
         });
         let batch = match requester.request(from, addr, request).await {
             Ok(
@@ -1940,6 +1947,7 @@ async fn catch_up<R: PeerRequester>(
             &batch.publishers,
             batch.times.as_deref().unwrap_or_default(),
             batch.headers.as_deref(),
+            batch.writers.as_deref(),
         )
         .await
         .map_err(|err| err.to_string())?;

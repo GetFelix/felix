@@ -287,6 +287,29 @@ pub struct LogRecord {
     /// The record's encoded key and headers, when it was stored with them.
     /// Boxed for the same reason as [`AppendRecord::headers`].
     pub headers: Option<Box<Bytes>>,
+    /// The generation of the leader that wrote the record, kept in its
+    /// header from segment format v9. `None` for a record in an older
+    /// segment.
+    pub generation: Option<u64>,
+}
+
+/// Which generation wrote the records of a batch, for a log whose segment
+/// stamps each record with one (format v9). An older segment ignores it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WrittenBy {
+    /// This log's own leader: the generation it accepted, which must be the
+    /// newest one its history records, since a leader records where its
+    /// generation begins before it serves. Anything else is refused rather
+    /// than stamped with a generation that did not write the record.
+    #[default]
+    Leader,
+    /// Records copied from another log, at the generations that wrote them
+    /// there: runs oldest first, each covering its records up to the next
+    /// run's start, the first starting at or before the batch.
+    Writers(Vec<Epoch>),
+    /// Records copied from a sender that did not say which generations wrote
+    /// them. A v9 segment refuses them.
+    Unknown,
 }
 
 /// One leadership generation, and the offset its first record took.

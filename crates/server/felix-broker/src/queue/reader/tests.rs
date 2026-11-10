@@ -999,6 +999,7 @@ async fn a_group_hands_out_each_records_publisher() {
             &[Some(alice.clone())],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")

@@ -131,6 +131,7 @@ mod correlation {
                 incarnation: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
+                writers: None,
                 times: None,
                 correlation_id: 7,
                 shard: shard(),
@@ -182,6 +183,7 @@ mod correlation {
                 attestation: None,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
+                writers: false,
                 timed: false,
                 headers: false,
                 correlation_id: 7,
@@ -192,6 +194,7 @@ mod correlation {
                 labelled: false,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+                writers: None,
                 times: None,
                 correlation_id: 7,
                 shard: shard(),

@@ -78,6 +78,7 @@ async fn append_trim(log: &felix_broker::StreamLog, floor: u64) -> u64 {
             &[],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")

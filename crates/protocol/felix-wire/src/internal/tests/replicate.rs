@@ -58,6 +58,7 @@ fn a_cache_replication_batch_is_not_a_stream_one() {
         generations: None,
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     };
     let stream = InternalMessage::ReplicateRecords(body.clone());
@@ -92,6 +93,7 @@ fn the_four_replication_kinds_are_distinguishable() {
         generations: None,
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     };
     let encoded: Vec<_> = [
@@ -162,6 +164,7 @@ fn a_commit_offset_travels_as_the_committed_kind_for_every_log() {
         generations: None,
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     };
     for message in [
@@ -205,6 +208,7 @@ fn generations_travel_as_the_labelled_kind_for_every_log() {
         ]),
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     };
     let opens = ProducerMark::Opens {
@@ -248,6 +252,7 @@ fn an_absent_commit_offset_must_be_zero() {
         generations: Some(Vec::new()),
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     });
     let encoded = message.encode().expect("encode");
@@ -274,6 +279,7 @@ fn a_labelled_fetch_is_its_own_kind() {
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
             headers: false,
+            writers: false,
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
@@ -313,6 +319,7 @@ fn a_generation_start_mark_round_trips_and_an_unknown_mark_is_refused() {
         generations: None,
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     };
     let message = InternalMessage::ReplicateMarkedRecords(batch);
@@ -363,6 +370,7 @@ fn a_trim_mark_round_trips_with_its_floor() {
         generations: None,
         publishers: vec![None, Some(Bytes::from_static(b"svc"))],
         headers: None,
+        writers: None,
         set_generation: None,
     };
     assert!(batch.holds_trim());
@@ -404,6 +412,7 @@ fn publishers_travel_with_the_marks_and_are_checksummed() {
             generations: None,
             publishers: publishers.clone(),
             headers: None,
+            writers: None,
             set_generation: None,
         };
         let message = if marks.is_empty() {
@@ -444,6 +453,7 @@ fn timed(times: Option<Vec<u64>>, generations: Option<Vec<GenerationStart>>) -> 
         publishers: Vec::new(),
         times,
         headers: None,
+        writers: None,
         set_generation: None,
     }
 }
@@ -533,6 +543,7 @@ fn a_timed_fetch_is_its_own_kind() {
             labelled,
             timed,
             headers: false,
+            writers: false,
         })
     };
     assert_eq!(fetch(true, true).kind(), Kind::ReplicateTimedFetch);
@@ -608,6 +619,7 @@ fn blocks(blocks: &[Option<&'static [u8]>]) -> Option<Vec<Option<Bytes>>> {
 fn headered(headers: Option<Vec<Option<Bytes>>>) -> ReplicateRecords {
     ReplicateRecords {
         headers,
+        writers: None,
         ..timed(
             Some(vec![1_000, 2_000]),
             Some(vec![GenerationStart {
@@ -719,6 +731,7 @@ fn a_headered_frame_must_hold_a_block_and_end_with_its_section() {
 fn blocks_without_generations_and_times_are_not_encoded() {
     let body = ReplicateRecords {
         headers: blocks(&[Some(b"block"), None]),
+        writers: None,
         ..timed(None, None)
     };
     assert!(matches!(
@@ -760,6 +773,7 @@ fn a_headered_fetch_is_its_own_kind() {
             labelled: true,
             timed,
             headers,
+            writers: false,
         })
     };
     let headered = fetch(true, true);
@@ -835,4 +849,205 @@ fn an_unknown_refusal_reason_is_refused() {
     let mut tampered = frame.to_vec();
     *tampered.last_mut().expect("a tag") = 99;
     assert!(InternalMessage::decode(Bytes::from(tampered)).is_err());
+}
+
+fn run(generation: u64, start_offset: u64) -> GenerationStart {
+    GenerationStart {
+        generation,
+        start_offset,
+    }
+}
+
+/// A timed batch of two records at offsets 10 and 11, one run each.
+fn stamped_batch() -> ReplicateRecords {
+    ReplicateRecords {
+        headers: blocks(&[Some(b"block"), None]),
+        writers: Some(vec![run(3, 10), run(4, 11)]),
+        ..timed(Some(vec![1_000, 2_000]), Some(vec![run(3, 4), run(4, 11)]))
+    }
+}
+
+/// Swaps the runs at the end of an encoded stamped frame for `runs`.
+fn with_runs(frame: &Bytes, old: usize, runs: &[GenerationStart]) -> Bytes {
+    let mut forged = frame.to_vec();
+    forged.truncate(forged.len() - (4 + 16 * old));
+    forged.extend_from_slice(&(runs.len() as u32).to_be_bytes());
+    for r in runs {
+        forged.extend_from_slice(&r.generation.to_be_bytes());
+        forged.extend_from_slice(&r.start_offset.to_be_bytes());
+    }
+    let length = (forged.len() - InternalHeader::LEN) as u32;
+    forged[8..12].copy_from_slice(&length.to_be_bytes());
+    Bytes::from(forged)
+}
+
+/// A batch with writers is its own kind, the headered body followed by the
+/// runs, and round-trips plain, incarnated and set-stamped.
+#[test]
+fn a_stamped_batch_is_its_own_kind_and_round_trips() {
+    let body = ReplicateRecords {
+        marks: vec![
+            ProducerMark::Opens {
+                producer_id: 7,
+                sequence: 1,
+                len: 2,
+            },
+            ProducerMark::Continues,
+        ],
+        ..stamped_batch()
+    };
+    let message = InternalMessage::ReplicateRecords(body.clone());
+    assert_eq!(message.kind(), Kind::ReplicateStampedRecords);
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::WRITER_GENERATIONS)
+    );
+    let bytes = message.encode().expect("encode");
+    assert_eq!(
+        InternalHeader::decode(&bytes).expect("header").kind,
+        Kind::ReplicateStampedRecords
+    );
+    assert_eq!(
+        InternalMessage::decode(bytes.clone()).expect("decode"),
+        InternalMessage::ReplicateMarkedRecords(body.clone())
+    );
+
+    // The runs follow the headered body unchanged.
+    let headered = InternalMessage::ReplicateRecords(ReplicateRecords {
+        writers: None,
+        ..body.clone()
+    })
+    .encode()
+    .expect("encode");
+    assert_eq!(
+        bytes[InternalHeader::LEN..headered.len()],
+        headered[InternalHeader::LEN..]
+    );
+
+    let mut incarnated_shard = body.clone();
+    incarnated_shard.shard.incarnation = Some(5);
+    let incarnated = InternalMessage::ReplicateRecords(incarnated_shard);
+    assert_eq!(
+        InternalMessage::decode(incarnated.encode().expect("encode")).expect("decode"),
+        InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            shard: ShardRef {
+                incarnation: Some(5),
+                ..body.shard.clone()
+            },
+            ..body.clone()
+        })
+    );
+
+    let set = InternalMessage::ReplicateRecords(ReplicateRecords {
+        set_generation: Some(11),
+        marks: Vec::new(),
+        ..body
+    });
+    assert_eq!(set.kind(), Kind::ReplicateStampedRecords);
+    assert_eq!(
+        set.required_capability(),
+        Some(PeerCapabilities::ELECTION.union(PeerCapabilities::WRITER_GENERATIONS))
+    );
+    let decoded = InternalMessage::decode(set.encode().expect("encode")).expect("decode");
+    let InternalMessage::ReplicateRecords(decoded) = decoded else {
+        panic!("not records");
+    };
+    assert_eq!(decoded.set_generation, Some(11));
+    assert_eq!(decoded.writers, Some(vec![run(3, 10), run(4, 11)]));
+}
+
+/// Without writers the frames are exactly what they were.
+#[test]
+fn a_batch_without_writers_is_byte_for_byte_the_headered_one() {
+    let with = InternalMessage::ReplicateRecords(stamped_batch());
+    let without = InternalMessage::ReplicateRecords(ReplicateRecords {
+        writers: None,
+        ..stamped_batch()
+    });
+    assert_eq!(without.kind(), Kind::ReplicateHeaderedRecords);
+    assert_eq!(
+        without.required_capability(),
+        Some(PeerCapabilities::RECORD_HEADERS)
+    );
+    assert_ne!(with.kind(), without.kind());
+}
+
+/// A shape the decoder refuses is one the encoder refuses to send.
+#[test]
+fn a_stamped_batch_with_a_bad_shape_is_refused_both_ways() {
+    let frame = InternalMessage::ReplicateRecords(stamped_batch())
+        .encode()
+        .expect("encode");
+    let bad: [Vec<GenerationStart>; 6] = [
+        vec![run(3, 11), run(4, 12)],
+        vec![run(3, 10), run(4, 10)],
+        vec![run(3, 10), run(3, 11)],
+        vec![run(3, 10), run(4, 12)],
+        vec![],
+        vec![run(3, 10), run(2, 11)],
+    ];
+    for runs in bad {
+        assert!(
+            InternalMessage::decode(with_runs(&frame, 2, &runs)).is_err(),
+            "{runs:?} decoded"
+        );
+        let message = InternalMessage::ReplicateRecords(ReplicateRecords {
+            writers: Some(runs.clone()),
+            ..stamped_batch()
+        });
+        assert!(message.encode().is_err(), "{runs:?} encoded");
+    }
+    // The good shape in the same forging path still decodes.
+    InternalMessage::decode(with_runs(&frame, 2, &[run(3, 10), run(4, 11)])).expect("decode");
+
+    // Runs on an empty batch.
+    let empty = ReplicateRecords {
+        payloads: Vec::new(),
+        headers: Some(Vec::new()),
+        times: Some(Vec::new()),
+        writers: Some(Vec::new()),
+        ..stamped_batch()
+    };
+    let frame = InternalMessage::ReplicateRecords(empty.clone())
+        .encode()
+        .expect("encode");
+    InternalMessage::decode(frame.clone()).expect("decode");
+    assert!(InternalMessage::decode(with_runs(&frame, 0, &[run(3, 10)])).is_err());
+    assert!(
+        InternalMessage::ReplicateRecords(ReplicateRecords {
+            writers: Some(vec![run(3, 10)]),
+            ..empty
+        })
+        .encode()
+        .is_err()
+    );
+}
+
+/// A stamped fetch is its own kind with the headered fetch's body.
+#[test]
+fn a_stamped_fetch_is_its_own_kind() {
+    let fetch = |writers| {
+        InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 100,
+            max_bytes: 1 << 20,
+            labelled: true,
+            timed: true,
+            headers: true,
+            writers,
+        })
+    };
+    let stamped = fetch(true);
+    assert_eq!(stamped.kind(), Kind::ReplicateStampedFetch);
+    assert_eq!(
+        stamped.required_capability(),
+        Some(PeerCapabilities::WRITER_GENERATIONS)
+    );
+    assert_eq!(fetch(false).kind(), Kind::ReplicateHeaderedFetch);
+    let plain = fetch(false).encode().expect("encode");
+    let bytes = stamped.encode().expect("encode");
+    assert_eq!(plain[InternalHeader::LEN..], bytes[InternalHeader::LEN..]);
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), stamped);
 }

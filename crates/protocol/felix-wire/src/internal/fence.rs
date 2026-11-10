@@ -147,6 +147,13 @@ impl PeerCapabilities {
     /// answer carrying one travels to it as `FenceAttestedOk`. To any other
     /// caller the answer goes without it.
     pub const UNIFIED_FENCE: Self = Self(1 << 21);
+    /// Reads a batch that names the generation that wrote each record
+    /// (`ReplicateRecords::writers`), stores those as the records'
+    /// generations, and answers a fetch asking for them
+    /// (`ReplicateFetch::writers`). A peer offering it also offers
+    /// `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`, since a
+    /// stamped batch travels on the headered layout.
+    pub const WRITER_GENERATIONS: Self = Self(1 << 22);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -266,6 +273,10 @@ pub struct ReplicateFetch {
     /// fetch can ask: it travels as `ReplicateHeaderedFetch`, sent only to a
     /// peer that advertised [`PeerCapabilities::RECORD_HEADERS`].
     pub headers: bool,
+    /// Answer with the generation that wrote each record. Only a headered
+    /// fetch can ask: it travels as `ReplicateStampedFetch`, sent only to a
+    /// peer that advertised [`PeerCapabilities::WRITER_GENERATIONS`].
+    pub writers: bool,
 }
 
 /// A follower checking that the leader of a shard it follows is reachable.

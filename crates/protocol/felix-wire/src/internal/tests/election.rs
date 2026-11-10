@@ -405,6 +405,7 @@ fn a_headered_batch_round_trips_inside_the_stamp_and_the_incarnation() {
     };
     let headered = ReplicateRecords {
         headers: Some(vec![Some(Bytes::from_static(b"block")), None]),
+        writers: None,
         // A block needs the generations and times beside it.
         generations: Some(vec![GenerationStart {
             generation: 3,
