@@ -91,3 +91,93 @@ async fn a_drain_is_not_held_up_by_a_trim_waiting_on_commit() {
     assert!(!trim.is_finished(), "the drain waited for the trim");
     trim.abort();
 }
+
+fn quorum_ctx(
+    leader: &Leader,
+    marks: &Arc<felix_replication::quorum::QuorumMarks>,
+) -> PublishContext {
+    build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig {
+            publish_quorum_timeout_ms: 300,
+            ..BrokerConfig::default()
+        },
+        ClusterContext {
+            ingress: Some(Arc::clone(&leader.ingress)),
+            marks: Some(Arc::clone(marks)),
+            ..ClusterContext::default()
+        },
+    )
+}
+
+async fn publish_a(
+    leader: &Leader,
+    publish_ctx: &PublishContext,
+    expected_offset: u64,
+) -> Result<u64, NotWritten> {
+    publish_at(
+        &leader.broker,
+        publish_ctx,
+        TENANT,
+        NAMESPACE,
+        QUORUM,
+        None,
+        Some(0),
+        vec![Bytes::from_static(b"a")],
+        expected_offset,
+        None,
+    )
+    .await
+}
+
+/// **A conditional publish waits for the mark at the generation it was
+/// written at, for the configured time.** A mark at another generation does
+/// not release it, and one at its own does.
+#[tokio::test]
+async fn a_conditional_publish_waits_for_the_mark_at_its_generation() {
+    let leader = Leader::start().await;
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let publish_ctx = quorum_ctx(&leader, &marks);
+    let key = leader::stream_key(QUORUM);
+
+    marks.publish(&key, leader::GENERATION + 1, 1_000);
+    let started = std::time::Instant::now();
+    publish_a(&leader, &publish_ctx, 0)
+        .await
+        .expect_err("a mark at another generation released the write");
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "waited past the timeout"
+    );
+
+    marks.publish(&key, leader::GENERATION, 1_000);
+    publish_a(&leader, &publish_ctx, 1)
+        .await
+        .expect("the mark at its own generation releases it");
+}
+
+/// With no mark the wait ends at the configured timeout and says so.
+#[tokio::test]
+async fn a_conditional_publish_without_a_mark_times_out_at_the_configured_wait() {
+    let leader = Leader::start().await;
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let publish_ctx = quorum_ctx(&leader, &marks);
+
+    let started = std::time::Instant::now();
+    let err = publish_a(&leader, &publish_ctx, 0)
+        .await
+        .expect_err("no mark");
+    let waited = started.elapsed();
+    let NotWritten::Refused(err) = err else {
+        panic!("expected a refusal");
+    };
+    assert_eq!(err.code(), &felix_wire::ErrorCode::QuorumTimeout, "{err:?}");
+    assert!(
+        waited >= Duration::from_millis(300),
+        "ended early after {waited:?}"
+    );
+    assert!(
+        waited < Duration::from_secs(3),
+        "ended late after {waited:?}"
+    );
+}

@@ -72,7 +72,7 @@ pub(super) async fn counter_add(
     }
     let applied = crate::serving::cache_routing::apply_counter_op(
         broker,
-        (publish_ctx.marks.as_deref(), publish_ctx.quorum_timeout),
+        (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
         session
@@ -184,7 +184,7 @@ pub(super) async fn counter_get(
     }
     let read = crate::serving::cache_routing::apply_counter_op(
         broker,
-        (publish_ctx.marks.as_deref(), publish_ctx.quorum_timeout),
+        (publish_ctx.engine.marks(), publish_ctx.quorum_timeout),
         publish_ctx.ingress.as_deref(),
         publish_ctx.peers.as_deref(),
         session

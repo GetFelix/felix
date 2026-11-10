@@ -228,7 +228,7 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         peers: None,
         lease: None,
         lease_headroom: std::time::Duration::ZERO,
-        marks: None,
+        engine: Default::default(),
         quorum_timeout: Duration::from_secs(1),
         scheduler,
         wait_timeout: Duration::from_millis(50),

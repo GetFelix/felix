@@ -51,6 +51,19 @@ impl<S: ?Sized> Hybrid<S> {
     pub fn new(marks: Option<Arc<QuorumMarks>>, serving: Option<Arc<S>>) -> Self {
         Self { marks, serving }
     }
+
+    /// The quorum marks, for the waits that are not behind [`Engine`] yet
+    /// (caches and counters).
+    pub fn marks(&self) -> Option<&QuorumMarks> {
+        self.marks.as_deref()
+    }
+}
+
+impl<S: ?Sized> Default for Hybrid<S> {
+    /// Outside a cluster: nothing is replicated.
+    fn default() -> Self {
+        Self::new(None, None)
+    }
 }
 
 impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
