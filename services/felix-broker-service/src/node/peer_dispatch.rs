@@ -1,8 +1,8 @@
 //! Routing a peer request to the half of this broker that answers it.
 //!
-//! Two halves (a forwarding handler and the replication engine), because a broker plays two roles at once and they are not the
-//! same role for the same shard: it is the leader of some shards and a follower
-//! of others. A forwarded publish is a request to *order* a record, and only a
+//! Two halves (a forwarding handler and the replication engine), because a
+//! broker plays two roles at once and they are not the same role for the same
+//! shard: it is the leader of some shards and a follower of others. A forwarded publish is a request to *order* a record, and only a
 //! leader may answer it; a replication batch is a request to *store* one
 //! already ordered, and only a follower should. Keeping them apart is what
 //! stops either check standing in for the other.

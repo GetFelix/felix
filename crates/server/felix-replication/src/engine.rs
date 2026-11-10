@@ -304,7 +304,11 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
     ) -> InternalMessage {
         use felix_broker::LogKind;
         let Some(replica) = self.replica.as_ref() else {
-            return not_replication(&request);
+            return InternalMessage::ForwardPublishError(ForwardPublishError {
+                correlation_id: request.correlation_id(),
+                code: ErrorCode::Unavailable,
+                detail: "replica handler not configured".to_string(),
+            });
         };
         match request {
             InternalMessage::ReplicateRecords(batch)

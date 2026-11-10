@@ -700,6 +700,7 @@ mod start {
             drop(elections(true, &router, Arc::default(), &marks));
         }
         let shutdown = CancellationToken::new();
+        super::super::start::SPAWNED.with(|spawned| spawned.borrow_mut().clear());
         let before = alive();
         let started = Hybrid::<ServedAt>::start(StartDeps {
             requester: Arc::new(Silent),
@@ -745,6 +746,10 @@ mod start {
     async fn spawns_the_driver_reporter_suspicion_and_election_tasks() {
         let (tasks, shutdown) = started(true, true).await;
         assert_eq!(tasks, 4, "driver, reporter, suspicion, election");
+        // The driver is handed the reporter, and the election driver reads
+        // the suspicions, so this order is the contract.
+        let order = super::super::start::SPAWNED.with(|spawned| spawned.borrow().clone());
+        assert_eq!(order, ["reporter", "driver", "suspicion", "election"]);
         shutdown.cancel();
 
         let (tasks, shutdown) = started(false, true).await;
@@ -754,5 +759,34 @@ mod start {
         let (tasks, shutdown) = started(true, false).await;
         assert_eq!(tasks, 3, "no election driver without elections");
         shutdown.cancel();
+    }
+}
+
+/// Without a replica handler a replication request is refused as
+/// unavailable, not as a malformed message.
+#[tokio::test]
+async fn handle_without_a_replica_says_so() {
+    use felix_wire::internal::{
+        ErrorCode, InternalMessage, PeerCapabilities, ReplicateBootstrap, ShardRef,
+    };
+    let engine = Hybrid::<ServedAt>::default();
+    let request = InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
+        correlation_id: 3,
+        shard: ShardRef {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            stream: "orders".to_string(),
+            shard: 0,
+            generation: 0,
+            incarnation: None,
+        },
+        base_offset: 0,
+    });
+    match engine.handle(None, PeerCapabilities::NONE, request).await {
+        InternalMessage::ForwardPublishError(error) => {
+            assert_eq!(error.code, ErrorCode::Unavailable);
+            assert_eq!(error.detail, "replica handler not configured");
+        }
+        other => panic!("{other:?}"),
     }
 }

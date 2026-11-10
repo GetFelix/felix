@@ -93,6 +93,18 @@ pub struct StartDeps<S: ?Sized, F: ?Sized, R, L> {
     pub shutdown: CancellationToken,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The components `Hybrid::start` spawned on this thread, in order.
+    pub(super) static SPAWNED: std::cell::RefCell<Vec<&'static str>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Note a spawn for the order test; nothing in a release build.
+fn spawned(_name: &'static str) {
+    #[cfg(test)]
+    SPAWNED.with(|spawned| spawned.borrow_mut().push(_name));
+}
+
 /// What a started engine hands back.
 pub struct Started {
     /// The driver's handle: shipping to followers.
@@ -133,9 +145,11 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
         } = deps;
         let marks = Arc::clone(&published.marks);
         let reporter = report.map(|to| {
+            spawned("reporter");
             let (reporter, _task) = Reporter::spawn(to, shutdown.clone());
             reporter
         });
+        spawned("driver");
         let replication = driver::spawn(
             Arc::clone(&requester),
             Arc::clone(&broker),
@@ -150,6 +164,7 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
             move_throttle,
             shutdown.clone(),
         );
+        spawned("suspicion");
         drop(suspicion::spawn(
             Arc::clone(&requester),
             Arc::clone(&router),
@@ -157,6 +172,7 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
             SuspicionConfig::from_env(),
             shutdown.clone(),
         ));
+        spawned("election");
         drop(election::spawn(
             requester,
             broker,

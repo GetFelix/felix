@@ -1036,7 +1036,9 @@ unit, integration and simulator seed tests pass unchanged after each.
    it to `ClusterContext`, `BrokerWrites`, `ForwardingHandler` and Kafka. This
    removes the `(ingress, marks)` inputs on those constructors and the test
    literals that set `marks` on `ClusterContext`, `BrokerWrites::new` and
-   `ForwardingHandler::new`.
+   `ForwardingHandler::new`. Until then `cluster.rs` `peer_handler` builds a
+   second `StreamEngine` with `with_replica` beside the shared one in `node.rs`;
+   this step folds it into the shared engine.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.

@@ -217,5 +217,10 @@ async fn the_engine_refuses_what_is_not_replication() {
         .engine
         .handle(None, PeerCapabilities::NONE, publish())
         .await;
-    assert!(format!("{answer:?}").contains("is not a replication request"));
+    assert!(
+        matches!(&answer, InternalMessage::ForwardPublishError(error)
+        if error.code == ErrorCode::Malformed
+            && error.detail.ends_with("is not a replication request")),
+        "{answer:?}"
+    );
 }
