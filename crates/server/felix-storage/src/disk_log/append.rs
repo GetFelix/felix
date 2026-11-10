@@ -380,9 +380,9 @@ impl LogInner {
 
     /// The generations a batch appended to `active` is stamped with: none
     /// before v9, and otherwise the ones that wrote it. A leader's is the
-    /// generation it accepted, and only while that is the newest its history
-    /// records: a newer one accepted from a fence means another leader now
-    /// holds it, and stamping it here would claim that leader wrote this
+    /// generation it leads at ([`DiskLog::lead_at`]), and only while that is
+    /// the one this log accepted: a newer one means another leader holds it,
+    /// and stamping either would claim a generation that did not write the
     /// record. Never raised to the floor; the writer refuses a stamp below
     /// it. Read under the append lock.
     #[inline]
@@ -396,14 +396,14 @@ impl LogInner {
         }
         match writers {
             WrittenBy::Leader => {
+                let led = self.led_generation.load(Ordering::Acquire).checked_sub(1);
                 let accepted = self.accepted_generation.load(Ordering::Acquire);
-                let recorded = self.epochs.lock().entries().last().map(|e| e.generation);
-                if recorded != Some(accepted) {
+                let Some(led) = led.filter(|led| *led == accepted) else {
                     return Err(StorageError::WriterUnknown(
-                        "the leader's accepted generation is not the one it recorded as its own",
+                        "this log does not lead at the generation it accepted",
                     ));
-                }
-                Ok(Some(Stamps::All(accepted)))
+                };
+                Ok(Some(Stamps::All(led)))
             }
             WrittenBy::Writers(runs) => Ok(Some(Stamps::Runs(runs))),
             WrittenBy::Unknown => Err(StorageError::WriterUnknown(

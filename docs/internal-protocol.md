@@ -752,12 +752,16 @@ altered in transit is refused as corrupt. A batch with no block anywhere
 travels as before and checksums as before.
 
 **The generation that wrote each record** rides with a batch to a follower
-that offered `WRITER_GENERATIONS`. Such a batch travels as
+that offered `WRITER_GENERATIONS`, once the leader's log stamps records (it is
+on storage format v9) or the fleet has finalized `record_generations`. Until
+then the leader sends the kinds it always did, byte for byte, even to a
+follower that offers the bit. Such a batch travels as
 `ReplicateStampedRecords` (kind 55): the kind 49 body, then `count u32` and
 `count` pairs of `generation u64` and `start_offset u64`. Each pair is a run:
 it covers the records from its `start_offset` up to the next pair's, the last
 to the end of the batch. A batch with no block anywhere sends the blocks
-section as all absent, which a decoder accepts on this kind only. A decoder
+section as all absent, which a decoder accepts on this kind only and reads as
+no headers. A decoder
 refuses a `count` over 512 or over what the body could hold; on a batch with
 records, a `count` of zero, a first `start_offset` other than `first_offset`,
 offsets that do not strictly increase or reach past the last record, and
@@ -962,7 +966,9 @@ too. `ReplicateHeaderedFetch` (kind 50) goes to a replica that also offered
 record in the page has a block, so the tail keeps its keys and headers. `ReplicateStampedFetch` (kind 56), the same body again, goes to a replica that
 also offered `WRITER_GENERATIONS` and is answered with
 `ReplicateStampedRecords`, so the tail keeps the generation that wrote each
-record. A
+record. A promoting leader asks for them only once its own log stamps records,
+as above. The kind reads back as a headered fetch, so an encoder refuses a
+fetch that asks for writers without asking for headers. A
 replica refuses with `UnsupportedKind` a fetch that did not ask for blocks
 when its page holds one: the leader would take those records bare.
 

@@ -262,9 +262,10 @@ async fn past_the_gate_a_stream_moves_onto_v9_and_reads_back() {
     let log = storage
         .open_stream("t1", "default", "orders", 0)
         .expect("stream");
-    // A v9 segment stamps a leader's records with the generation it recorded.
+    // A v9 segment stamps a leader's records with the generation it leads at.
     log.accept_generation(1, Some("a")).await.expect("accept");
     log.record_generation(1, 0).expect("record");
+    log.lead_at(1);
     let events: Vec<String> = (0..12).map(|n| format!("e{n}")).collect();
     for event in &events[..6] {
         log.append(&payloads(&[event.as_str()]))

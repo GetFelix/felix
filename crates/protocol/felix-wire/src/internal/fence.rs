@@ -274,8 +274,9 @@ pub struct ReplicateFetch {
     /// peer that advertised [`PeerCapabilities::RECORD_HEADERS`].
     pub headers: bool,
     /// Answer with the generation that wrote each record. Only a headered
-    /// fetch can ask: it travels as `ReplicateStampedFetch`, sent only to a
-    /// peer that advertised [`PeerCapabilities::WRITER_GENERATIONS`].
+    /// fetch can ask, and the encoder refuses one that is not: it travels as
+    /// `ReplicateStampedFetch`, sent only to a peer that advertised
+    /// [`PeerCapabilities::WRITER_GENERATIONS`].
     pub writers: bool,
 }
 

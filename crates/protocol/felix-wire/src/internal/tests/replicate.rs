@@ -1050,4 +1050,44 @@ fn a_stamped_fetch_is_its_own_kind() {
     let bytes = stamped.encode().expect("encode");
     assert_eq!(plain[InternalHeader::LEN..], bytes[InternalHeader::LEN..]);
     assert_eq!(InternalMessage::decode(bytes).expect("decode"), stamped);
+
+    // It decodes as a headered fetch, so asking without headers is refused.
+    for (labelled, timed, headers) in [
+        (true, true, false),
+        (true, false, true),
+        (false, true, true),
+    ] {
+        let fetch = InternalMessage::ReplicateFetch(ReplicateFetch {
+            correlation_id: 42,
+            shard: shard(),
+            log: ReplicaLog::Stream,
+            from_offset: 100,
+            max_bytes: 1 << 20,
+            labelled,
+            timed,
+            headers,
+            writers: true,
+        });
+        assert!(
+            matches!(fetch.encode(), Err(Error::InvalidRecordHeaders(_))),
+            "{labelled} {timed} {headers}"
+        );
+    }
+}
+
+/// A stamped batch whose headers hold no block is the batch with none: one
+/// encoding, which decodes as `None`.
+#[test]
+fn stamped_headers_with_no_block_are_no_headers() {
+    let with = InternalMessage::ReplicateRecords(ReplicateRecords {
+        headers: Some(vec![None, None]),
+        ..stamped_batch()
+    });
+    let without = InternalMessage::ReplicateRecords(ReplicateRecords {
+        headers: None,
+        ..stamped_batch()
+    });
+    let bytes = with.encode().expect("encode");
+    assert_eq!(bytes, without.encode().expect("encode"));
+    assert_eq!(InternalMessage::decode(bytes).expect("decode"), without);
 }

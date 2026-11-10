@@ -1892,9 +1892,11 @@ async fn catch_up<R: PeerRequester>(
     let headers =
         timed && offered.is_some_and(|offered| offered.contains(PeerCapabilities::RECORD_HEADERS));
     // And the generation that wrote each record, or a log that stamps them
-    // would refuse the batch.
+    // would refuse the batch. Asked only by such a log, so the fetch is what
+    // it always was until then.
     let writers = headers
-        && offered.is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS));
+        && offered.is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS))
+        && log.stamps_generations();
     let mut taken_labels = labelled.then(Vec::new);
     while next < target.log_end {
         let request = InternalMessage::ReplicateFetch(ReplicateFetch {

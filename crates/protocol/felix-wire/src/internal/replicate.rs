@@ -70,7 +70,8 @@ pub struct ReplicateRecords {
     /// of which has a block, byte for byte what a peer that predates them
     /// reads. `Some` travels only on a timed batch, as
     /// `ReplicateHeaderedRecords`, sent only to a peer that advertised
-    /// `RECORD_HEADERS`. Covered by the checksum.
+    /// `RECORD_HEADERS`. Covered by the checksum. `Some` holding no block is
+    /// the same message as `None`: it is sent as `None` and decodes as `None`.
     pub headers: Option<Vec<Option<Bytes>>>,
     /// The generation that wrote each record, as runs: entry `i` covers from
     /// its `start_offset` to the next entry's, the last to the batch end. The

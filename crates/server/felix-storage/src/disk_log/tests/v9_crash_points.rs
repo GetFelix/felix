@@ -83,6 +83,7 @@ async fn lead(log: &DiskLog, generation: u64) {
         .expect("accept");
     let tail = log.tail_offset().await.expect("tail");
     log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
 }
 
 async fn append(log: &DiskLog, from: Offset, to: Offset) {
@@ -148,6 +149,7 @@ async fn run_to(dir: &Path, stop: Step) -> (DiskLog, Offset) {
     log.shutdown().await.expect("shutdown");
     drop(log);
     let log = DiskLog::open(dir, KEY, config()).expect("reopen");
+    log.lead_at(6);
     append(&log, 62, 66).await;
     (log, 66)
 }
@@ -195,7 +197,9 @@ async fn recover(dir: &Path, acknowledged: Offset, written: Offset) -> Offset {
     }
     check_generations(dir, &log);
 
-    // The repaired log takes an append at its floor and opens again.
+    // The repaired log takes an append at its floor and opens again. Leading
+    // is not kept across the reopen, so the broker leads it again.
+    log.lead_at(log.accepted_generation());
     log.append(&[record(kept)])
         .await
         .expect("append after recovery");

@@ -197,6 +197,13 @@ impl InternalMessage {
                 }
             }
             Self::ReplicateFetch(m) => {
+                // The stamped kind reads back as headered, so any other
+                // combination would decode as a different fetch.
+                if m.writers && !(m.labelled && m.timed && m.headers) {
+                    return Err(Error::InvalidRecordHeaders(
+                        "a fetch asking for writers must ask for headers",
+                    ));
+                }
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.shard.tenant_id)?;
                 put_str(&mut body, &m.shard.namespace)?;

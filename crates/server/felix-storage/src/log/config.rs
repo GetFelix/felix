@@ -182,6 +182,13 @@ impl GenerationGate {
         let _ = self.0.check.set(Box::new(check));
     }
 
+    /// Whether the gate has said yes, or its check would now. Unlike
+    /// [`Self::allows`] it writes nothing.
+    pub(crate) fn heard(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.0.open.load(Ordering::Acquire) || self.0.check.get().is_some_and(|check| check())
+    }
+
     /// Whether a new segment may be v9. Asked only when a log rolls onto a
     /// segment that would otherwise be older, so the marker's write, once,
     /// lands on a roll rather than on an append. A marker that cannot be

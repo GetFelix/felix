@@ -312,14 +312,21 @@ async fn apply_at_tail(
 pub fn writers_to_wire(records: &[LogRecord], history: &[Epoch]) -> (Vec<GenerationStart>, usize) {
     let mut runs: Vec<GenerationStart> = Vec::new();
     let mut covered = 0;
+    // Records and history both ascend, so one cursor walks the history once.
+    // `epoch` is how many epochs start at or before the current record.
+    let mut epoch = records.first().map_or(0, |first| {
+        history.partition_point(|epoch| epoch.start_offset <= first.offset)
+    });
     for record in records {
-        let generation = record.generation.unwrap_or_else(|| {
-            history
-                .iter()
-                .rev()
-                .find(|epoch| epoch.start_offset <= record.offset)
-                .map_or(0, |epoch| epoch.generation)
-        });
+        while history
+            .get(epoch)
+            .is_some_and(|next| next.start_offset <= record.offset)
+        {
+            epoch += 1;
+        }
+        let generation = record
+            .generation
+            .unwrap_or_else(|| epoch.checked_sub(1).map_or(0, |at| history[at].generation));
         match runs.last() {
             Some(last) if generation < last.generation => break,
             Some(last) if generation == last.generation => {}

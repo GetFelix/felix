@@ -1917,9 +1917,12 @@ impl ReplicaHandler {
             }
             records.truncate(at);
         }
+        // Read once for the labels and the writers; a plain fetch reads none.
+        let history = (request.labelled || request.writers).then(|| log.generations());
+        let history = history.as_deref().unwrap_or_default();
         // Cut before any fall in the generations; the reader asks again.
         let writers = (request.writers && request.labelled && request.timed).then(|| {
-            let (runs, covered) = replication::writers_to_wire(&records, &log.generations());
+            let (runs, covered) = replication::writers_to_wire(&records, history);
             records.truncate(covered);
             runs
         });
@@ -1971,7 +1974,7 @@ impl ReplicaHandler {
             commit_offset: None,
             generations: request
                 .labelled
-                .then(|| generations_over(&log.generations(), first_offset, end)),
+                .then(|| generations_over(history, first_offset, end)),
             publishers,
             times,
             headers,

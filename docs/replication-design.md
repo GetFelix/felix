@@ -3421,7 +3421,16 @@ wrote each record, taken from the records' own stamps, or from the history
 for a record in an older segment. A tail fetch asks for them the same way
 (`ReplicateStampedFetch`), and a rebuild or catch-up copies through the same
 batches, so a copy keeps the original stamps rather than the sender's
-current generation.
+current generation. Until the leader's log is on v9 or the fleet has
+finalized `record_generations`, no replica stamps records, so the leader
+sends the older kinds and builds no writers.
+
+A leader stamps its own appends with the generation it leads at, and only
+while its log has accepted nothing newer. Following a leader labels a log's
+history with that leader's generations, so a deposed leader's history can
+end in a generation it never led: L leads 3, takes N's fence at 4 and N's
+batch written at 4, and an append still in flight on L is refused rather than
+stamped 4.
 
 The follower stamps the records with those writers, never with its own
 accepted generation. Take a leader L at generation 3 that wrote 0..10, a

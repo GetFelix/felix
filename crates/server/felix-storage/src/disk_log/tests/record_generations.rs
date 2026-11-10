@@ -70,6 +70,7 @@ async fn lead(log: &DiskLog, generation: u64) {
         .expect("accept");
     let tail = log.tail_offset().await.expect("tail");
     log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
 }
 
 /// A log holding one older record, at offset 0, whose active segment is v9.
@@ -279,6 +280,8 @@ async fn the_floor_survives_a_roll() {
         below,
         Err(StorageError::GenerationBelowFloor { floor: 7, .. })
     ));
+    // Leading is not kept across a reopen; a broker opens the shard to lead it.
+    lead(&log, 7).await;
     log.append(&records(&["g"])).await.expect("append");
     let log = reopen(&dir, log).await;
     let found = generations(&dir, &log);
@@ -337,6 +340,7 @@ async fn the_floor_survives_a_truncation() {
         below,
         Err(StorageError::GenerationBelowFloor { floor: 5, .. })
     ));
+    lead(&log, 5).await;
     log.append(&records(&["g"])).await.expect("append");
     let log = reopen(&dir, log).await;
     assert_eq!(flat(&dir, &log).last(), Some(&Some(5)));
@@ -559,6 +563,7 @@ async fn random_rolls_cuts_and_reopens_keep_generations_from_falling() {
                 }
                 4 => {
                     log = reopen(&dir, log).await;
+                    led = None;
                 }
                 _ => {
                     // A cut can drop the leader's record of its start, and
@@ -673,24 +678,35 @@ async fn a_v9_log_refuses_a_batch_that_names_no_writer() {
     assert_eq!(read_generations(&log, 0).await, [None, None]);
 }
 
-/// A leader stamps only a generation it recorded as its own. One accepted
-/// from a fence since belongs to another leader, so the append is refused
-/// until this log records where that generation begins.
+/// A leader stamps only the generation it leads at. Once its log accepts a
+/// newer one from a fence, that generation belongs to another leader, even
+/// after this log's history takes the new leader's labels: L leads 3, takes
+/// N's fence at 4 and N's batch written at 4, and its own in-flight append is
+/// refused rather than stamped 4.
 #[tokio::test]
-async fn a_leader_whose_accepted_generation_moved_on_is_refused() {
+async fn a_deposed_leader_is_refused_even_with_the_new_leaders_labels() {
     let dir = tempdir().expect("dir");
     let log = v9_log(&dir).await;
     lead(&log, 3).await;
     log.append(&names(0, 1)).await.expect("append");
 
-    log.accept_generation(4, Some("b")).await.expect("accept");
+    log.accept_generation(4, Some("n")).await.expect("accept");
     let refused = log.append(&names(1, 1)).await.err();
     assert!(matches!(refused, Some(StorageError::WriterUnknown(_))));
-    assert_eq!(log.tail_offset().await.expect("tail"), 2);
 
-    log.record_generation(4, 2).expect("record");
-    log.append(&names(1, 1)).await.expect("append");
+    log.record_generation(4, 2).expect("label");
+    copy_in(&log, 2, &names(1, 1), WrittenBy::Writers(vec![run(4, 2)]))
+        .await
+        .expect("copy");
+    let refused = log.append(&names(2, 1)).await.err();
+    assert!(matches!(refused, Some(StorageError::WriterUnknown(_))));
+    assert_eq!(log.tail_offset().await.expect("tail"), 3);
     assert_eq!(read_generations(&log, 1).await, [Some(3), Some(4)]);
+
+    // Leading again, at a newer generation, stamps that one.
+    lead(&log, 5).await;
+    log.append(&names(2, 1)).await.expect("append");
+    assert_eq!(read_generations(&log, 1).await, [Some(3), Some(4), Some(5)]);
 }
 
 /// A record read back carries its generation when its segment keeps one.

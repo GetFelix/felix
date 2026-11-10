@@ -876,6 +876,18 @@ impl StreamLog {
         }
     }
 
+    /// Note that this broker leads the log at `generation`. See
+    /// `DiskLog::lead_at`.
+    pub fn lead_at(&self, generation: u64) {
+        self.log.lead_at(generation);
+    }
+
+    /// Whether the log stamps records with their writer's generation, or may
+    /// soon. See `DiskLog::stamps_generations`.
+    pub fn stamps_generations(&self) -> bool {
+        self.log.stamps_generations()
+    }
+
     /// The highest generation a leader of this shard was accepted at here.
     pub fn accepted_generation(&self) -> u64 {
         self.log.accepted_generation()

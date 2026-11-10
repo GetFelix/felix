@@ -668,6 +668,28 @@ impl DiskLog {
             .record(generation, start_offset)
     }
 
+    /// Note that this broker leads the log at `generation` from now on. A v9
+    /// segment stamps the leader's own appends with it, and refuses them once
+    /// the log accepts a newer generation: that belongs to another leader,
+    /// even after this log records where it begins (a deposed leader's
+    /// history takes the new leader's labels). Only rises; kept in memory,
+    /// since a broker opens a shard to lead it again after a restart.
+    pub fn lead_at(&self, generation: u64) {
+        self.inner
+            .led_generation
+            .fetch_max(generation.saturating_add(1), Ordering::AcqRel);
+    }
+
+    /// Whether this log stamps records with the generation that wrote them,
+    /// or may soon: its active segment is v9, or its gate has said yes or
+    /// would now. A sender ships the writers of a batch only then, so a
+    /// cluster that has not finalized `record_generations` sends what it
+    /// always did.
+    pub fn stamps_generations(&self) -> bool {
+        self.inner.config.generations.heard()
+            || self.inner.segments.read().active().holds_generations()
+    }
+
     /// Note that the leader wrote `generation`'s start record at `offset`.
     pub fn note_stint_start(&self, generation: u64, offset: Offset) {
         *self.inner.stint.lock() = Some(Epoch {
@@ -996,6 +1018,7 @@ impl DiskLog {
             epochs: Mutex::new(epochs),
             stint: Mutex::new(None),
             accepted_generation: AtomicU64::new(accepted.generation),
+            led_generation: AtomicU64::new(0),
             ballot: RwLock::new(accepted),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
@@ -1389,6 +1412,10 @@ struct LogInner {
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
+    /// One past the generation this broker opened the log to lead at, zero
+    /// for none since it opened. A leader's appends are stamped with it. See
+    /// [`DiskLog::lead_at`].
+    led_generation: AtomicU64,
     /// The accepted generation with the leader it was accepted from, when one
     /// was named, and whether that vote is committed. Read together on every
     /// replicated batch, so a raise is seen with its own leader. Written only

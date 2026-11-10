@@ -297,10 +297,10 @@ pub struct LogRecord {
 /// stamps each record with one (format v9). An older segment ignores it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WrittenBy {
-    /// This log's own leader: the generation it accepted, which must be the
-    /// newest one its history records, since a leader records where its
-    /// generation begins before it serves. Anything else is refused rather
-    /// than stamped with a generation that did not write the record.
+    /// This log's own leader: the generation it leads at
+    /// (`DiskLog::lead_at`), which must be the one the log accepted. Anything
+    /// else is refused rather than stamped with a generation that did not
+    /// write the record.
     #[default]
     Leader,
     /// Records copied from another log, at the generations that wrote them

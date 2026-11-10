@@ -264,11 +264,13 @@ and counter logs stay on them too.
 generation-start, commit and trim records alike. It is the generation of the
 leader that wrote the record, the same on every replica:
 
-- A leader stamps its own records with the generation it accepted, and only
-  while that is the newest generation its history records. A leader records
-  where its generation begins before it serves, so a newer accepted
-  generation means a fence from another leader landed. The append is then
-  refused (`WriterUnknown`), never stamped with the newer generation.
+- A leader stamps its own records with the generation it leads at, which the
+  broker notes when it opens the shard to lead it. That must also be the
+  generation the log accepted. A newer accepted generation means a fence from
+  another leader landed, so the append is refused (`WriterUnknown`), never
+  stamped with the newer generation. That holds even after the log's history
+  takes the new leader's labels, since following a leader labels the history
+  too.
 - A follower stamps a replicated record with the generation the leader sent
   for it (`writer_generations` on the peer wire, see
   `docs/internal-protocol.md`), never its own. The same holds for a promoted

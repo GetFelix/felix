@@ -79,8 +79,8 @@ pub enum StorageError {
     },
     /// A v9 segment needs the generation that wrote each record, and this
     /// append cannot name it honestly: a copied batch whose sender did not
-    /// say, or a leader whose accepted generation is not the one it recorded
-    /// as its own.
+    /// say, or a leader whose log accepted a generation other than the one it
+    /// leads at.
     WriterUnknown(&'static str),
     /// The device or the quota is out of space. Nothing was written, so the
     /// same request can succeed once space is freed.

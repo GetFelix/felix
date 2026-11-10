@@ -44,6 +44,7 @@ async fn lead(log: &StreamLog, generation: u64) {
         .expect("accept");
     let tail = log.tail_offset().await.expect("tail");
     log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
 }
 
 async fn read_all(log: &StreamLog) -> Vec<LogRecord> {
@@ -261,4 +262,51 @@ fn a_fall_cuts_the_batch_before_it() {
     assert_eq!(runs, vec![start(3, 4)]);
     assert_eq!(covered, 2);
     assert_eq!(writers_to_wire(&[], &[]), (Vec::new(), 0));
+}
+
+/// The single walk over the history gives what looking each record up does,
+/// with epochs before the batch, between records and past it.
+#[test]
+fn one_walk_matches_a_lookup_per_record() {
+    let lookup = |history: &[Epoch], offset: u64| {
+        history
+            .iter()
+            .rev()
+            .find(|epoch| epoch.start_offset <= offset)
+            .map_or(0, |epoch| epoch.generation)
+    };
+    let mut state = 7u64;
+    let mut next = || {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+        state >> 33
+    };
+    for _ in 0..200 {
+        let mut history = Vec::new();
+        let (mut generation, mut offset) = (0, next() % 4);
+        for _ in 0..next() % 6 {
+            generation += 1 + next() % 3;
+            offset += next() % 5;
+            // Two epochs may start at one offset: the first wrote nothing.
+            history.push(epoch(generation, offset));
+        }
+        let first = next() % 8;
+        let records: Vec<_> = (first..first + next() % 12)
+            .map(|offset| record(offset, None))
+            .collect();
+        let (runs, covered) = writers_to_wire(&records, &history);
+        assert_eq!(covered, records.len());
+        for record in &records {
+            let run = runs
+                .iter()
+                .rev()
+                .find(|run| run.start_offset <= record.offset)
+                .expect("covered");
+            assert_eq!(
+                run.generation,
+                lookup(&history, record.offset),
+                "{history:?} at {}",
+                record.offset
+            );
+        }
+    }
 }
