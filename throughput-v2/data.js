@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794313892522,
+  "lastUpdate": 1794315962862,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51272,6 +51272,58 @@ window.BENCHMARK_DATA = {
             "range": "5904.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1207967.11\nmean: 1207129.63\nstdev: 5904.14\ncv: 0.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "136f1b4cd79b9c550002d7cfdf1ae02d401a6c40",
+          "message": "feat(storage): record_generations fleet feature moves stream logs onto segment v9 (#2187)\n\n* feat(storage): record_generations fleet feature moves stream logs onto segment v9\n\nBrokers report `record_generations`; once the fleet finalizes it, a stream\nlog starts its next segment at v9 and stamps every record with its accepted\ngeneration, never below the newest record's. The floor survives a roll\n(background and inline), a reopen (full scan of the active segment, or the\nsealed one before it) and a truncation (the header below the cut). The open\nchecks generations across segments. A committed vote (ballot v2) is gated\nthe same way. The first v9 segment writes a `record-generations` marker,\nand a directory holding it joins only a fleet that finalized the feature.\nA new cluster does not finalize it on its own; a lone broker never moves.\n\nPart of #2167.\n\nSpec-Unaffected: a storage format gate and a fleet feature name; leases, fencing, the quorum mark, promotion and the vote save order are unchanged, and the join refusal gains one marker of the existing kind.\n\n* fix(controlplane): record_generations cannot be finalized until the writer's generation replicates\n\nA follower stamps its own accepted generation on a leader's records, so\nreplicas would disagree on a record's term. The finalize is refused until\nthe writing generation travels to followers. Docs say so; join_refusal\nnames v9 data or a v2 ballot.\n\nSpec-Unaffected: fleet finalize guard and docs only\n\n* fix(fleet): brokers do not report record_generations until the writer's generation replicates\n\nAn older control plane finalizes any feature every serving broker reports, so\nthe control plane's refusal alone left a brokers-first upgrade open. Keeping\nit out of IMPLEMENTED closes that for every control plane release.\n\nSpec-Unaffected: fleet feature report only",
+          "timestamp": "2026-11-10T13:02:31Z",
+          "tree_id": "94b14eb8642b362c3869efe35c8768da8110747a",
+          "url": "https://github.com/GetFelix/felix/commit/136f1b4cd79b9c550002d7cfdf1ae02d401a6c40"
+        },
+        "date": 1794315962061,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 719815.26,
+            "range": "34733.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 719815.26\nmean: 730087.73\nstdev: 34733.93\ncv: 4.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 719815.26,
+            "range": "34733.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 719815.26\nmean: 730087.73\nstdev: 34733.93\ncv: 4.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 171445.39,
+            "range": "12663.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 171445.39\nmean: 167152.40\nstdev: 12663.37\ncv: 7.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1714453.94,
+            "range": "126633.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1714453.94\nmean: 1671523.98\nstdev: 126633.68\ncv: 7.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
