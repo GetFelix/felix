@@ -613,3 +613,29 @@ async fn a_raise_clears_the_committed_mark() {
         assert!(!log.accepted_vote_committed(), "{leader:?} after a reopen");
     }
 }
+
+#[tokio::test]
+async fn a_committed_vote_for_no_leader_is_refused_and_writes_nothing() {
+    // A given-up generation names the empty leader; marking it committed
+    // would write a ballot the next open cannot decode.
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(5, Some("broker-a"))
+        .await
+        .expect("accept");
+    log.give_up_generation().await.expect("give up");
+    let before = std::fs::read(dir.path().join("ballot")).expect("read");
+    for generation in [5, 6] {
+        assert!(log.commit_vote_for_tests(generation, "").await.is_err());
+    }
+    assert!(!log.accepted_vote_committed());
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(
+        std::fs::read(dir.path().join("ballot")).expect("read"),
+        before
+    );
+    drop(log);
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert!(log.gave_up());
+}

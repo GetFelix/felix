@@ -19,7 +19,8 @@
 //! Only a committed vote is written as v2, and only through the test hook
 //! until the fleet gate for segment format v9 wires a real caller, so every
 //! ballot a broker writes today is one the previous release reads. That
-//! release refuses a v2 file at open: its decoder takes only v1.
+//! release refuses a v2 file at open: its decoder takes only v1. That comes
+//! after the open's torn-tail repair and mark write, which both builds read.
 //!
 //! `DiskLog::accept_generation` and the open's reading of the two files live
 //! here, where `scripts/check_spec_pairing.py` pairs them with the formal model.
@@ -212,7 +213,8 @@ impl DiskLog {
             .await
     }
 
-    /// `committed` marks the vote committed; it needs a leader. A raise
+    /// `committed` marks the vote committed; it needs a leader, or `store`
+    /// refuses it before writing. A raise
     /// without it, or to another generation, clears the mark.
     async fn raise_ballot(
         &self,
@@ -221,7 +223,6 @@ impl DiskLog {
         committed: bool,
         kept: Option<ReplicaSet>,
     ) -> Result<Option<GenerationCheck>> {
-        debug_assert!(!committed || leader.is_some_and(|leader| !leader.is_empty()));
         if kept.is_none()
             && let Some(found) = check(&self.inner.ballot.read(), generation, leader, committed)
         {
@@ -435,6 +436,13 @@ pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
         return Err(StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!("a leader id of {} bytes is too long", ballot.leader.len()),
+        )));
+    }
+    // The decoder refuses this, so writing it would fail the next open.
+    if ballot.committed && ballot.leader.is_empty() {
+        return Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a committed vote needs a leader",
         )));
     }
     let path = path_in(dir);

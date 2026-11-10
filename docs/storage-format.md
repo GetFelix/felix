@@ -880,6 +880,9 @@ version 2 file. Brokers do not save committed votes yet; that waits for the
 same fleet gate as segment format v9 (see [Generations](#generations)). A
 build that predates version 2 reads only version 1, so it refuses a version 2
 file at open (the file "does not decode") and never ignores or rewrites it.
+The refusal comes after the open's first repairs (torn-tail recovery, the
+durable mark, a retention-hold change to `replica`), which are in formats both
+builds read, so the newer build still opens the shard afterwards.
 A version newer than the build reads fails the open with a message naming a
 newer build. The crc is checked first, so a damaged version field reads as
 damage, not as a newer format. An unknown flag bit, or the committed bit with

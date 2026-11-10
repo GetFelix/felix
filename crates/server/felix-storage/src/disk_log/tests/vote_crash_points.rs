@@ -6,6 +6,9 @@
 //! is cut with several seeds, and the shard is reopened. It must come back
 //! with the vote it had or the one being saved, never a mix: in particular
 //! never a committed mark on a vote that was not durably saved.
+//!
+//! Built only with the `sim` feature; CI runs it in the coverage job
+//! (`--all-features`).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
