@@ -184,8 +184,9 @@ pub trait Engine: Send + Sync {
     fn await_commit(&self, key: &ShardKey, written: Written, generation: u64, timeout: Duration)
         -> impl Future<Output = Result<(), CommitError>> + Send;
 
-    /// One past the highest offset a reader of `key` may see, or `None` when
-    /// the shard is not bounded (not replicated, not `Quorum`).
+    /// One past the highest offset a reader of `key` may see: the commit
+    /// offset, at every consistency level. `None` only for a shard with no
+    /// replicas, whose commit is the local durable append.
     fn read_bound(&self, key: &ShardKey) -> Result<Option<u64>, Unreadable>;
 
     /// Confirm this broker still leads `key` at `generation` for a read.
@@ -282,15 +283,15 @@ engine that writes through `DiskLog` keeps all of them.
 **openraft's `RaftLogStorage` maps onto `DiskLog`** (paths in
 `crates/server/felix-storage/src/`):
 
-| Raft storage operation | `DiskLog` today |
+| Raft storage operation (openraft 0.10) | `DiskLog` today |
 | --- | --- |
-| `append`, then `LogFlushed` | `append_pending_at` / `append_claimed_at` (`disk_log.rs:365`, `:340`), then `wait_durable` (`disk_log.rs:414`). Group commit is kept: the callback fires when the shared flush covers the offset. |
-| `truncate` an uncommitted suffix | The truncation path (`disk_log.rs:1227`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1242`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
-| `purge` a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
-| Install a snapshot | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
-| Term of each entry | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
-| `save_vote` / `read_vote` | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:155-164`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file. |
-| `save_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:703`). |
+| `append`, then `IOFlushed` (`LogFlushed` in 0.9, which the control plane uses until it moves) | `append_pending_at` / `append_claimed_at` (`disk_log.rs:365`, `:340`), then `wait_durable` (`disk_log.rs:414`). Group commit is kept: the callback fires when the shared flush covers the offset. |
+| `truncate_after(Option<LogId>)`, cutting everything after the given id (0.9's `truncate(log_id)` cut from it) | The truncation path (`disk_log.rs:1227`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1242`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
+| `purge(log_id)` of a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
+| `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
+| Term of each entry (`LogId` with `leader_id_std::LeaderId`) | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
+| `save_vote` / `read_vote` (`Vote` with its `committed` flag) | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:155-164`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file, which bumps the ballot format (see Format version 9). Storage errors reach openraft as `io::Error`. |
+| `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:703`). |
 
 The offset is the Raft index: one record is one entry. The startup scan, the
 torn-tail rule and the derived indexes keep working as they do; version 9
@@ -362,6 +363,46 @@ used by every shard group and by the control plane, tested once.
   operation (`disk_log.rs:1227`, and "Divergence and truncation" in
   `replication-design.md`). That comment is corrected when the adapter lands.
 
+### openraft version
+
+The adapter targets openraft 0.10, currently `0.10.0-alpha.38`, pinned to an
+exact version in `Cargo.toml` and `Cargo.lock`. The control plane runs 0.9.25
+today (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the
+same pinned version as part of its storage track, so the workspace has one
+openraft. 0.10 is in alpha and may still change. This work lands over weeks,
+so it is designed against the 0.10 API, and a version change is a reviewed
+update, never a side effect of refreshing the lockfile.
+
+What the adapter absorbs from 0.9 to 0.10:
+
+- The `single-term-leader` feature is gone. The type config sets
+  `LeaderId = leader_id_std::LeaderId`, which gives a log id of term and
+  index, the term being the record's generation.
+- `truncate(log_id)` becomes `truncate_after(Option<LogId>)`, which keeps the
+  named entry and cuts everything after it. The adapter maps it to `DiskLog`'s
+  truncate at the next offset.
+- `LogFlushed` becomes `IOFlushed`, and storage errors are `io::Error`.
+- `Vote` keeps its `committed` flag, stored in the ballot file.
+- The trigger handle gains `transfer_leader`, which the engine uses for a
+  graceful hand-off on drain and rebalance, and `elect` takes a `pre_vote`
+  choice.
+- Neither version steps a leader down when it loses its majority (Decisions,
+  5), so the write fence's check at acknowledgement time is Felix's own.
+
+0.10 also has opt-in local lease reads. They could replace `Quorum` read
+rounds and save a round trip per read. That is a later option, taken only
+after it is measured and after our own simulator and crash tests cover it.
+No safety rule rests on behaviour only an alpha has unless one of our tests
+pins it.
+
+The adapter stays thin: openraft types do not leave `felix-storage::raft_log`
+and the engine module that drives it, so an API change is contained there.
+The control plane already keeps openraft types inside `src/raft/` for the
+same reason (`services/felix-controlplane-service/Cargo.toml:62`), and it
+depends on `loosen-follower-log-revert` so a member with a wiped volume can
+rejoin (`Cargo.toml:63-68`). The pinned version must keep that behaviour, and
+the chaos test that caught its absence stays.
+
 ### Many groups on one broker
 
 A broker can lead thousands of shards. One Raft group each means thousands of
@@ -375,6 +416,11 @@ pair. Multi-Raft systems such as TiKV found two fixes, and Felix needs both:
   its followers do not start an election on silence alone. They start one
   when node-level liveness says the leader's broker is gone. Felix has that
   signal already in its broker heartbeats and suspicion (`suspicion.rs`).
+  A sleeping group's lease lapses, which is safe, because the lease is
+  checked when a write is acknowledged, not kept alive in the background
+  (Decisions, 5). The first write after a group wakes runs one quorum round
+  before it is acknowledged. That costs one round trip on the first write
+  after idle, and nothing on later ones.
 
 openraft runs each group as its own task with its own timers. It has no
 built-in coalescing or hibernation, but it can be driven from outside: its
@@ -425,7 +471,12 @@ section below and refined decision 5, and both were approved.
 ### Format version 9, shared by both tracks
 
 **What it adds.** A generation field (8 bytes) in every record header, the
-membership record kind, and the counter record kinds of decision 4. With
+membership record kind, the counter record kinds of decision 4, and the vote's
+`committed` flag in the ballot file. The last raises the ballot format from
+version 1 (`crates/server/felix-storage/src/disk_log/ballot.rs:31`). A ballot
+that does not decode fails the open (`ballot.rs:14-15`), so a broker that
+predates the new ballot cannot open a shard that has one. It falls under the
+same fleet gate and rollback rule as the segment format. With
 openraft's `single-term-leader` feature turned on, a log id is just
 `(term, index)`: the term is the record's generation and the index its
 offset. The leader of a term is kept in the ballot, as today.
@@ -614,9 +665,10 @@ different points after a failover.
    longer than the lease plus a clock-drift margin has passed. The
    control-plane lease goes: lease reads (`FELIX_QUORUM_READS=lease`) and
    lease admission for `Leader` shards are removed.
-2. **One delivery rule.** Subscribers receive only committed records, on
-   `Leader` streams as well as `Quorum` ones. A `Leader` publisher is still
-   acknowledged as soon as the leader has the batch on its own disk.
+2. **One delivery rule.** Readers receive only committed records, on
+   `Leader` streams as well as `Quorum` ones, through every read path. A
+   `Leader` publisher is still acknowledged as soon as the leader has the
+   batch on its own disk.
 3. **The term is in the record.** Each record's generation is in its version
    9 header, so it comes from the log and never from `epochs.rs` (see
    "Format version 9" above).
@@ -630,16 +682,57 @@ it. Delivering only committed records removes that case outright. The lease
 covers what remains: an old leader must stop acknowledging before a new one
 can be elected, which is the job the control-plane lease does today.
 
-**openraft settings.** `heartbeat_interval` sets how often the leader hears
-from its followers, and `election_timeout_min` / `election_timeout_max` set
-the election timeout. The engine sets the lease between the two, with the
-drift margin below the minimum timeout. A follower that heard a leader
-within its election timeout refuses to vote. openraft does not, as far as we
-know, step a leader down by itself when it loses its majority, so the engine
-adds that: it reads how long ago the leader last heard a majority from
-openraft's metrics, and closes the write fence and steps down once that
-passes the lease. The prototype checks both against the pinned openraft
-version, and if openraft has its own step-down, uses that instead.
+**Every read path goes through `read_bound`.** Today the bound applies only
+to `Quorum` streams: the broker asks for it only for `Quorum`
+(`crates/server/felix-broker/src/stream/committed.rs:15-16`), and
+`quorum::read_bound` returns unbounded for any other level
+(`crates/server/felix-replication/src/quorum.rs:1256`). Under the new rule
+`Engine::read_bound` returns the commit offset for every consistency level on
+a replicated shard, and the local durable tail on an RF 1 shard. Each read
+path takes its bound from it:
+
+- QUIC subscribe fanout and cursor replay, through the broker's commit hold
+  (`crates/server/felix-broker/src/stream/committed.rs`).
+- Kafka fetch and list-offsets (`services/felix-broker-service/src/serving/kafka.rs:251-262`).
+- Cache watch (`services/felix-broker-service/src/serving/quic/handlers/cache_watch.rs:509`).
+- Group reads and atomic-commit state reads, which already use it for `Quorum`
+  (`serving/group_ops.rs:370`, `serving/commit_ops.rs:305`).
+
+The refactor routes these callers through `Engine::read_bound` first (plan
+steps 1 to 4), so the rule changes in one place when the Raft engine lands.
+
+**How the lease is checked.** At acknowledgement time, not by a background
+poll. A `Leader` write is acknowledged only if
+
+    now < last_quorum_ack_sent + lease
+
+where `last_quorum_ack_sent` is when the leader sent the heartbeat or append
+that a majority last acknowledged. openraft reports the time since then
+(`millis_since_quorum_ack`, measured from the acknowledged message's send
+time). If the check fails, the write fence closes and the write is refused
+with leadership lost; a group that has been idle first runs one quorum round
+(see "Many groups on one broker"). The check reads the same lease clock as
+today (`CLOCK_BOOTTIME` on Linux, see "The clock assumption, stated
+precisely" in `replication-design.md`).
+
+**The margin.** Followers refuse to vote for `election_timeout_max` after they
+last heard the leader. openraft 0.9 fixes its follower-side leader lease at
+that value (`raft_core.rs:1476`). Clocks drift in rate by at most `ρ`, so the
+leader's lease must satisfy
+
+    lease * (1 + ρ) / (1 - ρ) <= election_timeout_max
+
+so that the leader stops before any follower can vote for someone else. The
+engine uses the same `ρ` the control-plane lease uses today and sets the lease
+from it. The config refuses a lease that breaks the inequality.
+
+**openraft settings.** `heartbeat_interval`, `election_timeout_min` and
+`election_timeout_max`, plus the follower-side vote refusal above. Neither
+0.9 nor 0.10 steps a leader down when it loses its majority. 0.10's
+`quorum_loss_probe_interval` only pauses heartbeats and replication after
+the lease runs out, and `removed_leader_step_down` covers only a leader
+removed from membership. So Felix's write fence closes on the failed check
+above.
 
 **Performance.** `Leader` acknowledgements stay local, so publish latency
 and throughput do not change. Delivery on a replicated `Leader` stream waits
@@ -650,8 +743,9 @@ more than one replication round trip over today is a bug to fix, not a cost
 to document. `Quorum` reads already confirm leadership with a shared read
 round (`crates/server/felix-replication/src/leadership.rs:15`), so a
 deployment that opted into lease reads now pays one majority round trip per
-round. The gate's `Quorum` read p99 measures it. The lease adds no messages,
-since heartbeats already carry it. Lease and election timeout together set
+round. The gate's `Quorum` read p99 measures it. The lease adds no messages
+on a busy group, where appends and heartbeats renew it. The first write after
+a group sleeps pays one quorum round. Lease and election timeout together set
 the failover time, which the gate's failover cells measure.
 
 **Safety.** Offset jumps stay an exact drop signal, because no subscriber is
@@ -673,9 +767,11 @@ is removed.
 
 **Checked by.** A delivered-latency cell for an RF 3 `Leader` stream. A
 history-checker nemesis that partitions a `Leader` stream's leader from its
-group while it takes writes and subscribers read, then checks that no
-subscriber holds two records at one offset. The simulator's `clocks` mode
-with drift up to the margin.
+group while it takes writes, with a QUIC subscriber, a Kafka consumer and a
+cache watcher reading, and checks that none of them holds two records at one
+offset across the failover. The simulator's `clocks` mode with drift up to
+the margin. A test that a sleeping group's first write runs a quorum round
+before it is acknowledged.
 
 ### 6. Code size is reported, not a criterion
 
@@ -834,8 +930,8 @@ Both engines run the same tests, on the same commit, on the same runners:
 - **Delivered latency** on an RF 3 `Leader` stream, against today (Decisions,
   5). More than about one replication round trip over today fails.
 - **Duplicate-offset nemesis** in the history checker: a `Leader` stream's
-  leader is partitioned while it takes writes; no subscriber may hold two
-  records at one offset (Decisions, 5).
+  leader is partitioned while it takes writes; no QUIC subscriber, Kafka
+  consumer or cache watcher may hold two records at one offset (Decisions, 5).
 
 ## Refactor plan
 
@@ -852,8 +948,10 @@ unit, integration and simulator seed tests pass unchanged after each.
 3. Cache and counter waits (`await_cache_quorum`, `cache_write_at`,
    `await_counter_quorum`, `read_skips_lease`, `await_readable`) as engine
    methods.
-4. Read confirmation: `confirm_state_read` and the `ReadIndex` setup in
-   `node/startup.rs` behind `confirm_read`.
+4. Read confirmation and bounds: `confirm_state_read` and the `ReadIndex`
+   setup in `node/startup.rs` behind `confirm_read`, and the broker's
+   `ReadBounds` answer (`CommittedReads`, `quorum.rs:1443`) behind
+   `read_bound`, so every read path takes its bound from the engine.
 5. `EngineHost`: one trait over `ShardServing` and the generic part of
    `WriteFence`, with the hybrid-only callbacks on an extension trait.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns
@@ -896,5 +994,5 @@ the cells in the test set above, run against the commit before the stage.
 | `raft_log` adapter | `felix-storage` group-commit and fan-in tests (`crates/server/felix-storage/tests/group_commit_fanin.rs`) unchanged | openraft storage suite; power-loss crash points at every append, vote, snapshot and purge step; format fuzz |
 | Control plane on the adapter | Metadata write latency and control-plane failover time no worse than redb | `raft_chaos.rs`; history control-plane-down nemesis; simulator restart-after-crash seeds |
 | Format version 9 (prerequisite of both tracks) | 1 KiB single-node and RF 3 steady cells for the 8-byte header field | Power-loss crash points for a torn header and a torn generation field; format fuzz; scan check that generations never fall; rollback refusal by a version 8 reader; no client read returns a membership or counter-checkpoint record |
-| Per-shard Raft prototype | Every A/B cell, the cache mixed cell, `Quorum` read p99, RF 3 `Leader` delivered latency and failover time with the Raft lease, against the gate | 2000 seeds in every simulator mode, `clocks` with drift up to the lease margin; every history nemesis, plus the `Leader` partition nemesis for two records at one offset; `scale-nightly.yml`; a standard Raft TLA+ model with Felix's log mapping and the leader lease in place of the `FelixShard*` set |
+| Per-shard Raft prototype | Every A/B cell, the cache mixed cell, `Quorum` read p99, RF 3 `Leader` delivered latency and failover time with the Raft lease, against the gate | 2000 seeds in every simulator mode, `clocks` with drift up to the lease margin; every history nemesis, plus the `Leader` partition nemesis for two records at one offset, read by a QUIC subscriber, a Kafka consumer and a cache watcher; `scale-nightly.yml`; a standard Raft TLA+ model with Felix's log mapping and the leader lease in place of the `FelixShard*` set |
 | Delete the bespoke protocol | Same cells, no change from the prototype result | Same as above; `FelixShard*` specs and configs retired |
