@@ -501,9 +501,10 @@ received snapshot is written, `metadata-raft-design.md`, "Snapshots,
 compaction, recovery") goes away if the adapter purges only after the
 snapshot file is renamed into place.
 
-The control plane can also keep its metadata in Postgres or in memory instead
-of Raft. Whether those backends stay is an open decision in issue #2167, and
-this design does not depend on it.
+Raft on the segment store becomes the control plane's one production
+metadata backend. The Postgres backend (`store/postgres`, the `sqlx`
+dependency, its contract-test runs, its configuration and its docs) is
+removed. The in-memory backend stays, for tests only.
 
 ## The no-regression gate
 
@@ -569,10 +570,12 @@ build-time switch that no release enables.
 The control-plane storage track runs alongside, in its own pull requests,
 none of which touch the engine:
 
-1. The `raft_log` adapter in `felix-storage`, passing openraft's storage
+1. Remove the Postgres metadata backend and its tests, configuration and
+   docs. It does not depend on anything else here, so it can go first.
+2. The `raft_log` adapter in `felix-storage`, passing openraft's storage
    suite, with no users yet.
-2. The control plane switches from redb to the adapter, with snapshots as
+3. The control plane switches from redb to the adapter, with snapshots as
    files and a refusal to start on an old redb directory.
-3. Remove redb from the workspace.
+4. Remove redb from the workspace.
 
 The shard Raft prototype then uses the same adapter.
