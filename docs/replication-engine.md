@@ -288,12 +288,13 @@ engine that writes through `DiskLog` keeps all of them.
 | `truncate` an uncommitted suffix | The truncation path (`disk_log.rs:1227`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1242`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
 | `purge` a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
 | Install a snapshot | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
-| Term of each entry | The generation list in `disk_log/epochs.rs`: one `(generation, start offset)` per leader (`epochs.rs:71`). The term of an offset is the generation of the last start at or before it. No per-record field is needed. |
-| `save_vote` / `read_vote` | The accepted generation in `disk_log/replica_state.rs` and the accepted leader in `disk_log/ballot.rs` (`accept_generation`, `ballot.rs:110`). |
+| Term of each entry | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
+| `save_vote` / `read_vote` | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:155-164`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file. |
 | `save_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:703`). |
 
-The offset is the Raft index. The segment format, the startup scan, the
-torn-tail rule and the derived indexes do not change.
+The offset is the Raft index: one record is one entry. The startup scan, the
+torn-tail rule and the derived indexes keep working as they do; version 9
+adds the generation field to the record header and the record kinds below.
 
 **The awkward part is entries that are not records.** Raft appends two kinds
 of entry no client wrote: a blank entry when a leader starts its term, and
@@ -347,9 +348,9 @@ used by every shard group and by the control plane, tested once.
   adapter cannot live there. `felix-storage` depends on neither.
 - **One implementation for both.** Every entry is a record. A blank leader
   entry is a generation-start record and a membership entry is the typed
-  membership record above, for both users, so the term of any index comes from
-  `epochs.rs` and nothing else is needed per record. The control plane's log
-  has no subscribers, but using the same kinds keeps one code path.
+  membership record above, for both users, and every record carries its
+  term in its header. The control plane's log has no subscribers, but using
+  the same kinds keeps one code path.
 - **One set of tests.** openraft's storage conformance suite
   (`openraft::testing::Suite`, run today against redb in
   `services/felix-controlplane-service/src/raft/store/tests.rs:44`) runs
@@ -393,8 +394,9 @@ not to give up the design.
 - **Control-plane leases.** A `Leader` shard (no `Quorum` acknowledgements)
   serves only while the broker's lease is valid. Raft has no such mode. The
   interface keeps the lease on the host side (`Serves::ByLease`), since it also
-  admits unreplicated shards. A Raft engine never returns `ByLease`, so
-  `Leader` consistency under Raft means "the Raft leader, durable locally".
+  admits unreplicated shards. A Raft engine never returns `ByLease`; it
+  bounds `Leader` writes with a Raft leader lease instead, and delivers only
+  committed records (Decisions, 5).
 - **Vouching, copy trust and ballots on a wiped disk.** A copy that lost its
   storage must not vote. Raft has the same problem when a node loses its vote
   file. Both engines handle it internally with the storage identity; the
@@ -417,7 +419,48 @@ not to give up the design.
 
 These were open design calls on this page and are now decided. Each has a
 note on what it costs in performance and what it risks for safety, and on
-what the gate measures to check it.
+what the gate measures to check it. A safety review then added the format
+section below and refined decision 5, and both were approved.
+
+### Format version 9, shared by both tracks
+
+**What it adds.** A generation field (8 bytes) in every record header, the
+membership record kind, and the counter record kinds of decision 4. With
+openraft's `single-term-leader` feature turned on, a log id is just
+`(term, index)`: the term is the record's generation and the index its
+offset. The leader of a term is kept in the ballot, as today.
+
+**Why the term goes in the record.** A Raft voter compares its last entry's
+term with the candidate's, so a wrong term can elect a leader that lacks
+committed entries. The term must therefore come from the log itself. The
+generation list in `disk_log/epochs.rs` cannot provide it: an absent or
+unreadable file loads as empty (`epochs.rs:204-228`), it keeps at most 512
+entries (`epochs.rs:34`), ranges that arrive after a cut are tracked only in
+memory (`epochs.rs:46-48`), and a truncation syncs the segments before it
+stores the list (`disk_log.rs:1642-1656`). That is fine for a hint, and it
+stays one. Making it safety state would need ordering and crash rules for
+every one of those paths. A header field is checksummed with the record, cut
+with the record on a torn tail, and needs no rules of its own.
+
+**Performance.** 8 bytes per record: under 1% of a 1 KiB record and nothing
+measurable at 64 KiB. The 1 KiB cells of the gate measure it.
+
+**Safety.** A torn header is a torn tail and is cut off. A header whose
+checksum fails in the middle of a log stops the open, like any interior
+damage. A record's generation must never be below the generation of the
+record before it; the scan checks this, and a log that breaks the rule is
+corrupt.
+
+**Rollout.** Brokers write version 9 only after a fleet feature says every
+broker reads it, and a broker that predates it refuses a version 9 segment,
+so a broker cannot roll back once it has written one. The control plane
+starts fresh (decision 7) and only control-plane members read its log, so its
+log is version 9 from the first record, with no fleet gate and no rollback
+concern.
+
+**Checked by.** Crash-point tests with the power-loss model for a torn
+header and a torn generation field. Format fuzz over the new header. A
+rollback test where a version 8 reader refuses the segment.
 
 ### 1. Membership is a typed record that readers skip
 
@@ -443,11 +486,8 @@ offsets still reads any other jump as a drop. A client without event offsets
 
 **Safety.** All four record-kind bits are in use
 (`crates/server/felix-storage/src/segment/format.rs:290-297`). The new kind
-takes an unused pair, the way the trim record did in version 7, and it raises
-the segment version to 9. It is written only after a fleet feature says every
-broker reads version 9. Rollback: a broker that predates version 9 refuses a
-segment holding one, so after the first membership record is written, the only
-way back is a fresh replica. The upgrade docs say so.
+takes an unused pair, the way the trim record did in version 7, as part of
+version 9 (above), with the same fleet gate and rollback rule.
 
 A membership record cut short by a crash is a torn tail. The open-time scan
 (`crates/server/felix-storage/src/segment/scan.rs`) cuts it off, and the
@@ -494,12 +534,11 @@ broker's commit order (`CommitSequencer`). They do not get their own path.
 
 **Performance.** The hot path stays as it is: one encode, one group-commit
 fsync and one fanout per batch. What adoption adds is a call into the Raft
-task per batch. openraft gives each entry one index, while a Felix batch
-holds many records with one offset each. So either each record is its own
-entry (more per-entry work in the Raft core), or one entry covers a batch and
-the adapter maps entries to offset ranges. The prototype measures both. The
-gate's single-node and RF 3 steady cells at 1 KiB, where per-record overhead
-shows most, decide.
+task per batch. One record is one entry, so the offset stays the Raft index
+and each record's term is in its own header. A batch of many records is many
+entries handed to openraft in one call, so the Raft core's cost per record is
+what the prototype measures. The gate's single-node and RF 3 steady cells at
+1 KiB, where per-record cost shows most, decide.
 
 With the `client_write` fallback the payload `Bytes` move into the entry by
 reference, so nothing is copied. The adapter's `append` calls the same
@@ -519,7 +558,9 @@ broker library builds without openraft. The control plane and
 `felix-replication` turn it on. Cargo merges features across a binary, so the
 broker binary links openraft once the Raft engine lands, and does not before.
 Nothing in `DiskLog`'s append, flush or read path changes when the feature is
-on. The adapter only calls `DiskLog`'s public methods.
+on. The adapter calls `DiskLog`'s methods from inside the crate, including
+`pub(crate)` ones such as `trim_before` (`disk_log.rs:495`), and changes none
+of them.
 
 **Safety.** The control plane gains a dependency on `felix-storage`, never on
 the broker. One adapter means one storage suite run and one set of
@@ -545,34 +586,96 @@ segments is Raft's purge. A follower no longer compacts on its own. The
 copies cost what they cost today. The gate adds a cache cell with mixed puts
 and counter adds, to measure the fsync count.
 
+Counters need more than a move. A counter record is a signed delta, and
+the counter log compacts deltas into a checkpoint of running sums
+(`crates/server/felix-storage/src/counter_log.rs:1-13`), not into the newest
+record per key as the cache does. Folding them into the cache shard's log
+needs two record kinds in version 9, a counter delta and a counter
+checkpoint, and a compaction rule per kind: the newest record per key for
+cache entries, and one checkpoint holding each key's sum for counters, which
+the leader proposes like any other compaction copy. The counter log was kept
+apart so that a build without counters could still read the cache's logs
+(`counter_log.rs:9-13`). Version 9's fleet gate and rollback rule now cover
+that.
+
 **Safety.** Puts and counter adds on one shard get one total order, where
 today they are ordered separately. That is a stronger guarantee, and nothing
 relied on the two being independent. One commit index replaces two marks,
 which removes the case where counters and cache data were acknowledged at
 different points after a failover.
 
-### 5. `Leader` consistency is "Raft leader, durable locally"
+### 5. `Leader` acknowledges locally, subscribers get only committed records
 
-**Decision.** Under Raft, a `Leader` stream acknowledges once the Raft leader
-has the batch on its own disk. Reads by the control-plane lease
-(`FELIX_QUORUM_READS=lease`) and the lease admission for `Leader` shards are
-removed.
+**Decision.** Three parts, all decided.
 
-**Performance.** A `Quorum` read already confirms leadership with a read round
-once the fleet finalizes lease-free reads, and rounds are shared: at most one is in flight per shard, with
-one more queued (`crates/server/felix-replication/src/leadership.rs:15`). A
-lease read skipped that round. Removing it costs a deployment that opted into
-lease reads one majority round trip per round, shared across concurrent reads.
-The gate's read latency at p99 measures it. `Leader` reads stay local, with no
-round.
+1. **A Raft leader lease bounds `Leader` writes.** A leader that has not heard
+   a majority within the lease period steps down and closes its write fence.
+   Followers do not start or grant an election until an election timeout
+   longer than the lease plus a clock-drift margin has passed. The
+   control-plane lease goes: lease reads (`FELIX_QUORUM_READS=lease`) and
+   lease admission for `Leader` shards are removed.
+2. **One delivery rule.** Subscribers receive only committed records, on
+   `Leader` streams as well as `Quorum` ones. A `Leader` publisher is still
+   acknowledged as soon as the leader has the batch on its own disk.
+3. **The term is in the record.** Each record's generation is in its version
+   9 header, so it comes from the log and never from `epochs.rs` (see
+   "Format version 9" above).
 
-**Safety.** This removes the clock assumption in reads ("The clock assumption,
-stated precisely" in `replication-design.md`). It also removes a class of bug
-that lease reads have had: a broker that has not heard the control plane
-confirming a `Quorum` read by its lease. Issue #2161 is a current example. The
-`Leader` loss window, a write acknowledged by a leader that is then deposed
-before it replicates, is unchanged in kind. It is now bounded by Raft's
-election instead of lease expiry.
+**Why.** Today a `Leader` stream reads `ReadBound::Unbounded`
+(`crates/server/felix-broker/src/stream/committed.rs:28-31`), so its records
+are delivered before any replica has them. A leader that loses its group
+could then deliver records the next leader writes over at the same offsets,
+and a subscriber would hold two records at one offset with no jump to show
+it. Delivering only committed records removes that case outright. The lease
+covers what remains: an old leader must stop acknowledging before a new one
+can be elected, which is the job the control-plane lease does today.
+
+**openraft settings.** `heartbeat_interval` sets how often the leader hears
+from its followers, and `election_timeout_min` / `election_timeout_max` set
+the election timeout. The engine sets the lease between the two, with the
+drift margin below the minimum timeout. A follower that heard a leader
+within its election timeout refuses to vote. openraft does not, as far as we
+know, step a leader down by itself when it loses its majority, so the engine
+adds that: it reads how long ago the leader last heard a majority from
+openraft's metrics, and closes the write fence and steps down once that
+passes the lease. The prototype checks both against the pinned openraft
+version, and if openraft has its own step-down, uses that instead.
+
+**Performance.** `Leader` acknowledgements stay local, so publish latency
+and throughput do not change. Delivery on a replicated `Leader` stream waits
+for commit, which is about one replication round trip after the local append.
+An RF 1 stream pays nothing, because its commit is the local append. The
+gate measures delivered latency on an RF 3 `Leader` stream. A gap of much
+more than one replication round trip over today is a bug to fix, not a cost
+to document. `Quorum` reads already confirm leadership with a shared read
+round (`crates/server/felix-replication/src/leadership.rs:15`), so a
+deployment that opted into lease reads now pays one majority round trip per
+round. The gate's `Quorum` read p99 measures it. The lease adds no messages,
+since heartbeats already carry it. Lease and election timeout together set
+the failover time, which the gate's failover cells measure.
+
+**Safety.** Offset jumps stay an exact drop signal, because no subscriber is
+ever given a record that a failover can take back. The control-plane lease
+goes, and with it the class of bug where a broker that has not heard the
+control plane confirms a `Quorum` read by its lease (issue #2161). A clock
+assumption stays, but only between members of one group: bounded drift
+between the lease and the election timeout, as Raft leader leases assume. It
+is stated next to the lease in the code and in the TLA+ model. `Leader`
+publishers keep the documented loss window ("The `Leader` loss window,
+precisely" in `replication-design.md`): an acknowledged batch no follower had
+is lost at a failover. It is no longer delivered first.
+
+**User-visible change.** For the 0.8 changelog and upgrade notes: on a
+replicated `Leader` stream, subscribers see a record about one replication
+round trip later than before, and never see one that a failover later
+discards. Publisher acknowledgements are unchanged. `FELIX_QUORUM_READS=lease`
+is removed.
+
+**Checked by.** A delivered-latency cell for an RF 3 `Leader` stream. A
+history-checker nemesis that partitions a `Leader` stream's leader from its
+group while it takes writes and subscribers read, then checks that no
+subscriber holds two records at one offset. The simulator's `clocks` mode
+with drift up to the margin.
 
 ### 6. Code size is reported, not a criterion
 
@@ -616,10 +719,13 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
   is durable, the log is trimmed behind it with `trim_before`. This replaces
   redb's "check and write in one transaction": the rename is the commit, and
   the one-writer rule comes from a lock in the adapter.
-- **The vote.** The ballot file (`disk_log/ballot.rs`) already holds a
-  generation and the leader it was given to in one checksummed file, written
-  to a temporary name, fsynced and renamed. That is Raft's `(term,
-  voted_for)`, saved atomically.
+- **The vote.** Saved as shard replicas save it today, in two files: the
+  ballot (`disk_log/ballot.rs`, the generation and the leader it was given to)
+  is written first and the replica state second, each to a temporary name,
+  fsynced and renamed (`ballot.rs:155-164`). The open takes the higher
+  generation, so a crash between the two never lowers the vote. It is not one
+  atomic file, and it does not need to be. openraft's `committed` flag is
+  added to the ballot file, so it is saved in the same rename as the leader.
 - **What replaces redb transactions.** Raft needs three atomic writes: a log
   append, the vote, and a snapshot. The first is a record (checksummed, with
   a torn tail repaired on open), the other two are rename-into-place files.
@@ -725,6 +831,11 @@ Both engines run the same tests, on the same commit, on the same runners:
 - **Failover scale** (`scale-nightly.yml`) and felixd at its scale.
 - **Cache cell** with mixed puts and counter adds, reporting fsyncs per write
   (Decisions, 4), and `Quorum` read p99 (Decisions, 5).
+- **Delivered latency** on an RF 3 `Leader` stream, against today (Decisions,
+  5). More than about one replication round trip over today fails.
+- **Duplicate-offset nemesis** in the history checker: a `Leader` stream's
+  leader is partitioned while it takes writes; no subscriber may hold two
+  records at one offset (Decisions, 5).
 
 ## Refactor plan
 
@@ -753,16 +864,23 @@ unit, integration and simulator seed tests pass unchanged after each.
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.
 
+Segment format version 9 (the generation field, the membership record and
+the counter kinds) is a prerequisite of both the control-plane track and the
+shard Raft prototype, and lands as its own stage with its own checks. Brokers
+do not write it until its fleet feature is finalized. The control plane uses
+it from its first record.
+
 The control-plane storage track runs alongside, in its own pull requests,
 none of which touch the engine:
 
 1. Remove the Postgres metadata backend and its tests, configuration and
    docs. It does not depend on anything else here, so it can go first.
-2. The `raft_log` adapter in `felix-storage`, passing openraft's storage
+2. Format version 9 in `felix-storage`, read and written, gated for brokers.
+3. The `raft_log` adapter in `felix-storage`, passing openraft's storage
    suite, with no users yet.
-3. The control plane switches from redb to the adapter, with snapshots as
+4. The control plane switches from redb to the adapter, with snapshots as
    files and a refusal to start on an old redb directory.
-4. Remove redb from the workspace.
+5. Remove redb from the workspace.
 
 The shard Raft prototype then uses the same adapter.
 
@@ -777,6 +895,6 @@ the cells in the test set above, run against the commit before the stage.
 | Remove the Postgres backend | None (no data path) | Control-plane tests on the in-memory and Raft backends |
 | `raft_log` adapter | `felix-storage` group-commit and fan-in tests (`crates/server/felix-storage/tests/group_commit_fanin.rs`) unchanged | openraft storage suite; power-loss crash points at every append, vote, snapshot and purge step; format fuzz |
 | Control plane on the adapter | Metadata write latency and control-plane failover time no worse than redb | `raft_chaos.rs`; history control-plane-down nemesis; simulator restart-after-crash seeds |
-| Membership record (format v9) | None (rare writes) | Format fuzz and crash recovery with the new kind; rollback refusal test; no client read returns it |
-| Per-shard Raft prototype | Every A/B cell, the cache mixed cell and `Quorum` read p99, against the gate | 2000 seeds in every simulator mode; every history nemesis; `scale-nightly.yml`; a standard Raft TLA+ model with Felix's log mapping in place of the `FelixShard*` set |
+| Format version 9 (prerequisite of both tracks) | 1 KiB single-node and RF 3 steady cells for the 8-byte header field | Power-loss crash points for a torn header and a torn generation field; format fuzz; scan check that generations never fall; rollback refusal by a version 8 reader; no client read returns a membership or counter-checkpoint record |
+| Per-shard Raft prototype | Every A/B cell, the cache mixed cell, `Quorum` read p99, RF 3 `Leader` delivered latency and failover time with the Raft lease, against the gate | 2000 seeds in every simulator mode, `clocks` with drift up to the lease margin; every history nemesis, plus the `Leader` partition nemesis for two records at one offset; `scale-nightly.yml`; a standard Raft TLA+ model with Felix's log mapping and the leader lease in place of the `FelixShard*` set |
 | Delete the bespoke protocol | Same cells, no change from the prototype result | Same as above; `FelixShard*` specs and configs retired |
