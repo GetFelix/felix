@@ -12,6 +12,7 @@ fn view(leader: &str, members: &[&str]) -> Views {
             leader: leader.to_string(),
             generation: 1,
             members: members.iter().map(|m| m.to_string()).collect(),
+            joining: BTreeSet::new(),
         },
     )])
 }
@@ -127,8 +128,8 @@ fn a_copy_up_while_a_leader_served_and_still_untrusted_is_a_stall() {
     log.started_unclean("b2", secs(10));
     log.started_unclean("b3", secs(12));
     for at in [20, 21, 22, 23, 24, 25, 26] {
-        log.served("stream/0", "b2", secs(at));
-        log.served("stream/0", "b3", secs(at));
+        log.served("stream/0", "b2", secs(at), Some(Duration::ZERO));
+        log.served("stream/0", "b3", secs(at), Some(Duration::ZERO));
     }
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::DownAfterKill);
@@ -151,8 +152,8 @@ fn a_copy_down_after_a_kill_counts_untrusted_though_a_leader_served_it_before() 
     // leader b1 were killed. b2's next start distrusts the copy anyway.
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
-    log.served("stream/0", "b1", secs(20));
-    log.served("stream/0", "b2", secs(20));
+    log.served("stream/0", "b1", secs(20), Some(Duration::ZERO));
+    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO));
     log.kill("b2", secs(25));
     log.kill("b1", secs(30));
     let copies = Trust::from([
@@ -196,11 +197,130 @@ fn a_blip_of_service_beside_a_copy_is_not_a_chance_to_vouch() {
     let mut log = KillLog::default();
     log.started_unclean("b2", secs(10));
     log.started_unclean("b3", secs(12));
-    log.served("stream/0", "b2", secs(20));
-    log.served("stream/0", "b3", secs(20));
-    log.served("stream/0", "b2", secs(21));
-    log.served("stream/0", "b3", secs(21));
+    log.served("stream/0", "b2", secs(20), Some(Duration::ZERO));
+    log.served("stream/0", "b3", secs(20), Some(Duration::ZERO));
+    log.served("stream/0", "b2", secs(21), Some(Duration::ZERO));
+    log.served("stream/0", "b3", secs(21), Some(Duration::ZERO));
     let mut copies = trust(&[("b2", false), ("b3", false)]);
     copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
     assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
+}
+
+/// `view` with these members still joining.
+fn learners(mut views: Views, joining: &[&str]) -> Views {
+    for view in views.values_mut() {
+        view.joining = joining.iter().map(|m| m.to_string()).collect();
+    }
+    views
+}
+
+/// b1 trusted, b2 and b3 restarted unclean at 10 s and 12 s.
+fn two_restarted() -> (KillLog, Trust) {
+    let mut log = KillLog::default();
+    log.started_unclean("b2", secs(10));
+    log.started_unclean("b3", secs(12));
+    let mut copies = trust(&[("b2", false), ("b3", false)]);
+    copies.insert(("stream/0".into(), "b1".into()), Copy::Trusted);
+    (log, copies)
+}
+
+#[test]
+fn a_copy_vouched_then_untrusted_with_no_new_unclean_start_is_a_stall() {
+    // b2 was seen trusted after its start, so its later doubt has no
+    // injected fault behind it and does not count toward a hold.
+    let (mut log, copies) = two_restarted();
+    log.trusted("stream/0", "b2");
+    assert!(held(&log, &view("b1", &THREE), &copies).is_empty());
+    // A new unclean start explains it again.
+    log.started_unclean("b2", secs(40));
+    assert_eq!(held(&log, &view("b1", &THREE), &copies), ["stream/0"]);
+}
+
+#[test]
+fn a_voter_a_leader_reached_over_a_link_is_vouchable_whatever_the_control_plane_does() {
+    // Shipping vouches a voter without the control plane, so a serving
+    // leader on a good link that never vouched it is a stall.
+    let (mut log, copies) = two_restarted();
+    for at in 20..24 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), None);
+        }
+    }
+    let views = view("b1", &THREE);
+    assert!(held(&log, &views, &copies).is_empty());
+    assert_eq!(log.vouchable_untrusted(&views, &copies).len(), 1);
+}
+
+#[test]
+fn a_learner_is_not_readmittable_while_the_control_plane_answers_nothing() {
+    let (mut log, copies) = two_restarted();
+    for at in 20..60 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), None);
+        }
+    }
+    let views = learners(view("b1", &THREE), &["b2", "b3"]);
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
+}
+
+#[test]
+fn a_learner_needs_a_run_as_long_as_reconcile_and_three_slow_calls() {
+    let (mut log, copies) = two_restarted();
+    let views = learners(view("b1", &THREE), &["b2", "b3"]);
+    let delay = Some(Duration::from_secs(4));
+    // Reconcile is 5 s by default: 5 + 2.5 + 12 = 19.5 s.
+    for at in 20..38 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), delay);
+        }
+    }
+    assert_eq!(held(&log, &views, &copies), ["stream/0"]);
+    for at in 38..=40 {
+        for node in ["b2", "b3"] {
+            log.served("stream/0", node, secs(at), delay);
+        }
+    }
+    assert!(held(&log, &views, &copies).is_empty());
+    assert_eq!(log.vouchable_untrusted(&views, &copies).len(), 1);
+}
+
+#[test]
+fn a_leader_reaches_a_copy_unless_a_partition_cuts_the_link() {
+    let up = |from: usize, to: usize| !(from == 0 && to == 2);
+    assert!(reaches(&[0], 1, &up));
+    assert!(!reaches(&[0], 2, &up), "cut off");
+    assert!(reaches(&[0], 0, &up), "a leader reaches its own copy");
+    assert!(
+        reaches(&[0, 1], 2, &up),
+        "another serving broker reaches it"
+    );
+    assert!(!reaches(&[], 1, &up), "nobody serves");
+}
+
+#[test]
+fn only_a_paused_or_down_control_plane_answers_nothing() {
+    use crate::controlplane::CpFault;
+    assert_eq!(cp_delay(CpFault::Healthy), Some(Duration::ZERO));
+    assert_eq!(cp_delay(CpFault::Slow(secs(2))), Some(secs(2)));
+    assert_eq!(cp_delay(CpFault::Paused), None);
+    assert_eq!(cp_delay(CpFault::Down), None);
+}
+
+fn stand(serving: bool, generation: u64, routes: u64) -> ShardStand {
+    ShardStand {
+        serving,
+        generation: serving.then_some(generation),
+        routed_leader: Some(("b1".into(), routes)),
+        opened_generation: None,
+        acks_by_followers: false,
+    }
+}
+
+#[test]
+fn a_deposed_leader_that_still_serves_is_not_a_chance_to_vouch() {
+    // b2 serves at generation 15 but b1 routes the shard at 21.
+    let stands = vec![(0, stand(false, 0, 21)), (1, stand(true, 15, 15))];
+    assert!(current_servers(&stands).is_empty());
+    let stands = vec![(0, stand(true, 21, 21)), (1, stand(true, 15, 15))];
+    assert_eq!(current_servers(&stands), [0]);
 }

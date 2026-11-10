@@ -20,14 +20,13 @@
 //! - it is up, and no broker served the shard while it was up since its last
 //!   unclean restart.
 //!
-//! A chance to vouch needs a way to vouch: the sim records a broker as served
-//! beside a copy only while the serving broker's link to it is up and the
-//! control plane is healthy (not paused, down or slowed), the injected faults
-//! that impede vouching and readmission, and only a run of at least five
-//! seconds counts, since a shorter one is a blip. And a copy counts as untrusted
-//! only when the sim's own record explains it: a kill or power loss it
-//! injected, or an unclean start it saw. A copy untrusted with no
-//! such record is not counted, so a broker that loses a vouch fails the check.
+//! A chance to vouch needs a way to vouch. The sim records a copy as reached
+//! only by a serving broker that is not superseded, over a link that is not
+//! partitioned. A voter is vouched by that shipping; a learner also needs the
+//! control plane to answer (not paused or down) for the reconcile interval
+//! plus slack plus three slow calls. And a copy counts as untrusted only when
+//! the sim's own record explains it: an injected kill or power loss, or an
+//! unclean start it saw that the copy has not been seen trusted since.
 //!
 //! An up copy that is still untrusted after a broker served the shard beside
 //! it is vouchable: its shard stays a stall. A broker down after a clean stop,
@@ -40,6 +39,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
+use felix_broker_service::sim::ShardStand;
+
 /// A shard as the control plane held it at one instant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ShardView {
@@ -47,6 +48,8 @@ pub(crate) struct ShardView {
     pub(crate) generation: u64,
     /// The replica set, with a joining member.
     pub(crate) members: BTreeSet<String>,
+    /// The members still joining: learners the control plane has not readmitted.
+    pub(crate) joining: BTreeSet<String>,
 }
 
 /// Every shard (`stream/3`) at one instant.
@@ -79,38 +82,135 @@ struct Unclean {
 struct Reach {
     since: Duration,
     last: Duration,
-    /// The longest earlier run.
-    best: Duration,
+    /// How long this run must last to count.
+    need: Duration,
+    /// An earlier run was long enough.
+    done: bool,
 }
 
 impl Reach {
-    fn span(&self) -> Duration {
-        self.best.max(self.last - self.since)
+    fn long_enough(&self) -> bool {
+        self.done || self.last - self.since >= self.need
     }
 }
 
 /// Samples further apart than this are not one run.
 const RUN_GAP: Duration = Duration::from_millis(2500);
 
-/// How long a serving broker must reach a copy for a vouch to be expected: a
-/// few shipping rounds and, for a learner, the control plane's readmission
-/// step. A shorter run is a blip, not a chance.
-const VOUCH_WINDOW: Duration = Duration::from_secs(5);
+/// How long a serving broker must reach a voting copy for a vouch: a few
+/// shipping rounds. A shorter run is a blip, not a chance.
+const SHIP_WINDOW: Duration = RUN_GAP;
+
+/// A learner is readmitted by a control plane step on its reconcile cycle,
+/// and each call under a slow control plane takes up to three delays (the
+/// reads and the write), so a run counts after `reconcile + RUN_GAP + 3d`.
+const READMIT_CALLS: u32 = 3;
+
+/// The brokers that serve a shard and are not superseded: a leader whose
+/// generation is behind what a broker routes to has been deposed, and its
+/// ships are refused, so it vouches nothing.
+pub(crate) fn current_servers(stands: &[(usize, ShardStand)]) -> Vec<usize> {
+    let newest = stands
+        .iter()
+        .filter_map(|(_, stand)| {
+            stand
+                .routed_leader
+                .as_ref()
+                .map(|(_, generation)| *generation)
+        })
+        .max()
+        .unwrap_or(0);
+    stands
+        .iter()
+        .filter(|(_, stand)| stand.serving && stand.generation.unwrap_or(0) >= newest)
+        .map(|(index, _)| *index)
+        .collect()
+}
+
+/// Whether a serving broker in `serving` reaches the broker `to` over a link
+/// that is up: it is one of them, or no partition cuts it off from `to`.
+pub(crate) fn reaches(
+    serving: &[usize],
+    to: usize,
+    link_up: &dyn Fn(usize, usize) -> bool,
+) -> bool {
+    serving
+        .iter()
+        .any(|leader| *leader == to || link_up(*leader, to))
+}
+
+/// How long each control plane call takes under `fault`, or `None` when it
+/// answers nothing (paused or down), which only a voter's vouch survives.
+pub(crate) fn cp_delay(fault: crate::controlplane::CpFault) -> Option<Duration> {
+    use crate::controlplane::CpFault;
+    match fault {
+        CpFault::Healthy => Some(Duration::ZERO),
+        CpFault::Slow(delay) => Some(delay),
+        CpFault::Paused | CpFault::Down => None,
+    }
+}
 
 /// Unclean stops and abandons so far. A clean stop never enters it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct KillLog {
+    /// The control plane's reconcile interval.
+    reconcile: Duration,
     stops: Vec<Unclean>,
     /// When an operator last abandoned each shard's log.
     abandoned: BTreeMap<String, Duration>,
     /// When each broker last started unclean.
     unclean_starts: BTreeMap<String, Duration>,
-    /// For each copy (shard, node), how long a broker that could vouch it
-    /// served the shard beside it since its last unclean start.
-    served: BTreeMap<(String, String), Reach>,
+    /// For each copy (shard, node), how long a serving broker had a link up
+    /// to it since its last unclean start.
+    shipped: BTreeMap<(String, String), Reach>,
+    /// The same, with a control plane that answers: what readmitting a
+    /// learner takes.
+    readmittable: BTreeMap<(String, String), Reach>,
+    /// Copies seen trusted since their broker's last unclean start.
+    vouched: BTreeSet<(String, String)>,
+}
+
+/// Add a sample at `at` to a run, opening a new one after a gap. A run
+/// needs `need` at the most demanding delay it saw.
+fn sample(
+    entry: std::collections::btree_map::Entry<'_, (String, String), Reach>,
+    at: Duration,
+    need: Duration,
+) {
+    let reach = entry.or_insert(Reach {
+        since: at,
+        last: at,
+        need,
+        done: false,
+    });
+    if at.saturating_sub(reach.last) > RUN_GAP {
+        reach.done |= reach.long_enough();
+        reach.since = at;
+        reach.need = need;
+    }
+    reach.need = reach.need.max(need);
+    reach.last = at;
+}
+
+impl Default for KillLog {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(5))
+    }
 }
 
 impl KillLog {
+    pub(crate) fn new(reconcile: Duration) -> Self {
+        Self {
+            reconcile,
+            stops: Vec::new(),
+            abandoned: BTreeMap::new(),
+            unclean_starts: BTreeMap::new(),
+            shipped: BTreeMap::new(),
+            readmittable: BTreeMap::new(),
+            vouched: BTreeSet::new(),
+        }
+    }
+
     /// `node` stopped uncleanly at `at`.
     pub(crate) fn kill(&mut self, node: &str, at: Duration) {
         self.stops.push(Unclean {
@@ -122,42 +222,68 @@ impl KillLog {
     /// `node`'s broker came up at `at` after a start that doubted its copies.
     pub(crate) fn started_unclean(&mut self, node: &str, at: Duration) {
         self.unclean_starts.insert(node.to_string(), at);
-        self.served.retain(|(_, served), _| served != node);
+        self.shipped.retain(|(_, served), _| served != node);
+        self.readmittable.retain(|(_, served), _| served != node);
+        self.vouched.retain(|(_, vouched)| vouched != node);
     }
 
-    /// `node` was up at `at` while some broker served `shard`.
-    pub(crate) fn served(&mut self, shard: &str, node: &str, at: Duration) {
-        let reach = self
-            .served
-            .entry((shard.to_string(), node.to_string()))
-            .or_insert(Reach {
-                since: at,
-                last: at,
-                best: Duration::ZERO,
-            });
-        if at.saturating_sub(reach.last) > RUN_GAP {
-            reach.best = reach.span();
-            reach.since = at;
+    /// `node` was up at `at` with a link from a broker serving `shard`.
+    /// `delay` is how long a control plane call takes now, `None` when it
+    /// answers nothing.
+    pub(crate) fn served(
+        &mut self,
+        shard: &str,
+        node: &str,
+        at: Duration,
+        delay: Option<Duration>,
+    ) {
+        let key = (shard.to_string(), node.to_string());
+        sample(self.shipped.entry(key.clone()), at, SHIP_WINDOW);
+        if let Some(delay) = delay {
+            let need = self.reconcile + RUN_GAP + delay * READMIT_CALLS;
+            sample(self.readmittable.entry(key), at, need);
         }
-        reach.last = at;
     }
 
-    /// Whether a leader had the chance to vouch `node`'s copy of `shard`:
-    /// some broker served the shard while `node` was up, since its last
-    /// unclean start.
-    pub(crate) fn vouchable(&self, shard: &str, node: &str) -> bool {
-        self.served
-            .get(&(shard.to_string(), node.to_string()))
-            .is_some_and(|reach| reach.span() >= VOUCH_WINDOW)
+    /// The brokers that started unclean so far.
+    pub(crate) fn unclean_nodes(&self) -> BTreeSet<String> {
+        self.unclean_starts.keys().cloned().collect()
+    }
+
+    /// `shard`'s copy on `node` was seen trusted at some point after the
+    /// broker's last unclean start: it was vouched, so a later loss of trust
+    /// has no injected unclean start behind it.
+    pub(crate) fn trusted(&mut self, shard: &str, node: &str) {
+        if self.unclean_starts.contains_key(node) {
+            self.vouched.insert((shard.to_string(), node.to_string()));
+        }
+    }
+
+    /// Whether a leader had the chance to vouch `node`'s copy of `shard`
+    /// since its last unclean start. A learner needs the control plane to
+    /// readmit it; a voter is vouched by a leader shipping over a link.
+    pub(crate) fn vouchable(&self, shard: &str, node: &str, learner: bool) -> bool {
+        let key = (shard.to_string(), node.to_string());
+        let runs = if learner {
+            &self.readmittable
+        } else {
+            &self.shipped
+        };
+        runs.get(&key).is_some_and(Reach::long_enough)
     }
 
     /// Whether `copy` counts as untrusted towards holding `shard`.
-    fn counts_untrusted(&self, shard: &str, node: &str, copy: Copy) -> bool {
+    fn counts_untrusted(&self, shard: &str, node: &str, copy: Copy, view: &ShardView) -> bool {
         match copy {
             Copy::Trusted => false,
             Copy::DownAfterKill => true,
             Copy::Untrusted => {
-                self.unclean_starts.contains_key(node) && !self.vouchable(shard, node)
+                let learner = view.joining.contains(node);
+                self.unclean_starts.contains_key(node)
+                    && !self
+                        .vouched
+                        .contains(&(shard.to_string(), node.to_string()))
+                    && !self.vouchable(shard, node, learner)
             }
         }
     }
@@ -170,7 +296,7 @@ impl KillLog {
             .filter(|(shard, view)| {
                 members(view).iter().any(|node| {
                     trust.get(&(shard.to_string(), node.to_string())) == Some(&Copy::Untrusted)
-                        && self.vouchable(shard, node)
+                        && self.vouchable(shard, node, view.joining.contains(*node))
                 })
             })
             .map(|(shard, _)| shard.clone())
@@ -184,7 +310,7 @@ impl KillLog {
             .into_iter()
             .filter_map(|node| {
                 let copy = *trust.get(&(shard.to_string(), node.to_string()))?;
-                if !self.counts_untrusted(shard, node, copy) {
+                if !self.counts_untrusted(shard, node, copy, view) {
                     return None;
                 }
                 Some(match copy {
@@ -233,7 +359,7 @@ impl KillLog {
                     .filter(|node| {
                         trust
                             .get(&(shard.to_string(), node.to_string()))
-                            .is_some_and(|copy| self.counts_untrusted(shard, node, *copy))
+                            .is_some_and(|copy| self.counts_untrusted(shard, node, *copy, view))
                     })
                     .count();
                 untrusted > set.len() / 2

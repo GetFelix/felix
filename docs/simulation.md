@@ -306,21 +306,24 @@ only when no leader had the chance to vouch it:
 
 - its broker is down after an unclean kill, so its next start distrusts the
   copy whatever came before, or
-- its broker is up, restarted unclean (an injected kill or power loss), and no
-  serving broker had a real chance to vouch it since.
+- its broker is up, restarted unclean (an injected kill or power loss), has
+  not been seen trusted since, and no serving broker had a real chance to
+  vouch it.
 
 The sim notes every second, and before each fault, which brokers a serving
-broker could vouch. That takes a link from the serving broker that is not
-partitioned and a healthy control plane, since readmitting a learner is a
-control plane step; a paused, down or slowed control plane is an injected
-fault that makes vouching impossible or slow. A run of at least five seconds
-counts, so a leader that served beside a copy for a moment before a fault
-does not. A copy still untrusted after such a run is vouchable. Its shard is
-not exempt and fails the check, marked `vouchable` in the stuck list, and the
-run prints those shards on their own line. A copy that is untrusted with no
-injected unclean stop or start behind it is not counted either, so a broker
-that loses a vouch fails the check. A broker down after a clean stop, or one
-with no copy, counts as trusted, so the rule errs towards exempting less.
+broker can reach. The serving broker must not be superseded (a deposed
+leader's ships are refused) and its link to the copy must not be partitioned.
+A voting copy is vouched by that shipping alone, so a run of 2.5 seconds is a
+chance. A learner is readmitted by a control plane step, so it needs the
+control plane to answer (paused and down never do) for a run of the reconcile
+interval plus 2.5 seconds plus three calls at the current slow delay. A copy
+still untrusted after such a chance is vouchable: its shard is not exempt and
+fails the check, marked `vouchable` in the stuck list, and the run prints
+those shards on their own line. A copy that is untrusted with no injected
+unclean start behind it, or that was seen trusted after the start, is not
+counted either, so a broker that loses a vouch fails the check. A broker down
+after a clean stop, or one with no copy, counts as trusted, so the rule errs
+towards exempting less.
 
 Each held shard is printed as a warning with the faults that explain its
 copies, by broker and time (for example `b3 restarted unclean at 12.1s; no

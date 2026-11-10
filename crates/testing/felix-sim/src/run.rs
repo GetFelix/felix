@@ -358,6 +358,7 @@ async fn drive(
                 }
                 // Which copies a leader could vouch, for the hold rule.
                 cluster.note_serving();
+                cluster.note_trusted().await;
                 let ctx = context(Point::Quiet, Duration::ZERO, recorder.history());
                 for checker in &checkers {
                     if let Ok(mut checker) = checker.try_lock() {

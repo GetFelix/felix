@@ -644,6 +644,7 @@ impl SimControlPlane {
             .map(|a| {
                 let kind = format!("{:?}", a.key.kind).to_lowercase();
                 let view = ShardView {
+                    joining: a.joining.iter().cloned().collect(),
                     leader: a.leader,
                     generation: a.generation,
                     members: a.replicas.into_iter().chain(a.joining).collect(),

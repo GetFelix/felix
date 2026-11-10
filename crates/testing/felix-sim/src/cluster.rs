@@ -73,7 +73,7 @@ use self::node::Node;
 use self::power::PowerLog;
 pub use self::power::PowerLoss;
 use crate::clock::{self, Owner};
-use crate::controlplane::{Answer, CpConfig, CpFault, SimControlPlane};
+use crate::controlplane::{Answer, CpConfig, SimControlPlane};
 use crate::nemesis::Stop;
 use crate::nemesis::clocks::{ClockPlan, ClockSkew};
 use crate::net::{Link, SimNet};
@@ -268,6 +268,7 @@ impl SimCluster {
             .map(|index| Node::new(index, &config))
             .collect::<Result<Vec<_>>>()?;
         let (stalled, done) = spawn_stall_watch(config.real_time_limit);
+        let reconcile = config.controlplane.reconcile_interval();
         let cluster = Arc::new(Self {
             config,
             seed,
@@ -279,7 +280,7 @@ impl SimCluster {
             starts: AtomicU64::new(0),
             stalled,
             done,
-            kills: Default::default(),
+            kills: parking_lot::Mutex::new(KillLog::new(reconcile)),
             power: Default::default(),
         });
         cluster.reset_links();
@@ -536,6 +537,7 @@ impl SimCluster {
     /// although a broker served the shard while it was up.
     pub(crate) async fn holds(&self) -> Holds {
         self.note_serving();
+        self.note_trusted().await;
         let Ok(mut views) = self.cp.shard_views().await else {
             return Holds::default();
         };
@@ -582,23 +584,33 @@ impl SimCluster {
             if !stands.iter().any(|(_, stand)| stand.serving) {
                 continue;
             }
-            // A serving broker can vouch a copy only over a link that is up
-            // and with a control plane that answers, for readmission.
-            if self.cp.fault() != CpFault::Healthy {
-                continue;
-            }
             let shard = describe(&key);
+            // A voter is vouched over a link that is up; readmitting a
+            // learner also needs a control plane that answers.
+            let delay = kills::cp_delay(self.cp.fault());
+            let serving = kills::current_servers(&stands);
+            let link_up = |from: usize, to: usize| {
+                !self
+                    .net
+                    .link(&self.nodes[from].id, &self.nodes[to].id)
+                    .partitioned
+            };
             for (index, _) in &stands {
-                let reached = stands.iter().any(|(leader, stand)| {
-                    stand.serving
-                        && (leader == index
-                            || !self
-                                .net
-                                .link(&self.nodes[*leader].id, &self.nodes[*index].id)
-                                .partitioned)
-                });
-                if reached {
-                    kills.served(&shard, &self.nodes[*index].id, at);
+                if kills::reaches(&serving, *index, &link_up) {
+                    kills.served(&shard, &self.nodes[*index].id, at, delay);
+                }
+            }
+        }
+    }
+
+    /// Note the copies of brokers that started unclean which are trusted
+    /// now, so a later loss of trust is not put down to that start.
+    pub(crate) async fn note_trusted(&self) {
+        let starts = self.kills.lock().unclean_nodes();
+        for node in self.nodes.iter().filter(|node| starts.contains(&node.id)) {
+            for key in self.shard_keys() {
+                if node.copy_trust(&key).await == Some(kills::Copy::Trusted) {
+                    self.kills.lock().trusted(&describe(&key), &node.id);
                 }
             }
         }
