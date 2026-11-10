@@ -492,7 +492,10 @@ where
                     Arc::clone(pool),
                     Arc::clone(broker),
                     Arc::clone(router),
-                    Arc::clone(ingress.fence()) as Arc<dyn replication::driver::WriteFence>,
+                    Arc::new(replication::engine::Host::new(
+                        Arc::clone(ingress),
+                        Arc::clone(ingress.fence()),
+                    )) as Arc<dyn replication::driver::WriteFence>,
                     Arc::clone(&gate),
                     replication::driver::Published {
                         marks: Arc::clone(quorum_marks),

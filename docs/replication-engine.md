@@ -165,7 +165,7 @@ broker's `ReadBounds` trait
 its control-plane lease or by a read round (`leadership.rs:34` `ReadIndex`,
 chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`quorum.rs:1574`) and
 `read_skips_lease` (`quorum.rs:1553`) are the entry points. Callers: `serving/kafka.rs:257`,
-`serving/group_ops.rs:370`, `serving/commit_ops.rs:305`,
+`serving/group_ops.rs:221` and `:321`, `serving/commit_ops.rs:308`,
 `serving/quic/handlers/cache_watch.rs:515`.
 
 ## The proposed interface
@@ -723,7 +723,7 @@ path takes its bound from it:
 - Kafka fetch and list-offsets (`services/felix-broker-service/src/serving/kafka.rs:251-262`).
 - Cache watch (`services/felix-broker-service/src/serving/quic/handlers/cache_watch.rs:509`).
 - Group reads and atomic-commit state reads, which already use it for `Quorum`
-  (`serving/group_ops.rs:370`, `serving/commit_ops.rs:305`).
+  (`serving/group_ops.rs:221` and `:321`, `serving/commit_ops.rs:308`).
 
 The refactor routes these callers through `Engine::read_bound` first (plan
 steps 1 to 4), so the rule changes in one place when the Raft engine lands.
@@ -998,12 +998,23 @@ unit, integration and simulator seed tests pass unchanged after each.
    `engine::bind_read_rounds` builds the `ReadIndex` that `node/startup.rs`
    used to build. The broker's `ReadBounds` answer is a separate method,
    `Engine::committed_bound`, because it adds the lease check that the commit
-   hold relies on and answers `Refused` where `read_bound` answers
-   `NotServed`; `engine::CommittedReads` asks it. The two merge into one
-   `read_bound` with the delivery rule of decision 5, which is a behaviour
-   change of its own. Bounds and lease rules are unchanged.
+   hold relies on. A broker that may not serve the shard gets `ReadBound::Refused`
+   from it, where `read_bound` returns `Unreadable::NotServed`. `engine::CommittedReads`
+   asks `committed_bound`. The two merge into one `read_bound` with the delivery
+   rule of decision 5, which is a behaviour change of its own. Bounds and lease
+   rules are unchanged.
 5. `EngineHost`: one trait over `ShardServing` and the generic part of
    `WriteFence`, with the hybrid-only callbacks on an extension trait.
+   Done as built: `engine::EngineHost` holds `generation`, `replicated`,
+   `quiesced` and `deposed`; `engine::HybridHost` extends it with the lease
+   and the fence's other callbacks (`withheld`, `gave_up_at`, `refused_at`,
+   `probed`, `opened_since`, `promoting`, `serve_without_lease`,
+   `sessions_without_lease`, `passed`, `record_ack_refusal`). `engine::Host`
+   pairs an `IngressRouter` with a `ShardFence` and implements both traits, and
+   `ShardServing` and `WriteFence`, by delegating, so those two traits and their
+   implementors are unchanged. `node/cluster.rs` hands the driver the `Host`
+   as its fence. The `opened(key, generation, serves)` event of the sketch above is
+   not built: today it is three separate fence calls whose order matters.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns
    today (driver, replica handler, reporter, elections, suspicion), and
    `peer_dispatch.rs` routes replication requests to `Engine::handle`.
