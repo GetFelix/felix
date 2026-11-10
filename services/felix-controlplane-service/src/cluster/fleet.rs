@@ -269,7 +269,9 @@ pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 /// Every implemented feature but `publisher_principal`, which stays the
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
-/// `FELIX_RECORD_PUBLISHERS` asks for it.
+/// `FELIX_RECORD_PUBLISHERS` asks for it. And `record_generations`, also the
+/// operator's until replication ships each record's generation to followers:
+/// until then a follower's v9 records carry its own accepted generation.
 pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,

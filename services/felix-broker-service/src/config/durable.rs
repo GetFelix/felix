@@ -71,6 +71,8 @@ impl DurableStorageConfig {
             offload: None,
             // Set from the broker's cluster configuration when the stores open.
             retention_hold: LogConfig::default().retention_hold,
+            // Each store's provider gives its logs a gate of their own.
+            generations: Default::default(),
         };
         let offload_dir = std::env::var("FELIX_DURABLE_OFFLOAD_DIR")
             .ok()

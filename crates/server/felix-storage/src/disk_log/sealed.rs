@@ -41,6 +41,9 @@ pub(crate) struct SealedEntry {
     /// A v7 segment, which may hold trim records. An older one cannot, so a
     /// rebuild of the head floor never has to read it.
     pub(crate) holds_trims: bool,
+    /// The generation of its last record, `None` before v9: the floor for
+    /// the segment after it when a truncation empties that one.
+    pub(crate) last_generation: Option<u64>,
     key: u64,
 }
 
@@ -50,8 +53,14 @@ impl SealedEntry {
             descriptor,
             holds_marks,
             holds_trims,
+            last_generation: None,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn with_last_generation(mut self, generation: Option<u64>) -> Self {
+        self.last_generation = generation;
+        self
     }
 
     /// Offset one past the last record, matching `SegmentWriter::next_offset`.

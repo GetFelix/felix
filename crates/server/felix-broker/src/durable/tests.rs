@@ -241,3 +241,64 @@ async fn the_event_end_steps_back_over_membership_and_counter_records() {
     assert_eq!(log.tail_offset().await.expect("tail"), 7);
     assert_eq!(log.event_end(0, 7).await.expect("end"), 5);
 }
+
+/// **Past the gate, events go into v9 and read back as written.** The log
+/// moves onto v9 only at a roll after the gate opens, and a read returns
+/// every event at its own offset, with nothing that is not one.
+#[tokio::test]
+async fn past_the_gate_a_stream_moves_onto_v9_and_reads_back() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            segment_size_bytes: felix_storage::segment::SEGMENT_HEADER_LEN + 120,
+            ..config()
+        },
+    )
+    .expect("open");
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let check = Arc::clone(&open);
+    storage.record_generations_when(move || check.load(std::sync::atomic::Ordering::Acquire));
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    let events: Vec<String> = (0..12).map(|n| format!("e{n}")).collect();
+    for event in &events[..6] {
+        log.append(&payloads(&[event.as_str()]))
+            .await
+            .expect("append");
+    }
+    let versions =
+        |log: &StreamLog| -> Vec<u16> { log.log.segments().iter().map(|s| s.version).collect() };
+    let closed = versions(&log);
+    assert!(
+        closed
+            .iter()
+            .all(|v| *v < felix_storage::segment::GENERATION_VERSION)
+    );
+    open.store(true, std::sync::atomic::Ordering::Release);
+    for event in &events[6..] {
+        log.append(&payloads(&[event.as_str()]))
+            .await
+            .expect("append");
+    }
+    let opened = versions(&log);
+    assert_eq!(
+        opened.last(),
+        Some(&felix_storage::segment::GENERATION_VERSION),
+        "{opened:?}"
+    );
+    let read: Vec<(Offset, Bytes)> = log
+        .read_from(0, usize::MAX)
+        .await
+        .expect("read")
+        .into_iter()
+        .map(|r| (r.offset, r.payload))
+        .collect();
+    let written: Vec<(Offset, Bytes)> = events
+        .iter()
+        .enumerate()
+        .map(|(offset, event)| (offset as Offset, Bytes::from(event.clone())))
+        .collect();
+    assert_eq!(read, written);
+}

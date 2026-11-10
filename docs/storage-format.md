@@ -57,6 +57,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   run-state                                  ← whether the last run stopped cleanly
   registration                               ← the node incarnation of the last registration
   controlplane.view                          ← what the control plane last said about this node's shards
+  record-generations                         ← a log here may hold a v9 segment
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
@@ -246,15 +247,38 @@ used and it is cut off with its record on a torn tail. A segment's version
 says which layout its records have; a v8 record and a v9 record never decode
 as each other, because the header checksum sits at a different place.
 
-Generations never fall along a log. The startup scan checks this within the
-scanned part of a segment; across segments is checked once brokers write v9.
-A record whose generation is below the one before it is `GenerationFell`
-corruption: every checksum held, so it was written that way.
+Generations never fall along a log. The startup scan checks this inside each
+segment, and the open checks it across segments: a segment's first record
+must not be below the last record of the segment before it. A record whose
+generation is below the one before it is `GenerationFell` corruption: every
+checksum held, so it was written that way.
 
-No broker writes v9 yet. Once a fleet feature says every broker reads it,
-a log moves onto v9 at its next segment and stays there. A build that reads
-only up to v8 refuses a v9 segment with `SegmentVersion`, so a broker cannot
-roll back past the release that wrote one.
+**When a log moves onto v9.** A broker in a cluster writes v9 only once its
+fleet has finalized `record_generations`. Until then nothing changes on disk.
+After it, each stream log starts its next segment at v9 and stays there; the
+segment that was active is never rewritten. A lone broker has no fleet and
+stays on the older formats. Cache and counter logs stay on them too.
+
+**What goes in the field.** Every record in a v9 segment carries one: events,
+generation-start, commit and trim records alike. It is the generation the
+log had accepted when the record was written, which on a leader is its own,
+and never below the newest record's (the floor). A follower stamps its own
+accepted generation for now; replication does not ship each record's
+generation yet. Membership and counter records are still not written.
+
+**The floor.** The writer refuses a record below the newest record's
+generation, and the log keeps that floor across a roll, a reopen and a
+truncation. A reopen takes it from the active segment's full scan, or from
+the last record of the segment before it when the active one is empty. A cut
+takes it from the header of the record just below the cut. It never comes
+from a resume scan, which sees only the end of a segment.
+
+**Rollback.** A build that reads only up to v8 refuses a v9 segment with
+`SegmentVersion`, so a broker cannot roll back past the release that wrote
+one. Before the first v9 segment, a broker writes a `record-generations`
+marker under the durable root and syncs it. A broker holding the marker
+refuses to register with a fleet that has not finalized `record_generations`,
+as the `record-headers` marker does for `record_headers`.
 
 ### Producer marks
 
@@ -570,7 +594,7 @@ the file is read up to the last whole entry.
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
-| A v9 record whose generation is below the record before it | `GenerationFell` |
+| A v9 record whose generation is below the record before it, in its segment or the one before | `GenerationFell` |
 
 Every error carries a `CorruptionSite` naming the shard, segment id and byte
 position, because "corruption detected" is not enough to act on at 3am.
@@ -736,7 +760,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Read, not yet written by brokers; every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -876,8 +900,9 @@ from a named leader: that generation and the leader's node id.
 Version 2 adds `flags`. Its one bit says the vote is committed: a majority
 granted it, which is what openraft's `Vote::committed` records. A ballot
 without that bit is written as version 1, so only a committed vote produces a
-version 2 file. Brokers do not save committed votes yet; that waits for the
-same fleet gate as segment format v9 (see [Generations](#generations)). A
+version 2 file. A committed vote can be saved only past the same fleet gate
+as segment format v9 (see [Generations](#generations)), and nothing in a
+broker commits a vote yet. A
 build that predates version 2 reads only version 1, so it refuses a version 2
 file at open (the file "does not decode") and never ignores or rewrites it.
 The refusal comes after the open's first repairs (torn-tail recovery, the

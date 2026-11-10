@@ -1716,6 +1716,22 @@ async fn the_refusal_names_the_missing_feature() {
     assert!(!reason.contains("head_trim"), "{reason}");
 }
 
+/// A directory that started a v9 segment joins only a fleet that has
+/// finalized `record_generations`.
+#[tokio::test]
+async fn a_directory_with_a_v9_segment_waits_for_record_generations() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_generations_written(data.path()).expect("mark");
+    let reason = join_refusal(Some(data.path()), &std::collections::BTreeSet::new())
+        .await
+        .expect("refused");
+    assert!(reason.contains("record_generations"), "{reason}");
+    let finalized = [felix_common::fleet::RECORD_GENERATIONS.name().to_string()]
+        .into_iter()
+        .collect();
+    assert_eq!(join_refusal(Some(data.path()), &finalized).await, None);
+}
+
 /// Registration, the lookup and a lifecycle call each go through the link
 /// alone; an unset reply reads as an outage, not a refusal.
 #[tokio::test]

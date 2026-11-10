@@ -68,6 +68,11 @@ impl DurableStorage {
         self.provider.root()
     }
 
+    /// See `Broker::record_generations_when`.
+    pub(crate) fn record_generations_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        self.provider.record_generations_when(gate);
+    }
+
     /// Bound one stream's logs by `retention`, open and future, with the
     /// broker-wide bounds for any it leaves unset.
     pub fn set_stream_retention(

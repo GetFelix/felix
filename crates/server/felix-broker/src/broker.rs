@@ -281,6 +281,18 @@ impl Broker {
         self.record_publishers.get().is_some_and(|gate| (gate.0)())
     }
 
+    /// Let durable stream logs start new segments in storage format v9, and
+    /// save committed votes, whenever `gate` says so. A build that predates
+    /// v9 refuses such a log, so a cluster member says yes only once its
+    /// fleet has finalized `record_generations`. Asked only when a log rolls
+    /// onto a new segment. Only the first call counts, and a broker without
+    /// durable storage ignores it.
+    pub fn record_generations_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        if let Some(storage) = &self.durable_storage {
+            storage.record_generations_when(gate);
+        }
+    }
+
     /// Accept record headers on publishes whenever `gate` says so.
     ///
     /// Asked on every durable publish. A durable record with headers is

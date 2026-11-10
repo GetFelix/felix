@@ -8,6 +8,7 @@ use crate::disk_log::now_micros;
 use crate::io::sync_dir;
 use crate::log::{Offset, SegmentId};
 use crate::segment::format::SEGMENT_HEADER_LEN;
+use crate::segment::scan::record_generation_at;
 use crate::segment::writer::ResumeState;
 use crate::segment::{
     ScanStart, SegmentReader, SegmentWriter, SparseIndex, index_file_name, read_segment_header,
@@ -45,7 +46,12 @@ impl SegmentSet {
                 Some(resume) => self.adopt_sealed_as_active(resume)?,
                 None => {
                     // Nothing left at all: restart the log at `offset`.
-                    self.replace_active(active_id + 1, offset, SEGMENT_HEADER_LEN, offset, 0)?;
+                    self.replace_active(
+                        active_id + 1,
+                        offset,
+                        (SEGMENT_HEADER_LEN, offset, 0),
+                        None,
+                    )?;
                     return Ok(());
                 }
             }
@@ -94,9 +100,8 @@ impl SegmentSet {
         self.replace_active(
             active_id + 1,
             base_offset,
-            SEGMENT_HEADER_LEN,
-            base_offset,
-            0,
+            (SEGMENT_HEADER_LEN, base_offset, 0),
+            None,
         )?;
         sync_dir(&self.dir)?;
         Ok(())
@@ -123,6 +128,10 @@ impl SegmentSet {
                 record_count: outcome.record_count,
                 index: outcome.index,
                 version: outcome.header.version,
+                // A full scan, so its last generation is the segment's.
+                generation_floor: outcome
+                    .last_generation
+                    .or_else(|| self.sealed.last().and_then(|entry| entry.last_generation)),
             },
             self.config.reserve_limit_bytes(),
             self.config.index_spacing_bytes,
@@ -154,7 +163,33 @@ impl SegmentSet {
 
         let id = self.active.id();
         let base_offset = self.active.base_offset();
-        self.replace_active(id, base_offset, keep_bytes, offset, keep_count)
+        let floor = self.generation_before(offset)?;
+        self.replace_active(id, base_offset, (keep_bytes, offset, keep_count), floor)
+    }
+
+    /// The generation of the record just below `offset`, which a cut there
+    /// leaves newest: read from its header in the active segment, or the
+    /// last one of the segment before when the cut empties the active one.
+    fn generation_before(&self, offset: Offset) -> Result<Option<u64>> {
+        if offset <= self.active.base_offset() {
+            return Ok(self.sealed.last().and_then(|entry| entry.last_generation));
+        }
+        if !self.active.holds_generations() {
+            return Ok(None);
+        }
+        let position = self.active_reader.position_of(
+            self.active.index(),
+            offset - 1,
+            self.active.size_bytes(),
+            &self.label,
+        )?;
+        record_generation_at(
+            self.active.path(),
+            self.active.id(),
+            &self.label,
+            self.active.version(),
+            position,
+        )
     }
 
     /// Swap in an active writer over segment `id`, either reopened at
@@ -163,9 +198,8 @@ impl SegmentSet {
         &mut self,
         id: SegmentId,
         base_offset: Offset,
-        valid_bytes: u64,
-        next_offset: Offset,
-        record_count: u64,
+        (valid_bytes, next_offset, record_count): (u64, Offset, u64),
+        generation_floor: Option<u64>,
     ) -> Result<()> {
         let path = self.dir.join(segment_file_name(id));
         self.active = if crate::fs::exists(&path) {
@@ -183,19 +217,22 @@ impl SegmentSet {
                     // rebuild from the surviving prefix rather than trusting it.
                     index: rebuild_index_prefix(index, valid_bytes),
                     version: read_segment_header(&path, id, &self.label)?.version,
+                    generation_floor,
                 },
                 self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,
             )?
         } else {
-            SegmentWriter::create(
+            let mut created = SegmentWriter::create(
                 &self.dir,
                 id,
                 base_offset,
                 now_micros(),
                 self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,
-            )?
+            )?;
+            created.continue_generations(generation_floor);
+            created
         };
         self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),

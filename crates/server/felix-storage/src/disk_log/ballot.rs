@@ -326,6 +326,24 @@ impl DiskLog {
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Mark the vote for `leader` at `generation` committed (openraft's
+    /// `Vote::committed`), accepting it first if it is new. The ballot is
+    /// then written in format v2, which the previous release refuses, so
+    /// this is refused with [`StorageError::Unsupported`], writing nothing,
+    /// until the log's [`crate::log::GenerationGate`] allows v9: in a
+    /// cluster, once the fleet has finalized `record_generations`.
+    pub async fn commit_vote(&self, generation: u64, leader: &str) -> Result<GenerationCheck> {
+        if !self.inner.config.generations.allows() {
+            return Err(StorageError::Unsupported(
+                "a committed vote needs ballot format v2, which this log does not write yet",
+            ));
+        }
+        let raised = self
+            .raise_ballot(generation, Some(leader), true, None)
+            .await?;
+        Ok(raised.expect("no set to check"))
+    }
+
     /// Whether this log gave up its accepted generation and has accepted no
     /// newer one since. See [`Self::give_up_generation`].
     pub fn gave_up(&self) -> bool {

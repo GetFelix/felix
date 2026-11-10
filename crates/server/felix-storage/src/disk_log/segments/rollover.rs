@@ -15,6 +15,7 @@ use crate::Result;
 use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
 use crate::log::{AppendRecord, SegmentId};
+use crate::segment::format::GENERATION_VERSION;
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
 use crate::{StorageError, metrics_names};
@@ -132,11 +133,12 @@ impl SegmentSet {
         }
         let descriptor = self.active.descriptor();
         // One page-cache write, no flush: see `BlankSegment::activate`.
-        let replacement = prepared.blank.activate(
+        let mut replacement = prepared.blank.activate(
             self.active.next_offset(),
             now_micros(),
-            self.active.successor_version(&[]),
+            self.successor_version(&[]),
         )?;
+        replacement.continue_generations(self.active.last_generation());
         self.bump_next_segment_id(replacement.id() + 1);
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(
@@ -165,7 +167,20 @@ impl SegmentSet {
 
     /// [`Self::roll`] to a segment that can hold `records`.
     pub(crate) fn roll_for(&mut self, records: &[AppendRecord]) -> Result<()> {
-        self.roll_to(self.active.successor_version(records))
+        self.roll_to(self.successor_version(records))
+    }
+
+    /// The version the segment after the active one is written at so that it
+    /// holds `records`: [`SegmentWriter::successor_version`], or v9 once the
+    /// log's [`crate::log::GenerationGate`] allows it. Only a new segment
+    /// moves; the active one is never rewritten.
+    fn successor_version(&self, records: &[AppendRecord]) -> u16 {
+        let version = self.active.successor_version(records);
+        if version < GENERATION_VERSION && self.config.generations.allows() {
+            GENERATION_VERSION
+        } else {
+            version
+        }
     }
 
     /// [`Self::roll`] to a segment at `version`.
@@ -175,7 +190,7 @@ impl SegmentSet {
         let base_offset = self.active.next_offset();
         let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
 
-        let replacement = SegmentWriter::create_at_version(
+        let mut replacement = SegmentWriter::create_at_version(
             &self.dir,
             id,
             base_offset,
@@ -184,6 +199,7 @@ impl SegmentSet {
             self.config.index_spacing_bytes,
             version,
         )?;
+        replacement.continue_generations(self.active.last_generation());
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),
@@ -224,7 +240,8 @@ impl SegmentSet {
         descriptor: crate::log::SegmentDescriptor,
         retired: &SegmentWriter,
     ) -> Result<()> {
-        let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims());
+        let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims())
+            .with_last_generation(retired.last_generation());
         self.files.seed(
             entry.key(),
             SealedHandle {

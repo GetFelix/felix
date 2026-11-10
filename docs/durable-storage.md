@@ -680,9 +680,12 @@ stale one is replaced by reading the sealed segments' marks, which
 `felix_storage_producer_state_rebuilt_total` counts. See
 the producer snapshot section of `docs/storage-format.md`.
 
-From segment format v9 each record also carries its leader's generation,
-and the scan refuses a log whose generations fall. A crash that cuts the
-longer v9 header, generation included, is a torn tail like any other. See
+From segment format v9 each record also carries a generation, and the open
+refuses a log whose generations fall, inside a segment or from one segment to
+the next. A crash that cuts the longer v9 header, generation included, is a
+torn tail like any other. A stream log moves onto v9 at its next segment once
+the fleet has finalized `record_generations`, and the floor that keeps its
+generations from falling survives a roll, a reopen and a truncation. See
 `docs/storage-format.md`, "Generations".
 
 ### What is validated at startup
@@ -1422,8 +1425,10 @@ writes them in and compare their generations when it loads, as the open does
 for `ballot` and `replica`.
 
 A ballot can also mark its vote committed, meaning a majority granted it.
-That bit is format v2 of the file, written only for a committed vote, and no
-broker saves one until the segment format v9 fleet gate. A save writes the
+That bit is format v2 of the file, written only for a committed vote, and
+`DiskLog::commit_vote` refuses one until the log's gate allows segment format
+v9 (in a cluster, `record_generations` finalized). Nothing in a broker commits
+a vote yet. A save writes the
 ballot before `replica`, so a crash at any step of it opens with the vote
 from before the save or the vote it saved, never a mark on a vote that did
 not reach the disk. See `docs/storage-format.md`, "`ballot`".

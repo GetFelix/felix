@@ -529,8 +529,8 @@ damage. A record's generation must never be below the generation of the
 record before it; the scan checks this, and a log that breaks the rule is
 corrupt.
 
-**Rollout.** Brokers write version 9 only after a fleet feature says every
-broker reads it, and a broker that predates it refuses a version 9 segment,
+**Rollout.** Brokers write version 9 only after a fleet feature,
+`record_generations`, says every broker reads it, and a broker that predates it refuses a version 9 segment,
 so a broker cannot roll back once it has written one. The control plane
 starts fresh (decision 7) and only control-plane members read its log, so its
 log is version 9 from the first record, with no fleet gate and no rollback

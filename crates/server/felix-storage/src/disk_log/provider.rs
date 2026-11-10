@@ -54,9 +54,12 @@ impl std::fmt::Debug for OpenHook {
 }
 
 impl DiskLogProvider {
-    pub fn new(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
+    pub fn new(root: impl Into<PathBuf>, mut config: LogConfig) -> Result<Self> {
         config.validate()?;
         let root = root.into();
+        // Its own gate, so a config cloned from the caller's (a cache's, say)
+        // never moves onto v9 when this provider's logs do.
+        config.generations = crate::log::GenerationGate::under(root.clone());
         crate::io::create_dir_all_durable(&root)?;
         // Whatever a delete left before a crash or restart.
         incarnation::purge_in_background(root.clone());
@@ -80,6 +83,13 @@ impl DiskLogProvider {
 
     pub fn config(&self) -> &LogConfig {
         &self.config
+    }
+
+    /// Let this provider's logs start new segments in format v9 whenever
+    /// `check` says so, for every log open now or later. Only the first call
+    /// counts. See [`crate::log::GenerationGate`].
+    pub fn record_generations_when(&self, check: impl Fn() -> bool + Send + Sync + 'static) {
+        self.config.generations.open_when(check);
     }
 
     /// Open or return the cached log for `shard`.

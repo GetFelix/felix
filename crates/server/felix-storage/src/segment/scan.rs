@@ -11,8 +11,8 @@ use crate::io::read_at;
 use crate::log::{Offset, RecordMark, SegmentId};
 use crate::segment::cursor::SegmentCursor;
 use crate::segment::format::{
-    IndexEntry, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader, check_offset_continuity,
-    decode_record_after, record_header_len,
+    GENERATION_VERSION, IndexEntry, RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader,
+    check_offset_continuity, decode_record_after, record_header_len,
 };
 use crate::segment::index::SparseIndex;
 use crate::{Corruption, CorruptionKind, Result, StorageError};
@@ -65,6 +65,9 @@ pub struct ScanOutcome {
     /// sees only the records after its resume point, so callers must not seed
     /// a generation floor from it.
     pub last_generation: Option<u64>,
+    /// The generation of the first intact record in the scanned span, which
+    /// for a [`ScanStart::Full`] scan is the segment's first record.
+    pub first_generation: Option<u64>,
 }
 
 impl ScanOutcome {
@@ -98,6 +101,7 @@ struct ScanState {
     repair: TailRepair,
     marks: Vec<(Offset, RecordMark, u64)>,
     last_generation: Option<u64>,
+    first_generation: Option<u64>,
 }
 
 impl ScanState {
@@ -111,6 +115,7 @@ impl ScanState {
             torn_tail,
             marks: self.marks,
             last_generation: self.last_generation,
+            first_generation: self.first_generation,
         }
     }
 
@@ -283,6 +288,7 @@ pub(crate) fn scan_segment_upto(
         repair,
         marks: Vec::new(),
         last_generation: None,
+        first_generation: None,
     };
     let header_len = record_header_len(header.version);
 
@@ -368,6 +374,7 @@ pub(crate) fn scan_segment_upto(
                 );
             }
             state.last_generation = Some(found);
+            state.first_generation.get_or_insert(found);
         }
 
         state.observe(decoded.header.offset, position, total_len);
@@ -400,6 +407,36 @@ pub fn read_segment_header(
     SegmentHeader::decode(bytes).map_err(|err| {
         StorageError::Corruption(err.in_segment(shard_label, segment_id).at_position(0))
     })
+}
+
+/// The generation of the record whose header starts at `position` in a v9
+/// segment, checked against its header checksum. `None` before v9, or when
+/// the segment ends before `position`.
+pub(crate) fn record_generation_at(
+    path: &Path,
+    segment_id: SegmentId,
+    shard_label: &str,
+    version: u16,
+    position: u64,
+) -> Result<Option<u64>> {
+    if version < GENERATION_VERSION {
+        return Ok(None);
+    }
+    let header_len = record_header_len(version);
+    let file = File::open(path)?;
+    let mut cursor = SegmentCursor::new(&file);
+    let bytes = cursor.slice_at(position, header_len as usize)?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    RecordHeader::decode_in(bytes, version)
+        .map(|header| header.generation)
+        .map_err(|err| {
+            StorageError::Corruption(
+                err.in_segment(shard_label, segment_id)
+                    .at_position(position),
+            )
+        })
 }
 
 /// Decide whether a decode failure at `position` may be truncated away.

@@ -16,6 +16,7 @@ mod power_loss;
 mod producers;
 mod provider;
 mod publisher;
+mod record_generations;
 mod replica_set;
 mod replica_state;
 mod reservation;
@@ -27,6 +28,8 @@ mod simulated_fs;
 mod stalled_write;
 mod trim;
 mod truncation;
+#[cfg(feature = "sim")]
+mod v9_crash_points;
 mod v9_kinds;
 #[cfg(feature = "sim")]
 mod vote_crash_points;
