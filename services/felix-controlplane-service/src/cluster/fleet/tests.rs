@@ -385,3 +385,18 @@ fn other_features_pass_the_election_check() {
     let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
     assert!(check_election(&nodes, "majority_ack", false).is_ok());
 }
+
+/// Replication does not yet carry the writer's generation, so finalizing
+/// `record_generations` would let replicas disagree on a record's term.
+#[test]
+fn record_generations_cannot_be_finalized_until_the_writer_generation_replicates() {
+    let err = check_operator_finalizable("record_generations").expect_err("refused");
+    let StoreError::Conflict(message) = err else {
+        panic!("expected a conflict");
+    };
+    assert!(
+        message.contains("generation that wrote each record"),
+        "{message}"
+    );
+    assert!(check_operator_finalizable("head_trim").is_ok());
+}

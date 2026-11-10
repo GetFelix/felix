@@ -254,17 +254,18 @@ generation is below the one before it is `GenerationFell` corruption: every
 checksum held, so it was written that way.
 
 **When a log moves onto v9.** A broker in a cluster writes v9 only once its
-fleet has finalized `record_generations`. Until then nothing changes on disk.
-After it, each stream log starts its next segment at v9 and stays there; the
+fleet has finalized `record_generations`. The control plane refuses that
+finalize until replication carries the generation that wrote each record, so
+no cluster writes v9 yet. Once it can be finalized, each stream log starts its next segment at v9 and stays there; the
 segment that was active is never rewritten. A lone broker has no fleet and
 stays on the older formats. Cache and counter logs stay on them too.
 
 **What goes in the field.** Every record in a v9 segment carries one: events,
 generation-start, commit and trim records alike. It is the generation the
 log had accepted when the record was written, which on a leader is its own,
-and never below the newest record's (the floor). A follower stamps its own
-accepted generation for now; replication does not ship each record's
-generation yet. Membership and counter records are still not written.
+and never below the newest record's (the floor). A follower would stamp its own
+accepted generation, because replication does not ship each record's
+generation yet; that is why the feature cannot be finalized. Membership and counter records are still not written.
 
 **The floor.** The writer refuses a record below the newest record's
 generation, and the log keeps that floor across a roll, a reopen and a

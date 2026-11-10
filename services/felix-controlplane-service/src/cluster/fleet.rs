@@ -132,10 +132,22 @@ where
 /// broker states them so the control plane can gate other finalizes, and
 /// enabling one would make [`admit`] refuse every broker that predates it.
 ///
+/// Also refuse [`felix_common::fleet::RECORD_GENERATIONS`]: brokers build it,
+/// but replication does not yet carry the generation that wrote a record, so
+/// a follower would stamp its own and replicas would disagree on an entry's
+/// term.
+///
 /// Checked when the operator asks, like [`check_prerequisites`], so a Raft
 /// member applying the finalize decides the same as one on an older release.
 pub(crate) fn check_operator_finalizable(feature: &str) -> Result<(), StoreError> {
-    use felix_common::fleet::{NON_VOTING, PEER_ELECTION, START_HOLDERS};
+    use felix_common::fleet::{NON_VOTING, PEER_ELECTION, RECORD_GENERATIONS, START_HOLDERS};
+    if feature == RECORD_GENERATIONS.name() {
+        return Err(StoreError::Conflict(format!(
+            "cannot finalize {feature} yet: replication does not carry the generation that \
+             wrote each record, so followers would stamp their own and replicas would \
+             disagree on a record's term"
+        )));
+    }
     if [PEER_ELECTION, START_HOLDERS, NON_VOTING]
         .iter()
         .any(|report| feature == report.name())

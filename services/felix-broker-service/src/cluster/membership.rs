@@ -1214,7 +1214,7 @@ pub(crate) async fn join_refusal(
         ),
         (
             felix_common::fleet::RECORD_GENERATIONS,
-            "has a segment in storage format v9",
+            "holds storage format v9 data or a v2 ballot",
             felix_storage::run_state::has_record_generations,
         ),
     ];

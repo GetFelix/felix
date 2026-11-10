@@ -145,7 +145,7 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id, `record_generations` (see
+its publisher's id, `record_generations` (not finalizable yet; see
 [`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
 finalizes (see [Failover without the control
 plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
@@ -585,11 +585,13 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 
 #### `record_generations`
 
-Once finalized, each durable stream log starts its next segment in storage
-format v9, where every record header carries the generation of the leader
-that wrote it. This is groundwork for running each shard on Raft, which
-needs the term of every entry in the log itself. Clients see nothing: reads,
-offsets and payloads are unchanged. Each record grows by 8 bytes on disk.
+Groundwork for running each shard on Raft, which needs the term of every
+entry in the log itself. Brokers report the feature, but it **cannot be
+finalized yet**: the control plane refuses it with 409 until replication
+carries the generation that wrote each record to followers. Once it can be
+finalized, each durable stream log will start its next segment in storage
+format v9, with an 8-byte generation in every record header. Clients will see
+nothing: reads, offsets and payloads are unchanged.
 
 - **It is the one-way step.** A broker older than this release refuses to
   open a v9 segment, so after the finalize no broker can be rolled back to
@@ -605,8 +607,8 @@ offsets and payloads are unchanged. Each record grows by 8 bytes on disk.
   `record-generations` marker in the data directory before the first v9
   segment, and a broker holding it that registers with a fleet that has not
   finalized the feature deregisters and stops with an error saying so.
-- **A new cluster** does not finalize it on its own. Finalize it with the
-  runbook above. A single broker has no fleet and stays on the older format.
+- **A new cluster** does not finalize it. A single broker has no fleet and
+  stays on the older format.
 
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
