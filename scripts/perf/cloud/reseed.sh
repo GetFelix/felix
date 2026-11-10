@@ -8,8 +8,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 : "${SESSION:?SESSION=<name>}"
 session="${SESSION}"
 set -a
-# shellcheck disable=SC1091
-source "${here}/session.env"
+# A caller that already loaded its session.env (run-ab.sh, session.sh) may keep it elsewhere.
+if [ -f "${here}/session.env" ]; then
+  # shellcheck disable=SC1091
+  source "${here}/session.env"
+elif [ "${FELIX_ENV_LOADED:-}" != 1 ]; then
+  echo "!! no ${here}/session.env and none loaded (FELIX_ENV_LOADED unset)" >&2; exit 1
+fi
 # session.env may name another session.
 SESSION="${session}"
 # shellcheck disable=SC1090
