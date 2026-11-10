@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794281895740,
+  "lastUpdate": 1794283323219,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -64416,6 +64416,72 @@ window.BENCHMARK_DATA = {
             "range": "634.65",
             "unit": "us",
             "extra": "trials: 5\nmedian: 449.00\nmean: 730.80\nstdev: 634.65\ncv: 86.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "73701220034e93dc0d8fdeca1bdfae696bbe311c",
+          "message": "perf: RF 3 A/B runs recreate the stream per cell instead of wiping brokers (#2163)\n\n* perf: A/B runs recreate the stream per cell instead of wiping RF 3 brokers\n\n* perf: let reseed.sh use a session env its caller already loaded\n\nrun-ab.sh can keep session.env outside the harness directory; reseed.sh\ninsisted on its own copy, so the first build switch of a GCP A/B failed.\n\n* perf: give a GCP ssh connect failure about four minutes to recover\n\nA banner-exchange timeout outlasted four attempts (55 s) and ended an A/B\nrun before its first cell. Six attempts with up to 60 s between them.\n\n* perf: run both A/B sides on their own control plane and brokers, stop on a bad reseed",
+          "timestamp": "2026-11-09T19:57:05-08:00",
+          "tree_id": "7ac8c17a2ef92f1301e6cd3b480fc49159f5a98d",
+          "url": "https://github.com/GetFelix/felix/commit/73701220034e93dc0d8fdeca1bdfae696bbe311c"
+        },
+        "date": 1794283312778,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 116,
+            "range": "2.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 117.00\nstdev: 2.00\ncv: 1.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 162,
+            "range": "26.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 162.00\nmean: 173.00\nstdev: 26.99\ncv: 15.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 347,
+            "range": "147.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 347.00\nmean: 345.40\nstdev: 147.29\ncv: 42.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "2.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 153.60\nstdev: 2.61\ncv: 1.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 310,
+            "range": "6.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 310.00\nmean: 311.60\nstdev: 6.11\ncv: 1.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 453,
+            "range": "415.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 453.00\nmean: 637.60\nstdev: 415.12\ncv: 65.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
