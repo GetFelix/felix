@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794355399835,
+  "lastUpdate": 1794368659251,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -65736,6 +65736,72 @@ window.BENCHMARK_DATA = {
             "range": "176.05",
             "unit": "us",
             "extra": "trials: 5\nmedian: 424.00\nmean: 507.00\nstdev: 176.05\ncv: 34.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eea215862b09021d55df9c6626629defaba9394a",
+          "message": "fix(storage): v9 writer generations part 2a: leader start rule, unknown writers, followers ahead of the finalize (#2199)\n\nPart of #2167. A v9 leader append is stamped only at or past its generation's recorded start; records whose writer is unknown carry generation 0 and are skipped by the floor; a follower that refuses unstamped batches is sent writers from then on; per-segment known-generation files keep the floor exact without re-reading segments on every start. Unknown writers stay below the Raft snapshot base (docs/replication-engine.md). Reviewed by three independent passes; all findings fixed.\n\nSpec-Unaffected: the v9 per-record generation is not modelled; leases, fencing, the quorum mark, promotion and divergence repair are unchanged.",
+          "timestamp": "2026-11-11T03:40:12Z",
+          "tree_id": "0c2c0e5825b2e8434beafa6fb74a8ae864be04af",
+          "url": "https://github.com/GetFelix/felix/commit/eea215862b09021d55df9c6626629defaba9394a"
+        },
+        "date": 1794368651657,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.20\nstdev: 0.84\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "13.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 133.40\nstdev: 13.22\ncv: 9.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 180,
+            "range": "1397.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 893.60\nstdev: 1397.38\ncv: 156.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.00\nstdev: 0.71\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "9.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 267.40\nstdev: 9.86\ncv: 3.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 415,
+            "range": "303.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 415.00\nmean: 531.40\nstdev: 303.93\ncv: 57.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
