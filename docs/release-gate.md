@@ -99,13 +99,15 @@ fsync mode (#2248).
 **Row 13, term limits.** A count of terms per fault says little: one real
 failure may cost several terms and a harmless event must cost none. The
 limits are per kind of fault, from "When a broker dies with sleeping
-leaders" in [`per-shard-raft.md`](per-shard-raft.md):
+leaders" in [`per-shard-raft.md`](per-shard-raft.md). Each limit holds
+when it is the only fault on that group. The simulator's seeds overlap
+faults, and a group hit by two at once is judged by "served" alone.
 
 | Fault | Limit |
 | --- | --- |
 | A false liveness alarm about a healthy leader's broker | No new term in any group |
 | A follower's broker restarts | No new term in any group it follows |
-| Sleep or wake messages are dropped | No new term |
+| A message of the sleep handshake is dropped | No new term. A dropped wake message from a follower, or its answer, is different: it starts an ordinary election by design |
 | A broker that leads sleeping groups dies | On each surviving broker, the elections started in one tick interval are at or under the ticker's cap. The rest queue |
 
 A leader transfer that the control plane asks for and a move are not
@@ -187,7 +189,8 @@ operator switches. Both must pass. The 0.8.0 candidate has one engine.
 **The paired rule.** The sides alternate trial by trial on one runner and
 the side that goes first flips each round, so each round is a pair. Each
 round gives one ratio, candidate over baseline. The figure for a cell is the
-median of those ratios, with the exact 99% interval for a median. That
+median of those ratios, with an exact interval for a median: the widest
+interval six rounds allow (96.9% two-sided), and 99% from 12 rounds. That
 interval is read off the sorted ratios and assumes nothing about their
 shape:
 
@@ -216,7 +219,7 @@ Otherwise the cell is undecided and rounds are added: 6, then 12, then 24.
 A cell still undecided at 24 rounds fails as not measured, and is rerun on
 a dedicated runner. So every cell is decided within 24 rounds.
 
-**What the rule promises.** The interval is 99% and not 95% because it is
+**What the rule promises.** The interval is this wide, and not 95%, because it is
 looked at three times and six rounds are few. A candidate whose true
 median is exactly at the bound passes with a chance of 1 in 64 at 6 rounds
 and under 1 in 300 at each later look, 2.0% over the three looks. A worse
@@ -356,7 +359,8 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 Changes the workflows need, in the order the gate needs them:
 
 1. **The paired rule in `gate_perf.py`**, for perf, failover and the move
-   pause: per-round ratios, the exact 99% interval, the three verdicts, the
+   pause: per-round ratios, the exact interval (the widest six rounds allow,
+   96.9% two-sided, and 99% from 12 rounds), the three verdicts, the
    separate p99 bound, and more rounds for an undecided cell. Add the
    baseline-against-itself pair as the validity check, on half width only. Keep 0.90 and 1.20 on medians as the engine rule.
    Drop the `failover_slack` input: the bound is 0.95.
@@ -400,7 +404,7 @@ Each has a recommendation.
 1. **Is the release A/B judged by the paired rule, or by the 0.90 and 1.20
    of the engine gate?** Decided: the paired rule, with two bounds.
    Throughput must be at least 0.97 of the release. p99 has its own bound:
-   the upper end of its 99% interval must be under 1.10. Both are decided
+   the upper end of its interval must be under 1.10. Both are decided
    within 24 rounds. The engine gate's 10% on throughput was written for a
    new engine against the old one. Against a release it would let 9% go
    every release.
