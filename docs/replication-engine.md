@@ -286,7 +286,7 @@ engine that writes through `DiskLog` keeps all of them.
 | Raft storage operation (openraft 0.10) | `DiskLog` today |
 | --- | --- |
 | `append`, then `IOFlushed` (`LogFlushed` in 0.9, which the control plane uses until it moves) | `append_pending_at` / `append_claimed_at` (`disk_log.rs:365`, `:340`), then `wait_durable` (`disk_log.rs:414`). Group commit is kept: the callback fires when the shared flush covers the offset. |
-| `truncate_after(Option<LogId>)`, cutting everything after the given id (0.9's `truncate(log_id)` cut from it) | The truncation path (`disk_log.rs:1227`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1242`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
+| `truncate_after(Option<LogId>)`, cutting everything after the given id (0.9's `truncate(log_id)` cut from it) | The truncation path (`disk_log.rs:1353`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1368`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
 | `purge(log_id)` of a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
 | `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
 | Term of each entry (`LogId` with `leader_id_std::LeaderId`) | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
@@ -296,6 +296,32 @@ engine that writes through `DiskLog` keeps all of them.
 The offset is the Raft index: one record is one entry. The startup scan, the
 torn-tail rule and the derived indexes keep working as they do; version 9
 adds the generation field to the record header and the record kinds below.
+
+**What is built.** The read side of the adapter is in
+`crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature:
+`RaftLog::log_state` (the last log id) and `LogReader`, which implements
+openraft's `RaftLogReader` (entries and the vote). `DiskLog::writer_at` and
+`DiskLog::last_writer` give the generation in a record's header without
+reading its payload. Appending, truncating, saving a vote, purging and
+snapshots are not built, so nothing uses the adapter yet.
+
+**The term is the generation minus one.** openraft's `initialize` writes the
+first membership entry at term 0, and generation 0 in a record header means
+"writer unknown" (see "Unknown writers and the switch to Raft"). The adapter
+stamps a record with its entry's term plus one, and the ballot's generation
+is the vote's term plus one, so term 0 is stored as generation 1 and no
+entry is ever stored as 0. This is one function in each direction inside
+`raft_log`. The engine that drives the adapter must use the same shift when
+it opens the write fence at a term.
+
+**An empty log can start at any index.** openraft's storage suite appends to
+an empty store at index 1. The adapter takes the log's first index from
+where its oldest segment starts, so a log reset to a base holds nothing
+below it.
+
+**A read is one log's.** A read that spans several pages restarts if the log
+is truncated under it, so it never joins entries from before a truncation to
+ones written after.
 
 **The awkward part is entries that are not records.** Raft appends two kinds
 of entry no client wrote: a blank entry when a leader starts its term, and
@@ -357,18 +383,23 @@ used by every shard group and by the control plane, tested once.
   `services/felix-controlplane-service/src/raft/store/tests.rs:44`) runs
   against the adapter, alongside `felix-storage`'s existing torn-tail,
   power-loss and fault-injection tests.
+  The suite drives a whole store, so it runs in full only once the write
+  side, purge and snapshots exist. Until then
+  `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the cases
+  that need only reads, appends, truncation and the vote, with test hooks
+  standing in for the write side.
 - **Truncation is allowed.** `store.rs` says the segment store forbids
   truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported
-  operation (`disk_log.rs:1227`, and "Divergence and truncation" in
+  operation (`disk_log.rs:1353`, and "Divergence and truncation" in
   `replication-design.md`). That comment is corrected when the adapter lands.
 
 ### openraft version
 
 The adapter targets openraft 0.10, pinned to an exact version in
-`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10). Nothing in
-the workspace depends on 0.10 yet; the adapter PR adds `openraft = "=0.10.0"`
-as its first commit. The control plane runs 0.9.25 today
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10), and
+`[workspace.dependencies]` pins `openraft = "=0.10.0"`, which `felix-storage`
+uses behind its `raft` feature. The control plane runs 0.9.25 today
 (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
 pinned version as part of its storage track, so the workspace has one
 openraft. A version change is a reviewed update, never a side effect of
@@ -415,7 +446,8 @@ What the adapter absorbs from 0.9 to 0.10:
 
 - The `single-term-leader` feature is gone. The type config sets
   `LeaderId = leader_id_std::LeaderId`, which gives a log id of term and
-  index, the term being the record's generation.
+  index, the term being the record's generation minus one. The adapter's
+  `LogTypes` bound accepts no other leader id.
 - `truncate(log_id)` becomes `truncate_after(Option<LogId>)`, which keeps the
   named entry and cuts everything after it. The adapter maps it to `DiskLog`'s
   truncate at the next offset.
@@ -592,7 +624,7 @@ generation list in `disk_log/epochs.rs` cannot provide it: an absent or
 unreadable file loads as empty (`epochs.rs:204-228`), it keeps at most 512
 entries (`epochs.rs:34`), ranges that arrive after a cut are tracked only in
 memory (`epochs.rs:46-48`), and a truncation syncs the segments before it
-stores the list (`disk_log.rs:1642-1656`). That is fine for a hint, and it
+stores the list (`disk_log.rs:1781-1787`). That is fine for a hint, and it
 stays one. Making it safety state would need ordering and crash rules for
 every one of those paths. A header field is checksummed with the record, cut
 with the record on a torn tail, and needs no rules of its own.
@@ -704,7 +736,7 @@ past the last index openraft knew. On restart openraft reads the log's last
 that term. A new leader keeps them or truncates them. Either way no client
 was told they were committed, because `await_commit` returned only on the
 commit index. Truncation goes through `DiskLog`'s truncate, which refuses to
-go below the commit offset (`disk_log.rs:1242`). Raft never asks it to, so a
+go below the commit offset (`disk_log.rs:1368`). Raft never asks it to, so a
 refusal there is a bug to stop on, not a case to handle.
 
 One ordering rule matters. The broker and openraft must agree on the next
@@ -971,9 +1003,9 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
 does not, today. The rule is that bytes are never rewritten in place, so
 recovery can trust that valid bytes end at EOF. Cutting a suffix off is a
 separate, supported operation: `DiskLog`'s truncate
-(`crates/server/felix-storage/src/disk_log.rs:1227`) cuts the log back to an
+(`crates/server/felix-storage/src/disk_log.rs:1353`) cuts the log back to an
 offset under the append and segment locks, and refuses with `BelowCommit` only
-when the cut would reach below the commit offset (`disk_log.rs:1242`). A
+when the cut would reach below the commit offset (`disk_log.rs:1368`). A
 diverged follower already uses it, and `restore_to` (`disk_log.rs:560`) goes
 through the same path. Raft truncates only entries that are not committed,
 so the guard never refuses a correct Raft truncation; it is a backstop

@@ -1114,6 +1114,14 @@ impl DiskLog {
 }
 
 impl DiskLog {
+    /// A count that changes whenever records are removed from either end of
+    /// the log or the log is reset. A reader that pages through the log compares
+    /// it before and after, since a cut in between can leave it holding
+    /// records from both sides of the cut.
+    pub(crate) fn cuts(&self) -> u64 {
+        self.inner.segments.read().generation()
+    }
+
     /// The read behind both `read_range` methods, and the tail it ran to.
     /// Without trims a start below the head floor is refused; with them only
     /// one below the oldest segment is, since replication ships from there.
@@ -1179,6 +1187,84 @@ impl DiskLog {
                 .record(started.elapsed().as_secs_f64());
             Ok((records, tail))
         })
+    }
+}
+
+/// What the log holds at one offset, as its record header says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterAt {
+    /// No record: the offset is below the oldest segment, or at or past the
+    /// tail.
+    Absent,
+    /// A record in a segment older than format v9, which keeps no generation.
+    Unstamped,
+    /// The generation stamped on the record. [`crate::log::UNKNOWN_WRITER`]
+    /// means the writer is not known, never that generation 0 wrote it.
+    Generation(u64),
+}
+
+impl DiskLog {
+    /// Which generation wrote the record at `offset`, read from the record's
+    /// own header and checked against the header checksum. The payload is
+    /// not read.
+    ///
+    /// This is the log's answer, not the generation history's
+    /// ([`AppendOnlyLog::generations`]), which is a hint that can be missing
+    /// or short. A Raft term must come from here.
+    pub async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
+        Ok(self.writers_at(Some(offset)).await?.1)
+    }
+
+    /// The offset of the last record and which generation wrote it, or `None`
+    /// for a log that holds no record. One answer about one tail: a
+    /// truncation in between restarts the read.
+    pub async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
+        let (tail, writer) = self.writers_at(None).await?;
+        Ok(tail
+            .checked_sub(1)
+            .filter(|_| writer != WriterAt::Absent)
+            .map(|last| (last, writer)))
+    }
+
+    /// The tail, and the writer of the record at `offset`, or of the last
+    /// record when `offset` is `None`.
+    async fn writers_at(&self, offset: Option<Offset>) -> Result<(Offset, WriterAt)> {
+        let inner = Arc::clone(&self.inner);
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(inner.label.clone()));
+        }
+        felix_common::blocking::spawn(move || {
+            loop {
+                // Planned under the lock and read without it, as a range
+                // read is.
+                let (plan, tail, offset) = {
+                    let segments = inner.segments.read();
+                    let tail = segments.tail_offset();
+                    let Some(offset) = offset.or(tail.checked_sub(1)) else {
+                        return Ok((tail, WriterAt::Absent));
+                    };
+                    if offset < segments.base_offset() || offset >= tail {
+                        return Ok((tail, WriterAt::Absent));
+                    }
+                    (segments.read_plan(offset), tail, offset)
+                };
+                let found = plan.generation_at(offset, &inner.label);
+                // A truncation in between may have put another record there.
+                if inner.segments.read().generation() != plan.generation {
+                    continue;
+                }
+                return Ok((
+                    tail,
+                    match found? {
+                        None => WriterAt::Absent,
+                        Some(None) => WriterAt::Unstamped,
+                        Some(Some(generation)) => WriterAt::Generation(generation),
+                    },
+                ));
+            }
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 }
 

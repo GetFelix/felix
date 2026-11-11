@@ -510,6 +510,35 @@ record reports the same count. A Kafka consumer is moved past a trailing run
 by an empty batch. Replication reads every kind (`read_replicated_from`),
 but cannot yet ship membership and counter records (see above).
 
+### Records as Raft entries
+
+The `raft_log` module of `felix-storage` (cargo feature `raft`) reads a log
+as an openraft log. It adds no bytes to the format. It reads what version 9
+already stores:
+
+| Raft | Record |
+| --- | --- |
+| Index | The record's offset. |
+| Term | The generation in the record header, minus one. |
+| Blank entry (a new leader's no-op) | A generation-start record. Its payload is the header's generation. |
+| Membership entry | A membership record. The payload is the engine's. |
+| Normal entry | Any other record, decoded by the log's user. |
+| Vote | The `ballot` file: the term is its generation minus one, the node voted for is its leader, and the committed flag is the vote's. |
+
+The term is stored plus one because openraft writes its first entry at term
+0, and generation 0 in a record header means "writer unknown". With the
+shift, no term is ever stored as 0. Reading a record stamped 0, a record in
+a segment older than version 9, or a record below the log's first index as
+an entry is an error. It is never read as a term-0 entry.
+
+A blank or membership entry takes an offset, because the offset is the Raft
+index. Both are kinds every client read skips (above), so the offsets a
+consumer sees stay dense apart from the gaps it is told about, and a jump
+still means a drop.
+
+Only reading is built: entries, the last log id and the vote. Nothing writes
+through the adapter yet.
+
 | Kind | Bits | From | Data |
 | --- | --- | --- | --- |
 | plain | none | v2 | yes |
