@@ -1096,6 +1096,7 @@ the new group.
 | `store/` with the converted mark, not started | Reports that the directory is converted. |
 | `store/` with the started mark | `convert` refuses. It never replaces a store. |
 | A `raft.redb.pre-segment` that already names the new cluster id | `restore` finishes from the step it stopped at. |
+| A real `raft.redb` that names the new cluster id, and a started `store/` without the converted mark | `restore` moves the store aside. A crash came between its last two steps. |
 
 **Going back.** There are two commands, and the started mark picks which
 one is allowed.
@@ -1114,7 +1115,8 @@ one is allowed.
 
   1. Writes the new id into `raft.redb.pre-segment`.
   2. Clears the converted mark in `store/member`, so the service no longer
-     starts on this store.
+     starts on this store. The file and the `store/` directory are fsynced
+     before the next step. The started mark stays set.
   3. Renames `raft.redb.pre-segment` over the stub.
   4. Moves `store/` aside.
 
