@@ -262,6 +262,8 @@ cluster does not. Every broker that reports the feature offers
 is finalized, each stream log starts its next segment at v9 and stays there;
 the segment that was active is never rewritten. A lone broker has no fleet
 and stays on the older formats. Cache and counter logs stay on them too.
+A Raft log does not wait for the gate: it is v9 from its first segment (see
+[Records as Raft entries](#records-as-raft-entries)).
 
 **What goes in the field.** Every record in a v9 segment carries one: events,
 generation-start, commit and trim records alike. It is the generation of the
@@ -536,8 +538,42 @@ index. Both are kinds every client read skips (above), so the offsets a
 consumer sees stay dense apart from the gaps it is told about, and a jump
 still means a drop.
 
-Only reading is built: entries, the last log id and the vote. Nothing writes
-through the adapter yet.
+The adapter writes the same way. An append stores one record per entry at
+the entry's index and stamps each with its own term plus one, so one append
+can hold several terms. Truncation is the log's suffix truncation, and a
+vote is saved to the `ballot` file.
+
+A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
+in six ways:
+
+- **Version 9 from its first segment.** Every entry needs a term, so no
+  segment is written in an older format, whatever the fleet gate says. If
+  the directory already holds older segments, the first append starts a
+  version 9 segment; the old ones are left as they are and their records
+  are not entries.
+- **It takes membership records.** A stream log still refuses them.
+- **No retention bounds.** Retention deletes head segments on a timer, which
+  would look like a purge nothing asked for. Bounds are refused at open and
+  when set later.
+- **An empty log can start at any index.** The first append to an empty log
+  restarts it at that entry's index. After that an append must start at the
+  tail.
+- **The commit offset is lowered to the log's end at open.** openraft can
+  save a committed id before its entry is flushed, so a crash can leave the
+  offset in `replica` past the recovered log. The open writes the lower
+  value back before anything is appended, in the same write as the
+  generation of the entry it now names.
+- **The commit offset is saved with a generation.** `replica` holds the
+  generation of the committed entry beside the offset (version 2 of the
+  file, below). An open compares it with the record just below the offset.
+  If that record is another generation's, the offset is lowered to the
+  log's first offset and written back: the log holds a different entry
+  there, and nothing in it is known committed. The offset moves only
+  through the adapter's `save_committed`: `advance_commit_offset` is
+  refused on a Raft log and `note_commit_offset` does nothing. An offline
+  `restore_to` saves the generation of the entry it lowers the offset to.
+
+Purge and snapshots are not built.
 
 | Kind | Bits | From | Data |
 | --- | --- | --- | --- |
@@ -967,6 +1003,18 @@ records committed since are unguarded until the leader's next batch carries the
 offset again. It is never read back ahead. Why that is acceptable is in
 `docs/replication-design.md`, "Divergence and truncation".
 
+A Raft log writes version 2 once a committed id has been saved. It adds the
+generation of the committed record before the checksum:
+
+```text
+24   8  committed    u64  generation of the record at commit - 1, never zero
+32   4  crc          u32  crc32 over bytes 0..32
+```
+
+Every other log, and a Raft log with no committed id yet, writes version 1,
+so those files are unchanged for older builds.
+See "Records as Raft entries" above for how an open uses the generation.
+
 The flags were a reserved zero before the hold was recorded, and no build
 checked them, so a file without the flag reads as not held and an older build
 reads a file with it unchanged. The hold is written when replication turns it
@@ -1007,9 +1055,11 @@ from a named leader: that generation and the leader's node id.
 Version 2 adds `flags`. Its one bit says the vote is committed: a majority
 granted it, which is what openraft's `Vote::committed` records. A ballot
 without that bit is written as version 1, so only a committed vote produces a
-version 2 file. A committed vote can be saved only past the same fleet gate
-as segment format v9 (see [Generations](#generations)), and nothing in a
-broker commits a vote yet. A
+version 2 file. A broker's own logs can save a committed vote only past the
+same fleet gate as segment format v9 (see [Generations](#generations)), and
+nothing in a broker commits a vote yet. A Raft log saves one whenever
+openraft hands it one (see [Records as Raft entries](#records-as-raft-entries)).
+A
 build that predates version 2 reads only version 1, so it refuses a version 2
 file at open (the file "does not decode") and never ignores or rewrites it.
 The refusal comes after the open's first repairs (torn-tail recovery, the

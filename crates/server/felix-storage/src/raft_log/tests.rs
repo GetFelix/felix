@@ -1,7 +1,10 @@
 //! The read side against logs written the way the write side will write
 //! them: one v9 record per entry, stamped with the entry's term plus one.
 
+#[cfg(feature = "sim")]
+mod crash_points;
 mod suite;
+mod writes;
 
 use std::io;
 
@@ -81,6 +84,7 @@ fn config() -> LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
         max_records_per_read: 3,
+        raft_log: true,
         ..LogConfig::default()
     }
 }
@@ -92,7 +96,7 @@ pub(super) type PagePause = (
 
 pub(super) fn open(dir: &TempDir) -> RaftLog<Types, Codec> {
     let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
-    RaftLog::new(log, Codec)
+    RaftLog::new(log, Codec).expect("a Raft log")
 }
 
 fn log_id(term: u64, index: u64) -> LogIdOf<Types> {
@@ -324,11 +328,18 @@ async fn an_unknown_writer_is_never_a_term_zero_entry() {
 #[tokio::test]
 async fn a_record_without_a_generation_is_no_entry() {
     let dir = tempdir().expect("dir");
-    let raft = open(&dir);
-    raft.disk_log()
-        .append(&[record(RecordMark::None, b"old")])
+    // Written before the directory became a Raft log's.
+    let plain = LogConfig {
+        raft_log: false,
+        ..config()
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", plain).expect("open");
+    log.append(&[record(RecordMark::None, b"old")])
         .await
         .expect("append");
+    log.close().await.expect("close");
+    drop(log);
+    let raft = open(&dir);
     assert_eq!(
         raft.disk_log().writer_at(0).await.expect("writer"),
         WriterAt::Unstamped
@@ -369,7 +380,7 @@ async fn a_record_below_the_first_index_is_no_entry() {
     // A log placed at a base holds nothing below it, and reads that way.
     let placed = tempdir().expect("dir");
     let log = DiskLog::open_at(placed.path(), "t/ns/raft/1", config(), 5).expect("open");
-    let raft = RaftLog::<Types, Codec>::new(log, Codec);
+    let raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
     assert_eq!(raft.log_state().await.expect("state").last_log_id, None);
     store(&raft, &[blank(2, 5), normal(2, 6, "a")])
         .await
@@ -534,4 +545,52 @@ async fn a_paged_read_restarts_when_the_head_is_removed_under_it() {
     resume.send(()).expect("resume");
 
     assert_eq!(read.await.expect("join").expect("read"), entries[10..]);
+}
+
+/// A record the byte budget refuses ends the read. The next segment's first
+/// record fits what is left of the budget, and returning it would leave a
+/// hole where the refused record is.
+#[tokio::test]
+async fn a_read_stops_at_a_record_its_byte_budget_refuses() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let wide = "w".repeat(40);
+    let entries = [
+        blank(1, 0),
+        normal(1, 1, &wide),
+        normal(1, 2, &wide),
+        normal(1, 3, "d"),
+        blank(2, 4),
+    ];
+    store(&raft, &entries).await.expect("store");
+
+    let read = |start| {
+        let log = raft.disk_log().clone();
+        async move {
+            let range = ReadRange {
+                start,
+                max_bytes: 64,
+            };
+            let page = log.read_range_with_trims(range).await.expect("read");
+            page.iter().map(|record| record.offset).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(read(0).await, [0, 1], "offset 2 does not fit");
+    assert_eq!(read(2).await, [2, 3, 4]);
+}
+
+/// The same through the reader, whose pages are bounded in bytes: a page
+/// that ends on a record too large for it is followed by one that starts
+/// there.
+#[tokio::test]
+async fn a_paged_read_crosses_a_record_too_large_for_its_page() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let entries = [
+        normal(1, 0, &"a".repeat(3 << 20)),
+        normal(1, 1, &"b".repeat(2 << 20)),
+        blank(2, 2),
+    ];
+    store(&raft, &entries).await.expect("store");
+    assert_eq!(all(&raft).await.expect("read"), entries);
 }

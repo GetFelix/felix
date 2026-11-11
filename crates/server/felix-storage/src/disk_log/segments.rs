@@ -12,7 +12,7 @@ mod truncation;
 mod test_support;
 
 pub(super) use rollover::RollOutcome;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub(super) use truncation::{stop_after_unlinks, stop_point};
 
 use std::path::{Path, PathBuf};

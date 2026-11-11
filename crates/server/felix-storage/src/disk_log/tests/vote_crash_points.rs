@@ -31,6 +31,8 @@ fn vote(generation: u64, leader: Option<&str>, committed: bool) -> Vote {
 enum Save {
     Accept(u64, Option<&'static str>),
     Commit(u64, &'static str),
+    /// The Raft log's plain save: generation, leader, committed.
+    Vote(u64, &'static str, bool),
 }
 
 impl Save {
@@ -38,6 +40,10 @@ impl Save {
         match self {
             Self::Accept(generation, leader) => log.accept_generation(generation, leader).await,
             Self::Commit(generation, leader) => log.commit_vote_for_tests(generation, leader).await,
+            Self::Vote(generation, leader, committed) => log
+                .save_vote(generation, leader, committed)
+                .await
+                .map(|()| GenerationCheck::Current),
         }
     }
 }
@@ -170,6 +176,42 @@ async fn raising_without_a_leader_after_a_committed_vote() {
         Save::Accept(5, None),
         vote(4, Some("a"), true),
         vote(5, None, false),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saving_a_first_vote() {
+    every_crash_point(
+        "vote-first",
+        &[],
+        Save::Vote(1, "1", false),
+        vote(0, None, false),
+        vote(1, Some("1"), false),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saving_the_held_vote_as_committed() {
+    every_crash_point(
+        "vote-commit",
+        &[Save::Vote(3, "1", false)],
+        Save::Vote(3, "1", true),
+        vote(3, Some("1"), false),
+        vote(3, Some("1"), true),
+    )
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn saving_a_committed_vote_at_a_higher_generation() {
+    every_crash_point(
+        "vote-raise",
+        &[Save::Vote(3, "1", true)],
+        Save::Vote(4, "2", true),
+        vote(3, Some("1"), true),
+        vote(4, Some("2"), true),
     )
     .await;
 }

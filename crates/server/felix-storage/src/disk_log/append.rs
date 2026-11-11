@@ -47,8 +47,12 @@ impl DiskLog {
         let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
             // Refused before the roll, which would otherwise move the log
             // onto v9 ahead of the fleet gate, and refused past the gate too:
-            // replication cannot carry these kinds yet.
-            if records.iter().any(|r| r.mark.needs_generation()) {
+            // replication cannot carry these kinds yet. A Raft log is v9
+            // throughout and its membership entries are these records.
+            let raft_log = inner.config.raft_log;
+            if records.iter().any(|r| {
+                r.mark.needs_generation() && !(raft_log && r.mark == RecordMark::Membership)
+            }) {
                 return Err(StorageError::Unsupported(
                     "membership and counter records are not written yet",
                 ));

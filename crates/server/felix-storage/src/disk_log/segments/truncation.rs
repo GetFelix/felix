@@ -70,7 +70,7 @@ impl SegmentSet {
     fn unlink_newest_first(&self, ids: &[SegmentId]) -> Result<()> {
         debug_assert!(ids.is_sorted_by(|a, b| a > b), "not newest first: {ids:?}");
         for id in ids {
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
             stop_point(&self.dir)?;
             self.remove_segment_files(*id)?;
             sync_dir(&self.dir)?;
@@ -268,13 +268,14 @@ impl SegmentSet {
                 self.config.index_spacing_bytes,
             )?
         } else {
-            let mut created = SegmentWriter::create(
+            let mut created = SegmentWriter::create_at_version(
                 &self.dir,
                 id,
                 base_offset,
                 now_micros(),
                 self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,
+                self.config.first_segment_version(),
             )?;
             created.continue_generations(generation_floor);
             created
@@ -291,19 +292,19 @@ impl SegmentSet {
 }
 
 /// Logs whose next truncation stops after a number of unlinks.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 static STOPS: parking_lot::Mutex<Vec<(std::path::PathBuf, usize)>> =
     parking_lot::Mutex::new(Vec::new());
 
 /// Make the next truncation or reset of the log in `dir` fail after
 /// `unlinks` unlinks, leaving the directory as a power loss at that moment
 /// would find it. Keyed by directory, so parallel tests are unaffected.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub(crate) fn stop_after_unlinks(dir: &std::path::Path, unlinks: usize) {
     STOPS.lock().push((dir.to_path_buf(), unlinks));
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub(crate) fn stop_point(dir: &std::path::Path) -> Result<()> {
     let mut stops = STOPS.lock();
     let Some(at) = stops.iter().position(|(stop, _)| stop == dir) else {
