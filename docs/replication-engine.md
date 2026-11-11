@@ -461,6 +461,51 @@ openraft tasks cost too much memory or scheduling is the first thing the
 prototype measures; if they do, that is a reason to pick a different library,
 not to give up the design.
 
+#### What other multi-Raft systems learned
+
+CockroachDB (a group per range), TiKV (per region) and YugabyteDB (per
+tablet) all run thousands of groups per node. Both fixes above are what they
+do. They also learned four things the design takes on:
+
+1. **Liveness is peer to peer and tied to the disk.** CockroachDB first kept
+   every node's liveness in one central range. It was a single point of
+   failure, and a node whose disk stalled kept its leases. Its replacement,
+   store liveness, is one support exchange per pair of stores, a heartbeat
+   counts only after a disk write, and support is granted for an epoch with
+   an expiry. Felix's liveness signal follows the same rule: it comes from
+   the brokers, never from the control plane, or a control-plane outage
+   would stop failover. Today's `suspicion.rs` pings peers directly but
+   reports what it finds through the control-plane heartbeat and writes
+   nothing to disk, so it does not meet the rule yet.
+2. **Liveness keeps leases, not per-group heartbeats.** In CockroachDB's
+   leader leases, a group's lease stays valid while its leader's store has
+   support from a quorum of the group's stores, and followers promise not to
+   campaign until a future time. A sleeping group then keeps its lease: no
+   quorum round on the first write after idle, and no election storm when
+   the groups of a broker that died wake together. They report up to 85%
+   less CPU on lease upkeep at scale. This replaces "a sleeping group's lease
+   lapses" above if the TLA+ model (issue #2198) checks it; CockroachDB's
+   model of it is public.
+3. **No task per group.** CockroachDB moved from a task per range to a few
+   per store, and TiKV drives regions from a small thread pool. openraft
+   runs a task per group, so the first step of per-shard Raft measures
+   memory, idle CPU and scheduling with 5,000 and 10,000 groups on one
+   broker, before other work builds on it. Felix stays on openraft. If the
+   measurement finds a limit, it is fixed in openraft: Felix files the
+   problem upstream with the numbers and, where the fix is clear, sends the
+   pull request, rather than switching libraries or keeping a private fork.
+   Fewer groups per broker (point 4) is the interim lever while an upstream
+   fix lands.
+4. **Fewer groups is the first fix.** Each system's first advice for an
+   overloaded node is fewer groups (TiKV merges regions, YugabyteDB
+   measured about 2.8% of a CPU per 100 tablets before batching). Folding
+   cache and counters into the shard's group (Decisions, 4) already does
+   this. The prototype also sets and tests a per-broker group budget at
+   felixd's 1,000-workload scale.
+
+Sleep and wake also get their own simulator nemesis: both CockroachDB and
+TiKV shipped bugs where idle groups failed to sleep or failed to wake.
+
 ### Hybrid behaviour that does not fit cleanly
 
 - **Control-plane leases.** A `Leader` shard (no `Quorum` acknowledgements)
