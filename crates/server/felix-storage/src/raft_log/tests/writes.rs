@@ -284,6 +284,36 @@ async fn a_vote_only_moves_forward() {
     assert!(!found.expect("a vote").is_committed());
 }
 
+/// The committed id is saved, read back and kept across a reopen, and a
+/// truncation below it is refused.
+#[tokio::test]
+async fn the_committed_id_is_read_back() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    assert_eq!(raft.read_committed().await.expect("read"), None);
+    let entries = mixed();
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(None).await.expect("save");
+    assert_eq!(raft.read_committed().await.expect("read"), None);
+    raft.save_committed(Some(log_id(1, 5))).await.expect("save");
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 5))
+    );
+    raft.truncate_after(Some(log_id(1, 3)))
+        .await
+        .expect_err("below the committed id");
+
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    let mut raft = open(&dir);
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 5))
+    );
+    assert_eq!(all(&raft).await.expect("read"), entries);
+}
+
 /// Retention would delete entries nothing purged, so a Raft log refuses
 /// bounds at open and later, and a log not opened as one is no Raft log.
 #[tokio::test]

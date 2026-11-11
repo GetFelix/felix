@@ -214,6 +214,88 @@ async fn a_cut_at_each_step_of_a_truncation_leaves_no_gap() {
     }
 }
 
+/// A truncation's cut is on disk when `truncate_after` returns, so the
+/// callback of an append after it never fires ahead of the cut (#2221). The
+/// power is cut right after the truncation, and again after a later
+/// append's callback: none of the cut entries come back either time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_is_on_disk_before_a_later_appends_callback() {
+    for seed in 0..SEEDS {
+        for later_append in [false, true] {
+            let sim = Sim::new(&format!("cut-first-{later_append}"), seed);
+            let mut raft = sim.open();
+            append_flushed(&mut raft, &entries(0..90)).await;
+            raft.truncate_after(Some(entry(12).log_id))
+                .await
+                .expect("truncate");
+            let mut written = entries(0..13);
+            if later_append {
+                written.extend([blank(9, 13), normal(9, 14, "new"), normal(9, 15, "newer")]);
+                let flushed = append(&mut raft, &written[13..]).await.expect("append");
+                flushed.await.expect("flush");
+            }
+            sim_fs::crash(&sim.0, seed).expect("crash");
+
+            let at = format!("seed {seed}, later append {later_append}");
+            let kept = recover(&sim, written.len(), &written, &at).await;
+            assert_eq!(kept, written.len(), "{at}");
+        }
+    }
+}
+
+/// openraft saves a committed id before the entry it names is flushed here.
+/// A power cut can then take the entry and keep the id. The id read back is
+/// never past the log, and stays where it was lowered to: entries another
+/// leader writes at the lost indexes are not committed, and can be cut
+/// (#2221).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committed_id_never_reads_back_past_the_log() {
+    let mut lost_some = false;
+    for seed in 0..SEEDS {
+        let sim = Sim::new("committed", seed);
+        let mut raft = sim.open();
+        let written = entries(0..26);
+        append_flushed(&mut raft, &written[..20]).await;
+        let log = raft.disk_log().clone();
+        let held = log.hold_flushes().await;
+        let _unflushed = append(&mut raft, &written[20..]).await.expect("append");
+        raft.save_committed(Some(written[25].log_id))
+            .await
+            .expect("save");
+        log.commit_offset_persisted().await;
+        sim_fs::crash(&sim.0, seed).expect("crash");
+        drop(held);
+
+        let mut raft = sim.open();
+        let found = all(&raft).await.expect("read after the cut");
+        assert!(found.len() >= 20 && found == written[..found.len()]);
+        lost_some |= found.len() < written.len();
+        let last = found.last().map(|entry| entry.log_id);
+        assert_eq!(
+            raft.read_committed().await.expect("committed"),
+            last,
+            "seed {seed}: {} entries",
+            found.len()
+        );
+
+        let from = found.len() as u64;
+        let other: Vec<_> = (from..from + 8)
+            .map(|index| normal(50, index, "another leader's"))
+            .collect();
+        append_flushed(&mut raft, &other).await;
+        raft.truncate_after(last)
+            .await
+            .expect("entries past the committed id can be cut");
+        raft.disk_log().shutdown().await.expect("shutdown");
+        drop(raft);
+        let mut raft = sim.open();
+        assert_eq!(raft.read_committed().await.expect("committed"), last);
+        assert_eq!(all(&raft).await.expect("read"), found);
+        raft.disk_log().shutdown().await.expect("shutdown");
+    }
+    assert!(lost_some, "no seed lost an unflushed entry");
+}
+
 /// After a truncation returned and another term's entries took the place of
 /// what it cut, a power cut brings none of the old entries back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
