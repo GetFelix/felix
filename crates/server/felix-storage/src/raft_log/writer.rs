@@ -16,7 +16,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 
 use super::codec::record_from_entry;
 use super::{
-    EntryCodec, LogReader, LogTypes, RaftLog, first_index, generation_of, invalid, term_at,
+    EntryCodec, LogReader, LogTypes, RaftLog, first_index, generation_of, invalid, log_id, term_at,
 };
 #[cfg(doc)]
 use crate::DiskLog;
@@ -51,6 +51,34 @@ where
             .save_vote(generation, &leader, vote.is_committed())
             .await
             .map_err(io_error)
+    }
+
+    /// Kept as the log's commit offset, which is written behind the call:
+    /// after a crash the id read back may be older, never newer.
+    async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> io::Result<()> {
+        match committed {
+            None => Ok(()),
+            Some(id) => self
+                .shared
+                .log
+                .advance_commit_offset(id.index() + 1)
+                .await
+                .map_err(io_error),
+        }
+    }
+
+    /// The last committed id saved, never past the log: an open lowers a
+    /// saved id whose entry a crash took before it was flushed.
+    async fn read_committed(&mut self) -> io::Result<Option<LogIdOf<C>>> {
+        let log = &self.shared.log;
+        let Some(index) = log.commit_offset().checked_sub(1) else {
+            return Ok(None);
+        };
+        if index < first_index(log) {
+            return Ok(None);
+        }
+        let writer = log.writer_at(index).await.map_err(io_error)?;
+        Ok(Some(log_id::<C>(term_at(writer, index)?, index)))
     }
 
     /// Returns once the entries are written and a reader sees them.

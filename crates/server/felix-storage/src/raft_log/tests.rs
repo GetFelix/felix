@@ -197,40 +197,79 @@ async fn entries_read_back_with_their_term_and_kind() {
 }
 
 /// The safety call: a blank or membership entry takes an offset, since the
-/// offset is the Raft index, but it is stored as a kind no client read
-/// returns. Consumer-visible offsets stay dense apart from offsets a reader
-/// is told were skipped.
+/// offset is the Raft index, but no client read returns it. Read the way
+/// clients read (`read_range`, keeping `is_data` records, as the broker's
+/// `StreamLog::read_from` does), the events come back at their own offsets,
+/// and every offset between two of them is a skipped entry, which
+/// `skipped_before` reports. A consumer sees dense offsets once skips are
+/// counted, so any other jump is still a drop.
 #[tokio::test]
 async fn blank_and_membership_entries_are_records_clients_skip() {
     let dir = tempdir().expect("dir");
     let raft = open(&dir);
-    store(
-        &raft,
-        &[
-            membership(0, 0),
-            blank(1, 1),
-            normal(1, 2, "a"),
-            membership(1, 3),
-        ],
-    )
-    .await
-    .expect("store");
-    let records = raft
-        .disk_log()
-        .read_range_with_trims(ReadRange {
-            start: 0,
-            max_bytes: usize::MAX,
-        })
-        .await
-        .expect("read");
-    let data: Vec<_> = records
+    let entries = [
+        membership(0, 0),
+        blank(1, 1),
+        normal(1, 2, "a"),
+        membership(1, 3),
+        normal(1, 4, "b"),
+        normal(1, 5, "c"),
+        blank(2, 6),
+        membership(2, 7),
+        membership(2, 8),
+        normal(2, 9, "d"),
+        blank(3, 10),
+    ];
+    store(&raft, &entries).await.expect("store");
+    let tail = raft.disk_log().tail_offset().await.expect("tail");
+    assert_eq!(tail, 11);
+
+    // (offset, payload, skipped_before) for each event a consumer receives.
+    let mut delivered = Vec::new();
+    let mut next = 0;
+    while next < tail {
+        let page = raft
+            .disk_log()
+            .read_range(ReadRange {
+                start: next,
+                // Paged by record count only: a byte bound can skip records
+                // across a segment end (#2218).
+                max_bytes: usize::MAX,
+            })
+            .await
+            .expect("read");
+        assert!(page.next > next, "the read moves forward");
+        for record in page.records.into_iter().filter(|r| r.mark.is_data()) {
+            let skipped_before = record.offset - delivered.last().map_or(0, |(at, _, _)| at + 1);
+            let payload = String::from_utf8(record.payload.to_vec()).expect("utf-8");
+            delivered.push((record.offset, payload, skipped_before));
+        }
+        next = page.next;
+    }
+
+    let events: Vec<_> = entries
         .iter()
-        .filter(|r| r.mark.is_data())
-        .map(|r| r.offset)
+        .filter_map(|entry| match &entry.payload {
+            EntryPayload::Normal(data) => Some((entry.log_id.index(), data.clone())),
+            _ => None,
+        })
         .collect();
-    assert_eq!(data, [2]);
-    assert_eq!(records[0].mark, RecordMark::Membership);
-    assert_eq!(records[1].mark, RecordMark::GenerationStart);
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|(at, data, _)| (*at, data.clone()))
+            .collect::<Vec<_>>(),
+        events,
+        "only the commands reach a consumer, at their own indexes"
+    );
+    assert_eq!(
+        delivered
+            .iter()
+            .map(|(_, _, skipped)| *skipped)
+            .collect::<Vec<_>>(),
+        [2, 1, 0, 3],
+        "each skip counts exactly the blank and membership entries before it"
+    );
 }
 
 /// A limited read may stop at a page, but returns the start of the range.
@@ -481,4 +520,29 @@ async fn a_paged_read_restarts_when_the_log_is_cut_under_it() {
     let mut expected = vec![old[0].clone()];
     expected.extend(new);
     assert_eq!(read.await.expect("join").expect("read"), expected);
+}
+
+/// Removing the head under a paged read leaves the read's next page below
+/// the oldest segment. openraft takes a range missing its start, so the read
+/// starts again from the new head instead of failing.
+#[tokio::test]
+async fn a_paged_read_restarts_when_the_head_is_removed_under_it() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let mut entries: Vec<_> = (0..10).map(|index| normal(1, index, "old")).collect();
+    entries.extend((10..14).map(|index| normal(2, index, "new")));
+    store(&raft, &entries).await.expect("store");
+
+    let (reached_tx, reached) = tokio::sync::oneshot::channel();
+    let (resume, resume_rx) = tokio::sync::oneshot::channel();
+    *raft.shared.pause_after_page.lock() = Some((reached_tx, resume_rx));
+    let mut reader = raft.reader();
+    let read = tokio::spawn(async move { reader.try_get_log_entries(3..).await });
+    reached.await.expect("the read took its first page");
+
+    raft.disk_log().trim_before(10).await.expect("trim");
+    assert_eq!(raft.disk_log().base_offset(), 10);
+    resume.send(()).expect("resume");
+
+    assert_eq!(read.await.expect("join").expect("read"), entries[10..]);
 }

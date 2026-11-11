@@ -958,7 +958,16 @@ impl DiskLog {
             crate::log::RetentionHold::Held => true,
             crate::log::RetentionHold::Lifted => false,
         };
-        if hold != replica.hold_at_commit {
+        // openraft may save a committed id whose entry is not flushed yet,
+        // so a crash can leave the offset past the log. Lowered on disk
+        // before anything is appended: what is written at those indexes
+        // later was never committed.
+        let tail = recovered.active.next_offset();
+        let past_the_log = config.raft_log && replica.commit_offset > tail;
+        if past_the_log {
+            replica.commit_offset = tail;
+        }
+        if hold != replica.hold_at_commit || past_the_log {
             replica.hold_at_commit = hold;
             replica_state::store(&dir, &replica)?;
         }
@@ -1118,6 +1127,7 @@ impl DiskLog {
     /// the log or the log is reset. A reader that pages through the log compares
     /// it before and after, since a cut in between can leave it holding
     /// records from both sides of the cut.
+    #[cfg(feature = "raft")]
     pub(crate) fn cuts(&self) -> u64 {
         self.inner.segments.read().generation()
     }
@@ -1203,6 +1213,13 @@ impl DiskLog {
         self.inner.fail_next_flush.store(true, Ordering::Release);
     }
 
+    /// Wait until the commit offset in memory is the one on disk.
+    pub(crate) async fn commit_offset_persisted(&self) {
+        while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
     /// Stop the next truncation or reset after `unlinks` unlinks.
     pub(crate) fn stop_after_unlinks(&self, unlinks: usize) {
         segments::stop_after_unlinks(&self.inner.dir, unlinks);
@@ -1210,8 +1227,9 @@ impl DiskLog {
 }
 
 /// What the log holds at one offset, as its record header says.
+#[cfg(feature = "raft")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriterAt {
+pub(crate) enum WriterAt {
     /// No record: the offset is below the oldest segment, or at or past the
     /// tail.
     Absent,
@@ -1222,6 +1240,7 @@ pub enum WriterAt {
     Generation(u64),
 }
 
+#[cfg(feature = "raft")]
 impl DiskLog {
     /// Which generation wrote the record at `offset`, read from the record's
     /// own header and checked against the header checksum. The payload is
@@ -1230,14 +1249,14 @@ impl DiskLog {
     /// This is the log's answer, not the generation history's
     /// ([`AppendOnlyLog::generations`]), which is a hint that can be missing
     /// or short. A Raft term must come from here.
-    pub async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
+    pub(crate) async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
         Ok(self.writers_at(Some(offset)).await?.1)
     }
 
     /// The offset of the last record and which generation wrote it, or `None`
     /// for a log that holds no record. One answer about one tail: a
     /// truncation in between restarts the read.
-    pub async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
+    pub(crate) async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
         let (tail, writer) = self.writers_at(None).await?;
         Ok(tail
             .checked_sub(1)

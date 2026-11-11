@@ -11,7 +11,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use openraft::{OptionalSend, RaftTypeConfig};
 
 use super::codec::entry_from_record;
-use super::{EntryCodec, LogTypes, Shared, first_index, invalid};
+use super::{EntryCodec, LogTypes, Shared, first_index, invalid, term_of_generation};
 use crate::log::{AppendOnlyLog, Offset, ReadRange};
 
 /// Payload bytes one read of the log asks for. A range larger than this is
@@ -64,11 +64,14 @@ where
                         start: next,
                         max_bytes: PAGE_BYTES,
                     })
-                    .await
-                    .map_err(io::Error::other)?;
+                    .await;
+                // Checked before the error: a head removed under the read
+                // fails it as `Trimmed`, and openraft takes a range missing
+                // its start, so the read starts again above the new head.
                 if log.cuts() != cuts {
                     continue 'read;
                 }
+                let page = page.map_err(io::Error::other)?;
                 if page.is_empty() {
                     break;
                 }
@@ -135,9 +138,15 @@ where
         match log.accepted_vote() {
             (0, None, _) => Ok(None),
             // An empty leader is a generation given up, not a vote.
-            (generation, Some(leader), committed) if generation > 0 && !leader.is_empty() => {
+            (generation, Some(leader), committed) if !leader.is_empty() => {
+                let Some(term) = term_of_generation(generation) else {
+                    return Err(invalid(format!(
+                        "{}: a vote for {leader:?} was accepted at no generation",
+                        log.label()
+                    )));
+                };
                 let node_id = self.shared.codec.decode_node_id(&leader)?;
-                let leader_id = <C as RaftTypeConfig>::LeaderId::new(generation - 1, node_id);
+                let leader_id = <C as RaftTypeConfig>::LeaderId::new(term, node_id);
                 Ok(Some(VoteOf::<C>::from_leader_id(leader_id, committed)))
             }
             (generation, leader, _) => Err(invalid(format!(
