@@ -240,6 +240,72 @@ fn a_given_up_leaders_probe_admits_a_learner_holding_the_start() {
     }
 }
 
+/// **Known gap, pinned as it is today: a given-up leader at N+1 strands a
+/// readmitted learner that is the furthest copy.** broker-b was elected at
+/// generation 5 while the control plane was paused and went down. The control
+/// plane, still naming broker-a, readmitted broker-c as a learner, then a late
+/// report from broker-b collided and moved the shard to generation 6 naming
+/// broker-b, which came back from an unclean stop and gave the shard up. Its
+/// probe shows broker-c level with it and broker-a behind, but broker-c is a
+/// learner and no leader ever writes generation 6, so it never holds a start
+/// to leave that state; broker-a is behind and a reclaim needs every follower
+/// behind. The shard stays without a leader (a sim stall).
+///
+/// A fix has to let placement promote broker-c here, either by taking the
+/// probe's evidence of the elected generation it voted into, or by not moving
+/// the shard to a leader that has no heartbeat. When it does, flip the final
+/// assertion to expect `Decision::Place` of broker-c.
+#[test]
+fn known_gap_a_given_up_leader_leaves_the_furthest_learner_unpromotable() {
+    let nodes = vec![
+        registered("broker-a", 1, NodeLifecycle::Live),
+        registered("broker-b", 2, NodeLifecycle::Live),
+        registered("broker-c", 33, NodeLifecycle::Live),
+    ];
+    let collided = ShardAssignment {
+        generation: 6,
+        learners: ["broker-c".to_string()].into(),
+        ..named(
+            "broker-b",
+            &["broker-a", "broker-c"],
+            &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        )
+    };
+    let said = Said {
+        generation: 6,
+        leader: "broker-b",
+        offsets: &[("broker-a", 3), ("broker-b", 4), ("broker-c", 4)],
+        seen: &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        // Nobody wrote generation 6, so no follower holds its start.
+        holds: &[],
+    };
+    let incarnations = nodes
+        .iter()
+        .map(|n| (n.node_id.clone(), n.status.incarnation))
+        .collect();
+    let report = ReplicaReport {
+        given_up: true,
+        leader_offset: None,
+        caught_up: ["broker-c".to_string()].into(),
+        ..said.report(incarnations, 1_000)
+    };
+    let positions = ReplicaPositions::new(vec![report], &Default::default(), 1_000)
+        .with_nodes(&nodes, std::slice::from_ref(&collided))
+        .with_joint_fence(true);
+    let key = shard_zero();
+
+    assert!(positions.is_learner(&key, "broker-c"));
+    assert!(!positions.is_caught_up(&key, "broker-c"));
+    assert!(!positions.is_caught_up(&key, "broker-a"));
+    assert!(!positions.reclaimable(&key, "broker-b", &["broker-a", "broker-c"]));
+
+    // Today's behaviour. After the fix this is `Place` of broker-c.
+    match plan_for(&nodes, &collided, &positions, true) {
+        Decision::Unplaceable(Unplaceable::NoCaughtUpReplica) => {}
+        other => panic!("expected the stall, got {other:?}"),
+    }
+}
+
 /// **A move's old-set majority does not count a learner.** A set above its
 /// factor drops the first follower whose leaving leaves the rest at the
 /// drained leader's tail. broker-b is a learner, so it does not count as at
