@@ -258,42 +258,53 @@ flowchart LR
 
 The one-way points, in order:
 
-1. **Does 0.8.0 carry the hybrid for upgrades, or is there a bridge
-   build?** A live switch needs the hybrid's fence, catch-up and rebuild,
-   which is most of the hybrid. So either 0.8.0 ships both engines and the
-   delete moves to 0.9, or the last build with both is a required stop.
-   Recommended: a bridge build, on two conditions. First, PR 3 waits until
-   the project's own long-running clusters have switched and latched on
-   it, so the switch has run on real data before main loses the hybrid.
-   Second, the bridge build has its own branch, and that branch keeps the
-   hybrid, switch and upgrade CI jobs for as long as the build is
-   supported, so a fix to it is tested like any other. It is what track 3
-   already does for redb: the new release refuses the old state and names
-   what converts it. 0.8.0 then has one engine to test, model and document,
-   which is the point of the release. The cost is a second hop for
-   upgraders and a second branch to keep green.
-
-2. **What is the bridge build called?** Two options. (a) A preview of the
-   0.8 line, pinned by exact version on the "Upgrading to 0.8" page. It
-   needs no new version scheme, but it makes a preview a required step,
-   previews get no patches, and the site recommends stable releases only.
-   (b) A named stable release with its own branch, versioned below 0.8.0,
-   listed on the site as the step between 0.7 and 0.8 and patched while
-   0.7 is supported. Recommended: (b). Every upgrade passes through this
-   build with real data, so it should be held to the bar of a release:
-   release checks, a changelog, patches from a branch whose CI still runs
-   the hybrid. The exact version number needs a maintainer decision.
-
-3. **Is `hybrid_retired` a feature an operator finalizes, or derived from
-   "no shard is on the hybrid"?** Recommended: finalized by an operator,
-   with the condition checked when the entry is applied, not when the
-   operator asks. It follows the fleet feature runbook, gives 0.8.0 one
-   fact to check at start, and gives the control plane a log entry to
-   snapshot behind. Checking in apply is what makes it a latch: no create
-   can slip in between the check and the entry.
-
+1. **Per shard: the control plane's compare-and-swap in the switch**
+   (`per-shard-raft.md`, "Moving a shard from the hybrid to Raft"). Before
+   it the shard is a closed hybrid shard and can reopen. After it no broker
+   runs the hybrid for that shard.
+2. **Per cluster: finalizing `shard_raft`.** Shards start switching, and a
+   build without the Raft engine can no longer join. From the log entry
+   that enables it, every shard record is created on Raft ("Creating
+   shards after `shard_raft`" below). So after this entry the number of
+   hybrid shards only falls.
+3. **Per cluster: finalizing `hybrid_retired`.** The condition "no shard is
+   on the hybrid" is evaluated when the entry is applied, on every member,
+   from the state at that log position. If a hybrid shard exists there the
+   entry changes nothing and the operator is told which shards remain.
+   Today's finalize checks run when the operator asks
+   (`services/felix-controlplane-service/src/cluster/fleet.rs`,
+   `check_prerequisites`). That is sound for conditions that only grow. It
+   is not enough here: a shard create could commit between the check and
+   the latch. After it the control plane refuses every hybrid write, nothing
+   creates a hybrid shard, and a build without the hybrid can join.
 4. **For the repository: PR 3.** Main can no longer run a hybrid shard. A
    fix to the switch after this goes to the bridge build's own branch.
+
+### Creating shards after `shard_raft`
+
+The rule is on the state machine, not on each caller. One function inserts
+a shard record, and it reads the enabled set at the entry being applied:
+with `shard_raft` enabled the record is created on Raft, whoever proposed
+it and on whatever build. Every path that makes a shard record goes
+through it:
+
+- creating a stream,
+- creating a cache,
+- the group and dead-letter logs a stream gets,
+- growing a stream's shard count,
+- the fresh set that `placement abandon` writes.
+
+A path that is found to insert a record any other way is a bug in the
+bridge build. After the latch nothing creates a hybrid shard, and a command
+that would write hybrid state applies as a no-op.
+
+These are decisions made in apply, so every member must make them alike,
+including two patch builds of the bridge. They are tied to a metadata
+level, as the control plane does for every other change to what apply
+does: `shard_raft` and `hybrid_retired` can be proposed only when every
+member is at or above that level, and a member below it is held, not fed.
+This is the concern the comment on `check_prerequisites` states: a member
+applying a command must not decide differently from one on another build.
 
 PR 3 merges only when all of these hold:
 
@@ -428,7 +439,7 @@ A 0.7 cluster cannot go straight to 0.8.0. The path:
    `hybrid_retired`. If a shard was created or is still hybrid at that
    point the finalize reports it and changes nothing. Try again later.
 4. Wait until every control-plane member reports a snapshot at or past the
-   latch entry.
+   latch entry and a log purged up to it.
 5. Roll the cluster to 0.8.0.
 
 A single broker follows the same steps. Its RF 1 shards switch with a set
@@ -441,7 +452,14 @@ is on the bridge build, while the hybrid is still there:
 
 - `felixctl placement abandon <stream> <shard>` writes a fresh set on live
   brokers. It loses the records no live copy holds, as it does today. The
-  shard is then an ordinary hybrid shard with a live majority and switches.
+  shard then has a live majority and switches. It is only for a shard with
+  no live majority: the leader proposes it only then, and apply accepts it
+  only if the set version is the one the command saw and the shard is
+  still on the hybrid. So it cannot race the switch. Before the
+  compare-and-swap, an abandon raises the set version, the switch's write
+  fails and the seal starts over on the new set. After it, apply sees the
+  shard is on Raft and refuses, and the answer points to re-forming the
+  group (#2250).
 - Or delete the stream or cache.
 
 The fleet status names each shard that has not switched and why. Abandon
@@ -461,8 +479,7 @@ build can be started again.
 | Finds | Does |
 | --- | --- |
 | Control plane: a redb store | Refuses, as today, and names the tool |
-| Control plane: a store without `hybrid_retired` finalized | Refuses |
-| Control plane: a store whose snapshot is before the latch entry | Refuses |
+| Control plane: a store whose snapshot is not at or past the latch entry | Refuses. This is also how it knows the cluster is latched |
 | Broker: a control plane without `hybrid_retired` finalized | Does not register and exits |
 
 A broker does not refuse over what a shard directory holds. Once the
@@ -483,11 +500,17 @@ So 0.8.0 keeps the member start from a recorded base. It is Raft-side code
 that re-forming a group also uses, and PRs 4 and 7 must not remove it:
 
 - A member that has started leaves a **member mark** in its shard
-  directory, written by one rename with its first vote state: the group
-  epoch and the base it started from. The copy id is not that mark.
+  directory: the group epoch and the base it started from. The copy id is
+  not that mark. The mark is written by a rename, and the file and its
+  directory are fsynced, in every fsync mode, before the member answers
+  any vote or append. Without that, a copy could rename the mark,
+  acknowledge entries above the base, lose power, come back with no mark,
+  and cut the entries it acknowledged.
 - A directory without the mark is not a member yet. The broker reads the
-  shard's recorded base and voters from the control plane. If its copy id
-  is a recorded voter it cuts anything above the base and starts from it
+  shard's current record from the control plane, not from a saved view:
+  the group epoch, base and voters as they are now, which after a re-form
+  are not the ones the switch wrote. If its copy id is a voter of the
+  current epoch it cuts anything above that base and starts from it
   (step 3). Otherwise it starts empty as a learner (step 4). That covers a
   copy that failed the digest on the first seal and was still being
   rebuilt.
@@ -512,26 +535,31 @@ adoption, replica reports, suspicions) and its snapshot holds hybrid fields.
 Finalizing `hybrid_retired` is a log entry, the latch entry. Applying it
 clears the hybrid fields. Each bridge member then takes a snapshot and
 purges its log up to it, and redoes both at start if it crashed in
-between. The rules for 0.8.0:
+between. The rules, which hold on the bridge build and on 0.8.0 alike:
 
-- **It starts only from a snapshot at or past the latch entry**, and
-  purges its log up to its snapshot before it serves. So a 0.8.0 leader
-  holds no entry from before the latch, and a member that joins it empty
-  gets a snapshot or entries after the latch.
-- **A reserved command tag stops the member.** If 0.8.0 is ever asked to
-  apply a hybrid command it stops, with a message that names the bridge
-  build, and applies nothing. It does not skip the command: hybrid
-  commands also moved state that stays, such as the replica set and its
-  version, so skipping one would make members diverge. A stopped member is
-  recovered like any member that refuses to start, by wiping it and
-  joining again.
-- **Joining empty under a bridge leader.** During the roll the leader may
-  be a bridge member. It has purged up to its latch snapshot, so an empty
-  0.8.0 member is sent that snapshot. The one window is a bridge leader
-  that has applied the latch and not yet purged. That is why step 4 of the
-  upgrade waits for every member to report a snapshot at or past the latch
-  entry before any member is replaced. A member that joins in that window
-  anyway hits the stop above, which is safe.
+- **A hybrid command after the latch is a no-op.** A bridge leader can
+  commit a hybrid command that was proposed before it applied the latch,
+  at an index after the latch. Every member, on either build, applies it
+  as a no-op, because its state is latched at that position. 0.8.0 keeps
+  the reserved tags only to recognize them for this.
+- **A hybrid command before the latch stops a 0.8.0 member.** If 0.8.0 is
+  asked to apply a reserved tag while its state is not latched, it stops
+  with a message that names the bridge build and applies nothing. It
+  cannot skip it: before the latch hybrid commands also moved state that
+  stays, such as the replica set and its version.
+- **0.8.0 starts only from a snapshot at or past the latch entry**, and
+  purges its log up to its snapshot before it serves. It refuses to
+  install a snapshot from before the latch.
+- **The window closes at the purge, not at the snapshot.** A bridge leader
+  that has taken its latch snapshot and not yet purged can still send
+  entries from before the latch to an empty member. So step 4 of the
+  upgrade waits for every member to report its log purged up to the latch
+  entry before any member is replaced.
+- **Recovery is going back to the bridge build, never a wipe.** A stop
+  writes nothing, so a stopped member starts again on the bridge build
+  with its store as it was, finishes its snapshot and purge, and is then
+  upgraded. That holds for one member or for a majority. Wiping stopped
+  members is never the answer: wiping a majority loses the metadata.
 
 The command tags stay reserved, like wire numbers.
 
@@ -657,22 +685,35 @@ Each has a recommendation.
    build?** A live switch needs the hybrid's fence, catch-up and rebuild,
    which is most of the hybrid. So either 0.8.0 ships both engines and the
    delete moves to 0.9, or the last build with both is a required stop.
-   Recommended: a bridge build. It is what track 3 already does for redb:
-   the new release refuses the old state and names what converts it. 0.8.0
-   then has one engine to test, model and document, which is the point of
-   the release. The cost is a second hop for upgraders and a branch to
-   patch if the switch has a bug after PR 3.
+   Recommended: a bridge build, on two conditions. First, PR 3 waits until
+   the project's own long-running clusters have switched and latched on
+   it, so the switch has run on real data before main loses the hybrid.
+   Second, the bridge build has its own branch, and that branch keeps the
+   hybrid, switch and upgrade CI jobs for as long as the build is
+   supported, so a fix to it is tested like any other. It is what track 3
+   already does for redb: the new release refuses the old state and names
+   what converts it. 0.8.0 then has one engine to test, model and document,
+   which is the point of the release. The cost is a second hop for
+   upgraders and a second branch to keep green.
 
-2. **What is the bridge build called?** Recommended: an ordinary preview of
-   the 0.8 line, pinned by exact version on the "Upgrading to 0.8" page,
-   and kept installable for as long as 0.7 is supported. It is the one
-   place the site names a preview, as a step and not as a recommendation.
+2. **What is the bridge build called?** Two options. (a) A preview of the
+   0.8 line, pinned by exact version on the "Upgrading to 0.8" page. It
+   needs no new version scheme, but it makes a preview a required step,
+   previews get no patches, and the site recommends stable releases only.
+   (b) A named stable release with its own branch, versioned below 0.8.0,
+   listed on the site as the step between 0.7 and 0.8 and patched while
+   0.7 is supported. Recommended: (b). Every upgrade passes through this
+   build with real data, so it should be held to the bar of a release:
+   release checks, a changelog, patches from a branch whose CI still runs
+   the hybrid. The exact version number needs a maintainer decision.
 
 3. **Is `hybrid_retired` a feature an operator finalizes, or derived from
    "no shard is on the hybrid"?** Recommended: finalized by an operator,
-   and refused until no shard is on the hybrid. It follows the fleet
-   feature runbook, gives 0.8.0 one fact to check at start, and gives the
-   control plane a log entry to snapshot behind.
+   with the condition checked when the entry is applied, not when the
+   operator asks. It follows the fleet feature runbook, gives 0.8.0 one
+   fact to check at start, and gives the control plane a log entry to
+   snapshot behind. Checking in apply is what makes it a latch: no create
+   can slip in between the check and the entry.
 
 4. **Does 0.8.0 convert an RF 1 shard in place, so a single broker can
    skip the bridge?** One copy has nobody to disagree with, so it is safe.
