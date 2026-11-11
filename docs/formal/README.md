@@ -584,6 +584,85 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReachInstallCrash.cfg` | witness: a crash between an install's second and third write | violate `NeverCrashesMidInstall` |
 | `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
 | `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
+| `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
+| `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
+| `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change; not registered, run by dispatch | pass the same |
+| `FelixRaftMembershipSkipJoint.cfg` | a move swaps one voter for the learner in one entry | violate `OneLeaderPerTerm` |
+| `FelixRaftMembershipChangeBeforeCommit.cfg` | the leader leaves the joint configuration before the joint entry is committed | violate `StateMachineSafety` |
+| `FelixRaftMembershipLearnerCounts.cfg` | a learner counts toward a majority | violate `AckedSurvive` |
+| `FelixRaftMembershipClaimRaces.cfg` | the membership call is made with the fence open and a claim outstanding | violate `NeverStops` |
+| `FelixRaftMembershipReopenOnReturn.cfg` | the fence reopens with the call's entry still queued | violate `NeverStops` |
+| `FelixRaftMembershipReachMove.cfg` | witness: a whole move commits and an old voter is out | violate `NeverMoves` |
+| `FelixRaftMembershipReachStepDown.cfg` | witness: a leader moved out of the voter set steps down | violate `NeverRemovedLeaderStepsDown` |
+| `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
+| `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
+| `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
+| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue to file). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root |
+| `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
+| `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
+| `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
+| `FelixRaftIdentityWipeThenRestore.cfg` | two faults on one broker: the directory is emptied, then an older directory with the old copy id is put back | pass the same (3.0M distinct states) |
+| `FelixRaftIdentityWipeKeepsId.cfg` | a member made in an empty directory takes the old id | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoRestoreCheck.cfg` | a restored root keeps its storage id, so the copy keeps its id with an older log and vote | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoStorageIdCheck.cfg` | a copy cut short by a relaxed-fsync crash keeps its id | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoVoteMark.cfg` | a directory restored to an older vote with the same log votes twice in a term | violate `OneLeaderPerTerm` |
+| `FelixRaftIdentityVoteBeforeMark.cfg` | the vote is answered before its mark is synced, and the directory goes back in between | violate `OneLeaderPerTerm` |
+| `FelixRaftIdentityMarkForgetsCopy.cfg` | the marks are reset at a rotation and the old directory, put back, passes them | violate `LeaderCompleteness` |
+| `FelixRaftIdentityRejoins.cfg` | witness: a rotated copy is swapped in by a committed membership change | violate `NeverRejoins` |
+| `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
+| `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
+| `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
+| `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
+| `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (9.2M distinct states, 2 min) |
+| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes; not registered, run by dispatch | pass the same (107M distinct states, 28 min locally) |
+| `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
+| `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned |
+| `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg` (0.7M distinct states) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch; not registered, run by dispatch | pass the same (33.9M distinct states, 8 min locally) |
+| `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
+| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, the control plane's record possibly stale, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.7M distinct states) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one copy rotating with a short log; not registered, run by dispatch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (23.2M distinct states, 11.5 min locally) |
+| `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write and two rotations; not registered, run by dispatch | pass the same (not run locally) |
+| `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
+| `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (7.5M distinct states) |
+| `FelixRaftReformOneReplicaCommits.cfg` | a witness: the re-formed single voter commits | violate `NeverCommitsAfterReform` |
+| `FelixRaftReformBeforeAll.cfg` | the control plane re-forms before every voter has reported | violate `AckedSurvive` |
+| `FelixRaftReformEpochNotChecked.cfg` | a late append from the old epoch is taken by a new-epoch voter and cuts the base out of its log | violate `AckedSurvive` |
+| `FelixRaftReformReportNotPromise.cfg` | three intact voters report without retiring, and the old epoch acknowledges a record the base lacks | violate `AckedSurvive` |
+| `FelixRaftReformOwnMembershipOnly.cfg` | the control plane waits only for its own stale {a, b, c} while d holds the committed entry | violate `AckedSurvive` |
+| `FelixRaftReformRetireNotDurable.cfg` | two retired voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
+| `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter report | violate `AckedSurvive` |
+| `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
+| `FelixRaftReformRotatedNotWaited.cfg` | a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` |
+| `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` |
+| `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
+| `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
+| `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |
+| `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (56 distinct states) |
+| `FelixRaftSwitchGenZero.cfg` | any copy may carry generation 0 on a prefix of its records | pass the same (10.6M distinct states, 4 min) |
+| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted; not registered, run by dispatch | pass the same (19.2M distinct states, 7 min locally) |
+| `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 3 min) |
+| `FelixRaftSwitchDiffers.cfg` | a follower may hold a different record below `N`; it fails its digest and starts as a learner | pass the same (1.4M distinct states) |
+| `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.1M distinct states, 2.5 min) |
+| `FelixRaftSwitchAllVoters.cfg` | the whole set recorded as voters, b lagging and c wiped | violate `LeaderCompleteness`: b and the new c elect b without a record a and the old c acknowledged |
+| `FelixRaftSwitchTermsBelowBase.cfg` | the hybrid log kept as the Raft log; b differs below `N` under the same generation | violate `LeaderCompleteness`: log matching takes b as level, it is promoted and leads |
+| `FelixRaftSwitchTermsBelowBaseCuts.cfg` | a witness for the same rule in the generation 0 case | violate `NeverCutsHeldRecord`: a generation 0 learner cuts records it holds and takes the same content back |
+| `FelixRaftSwitchNoDigest.cfg` | a follower acknowledges without the digest | violate `LeaderCompleteness`: a copy that differs below `N` votes and leads |
+| `FelixRaftSwitchDigestFromOwnStart.cfg` | the digest runs from each copy's own first record | violate `LeaderCompleteness`: a copy that starts above `S` leads without the record at `S` |
+| `FelixRaftSwitchDigestCoversGeneration.cfg` | the digest covers the generation field, b and c at generation 0 | pass the same and `NeverSwitches`: no majority ever acknowledges. Availability, not safety |
+| `FelixRaftSwitchBlindWrite.cfg` | the control plane's write without the compare | violate `LeaderCompleteness`: the first seal's voters cut a write the reopened hybrid acknowledged |
+| `FelixRaftSwitchBlindWriteTwoBases.cfg` | the same | violate `OneBase` |
+| `FelixRaftSwitchStaleIdVotes.cfg` | a wiped copy still votes under its old id; b and c wiped after acknowledging | violate `LeaderCompleteness` |
+| `FelixRaftSwitchReachCommit.cfg` | a witness for `FelixRaftSwitch.cfg` | violate `NeverCommitsAboveBase`: the switch completes and Raft acknowledges a record above `N` |
+| `FelixRaftSwitchReachPromote.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverPromotes`: a learner's promotion commits |
+| `FelixRaftSwitchReachPromotedLeads.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverPromotedLeads`: a promoted learner is elected |
+| `FelixRaftSwitchReachInstall.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverInstalls`: a learner takes the records below the base from the leader |
+| `FelixRaftSwitchReachGenZero.cfg` | `FelixRaftSwitchDigestCoversGeneration.cfg`'s copies with the rule on | violate `NeverElects`: the switch completes and a leader is elected |
+| `FelixRaftSwitchReachWipedSwitch.cfg` | a witness for `FelixRaftSwitchWiped.cfg` | violate `NeverSwitches`: the control plane records the switch with c wiped |
+| `FelixRaftSwitchReachReseal.cfg` | a witness for `FelixRaftSwitchReseal.cfg` | violate `NeverSwitchesAfterReseal`: the switch completes from the second seal |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2259,17 +2338,251 @@ default) and the broker is a voter, and stays a follower otherwise.
 
 #### What it does not cover yet
 
-Issue #2198 lists the rest, and none of it is in this model: membership
-changes that alter the voter set (a membership entry here only holds an
-index), the leader lease and its clock assumption, disk loss and storage ids,
-placement-driven moves, the switch from the hybrid protocol as a snapshot
-install, and `Leader`-level acknowledgements. A message is one step that reads
+Issue #2198 lists the rest, and none of it is in this module (a membership
+entry here only holds an index). Membership changes, copy identity,
+re-forming a group and the switch from the hybrid protocol each have a module
+of their own, in the sections below. They leave storage abstract, because
+this module covers the adapter's crash rules. A message is one step that reads
 both brokers, so the model has no lost, repeated or reordered messages beyond
 a leader acting on an old answer. A broker in the middle of a snapshot
 install takes no other step until the three writes land or it crashes. The
 `SnapshotTwoRenames` rule is dropped for a snapshot the broker builds, not
 for one it installs. The order of writes inside one adapter call is left to
 the simulator's power-loss crash points.
+
+### Raft membership change and the fence around it
+
+`FelixRaftMembership.tla` models one Raft group changing its voter set, as
+[per-shard Raft](../per-shard-raft.md) decides it ("Membership" and "Entries
+openraft writes itself"). It has four brokers: three voters and a newcomer.
+
+What is modelled:
+
+- Membership is carried by membership entries. A broker uses the latest one in
+  its own log, committed or not. A configuration is an old set, a new set and
+  learners. While old and new differ it is joint, and an election or a commit
+  needs a majority of both.
+- A move is three entries: the newcomer added as a learner, the joint
+  configuration once the learner is level, and the entry that leaves it.
+  openraft writes the last one itself when the joint entry is committed. A new
+  leader that finds a joint configuration repeats the call.
+- A change starts only after the previous membership entry is committed. A
+  leader outside the new set steps down once that set is committed. The design
+  transfers leadership first; the model has only the step-down.
+- A publish claims the next offset on the leader and later hands the record to
+  Raft, which gives it the next index. Before a membership call the engine
+  holds the fence and waits until no claim is left. The fence reopens when
+  every entry the call proposed is committed, or the call was refused before
+  appending. If Raft assigns an index a claimed record is not at, the group
+  stops.
+
+What is checked: `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`,
+`StateMachineSafety`, `AckedSurvive` and `NeverStops`. `AckedSurvive` here says
+that no broker that could still win an election lacks an acknowledged record:
+it is a voter of the configuration it holds, and the brokers whose logs are not
+ahead of its own make a majority of each voter set. "On a majority of each
+voter set" is not an invariant across a change. A record committed under the
+leader's latest configuration need not be on a majority of an older one, and
+the log comparison in the vote is what keeps it.
+
+Each knob drops one rule:
+
+- `SkipJoint`: a move swaps one voter for the learner in a single entry.
+- `ChangeBeforeCommit`: a change is proposed while the previous membership
+  entry is uncommitted.
+- `LearnerCounts`: a learner's vote and its copy count toward a majority.
+- `ClaimRacesMembership`: the membership call is made with the fence open.
+- `ReopenOnReturn`: the fence reopens when the call returned or timed out,
+  with an entry still queued or uncommitted.
+
+A removed leader that never steps down has no twin. It commits with the new
+set's majority and does not count itself, so it costs liveness, not safety.
+
+Abstracted: storage (an entry in a log is durable; `FelixRaft.tla` covers the
+adapter's fsync rules), crashes, snapshots, the subscriber and the lease. A
+message is one atomic step between two brokers. A deposed leader's claims are
+dropped, which stands for the adapter's term gate.
+
+### Copy identity under Raft
+
+`FelixRaftIdentity.tla` models the member ids of one Raft group as
+[Per-shard Raft](../per-shard-raft.md) decides them under "Group and member
+identity". It is the model's side of #1331. A member id is a broker and a
+copy id. The copy id lives in the shard directory with the storage id it was
+minted under. The data root holds the storage id and, per shard, a mark of
+the highest vote and last log id, with the copy id the marks belong to. The
+vote is always synced.
+
+A member that opens its directory rotates its copy (new id, never voted, an
+empty Raft log, a learner) when the directory is empty, was minted under
+another storage id, holds another copy id than the marks name, or has a vote
+or last log id below its mark. A rotated copy becomes a voter again only
+through a membership change: a joint entry once it has the leader's log,
+then the final entry, each committed under the quorum in force.
+
+The faults all hit one broker: an emptied shard directory, a lost data root,
+a crash under relaxed fsync that shortens the log, a whole root restored
+from a backup, and one shard directory restored under a running root. The
+log mark is exact (written with every append) or batched (a separate step,
+so it trails).
+
+Checked: `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety` (no
+two leaders commit different entries at one index), `AckedSurvive` (no set
+of copies that could elect a leader lacks an acknowledged record, which
+without faults is "on a majority of disks") and `AckedHeldByLeader` (no
+leader is elected without a record acknowledged in an earlier term).
+
+Each knob drops one rule: `WipeKeepsId`, `NoRestoreCheck` (no gate in front
+of Raft), `NoStorageIdCheck` (a directory is not compared with the root's
+storage id), `NoVoteMark`, `VoteBeforeMark` (the vote is answered before its
+mark is synced) and `MarkForgetsCopy` (the marks do not name a copy id).
+`ExactMark = FALSE` with `RestoreYoung` is the fallback of Questions, 11.
+
+Abstracted: the log is durable when appended (`FelixRaft.tla` has the fsync
+rules), messages are atomic steps, a learner needs no membership entry,
+nothing is purged, a rotated copy starts from an empty log, and the leader
+that stops on a follower going backwards is left out. A follower cuts and
+appends in one step, so its last log id never goes down; an implementation
+that syncs the mark between the two must not read a cut as a restore.
+
+### Re-forming a group
+
+`FelixRaftReform.tla` models the path in
+[per-shard-raft.md](../per-shard-raft.md#re-forming-a-group) that gives a
+Raft group a new epoch when it can no longer elect. A group id carries an
+epoch that starts at 0. A member id is a broker and a copy id. A copy that
+rotates has a new id that never voted and keeps what is left of its log as
+plain records. Membership changes inside an epoch go through a joint
+configuration, and a member uses the newest membership in its log,
+committed or not.
+
+The five steps are five actions. `FirstReport` promises nothing.
+`AskRetire` fires only when every voter's broker reported the group
+leaderless or a majority of some voter set has rotated. `Retire` sets a
+durable marker and then reports the log and the membership. `Reform` waits
+for every voter of every membership any report names, takes the highest
+reported last log id as the base and the copies whose reports hold it as
+the voters, and writes the next epoch by compare-and-swap. `StartEpoch`
+starts a member at the new epoch from the base. A group with one replica
+is the same model with one voter.
+
+What is checked:
+
+- `AckedSurvive`: an acknowledged record is in the base of every later
+  epoch and in the log of every later leader. One loss is allowed, the one
+  relaxed fsync documents: at the re-form no disk of any voter's broker
+  held the record. The model records those in `lost` and excuses nothing
+  else.
+- `StateMachineSafety`: no index is committed with two different entries,
+  in one epoch or across epochs, except over a documented loss.
+- `OneLeaderPerTerm`, per epoch.
+- `NothingLost` and `OffsetNeverReused`, in the configs where no copy
+  rotates. That is fsync on commit, and a re-form then loses nothing and
+  reuses no offset.
+- `SlowGroupLeftAlone`: with no copy rotated and a voter that has not
+  reported, nothing is retired.
+
+Each knob drops one rule: `ReformBeforeAll` (re-form from the reports at
+hand), `EpochNotChecked` (a member takes an append from another epoch),
+`ReportNotPromise` (report without retiring), `OwnMembershipOnly` (wait
+only for the control plane's own record of the membership),
+`RetireNotDurable` (a restart forgets the marker), `BaseNotHighest`,
+`NoCas`, `RotatedNotWaited` (a voter known to have rotated counts as done
+before it has reported its records) and `JoinKeepsReport` (a copy that
+rotates after it reported joins as a learner while the control plane still
+holds its old report).
+
+The last two are rules the design page does not state. Step 4 says a voter
+is done when it "has retired and reported, or is known to have rotated".
+Read as two separate ways to be done, a rotated copy's records are never
+collected, and `FelixRaftReformRotatedNotWaited.cfg` loses a record its
+disk holds. The page also lets a retired copy rotate and rejoin as a
+learner. Its old report stays with the control plane, the learner takes
+newer records, and `FelixRaftReformJoinKeepsReport.cfg` loses one of them.
+The passing configs run with the rule that closes it: a new copy tells the
+control plane its id before it joins, and the control plane drops the
+report of the copy it replaces.
+
+After a relaxed fsync loss the offsets of the lost records are above the
+base and the new epoch gives them out again.
+`FelixRaftReformTwoRotatedOffsets.cfg` pins that.
+
+Abstracted: storage is a log and a rotation that may cut it to any prefix
+(`FelixRaft.tla` has the fsync rules). An election is one step over a
+quorum. An append is one step between two brokers, plus a bounded set of
+in-flight appends that can arrive late and more than once. A report
+carries the whole log where the design sends its last log id. A leader
+does not propose its own removal. A learner that no membership ever named
+is not a voter's broker, so a record only it holds counts as a documented
+loss. The operator's forced re-form is not modelled.
+
+### The switch from the hybrid to Raft
+
+`FelixRaftSwitch.tla` models moving one shard from the hybrid protocol to
+Raft, as [Per-shard Raft](../per-shard-raft.md) decides it ("Moving a shard
+from the hybrid to Raft"). These configs gate the pull request that builds
+the switch.
+
+The model starts at the seal. The hybrid leader has fenced at generation `G`
+and appended the generation-start record at offset `N`, which names a start
+offset `S` and a digest of the records from `S` up to `N`. What each copy
+holds at that moment is an arbitrary choice, bounded only by what the
+hybrid's fence guarantees: the leader holds every acknowledged record below
+`N`, and a record counts as acknowledged only when a majority holds it. A
+copy can lag, start later than the leader, carry generation 0 where another
+copy carries the real generation, or hold a different record below `N`. A
+copy can be wiped at any step, which gives it a new copy id.
+
+A follower acknowledges `N` with its copy id if its log starts at or below
+`S` and its digest matches. The leader reports the base and the copy ids of
+a majority, once. The control plane writes engine, base and voters in one
+compare-and-swap on generation and set version. A broker whose copy id is
+recorded cuts above `N` and starts with its log purged up to `(G, N)`;
+every other copy starts empty as a learner, takes the records below the
+base from the Raft leader and is promoted by a membership entry. Raft then
+elects at a term above `G`, commits a blank entry and takes writes. The
+hybrid can also open again after a seal, acknowledge a write and be sealed
+at a later generation while the first seal's report is still in flight.
+
+Checked:
+
+- `LeaderCompleteness`: a Raft leader holds, by content, every record the
+  hybrid acknowledged from `S` up and every record Raft acknowledged before
+  its term. This is "no acknowledged record is lost".
+- `StateMachineSafety`: above the base, every member applies the one
+  committed record at each offset.
+- `BaseAgree`: members that vote hold the same content from `S` to `N`,
+  whatever generation each copy wrote on a record.
+- `OneBase`: no two brokers start from different bases.
+- `OneLeaderPerTerm`.
+
+Each knob drops one rule:
+
+- `AllVoters`: the control plane records the whole set as voters.
+- `TermsBelowBase`: no copy purges or starts empty, so the hybrid log is
+  the Raft log and the generation field is the term.
+- `NoDigest`: a follower acknowledges `N` on reaching it.
+- `DigestCoversGeneration`: the digest includes the generation field.
+- `DigestFromOwnStart`: a follower's digest runs from its own first record,
+  so a copy that starts above `S` acknowledges.
+- `CpBlindWrite`: the control plane writes any report it receives.
+- `StaleIdVotes`: a broker is matched to the recorded voters by name, so a
+  wiped copy still votes.
+
+Two results are about availability, not safety. With a and c's old copy id
+recorded and c wiped, a alone cannot elect: the safety checks pass and no
+leader is ever elected (`FelixRaftSwitchWiped.cfg`). With the digest
+covering the generation field and generation 0 on the followers, no
+majority ever acknowledges and the switch never happens
+(`FelixRaftSwitchDigestCoversGeneration.cfg`).
+
+Abstracted: storage is durable at once (`FelixRaft.tla` covers the
+adapter's fsync rules), a message is one atomic step, and the hybrid before
+the seal is the initial choice. The hybrid's rebuild and catch-up during
+the seal are left out, so a copy that lags or was wiped stays so until Raft
+brings it up. The promotion adds one voter in one step. Records below `S`
+are outside the check, as the design says. Cache shards, whose digest is
+over live state, are not modelled.
 
 ## Which configurations run where
 

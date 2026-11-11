@@ -714,6 +714,10 @@ fi
 # FelixRaftTermsFull, FelixRaftOffsetsFull, FelixRaftOffsetsFailoverCrash and
 # FelixRaftSnapshotCrashes are not registered: none has been run to the end
 # yet. Run them through the workflow's dispatch.
+# FelixRaftMembershipTerms, FelixRaftSwitchGenZeroFull and
+# FelixRaftReform{StaleMembership,StaleMembershipFull,TwoRotatedFull,RejoinFull}
+# are not registered either: each is over five minutes on six cores, and is
+# registered once a dispatch run gives its declared outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -899,6 +903,15 @@ weights=(
   "FelixRaftFourTerms 45"
   "FelixRaftCommitPriorTerm 1"
   "FelixRaftSaveCommittedUnflushed 2"
+  "FelixRaftMembership 4"
+  "FelixRaftMembershipFailover 8"
+  "FelixRaftIdentityDirRestore 2"
+  "FelixRaftSwitchGenZero 6"
+  "FelixRaftSwitchStarts 5"
+  "FelixRaftSwitchReseal 4"
+  "FelixRaftReform 4"
+  "FelixRaftReformTwoRotated 4"
+  "FelixRaftReformOwnMembershipOnly 2"
 )
 
 weight_of() {
