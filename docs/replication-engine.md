@@ -1193,6 +1193,9 @@ removed. The in-memory backend stays, for tests only.
 
 ## The no-regression gate
 
+What each criterion must prove, with the fault matrix, the perf cells and
+where each check runs, is in [`release-gate.md`](release-gate.md).
+
 Written before any numbers exist. Raft is the target, and this gate is what
 it must pass before the bespoke shard protocol and its models are deleted
 (issue #2167, track 5). It applies to the shard side only; the control-plane
