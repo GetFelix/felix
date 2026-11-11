@@ -143,6 +143,9 @@ where
             return Ok(());
         };
 
+        // Taken before the entries are written and held until the callback
+        // has fired, so a truncation waits for it.
+        let flushing = Arc::clone(&shared.flushing).read_owned().await;
         let tail = log.tail_offset().await.map_err(io_error)?;
         if first > tail && tail == first_index(log) {
             log.reset_to(first).await.map_err(io_error)?;
@@ -158,8 +161,6 @@ where
                 ))
             })?;
 
-        // Held until the callback has fired, so a truncation waits for it.
-        let flushing = Arc::clone(&shared.flushing).read_owned().await;
         let shared = Arc::clone(shared);
         tokio::spawn(async move {
             let flushed = shared.log.commit(&pending).await.map_err(io_error);

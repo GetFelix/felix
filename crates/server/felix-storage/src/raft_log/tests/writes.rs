@@ -460,3 +460,142 @@ async fn a_committed_id_is_not_another_terms_entry_at_its_index() {
         Some(log_id(2, 5))
     );
 }
+
+/// Copy one file of `from` over `to`'s.
+fn copy_file(from: &TempDir, to: &TempDir, name: &str) {
+    std::fs::copy(from.path().join(name), to.path().join(name)).expect("copy");
+}
+
+/// A log holding entries 0..=9 of term 1 under a `replica` that says
+/// (term 5, index 10) is committed: the entry at 10 was lost with the power.
+async fn a_committed_id_past_the_log() -> TempDir {
+    let ahead = tempdir().expect("dir");
+    let mut raft = open(&ahead);
+    let mut entries: Vec<_> = (0..10).map(|index| normal(1, index, "kept")).collect();
+    entries.push(normal(5, 10, "lost"));
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(5, 10)))
+        .await
+        .expect("save");
+    raft.disk_log().close().await.expect("close");
+
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &entries[..10]).await;
+    raft.disk_log().close().await.expect("close");
+    copy_file(&ahead, &dir, "replica");
+    dir
+}
+
+/// The open that lowers a committed id to the log's end writes the lower
+/// index and its entry's term in one write. Stopped at every step of that
+/// open, the next one still reads the lowered id. Two writes would leave
+/// the lower index beside the lost entry's term in between, which reads as
+/// another entry's id and drops the commit.
+#[tokio::test]
+async fn a_lowered_committed_id_is_written_with_its_own_term() {
+    use crate::disk_log::crash_point;
+
+    let dir = a_committed_id_past_the_log().await;
+    crash_point::watch(dir.path(), None);
+    let mut raft = open(&dir);
+    let steps = crash_point::unwatch(dir.path());
+    assert!(steps >= 4, "the open wrote nothing: {steps} steps");
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 9))
+    );
+    raft.disk_log().close().await.expect("close");
+
+    for stop in 0..steps {
+        let dir = a_committed_id_past_the_log().await;
+        crash_point::watch(dir.path(), Some(stop));
+        let stopped = DiskLog::open(dir.path(), "t/ns/raft/0", config());
+        crash_point::unwatch(dir.path());
+        assert!(stopped.is_err(), "stop {stop} of {steps}");
+        drop(stopped);
+        let mut raft = open(&dir);
+        assert_eq!(
+            raft.read_committed().await.expect("read"),
+            Some(log_id(1, 9)),
+            "stopped at step {stop} of {steps}"
+        );
+    }
+}
+
+/// A committed id lowered to the log's end names an earlier entry of the
+/// same log, so that entry's term is at most the saved one. A higher term
+/// there is some other log's entry and is not taken as committed.
+#[tokio::test]
+async fn a_lowered_committed_id_is_not_a_later_terms_entry() {
+    let ahead = tempdir().expect("dir");
+    let mut raft = open(&ahead);
+    let mut entries: Vec<_> = (0..10).map(|index| normal(1, index, "a")).collect();
+    entries.push(normal(5, 10, "a"));
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(5, 10)))
+        .await
+        .expect("save");
+    raft.disk_log().close().await.expect("close");
+
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    entries.truncate(9);
+    entries.push(normal(7, 9, "b"));
+    append_flushed(&mut raft, &entries).await;
+    raft.disk_log().close().await.expect("close");
+    copy_file(&ahead, &dir, "replica");
+
+    let mut raft = open(&dir);
+    assert_eq!(raft.read_committed().await.expect("read"), None);
+    assert_eq!(raft.disk_log().commit_offset(), 0);
+    raft.truncate_after(Some(log_id(1, 8))).await.expect("cut");
+}
+
+/// `read_committed` compares the saved term with the entry on every call.
+/// The commit offset of a Raft log moves only with a term, so this takes a
+/// test hook to get wrong.
+#[tokio::test]
+async fn read_committed_refuses_an_offset_moved_without_its_term() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &mixed()).await;
+    raft.save_committed(Some(log_id(1, 5))).await.expect("save");
+    raft.disk_log()
+        .advance_commit_offset(11)
+        .await
+        .expect_err("a Raft log's commit offset takes a term");
+    raft.disk_log().note_commit_offset(11);
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 5))
+    );
+
+    raft.disk_log().move_commit_offset_for_tests(11);
+    let err = raft.read_committed().await.expect_err("index 10 is term 3");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+}
+
+/// An offline restore lowers the commit offset to an entry the log holds,
+/// and saves that entry's term with it, so the next open keeps the id.
+#[tokio::test]
+async fn a_restore_keeps_a_committed_id_the_next_open_accepts() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &mixed()).await;
+    raft.save_committed(Some(log_id(3, 10)))
+        .await
+        .expect("save");
+    raft.disk_log().restore_to(6).await.expect("restore");
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 5))
+    );
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    let mut raft = open(&dir);
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(1, 5))
+    );
+}

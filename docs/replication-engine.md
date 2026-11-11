@@ -377,9 +377,12 @@ lowers the commit offset to the log's first index, writes that back, and
 `read_committed` returns nothing until the leader sends an id again. When
 the open has already lowered the offset to the log's end, the record there
 is an earlier entry, so its generation may be lower than the saved one but
-never higher. `read_committed` makes the same comparison on every call and
-fails on a mismatch, which an open log cannot reach unless something moved
-the commit offset around the adapter. A durable `truncate_after` is what
+never higher. The lowered offset and that entry's generation go to disk in
+one write. `read_committed` makes the same comparison on every call and
+fails on a mismatch. Nothing can cause one on an open log: the commit
+offset of a Raft log moves only with a term, so
+`DiskLog::advance_commit_offset` is refused and `note_commit_offset` does
+nothing there. A durable `truncate_after` is what
 keeps a cut tail off the disk. This check is for the case where the disk
 comes back with it anyway.
 

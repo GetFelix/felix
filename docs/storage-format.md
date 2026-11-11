@@ -544,7 +544,7 @@ can hold several terms. Truncation is the log's suffix truncation, and a
 vote is saved to the `ballot` file.
 
 A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
-in five ways:
+in six ways:
 
 - **Version 9 from its first segment.** Every entry needs a term, so no
   segment is written in an older format, whatever the fleet gate says. If
@@ -558,17 +558,20 @@ in five ways:
 - **An empty log can start at any index.** The first append to an empty log
   restarts it at that entry's index. After that an append must start at the
   tail.
-
 - **The commit offset is lowered to the log's end at open.** openraft can
   save a committed id before its entry is flushed, so a crash can leave the
   offset in `replica` past the recovered log. The open writes the lower
-  value back before anything is appended.
+  value back before anything is appended, in the same write as the
+  generation of the entry it now names.
 - **The commit offset is saved with a generation.** `replica` holds the
   generation of the committed entry beside the offset (version 2 of the
   file, below). An open compares it with the record just below the offset.
   If that record is another generation's, the offset is lowered to the
   log's first offset and written back: the log holds a different entry
-  there, and nothing in it is known committed.
+  there, and nothing in it is known committed. The offset moves only
+  through the adapter's `save_committed`: `advance_commit_offset` is
+  refused on a Raft log and `note_commit_offset` does nothing. An offline
+  `restore_to` saves the generation of the entry it lowers the offset to.
 
 Purge and snapshots are not built.
 
@@ -1000,15 +1003,16 @@ records committed since are unguarded until the leader's next batch carries the
 offset again. It is never read back ahead. Why that is acceptable is in
 `docs/replication-design.md`, "Divergence and truncation".
 
-A Raft log writes version 2, which adds the generation of the committed
-record before the checksum:
+A Raft log writes version 2 once a committed id has been saved. It adds the
+generation of the committed record before the checksum:
 
 ```text
 24   8  committed    u64  generation of the record at commit - 1, never zero
 32   4  crc          u32  crc32 over bytes 0..32
 ```
 
-Every other log writes version 1, so its file is unchanged for older builds.
+Every other log, and a Raft log with no committed id yet, writes version 1,
+so those files are unchanged for older builds.
 See "Records as Raft entries" above for how an open uses the generation.
 
 The flags were a reserved zero before the hold was recorded, and no build

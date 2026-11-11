@@ -50,7 +50,7 @@ pub mod layout;
 
 mod append;
 mod ballot;
-mod crash_point;
+pub(crate) mod crash_point;
 mod durable_mark;
 mod epochs;
 mod flush;
@@ -592,15 +592,27 @@ impl DiskLog {
             {
                 let mut persisted = operation.replica_persisted.lock();
                 if operation.commit_offset.load(Ordering::Acquire) > offset {
-                    // The generation named the record below the old offset.
+                    // The generation saved named the record below the old
+                    // offset. A Raft log names the one below the new offset.
                     let mut committed = operation.committed_generation.lock();
+                    #[cfg(feature = "raft")]
+                    let below = match offset.checked_sub(1) {
+                        Some(last) if operation.config.raft_log && last >= base => segments
+                            .read_plan(last)
+                            .generation_at(last, &operation.label)?
+                            .flatten()
+                            .unwrap_or(0),
+                        _ => 0,
+                    };
+                    #[cfg(not(feature = "raft"))]
+                    let below = 0;
                     let state = replica_state::ReplicaState {
                         commit_offset: offset,
-                        committed_generation: 0,
+                        committed_generation: below,
                         ..operation.replica_state_with(*committed)
                     };
                     replica_state::store(&operation.dir, &state)?;
-                    *committed = 0;
+                    *committed = below;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
                     *persisted = (state, Some(tokio::time::Instant::now()));
@@ -740,7 +752,23 @@ impl DiskLog {
     ///
     /// Fails only on a closed log, or, when not under `OnCommit`, when a write
     /// due now fails.
+    ///
+    /// Refused on a Raft log, whose commit offset moves only with the term
+    /// of the entry it names (the adapter's `save_committed`).
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
+        if self.inner.config.raft_log {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: a Raft log's commit offset is saved with its entry's term",
+                    self.inner.label
+                ),
+            )));
+        }
+        self.raise_commit_offset(offset).await
+    }
+
+    async fn raise_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
         // Not `offset <= previous`: a write that failed left memory ahead of
         // disk, and the next call with the same offset has to write again.
@@ -772,8 +800,12 @@ impl DiskLog {
     ///
     /// For a leader about to open reads up to `offset`: a reader let in
     /// before the floor applies is served below an acknowledged trim.
+    ///
+    /// Does nothing on a Raft log, as [`Self::advance_commit_offset`].
     pub fn note_commit_offset(&self, offset: Offset) {
-        self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+        if !self.inner.config.raft_log {
+            self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+        }
     }
 
     /// Keep retention and compaction's head trims below the commit offset.
@@ -954,7 +986,8 @@ impl DiskLog {
         crate::io::sync_dir(&dir).map_err(StorageError::Io)?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
-        let mut replica = replica_state::load(&dir)?;
+        let saved = replica_state::load(&dir)?;
+        let mut replica = saved;
         // Before retention starts below, so its first sweep sees the hold.
         let hold = match config.retention_hold {
             crate::log::RetentionHold::AsSaved => replica.hold_at_commit,
@@ -970,10 +1003,7 @@ impl DiskLog {
         if past_the_log {
             replica.commit_offset = tail;
         }
-        if hold != replica.hold_at_commit || past_the_log {
-            replica.hold_at_commit = hold;
-            replica_state::store(&dir, &replica)?;
-        }
+        replica.hold_at_commit = hold;
         let (kept_set, accepted) =
             set::reconcile(&dir, &label, ballot::reconcile(&dir, &replica)?)?;
         let (replica_set, wiped) = kept_set.map_or((None, None), |(set, wiped)| (Some(set), wiped));
@@ -1000,11 +1030,12 @@ impl DiskLog {
                 );
                 replica.commit_offset = segments.base_offset();
             }
-            let found = found.unwrap_or(0);
-            if found != replica.committed_generation {
-                replica.committed_generation = found;
-                replica_state::store(&epochs_dir, &replica)?;
-            }
+            replica.committed_generation = found.unwrap_or(0);
+        }
+        // One write: a lowered offset beside the generation saved for the
+        // higher one would read at the next open as another entry's id.
+        if replica != saved {
+            replica_state::store(&epochs_dir, &replica)?;
         }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
@@ -1243,6 +1274,12 @@ impl DiskLog {
         }
     }
 
+    /// Move the commit offset and leave the generation saved with it, which
+    /// nothing outside a test can do to a Raft log.
+    pub(crate) fn move_commit_offset_for_tests(&self, offset: Offset) {
+        self.inner.commit_offset.store(offset, Ordering::Release);
+    }
+
     /// Stop the next truncation or reset after `unlinks` unlinks.
     pub(crate) fn stop_after_unlinks(&self, unlinks: usize) {
         segments::stop_after_unlinks(&self.inner.dir, unlinks);
@@ -1292,7 +1329,7 @@ impl DiskLog {
                 *committed = generation;
             }
         }
-        self.advance_commit_offset(offset).await
+        self.raise_commit_offset(offset).await
     }
 
     /// The commit offset and the generation saved with it, zero for none.
