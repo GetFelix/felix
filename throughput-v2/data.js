@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794348833495,
+  "lastUpdate": 1794355403778,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51740,6 +51740,58 @@ window.BENCHMARK_DATA = {
             "range": "37162.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 777967.16\nmean: 761231.14\nstdev: 37162.59\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "33582be0585672faba93213f8f445b6830939ceb",
+          "message": "refactor(replication): one shared engine in node.rs (#2167, #2154) (#2197)\n\n* refactor(replication): share one engine across the client listeners, writes, forwarding and the peer handler (#2167, #2154)\n\n* chore: record that the spec is unaffected (#2167, #2154)\n\nSpec-Unaffected: wiring only; one shared engine, no protocol or state-machine change",
+          "timestamp": "2026-11-10T23:59:12Z",
+          "tree_id": "745cba52e8f8edd8d5564cd98ec82baca75463e9",
+          "url": "https://github.com/GetFelix/felix/commit/33582be0585672faba93213f8f445b6830939ceb"
+        },
+        "date": 1794355402868,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510904.53,
+            "range": "18765.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510904.53\nmean: 506828.39\nstdev: 18765.31\ncv: 3.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510904.53,
+            "range": "18765.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510904.53\nmean: 506828.39\nstdev: 18765.31\ncv: 3.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120853.79,
+            "range": "970.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120853.79\nmean: 121223.80\nstdev: 970.42\ncv: 0.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1208537.87,
+            "range": "9704.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1208537.87\nmean: 1212238.01\nstdev: 9704.19\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
