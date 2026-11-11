@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794368661672,
+  "lastUpdate": 1794380052732,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51844,6 +51844,58 @@ window.BENCHMARK_DATA = {
             "range": "26172.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1202452.44\nmean: 1191395.49\nstdev: 26172.75\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d070cfc2828c791d95fc27d572b8e7c84226b322",
+          "message": "feat(fleet): report record_generations and let an operator finalize it (#2167) (#2200)\n\nBrokers report record_generations; an operator can finalize it (prerequisite generation_start; not in new clusters). Sim checker RecordGenerationsAgree with a mid-run finalize seed; unreadable replicas are reported. RF 3 A/B with the feature finalized is within the perf gate at 1 KiB and 64 KiB.",
+          "timestamp": "2026-11-10T22:50:07-08:00",
+          "tree_id": "3f151ecdd3d591f1184efa71c753da1b0b5499e4",
+          "url": "https://github.com/GetFelix/felix/commit/d070cfc2828c791d95fc27d572b8e7c84226b322"
+        },
+        "date": 1794380052046,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 574406.5,
+            "range": "48668.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 574406.50\nmean: 569007.38\nstdev: 48668.15\ncv: 8.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 574406.5,
+            "range": "48668.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 574406.50\nmean: 569007.38\nstdev: 48668.15\ncv: 8.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119660.01,
+            "range": "4601.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119660.01\nmean: 118630.52\nstdev: 4601.18\ncv: 3.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1196600.13,
+            "range": "46011.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1196600.13\nmean: 1186305.24\nstdev: 46011.74\ncv: 3.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
