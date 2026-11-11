@@ -931,7 +931,8 @@ member reads may change:
 
 - **The peer format is Felix's, not the library's.** Each peer request and
   response is a Felix type that mirrors the 0.9 JSON, checked against bytes
-  captured from the last release. The library's own types are not put on
+  captured from the last release. The same fixtures cover what is stored:
+  the vote, a log entry and the snapshot meta. The library's own types are not put on
   the wire.
 - **Snapshots still travel in chunks, with a snapshot id.** 0.10 sends a
   snapshot in one piece and has no snapshot id. The network layer cuts the
@@ -998,19 +999,27 @@ Two rules make the copy exact:
   carry the leader's node id, because two leaders can share a term. The new
   log id has only a term. Dropping the node id would give two different
   entries the same id. The mapping keeps the order and keeps them apart.
-- **The vote is raised to term 2^63, for the member itself, not
+- **The vote is raised to term 2^62, for the member itself, not
   committed.** That is what a member does when it times out and stands for
-  election, so it is always allowed. Every mapped id is below 2^63 and every
+  election, so it is always allowed. Every mapped id is below 2^62 and every
   term used after the conversion is above it. So no term used after the
   conversion can equal one an unconverted member still holds.
 
-The mapping needs every node id below 2^32 and every term below 2^31. The
+A term that large does not fit the places a term is shown: the
+`felix_meta_raft_term` gauge is a float, exact only below 2^53, and the
+status route reports a signed 64-bit number. Both show a term of 2^62 or
+more with 2^62 taken off. The term on the wire and on disk is unchanged.
+
+The mapping needs every node id below 2^32 and every term below 2^30. The
 tool refuses a store outside those bounds and changes nothing. A term that
 high is not reachable. `FELIX_RAFT_NODE_ID` is any 64-bit number, so a node
-id can be. Such a group first replaces its large-id members with small-id
-ones through an ordinary membership change on 0.7, then waits for a
-snapshot and purge to pass the last entry a large-id leader wrote.
-`verify` reports when every member's store is inside the bounds.
+id can be, and such a group has no upgrade path yet. Replacing the member
+needs a membership change, and no operator command proposes one. Even with
+one, a membership entry written by a large-id leader outlives snapshot and
+purge, because the snapshot keeps the last membership with its log id. The
+store is inside the bounds only after a small-id leader commits another
+membership change and a snapshot passes it. Issue
+[#2252](https://github.com/GetFelix/felix/issues/2252) tracks the path.
 
 **Converted and unconverted members never talk.** Every route on the peer
 listener moves to a new prefix: append entries, vote, snapshot install,
@@ -1071,9 +1080,12 @@ its own member file only:
 | present | present, with the converted mark | Starts. The mark is written before step 6 and `store/` appears after it, so the file is the stub. |
 | present | absent, or without the mark | Refuses to start and names the tool. |
 
-On its first start on a store, before it opens the peer listener, the
-service sets the *started* mark in the member file and makes it durable.
-From then on this member may have voted or acknowledged in the new group.
+On its first start on a store, before it creates the Raft node, the
+service sets the *started* mark in the member file: the file is fsynced,
+renamed and its directory fsynced. A member campaigns on its own timer, so
+the mark has to be on disk before the node exists, not only before the peer
+listener opens. From then on this member may have voted or acknowledged in
+the new group.
 
 **What the tool finds on a second run:**
 
@@ -1082,7 +1094,8 @@ From then on this member may have voted or acknowledged in the new group.
 | A real `raft.redb`, no `store/` | Starts again from step 1. A leftover link or temporary directory is removed. |
 | The stub, a `raft.redb.pre-segment`, no `store/` | Converts from the linked file and finishes. |
 | `store/` with the converted mark, not started | Reports that the directory is converted. |
-| `store/` with the started mark | Refuses. It never replaces a store. |
+| `store/` with the started mark | `convert` refuses. It never replaces a store. |
+| A `raft.redb.pre-segment` that already names the new cluster id | `restore` finishes from the step it stopped at. |
 
 **Going back.** There are two commands, and the started mark picks which
 one is allowed.
@@ -1094,13 +1107,28 @@ one is allowed.
   entry of the new group. Putting its old file back makes it forget them,
   and one member that forgets can vote twice in a term or help commit a
   second entry at an index the others already filled. So one member can
-  never go back alone. `restore` takes a new cluster id. It moves `store/`
-  aside, puts the redb file back and writes the new id into it. Every
-  member is restored with the same new id and
+  never go back alone.
+
+  `restore` takes a new cluster id and refuses one equal to the current
+  id. Its steps, in order:
+
+  1. Writes the new id into `raft.redb.pre-segment`.
+  2. Clears the converted mark in `store/member`, so the service no longer
+     starts on this store.
+  3. Renames `raft.redb.pre-segment` over the stub.
+  4. Moves `store/` aside.
+
+  The new id is on disk before anything else moves. So a crash never leaves
+  a redb file with the old id beside no store, which a second `convert`
+  would take for a member that was never converted.
+
+  Every member is restored with the same new id and
   `FELIX_RAFT_CLUSTER_ID` is changed to match. A member that was left out
   still names the old id, and the peer listener refuses it with a 403. A
   member given the new id in its configuration but not restored refuses to
-  start, because its store names the old one.
+  start, because its store names the old one. A left-out member that keeps
+  running still answers local reads from the history the group abandoned.
+  Stop it, then restore or wipe it.
 
   A restore returns the cluster to the conversion point and loses what was
   committed since. It follows the rules of
@@ -1225,7 +1253,8 @@ The switch does not merge until all of these pass on the new store.
   after one; `restore` of two members of three, where the third is refused
   by its peers. An older binary on a converted directory refuses to start
   and leaves the stub's cluster id empty. A store with a node id of 2^32 is
-  refused untouched.
+  refused untouched. A crash at every step of `restore`, then a second
+  `convert`, which must refuse.
 - **TLA+.** The `FelixRaft` configs for snapshots, purge and the committed
   index. A config for the conversion, with three twins that must fail:
   one drops the node id, one does not raise the vote, one rolls a single
@@ -1328,8 +1357,8 @@ Each has a recommendation, judged on safety and performance only.
 9. **Pre-vote: on, and when?** openraft 0.10 has it as
    `Config::enable_pre_vote`, off unless set, with its own peer request. A
    peer that does not implement the request counts as granting it. A member
-   whose vote is withheld must not grant a pre-vote or start one, and
-   nothing tests that yet. *Recommendation: leave it off at the switch.
+   whose vote is withheld must answer a pre-vote with an explicit refusal
+   and must never start one. Silence would count as a grant. *Recommendation: leave it off at the switch.
    Decide after
    [#2237](https://github.com/GetFelix/felix/issues/2237) has run the chaos
    suite with vote-withheld members.*
