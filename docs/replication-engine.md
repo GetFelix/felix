@@ -365,21 +365,51 @@ used by every shard group and by the control plane, tested once.
 
 ### openraft version
 
-The adapter targets openraft 0.10, currently `0.10.0-alpha.38`, pinned to an
-exact version in `Cargo.toml` and `Cargo.lock`. The control plane runs 0.9.25
-today (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the
-same pinned version as part of its storage track, so the workspace has one
-openraft. 0.10 is in alpha and may still change. This work lands over weeks,
-so it is designed against the 0.10 API, and a version change is a reviewed
-update, never a side effect of refreshing the lockfile.
+The adapter targets openraft 0.10, pinned to an exact version in
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10). Nothing in
+the workspace depends on 0.10 yet; the adapter PR adds `openraft = "=0.10.0"`
+as its first commit. The control plane runs 0.9.25 today
+(`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
+pinned version as part of its storage track, so the workspace has one
+openraft. A version change is a reviewed update, never a side effect of
+refreshing the lockfile.
 
-**Release rule (decided).** Everything is built and tested on the pinned
-0.10 alpha. A Felix release ships a control plane on 0.10 only if 0.10 is
-final by then, or the pinned alpha has passed the full control-plane
-simulator, crash-point and history checks. Otherwise that release keeps the
-control plane on 0.9.25, and everything else stays on 0.10. The control
-plane's openraft types stay inside `src/raft/` either way, so switching it
-between the two versions touches only that module.
+**Release rule (decided).** A Felix release ships a control plane on 0.10
+only if 0.10 is final, or the pinned version has passed the full
+control-plane simulator, crash-point and history checks. With 0.10.0 final
+the first condition holds; the checks still run before the control plane
+switches. The control plane's openraft types stay inside `src/raft/`, so a
+version change touches only that module.
+
+**What 0.10.0 adds that this design uses.** Each needs checking against the
+release before the design relies on it:
+
+- `openraft-multi` routes every group's RPCs through one shared router,
+  tagged with a group id (`examples/multi-raft-kv`). It shares connections,
+  but each group still sends its own heartbeats, so coalescing per peer
+  (below) is still Felix's to build, and a candidate to contribute upstream.
+- Pipelined replication (`RaftNetworkV2::stream_append`), and consecutive
+  appends merged into one storage write. Both bear on the per-record cost of
+  Decision 2.
+- Lease admission: a leader past its lease refuses new proposals
+  (openraft#1898), and `quorum_loss_probe_interval` stops its heartbeats so a
+  connected majority can elect (openraft#2080, #2166).
+- Pre-vote, leadership transfer, and lease reads that skip the core task
+  (`get_local_read_linearizer`).
+- `openraft-rt-sim`, a runtime for simulation, to evaluate for the felix-sim
+  harness.
+- Startup refuses a store whose state machine misses purged logs
+  (openraft#2222), next to the purge-then-snapshot crash window in Felix
+  issue #1931.
+
+**Limits found in openraft are fixed upstream.** Felix files an openraft
+issue with the measured numbers and, where the fix is clear, sends the pull
+request. Felix does not switch libraries or keep a private fork. The likely
+first one is coalescing heartbeats per peer in `openraft-multi`
+(openraft#1959 reported high p99 from groups ticking together and noted
+batching as the real fix). A lease backed by broker liveness goes to the
+open LeaseGuard issue (openraft#1651) once the TLA+ model (issue #2198)
+covers it.
 
 What the adapter absorbs from 0.9 to 0.10:
 
@@ -394,8 +424,10 @@ What the adapter absorbs from 0.9 to 0.10:
 - The trigger handle gains `transfer_leader`, which the engine uses for a
   graceful hand-off on drain and rebalance, and `elect` takes a `pre_vote`
   choice.
-- Neither version steps a leader down when it loses its majority (Decisions,
-  5), so the write fence's check at acknowledgement time is Felix's own.
+- 0.9 does not step a leader down when it loses its majority, so the write
+  fence's check at acknowledgement time is Felix's own (Decisions, 5). 0.10.0
+  adds lease admission (above). The fence check stays until a test pins
+  0.10.0's behaviour.
 
 0.10 also has opt-in local lease reads. They could replace `Quorum` read
 rounds and save a round trip per read. That is a later option, taken only
@@ -460,6 +492,51 @@ one batched message and fan it out to each group. Whether thousands of
 openraft tasks cost too much memory or scheduling is the first thing the
 prototype measures; if they do, that is a reason to pick a different library,
 not to give up the design.
+
+#### What other multi-Raft systems learned
+
+CockroachDB (a group per range), TiKV (per region) and YugabyteDB (per
+tablet) all run thousands of groups per node. Both fixes above are what they
+do. They also learned four things the design takes on:
+
+1. **Liveness is peer to peer and tied to the disk.** CockroachDB first kept
+   every node's liveness in one central range. It was a single point of
+   failure, and a node whose disk stalled kept its leases. Its replacement,
+   store liveness, is one support exchange per pair of stores, a heartbeat
+   counts only after a disk write, and support is granted for an epoch with
+   an expiry. Felix's liveness signal follows the same rule: it comes from
+   the brokers, never from the control plane, or a control-plane outage
+   would stop failover. Today's `suspicion.rs` pings peers directly but
+   reports what it finds through the control-plane heartbeat and writes
+   nothing to disk, so it does not meet the rule yet.
+2. **Liveness keeps leases, not per-group heartbeats.** In CockroachDB's
+   leader leases, a group's lease stays valid while its leader's store has
+   support from a quorum of the group's stores, and followers promise not to
+   campaign until a future time. A sleeping group then keeps its lease: no
+   quorum round on the first write after idle, and no election storm when
+   the groups of a broker that died wake together. They report up to 85%
+   less CPU on lease upkeep at scale. This replaces "a sleeping group's lease
+   lapses" above if the TLA+ model (issue #2198) checks it; CockroachDB's
+   model of it is public.
+3. **No task per group.** CockroachDB moved from a task per range to a few
+   per store, and TiKV drives regions from a small thread pool. openraft
+   runs a task per group, so the first step of per-shard Raft measures
+   memory, idle CPU and scheduling with 5,000 and 10,000 groups on one
+   broker, before other work builds on it. Felix stays on openraft. If the
+   measurement finds a limit, it is fixed in openraft: Felix files the
+   problem upstream with the numbers and, where the fix is clear, sends the
+   pull request, rather than switching libraries or keeping a private fork.
+   Fewer groups per broker (point 4) is the interim lever while an upstream
+   fix lands.
+4. **Fewer groups is the first fix.** Each system's first advice for an
+   overloaded node is fewer groups (TiKV merges regions, YugabyteDB
+   measured about 2.8% of a CPU per 100 tablets before batching). Folding
+   cache and counters into the shard's group (Decisions, 4) already does
+   this. The prototype also sets and tests a per-broker group budget at
+   felixd's 1,000-workload scale.
+
+Sleep and wake also get their own simulator nemesis: both CockroachDB and
+TiKV shipped bugs where idle groups failed to sleep or failed to wake.
 
 ### Hybrid behaviour that does not fit cleanly
 

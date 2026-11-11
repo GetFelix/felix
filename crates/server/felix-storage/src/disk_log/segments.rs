@@ -26,6 +26,7 @@ use crate::io::read_at;
 #[cfg(test)]
 use crate::log::AppendRecord;
 use crate::log::{LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
+use crate::segment::known::known_file_name;
 use crate::segment::{
     ReadBudget, SegmentReader, SegmentWriter, TrimRecords, index_file_name, segment_file_name,
 };
@@ -499,6 +500,7 @@ pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
     for path in [
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
+        dir.join(known_file_name(id)),
     ] {
         match crate::fs::remove_file(&path) {
             Ok(()) => {}

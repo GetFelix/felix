@@ -16,7 +16,8 @@ use crate::disk_log::durable_mark::{self, DurableMark};
 use crate::disk_log::offload::Manifest;
 use crate::log::{LogConfig, Offset, SegmentDescriptor, SegmentId};
 use crate::segment::format::{IndexEntry, SEGMENT_HEADER_LEN};
-use crate::segment::scan::{record_generation_at, scan_segment_upto};
+use crate::segment::known::KnownGenerations;
+use crate::segment::scan::scan_segment_upto;
 use crate::segment::{
     ScanOutcome, ScanStart, SparseIndex, TailRepair, index_file_name, read_segment_header,
     segment_file_name,
@@ -46,6 +47,9 @@ pub(crate) enum Step {
     RebuildIndex {
         id: SegmentId,
         index: SparseIndex,
+        /// A v9 segment's known generations and its length, for the file
+        /// beside it.
+        known: Option<(KnownGenerations, u64)>,
         why: IndexRebuild,
     },
     /// Cut a retired segment whose seal never finished back to its last
@@ -83,6 +87,9 @@ pub(crate) enum IndexRebuild {
     Mismatch,
     /// `verify_all_on_open` asked for every sealed segment to be walked.
     VerifyAll,
+    /// The file naming a v9 segment's known generations is missing or does
+    /// not match the segment.
+    Generations,
 }
 
 /// Where the log stands once the steps are made.
@@ -667,8 +674,32 @@ impl<'a> View<'a> {
             (Some(_), true) => Err(IndexRebuild::VerifyAll),
             (None, _) => Err(IndexRebuild::Missing),
         };
+        // A resume scan sees only the segment's last records, so the known
+        // generations come from the file beside it, checked against the
+        // segment. Without it the segment is walked once and the file
+        // rewritten, rather than on every open.
+        let resumed = resumed.and_then(|outcome| {
+            if !header.holds_generations() {
+                return Ok((outcome, KnownGenerations::default()));
+            }
+            KnownGenerations::load_verified(
+                self.dir,
+                id,
+                self.label,
+                header.version,
+                base_offset,
+                file_len,
+            )
+            .filter(|known| {
+                outcome
+                    .last_generation
+                    .is_none_or(|found| known.last_generation() == Some(found))
+            })
+            .map(|known| (outcome, known))
+            .ok_or(IndexRebuild::Generations)
+        });
         let rebuilt_index = resumed.is_err();
-        let outcome = match resumed {
+        let (outcome, known) = match resumed {
             Ok(resumed) => resumed,
             Err(why) => {
                 // Walk the whole segment and rebuild its index from it.
@@ -678,9 +709,13 @@ impl<'a> View<'a> {
                 self.steps.push(Step::RebuildIndex {
                     id,
                     index: outcome.index.clone(),
+                    known: header
+                        .holds_generations()
+                        .then_some((outcome.known, outcome.valid_bytes)),
                     why,
                 });
-                outcome
+                let known = outcome.known;
+                (outcome, known)
             }
         };
 
@@ -704,28 +739,8 @@ impl<'a> View<'a> {
             ));
         }
 
-        // A resume scan sees only the segment's last records, which include
-        // its last one but not its first.
-        let (first_generation, last_generation) = if rebuilt_index {
-            (outcome.first_generation, outcome.last_generation)
-        } else {
-            let first = record_generation_at(
-                &self.path(id),
-                id,
-                self.label,
-                header.version,
-                SEGMENT_HEADER_LEN,
-            )?
-            .filter(|generation| *generation != crate::log::UNKNOWN_WRITER);
-            // Unknown writers at an end can hide the segment's known
-            // generations. Walking the whole segment to find them would read
-            // all of a log copied from pre-v9 segments on every start, so the
-            // ends decide: the cross-segment check uses the known generation
-            // nearest the start, and a segment showing none keeps the floor
-            // before it. The writer kept the generations inside it rising.
-            let last = outcome.last_generation.or(first);
-            (first.or(last), last)
-        };
+        let (first_generation, last_generation) =
+            (known.first_generation(), known.last_generation());
         Ok(OpenedSealed {
             sealed: PlannedSealed {
                 descriptor: SegmentDescriptor {

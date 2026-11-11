@@ -42,6 +42,7 @@ use super::offload::Manifest;
 use super::segments::SealedEntry;
 use crate::io::{create_dir_all_durable, sync_dir};
 use crate::log::{LogConfig, Offset, RecordMark, SegmentId};
+use crate::segment::known::known_file_name;
 use crate::segment::writer::ResumeState;
 use crate::segment::{SegmentWriter, index_file_name, parse_segment_file_name, segment_file_name};
 use crate::{Result, StorageError, metrics_names};
@@ -172,7 +173,23 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
             remove_segment_files(dir, id)
         }
         Step::SyncDir => Ok(sync_dir(dir)?),
-        Step::RebuildIndex { id, index, why } => {
+        Step::RebuildIndex {
+            id,
+            index,
+            known,
+            why,
+        } => {
+            // Derived and checked on every open, so a failed write costs
+            // only another walk.
+            if let Some((known, segment_len)) = known
+                && let Err(err) = known.persist(
+                    &dir.join(known_file_name(id)),
+                    index.base_offset(),
+                    segment_len,
+                )
+            {
+                tracing::warn!(shard = label, segment = id, error = %err, "could not write a sealed segment's known generations");
+            }
             if why == IndexRebuild::Mismatch {
                 tracing::warn!(
                     shard = label,
@@ -195,6 +212,13 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 "repairing the torn tail of a segment whose seal never finished",
             );
             crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
+            // The segment may be appended to again and sealed at the same
+            // length, so its old file must not survive to describe it.
+            match crate::fs::remove_file(dir.join(known_file_name(id))) {
+                Ok(()) => sync_dir(dir)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
             if let Some(next) = drop_next {
                 crate::fs::note_torn_tail(&dir.join(segment_file_name(next)));
                 remove_segment_files(dir, next)?;
@@ -249,6 +273,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             index: outcome.index,
             version: outcome.header.version,
             generation_floor,
+            known: Some(outcome.known),
         },
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
@@ -342,6 +367,7 @@ fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
     for path in [
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
+        dir.join(known_file_name(id)),
     ] {
         match crate::fs::remove_file(&path) {
             Ok(()) => {}

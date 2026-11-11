@@ -145,9 +145,19 @@ async fn reopen(dir: &TempDir, log: DiskLog) -> DiskLog {
 /// Rewrite the first record of `segment` at `generation`, with its checksums
 /// fitted, as a writer that ignored the floor would have.
 fn restamp_first(dir: &TempDir, segment: u64, generation: u64) {
+    restamp(dir, segment, 0, generation);
+}
+
+/// [`restamp_first`] for the `nth` record of `segment`.
+fn restamp(dir: &TempDir, segment: u64, nth: usize, generation: u64) {
     let path = dir.path().join(segment_file_name(segment));
     let mut bytes = std::fs::read(&path).expect("read");
-    let at = SEGMENT_HEADER_LEN as usize;
+    let mut at = SEGMENT_HEADER_LEN as usize;
+    for _ in 0..nth {
+        at += decode_record_in(&bytes[at..], GENERATION_VERSION)
+            .expect("record")
+            .1 as usize;
+    }
     let (record, len) = decode_record_in(&bytes[at..], GENERATION_VERSION).expect("record");
     let mut encoded = Vec::new();
     encode_record_at(
@@ -440,7 +450,8 @@ async fn a_sealed_segment_of_unknown_writers_is_not_walked_on_open() {
     log.shutdown().await.expect("shutdown");
     drop(log);
 
-    // Damage the first record, which the index lets the open skip.
+    // Damage the first record. The index spacing puts it outside the last
+    // index interval, so only a walk of the segment would read it.
     let path = dir.path().join(segment_file_name(unknown));
     let mut bytes = std::fs::read(&path).expect("read");
     let at = SEGMENT_HEADER_LEN as usize;
@@ -468,6 +479,105 @@ async fn a_sealed_segment_of_unknown_writers_is_not_walked_on_open() {
         ),
         "{refused}"
     );
+}
+
+/// A sealed segment's last known generation is the floor even when unknown
+/// records fill its last index interval, and the verdict does not depend on
+/// the derived files beside it: without them, or damaged, the open walks
+/// the segment once and writes them again.
+#[tokio::test]
+async fn the_floor_is_the_last_known_generation_of_a_sealed_segment() {
+    let dir = tempdir().expect("dir");
+    let log = open_gated(&dir);
+    for generation in [9, 10] {
+        log.append_v9_for_tests(&records(&["k"]), generation)
+            .await
+            .expect("append");
+    }
+    log.append_v9_for_tests(&names(0, 4), UNKNOWN_WRITER)
+        .await
+        .expect("append");
+    let sealed = log.segments().last().expect("active").id;
+    log.roll_now().await.expect("roll");
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+    let known = dir
+        .path()
+        .join(crate::segment::known::known_file_name(sealed));
+    let index = dir.path().join(crate::segment::index_file_name(sealed));
+    for damage in ["none", "known missing", "known damaged", "index missing"] {
+        match damage {
+            "known missing" => std::fs::remove_file(&known).expect("remove"),
+            "known damaged" => {
+                let mut bytes = std::fs::read(&known).expect("read");
+                bytes[12] ^= 1;
+                std::fs::write(&known, bytes).expect("write");
+            }
+            "index missing" => std::fs::remove_file(&index).expect("remove"),
+            _ => {}
+        }
+        let log = open_gated(&dir);
+        let refused = log.append_v9_for_tests(&records(&["x"]), 9).await.err();
+        assert_below(refused, 9, 10);
+        log.shutdown().await.expect("shutdown");
+        drop(log);
+        assert!(known.exists(), "{damage}: written again");
+    }
+}
+
+/// The cross-segment check uses a sealed segment's first known generation,
+/// even behind an unknown first record, whether or not the file naming it
+/// is still beside the segment.
+#[tokio::test]
+async fn a_generation_falling_behind_an_unknown_first_record_refuses_the_open() {
+    for remove_known in [false, true] {
+        let dir = tempdir().expect("dir");
+        let log = open_gated(&dir);
+        log.append_v9_for_tests(&records(&["a"]), 9)
+            .await
+            .expect("append");
+        log.roll_now().await.expect("roll");
+        log.append_v9_for_tests(&records(&["u"]), UNKNOWN_WRITER)
+            .await
+            .expect("append");
+        for generation in [9, 9, 10] {
+            log.append_v9_for_tests(&records(&["k"]), generation)
+                .await
+                .expect("append");
+        }
+        let segment = log.segments().last().expect("active").id;
+        log.roll_now().await.expect("roll");
+        log.append_v9_for_tests(&records(&["z"]), 10)
+            .await
+            .expect("append");
+        log.shutdown().await.expect("shutdown");
+        drop(log);
+
+        restamp(&dir, segment, 1, 7);
+        if remove_known {
+            std::fs::remove_file(
+                dir.path()
+                    .join(crate::segment::known::known_file_name(segment)),
+            )
+            .expect("remove");
+        }
+        let refused = DiskLog::open(
+            dir.path(),
+            "t/ns/s/0",
+            gated(&Arc::new(AtomicBool::new(true))),
+        )
+        .expect_err("a falling generation opened");
+        assert!(
+            matches!(
+                &refused,
+                StorageError::Corruption(corruption) if matches!(
+                    corruption.kind,
+                    crate::CorruptionKind::GenerationFell { previous: 9, found: 7 }
+                )
+            ),
+            "{refused}"
+        );
+    }
 }
 
 /// A committed vote is written as ballot format v2, which the previous
