@@ -30,6 +30,8 @@ fn config() -> LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         rollover_threshold_percent: 100,
         max_overshoot_percent: 200,
+        // Retention runs only when a test asks.
+        retention_check_interval: std::time::Duration::from_secs(3600),
         ..LogConfig::default()
     }
 }
@@ -100,12 +102,27 @@ where
     Op: Fn(DiskLog) -> Fut,
     Fut: Future<Output = (DiskLog, u64, Result<()>)>,
 {
+    every_flush_site_after(name, async |_| {}, operation, reopened).await
+}
+
+/// [`every_flush_site`], with `prepare` run before the fault is armed.
+async fn every_flush_site_after<Op, Fut>(
+    name: &str,
+    prepare: impl AsyncFn(&DiskLog),
+    operation: Op,
+    reopened: impl Fn(&DiskLog),
+) -> u64
+where
+    Op: Fn(DiskLog) -> Fut,
+    Fut: Future<Output = (DiskLog, u64, Result<()>)>,
+{
     for skip in 0.. {
         let sim = Sim::new(name, skip);
         let log = DiskLog::open(sim.dir(), KEY, config()).expect("open");
         let (acknowledged, written) = append_until_refused(&log, 0, BEFORE).await;
         written.expect("append before the fault");
         assert_eq!(acknowledged, BEFORE);
+        prepare(&log).await;
 
         sim_fs::fail_flush(&sim.0, skip).expect("arm");
         let (log, acknowledged, outcome) = operation(log).await;
@@ -138,29 +155,45 @@ where
         let log = DiskLog::open(sim.dir(), KEY, config())
             .unwrap_or_else(|err| panic!("{name}: reopen after flush {skip} failed: {err}"));
         assert!(!log.is_poisoned());
+        // From the oldest record retention left.
+        let base = log.readable_base();
         let records = log
             .read_range(ReadRange {
-                start: 0,
+                start: base,
                 max_bytes: usize::MAX,
             })
             .await
             .expect("read")
             .records;
-        assert!(
-            records.len() as u64 >= acknowledged,
-            "{name}: flush {skip} failed and {} of {acknowledged} acknowledged records came back",
-            records.len()
+        let kept: Vec<_> = records
+            .iter()
+            .filter(|record| record.offset < acknowledged)
+            .collect();
+        assert_eq!(
+            kept.len() as u64,
+            acknowledged.saturating_sub(base),
+            "{name}: flush {skip} failed and the acknowledged records from {base} to \
+             {acknowledged} did not all come back"
         );
-        for (index, record) in records.iter().enumerate() {
-            assert_eq!(record.offset, index as u64, "{name}: gap or reorder");
-            assert_eq!(record.payload.as_ref(), payload(record.offset).as_slice());
+        for (record, offset) in kept.iter().zip(base..) {
+            assert_eq!(record.offset, offset, "{name}: gap or reorder");
+            assert_eq!(record.payload.as_ref(), payload(offset).as_slice());
         }
         reopened(&log);
-        log.append(&[numbered(records.len() as u64)])
+        log.append(&[numbered(acknowledged)])
             .await
             .expect("append after reopen");
     }
     unreachable!()
+}
+
+/// A state write that hit the failed flush says so itself.
+fn state_write(outcome: Result<()>) -> Result<()> {
+    assert!(
+        matches!(outcome, Ok(()) | Err(StorageError::SyncFailed(_))),
+        "{outcome:?}"
+    );
+    outcome
 }
 
 fn set(generation: u64) -> ReplicaSet {
@@ -219,7 +252,7 @@ async fn a_failed_flush_of_the_replica_set_poisons_the_log() {
         "set",
         |log| async move {
             let outcome = log.accept_set(set(3)).await.map(|_| ());
-            (log, BEFORE, outcome)
+            (log, BEFORE, state_write(outcome))
         },
         // The set file is the old one or the new one.
         |log| assert!(matches!(log.set_generation(), 0 | 3)),
@@ -234,7 +267,7 @@ async fn a_failed_flush_of_a_vote_poisons_the_log() {
         "vote",
         |log| async move {
             let outcome = log.accept_generation(4, Some("a")).await.map(|_| ());
-            (log, BEFORE, outcome)
+            (log, BEFORE, state_write(outcome))
         },
         |log| match log.accepted_generation() {
             0 => {}
@@ -251,6 +284,7 @@ async fn a_failed_flush_of_the_commit_offset_poisons_the_log() {
     let sites = every_flush_site(
         "commit-offset",
         |log| async move {
+            // Written behind, so the call itself does not fail.
             let outcome = log.advance_commit_offset(BEFORE).await;
             (log, BEFORE, outcome)
         },
@@ -266,7 +300,7 @@ async fn a_failed_flush_of_the_generation_history_poisons_the_log() {
         "generations",
         |log| async move {
             let outcome = log.record_generation(2, BEFORE).map(|_| ());
-            (log, BEFORE, outcome)
+            (log, BEFORE, state_write(outcome))
         },
         |_| {},
     )
@@ -288,6 +322,83 @@ async fn a_failed_flush_during_a_truncation_poisons_the_log() {
     )
     .await;
     assert!(sites >= 2, "only {sites} flushes in a truncation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_flush_during_a_seal_poisons_the_log() {
+    let sites = every_flush_site(
+        "seal",
+        |log| async move {
+            let outcome = log.seal().await.map(|_| ());
+            (log, BEFORE, outcome)
+        },
+        |_| {},
+    )
+    .await;
+    // The segment, its index, the segment after it and the directory.
+    assert!(sites >= 3, "only {sites} flushes in a seal");
+}
+
+/// Enough records for several sealed segments, with every roll finished.
+async fn fill_segments(log: &DiskLog) -> u64 {
+    let (tail, written) = append_until_refused(log, BEFORE, 18).await;
+    written.expect("append");
+    log.sync().await.expect("sync");
+    assert!(log.segments().len() >= 4, "{:?}", log.segments());
+    tail
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_flush_of_a_retention_removal_poisons_the_log() {
+    let sites = every_flush_site_after(
+        "retention",
+        async |log| {
+            fill_segments(log).await;
+            log.set_retention(crate::log::Retention {
+                bytes: Some(2 * 4096),
+                age: None,
+            })
+            .expect("bounds");
+        },
+        |log| async move {
+            let outcome = log.enforce_retention_now().await;
+            if let Ok(outcome) = &outcome {
+                assert!(outcome.segments_deleted > 0, "{outcome:?}");
+            }
+            (log, BEFORE + 18, outcome.map(|_| ()))
+        },
+        |_| {},
+    )
+    .await;
+    assert!(sites >= 1, "a removal syncs the directory");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_flush_of_a_removal_below_the_floor_poisons_the_log() {
+    // The trim is the last record, so everything before it is numbered.
+    const TRIM_AT: u64 = BEFORE + 18;
+    let sites = every_flush_site_after(
+        "floor",
+        async |log| {
+            fill_segments(log).await;
+            let trim = AppendRecord {
+                mark: RecordMark::Trim { floor: 12 },
+                ..numbered(TRIM_AT)
+            };
+            log.append(&[trim]).await.expect("trim");
+            assert_eq!(log.readable_base(), 12);
+        },
+        |log| async move {
+            let outcome = log.enforce_retention_now().await;
+            if let Ok(outcome) = &outcome {
+                assert!(outcome.segments_deleted > 0, "{outcome:?}");
+            }
+            (log, TRIM_AT, outcome.map(|_| ()))
+        },
+        |_| {},
+    )
+    .await;
+    assert!(sites >= 1, "a removal syncs the directory");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -316,4 +427,35 @@ async fn a_poisoned_log_refuses_state_writes() {
     ));
     assert_eq!(log.set_generation(), 0);
     assert_eq!(log.accepted_generation(), 0);
+}
+
+/// What a readiness probe reports: the shard and what stopped it, which for
+/// a truncation that failed without a flush failing is not a flush.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_poisoned_log_is_listed_with_its_cause() {
+    let sim = Sim::new("listed", 0);
+    let flushed = "t/ns/listed/0";
+    let log = DiskLog::open(sim.dir(), flushed, config()).expect("open");
+    sim_fs::fail_flush(&sim.0, 0).expect("arm");
+    log.append(&[numbered(0)]).await.expect_err("flush");
+    let listed = crate::disk_log::poisoned_logs();
+    let entry = listed
+        .iter()
+        .find(|log| log.shard == flushed)
+        .expect("listed");
+    assert!(entry.reason.contains("sync"), "{}", entry.reason);
+
+    let rewound = "t/ns/listed/1";
+    let log = DiskLog::open(sim.0.join("rewound"), rewound, config()).expect("open");
+    let failed: Result<()> = Err(StorageError::Io(std::io::Error::other("unlink refused")));
+    log.inner.poison_after_rewind(failed).expect_err("rewind");
+    let listed = crate::disk_log::poisoned_logs();
+    let entry = listed
+        .iter()
+        .find(|log| log.shard == rewound)
+        .expect("listed");
+    assert_eq!(
+        entry.reason,
+        "a truncation or reset failed: io error: unlink refused"
+    );
 }

@@ -186,7 +186,7 @@ fn health_router(
             "/ready",
             axum::routing::get(move || async move {
                 ready_status(
-                    felix_storage::disk_log::any_log_poisoned(),
+                    &felix_storage::disk_log::poisoned_logs(),
                     readiness.is_ready(),
                 )
             }),
@@ -201,19 +201,27 @@ fn health_router(
         )
 }
 
-/// What `/ready` answers. A failed flush stops a log for good and only a
-/// restart reopens it; its shards refuse writes until then, so traffic
-/// should go elsewhere.
-fn ready_status(poisoned: bool, ready: bool) -> (axum::http::StatusCode, &'static str) {
-    if poisoned {
+/// What `/ready` answers. A poisoned log refuses writes until it is
+/// reopened, so the body names each one and what stopped it. One poisoned
+/// log fails the whole broker's probe for now: see "A failed fsync poisons
+/// the log" in `docs/durable-storage.md`.
+fn ready_status(
+    poisoned: &[felix_storage::disk_log::PoisonedLog],
+    ready: bool,
+) -> (axum::http::StatusCode, String) {
+    if !poisoned.is_empty() {
+        let logs: Vec<String> = poisoned
+            .iter()
+            .map(|log| format!("log {} is poisoned: {}", log.shard, log.reason))
+            .collect();
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, logs.join("\n"))
+    } else if ready {
+        (axum::http::StatusCode::OK, "ok".to_string())
+    } else {
         (
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "a log is poisoned after a failed flush; restart the broker",
+            "draining".to_string(),
         )
-    } else if ready {
-        (axum::http::StatusCode::OK, "ok")
-    } else {
-        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
     }
 }
 

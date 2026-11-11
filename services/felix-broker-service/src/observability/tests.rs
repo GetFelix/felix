@@ -308,16 +308,30 @@ fn installing_the_recorder_starts_histogram_upkeep() {
 #[test]
 fn a_poisoned_log_makes_the_broker_not_ready() {
     use axum::http::StatusCode;
+    use felix_storage::disk_log::PoisonedLog;
 
-    assert_eq!(ready_status(false, true).0, StatusCode::OK);
-    assert_eq!(
-        ready_status(false, false).0,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
-    // Whether or not it is otherwise ready, and it says why.
+    assert_eq!(ready_status(&[], true).0, StatusCode::OK);
+    assert_eq!(ready_status(&[], false).0, StatusCode::SERVICE_UNAVAILABLE);
+
+    let poisoned = [
+        PoisonedLog {
+            shard: "t/ns/orders/0".to_string(),
+            reason: "a flush of the replica state failed (EIO)".to_string(),
+        },
+        PoisonedLog {
+            shard: "t/ns/orders/1".to_string(),
+            reason: "a truncation or reset failed: no space".to_string(),
+        },
+    ];
+    // Whether or not it is otherwise ready, and it names each log with its
+    // own cause.
     for ready in [true, false] {
-        let (status, body) = ready_status(true, ready);
+        let (status, body) = ready_status(&poisoned, ready);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert!(body.contains("poisoned"), "{body}");
+        assert_eq!(
+            body,
+            "log t/ns/orders/0 is poisoned: a flush of the replica state failed (EIO)\n\
+             log t/ns/orders/1 is poisoned: a truncation or reset failed: no space"
+        );
     }
 }

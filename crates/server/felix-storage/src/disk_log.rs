@@ -112,6 +112,35 @@ pub fn any_log_poisoned() -> bool {
     ANY_POISONED.load(Ordering::Acquire)
 }
 
+/// A log a failure stopped, for a readiness probe to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoisonedLog {
+    pub shard: String,
+    /// The first failure, which is not always a flush: a truncation that
+    /// failed partway poisons too.
+    pub reason: String,
+}
+
+/// One entry per shard, with its first failure. Like [`ANY_POISONED`], never
+/// cleared.
+static POISONED: Mutex<Vec<PoisonedLog>> = Mutex::new(Vec::new());
+
+/// The logs a failure has stopped in this process, each with the failure that
+/// stopped it first.
+pub fn poisoned_logs() -> Vec<PoisonedLog> {
+    POISONED.lock().clone()
+}
+
+fn note_poisoned(shard: &str, reason: &str) {
+    let mut poisoned = POISONED.lock();
+    if !poisoned.iter().any(|log| log.shard == shard) {
+        poisoned.push(PoisonedLog {
+            shard: shard.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+}
+
 /// What [`DiskLog::accept_generation`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationCheck {
@@ -1555,13 +1584,19 @@ impl AppendOnlyLog for DiskLog {
                     Ok(sealed) => sealed,
                     Err(err) => {
                         inner.poison_after_writer_failure(&segments);
-                        return Err(err);
+                        // The index, which the writer does not own.
+                        return inner.poison_on_sync_failure("a segment seal", Err(err));
                     }
                 };
                 // Start a fresh segment so the sealed one is immutable from here
                 // on, which is what makes its checksum meaningful.
                 if segments.active().record_count() > 0 {
-                    segments.roll()?;
+                    if let Err(err) = segments.roll() {
+                        inner.poison_after_writer_failure(&segments);
+                        // Appends would otherwise go on into a segment whose
+                        // directory entry may not survive a crash.
+                        return inner.poison_on_sync_failure("a segment rollover", Err(err));
+                    }
                     inner.note_sealed_before(segments.active().id());
                 }
                 Ok(SealedSegment {

@@ -356,8 +356,13 @@ shard is the same under either engine, and it follows from that one error:
 - **A leader stops leading.** It cannot append, so it acknowledges nothing
   more. It does not keep the role on the strength of what it holds in
   memory: the records it acknowledged may no longer be on its disk.
-- **The broker says so.** `/ready` answers 503 with the reason, and a
-  restart reopens the log from what reached the disk.
+- **The broker says so.** `/ready` answers 503 and names each poisoned log
+  with what stopped it. That is broker-wide for now. The decided behaviour is
+  per shard ([#2300](https://github.com/GetFelix/felix/issues/2300)): the
+  leader of the poisoned shard steps down, the broker stays ready for its
+  healthy shards, and the poisoned log shows in metrics and status. The log
+  stays poisoned until the broker restarts; `docs/durable-storage.md` says
+  when a restart is safe.
 
 On the hybrid, a poisoned process attests no trusted copy to a fence, and a
 promotion does not let it continue as leader, so another copy takes over

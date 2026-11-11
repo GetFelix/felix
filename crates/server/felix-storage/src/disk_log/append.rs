@@ -699,6 +699,7 @@ impl LogInner {
                 return;
             }
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
+            super::note_poisoned(&self.label, &reason);
             *failure = Some(reason);
             super::ANY_POISONED.store(true, Ordering::Release);
         }

@@ -43,7 +43,9 @@ pub enum StorageError {
     /// commit, flush and state write from then on. The kernel may have
     /// dropped the pages that flush could not write, and a retry would
     /// report success for them. Names the shard and the first failure.
-    /// Reopening the log re-reads what reached the disk.
+    /// Lasts until the log is reopened. A reopen is only known to read back
+    /// just what reached the disk after a reboot: see "A failed fsync
+    /// poisons the log" in `docs/durable-storage.md`.
     Poisoned {
         shard: String,
         reason: String,

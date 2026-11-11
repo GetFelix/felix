@@ -1,2 +1,3 @@
-- A failed fsync or directory sync on a log's state files (the ballot, the replica set, the replica state, the generation history), on a rollover's index or directory entry, or on a retention removal now poisons the log, as a failed segment flush already did (#1998).
-  Later operations on it fail with the new `StorageError::Poisoned`, the commit offset is no longer retried after a failed flush, and a broker with a poisoned log answers `/ready` with 503.
+- A failed fsync or directory sync on a log's state files (the ballot, the replica set, the replica state, the generation history), on a seal or a rollover's index or directory entry, or on a retention removal now poisons the log, as a failed segment flush already did (#1998).
+  Later operations on it fail with the new `StorageError::Poisoned`, the commit offset is no longer retried after a failed flush, and a broker with a poisoned log answers `/ready` with 503 and a body naming each poisoned log and what stopped it.
+  A restart on the same boot after a failed flush is not covered yet (#2308).
