@@ -593,7 +593,55 @@ expectations=(
   "FelixRaftReformSlow violates NeverSlowGroupElects"
   "FelixRaftReformTwoRotatedOneVoter violates NeverOneVoterCommits"
   "FelixRaftReformRejoinHappens violates NeverRetiredRejoins"
+  "FelixRaftReformStaleMembership pass"
+  "FelixRaftReformRejoinFull pass"
+  "FelixRaftSwitchGenZeroFull pass"
   "FelixRaftReformStaleMembershipHappens violates NeverReformsAfterChange"
+  "FelixRaftReformStaleMembershipTwoRotated violates AckedSurvive"
+  "FelixRaftLease pass"
+  "FelixRaftLeaseAck pass"
+  "FelixRaftLeaseDeliver pass"
+  "FelixRaftLeaseRestart pass"
+  "FelixRaftLeaseStore pass"
+  "FelixRaftLeaseStoreStall pass"
+  "FelixRaftLeaseRestartForgets violates LeaseExclusive"
+  "FelixRaftLeaseLong violates LeaseExclusive"
+  "FelixRaftLeaseDrift violates LeaseExclusive"
+  "FelixRaftLeaseFromAck violates LeaseExclusive"
+  "FelixRaftLeaseVoteInWindow violates LeaseExclusive"
+  "FelixRaftLeaseStoreNotDurable violates LeaseExclusive"
+  "FelixRaftLeaseStoreVote violates LeaseExclusive"
+  "FelixRaftLeaseStoreKept violates LeaseExclusive"
+  "FelixRaftLeaseStoreResupport violates LeaseExclusive"
+  "FelixRaftLeaseStoreWithdrawEarly violates LeaseExclusive"
+  "FelixRaftLeaseStoreLong violates LeaseExclusive"
+  "FelixRaftLeaseAckLong violates NoAckBehindNewLeader"
+  "FelixRaftLeaseDeliverUncommitted violates DeliveredNeverReplaced"
+  "FelixRaftLeaseReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseReachRenewed violates NeverLapsedThenRenewed"
+  "FelixRaftLeaseReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
+  "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftSleep pass"
+  "FelixRaftSleepWrite pass"
+  "FelixRaftSleepLeaderDies pass"
+  "FelixRaftSleepLivenessMisses pass"
+  "FelixRaftSleepFalseAlarm pass"
+  "FelixRaftSleepRestart pass"
+  "FelixRaftSleepAnyState pass"
+  "FelixRaftSleepEnds pass"
+  "FelixRaftSleepNoWake violates QuiescentLed"
+  "FelixRaftSleepSleepUnsupported violates QuiescentLed"
+  "FelixRaftSleepCampaignOnWake violates NoNeedlessDeposal"
+  "FelixRaftSleepRestartNoHold violates NoNeedlessDeposal"
+  "FelixRaftSleepLeaderSleepsFirst violates NoNeedlessDeposal"
+  "FelixRaftSleepHeartbeatKeepsProposal violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollower violates NoNeedlessDeposal"
+  "FelixRaftSleepAcceptUnchecked violates AsleepIsLevel"
+  "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
+  "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
+  "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -715,10 +763,11 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
-# FelixRaftMembershipTerms, FelixRaftSwitchGenZeroFull and
-# FelixRaftReform{StaleMembership,StaleMembershipFull,TwoRotatedFull,RejoinFull}
-# are not registered: each is over five minutes on six cores, and is
-# registered once a dispatch run gives its declared outcome.
+# FelixRaftMembershipTerms, FelixRaftReformTwoRotatedFull and
+# FelixRaftLease{AckWide,StoreWide} are not registered: each is registered
+# once a dispatch run gives its declared outcome.
+# FelixRaftReformStaleMembershipFull is not registered either: it gives the
+# violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -917,6 +966,13 @@ weights=(
   "FelixRaftReform 4"
   "FelixRaftReformTwoRotated 4"
   "FelixRaftReformOwnMembershipOnly 2"
+  "FelixRaftReformStaleMembership 40"
+  "FelixRaftReformRejoinFull 34"
+  "FelixRaftSwitchGenZeroFull 28"
+  "FelixRaftLeaseAck 2"
+  "FelixRaftLeaseDeliver 6"
+  "FelixRaftLeaseRestart 5"
+  "FelixRaftLeaseStore 2"
 )
 
 weight_of() {
