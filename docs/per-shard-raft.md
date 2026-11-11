@@ -42,7 +42,7 @@ them can make two leaders commit at one offset.
 | A `Leader` shard serves on the control-plane lease | A Raft leader lease, checked when a write is acknowledged |
 | `Quorum` reads confirm by lease or read round | A read-index round |
 | Cache shards have a cache log and a counter log | One log, one group |
-| A wiped copy is vouched back in | A wiped copy is a new member and joins as a learner |
+| A wiped copy is vouched back in | A wiped copy has a new copy id, is a new member and joins as a learner. A group that lost its voters is re-formed |
 | Suspicion is reported through the control plane | Brokers exchange liveness directly, tied to their disks |
 
 ## The engine interface
@@ -69,7 +69,8 @@ pub trait Engine: Send + Sync {
         -> impl Future<Output = Result<(), CommitError>> + Send;
 
     /// May a write at `generation` be acknowledged on local durability
-    /// alone? The leader lease check for `Leader` streams.
+    /// alone? The leader lease check for `Leader` streams. On an error the
+    /// caller waits on `await_commit`. A refusal never closes the shard.
     fn admit_local_ack(&self, shard: &ShardKey, generation: u64) -> Result<(), CommitError>;
 
     /// One past the highest committed offset, at every consistency level.
@@ -97,7 +98,9 @@ pub(crate) trait EngineHost: Send + Sync {
 }
 ```
 
-What goes away, and why it is safe to drop:
+The hybrid keeps implementing everything it has today until it is deleted.
+The first pull request only adds to the trait. What goes away when the
+hybrid is deleted, and why it is safe to drop then:
 
 - `cache_write_at`, `await_cache_quorum` and `await_counter_quorum` become
   `await_commit`. A cache shard has one log and one commit index (see "Cache
@@ -106,8 +109,9 @@ What goes away, and why it is safe to drop:
   check. Under Raft a deposed leader's commit index is still a true lower
   bound on what is committed, so delivering up to it is always safe and needs
   no lease.
-- `read_skips_lease` and `await_readable` go with the control-plane lease.
-  Every read is bounded by `read_bound`.
+- `read_skips_lease` and `await_readable` go with the control-plane lease,
+  which the shipping hybrid still serves on. Under Raft every read is bounded
+  by `read_bound`.
 - `EngineHost::generation` and `replicated` go. The engine tells the host the
   generation through `opened`, and every shard is a group.
 - The `HybridHost` callbacks stay on the hybrid until it is deleted.
@@ -118,24 +122,107 @@ later share a group without changing a caller.
 
 ### Group and member identity
 
-A group id is the `ShardKey`. A member id is the pair of broker id and
-storage id. The storage id changes when a broker loses its disk or restarts
-after a failed fsync (`run_state::forget_boot`). So a copy that may have
-forgotten a vote or an acknowledged record is a new member to Raft. It has
-never voted, it joins as a learner, and the old member is removed by a
-membership change. This is the rule issue #1331 asks for, and it replaces
-vouching and copy trust.
+A group id is the `ShardKey` plus a group epoch, which starts at 0 and rises
+only when the group is re-formed (below). A member id is the pair of broker
+id and copy id.
+
+The copy id is minted in the shard's own directory when the member is first
+created there, and is fsynced with the directory. It is per shard on
+purpose. The broker's storage id is one per data root and rotates only when
+the broker notices a loss at start (`node/storage.rs`, `start_run`), so it
+cannot tell a broker that lost one shard's directory from one that lost
+nothing. An empty shard directory has no copy id, so the member made there
+is new to Raft whatever the storage id says.
+
+A member with a new id has never voted. It joins as a learner and the old
+member is removed by a membership change. This is the rule issue #1331 asks
+for, and it replaces vouching and copy trust. The copy ids of a shard
+rotate, and the directory's log is kept as plain records, in each of these
+cases:
+
+- The shard directory is missing or empty.
+- The storage id rotated: the data root was lost, or a run with relaxed
+  fsync crashed and the machine restarted since
+  (`felix-storage/src/run_state.rs`, `begin`), so writes that peers counted
+  may be gone.
+- The directory fails the restore check below.
+
+**Votes are always fsynced.** The vote, the copy id and the membership are
+synced in every fsync mode. Votes are rare, so this costs nothing on the
+write path, and it means a relaxed-fsync crash can shorten a log but never
+forget a vote.
+
+**The restore check.** A directory restored from a backup or a VM rollback
+keeps its copy id with an older log and an older vote. Raft cannot see
+that: the copy would vote under an id that already promised more. Today the
+control plane's incarnation check catches it (`restored` in `start_run`),
+and the run witness catches it when the broker starts from its saved view.
+Both stay, as a gate in front of Raft: a restarted broker starts no member
+until its data root has passed one of them. A root that fails rotates every
+copy id in it. A broker that can reach neither the control plane nor a
+witness starts no member until it can. Brokers that stayed up are not
+affected, so failover with the control plane down still works. What waits
+is the restarted broker's own vote. The check is once per broker start, not
+per shard.
 
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
-come back with a shorter log under the same id, and a voter that lost an
-acknowledged entry can then help elect a leader without it. With the storage
-id in the member id the case does not arise, and a log that goes backwards
-under one id is a bug to stop on. (The engine page says the adapter sets it
-for every group. See Questions, 2.)
+come back with a shorter log under the same id. Off, a leader that sees a
+follower go backwards stops instead of carrying on. That protects a leader.
+It does not stop the reverted copy from voting, which is why the rotation
+rules and the restore check above carry the safety, and reversion-off is
+the backstop. (The engine page says the adapter sets it for every group.
+See Questions, 2.)
 
-A new group is created by every member of the control plane's first set
-calling `initialize` with that same set, which openraft allows. A member
-initializes only when its own member id is in the set and its log is empty.
+A new group is created from a first set that names copy ids. Each broker
+the control plane places the shard on mints its copy id and reports it, and
+the control plane then writes the first member set once. Every member in
+that set calls `initialize` with it, which openraft allows. A member
+initializes only when its own member id is in the set. A copy wiped after
+that has a new id that the set does not name, so it can never initialize a
+second time on an empty log.
+
+### Re-forming a group
+
+Rotating ids keeps one failure safe. It also means that several at once can
+leave a group without a majority of voters: power-cycle two of three
+brokers that run relaxed fsync, and every group they share has one voter
+left. An RF 1 shard has that problem after any rotation. The hybrid
+readmits such copies. Raft needs an explicit path, and it is the same
+mechanism as the switch from the hybrid: a base recorded once in the
+control plane.
+
+1. A broker that holds a copy of a group that has had no leader for the
+   re-form time reports to the control plane what its directory holds: the
+   old member id if it still has one, or that it rotated, and the last log
+   id of the records on disk. A rotated copy still reports its records. They
+   are evidence, not votes.
+2. When every voter of the last committed membership the control plane
+   knows is accounted for by such a report, the control plane picks the
+   report with the highest last log id and writes, by compare-and-swap on
+   the group epoch: the next epoch, the base (that log id), and the voter
+   set, which is exactly the copies whose reports hold the base. Everyone
+   else is a learner.
+3. Members start at the new epoch from the base, as in the switch. A member
+   of the old epoch stops when it learns of the new one. Messages carry the
+   epoch, so the two never mix.
+
+Why it is safe: the old epoch cannot commit anything more, because a
+majority of its voters no longer exist under their old ids. Every record
+any disk still holds is at or below the chosen base or is cut as
+uncommitted. What is lost is only a record that no surviving disk holds,
+which is the loss relaxed fsync already documents for a majority losing
+power. With fsync on commit a crash does not rotate ids, and this path is
+not reached.
+
+If an old voter's broker cannot be reached, the control plane waits. An
+operator can force the re-form without it. The command names the missing
+copies and says that records only they held are lost. An RF 1 shard whose
+only copy is gone is re-formed empty the same way, by an operator, and the
+new base is not below the highest offset the control plane has seen
+reported for the shard, so offsets are not reused. See Questions, 10.
+
+The control plane is on this path. It already is for placement, and a
+group that needs re-forming is not serving.
 
 ### Adopting the leader's appends
 
@@ -163,8 +250,24 @@ acknowledged for them, which is inside the loss window `Leader` already
 documents. After a crash the same tail is read back as uncommitted entries of
 the old term, and the next leader keeps or cuts it, as the engine page says.
 
-If openraft assigns an index the record is not at, the group stops. That
-means the commit order and openraft disagree, which is a bug.
+**Entries openraft writes itself.** A membership entry is created by
+openraft, not by a publish. If a publish has claimed offset `X` in
+`begin_append` and openraft gives `X` to a membership entry, the two
+collide. So the engine never lets them race. Before it calls `add_learner`
+or `change_membership`, the engine closes the write fence for the shard,
+waits until the host reports `quiesced` (no claim outstanding) and every
+`appended` has been handed to openraft, and only then makes the call. The
+fence opens again when the call returns, with the same term. The blank
+entry at the start of a term needs none of this, because the fence is still
+closed then.
+
+The cost is a write pause on that shard for each membership step: the drain
+plus one commit round for a learner, and two rounds for a joint change. A
+move is a learner step and a joint step. Publishers wait or retry as they
+do during a promotion. The "move under load" cell prices it.
+
+If openraft still assigns an index the record is not at, the group stops.
+That means the commit order and openraft disagree, which is a bug.
 
 The first implementation pull request proves adoption on the pinned openraft
 with a test, before anything builds on it. If it cannot be made to hold, the
@@ -285,9 +388,9 @@ for it and tells the sleep logic, which wakes the groups it shares with that
 peer.
 
 In this design store liveness decides only when to wake. A wrong answer is
-never unsafe: a false alarm wakes groups that then find a healthy leader
-through pre-vote, and a missed failure is caught by the audit described
-below. Using it to keep leases alive while a group sleeps is a later step
+never unsafe: a false alarm wakes groups whose followers then ask the
+leader before they campaign ("When a broker dies with sleeping leaders"),
+and a missed failure is caught by the audit described below. Using it to keep leases alive while a group sleeps is a later step
 with its own safety argument (see "Leases that survive sleep").
 
 `suspicion.rs` is the hybrid's version of this signal. It pings peers but
@@ -344,8 +447,8 @@ handed to openraft.
 - **A placement change** for the shard.
 - **Liveness.** When support for a broker is withdrawn, or its epoch
   changes, every group shared with it wakes. A leader woken this way sends a
-  heartbeat at once, so a restarted follower hears it before its election
-  timeout.
+  heartbeat at once. A follower woken this way does not campaign at once
+  (see the next section).
 - **The audit timer.** Each sleeping leader wakes on a long, jittered timer
   (about a minute), sends one heartbeat round and sleeps again through the
   handshake. A sleeping follower that has heard nothing for two audit periods
@@ -355,17 +458,38 @@ handed to openraft.
 
 ### When a broker dies with sleeping leaders
 
-Every follower of every group it led wakes together. Two things keep that
-from becoming an election storm:
+Every follower of every group it led wakes together. Pre-vote does not help
+here. Pre-vote refuses a candidate only while the voter has heard from a
+leader recently, and a sleeping follower has not heard from its leader for
+up to an audit period. So a single false liveness alarm, followed by an
+immediate campaign, would depose every sleeping leader on a healthy broker.
+Three rules prevent that and keep a real failure from becoming a storm:
 
-- **Ranked starts.** Each waking follower ranks itself among the group's live
-  voters by a hash of the group id and member id. The first calls
-  `trigger().elect(true)` (with pre-vote) at once. The others get their first
-  tick one election timeout later per rank. By then the first has usually
-  won and its append resets their timers. This only shapes timing: if the
-  ranks are wrong, the usual randomized timeouts decide.
+- **Ask before campaigning.** A follower woken by liveness sends a wake
+  message for the group to the leader's broker. These travel in one message
+  per peer. It is then given no ticks for one election timeout. A healthy
+  leader wakes on the message and heartbeats, which resets the follower's
+  election timer, and nothing changes. Only if nothing arrives do ticks
+  start, and ordinary election follows. openraft measures its timeout from
+  the last leader contact, so withholding ticks should be all this needs.
+  The sleep pull request confirms that on the pinned version with a test.
+- **Ranked starts.** When ticks do start, each follower's first tick is
+  delayed by its rank among the group's live voters (a hash of the group id
+  and member id), one election timeout per rank. The first usually wins
+  before the second starts. This only shapes timing: if the ranks are
+  wrong, the usual randomized timeouts decide.
 - **A cap per tick.** The ticker starts at most a fixed number of elections
   per interval and queues the rest.
+
+The cost is that a sleeping group fails over one election timeout later
+than an awake one.
+
+**Restarted members.** A member that starts after a broker restart is held
+the same way: it gets no ticks until it hears from a leader, or until the
+liveness suspect time plus one election timeout has passed since it
+started. Without the hold it would campaign 1 to 2 seconds after start,
+before the sleeping leaders on other brokers have noticed its new epoch and
+sent a heartbeat.
 
 ### What sleep costs a write
 
@@ -401,9 +525,13 @@ term, as the hybrid's fence does today.
 The engine calls `deposed` and the write fence closes on any of:
 
 - openraft reports a vote for a higher term, or a role other than leader.
-- `admit_local_ack` fails the lease check.
 - A leadership transfer starts.
 - The group stops on a storage error.
+
+A failed lease check is not on this list. A leader whose lease has lapsed
+is still the leader until Raft says otherwise, and a leader that has just
+woken always has a lapsed lease. The fence also closes for a moment around a
+membership step, without `deposed` ("Entries openraft writes itself").
 
 openraft reports role changes through its metrics channel, which is
 asynchronous. The term gate in the adapter covers the gap: after the vote
@@ -425,6 +553,12 @@ refusing. The lease must satisfy the inequality on the engine page
 (Decisions, 5), with the tick interval and the heartbeat batch window added
 to the left side.
 
+If the check fails, the write waits on `await_commit` like a `Quorum`
+write. Its commit renews the lease, and later writes are local again. The
+shard stays open. The check is turned on by its own pull request, after the
+model's lease configs pass. Until then it always refuses and every `Leader`
+write waits for commit, which is safe and slower.
+
 ### Reads
 
 `read_bound` is the commit index plus one, for every stream and every
@@ -439,8 +573,9 @@ stay off until they are measured and the model covers the lease (engine
 page, "openraft version").
 
 A broker that restarts answers reads again once its member has caught up
-and a leader is known. It does not need the control plane to confirm an
-assignment first, which is what kept shards unreadable in issue #1914.
+and a leader is known. It needs the restore check once per start ("Group
+and member identity"), and nothing per shard: no assignment has to be
+confirmed, which is what kept shards unreadable in issue #1914.
 
 ### Membership
 
@@ -453,9 +588,10 @@ leader makes Raft's membership match it:
 3. If the leader is not in the new set, transfer leadership first.
 
 Only the leader acts, one change at a time, and the steps can be repeated
-safely. A copy with a new storage id is handled by the same loop: the set
-names the broker, the member id differs, so the old member is swapped for a
-learner with the new id.
+safely. Each step closes the write fence and drains first ("Entries openraft
+writes itself"). A copy with a new copy id is handled by the same loop: the
+set names the broker, the member id differs, so the old member is swapped
+for a learner with the new id.
 
 The control plane no longer assigns leaders. Brokers report who leads each
 shard, and the routing table uses that as a hint. A broker that gets a write
@@ -467,7 +603,8 @@ leaders the control plane asks the current leader for a transfer.
 An RF 1 shard runs a group with one voter. It elects itself, commits on its
 own disk and sleeps like any other group, and moving it to another broker is
 an ordinary membership change. This removes the last use of the
-control-plane lease. See Questions, 1.
+control-plane lease. If its one copy rotates its id, the group has no voter
+and is re-formed ("Re-forming a group"). See Questions, 1.
 
 ## Cache and counters
 
@@ -503,11 +640,12 @@ sequenceDiagram
   F-->>L: promises and tails
   L->>F: generation-start record of G at offset N
   F-->>L: acknowledged by a majority
-  L->>CP: sealed at (G, N)
-  CP->>CP: commit engine = raft, base (G, N), members
+  L->>CP: sealed at (G, N), acknowledged by these copy ids
+  CP->>CP: compare-and-swap: engine = raft, base (G, N), voters = those copies
   CP-->>L: assignment
   CP-->>F: assignment
-  Note over L,F: each copy holding (G, N) starts its member with base (G, N)
+  Note over L,F: each named voter starts its member with base (G, N)
+  Note over L,F: every other copy starts empty as a learner
   Note over L,F: Raft elects at a term above G and opens
 ```
 
@@ -516,30 +654,57 @@ sequenceDiagram
    and appends the generation-start record at offset `N`, but does not open
    for writes. For a cache shard it first appends one counter checkpoint
    holding the counter log's sums, so the cache log alone carries the state.
-2. **Record the base.** When a majority holds the record at `N`, the leader
-   reports it. The control plane commits, in one metadata write, that the
-   shard's engine is Raft, its base is `(G, N)`, and its members are the
-   current set with their storage ids. This write is the switch. Before it,
-   the shard is a hybrid shard that happens to be closed, and can be opened
-   again. After it, no broker runs the hybrid for this shard.
-3. **Start.** A copy that holds the record `(G, N)` cuts anything above it
-   and starts its Raft member with the log purged up to `(G, N)`, the base
-   as its snapshot id, and the recorded membership. Everything up to `N`
-   stays on disk as readable records and is never compared by term, so
-   records whose writer is unknown (generation 0) are never Raft entries.
-4. **Catch up the rest.** A copy that does not hold `(G, N)`, or was halted,
-   starts empty and receives a snapshot install from the Raft leader, which
-   is the record range below the base copied the way a rebuild copies it
-   today.
-5. **Elect.** Members campaign at a term above `G`. The winner commits its
+   The record at `N` carries a digest of every record below it (see "What a
+   holder holds").
+2. **Record the base.** A follower acknowledges the record at `N` with its
+   copy id, and only if its own digest matches. When a majority of the
+   hybrid's set has acknowledged, the leader reports `(G, N)` and the copy
+   ids that acknowledged. The control plane commits, in one
+   compare-and-swap on the shard's generation and replica set version, that
+   the shard's engine is Raft, its base is `(G, N)`, and its voters are
+   exactly the reported copy ids. Every other copy in the set is a learner.
+   This write is the switch. Before it, the shard is a hybrid shard that
+   happens to be closed, and can be opened again. After it, no broker runs
+   the hybrid for this shard. If the generation or the set changed in
+   between, the write fails and the seal starts over.
+3. **Start the voters.** A copy whose copy id is in the recorded voter set
+   cuts anything above `N` and starts its Raft member with the log purged
+   up to `(G, N)`, the base as its snapshot id, and the recorded
+   membership. Everything up to `N` stays on disk as readable records and
+   is never compared by term, so records whose writer is unknown
+   (generation 0) are never Raft entries.
+4. **Start the rest as learners.** Every other copy starts empty as a
+   learner: one that lagged, one that was halted, one whose digest
+   differed, and one whose copy id changed after it acknowledged. It
+   receives a snapshot install from the Raft leader, which is the record
+   range below the base copied the way a rebuild copies it today. The
+   leader promotes it by a membership change once it has caught up.
+5. **Elect.** Voters campaign at a term above `G`. The winner commits its
    blank entry and opens.
 
 Why it is safe: the hybrid's fence guarantees that every acknowledged record
 is at or below `N` on the leader and that no lower generation can commit
-again. Every copy that starts from the base holds the same bytes up to `N`,
-because it holds the record `(G, N)` and the hybrid's log matching covers
-everything below it. The base is recorded once, in the control plane's Raft,
-so no two brokers can start from different bases.
+again. Only copies that proved they hold everything up to `N` can vote, so
+no set of voters can elect a leader that lacks an acknowledged record. The
+base and the voters are recorded once, in the control plane's Raft, so no
+two brokers can start from different bases.
+
+The case this closes: A leads, A and C acknowledge `N`, B lags, and C is
+wiped before the control plane's write. The record names A and C's old copy
+id. B and the new C are learners with nothing to vote with. A alone cannot
+elect, so the shard is unavailable, not wrong, and "Re-forming a group"
+brings it back from A's log.
+
+**What a holder holds.** Two copies that hold the same records below `N`
+do not hold the same bytes. A record written before generations were
+recorded has generation 0 in its header on one copy and may carry a real
+generation on another. So the digest covers each record's offset, key,
+payload and flags, and leaves the generation field out. A snapshot install
+and any later comparison follow the same rule. The digest is also why the
+switch does not rest on the hybrid's log matching for prefixes with
+generation 0, which has not been verified: a copy that differs below `N`
+fails its digest and is rebuilt as a learner. Computing it reads each
+shard's log once on each copy, which is part of what paces the switch.
 
 The shard is closed from the seal until the Raft leader opens: one hybrid
 promotion plus one Raft election. Shards switch a few at a time, paced like
@@ -551,15 +716,18 @@ moves. There is no switch back. See Questions, 6.
 
 The simulator builds Raft-engine clusters through the same service code. All
 four modes (`off`, `clocks`, `placement`, `power-loss`) run against them,
-with the history checkers unchanged. Cluster checkers named after
+with the history checkers unchanged. They are turned on as the code they
+need lands: `off` and `clocks` with stream shards, `placement` with
+membership, `power-loss` with copy ids and re-forming. Each of these sweeps
+passes with sleep off before sleep is turned on. Cluster checkers named after
 `FelixShard.tla` invariants are replaced by the same checks named after
 `FelixRaft.tla`: one leader per term, acknowledged records held by the
 leader, election settles.
 
 Acceptance cases carried over from open issues:
 
-- **#1331.** A broker restarted with a new storage id never votes under its
-  old member id. It rejoins as a learner. A test wipes a voter that held an
+- **#1331.** A copy that was wiped has a new copy id and never votes under
+  its old member id. It rejoins as a learner. A test wipes a voter that held an
   acknowledged record and checks the record survives every later election.
 - **#1914.** After a killed broker returns, every shard is served and
   readable. No read is refused once the faults heal.
@@ -570,6 +738,13 @@ Acceptance cases carried over from open issues:
   over, writes continue and consumer groups keep working. Passing this in
   the Raft cluster closes both.
 - **#2032.** Seed 4 is rerun under Raft.
+- **Majority power loss.** Two of three brokers on relaxed fsync lose power
+  together. Every shard is served again through a re-form, and the only
+  records lost are ones no disk holds.
+- **Restored directory.** A broker restarted on an older copy of its
+  directory never votes under its old ids.
+- **Membership under load.** A move while publishers write never stops a
+  group on an index collision.
 
 ### Simulator: the sleep nemesis
 
@@ -586,8 +761,10 @@ at sleeping groups:
 | Drop or delay sleep requests and answers | A half-asleep group wakes fully or sleeps fully |
 | Partition a sleeping leader, then write to it | The write is refused or times out; a new leader takes it |
 | A write arriving during the handshake | It is committed; no member sleeps behind |
-| Restart a sleeping follower | It hears the leader before it campaigns, or loses a pre-vote |
-| A false liveness alarm for a healthy broker | Pre-vote leaves the leader in place |
+| Restart a sleeping follower | It hears the leader before it campaigns |
+| A false liveness alarm for a healthy broker | No leader on it is deposed: followers ask first |
+| A broker restart with sleeping leaders elsewhere | The restarted members hold until they hear a leader |
+| The first `Leader` write after sleep | It is acknowledged after one round; the shard stays open |
 | Liveness that misses a dead broker | The audit elects a leader within two periods |
 | A placement change on a sleeping shard | The group wakes and applies it |
 | Clock steps and skew (with `clocks`) | The lease margin holds |
@@ -627,9 +804,20 @@ pair of overlapping configurations. Twin configs that must fail: a change
 that skips the joint step with two members changed, a second change before
 the first commits, and a learner counted toward a quorum.
 
-**Member identity.** A wipe gives a broker a new member id. A twin where a
-wiped broker keeps its id and votes must violate `LeaderCompleteness`. This
-is the model's side of #1331.
+**Member identity.** A wipe gives a copy a new member id. A twin where a
+wiped copy keeps its id and votes must violate `LeaderCompleteness`. A
+second twin restores a copy to an older log and vote under its old id and
+lets it vote, and must fail the same way. This is the model's side of
+#1331.
+
+**Re-forming.** Add the group epoch and the re-form step: a new base and
+voter set chosen from reports of every old voter. Check that a record held
+by any reporting copy and committed in the old epoch is in the base. Twins
+that must fail: re-forming before every old voter has reported, and old
+and new epochs exchanging messages.
+
+**Membership and adoption.** A twin where a publish claims an offset while
+a membership entry is proposed must reach the stop.
 
 **Leader leases.** Add a clock per broker with bounded drift, the leader's
 lease from the send time of its last majority-acknowledged message, and the
@@ -651,6 +839,9 @@ state, including behind, to show safety does not rest on the handshake.
 **The switch.** Start a group from a base `(G, N)` with records below it
 that differ in term between members (the generation 0 case). The twin that
 compares terms below the base must fail, as the engine page already asks.
+Voters are the copies that acknowledged `N`. A twin that makes the whole
+set voters, with one member lagging and one wiped, must lose an
+acknowledged record.
 
 **Later, with store-liveness leases:** support with epochs and expiry, a
 lease that holds while a majority supports the leader's store, and a vote
@@ -685,6 +876,8 @@ Cells, each at 1 KiB and 64 KiB where payload size applies:
 | `Quorum` read p99 | Read-index rounds |
 | Failover time, control plane up and down | Timer values and ranked starts |
 | First write after sleep | The one extra round, p50 and p99 |
+| Move under load | The write pause around each membership step |
+| Store liveness on, on the hybrid | The disk probe's fsync per second per volume |
 | Broker loss with sleeping leaders, design point | Time until every shard is served |
 
 Rules for the runs: a clean machine and clean artifacts, nothing compiled
@@ -703,7 +896,8 @@ members per broker, about a third of them leaders.
 | Measure | At 2,000 members (design point) | At 5,000 members (gate) |
 | --- | --- | --- |
 | Idle CPU per broker, 60 s after settling | under 2% of one core | under 5% of one core |
-| Resident memory added by Raft, against the hybrid on the same shards | reported | under 1 GB |
+| Resident memory added by Raft, against the hybrid on the same shards, idle | reported | reported |
+| The same, one broker killed, under load | reported | under 1 GB |
 | Groups asleep after the idle time | all | all |
 | Ticks to sleeping groups | 0 | 0 |
 | First write after sleep | within the A/B cell | reported |
@@ -713,15 +907,22 @@ members per broker, about a third of them leaders.
 10,000 members is a stress run. Its numbers go upstream and nothing passes
 or fails on it.
 
-Memory is the tight one. From the 0.10.0 measurement (180 KB per leader
-member, 145 KB per follower), 5,000 members at one third leaders is about
-780 MB. Sleep does not reduce it, because a parked task keeps its memory.
-The headroom comes from the upstream ask for fewer tasks per member
-(openraft#2304, item 3). If the gate run is over 1 GB, that ask is the fix,
-and `max_shards` holds brokers under it meanwhile.
+Memory is the tight one, and the estimate below is a floor. From the
+0.10.0 measurement (180 KB per leader member, 145 KB per follower, idle,
+with empty logs), 5,000 members at one third leaders is about 780 MB. When
+one broker dies the survivors lead half of the groups each, which is about
+810 MB, before any payload held in flight for replication. Sleep does not
+reduce any of it, because a parked task keeps its memory.
 
-`max_shards` defaults to the gate size once Raft is the engine, and
-placement answers `at_capacity` past it.
+So the memory row is measured twice: idle with three brokers, and with one
+broker killed while publishers write. The 1 GB limit applies to the second.
+If that run is over, the fix is the upstream ask for fewer tasks per member
+(openraft#2304, item 3).
+
+`max_shards` defaults to the largest member count at which the
+one-broker-killed run stays under the limit, which may be below 5,000. It
+is not set to the gate size because the gate names it. Placement answers
+`at_capacity` past it.
 
 ## Pull request split
 
@@ -731,16 +932,21 @@ and the hybrid is what ships.
 
 | # | Pull request | Depends on | Why it is safe alone |
 | --- | --- | --- | --- |
-| 1 (#2227) | Engine trait takes its final shape (`appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`), implemented by the hybrid | | No behaviour change. Existing tests and seeds pass unchanged |
-| 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Runs and reports metrics, drives nothing | | Nothing reads it yet |
-| 3 (#2231) | Group runtime: type config, member id with storage id, group registry, peer messages for Raft behind a negotiated capability, node ticker on openraft 0.10.1 | track 2 adapter | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, the leader lease, `opened` and `deposed`. Simulator and history runs on fresh Raft clusters | 1, 3 | Behind the feature, fresh clusters only. Starts with the adoption test |
-| 5 (#2235) | Membership: learner, joint change, transfer, wiped-copy replacement, leader reports and routing hints, single-voter RF 1 groups | 4 | Behind the feature. Needs the model's joint consensus and identity configs first |
+| 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
+| 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Reports metrics, drives nothing | | Behind the feature, so a shipping broker gains no fsync. An A/B cell prices the probe before it is on anywhere |
+| 3 (#2231) | Group runtime: type config, member id, group registry, peer messages for Raft behind a negotiated capability, node ticker | track 2 adapter; openraft 0.10.1, which is not released (the lock has 0.9.25, see #2215) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
+| 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, `opened` and `deposed`. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3 | Behind the feature, fresh clusters only. Starts with the adoption test. No lease, no membership change, no power loss yet |
+| 5 (#2235) | Membership: learner, joint change, transfer, the fence drain around each step, leader reports and routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
+| 12 (#2250) | Copy ids per shard directory, the restore check before voting, votes always fsynced, re-forming a group. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
+| 11 (#2249) | The leader lease: `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
 | 6 (#2238) | Cache and counters in one group: state machine, proposed compaction, snapshot | 4 | Behind the feature |
-| 7 (#2239) | Sleep and wake, the audit, ranked starts, and the `sleep` simulator mode with its checkers | 2, 4 | Behind the feature. Sleep can be turned off, and safety does not depend on it. Needs the model's sleep configs first |
+| 7 (#2239) | Sleep and wake, ask before campaigning, the hold on restarted members, the audit, ranked starts, and the `sleep` simulator mode with its checkers | 2, 4, and a sleep-off sweep of 4, 5, 6 and 12 | Behind the feature. Sleep can be turned off, and safety does not depend on it. Needs the model's sleep configs first |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |
-| 9 (#2242) | The switch from the hybrid: seal, base, `shard_raft` fleet feature | 4, 5, 6 | Gated by a fleet feature nobody finalizes before the gate passes. Needs the model's switch config first |
-| 10 (#2243) | Gate runs: A/B cells, groups-per-broker run, write-up in `docs/` | 4 to 8 | Workflows and docs only |
+| 9 (#2242) | The switch from the hybrid: seal with digest, base and voters by compare-and-swap, `shard_raft` fleet feature | 4, 5, 6, 12 | Gated by a fleet feature nobody finalizes before the gate passes. Needs the model's switch config first |
+| 10 (#2243) | Gate runs: A/B cells, groups-per-broker run, write-up in `docs/` | 4 to 8, 11, 12 | Workflows and docs only |
+
+Rows are in merge order. 11 and 12 were split out after review, which is
+why their numbers are out of sequence.
 
 TLA+ additions (issue #2244, part of #2198) land in the model's own pull
 requests, ahead of the pull requests that name them.
@@ -750,18 +956,21 @@ requests, ahead of the pull requests that name them.
 Each has a recommendation, judged on safety and performance only.
 
 1. **Do RF 1 shards run a single-voter Raft group, or stay outside Raft on
-   the control-plane lease?** Recommended: a single-voter group. It removes
-   the control-plane lease and its bug class entirely, and a move is a
-   membership change instead of a second mechanism. The cost is about 180 KB
-   per shard and whatever adoption adds per batch, which the single-node
-   cell must show is within the gate.
+   the control-plane lease?** Recommended: a single-voter group, and only
+   together with the re-form path, because a single voter that rotates its
+   id leaves a group nobody can elect in. It removes the control-plane
+   lease and its bug class, and a move is a membership change instead of a
+   second mechanism. The cost is about 180 KB per shard and whatever
+   adoption adds per batch, which the single-node cell must show is within
+   the gate.
 
 2. **Is `allow_log_reversion` on for shard groups?** The engine page says
-   the adapter sets it for every group. Recommended: off for shard groups,
-   with the storage id in the member id. A voter that returns with a shorter
-   log under its old id can help elect a leader that lacks an acknowledged
-   record. A new id per storage id makes the copy a learner and closes that.
-   The control plane's group is track 3's call.
+   the adapter sets it for every group. Recommended: off for shard groups.
+   Off is not enough on its own: it stops a leader that sees a follower go
+   backwards, and does not stop that follower from voting. The safety comes
+   from copy ids per shard directory, rotation, and the restore check
+   before a restarted broker votes. The control plane's group is track 3's
+   call.
 
 3. **What is the heartbeat-coalescing interim?** Recommended: none in the
    tree. Sleep removes idle heartbeats, which is the gate. Measure the awake
@@ -771,11 +980,16 @@ Each has a recommendation, judged on safety and performance only.
    so this is about keeping one copy of the code.
 
 4. **Which timer values?** Recommended to start: tick 50 ms, heartbeat
-   200 ms, election timeout 1 to 2 s, liveness heartbeat 1 s with support
-   withdrawn after 3 s. That is a quarter of the default heartbeat traffic
-   and tick cost, and still fails over faster than the hybrid's 5 s
-   suspicion. The failover cells decide the final values. A shorter election
-   timeout shortens the lease, so the two are tuned together.
+   200 ms, election timeout 1 to 2 s, liveness heartbeat 500 ms with support
+   withdrawn after 1.5 s. A restarted member is held until it hears a
+   leader, or for the suspect time plus one election timeout. The liveness
+   interval is half of the first draft's so that a leader notices a
+   restarted follower's epoch well inside that hold. This is a quarter of
+   the default heartbeat traffic and tick cost. A sleeping group's
+   first-ranked follower campaigns after the suspect time plus one election
+   timeout (2.5 to 3.5 s), which is ahead of the hybrid's 5 s suspicion; the
+   failover cells decide the final values. A shorter election timeout
+   shortens the lease, so the two are tuned together.
 
 5. **Does 0.8 ship leases that survive sleep (store-liveness leases)?**
    Recommended: no. Ship sleep with a lapsed lease first. It adds no safety
@@ -786,8 +1000,9 @@ Each has a recommendation, judged on safety and performance only.
    shape.
 
 6. **Is the switch from the hybrid live and per shard, or done with the
-   cluster stopped?** Recommended: live, per shard, as designed above. Both
-   are equally safe if the base is recorded once. The live switch is the one
+   cluster stopped?** Recommended: live, per shard, with the voter rule
+   above (only copies that acknowledged the base vote). Without that rule
+   neither form is safe. With it both are, and the live switch is the one
    the simulator and the model can exercise under faults, and it keeps the
    closed window to one shard at a time. A stopped-cluster switch is
    simpler to build but is tested less, and closes every shard at once.
@@ -798,13 +1013,24 @@ Each has a recommendation, judged on safety and performance only.
    its commit index or has a lease, and every one of those writes would wait
    for the blank entry anyway.
 
-8. **Is sleep on by default when Raft first lands?** Recommended: yes, from
-   the first gate run. The 5,000-member gate cannot pass without it, and a
-   mode that is off by default is not the one the sweeps test. The audit
-   timer bounds the damage of a sleep bug to availability for about two
-   minutes.
+8. **Is sleep on by default when Raft first lands?** Recommended: on by
+   default from the pull request that adds it, and every gate run has it
+   on. The pull requests before it (stream shards, membership, identity,
+   cache) first pass their sweeps with sleep off, so a failure there is not
+   confused with a sleep bug. The 5,000-member gate cannot pass without
+   sleep, and a mode that is off by default is not the one the sweeps test.
+   The audit timer bounds the damage of a sleep bug to availability for
+   about two minutes.
 
 9. **Do Raft lease reads replace read-index rounds for `Quorum` reads in
    0.8?** Recommended: not at first. Read index is safe without any clock
    assumption. Turn lease reads on only if the `Quorum` read p99 cell misses
    the gate, and only after the model's lease configs pass.
+
+10. **Is re-forming a group automatic?** Recommended: automatic only when
+    every voter of the last known membership has reported what its disk
+    holds, because then no information is missing and the choice is the
+    best any operator could make. If a voter's broker is unreachable, wait,
+    and let an operator force it with a command that states which copies
+    are missing. Never re-form on a timer alone: that would turn a long
+    partition into data loss.
