@@ -85,6 +85,9 @@ pub struct SimBrokerConfig {
     /// that cannot sync the data directory's filesystem after a crash (all but
     /// Linux), which makes peers copy the whole log again.
     pub fsync_mode: felix_storage::log::FsyncMode,
+    /// A segment size to use instead of the default, so a short run rolls
+    /// its logs onto new segments.
+    pub segment_size_bytes: Option<u64>,
 }
 
 impl SimBrokerConfig {
@@ -99,6 +102,7 @@ impl SimBrokerConfig {
                 BrokerConfig::default().controlplane_sync_interval_ms,
             ),
             fsync_mode: felix_storage::log::FsyncMode::None,
+            segment_size_bytes: None,
             node_id,
             data_dir: data_dir.into(),
         }
@@ -138,6 +142,9 @@ impl SimBrokerConfig {
             root: self.data_dir.clone(),
             log: felix_storage::log::LogConfig {
                 fsync_mode: self.fsync_mode,
+                segment_size_bytes: self
+                    .segment_size_bytes
+                    .unwrap_or(felix_storage::log::LogConfig::default().segment_size_bytes),
                 ..Default::default()
             },
             offload_dir: None,

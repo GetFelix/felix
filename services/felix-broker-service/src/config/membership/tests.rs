@@ -1,4 +1,4 @@
-use super::{election_features, features_for, is_host_port};
+use super::{cluster_features, election_features, features_for, is_host_port};
 
 #[test]
 fn a_client_advertise_address_is_a_host_and_a_port() {
@@ -82,4 +82,29 @@ fn a_broker_reports_fencing_every_change_only_with_the_fence() {
     assert!(features_for(true, false).contains(every_change));
     assert!(features_for(true, true).contains(every_change));
     assert!(!features_for(false, false).contains(every_change));
+}
+
+/// A broker reports `record_generations` and offers `WRITER_GENERATIONS`
+/// together, whatever its fence and election settings. Peers negotiate the
+/// capability before any log goes v9, so the report must never run ahead of
+/// the offer.
+#[test]
+fn a_broker_reports_record_generations_and_offers_writer_generations() {
+    use felix_wire::internal::PeerCapabilities;
+    for fences in [false, true] {
+        for reads_by_lease in [false, true] {
+            for election in [false, true] {
+                let reports = cluster_features(fences, reads_by_lease, election)
+                    .contains(felix_common::fleet::RECORD_GENERATIONS.name());
+                let offers = felix_replication::peer::PeerTransportConfig {
+                    fence: fences,
+                    election,
+                    ..Default::default()
+                }
+                .capabilities()
+                .contains(PeerCapabilities::WRITER_GENERATIONS);
+                assert!(reports && offers, "{fences} {reads_by_lease} {election}");
+            }
+        }
+    }
 }

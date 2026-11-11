@@ -35,6 +35,7 @@ use std::time::Duration;
 use felix_cluster::history::checker::{self, Report};
 use felix_cluster::history::model::History;
 use felix_cluster::history::rng::Rng;
+use felix_common::fleet;
 use parking_lot::Mutex;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -284,6 +285,23 @@ async fn drive(
             }
         }
     });
+    if let Some(at) = config
+        .finalize_record_generations
+        .filter(|at| !at.is_zero())
+    {
+        let (cluster, recorder) = (cluster.clone(), recorder.clone());
+        tokio::spawn(async move {
+            tokio::time::sleep(at).await;
+            match cluster
+                .cp()
+                .finalize_feature(fleet::RECORD_GENERATIONS.name())
+                .await
+            {
+                Ok(_) => recorder.fault("finalize record_generations".to_string()),
+                Err(err) => recorder.fault(format!("finalize record_generations failed: {err:#}")),
+            }
+        });
+    }
     let mut rng = Rng::new(seed);
 
     let mut clients = Vec::new();

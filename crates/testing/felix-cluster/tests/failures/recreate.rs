@@ -122,15 +122,16 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
     .await
     .expect("start cluster");
     let store = &cluster.control_plane.as_ref().expect("control plane").store;
-    // A new cluster starts with every feature but the opt-in
-    // `publisher_principal`; `majority_ack` keeps the control plane's replica
-    // report off a `Quorum` write's path.
+    // A new cluster starts with every feature but the opt-ins
+    // `publisher_principal` and `record_generations`; `majority_ack` keeps the
+    // control plane's replica report off a `Quorum` write's path.
     let enabled = store.enabled_fleet_features().await.expect("features");
     for feature in felix_common::fleet::IMPLEMENTED {
         let name = feature.name();
         assert_eq!(
             enabled.contains(name),
-            *feature != felix_common::fleet::PUBLISHER_PRINCIPAL,
+            *feature != felix_common::fleet::PUBLISHER_PRINCIPAL
+                && *feature != felix_common::fleet::RECORD_GENERATIONS,
             "{name}: {enabled:?}"
         );
     }

@@ -61,6 +61,7 @@ use felix_broker_service::cluster::lease::LeaseState;
 use felix_broker_service::shards::routing::IngressRouter;
 use felix_broker_service::sim::{ShardKey, ShardKind, ShardSnapshot, ShardStand};
 use felix_cluster::history::rng::Rng;
+use felix_common::fleet;
 use felix_replication::peer::PeerTransportConfig;
 use felix_replication::quorum::QuorumMarks;
 use felix_storage::log::FsyncMode;
@@ -137,6 +138,11 @@ pub struct SimConfig {
     /// Whether startup finalizes the fence and election features. A test
     /// that finalizes them itself, at a moment it picks, turns this off.
     pub finalize_election: bool,
+    /// When `record_generations` is finalized, counted from the start of the
+    /// run's clients and faults (zero finalizes it with the election features
+    /// at startup). `Some` also gives the brokers small segments, so their
+    /// logs roll onto format v9 after it.
+    pub finalize_record_generations: Option<Duration>,
 }
 
 impl SimConfig {
@@ -162,6 +168,7 @@ impl SimConfig {
             clocks: ClockSkew::Off,
             clock_plan: None,
             finalize_election: true,
+            finalize_record_generations: None,
         }
     }
 
@@ -299,6 +306,13 @@ impl SimCluster {
                 .finalize_election()
                 .await
                 .context("finalize the election features")?;
+        }
+        if cluster.config.finalize_record_generations == Some(Duration::ZERO) {
+            cluster
+                .cp
+                .finalize_feature(fleet::RECORD_GENERATIONS.name())
+                .await
+                .context("finalize record_generations")?;
         }
         cluster
             .wait_every_shard_served(Duration::from_secs(180))

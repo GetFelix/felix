@@ -79,6 +79,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     CACHE_INCARNATIONS,
     HEAD_TRIM,
     RECORD_HEADERS,
+    RECORD_GENERATIONS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -173,10 +174,12 @@ pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 /// lone broker has no fleet and stays on the older formats. See
 /// `docs/storage-format.md` ("Generations").
 ///
-/// Kept out of [`IMPLEMENTED`] until replication carries the generation that
-/// wrote each record to followers: a follower would stamp its own, and
-/// replicas would disagree on a record's term. A feature no broker reports
-/// cannot be finalized by a control plane of any release.
+/// Reported only by a build whose peers offer `WRITER_GENERATIONS`, which
+/// every build that reports it does, so once it is finalized every replica of
+/// every log negotiates the generation that wrote each record: admission
+/// refuses a broker that does not report an enabled feature. Needs
+/// [`GENERATION_START`]: a leader stamps its appends only once it has
+/// recorded where its generation starts, which is required only under it.
 pub const RECORD_GENERATIONS: FleetFeature = FleetFeature::new("record_generations");
 
 /// Every change of a shard's replica set, and the next generation a leader
@@ -294,7 +297,7 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         FOR_ELECTION
     } else if feature == JOINT_FENCE.name() {
         FOR_JOINT_FENCE
-    } else if feature == MAJORITY_ACK.name() {
+    } else if feature == MAJORITY_ACK.name() || feature == RECORD_GENERATIONS.name() {
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS
