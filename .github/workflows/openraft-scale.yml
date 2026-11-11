@@ -1,6 +1,7 @@
 name: openraft-scale
 on:
-  workflow_dispatch:
+  push:
+    branches: [scratch/openraft-scale]
 jobs:
   scale:
     runs-on: ubuntu-latest
