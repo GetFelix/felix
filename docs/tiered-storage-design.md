@@ -95,7 +95,10 @@ copy, and one that does not fit is a no-op everywhere:
 
 All three also need the object's key to carry the group epoch and term of
 the log entry that names it (see "Keys"). A record that fails that is a
-no-op too.
+no-op too. An entry's term is in its record header. Its epoch is the one it
+was written in: a copy keeps the base of each re-form with its snapshot, so
+an entry at or below a base belongs to the epoch before it, also when it is
+applied again after the re-form.
 
 The range a record names can start inside its object. After a leader change
 the new leader's segments do not line up with the old ones, so its first
@@ -175,6 +178,12 @@ sound:
   leaves a copy's disk, the pointer that covers it is in that copy's
   durable snapshot and in its durable log.
 
+The pointer in a snapshot is safe to rely on only because tier records are
+synced. A sync through a tier record's offset covers everything before it
+in the log, the earlier sealed segments included. So a copy that holds the
+pointer durably also holds every record the pointer stands for, until it
+unlinks them itself.
+
 Every crash point, and what is left:
 
 | Crash or failure | State left | What happens next |
@@ -211,7 +220,10 @@ runs on a blocking thread, which a network round trip must not hold, so the
 plan is split into a blocking local part and an async cold part.
 
 A range that spans the tier and the local log is served in offset order
-from both. Where they overlap the local copy wins, because it is cheaper.
+from both. Where they overlap, the local copy is used only for a range
+whose digest this copy has checked against the tier record. For any range
+it failed to match or never checked, the tier is read. So from `tier_start`
+up every leader returns the same bytes.
 
 `offset_for_time` uses the timestamps in the tier state to pick one object
 without touching the store, then searches inside it.
@@ -323,25 +335,31 @@ cannot get elsewhere. Three things are fixed by this design:
   behind the copy's own durable snapshot, and with tiering on only inside
   `[tier_start, tier_end]`. Without tiering the bound is retention's, as
   the Raft page says.
-- *The record part skips what the tier holds.* A sender includes its local
-  records from `tier_end + 1` to `A`. Records at or below `tier_end` are
-  not sent, because the receiver reads them from the tier.
+- *The record part is every record that no object holds.* A sender
+  includes its local records up to `A` that lie outside
+  `[tier_start, tier_end]`: the older ones from its local start up to
+  `tier_start`, and the newer ones from `tier_end + 1` to `A`. With no
+  objects that is its whole local log. Records inside the tier's range are
+  not sent, because the receiver reads them from the tier. Leaving out the
+  older part would drop history that only local disks hold each time a
+  copy is rebuilt.
 
 Raft's log compaction and tiering are therefore the same deletion seen from
 two sides. Purge may remove a record from a copy because an object holds
 it, and the snapshot is what tells the next copy where to find it.
 
 **A follower that fell behind the purge point** gets a snapshot instead of
-entries. It installs the tier state, drops its own local records up to `A`,
-takes the records from `tier_end + 1` to `A` from the sender, and then
-entries from `A + 1`. It never downloads cold data. Older records it held
-below `tier_start` go with the rest, as they do in a rebuild today.
+entries. It receives the tier state and the record part and makes both
+durable. Only then does it drop its own old records up to `A`, so a crash
+part way leaves it with what it had. Then it takes entries from `A + 1`.
+It never downloads cold data. Its readable base afterwards is the
+sender's.
 
 **A wiped copy** joins as a learner with a new member id, as the Raft page
-says, and catches up the same way. The rebuild copies the leader's local
-data above `tier_end` only, which local retention bounds, and not the
-stream's whole history. This is what makes a rebuild cheap (#172, first
-comment). A copy does not need any tiered record on its own disk to become
+says, and catches up the same way. The rebuild copies only the
+leader's local records that no object holds, which local retention bounds
+once the history is in the tier, and not the stream's whole history. This
+is what makes a rebuild cheap (#172, first comment). A copy does not need any tiered record on its own disk to become
 leader: it serves old reads through the tier state.
 
 **Re-forming a group.** A re-form (Raft page, "Re-forming a group") picks a
@@ -444,9 +462,16 @@ cut, an object whose delete after a tier drop did not finish. The leader
 lists its shard's prefix on a slow timer (start: once a day) and deletes
 orphans, under these rules:
 
-1. It runs only after the leader's term has opened and it has applied up
-   to its blank entry. From then on its tier state holds every tier record
-   of an earlier term that will ever be committed.
+1. It runs only after the leader has committed a cleanup marker of its own
+   term and applied up to it. The marker is an empty record that readers
+   skip, synced in every fsync mode like a tier record, and proposed once
+   per term before the first delete. From then on the leader's tier state
+   holds every tier record of an earlier term that will ever be committed.
+   The marker has to be synced, and the blank entry of the term is not
+   enough. Under relaxed fsync a majority power loss could drop the whole
+   term, and a re-form could then pick a base from an older leader's log
+   that holds a tier record this leader never saw. With the marker on a
+   majority of disks, any base a re-form picks is at or above it.
 2. It deletes only objects whose key carries an epoch and term below its
    own. Such an object can only be named by an entry of that earlier term,
    and rule 1 says every such entry that counts is already applied. So if
@@ -458,9 +483,11 @@ orphans, under these rules:
    removed by a later leader under rule 2.
 5. Between the listing and the deletes it confirms that it still leads
    with a read-index round. A broker that cannot confirm deletes nothing.
+   This only saves a deposed leader the work. It proves leadership, not
+   durability, which is rule 1's job.
 
-Safety rests on rules 1 to 3, which depend only on keys and on the leader's
-own log. A grace period (start: 24 hours, objects younger than it are
+Safety rests on rules 1 to 3, which depend only on keys and on what is
+durable in the log. A grace period (start: 24 hours, objects younger than it are
 skipped) is kept on top. It is not what makes cleanup safe. It gives an
 operator time to look at an object before it goes.
 
@@ -548,6 +575,8 @@ steps, so it matters for liveness and not safety.
   tier state names exists.
 - `TierStateAgreement`: any two members at the same applied index have the
   same tier state, whether they applied entries or installed a snapshot.
+- `InstallKeepsHistory`: after a snapshot install the receiver's readable
+  base is the sender's.
 - `TierBaseAgrees`: the highest of the trim floor, `retained_from` and
   `tier_start` is a function of the applied index alone, and no member's
   readable base is above it.
@@ -571,6 +600,15 @@ steps, so it matters for liveness and not safety.
   the current leader's fresh upload before its record commits.
 - Cleanup before the leader's term has opened, deleting the object of a
   record that then commits.
+- Cleanup on a read-index round alone, with no synced marker: an older
+  leader holds an unseen tier add, the cleaning leader deletes its object,
+  a majority loses its unsynced term, and the re-form base commits the
+  add.
+- A snapshot record part that leaves out local records below
+  `tier_start`: a rebuilt member then leads and cannot read an offset the
+  sender served, though no trim, drop or retention removed it.
+- A leader that serves local records inside the tier's range without a
+  matching digest, so two leaders return different bytes for one offset.
 - Tier records left unsynced, or a snapshot ahead of the durable log: a
   copy unlinks, a majority loses power, the re-form base is below the tier
   record, and the object is cleaned up.
@@ -593,8 +631,8 @@ the adapter's purge and snapshot.
 | 3 | #2284 | The tier records and tier state: the add, prepend and drop kinds with their fit rules and the epoch and term check, synced in every fsync mode, the `tiered_storage` fleet feature, the tier state in the stream snapshot (exact at its last log id, never ahead of the durable log), the readable base, and the tier state at a re-form base | 1 | No uploader exists, so no tier record is ever proposed outside tests |
 | 4 | #2285 | The leader's uploader: upload, verify, propose, the range digest checked at apply, local delete under its four conditions, the idle roll on every copy, metrics. The offload pass in `disk_log/offload.rs` and `FELIX_DURABLE_OFFLOAD_DIR` are removed, since stream logs were its only users and they are all Raft shards by then. Recovery keeps reading an existing `offload.manifest` for the head gap of an upgraded directory | 2, 3 | Reads below the local base still answer `too_old`, so a stream that turns tiering on in this state keeps local retention off |
 | 5 | #2286 | Cold reads: the async cold span, range requests, the index object, the cold cache, admission, the `tier_unavailable` and `tier_corrupt` answers, the answer to a client without error codes, `too_old` for a read that lost a race with a drop, `offset_for_time` through the tier state | 4 | Read path only. Local retention may now be set |
-| 6 | #2287 | Total retention, trims and cleanup: proposing tier drops, object deletion, stream delete by prefix, orphan cleanup under its five rules | 4 | Deletes only what a committed drop released, or what the key rules prove can never be named |
-| 7 | #2288 | Rebuild from the tier: snapshot install on a behind follower and a wiped copy, the record part that skips what the tier holds, a re-form with tiered data, with simulator and cluster tests | 3, 4 | Uses the snapshot path of the Raft track. No new deletion |
+| 6 | #2287 | Total retention, trims and cleanup: proposing tier drops, object deletion, stream delete by prefix, the synced cleanup marker, orphan cleanup under its five rules | 4 | Deletes only what a committed drop released, or what the key rules prove can never be named |
+| 7 | #2288 | Rebuild from the tier: snapshot install on a behind follower and a wiped copy, a record part of every local record no object holds, a re-form with tiered data, with simulator and cluster tests | 3, 4 | Uses the snapshot path of the Raft track. No new deletion |
 | 8 | #2289 | Upgrade and shipping: the 0.7 offload directory, tier prepend for records below the first object, the ops page, the status rows, and the gate cells (cold read latency, upload lag under load, rebuild time with and without tiering) | 5, 6, 7 | Prepend adds coverage and deletes nothing that an object does not hold |
 
 The status rows in `what-felix-is-for.md` and the offload section of
@@ -725,10 +763,14 @@ Each has a recommendation.
    total retention. With prepend, a leader that holds records below
    `tier_start` uploads them newest first, each range ending where the
    tier starts. Its digest is the switch's digest, which leaves the
-   generation out. A follower compares the part of the range it holds. On
-   a match it may delete those records. On a mismatch it keeps them and
-   reports it, and does not stop, because nothing was ever proven about
-   those records. A follower's records below the oldest object stay where
+   generation out, and it is carried per chunk of offsets (start: every
+   4,096 offsets), because a follower may hold only part of the range. A
+   follower compares each chunk it holds in full. Where a chunk matches it
+   may delete those records and may serve them from local disk. Where a
+   chunk does not match, or it holds only part of one, it keeps the
+   records and reports it, does not stop, because nothing was ever proven
+   about those records, and reads that range from the tier. So from the
+   new `tier_start` up, every leader returns what the object holds. A follower's records below the oldest object stay where
    they are until a prepend covers them or total retention removes them.
    An add can never do this job: a range at or below `tier_end` does not
    fit, which is why prepend is a kind of its own and is defined with the
