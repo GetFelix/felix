@@ -1106,7 +1106,7 @@ and writes one report:
 |---|---|---|
 | `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
 | `gate-perf.yml` | 2, 3 | Single node and RF 3, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
-| `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit |
+| `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
 Each part also runs alone with its own "Run workflow" button. Small sizes make
