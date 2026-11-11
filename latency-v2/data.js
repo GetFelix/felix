@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794426021491,
+  "lastUpdate": 1794435102730,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66132,6 +66132,72 @@ window.BENCHMARK_DATA = {
             "range": "607.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 481.00\nmean: 730.60\nstdev: 607.38\ncv: 83.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "90f6b22b93b94c5af061a2547454b22051ba5cd3",
+          "message": "ci(gate): workflows for the Raft no-regression gate (#2247)\n\n* ci(gate): workflows for the Raft no-regression gate (#2167 track 5)\n\nHistory and simulator sweeps (2000-seed mode), perf A/B against the last\nv0.7.x release, failover and control-plane-down, a groups-per-broker stub,\nand one gate report. Each takes an engine input; raft is a clear skip until\nthe engine exists. felix-cluster up gains --stream, --shards and\n--replication-factor so the perf cells can measure a replicated stream.\n\nSpec-Unaffected: CI workflows, a test harness flag and docs; no protocol or model change.\n\n* ci(gate): temporary dry-run caller\n\nSpec-Unaffected: temporary CI workflow\n\n* ci(gate): judge failover cells on the outage alone; run the control-plane-down tests even when the failover verdict fails\n\nSpec-Unaffected: CI workflow and script only\n\n* ci(gate): failover tolerance 5% by default, control-plane-down tests one at a time, cache on failure\n\nSpec-Unaffected: CI workflow and docs only\n\n* ci(gate): skip the one control-plane-down test that fails in release builds (#2272)\n\nSpec-Unaffected: CI workflow and docs only\n\n* ci(gate): remove the temporary dry-run caller\n\nSpec-Unaffected: CI workflow removal\n\n* ci(gate): a missing cell or round fails the gate; control-plane-down needs a passing test\n\ngate_perf.py takes the expected cells and a minimum round count, judges only\nrounds both sides completed, and fails any cell short of either. The failover\njob passes the same. The control-plane-down check requires at least one test\npassed. The report no longer claims a cross-engine stall comparison (#2298).\nThe RF 1 cell is named rf1, the baseline ref must start alphanumeric.\n\nSpec-Unaffected: CI scripts and docs only, no protocol or model change.",
+          "timestamp": "2026-11-11T22:04:17Z",
+          "tree_id": "2c91a2188fcbdc33b9e05171cc54662ec6ce2944",
+          "url": "https://github.com/GetFelix/felix/commit/90f6b22b93b94c5af061a2547454b22051ba5cd3"
+        },
+        "date": 1794435093271,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.40\nstdev: 0.55\ncv: 0.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "5.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 213.80\nstdev: 5.81\ncv: 2.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 270,
+            "range": "179.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 390.20\nstdev: 179.96\ncv: 46.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.20\nstdev: 1.48\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 401,
+            "range": "4.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 401.00\nmean: 400.60\nstdev: 4.39\ncv: 1.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 574,
+            "range": "19.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 574.00\nmean: 577.20\nstdev: 19.46\ncv: 3.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
