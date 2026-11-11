@@ -62,7 +62,8 @@ fn print_help() {
         "\
 felix-cluster — a local multi-node Felix cluster
 
-  up [--nodes N]                  start a cluster and hold it until Ctrl-C
+  up [--nodes N] [--stream NAME] [--shards N] [--replication-factor N]
+                                  start a cluster and hold it until Ctrl-C
   status [--nodes N]              start, print membership and ownership, exit
   smoke [--nodes N]               publish through a non-owner, receive from the owner
   demo [--pace SECONDS]           the whole cross-broker story, start to finish

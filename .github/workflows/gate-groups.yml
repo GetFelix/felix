@@ -1,0 +1,79 @@
+name: Gate - groups per broker
+
+# Criterion 6 of the no-regression gate (docs/replication-engine.md, "The
+# no-regression gate", and "How many groups a broker carries"): 5,000 idle
+# members on one broker, idle CPU near zero, Raft resident memory under 1 GB.
+#
+# A stub until the per-shard Raft engine exists. The numbers below are the
+# gate's; the measuring job is added with the engine, behind the `measure`
+# placeholder, so this workflow's inputs and artifact do not change shape.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Replication engine under test"
+        type: choice
+        options: [hybrid, raft]
+        default: raft
+      members:
+        description: "Idle Raft members on one broker"
+        type: string
+        default: "5000"
+      max_idle_cpu_percent:
+        description: "Idle CPU of the broker, percent of one core"
+        type: string
+        default: "5"
+      max_raft_rss_mb:
+        description: "Resident memory the Raft state may use"
+        type: string
+        default: "1024"
+  workflow_call:
+    inputs:
+      engine: { type: string, default: raft }
+      members: { type: string, default: "5000" }
+      max_idle_cpu_percent: { type: string, default: "5" }
+      max_raft_rss_mb: { type: string, default: "1024" }
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Write the result
+        env:
+          ENGINE: ${{ inputs.engine }}
+          MEMBERS: ${{ inputs.members }}
+          CPU: ${{ inputs.max_idle_cpu_percent }}
+          RSS: ${{ inputs.max_raft_rss_mb }}
+        run: |
+          set -euo pipefail
+          for value in "$MEMBERS" "$CPU" "$RSS"; do
+            [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]] || { echo "not a positive number: $value"; exit 1; }
+          done
+          out=gate-groups
+          mkdir -p "$out"
+          if [ "$ENGINE" = hybrid ]; then
+            # The hybrid keeps no Raft groups; the criterion is the Raft engine's.
+            jq -cn '{part: "groups", engine: "hybrid", status: "n/a", summary: "applies to the Raft engine only"}' > "$out/result.json"
+            echo "### 6. Groups per broker: applies to the Raft engine only." > "$out/section.md"
+            cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          jq -cn --arg e "$ENGINE" \
+            '{part: "groups", engine: $e, status: "unavailable", summary: "needs the per-shard Raft engine"}' > "$out/result.json"
+          {
+            echo "### 6. Groups per broker: not measured"
+            echo
+            echo "Needs the per-shard Raft engine. The gate asks for $MEMBERS idle members on one broker, idle CPU at most $CPU% of a core, and Raft resident memory under $RSS MB."
+          } > "$out/section.md"
+          cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-result-groups-${{ inputs.engine }}
+          path: gate-groups
+          retention-days: 30

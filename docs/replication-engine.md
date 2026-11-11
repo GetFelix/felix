@@ -1235,6 +1235,54 @@ Both engines run the same tests, on the same commit, on the same runners:
   leader is partitioned while it takes writes; no QUIC subscriber, Kafka
   consumer or cache watcher may hold two records at one offset (Decisions, 5).
 
+### How to run the gate
+
+Everything runs in GitHub Actions, never on a laptop. Start **Gate - no-regression
+report** (`gate.yml`) with "Run workflow", pick the `engine` (`hybrid` or `raft`)
+and leave the sizes at their defaults for the real gate. It calls four parts
+and writes one report:
+
+| Workflow | Criterion | What it runs |
+|---|---|---|
+| `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
+| `gate-perf.yml` | 2, 3 | RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
+| `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
+| `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
+
+Each part also runs alone with its own "Run workflow" button. Small sizes make
+a dry run: for example `seeds: 8`, `shards: 2`, `modes: off`,
+`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `rounds: 2`,
+`seconds: 5` for `gate-perf.yml`.
+
+The perf and failover parts build the baseline (default `v0.7.1`, the last
+v0.7.x release) and this commit, then alternate the two sides trial by trial
+with the side that goes first flipping each round, so runner drift lands on
+both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
+only `felix-broker` differs. The figure for a cell is the median over the
+rounds both sides completed. A cell with no results, or with fewer than half
+the rounds completed by both sides, fails. `scripts/ci/gate_perf.py` applies
+the rules: throughput at least
+0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
+plus the `failover_slack` input, 5% by default: failover is quantized by the
+failure-detection timer, and a half-millisecond difference is not a regression.
+Set it to 0 for the literal rule.
+
+The last job, `report`, assembles `gate-report.md` (also in the run summary and
+in the `gate-report-<engine>` artifact): one row per criterion with pass, fail
+or "unavailable", the tables, the failing seeds with replay commands, and the
+code size of criterion 7. The workflow is red only when a criterion fails. With
+`engine: raft` before the engine exists, each part writes "unavailable" and the
+report says NOT AVAILABLE.
+
+The history part lists simulator stalls but does not fail on them, and the
+report does not yet compare stalls between engines; the stall rule of
+criterion 1 is judged by hand until #2298 lands. Replay any seed with the command in the failing shard's summary
+([simulation](simulation.md)).
+
+The history campaigns use the same runners as `history.yml`. A hosted-runner
+perf run is noisy; for numbers that go in the write-up, set `FELIX_LARGE_RUNNER`
+to a dedicated runner label so both sides share one machine.
+
 ## Refactor plan
 
 Each step is one small pull request that changes no behaviour. The existing
