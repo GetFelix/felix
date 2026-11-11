@@ -2122,10 +2122,11 @@ on start records. Their `Full` twins have one write and run nightly.
 `FelixRaft.tla` is the first part of the model for the 0.8 engine: one Raft
 group whose log is Felix's segment log, as
 [The replication engine interface](../replication-engine.md) decides it. The
-`raft_log` adapter that puts openraft's log on `DiskLog` is not built yet
-(issue #2167), so every configuration's evidence line says so. The model is
-written first on purpose: it states what the adapter has to guarantee, and
-reviews of the adapter are checked against it.
+`raft_log` adapter that puts openraft's log on `DiskLog` is in
+`crates/server/felix-storage/src/raft_log.rs` (#2217, #2222; purge and the
+snapshot file are #2255). The configurations' evidence lines do not cite its
+tests yet (#2297 tracks that). The model states what the adapter has to
+guarantee, and reviews of the adapter are checked against it.
 
 Three brokers run elections and replicate a log of three kinds of entry: a
 leader's blank entry, a membership entry and a client record. The offset is
