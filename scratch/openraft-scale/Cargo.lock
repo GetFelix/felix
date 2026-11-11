@@ -662,6 +662,7 @@ dependencies = [
  "openraft",
  "openraft-memstore",
  "openraft-multi",
+ "openraft-rt",
  "tokio",
 ]
 

@@ -11,6 +11,7 @@ use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::network::RPCOption;
 use openraft::network::RaftNetworkFactory;
 use openraft::raft::{AppendEntriesRequest, AppendResult, SnapshotResponse, VoteRequest, VoteResponse};
+use openraft_rt::watch::WatchReceiver;
 use openraft::{Config, OptionalSend};
 use openraft_memstore::{TypeConfig, new_mem_store};
 use openraft_multi::{GroupNetworkAdapter, GroupNetworkFactory, GroupRouter};
