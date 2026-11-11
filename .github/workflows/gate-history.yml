@@ -1,0 +1,396 @@
+name: Gate - history and simulator sweeps
+
+# Criterion 1 of the no-regression gate (docs/replication-engine.md, "The
+# no-regression gate"): no history-checker violation, and no simulator stall the
+# hybrid does not also have on the same seed. Run by hand, or as part of
+# gate.yml. The report lists violations and stalls for the chosen engine so two
+# runs (hybrid, raft) can be compared seed by seed.
+#
+# `engine: raft` ends in a skip until the Raft engine exists.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Replication engine under test"
+        type: choice
+        options: [hybrid, raft]
+        default: hybrid
+      seeds:
+        description: "Simulator seeds per mode (2000 for the gate)"
+        type: string
+        default: "2000"
+      first:
+        description: "First simulator seed"
+        type: string
+        default: "1"
+      shards:
+        description: "Jobs each mode's seeds are split across (at most 50 seeds per job)"
+        type: string
+        default: "50"
+      modes:
+        description: "Simulator nemeses: off, clocks, placement, power-loss (comma separated), or all"
+        type: string
+        default: "all"
+      parallel:
+        description: "Sweep jobs running at once (1 to 20)"
+        type: string
+        default: "4"
+      nemeses:
+        description: "History nemeses, comma separated: all, adversarial, election; empty skips the history campaign"
+        type: string
+        default: "all,adversarial,election"
+      history_seed:
+        description: "History seed (empty picks a random one per run)"
+        type: string
+        default: ""
+      duration_secs:
+        description: "How long each history nemesis runs"
+        type: string
+        default: "1200"
+  workflow_call:
+    inputs:
+      engine: { type: string, default: hybrid }
+      seeds: { type: string, default: "2000" }
+      first: { type: string, default: "1" }
+      shards: { type: string, default: "50" }
+      modes: { type: string, default: "all" }
+      parallel: { type: string, default: "4" }
+      nemeses: { type: string, default: "all,adversarial,election" }
+      history_seed: { type: string, default: "" }
+      duration_secs: { type: string, default: "1200" }
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FELIX_DURABLE_PREALLOCATE: "false"
+  FELIX_TEST_TIMEOUT_SCALE: "3"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      shards: ${{ steps.plan.outputs.shards }}
+      nemeses: ${{ steps.plan.outputs.nemeses }}
+      seed: ${{ steps.plan.outputs.seed }}
+    steps:
+      - name: Plan
+        id: plan
+        # Inputs reach the script through the environment, never pasted into it.
+        env:
+          ENGINE: ${{ inputs.engine }}
+          FIRST: ${{ inputs.first }}
+          SEEDS: ${{ inputs.seeds }}
+          SHARDS: ${{ inputs.shards }}
+          MODES: ${{ inputs.modes }}
+          PARALLEL: ${{ inputs.parallel }}
+          NEMESES: ${{ inputs.nemeses }}
+          HISTORY_SEED: ${{ inputs.history_seed }}
+          DURATION: ${{ inputs.duration_secs }}
+        run: |
+          set -euo pipefail
+          case "$ENGINE" in
+            hybrid) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            raft)
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "The Raft engine is not available yet; nothing to sweep." >> "$GITHUB_STEP_SUMMARY"
+              exit 0 ;;
+            *) echo "engine must be hybrid or raft"; exit 1 ;;
+          esac
+          for value in "$FIRST" "$SEEDS" "$SHARDS" "$DURATION"; do
+            [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]] || { echo "not a positive number: $value"; exit 1; }
+          done
+          [[ "$PARALLEL" =~ ^[0-9]+$ ]] && [ "$PARALLEL" -ge 1 ] && [ "$PARALLEL" -le 20 ] \
+            || { echo "parallel must be 1 to 20"; exit 1; }
+          [ "$SHARDS" -gt "$SEEDS" ] && SHARDS=$SEEDS
+          if [ $(( (SEEDS + SHARDS - 1) / SHARDS )) -gt 50 ]; then
+            echo "at most 50 seeds per job: raise shards or lower seeds"; exit 1
+          fi
+          [ "$MODES" = all ] && MODES="off,clocks,placement,power-loss"
+          plan=$(jq -cn --arg modes "$MODES" --argjson first "$FIRST" \
+            --argjson seeds "$SEEDS" --argjson shards "$SHARDS" '
+            [($modes | split(",") | unique[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
+          if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss") | not)) | length' <<<"$plan")" != 0 ]; then
+            echo "modes must be from off, clocks, placement, power-loss, or all"; exit 1
+          fi
+          if [ "$(jq 'map(.shards) | add' <<<"$plan")" -gt 256 ]; then
+            echo "at most 256 jobs in all (modes times shards)"; exit 1
+          fi
+          shards=$(jq -c '
+            [.[] | . as $p
+              | ($p.seeds / $p.shards | floor) as $base
+              | ($p.seeds % $p.shards) as $extra
+              | range($p.shards) as $i
+              | { mode: $p.mode, index: $i,
+                  first: ($p.first + $i * $base + ([$i, $extra] | min)),
+                  count: ($base + (if $i < $extra then 1 else 0 end)) }]' <<<"$plan")
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          nemeses=$(jq -cn --arg n "$NEMESES" '[$n | split(",")[] | gsub(" "; "") | select(. != "")]')
+          if [ "$(jq 'map(select(IN("all","adversarial","election") | not)) | length' <<<"$nemeses")" != 0 ]; then
+            echo "nemeses must be from all, adversarial, election"; exit 1
+          fi
+          echo "nemeses=$nemeses" >> "$GITHUB_OUTPUT"
+          seed="$HISTORY_SEED"
+          [ -n "$seed" ] || seed=$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')
+          [[ "$seed" =~ ^[0-9]{1,20}$ ]] || { echo "history seed must be a number"; exit 1; }
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          {
+            echo "| Mode | First seed | Seeds | Jobs |"
+            echo "|---|---|---|---|"
+            jq -r '.[] | "| \(.mode) | \(.first) | \(.seeds) | \(.shards) |"' <<<"$plan"
+            echo
+            echo "History nemeses: \`$nemeses\`, seed \`$seed\`, $DURATION s each."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build-sim:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: sim-sweep-tokio-unstable
+
+      # The same build as dst-nightly.yml and `task sim:replay`, so a failing
+      # seed replays the run the sweep saw.
+      - name: Build the seeds test
+        env:
+          RUSTFLAGS: "--cfg tokio_unstable"
+        run: |
+          bin=$(cargo test -p felix-sim --release --test seeds --no-run --message-format=json |
+            jq -r 'select(.profile.test == true and .target.name == "seeds") | .executable' |
+            tail -1)
+          mkdir -p sim-bin
+          cp "$bin" sim-bin/seeds
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-sim-bin
+          path: sim-bin/seeds
+          retention-days: 2
+
+  sweep:
+    needs: [plan, build-sim]
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    name: sweep ${{ matrix.shard.mode }} ${{ matrix.shard.first }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-sim-bin
+          path: sim-bin
+
+      - name: Run the seeds
+        env:
+          FELIX_SIM_BIN: ${{ github.workspace }}/sim-bin/seeds
+          FELIX_SIM_JOBS: "2"
+          FELIX_SIM_MODE: ${{ matrix.shard.mode }}
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          chmod +x "$FELIX_SIM_BIN"
+          scripts/sim-sweep.sh "$FIRST" "$COUNT" sweep-out
+
+      # Every shard leaves a small record, so a clean shard still counts as run.
+      - name: Record the shard
+        if: always()
+        env:
+          MODE: ${{ matrix.shard.mode }}
+          FIRST: ${{ matrix.shard.first }}
+          COUNT: ${{ matrix.shard.count }}
+        run: |
+          mkdir -p sweep-out shard
+          for kind in failed stalls; do
+            if [ -f "sweep-out/$kind.txt" ]; then
+              cp "sweep-out/$kind.txt" "shard/$kind.txt"
+              awk -v mode="$MODE" '{print mode, $3}' "sweep-out/$kind.txt" > "shard/$kind-seeds.txt"
+            fi
+          done
+          echo "$MODE $FIRST $COUNT" > shard/ran.txt
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gate-sim-shard-${{ matrix.shard.mode }}-${{ matrix.shard.first }}
+          path: shard
+          retention-days: 30
+
+      - name: Upload the failing seeds' logs
+        if: always() && (hashFiles('sweep-out/failed.txt') != '' || hashFiles('sweep-out/stalls.txt') != '')
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-sim-logs-${{ matrix.shard.mode }}-${{ matrix.shard.first }}
+          path: sweep-out
+          retention-days: 30
+
+  campaign:
+    name: history (${{ matrix.nemesis }})
+    needs: plan
+    if: needs.plan.outputs.run == 'true' && needs.plan.outputs.nemeses != '[]'
+    # Same runner rule as history.yml.
+    runs-on: ${{ vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        nemesis: ${{ fromJSON(needs.plan.outputs.nemeses) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        if: runner.environment == 'github-hosted'
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Warm target dir
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/warm-target
+        with:
+          slot: history
+
+      - name: Build the broker the harness runs
+        run: cargo build -p felix-broker-service --bin felix-broker
+
+      - name: Run the campaign
+        env:
+          FELIX_HISTORY_SEED: ${{ needs.plan.outputs.seed }}
+          FELIX_HISTORY_MODE: lease-free
+          FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
+          FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs }}
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
+        run: |
+          set -o pipefail
+          cargo test -p felix-cluster --test history -- --nocapture --include-ignored 2>&1 | tee "$RUNNER_TEMP/history-output.txt"
+
+      - name: Record the outcome
+        if: always()
+        env:
+          NEMESIS: ${{ matrix.nemesis }}
+          SEED: ${{ needs.plan.outputs.seed }}
+          OUTCOME: ${{ job.status }}
+        run: |
+          mkdir -p record
+          violations=$(grep -c 'violation(s)' "$RUNNER_TEMP/history-output.txt" 2>/dev/null || true)
+          jq -cn --arg nemesis "$NEMESIS" --arg seed "$SEED" --arg outcome "$OUTCOME" \
+            --argjson violations "${violations:-0}" \
+            '{nemesis: $nemesis, seed: $seed, outcome: $outcome, violation_reports: $violations}' > record/outcome.json
+          sed -n '/violation(s)\|could not finish\|panicked/,/^test /p' "$RUNNER_TEMP/history-output.txt" 2>/dev/null | head -150 > record/failure.txt || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gate-history-run-${{ matrix.nemesis }}
+          path: record
+          retention-days: 30
+
+      - name: Upload the broker logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-history-logs-${{ matrix.nemesis }}
+          path: ${{ runner.temp }}/cluster-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
+  result:
+    needs: [plan, sweep, campaign]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gate-sim-shard-*
+          path: shards
+        continue-on-error: true
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gate-history-run-*
+          path: runs
+        continue-on-error: true
+
+      - name: Write the result
+        env:
+          ENGINE: ${{ inputs.engine }}
+          RUN: ${{ needs.plan.outputs.run }}
+          SWEEP: ${{ needs.sweep.result }}
+          CAMPAIGN: ${{ needs.campaign.result }}
+          SEEDS: ${{ inputs.seeds }}
+          MODES: ${{ inputs.modes }}
+          SEED: ${{ needs.plan.outputs.seed }}
+        run: |
+          set -euo pipefail
+          out=gate-history
+          mkdir -p "$out"
+          if [ "$RUN" != true ]; then
+            jq -cn --arg e "$ENGINE" '{part: "history", engine: $e, status: "unavailable", summary: "engine not available yet"}' > "$out/result.json"
+            echo "### 1. Correctness: not run, the $ENGINE engine is not available yet." > "$out/section.md"
+            exit 0
+          fi
+          shard_count=$(cat shards/*/ran.txt 2>/dev/null | grep -c . || true)
+          bugs=$(cat shards/*/failed.txt 2>/dev/null | sort -k3,3n || true)
+          stalls=$(cat shards/*/stalls.txt 2>/dev/null | sort -k3,3n || true)
+          # Only the stalls go in sim-stalls.txt, which the report diffs between engines.
+          cat shards/*/stalls-seeds.txt 2>/dev/null | sort -u > "$out/sim-stalls.txt" || true
+          nbugs=$(grep -c . <<<"$bugs" || true); nstalls=$(grep -c . <<<"$stalls" || true)
+          nviol=0; failed_nem=""
+          for f in runs/*/outcome.json; do
+            [ -f "$f" ] || continue
+            nviol=$(( nviol + $(jq .violation_reports "$f") ))
+            [ "$(jq -r .outcome "$f")" = success ] || failed_nem="$failed_nem $(jq -r .nemesis "$f")"
+          done
+          status=pass
+          [ "$SWEEP" = success ] && { [ "$CAMPAIGN" = success ] || [ "$CAMPAIGN" = skipped ]; } || status=fail
+          [ "$nbugs" = 0 ] || status=fail
+          [ -z "$failed_nem" ] || status=fail
+          summary="$nbugs simulator bugs, $nstalls stalls, $nviol history violation reports"
+          jq -cn --arg e "$ENGINE" --arg s "$status" --arg m "$summary" \
+            '{part: "history", engine: $e, status: $s, summary: $m}' > "$out/result.json"
+          {
+            echo "### 1. Correctness ($ENGINE)"
+            echo
+            echo "Simulator: $shard_count shards, $SEEDS seeds in modes \`$MODES\`. Real bugs (history violations, safety findings, crashes): $nbugs. Tracked stalls: $nstalls."
+            echo
+            echo "History campaigns (seed \`$SEED\`): sweep job $SWEEP, campaign jobs $CAMPAIGN, violation reports $nviol.${failed_nem:+ Failed nemeses:$failed_nem.}"
+            if [ "$nbugs" != 0 ]; then echo; echo '```'; head -100 <<<"$bugs"; echo '```'; fi
+            if [ "$nstalls" != 0 ]; then echo; echo 'Stalls:'; echo; echo '```'; head -100 <<<"$stalls"; echo '```'; fi
+          } > "$out/section.md"
+          cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-result-history-${{ inputs.engine }}
+          path: gate-history
+          retention-days: 30

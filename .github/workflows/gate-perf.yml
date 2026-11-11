@@ -1,0 +1,235 @@
+name: Gate - performance A/B
+
+# Criteria 2 and 3 of the no-regression gate (docs/replication-engine.md, "The
+# no-regression gate"): single node and RF 3, 1 KiB and 64 KiB payloads, the
+# last v0.7.x release against this commit, on one runner. Throughput must stay
+# within 10% of the baseline and p99 within 20%.
+#
+# Both sides run in this job, alternate trial by trial, and the side that goes
+# first flips each round, so runner drift lands on both. The same felix-cluster
+# harness and felix-loadgen drive both; only felix-broker differs. Medians over
+# the rounds are compared (scripts/ci/gate_perf.py).
+#
+# `engine: raft` ends in a skip until the Raft engine exists. The Raft run will
+# compare the Raft build with the hybrid baseline in the same way.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Replication engine under test"
+        type: choice
+        options: [hybrid, raft]
+        default: hybrid
+      baseline_ref:
+        description: "Baseline tag or commit (the last v0.7.x release)"
+        type: string
+        default: "v0.7.1"
+      rounds:
+        description: "Rounds; each runs every cell once per side (even, so each side goes first equally often)"
+        type: string
+        default: "6"
+      seconds:
+        description: "Seconds each trial publishes"
+        type: string
+        default: "30"
+  workflow_call:
+    inputs:
+      engine: { type: string, default: hybrid }
+      baseline_ref: { type: string, default: "v0.7.1" }
+      rounds: { type: string, default: "6" }
+      seconds: { type: string, default: "30" }
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR_BASELINE: /tmp/felix-gate-target-baseline
+  CARGO_TARGET_DIR_HEAD: /tmp/felix-gate-target-head
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+    steps:
+      - name: Plan
+        id: plan
+        env:
+          ENGINE: ${{ inputs.engine }}
+          BASELINE: ${{ inputs.baseline_ref }}
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+        run: |
+          set -euo pipefail
+          case "$ENGINE" in
+            hybrid) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            raft)
+              echo "run=false" >> "$GITHUB_OUTPUT"
+              echo "The Raft engine is not available yet; no perf cells to run." >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "engine must be hybrid or raft"; exit 1 ;;
+          esac
+          [[ "$BASELINE" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || { echo "bad baseline ref"; exit 1; }
+          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
+          [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
+
+  ab:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 180
+    steps:
+      - name: Checkout head
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> /tmp/felix-gate-target-baseline
+            . -> /tmp/felix-gate-target-head
+
+      - name: Add the baseline worktree
+        env:
+          BASELINE: ${{ inputs.baseline_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet origin
+          git worktree add /tmp/felix-gate-baseline "$BASELINE"
+          echo "Baseline $BASELINE is $(git -C /tmp/felix-gate-baseline rev-parse --short HEAD); head is $(git rev-parse --short HEAD)." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Both are built before any trial, so compile time never sits between two
+      # measurements. Separate target dirs: the two checkouts share crate names.
+      - name: Build both sides
+        run: |
+          set -euo pipefail
+          (cd /tmp/felix-gate-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
+            cargo build --release -p felix-broker-service --bin felix-broker)
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --release \
+            -p felix-broker-service --bin felix-broker \
+            -p felix-cluster --bin felix-cluster \
+            -p felix-loadgen --bin felix-loadgen
+          # Head's harness and load generator drive both brokers; the cluster
+          # starts the felix-broker that sits beside it.
+          for side in baseline head; do
+            dir=/tmp/felix-gate/$side
+            mkdir -p "$dir"
+            cp "$CARGO_TARGET_DIR_HEAD/release/felix-cluster" "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" "$dir/"
+          done
+          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-gate/baseline/
+          cp "$CARGO_TARGET_DIR_HEAD/release/felix-broker" /tmp/felix-gate/head/
+
+      - name: Run the cells, alternating sides
+        id: run
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+        run: |
+          set -euo pipefail
+          results=/tmp/felix-gate/results.jsonl
+          : > "$results"
+          # name, replication factor, payload bytes, batch
+          cells="single-1k:1:1024:64 single-64k:1:65536:4 rf3-1k:3:1024:64 rf3-64k:3:65536:4"
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
+            for cell in $cells; do
+              IFS=: read -r name rf payload batch <<<"$cell"
+              for side in $sides; do
+                scripts/ci/gate-perf-cell.sh "/tmp/felix-gate/$side" "$side" "$name" "$rf" "$payload" "$batch" \
+                  "$SECONDS_PER_TRIAL" "$round" "$results" \
+                  || echo "::warning::$side $name round $round failed"
+              done
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Compare
+        id: compare
+        if: always() && steps.run.outcome != 'skipped'
+        run: |
+          set -o pipefail
+          python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl \
+            --md /tmp/felix-gate/table.md --json /tmp/felix-gate/verdict.json
+
+      - name: Upload the raw trials
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-perf-trials
+          path: /tmp/felix-gate/results.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-perf-verdict
+          path: |
+            /tmp/felix-gate/table.md
+            /tmp/felix-gate/verdict.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  result:
+    needs: [plan, ab]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-perf-verdict
+          path: verdict
+        continue-on-error: true
+
+      - name: Write the result
+        env:
+          ENGINE: ${{ inputs.engine }}
+          RUN: ${{ needs.plan.outputs.run }}
+          BASELINE: ${{ inputs.baseline_ref }}
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+        run: |
+          set -euo pipefail
+          out=gate-perf
+          mkdir -p "$out"
+          if [ "$RUN" != true ]; then
+            jq -cn --arg e "$ENGINE" '{part: "perf", engine: $e, status: "unavailable", summary: "engine not available yet"}' > "$out/result.json"
+            echo "### 2, 3. Throughput and p99: not run, the $ENGINE engine is not available yet." > "$out/section.md"
+            exit 0
+          fi
+          if [ -f verdict/verdict.json ]; then
+            status=$(jq -r .status verdict/verdict.json)
+            bad=$(jq '[.verdicts[] | select(.ok | not)] | length' verdict/verdict.json)
+            summary="$bad of $(jq '.verdicts | length' verdict/verdict.json) checks outside the gate"
+          else
+            status=fail; summary="no verdict: the A/B job did not finish"
+          fi
+          jq -cn --arg e "$ENGINE" --arg s "$status" --arg m "$summary" \
+            '{part: "perf", engine: $e, status: $s, summary: $m}' > "$out/result.json"
+          {
+            echo "### 2, 3. Throughput and p99 ($ENGINE against $BASELINE)"
+            echo
+            echo "Single node and RF 3, 1 KiB and 64 KiB, $ROUNDS rounds of $SECONDS_PER_TRIAL s per trial, medians. Throughput must be at least 0.90 of the baseline and p99 at most 1.20."
+            echo
+            if [ -f verdict/table.md ]; then cat verdict/table.md; else echo "No table."; fi
+          } > "$out/section.md"
+          cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gate-result-perf-${{ inputs.engine }}
+          path: gate-perf
+          retention-days: 30
