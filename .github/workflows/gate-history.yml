@@ -362,7 +362,7 @@ jobs:
           shard_count=$(cat shards/*/ran.txt 2>/dev/null | grep -c . || true)
           bugs=$(cat shards/*/failed.txt 2>/dev/null | sort -k3,3n || true)
           stalls=$(cat shards/*/stalls.txt 2>/dev/null | sort -k3,3n || true)
-          # Only the stalls go in sim-stalls.txt, which the report diffs between engines.
+          # Only the stalls go in sim-stalls.txt. Stalls are reported, not gated (#2298).
           cat shards/*/stalls-seeds.txt 2>/dev/null | sort -u > "$out/sim-stalls.txt" || true
           nbugs=$(grep -c . <<<"$bugs" || true); nstalls=$(grep -c . <<<"$stalls" || true)
           nviol=0; failed_nem=""

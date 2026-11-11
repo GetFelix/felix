@@ -1,7 +1,7 @@
 name: Gate - performance A/B
 
 # Criteria 2 and 3 of the no-regression gate (docs/replication-engine.md, "The
-# no-regression gate"): single node and RF 3, 1 KiB and 64 KiB payloads, the
+# no-regression gate"): RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB payloads, the
 # last v0.7.x release against this commit, on one runner. Throughput must stay
 # within 10% of the baseline and p99 within 20%.
 #
@@ -71,7 +71,7 @@ jobs:
               echo "The Raft engine is not available yet; no perf cells to run." >> "$GITHUB_STEP_SUMMARY" ;;
             *) echo "engine must be hybrid or raft"; exit 1 ;;
           esac
-          [[ "$BASELINE" =~ ^[A-Za-z0-9._/-]{1,100}$ ]] || { echo "bad baseline ref"; exit 1; }
+          [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
           [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
           [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
 
@@ -139,7 +139,7 @@ jobs:
           results=/tmp/felix-gate/results.jsonl
           : > "$results"
           # name, replication factor, payload bytes, batch
-          cells="single-1k:1:1024:64 single-64k:1:65536:4 rf3-1k:3:1024:64 rf3-64k:3:65536:4"
+          cells="rf1-1k:1:1024:64 rf1-64k:1:65536:4 rf3-1k:3:1024:64 rf3-64k:3:65536:4"
           for round in $(seq 1 "$ROUNDS"); do
             echo "::group::Round $round of $ROUNDS"
             if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
@@ -157,9 +157,14 @@ jobs:
       - name: Compare
         id: compare
         if: always() && steps.run.outcome != 'skipped'
+        env:
+          ROUNDS: ${{ inputs.rounds }}
         run: |
           set -o pipefail
+          # A cell with no rows, or fewer than half the rounds completed by both
+          # sides, fails; a lost trial is never a pass.
           python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl \
+            --expect-cells rf1-1k,rf1-64k,rf3-1k,rf3-64k --min-rounds $(( (ROUNDS + 1) / 2 )) \
             --md /tmp/felix-gate/table.md --json /tmp/felix-gate/verdict.json
 
       - name: Upload the raw trials
@@ -222,7 +227,7 @@ jobs:
           {
             echo "### 2, 3. Throughput and p99 ($ENGINE against $BASELINE)"
             echo
-            echo "Single node and RF 3, 1 KiB and 64 KiB, $ROUNDS rounds of $SECONDS_PER_TRIAL s per trial, medians. Throughput must be at least 0.90 of the baseline and p99 at most 1.20."
+            echo "RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, $ROUNDS rounds of $SECONDS_PER_TRIAL s per trial, medians. Throughput must be at least 0.90 of the baseline and p99 at most 1.20."
             echo
             if [ -f verdict/table.md ]; then cat verdict/table.md; else echo "No table."; fi
           } > "$out/section.md"

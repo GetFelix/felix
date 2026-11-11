@@ -34,6 +34,27 @@ class PerfRules(unittest.TestCase):
     def test_missing_side_fails(self):
         self.assertFalse(gate_perf.judge({"c": {"head": [{"msg_s": 1}]}})[0]["ok"])
 
+    def test_expected_cell_with_no_rows_fails(self):
+        data = cells([100, 100], [100, 100])
+        self.assertTrue(gate_perf.judge(data, expected=["c"])[0]["ok"])
+        verdicts = gate_perf.judge(data, expected=["c", "gone"])
+        self.assertEqual([v["ok"] for v in verdicts if v["cell"] == "gone"], [False, False])
+
+    def test_too_few_rounds_fails(self):
+        data = cells([100, 100], [100, 100])
+        self.assertTrue(gate_perf.judge(data, min_rounds=2)[0]["ok"])
+        self.assertFalse(gate_perf.judge(data, min_rounds=3)[0]["ok"])
+
+    def test_a_round_one_side_lost_is_dropped_for_both(self):
+        # Head lost round 0, the slow baseline round. Pairing drops it for both,
+        # so the medians compare rounds 1 and 2 only.
+        data = {"c": {"baseline": [{"round": 0, "msg_s": 1000}, {"round": 1, "msg_s": 100},
+                                   {"round": 2, "msg_s": 100}],
+                      "head": [{"round": 1, "msg_s": 100}, {"round": 2, "msg_s": 100}]}}
+        verdict = gate_perf.judge(data, min_rounds=2)[0]
+        self.assertEqual((verdict["rounds"], verdict["baseline"], verdict["ok"]), (2, 100, True))
+        self.assertFalse(gate_perf.judge(data, min_rounds=3)[0]["ok"])
+
     def test_failover_no_worse(self):
         data = {"failover": {"baseline": [{"outage_max_ms": 2000}], "head": [{"outage_max_ms": 2001}]}}
         self.assertFalse(gate_perf.judge(data)[0]["ok"])

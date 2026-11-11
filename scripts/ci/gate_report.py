@@ -76,16 +76,6 @@ def size_section(repo):
     )
 
 
-def raft_only_stalls(root, parts_hybrid, parts_raft):
-    def stalls(part):
-        path = part["dir"] / "sim-stalls.txt" if part else None
-        if not path or not path.exists():
-            return None
-        return {line.strip() for line in path.read_text().splitlines() if line.strip()}
-
-    return stalls(parts_raft.get("history")), stalls(parts_hybrid.get("history"))
-
-
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("artifacts")
@@ -114,17 +104,6 @@ def main(argv):
         part = parts.get(name)
         if part and part["section"].strip():
             lines += [part["section"].rstrip(), ""]
-    if args.engine != "hybrid":
-        other = read_parts(args.artifacts, "hybrid")
-        mine, theirs = raft_only_stalls(args.artifacts, other, parts)
-        if mine is not None and theirs is not None:
-            extra = sorted(mine - theirs)
-            lines += [
-                "### Stalls the hybrid does not have on the same seed",
-                "",
-                "\n".join(f"- {seed}" for seed in extra) if extra else "None.",
-                "",
-            ]
     lines.append(size_section(args.repo))
     pathlib.Path(args.out).write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))

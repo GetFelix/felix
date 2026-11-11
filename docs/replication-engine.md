@@ -1105,7 +1105,7 @@ and writes one report:
 | Workflow | Criterion | What it runs |
 |---|---|---|
 | `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
-| `gate-perf.yml` | 2, 3 | Single node and RF 3, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
+| `gate-perf.yml` | 2, 3 | RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
 | `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
@@ -1119,7 +1119,9 @@ v0.7.x release) and this commit, then alternate the two sides trial by trial
 with the side that goes first flipping each round, so runner drift lands on
 both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
 only `felix-broker` differs. The figure for a cell is the median over the
-rounds, and `scripts/ci/gate_perf.py` applies the rules: throughput at least
+rounds both sides completed. A cell with no results, or with fewer than half
+the rounds completed by both sides, fails. `scripts/ci/gate_perf.py` applies
+the rules: throughput at least
 0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
 plus the `failover_slack` input, 5% by default: failover is quantized by the
 failure-detection timer, and a half-millisecond difference is not a regression.
@@ -1132,9 +1134,9 @@ code size of criterion 7. The workflow is red only when a criterion fails. With
 `engine: raft` before the engine exists, each part writes "unavailable" and the
 report says NOT AVAILABLE.
 
-To judge the stall rule of criterion 1, run the gate for both engines on the
-same commit. The Raft report lists the stalled seeds the hybrid does not have.
-Replay any seed with the command in the failing shard's summary
+The history part lists simulator stalls but does not fail on them, and the
+report does not yet compare stalls between engines; the stall rule of
+criterion 1 is judged by hand until #2298 lands. Replay any seed with the command in the failing shard's summary
 ([simulation](simulation.md)).
 
 The history campaigns use the same runners as `history.yml`. A hosted-runner
