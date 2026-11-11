@@ -1,0 +1,13 @@
+[package]
+name = "openraft-scale"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+openraft = { version = "=0.10.0", default-features = false }
+openraft-multi = "=0.10.0"
+openraft-memstore = "=0.10.0"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

@@ -1,0 +1,22 @@
+name: openraft-scale
+on:
+  workflow_dispatch:
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build
+        working-directory: scratch/openraft-scale
+        run: cargo build --release
+      - name: run
+        working-directory: scratch/openraft-scale
+        run: |
+          ulimit -n 1048576 || true
+          nproc; free -m
+          for t in on off; do for n in 1000 5000 10000; do
+            ./target/release/openraft-scale $n $t 30 | tee -a ../../results.txt
+          done; done
+          { echo '```'; cat ../../results.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
