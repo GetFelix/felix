@@ -521,8 +521,8 @@ do. They also learned four things the design takes on:
 3. **No task per group.** CockroachDB moved from a task per range to a few
    per store, and TiKV drives regions from a small thread pool. openraft
    runs a task per group, so the first step of per-shard Raft measures
-   memory, idle CPU and scheduling with 5,000 and 10,000 groups on one
-   broker, before other work builds on it. Felix stays on openraft. If the
+   memory, idle CPU and scheduling with 5,000 groups on one broker (and
+   10,000 as a stress run), before other work builds on it. Felix stays on openraft. If the
    measurement finds a limit, it is fixed in openraft: Felix files the
    problem upstream with the numbers and, where the fix is clear, sends the
    pull request, rather than switching libraries or keeping a private fork.
@@ -534,6 +534,35 @@ do. They also learned four things the design takes on:
    cache and counters into the shard's group (Decisions, 4) already does
    this. The prototype also sets and tests a per-broker group budget at
    felixd's 1,000-workload scale.
+
+#### How many groups a broker carries
+
+A broker holds about `shards × RF / brokers` Raft members, a third of them
+leaders at RF 3. Three brokers with 300 streams of 4 shards carry 1,200
+members each; 2,000 small per-entity streams on three brokers carry 2,000.
+Kafka brokers usually run 1,000 to 4,000 partitions.
+
+- **Design point: 2,000 members per broker.** Defaults and docs assume this.
+- **Gate: 5,000 members per broker**, idle, with idle CPU near zero and
+  resident memory under 1 GB for Raft state (perf gate, criterion 6).
+- **10,000 is a stress run**, used to find limits to fix upstream. It is not
+  a supported size.
+- **`max_shards` caps a broker.** Past it, placement answers `at_capacity`
+  instead of the broker slowing down.
+
+Measured on openraft 0.10.0 (one process leading every group, stub
+followers, a 4-vCPU runner): about 180 KB and 10 tasks per leader member
+and 145 KB and 6 tasks per follower, whatever the timers. Idle CPU comes
+from each member's tick: 86% of a core per 1,000 members with the default
+timers, 0 with `enable_tick=false`. One node timer driving
+`Raft::trigger().tick()` (openraft 0.10.1) removes it. The other upstream
+asks (heartbeat coalescing per peer, idle groups that sleep, fewer tasks per
+member) are tracked in #2215.
+
+If per-entity streams push a broker past the gate, many small streams can
+share one Raft group, the way one CockroachDB range covers many keys, with
+groups splitting when hot and merging when cold. Nothing is built for this
+yet, but the engine interface must not assume one group per stream.
 
 Sleep and wake also get their own simulator nemesis: both CockroachDB and
 TiKV shipped bugs where idle groups failed to sleep or failed to wake.
@@ -1038,7 +1067,10 @@ fixed in the Raft engine, or the decision is reopened with the numbers in
 4. **Failover time** no worse than the hybrid in any cell.
 5. **Control plane down.** A leader crash while the control plane is down
    still fails over and keeps serving.
-6. **Size, reported only.** Lines of replication code and TLA+ specs and
+6. **Groups per broker.** 5,000 idle members on one broker with idle CPU
+   near zero and Raft resident memory under 1 GB (see
+   [How many groups a broker carries](#how-many-groups-a-broker-carries)).
+7. **Size, reported only.** Lines of replication code and TLA+ specs and
    configs each protocol keeps. Baseline today: `felix-replication/src` has
    about 26,000 lines of non-test code, and `docs/formal/FelixShard*.tla` is
    about 8,000 lines across 425 configs. This is reported with the results and
