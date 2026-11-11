@@ -51,6 +51,7 @@ impl SegmentSet {
         let full = self.active.projected_size(records) > self.size_ceiling(roll_pending)
             && self.active.record_count() > 0;
         full || !self.active.holds(records)
+            || (self.config.raft_log && !self.active.holds_generations())
     }
 
     /// Whether the active segment has crossed the point where a rollover should
@@ -173,11 +174,13 @@ impl SegmentSet {
 
     /// The version the segment after the active one is written at so that it
     /// holds `records`: [`SegmentWriter::successor_version`], or v9 once the
-    /// log's [`crate::log::GenerationGate`] allows it. Only a new segment
+    /// log's [`crate::log::GenerationGate`] allows it or for a Raft log. Only a new segment
     /// moves; the active one is never rewritten.
     fn successor_version(&self, records: &[AppendRecord]) -> u16 {
         let version = self.active.successor_version(records);
-        if version < GENERATION_VERSION && self.config.generations.allows() {
+        if version < GENERATION_VERSION
+            && (self.config.raft_log || self.config.generations.allows())
+        {
             GENERATION_VERSION
         } else {
             version

@@ -2,10 +2,10 @@
 //! record's offset is the entry's index, and the generation in the record's
 //! header gives its term.
 //!
-//! This is the read side: [`RaftLog::log_state`], and [`LogReader`], which
-//! implements openraft's `RaftLogReader`. Appending, truncating, purging and
-//! saving a vote are not here yet. The design is in
-//! `docs/replication-engine.md`, "Raft log on the segment store".
+//! [`RaftLog`] implements openraft's `RaftLogStorage` (append, truncate and
+//! the vote) and [`LogReader`] its `RaftLogReader`. Purging and snapshots
+//! are not here yet. The design is in `docs/replication-engine.md`, "Raft
+//! log on the segment store".
 //!
 //! Three rules hold everywhere in this module:
 //!
@@ -30,6 +30,7 @@ mod codec;
 mod reader;
 #[cfg(test)]
 mod tests;
+mod writer;
 
 pub use codec::EntryCodec;
 pub use reader::LogReader;
@@ -45,6 +46,8 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
+#[cfg(doc)]
+use crate::log::LogConfig;
 #[cfg(doc)]
 use crate::log::RecordMark;
 use crate::log::{Offset, UNKNOWN_WRITER};
@@ -93,6 +96,9 @@ pub struct RaftLog<C, K> {
 struct Shared<K> {
     log: DiskLog,
     codec: K,
+    /// Read-held by each append until its callback has fired, and
+    /// write-held by a truncation.
+    flushing: Arc<tokio::sync::RwLock<()>>,
     /// Holds the next paged read after its first page: the read signals the
     /// sender, then waits for the receiver.
     #[cfg(test)]
@@ -114,17 +120,28 @@ where
     CommittedLeaderIdOf<C>: From<u64> + Deref<Target = u64>,
     K: EntryCodec<C>,
 {
-    /// Read `log` as a Raft log, with `codec` turning records into entries.
-    pub fn new(log: DiskLog, codec: K) -> Self {
-        Self {
+    /// Use `log` as a Raft log, with `codec` turning records into entries.
+    ///
+    /// Refused unless the log was opened with [`LogConfig::raft_log`]: any
+    /// other log starts on a format with no generations and may delete
+    /// entries by retention.
+    pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
+        if !log.config().raft_log {
+            return Err(invalid(format!(
+                "{} was not opened as a Raft log",
+                log.label()
+            )));
+        }
+        Ok(Self {
             shared: Arc::new(Shared {
                 log,
                 codec,
+                flushing: Arc::default(),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
             }),
             types: std::marker::PhantomData,
-        }
+        })
     }
 
     /// The log underneath.

@@ -1,8 +1,9 @@
-//! openraft's storage suite, the cases the read side can answer.
+//! openraft's storage suite, the cases the log can answer without a purge
+//! or a state machine.
 //!
-//! The suite drives a whole `RaftLogStorage`. Reading goes through the
-//! adapter; [`Store`] writes with the test hooks, standing in for the write
-//! side. Cases that purge, apply or snapshot wait for those parts.
+//! The suite wants one type that is both the log and its reader, so
+//! [`Store`] hands each call to the adapter. Cases that purge, apply or
+//! snapshot wait for those parts.
 
 use std::io;
 
@@ -19,9 +20,8 @@ use openraft::type_config::alias::{
 use openraft::{OptionalSend, StorageError};
 use tempfile::TempDir;
 
-use super::{Codec, Types, open, store};
-use crate::log::AppendOnlyLog;
-use crate::raft_log::{EntryCodec, LogReader, RaftLog, generation_of};
+use super::{Codec, Types, open};
+use crate::raft_log::{LogReader, RaftLog};
 
 struct Store(RaftLog<Types, Codec>);
 
@@ -58,16 +58,7 @@ impl RaftLogStorage<Types> for Store {
     }
 
     async fn save_vote(&mut self, vote: &VoteOf<Types>) -> io::Result<()> {
-        let generation = generation_of(vote.leader_id.term)?;
-        let leader = Codec.encode_node_id(&vote.leader_id.voted_for);
-        let log = self.0.disk_log();
-        if vote.committed {
-            log.commit_vote_for_tests(generation, &leader).await
-        } else {
-            log.accept_generation(generation, Some(&leader)).await
-        }
-        .map(|_| ())
-        .map_err(io::Error::other)
+        self.0.save_vote(vote).await
     }
 
     async fn append<I>(&mut self, entries: I, callback: IOFlushed<Types>) -> io::Result<()>
@@ -75,23 +66,15 @@ impl RaftLogStorage<Types> for Store {
         I: IntoIterator<Item = super::TestEntry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
-        let entries: Vec<_> = entries.into_iter().collect();
-        let stored = store(&self.0, &entries).await;
-        callback.io_completed(stored);
-        Ok(())
+        self.0.append(entries, callback).await
     }
 
     async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<Types>>) -> io::Result<()> {
-        let keep = last_log_id.map_or(0, |id| id.index() + 1);
-        self.0
-            .disk_log()
-            .truncate(keep)
-            .await
-            .map_err(io::Error::other)
+        self.0.truncate_after(last_log_id).await
     }
 
-    async fn purge(&mut self, _log_id: LogIdOf<Types>) -> io::Result<()> {
-        Err(unsupported())
+    async fn purge(&mut self, log_id: LogIdOf<Types>) -> io::Result<()> {
+        self.0.purge(log_id).await
     }
 }
 
@@ -142,7 +125,7 @@ impl RaftStateMachine<Types> for NoStateMachine {
 }
 
 fn unsupported() -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, "not part of the read side")
+    io::Error::new(io::ErrorKind::Unsupported, "no state machine here")
 }
 
 struct Builder;
@@ -167,7 +150,7 @@ macro_rules! run {
 }
 
 #[test]
-fn the_read_side_passes_the_storage_suite_cases_it_can_answer() {
+fn the_log_passes_the_storage_suite_cases_that_need_no_purge_or_state_machine() {
     Types::run(async {
         run!(
             last_membership_in_log_initial,

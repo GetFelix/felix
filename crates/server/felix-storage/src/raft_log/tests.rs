@@ -1,7 +1,10 @@
 //! The read side against logs written the way the write side will write
 //! them: one v9 record per entry, stamped with the entry's term plus one.
 
+#[cfg(feature = "sim")]
+mod crash_points;
 mod suite;
+mod writes;
 
 use std::io;
 
@@ -81,6 +84,7 @@ fn config() -> LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
         max_records_per_read: 3,
+        raft_log: true,
         ..LogConfig::default()
     }
 }
@@ -92,7 +96,7 @@ pub(super) type PagePause = (
 
 pub(super) fn open(dir: &TempDir) -> RaftLog<Types, Codec> {
     let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
-    RaftLog::new(log, Codec)
+    RaftLog::new(log, Codec).expect("a Raft log")
 }
 
 fn log_id(term: u64, index: u64) -> LogIdOf<Types> {
@@ -285,11 +289,18 @@ async fn an_unknown_writer_is_never_a_term_zero_entry() {
 #[tokio::test]
 async fn a_record_without_a_generation_is_no_entry() {
     let dir = tempdir().expect("dir");
-    let raft = open(&dir);
-    raft.disk_log()
-        .append(&[record(RecordMark::None, b"old")])
+    // Written before the directory became a Raft log's.
+    let plain = LogConfig {
+        raft_log: false,
+        ..config()
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", plain).expect("open");
+    log.append(&[record(RecordMark::None, b"old")])
         .await
         .expect("append");
+    log.close().await.expect("close");
+    drop(log);
+    let raft = open(&dir);
     assert_eq!(
         raft.disk_log().writer_at(0).await.expect("writer"),
         WriterAt::Unstamped
@@ -330,7 +341,7 @@ async fn a_record_below_the_first_index_is_no_entry() {
     // A log placed at a base holds nothing below it, and reads that way.
     let placed = tempdir().expect("dir");
     let log = DiskLog::open_at(placed.path(), "t/ns/raft/1", config(), 5).expect("open");
-    let raft = RaftLog::<Types, Codec>::new(log, Codec);
+    let raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
     assert_eq!(raft.log_state().await.expect("state").last_log_id, None);
     store(&raft, &[blank(2, 5), normal(2, 6, "a")])
         .await

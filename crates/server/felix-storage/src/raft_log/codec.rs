@@ -78,8 +78,6 @@ where
 
 /// The record that holds `entry`, and the generation to stamp it with. The
 /// record goes at offset `entry.log_id.index`.
-// Only the tests write until the write side lands.
-#[cfg_attr(not(test), expect(dead_code))]
 pub(super) fn record_from_entry<C, K>(
     codec: &K,
     entry: &Entry<CommittedLeaderIdOf<C>, EntryPayload<C::D, C::Membership>>,

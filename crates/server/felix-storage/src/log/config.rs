@@ -145,6 +145,15 @@ pub struct LogConfig {
     /// carry a generation. Off unless a [`crate::DiskLogProvider`] is told
     /// otherwise; see [`GenerationGate`].
     pub generations: GenerationGate,
+    /// Every record is a Raft entry (`crate::raft_log`), so each needs a
+    /// generation: the log writes format v9 from its first segment, moves an
+    /// older active segment onto v9 at the next append, and takes membership
+    /// records. Retention bounds are refused, since only a purge may drop
+    /// entries.
+    ///
+    /// The [`GenerationGate`] is not asked. Set this only where every build
+    /// that may open the directory reads v9.
+    pub raft_log: bool,
 }
 
 /// Whether logs may start new segments in format v9, shared by every log a
@@ -305,6 +314,15 @@ impl Retention {
 }
 
 impl LogConfig {
+    /// The format a segment that starts a log is written at.
+    pub(crate) fn first_segment_version(&self) -> u16 {
+        if self.raft_log {
+            crate::segment::format::GENERATION_VERSION
+        } else {
+            crate::segment::format::BASELINE_VERSION
+        }
+    }
+
     /// The retention bounds this configuration sets.
     pub fn retention(&self) -> Retention {
         Retention {
@@ -315,6 +333,13 @@ impl LogConfig {
 
     /// Whether `retention` can be enforced under this configuration.
     pub(crate) fn check_retention(&self, retention: Retention) -> Result<()> {
+        // Retention deletes head segments on its own schedule, which a Raft
+        // log would read as entries purged that nothing purged.
+        if self.raft_log && retention.is_set() {
+            return Err(StorageError::InvalidConfig(
+                "a Raft log takes no retention bounds; its entries go only by a purge",
+            ));
+        }
         // Zero is not "retain nothing" — the active segment is never deleted, so
         // it would be a bound the log can never satisfy, re-evaluated forever.
         if retention.bytes == Some(0) {
@@ -434,6 +459,7 @@ impl Default for LogConfig {
             offload: None,
             retention_hold: RetentionHold::AsSaved,
             generations: GenerationGate::default(),
+            raft_log: false,
         }
     }
 }

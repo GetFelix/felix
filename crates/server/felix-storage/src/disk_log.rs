@@ -1190,6 +1190,25 @@ impl DiskLog {
     }
 }
 
+/// Hooks for tests outside this module.
+#[cfg(test)]
+impl DiskLog {
+    /// Hold every flush until the guard is dropped.
+    pub(crate) async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.durability.lock_flushes().await
+    }
+
+    /// Fail the next flush, as a failed fsync would.
+    pub(crate) fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Stop the next truncation or reset after `unlinks` unlinks.
+    pub(crate) fn stop_after_unlinks(&self, unlinks: usize) {
+        segments::stop_after_unlinks(&self.inner.dir, unlinks);
+    }
+}
+
 /// What the log holds at one offset, as its record header says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriterAt {
