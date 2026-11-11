@@ -185,11 +185,10 @@ fn health_router(
         .route(
             "/ready",
             axum::routing::get(move || async move {
-                if readiness.is_ready() {
-                    (axum::http::StatusCode::OK, "ok")
-                } else {
-                    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
-                }
+                ready_status(
+                    felix_storage::disk_log::any_log_poisoned(),
+                    readiness.is_ready(),
+                )
             }),
         )
         // Read-only, and deliberately so: this listener has no authentication
@@ -200,6 +199,22 @@ fn health_router(
             "/replication/halted",
             axum::routing::get(move || async move { axum::Json(halted.snapshot()) }),
         )
+}
+
+/// What `/ready` answers. A failed flush stops a log for good and only a
+/// restart reopens it; its shards refuse writes until then, so traffic
+/// should go elsewhere.
+fn ready_status(poisoned: bool, ready: bool) -> (axum::http::StatusCode, &'static str) {
+    if poisoned {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "a log is poisoned after a failed flush; restart the broker",
+        )
+    } else if ready {
+        (axum::http::StatusCode::OK, "ok")
+    } else {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    }
 }
 
 /// The probes a broker answers before it is built: `/live` says ok, `/ready`

@@ -391,6 +391,7 @@ impl DiskLog {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
             if let Some((generation, leader)) = &from
                 && let Some(refused) = super::ballot::check(
                     &inner.ballot.read(),
@@ -468,7 +469,10 @@ impl DiskLog {
             // The mark may have made the current set one an earlier set
             // already names.
             set.drop_repeated_earlier();
-            store(&inner.dir, &set, wiped.as_ref())?;
+            inner.poison_on_sync_failure(
+                "the replica set file",
+                store(&inner.dir, &set, wiped.as_ref()),
+            )?;
             let generation = set.current.generation;
             // The mark first: a reader that sees the new set sees it too.
             *inner.wiped.write() = wiped;
@@ -529,6 +533,7 @@ impl DiskLog {
         let node = node.to_string();
         felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
             };
@@ -556,7 +561,10 @@ impl DiskLog {
             // Admission may have made the current set one an earlier set
             // already names.
             set.drop_repeated_earlier();
-            store(&inner.dir, &set, wiped.as_ref())?;
+            inner.poison_on_sync_failure(
+                "the replica set file",
+                store(&inner.dir, &set, wiped.as_ref()),
+            )?;
             *inner.replica_set.write() = Some(set);
             *inner.wiped.write() = wiped;
             Ok(true)

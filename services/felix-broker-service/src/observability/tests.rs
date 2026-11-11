@@ -304,3 +304,20 @@ fn installing_the_recorder_starts_histogram_upkeep() {
     let _handle = install_metrics_recorder();
     assert!(upkeep_threads_started() >= 1);
 }
+
+#[test]
+fn a_poisoned_log_makes_the_broker_not_ready() {
+    use axum::http::StatusCode;
+
+    assert_eq!(ready_status(false, true).0, StatusCode::OK);
+    assert_eq!(
+        ready_status(false, false).0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    // Whether or not it is otherwise ready, and it says why.
+    for ready in [true, false] {
+        let (status, body) = ready_status(true, ready);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert!(body.contains("poisoned"), "{body}");
+    }
+}

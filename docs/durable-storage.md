@@ -575,14 +575,36 @@ Four properties:
    its placed base). A zeroed header on a longer first segment stays fatal,
    even if the bytes after it are zeros too. See
    `docs/storage-format.md`, "What recovery may repair".
-   A **failed fsync poisons the log**, whichever path issued it (the group
-   commit flush, the io_uring flusher, a seal, a truncation): the durable bound
-   never moves again, and every later append, commit, flush and shutdown on that
-   log returns the error until the process restarts and recovery re-reads what
-   actually reached the disk. Linux may drop the dirty pages a failed writeback
+   A **failed fsync poisons the log**, whichever path issued it. That covers
+   the group commit flush, the io_uring flusher, a seal and its index, a new
+   segment's directory entry, a truncation, a retention removal, and the small
+   state files beside the segments (the ballot, the replica set, the replica
+   state with the commit offset, the generation history). A directory sync
+   counts as a flush. The durable bound never moves again. The operation
+   that hit the failure returns `StorageError::SyncFailed`, and so does every
+   append waiting on that flush. Every later append, commit, flush, state
+   write and shutdown on that log returns `StorageError::Poisoned`, which
+   names the shard and the first failure. Nothing is retried. The log works
+   again once it is reopened, which in a broker means a restart: recovery
+   re-reads what actually reached the disk, as it does after a crash.
+
+   The reason is that Linux may drop the dirty pages a failed writeback
    could not write, so the *next* fsync returns success having flushed nothing
    ("fsyncgate"). Believing it would acknowledge records that are gone, which is
-   the same silent loss the checksum rule above refuses to risk.
+   the same silent loss the checksum rule above refuses to risk. For a state
+   file the failure also leaves memory and disk apart: the file on disk may be
+   the old one or the new one, and memory keeps the old value. Stopping the
+   log keeps anything from being decided on that difference.
+
+   A broker with a poisoned log answers `/ready` with 503 and the reason, so
+   a load balancer or an orchestrator takes it out of rotation, and it
+   attests no trusted copy to a fence from then on. See "A failed flush" in
+   [replication-engine.md](replication-engine.md) for what a replicated shard
+   does.
+
+   > `disk_log/tests/flush_failures.rs` fails each flush of an append, a
+   > rollover, a truncation and each state-file write in turn on the
+   > simulator's filesystem, then cuts the power and reopens.
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
    resumed subscription, a Kafka Fetch (and its high watermark) and a group

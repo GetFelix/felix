@@ -318,7 +318,8 @@ impl LogInner {
             self.sync_pending_seal()?;
             if let Err(err) = segments.roll_for(records) {
                 self.poison_after_writer_failure(&segments);
-                return Err(err);
+                // The index or the directory, which the writer does not own.
+                return self.poison_on_sync_failure("a segment rollover", Err(err));
             }
             // `roll` sealed the retired segment, so the snapshot describes
             // only records already on the device.
@@ -743,21 +744,41 @@ impl LogInner {
         if self.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(self.label.clone()));
         }
+        self.check_not_poisoned()
+    }
+
+    /// [`Self::check_healthy`] without the closed check, for the state
+    /// writes a closing log still makes.
+    pub(super) fn check_not_poisoned(&self) -> Result<()> {
         if let Some(reason) = self.failure.lock().as_deref() {
-            return Err(StorageError::SyncFailed(format!(
-                "{}: {reason}; the log is no longer accepting appends",
-                self.label
-            )));
+            return Err(StorageError::Poisoned {
+                shard: self.label.clone(),
+                reason: reason.to_string(),
+            });
         }
         // A `Failed` state with no recorded reason means the rollover task
         // itself panicked or was cancelled. Still terminal.
         if RollState::from_u8(self.roll_state.load(Ordering::Acquire)) == RollState::Failed {
-            return Err(StorageError::SyncFailed(format!(
-                "{}: a background segment rollover failed; the log is no longer accepting appends",
-                self.label
-            )));
+            return Err(StorageError::Poisoned {
+                shard: self.label.clone(),
+                reason: "a background segment rollover failed".to_string(),
+            });
         }
         Ok(())
+    }
+
+    /// Poison the log if `result` is a flush that failed. For the small
+    /// state files (the vote, the replica set and state, the generation
+    /// history, the snapshots): the file on disk may be the new one, the old
+    /// one or neither, memory keeps the old value, and a retry could report
+    /// success for pages the kernel dropped.
+    pub(super) fn poison_on_sync_failure<T>(&self, what: &str, result: Result<T>) -> Result<T> {
+        if let Err(err) = &result
+            && err.is_sync_failure()
+        {
+            self.poison(format!("a flush of {what} failed ({err})"));
+        }
+        result
     }
 }
 

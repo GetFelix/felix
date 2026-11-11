@@ -558,6 +558,12 @@ It turns true once the catalog is applied, every durable stream is recovered,
 and every listener is bound. A broker that cannot bind a port exits without
 ever reporting ready, so whatever started it sees a failed start, not a crash.
 
+`/ready` also turns false, with the reason in the body, when a disk flush
+(an fsync) has failed on any log. That log refuses writes until the broker
+restarts, because the operating system may have dropped the data the failed
+flush was meant to keep. Restart the broker once the disk is healthy; it
+reopens every log from what reached the disk.
+
 ## Distributed tracing
 
 Tracing export is off unless an OTLP endpoint is set. With

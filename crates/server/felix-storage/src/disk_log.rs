@@ -611,7 +611,10 @@ impl DiskLog {
                         committed_generation: below,
                         ..operation.replica_state_with(*committed)
                     };
-                    replica_state::store(&operation.dir, &state)?;
+                    operation.poison_on_sync_failure(
+                        "the replica state",
+                        replica_state::store(&operation.dir, &state),
+                    )?;
                     *committed = below;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
@@ -647,7 +650,11 @@ impl DiskLog {
             epochs.record(epoch.generation, epoch.start_offset.max(from));
         }
         if epochs.entries() != before.as_slice() {
-            epochs::store(&self.inner.dir, &epochs)?;
+            self.inner.check_not_poisoned()?;
+            self.inner.poison_on_sync_failure(
+                "the generation history",
+                epochs::store(&self.inner.dir, &epochs),
+            )?;
         }
         Ok(())
     }
@@ -1489,10 +1496,14 @@ impl AppendOnlyLog for DiskLog {
         let segments = self.inner.segments.read();
         segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
+        self.inner.check_not_poisoned()?;
         if !epochs.record(generation, start_offset) {
             return Ok(false);
         }
-        epochs::store(&self.inner.dir, &epochs)?;
+        self.inner.poison_on_sync_failure(
+            "the generation history",
+            epochs::store(&self.inner.dir, &epochs),
+        )?;
         Ok(true)
     }
 
@@ -2063,7 +2074,13 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         if inner.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(inner.label.clone()));
         }
-        replica_state::store(&inner.dir, &state)?;
+        // Not retried once poisoned: the write behind would otherwise try
+        // again, and a retry after a failed flush proves nothing.
+        inner.check_not_poisoned()?;
+        inner.poison_on_sync_failure(
+            "the replica state",
+            replica_state::store(&inner.dir, &state),
+        )?;
         #[cfg(test)]
         inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
@@ -2127,7 +2144,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            if inner.closed.load(Ordering::Acquire) {
+            // A poisoned log writes nothing more, so there is nothing to
+            // retry.
+            if inner.closed.load(Ordering::Acquire) || inner.is_poisoned() {
                 return;
             }
             if persist_replica_state(Arc::clone(&inner)).await.is_err() {
