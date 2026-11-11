@@ -1,5 +1,7 @@
 //! Throwaway: cost of N three-member openraft groups in one process.
-//! usage: openraft-scale <groups> <timers:on|off> <idle_secs>
+//! usage: openraft-scale <groups> <timers:on|hb_off|tick_off> <idle_secs> <mode:multi|single>
+//! multi: 3 members/group in this process. single: one member (node 1) per group; nodes 2 and 3 are stubs
+//! that ack every AppendEntries and grant every vote without running a Raft.
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
@@ -12,6 +14,7 @@ use openraft::network::RPCOption;
 use openraft::network::RaftNetworkFactory;
 use openraft::raft::{AppendEntriesRequest, AppendResult, SnapshotResponse, VoteRequest, VoteResponse};
 use openraft_rt::watch::WatchReceiver;
+use openraft::entry::RaftEntry;
 use openraft::{Config, OptionalSend};
 use openraft_memstore::{TypeConfig, new_mem_store};
 use openraft_multi::{GroupNetworkAdapter, GroupNetworkFactory, GroupRouter};
@@ -21,6 +24,7 @@ type Raft = openraft::Raft<TypeConfig, Arc<openraft_memstore::MemStateMachine>>;
 #[derive(Default)]
 struct Inner {
     rafts: RwLock<HashMap<(u64, u64), Raft>>,
+    single: bool,
     rpcs: AtomicU64,
     heartbeats: AtomicU64,
 }
@@ -58,6 +62,10 @@ impl GroupRouter<TypeConfig, u64> for Router {
         if rpc.entries.is_empty() {
             self.0.heartbeats.fetch_add(1, Relaxed);
         }
+        if self.0.single && target != 1 {
+            let m = rpc.entries.last().map(|e| e.log_id()).or(rpc.prev_log_id);
+            return Ok(Ok(m));
+        }
         self.get(target, group)?.append_entries(rpc).await.map_err(unreach)
     }
 
@@ -69,6 +77,9 @@ impl GroupRouter<TypeConfig, u64> for Router {
         _o: RPCOption,
     ) -> Result<VoteResponse<TypeConfig>, RPCError<TypeConfig>> {
         self.0.rpcs.fetch_add(1, Relaxed);
+        if self.0.single && target != 1 {
+            return Ok(VoteResponse::new(&rpc.vote, None, true));
+        }
         self.get(target, group)?.vote(rpc).await.map_err(unreach)
     }
 
@@ -80,6 +91,9 @@ impl GroupRouter<TypeConfig, u64> for Router {
         _o: RPCOption,
     ) -> Result<VoteResponse<TypeConfig>, RPCError<TypeConfig>> {
         self.0.rpcs.fetch_add(1, Relaxed);
+        if self.0.single && target != 1 {
+            return Ok(VoteResponse::new(&rpc.vote, None, true));
+        }
         self.get(target, group)?.pre_vote(rpc).await.map_err(unreach)
     }
 
@@ -123,17 +137,24 @@ fn cpu_ticks() -> u64 {
 async fn main() {
     let a: Vec<String> = std::env::args().collect();
     let n: u64 = a[1].parse().unwrap();
-    let timers = a[2] == "on";
+    let single = a.get(4).map(|m| m == "single").unwrap_or(false);
     let idle: u64 = a[3].parse().unwrap();
     let rss0 = rss_kb();
 
     let cfg = Arc::new(
-        Config { enable_heartbeat: timers, enable_elect: timers, ..Default::default() }.validate().unwrap(),
+        Config {
+            enable_heartbeat: a[2] == "on",
+            enable_elect: a[2] == "on",
+            enable_tick: a[2] != "tick_off",
+            ..Default::default()
+        }
+        .validate()
+        .unwrap(),
     );
-    let router = Router::default();
+    let router = Router(Arc::new(Inner { single, ..Default::default() }));
     let t0 = Instant::now();
     for g in 0..n {
-        for node in 1..=3u64 {
+        for node in if single { 1..=1u64 } else { 1..=3u64 } {
             let (ls, sm) = new_mem_store();
             let f = Factory(GroupNetworkFactory::new(router.clone(), g));
             let r = Raft::new(node, cfg.clone(), f, ls, sm).await.unwrap();
@@ -167,7 +188,8 @@ async fn main() {
     let (c1, h1, p1) = (cpu_ticks(), router.0.heartbeats.load(Relaxed), router.0.rpcs.load(Relaxed));
     let cpu_pct = (c1 - c0) as f64 / 100.0 / el * 100.0;
     println!(
-        "RESULT groups={n} timers={} leaders={ready} setup_s={setup:.1} rss_base_mb={} rss_mb={} rss_per_group_kb={} tasks={tasks} idle_cpu_pct={cpu_pct:.1} hb_per_s={:.0} rpc_per_s={:.0}",
+        "RESULT groups={n} mode={} timers={} leaders={ready} setup_s={setup:.1} rss_base_mb={} rss_mb={} rss_per_group_kb={} tasks={tasks} idle_cpu_pct={cpu_pct:.1} hb_per_s={:.0} rpc_per_s={:.0}",
+        a.get(4).map(String::as_str).unwrap_or("multi"),
         a[2],
         rss0 / 1024,
         rss_kb() / 1024,

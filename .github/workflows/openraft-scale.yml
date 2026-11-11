@@ -5,12 +5,13 @@ on:
 jobs:
   scale:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        timers: [on, off]
-        groups: [1000, 5000, 10000]
+        timers: [on, hb_off, tick_off]
+        groups: [1000, 5000]
+        mode: [multi, single]
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/bin-target
     steps:
@@ -23,5 +24,5 @@ jobs:
         working-directory: scratch/openraft-scale
         run: |
           free -m
-          timeout 900 ${{ github.workspace }}/bin-target/release/openraft-scale ${{ matrix.groups }} ${{ matrix.timers }} 30 2>&1 | tail -5 | tee out.txt || echo "FAILED/timeout rc=$?" | tee -a out.txt
+          timeout 1500 ${{ github.workspace }}/bin-target/release/openraft-scale ${{ matrix.groups }} ${{ matrix.timers }} 30 ${{ matrix.mode }} 2>&1 | tail -5 | tee out.txt || echo "FAILED/timeout rc=$?" | tee -a out.txt
           { echo '```'; cat out.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
