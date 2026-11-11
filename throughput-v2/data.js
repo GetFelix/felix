@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794416866380,
+  "lastUpdate": 1794426025861,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52052,6 +52052,58 @@ window.BENCHMARK_DATA = {
             "range": "8117.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 821018.82\nmean: 819042.77\nstdev: 8117.31\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc8e8c69a28ad611d5b25df9cdaa6f9c163791a8",
+          "message": "feat(storage): write side of the Raft log adapter over DiskLog (#2167) (#2222)\n\n* wip: write side of the Raft log adapter\n\nSpec-Unaffected: save_vote is a new entry to the same ballot-then-replica write; no rule the model checks changes.\n\n* wip: tests and docs\n\nSpec-Unaffected: no ballot rule changes.\n\n* feat(storage): write side of the Raft log adapter over DiskLog (#2167)\n\nappend with the IOFlushed callback, truncate_after and save_vote on RaftLog.\nLogConfig::raft_log: v9 from the first segment, membership records allowed,\nretention bounds refused, an empty log starts at any index.\n\nSpec-Unaffected: DiskLog::save_vote is a new caller of the same ballot-then-replica write; no rule the model checks changes.\n\n* test(storage): committed id never past the log; a cut is on disk before a later callback (#2221)\n\n* docs(replication): the committed id and the cut-before-callback rule (#2221)\n\n* test(storage): a cut tail never returns under a committed id (#2221)\n\n* fix(storage): a read ends at a record its byte budget refuses (#2218)\n\nA refused record stopped the read of its segment but left the budget\nunspent, so the plan went on to the next segment and returned its first\nrecord past a hole. The Raft log reader pages by bytes and failed on it.\n\nSpec-Unaffected: read path only; no replication or election rule changes.\n\n* fix(storage): the committed id is checked by term, not only by index (#2221)\n\nThe replica file of a Raft log keeps the committed entry's generation\nbeside the commit offset (version 2; other logs still write version 1).\nAn open compares it with the record below the offset and takes nothing as\ncommitted when another term's entry is there. read_committed checks again.\n\nSpec-Unaffected: ballot.rs only builds the replica state through a shared helper; the rule added is the FelixRaft model's committed-id check, which is in #2220.\n\n* fix(storage): review follow-ups for the committed id (#2221)\n\n- An open that lowers the commit offset writes it with its entry's\n  generation in one write. Two writes left the lower offset beside the\n  higher generation in between, and the next open dropped the commit.\n- A Raft log's commit offset moves only with a term: advance_commit_offset\n  is refused and note_commit_offset does nothing there. restore_to saves\n  the generation of the entry it lowers the offset to.\n- append takes the flushing guard before it writes.\n- Tests for the read_committed check and for a lowered id under a later\n  term's entry.\n\nSpec-Unaffected: storage rules under the FelixRaft model's committed-id check (#2220); no election or replication rule changes.",
+          "timestamp": "2026-11-11T11:33:10-08:00",
+          "tree_id": "8f6fb399535686130648e4100e5800ff3beb500d",
+          "url": "https://github.com/GetFelix/felix/commit/dc8e8c69a28ad611d5b25df9cdaa6f9c163791a8"
+        },
+        "date": 1794426024956,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 374071.23,
+            "range": "7511.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374071.23\nmean: 373696.00\nstdev: 7511.82\ncv: 2.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 374071.23,
+            "range": "7511.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374071.23\nmean: 373696.00\nstdev: 7511.82\ncv: 2.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 90791.34,
+            "range": "1499.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 90791.34\nmean: 90662.27\nstdev: 1499.90\ncv: 1.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 907913.44,
+            "range": "14999.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 907913.44\nmean: 906622.75\nstdev: 14999.04\ncv: 1.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
