@@ -485,11 +485,15 @@ expectations=(
   "FelixRaft pass"
   "FelixRaftCrashes pass"
   "FelixRaftTerms pass"
+  "FelixRaftTermsFull pass"
   "FelixRaftFourTerms pass"
   "FelixRaftSnapshot pass"
   "FelixRaftSnapshotReplace pass"
+  "FelixRaftSnapshotCrashes pass"
   "FelixRaftOffsets pass"
   "FelixRaftOffsetsFailover pass"
+  "FelixRaftOffsetsFailoverCrash pass"
+  "FelixRaftOffsetsFull pass"
   "FelixRaftAckBeforeFlush violates AckedSurvive"
   "FelixRaftVoteNotDurable violates OneLeaderPerTerm"
   "FelixRaftLeaderResumes violates LogMatching"
@@ -632,9 +636,6 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
-# FelixRaftTermsFull, FelixRaftOffsetsFull, FelixRaftOffsetsFailoverCrash and
-# FelixRaftSnapshotCrashes are not registered: none has been run to the end
-# yet. Run them through the workflow's dispatch.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -818,6 +819,10 @@ weights=(
   "FelixRaftSnapshotReplace 6"
   "FelixRaftOffsetsFailover 7"
   "FelixRaftFourTerms 45"
+  "FelixRaftTermsFull 59"
+  "FelixRaftOffsetsFull 20"
+  "FelixRaftSnapshotCrashes 21"
+  "FelixRaftOffsetsFailoverCrash 41"
   "FelixRaftCommitPriorTerm 1"
   "FelixRaftSaveCommittedUnflushed 2"
 )

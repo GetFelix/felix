@@ -555,14 +555,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCrashes.cfg` | the same with two crashes and no subscriber | pass the same (1.6M distinct states) |
 | `FelixRaftTerms.cfg` | three terms, no write, no crash, no subscriber | pass the same (1.1M distinct states) |
 | `FelixRaftFourTerms.cfg` | four terms, no write, no crash, no subscriber | pass the same (40.9M distinct states) |
-| `FelixRaftTermsFull.cfg` | three terms with one write; not registered, run by dispatch | pass the same |
+| `FelixRaftTermsFull.cfg` | three terms with one write | pass the same (26.0M distinct states, 59 min) |
 | `FelixRaftSnapshot.cfg` | one snapshot, a purge up to it and a follower brought up by snapshot in three writes, one crash | pass the same (5.5M distinct states) |
 | `FelixRaftSnapshotReplace.cfg` | two snapshots, no crash: a broker replaces a snapshot it stored | pass the same (5.8M distinct states) |
-| `FelixRaftSnapshotCrashes.cfg` | `FelixRaftSnapshot.cfg` with two crashes; not registered, run by dispatch | pass the same |
+| `FelixRaftSnapshotCrashes.cfg` | `FelixRaftSnapshot.cfg` with two crashes | pass the same (9.4M distinct states, 21 min) |
 | `FelixRaftOffsets.cfg` | one term, two writes and a membership entry, the subscriber reading, no crash | pass the same (0.4M distinct states) |
 | `FelixRaftOffsetsFailover.cfg` | two terms, two writes, the subscriber reading across a change of leader, no crash | pass the same (5.7M distinct states) |
-| `FelixRaftOffsetsFailoverCrash.cfg` | the same with one crash; not registered, run by dispatch | pass the same |
-| `FelixRaftOffsetsFull.cfg` | two terms, one write and a membership entry, the subscriber reading; not registered, run by dispatch | pass the same |
+| `FelixRaftOffsetsFailoverCrash.cfg` | the same with one crash | pass the same (16.1M distinct states, 41 min) |
+| `FelixRaftOffsetsFull.cfg` | two terms, one write and a membership entry, the subscriber reading | pass the same (8.9M distinct states, 20 min) |
 | `FelixRaftAckBeforeFlush.cfg` | the flush callback fires before the fsync | violate `AckedSurvive` |
 | `FelixRaftRecoveredTailUnsynced.cfg` | entries found at the open are reported flushed without an fsync | violate `AckedSurvive` |
 | `FelixRaftVoteNotDurable.cfg` | `save_vote` returns before the vote is on disk | violate `OneLeaderPerTerm` |
@@ -2219,10 +2219,11 @@ The passing run is split by what it varies, each with three brokers:
 - `FelixRaftOffsetsFailover.cfg`: two writes over two terms with the
   subscriber, so two deliveries can come from different leaders.
 
-Four more are too large for every push and are not registered. Run them by
-name through the CI workflow's dispatch (`tla_configs`):
-`FelixRaftTermsFull.cfg` (three terms with a write), `FelixRaftOffsetsFull.cfg`
-(one write and a membership entry across a change of leader),
+Five take more than ten minutes on a CI runner, so a pull request checks them
+only when it changes `FelixRaft.tla` or the configuration, and main checks
+them on every spec change: `FelixRaftFourTerms.cfg`, `FelixRaftTermsFull.cfg`
+(three terms with a write), `FelixRaftOffsetsFull.cfg` (one write and a
+membership entry across a change of leader),
 `FelixRaftOffsetsFailoverCrash.cfg` (`FelixRaftOffsetsFailover.cfg` with one
 crash) and `FelixRaftSnapshotCrashes.cfg` (`FelixRaftSnapshot.cfg` with two
 crashes).
