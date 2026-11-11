@@ -338,7 +338,7 @@ impl LogInner {
             removed
         };
         for descriptor in &removed {
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
             super::segments::stop_point(&self.dir)?;
             remove_segment_files(&self.dir, descriptor.id)?;
             crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;

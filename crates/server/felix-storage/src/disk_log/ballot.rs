@@ -16,9 +16,9 @@
 //! the open.
 //!
 //! Format v2 adds the vote's committed flag (openraft's `Vote::committed`).
-//! Only a committed vote is written as v2, and only through the test hook
-//! until the fleet gate for segment format v9 wires a real caller, so every
-//! ballot a broker writes today is one the previous release reads. That
+//! Only a committed vote is written as v2, and only by a Raft log
+//! ([`DiskLog::save_vote`]) or past the fleet gate for segment format v9,
+//! so every ballot a broker writes today is one the previous release reads. That
 //! release refuses a v2 file at open: its decoder takes only v1. That comes
 //! after the open's torn-tail repair and mark write, which both builds read.
 //!
@@ -176,6 +176,15 @@ impl DiskLog {
         self.inner.ballot.read().committed
     }
 
+    /// The accepted generation, its leader and whether the vote is
+    /// committed, read together so a vote saved in between cannot be seen
+    /// half changed.
+    #[cfg(feature = "raft")]
+    pub(crate) fn accepted_vote(&self) -> (u64, Option<Arc<str>>, bool) {
+        let ballot = self.inner.ballot.read();
+        (ballot.generation, ballot.leader.clone(), ballot.committed)
+    }
+
     /// Accept `leader` at `generation`, persisting it first if it is new.
     ///
     /// Returns once a raised generation is on disk, so a caller that
@@ -265,8 +274,7 @@ impl DiskLog {
             if raised {
                 let state = replica_state::ReplicaState {
                     accepted_generation: generation,
-                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
-                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
+                    ..inner.replica_state()
                 };
                 replica_state::store(&inner.dir, &state)?;
                 inner
@@ -342,6 +350,57 @@ impl DiskLog {
             .raise_ballot(generation, Some(leader), true, None)
             .await?;
         Ok(raised.expect("no set to check"))
+    }
+
+    /// Save the vote for `leader` at `generation`, committed or not, for a
+    /// caller that has already decided it, as openraft has. On disk before
+    /// this returns.
+    ///
+    /// A saved vote only moves forward: to a higher generation, or from
+    /// uncommitted to committed for the same leader. Saving the vote held
+    /// writes nothing. Anything else is refused with nothing written: a vote
+    /// that goes back, or changes leader within a generation, can elect two
+    /// leaders.
+    ///
+    /// A committed vote is written in ballot format v2 whatever the log's
+    /// [`crate::log::GenerationGate`] says, so the caller must know every
+    /// build that may open the directory reads it.
+    pub async fn save_vote(&self, generation: u64, leader: &str, committed: bool) -> Result<()> {
+        let refused = |why: String| {
+            Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{}: {why}", self.inner.label),
+            )))
+        };
+        // An empty leader is how a given-up generation is kept.
+        if leader.is_empty() {
+            return refused(format!("a vote at generation {generation} names no leader"));
+        }
+        {
+            let held = self.inner.ballot.read();
+            if held.generation == generation
+                && held.leader.as_deref() == Some(leader)
+                && held.committed
+                && !committed
+            {
+                return refused(format!(
+                    "the vote for {leader} at generation {generation} is already committed"
+                ));
+            }
+        }
+        match self
+            .raise_ballot(generation, Some(leader), committed, None)
+            .await?
+            .expect("no set to check")
+        {
+            GenerationCheck::Raised | GenerationCheck::Current => Ok(()),
+            GenerationCheck::Superseded { accepted } => refused(format!(
+                "a vote at generation {generation} is behind the one held at {accepted}"
+            )),
+            GenerationCheck::Promised { leader: held } => refused(format!(
+                "a vote for {leader} at generation {generation} follows one for {held:?}"
+            )),
+        }
     }
 
     /// Whether this log gave up its accepted generation and has accepted no

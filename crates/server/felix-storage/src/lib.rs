@@ -45,6 +45,8 @@
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
+//! - `raft_log`, behind the `raft` feature: a [`DiskLog`] as an openraft
+//!   log, one record per entry.
 //! - [`tiered`] is an interface with no implementation yet.
 //! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
 //!   reach decoders this crate does not export.
@@ -68,6 +70,8 @@ pub(crate) mod io;
 mod legacy_swap;
 pub mod log;
 pub mod metrics_names;
+#[cfg(feature = "raft")]
+pub mod raft_log;
 pub mod run_state;
 pub mod segment;
 mod shard_slots;

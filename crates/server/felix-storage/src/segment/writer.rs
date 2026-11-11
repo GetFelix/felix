@@ -136,8 +136,8 @@ impl SegmentWriter {
         dir: &Path,
         base_offset: Offset,
         created_at_micros: u64,
-        reserve_limit_bytes: u64,
-        index_spacing_bytes: u64,
+        (reserve_limit_bytes, index_spacing_bytes): (u64, u64),
+        version: u16,
     ) -> Result<Self> {
         Self::create_with(
             dir,
@@ -145,7 +145,7 @@ impl SegmentWriter {
             base_offset,
             created_at_micros,
             (reserve_limit_bytes, index_spacing_bytes),
-            BASELINE_VERSION,
+            version,
             DirEntry::Deferred,
         )
     }
