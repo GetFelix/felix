@@ -297,13 +297,71 @@ The offset is the Raft index: one record is one entry. The startup scan, the
 torn-tail rule and the derived indexes keep working as they do; version 9
 adds the generation field to the record header and the record kinds below.
 
-**What is built.** The read side of the adapter is in
-`crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature:
-`RaftLog::log_state` (the last log id) and `LogReader`, which implements
-openraft's `RaftLogReader` (entries and the vote). `DiskLog::writer_at` and
+**What is built.** The adapter is in
+`crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature.
+`RaftLog` implements openraft's `RaftLogStorage`: `append` with its
+`IOFlushed` callback, `truncate_after` and `save_vote`. `LogReader`
+implements `RaftLogReader` (entries and the vote). `DiskLog::writer_at` and
 `DiskLog::last_writer` give the generation in a record's header without
-reading its payload. Appending, truncating, saving a vote, purging and
-snapshots are not built, so nothing uses the adapter yet.
+reading its payload. Purge, the saved committed id and snapshots are not
+built, so no engine runs on the adapter yet.
+
+**A Raft log is opened as one.** `LogConfig::raft_log` makes a log v9 from
+its first segment, lets it take membership records, and refuses retention
+bounds, since retention deleting head segments would look like a purge
+nothing asked for. `RaftLog::new` refuses a log opened without it.
+
+**Append returns before the flush.** openraft wants `append` to return once
+the entries can be read and to hear through the callback once they are
+durable:
+
+```mermaid
+sequenceDiagram
+    participant R as openraft
+    participant A as RaftLog
+    participant D as DiskLog
+    R->>A: append(entries, callback)
+    A->>D: append_pending_at(index, records, terms)
+    D-->>A: written, readable
+    A-->>R: Ok
+    Note over A,D: a task waits for the group commit
+    D-->>A: flush covers the entries
+    A-->>R: callback(Ok)
+```
+
+The append checks that the first entry is the next index under the same
+lock that assigns offsets, so a hole is refused with nothing written. The
+callback fires from a task that waits on the log's group commit, once per
+append. A flush covers a prefix of the log, so when the callback fires
+every entry below is durable too. The wait follows the log's fsync policy:
+under `FsyncMode::OnCommit` it is a real flush, and under the other modes
+the callback fires at once, as an acknowledgement does for a stream. A
+flush that fails reaches the callback as an error, which openraft treats as
+fatal for the node.
+
+**Truncation waits for those callbacks.** `truncate_after` first lets every
+earlier append's callback fire, then cuts. Cutting first would leave a
+flush waiting on entries that no longer exist; it would give up and report
+the append failed. The cut itself removes whole segments newest first and
+syncs the directory after each, then cuts the surviving segment, so a crash
+part way leaves a longer log and never a gap. `truncate_after` also checks
+the id it is given: if the log holds an entry of another term at that
+index, the caller is describing a different log and the cut is refused.
+
+**A vote only moves forward.** `save_vote` writes the ballot and returns
+once it is on disk. It accepts a higher term, or the vote already held
+turning committed, and saving the held vote again writes nothing. A lower
+term, another node in the same term, or a committed vote going back to
+uncommitted is refused with nothing written.
+
+**Crash points.** Each write has power-loss tests on the simulator's
+filesystem (`raft_log/tests/crash_points.rs`,
+`disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
+inside the write and after its callback; a truncation cut after each
+unlink and after it returns; a vote save cut at every step. What reopens
+holds every entry whose callback fired, is a gap-free prefix of what was
+written, is never shorter than a truncation was asked to keep, and has the
+old vote or the new one.
 
 **The term is the generation minus one.** openraft's `initialize` writes the
 first membership entry at term 0, and generation 0 in a record header means
@@ -316,8 +374,9 @@ it opens the write fence at a term.
 
 **An empty log can start at any index.** openraft's storage suite appends to
 an empty store at index 1. The adapter takes the log's first index from
-where its oldest segment starts, so a log reset to a base holds nothing
-below it.
+where its oldest segment starts, and the first append to an empty log
+restarts it at that entry's index, so the log holds nothing below it. A log
+that holds entries takes an append only at its tail.
 
 **A read is one log's.** A read that spans several pages restarts if the log
 is truncated under it, so it never joins entries from before a truncation to
@@ -383,11 +442,11 @@ used by every shard group and by the control plane, tested once.
   `services/felix-controlplane-service/src/raft/store/tests.rs:44`) runs
   against the adapter, alongside `felix-storage`'s existing torn-tail,
   power-loss and fault-injection tests.
-  The suite drives a whole store, so it runs in full only once the write
-  side, purge and snapshots exist. Until then
-  `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the cases
-  that need only reads, appends, truncation and the vote, with test hooks
-  standing in for the write side.
+  The suite drives a whole store, so it runs in full only once purge and
+  snapshots exist. Until then
+  `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the 13
+  cases that need only reads, appends, truncation and the vote, all through
+  the adapter.
 - **Truncation is allowed.** `store.rs` says the segment store forbids
   truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported

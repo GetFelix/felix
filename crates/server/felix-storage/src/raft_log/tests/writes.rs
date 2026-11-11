@@ -55,6 +55,11 @@ fn mixed() -> Vec<TestEntry> {
 async fn an_append_keeps_each_entrys_term_and_kind() {
     let dir = tempdir().expect("dir");
     let mut raft = open(&dir);
+    assert_eq!(
+        raft.disk_log().segments()[0].version,
+        GENERATION_VERSION,
+        "the first segment, before any entry"
+    );
     let entries = mixed();
     append_flushed(&mut raft, &entries).await;
 
@@ -111,20 +116,33 @@ async fn a_failed_flush_fails_the_callback() {
     flushed.await.expect_err("the flush failed");
 }
 
-/// A truncation right behind an append waits for that append's callback.
-/// Cutting first would leave the flush waiting on entries that are gone, and
-/// it would report the append failed, which stops the node.
+/// A truncation waits for the callbacks of the appends before it. Here the
+/// flush is held and the truncation would otherwise reach the flush lock
+/// first, cut, and leave the append's flush waiting on entries that are
+/// gone: it would report the append failed, which stops the node.
 #[tokio::test]
 async fn a_truncation_waits_for_the_callbacks_of_what_it_cuts() {
     let dir = tempdir().expect("dir");
     let mut raft = open(&dir);
     let entries = mixed();
-    let mut flushed = append(&mut raft, &entries).await.expect("append");
-    raft.truncate_after(Some(log_id(1, 1)))
-        .await
-        .expect("truncate");
+    let log = raft.disk_log().clone();
+    let held = log.hold_flushes().await;
+    let flushed = append(&mut raft, &entries).await.expect("append");
+
+    // Polled without yielding, so the append's flush task has not run when
+    // the truncation gets as far as it can.
+    let mut cutter = raft.clone();
+    let mut cut = std::pin::pin!(cutter.truncate_after(Some(log_id(1, 1))));
+    for _ in 0..40 {
+        assert!(
+            cut.as_mut().now_or_never().is_none(),
+            "cut under a held flush"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    drop(held);
+    cut.await.expect("truncate");
     flushed
-        .as_mut()
         .now_or_never()
         .expect("the callback had not fired when the truncation returned")
         .expect("flush");
@@ -183,6 +201,11 @@ async fn an_empty_log_starts_at_any_index() {
     // Emptied, it is still not a log that goes back.
     raft.truncate_after(None).await.expect("truncate");
     assert_eq!(raft.log_state().await.expect("state").last_log_id, None);
+    assert_eq!(
+        raft.disk_log().segments()[0].version,
+        GENERATION_VERSION,
+        "an emptied log starts again on v9"
+    );
     assert!(
         append(&mut raft, &[blank(3, 4)]).await.is_err(),
         "below where the log starts"
@@ -321,7 +344,8 @@ async fn an_older_log_moves_onto_v9_at_its_first_entry() {
     drop(log);
 
     let mut raft = open(&dir);
-    let entries = [blank(4, 1), normal(4, 2, "a")];
+    // A command, which the old segment's format could hold.
+    let entries = [normal(4, 1, "a"), normal(4, 2, "b")];
     append_flushed(&mut raft, &entries).await;
     let versions: Vec<u16> = raft
         .disk_log()
