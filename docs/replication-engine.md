@@ -365,21 +365,51 @@ used by every shard group and by the control plane, tested once.
 
 ### openraft version
 
-The adapter targets openraft 0.10, currently `0.10.0-alpha.38`, pinned to an
-exact version in `Cargo.toml` and `Cargo.lock`. The control plane runs 0.9.25
-today (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the
-same pinned version as part of its storage track, so the workspace has one
-openraft. 0.10 is in alpha and may still change. This work lands over weeks,
-so it is designed against the 0.10 API, and a version change is a reviewed
-update, never a side effect of refreshing the lockfile.
+The adapter targets openraft 0.10, pinned to an exact version in
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10); the workspace
+pin moves from `0.10.0-alpha.38` to it as the first commit of the adapter
+work. The control plane runs 0.9.25 today
+(`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
+pinned version as part of its storage track, so the workspace has one
+openraft. A version change is a reviewed update, never a side effect of
+refreshing the lockfile.
 
-**Release rule (decided).** Everything is built and tested on the pinned
-0.10 alpha. A Felix release ships a control plane on 0.10 only if 0.10 is
-final by then, or the pinned alpha has passed the full control-plane
-simulator, crash-point and history checks. Otherwise that release keeps the
-control plane on 0.9.25, and everything else stays on 0.10. The control
-plane's openraft types stay inside `src/raft/` either way, so switching it
-between the two versions touches only that module.
+**Release rule (decided).** A Felix release ships a control plane on 0.10
+only if 0.10 is final, or the pinned version has passed the full
+control-plane simulator, crash-point and history checks. With 0.10.0 final
+the first condition holds; the checks still run before the control plane
+switches. The control plane's openraft types stay inside `src/raft/`, so a
+version change touches only that module.
+
+**What 0.10.0 adds that this design uses.** Each needs checking against the
+release before the design relies on it:
+
+- `openraft-multi` routes every group's RPCs through one shared router,
+  tagged with a group id (`examples/multi-raft-kv`). It shares connections,
+  but each group still sends its own heartbeats, so coalescing per peer
+  (below) is still Felix's to build, and a candidate to contribute upstream.
+- Pipelined replication (`RaftNetworkV2::stream_append`), and consecutive
+  appends merged into one storage write. Both bear on the per-record cost of
+  Decision 2.
+- Lease admission: a leader past its lease refuses new proposals
+  (openraft#1898), and `quorum_loss_probe_interval` stops its heartbeats so a
+  connected majority can elect (openraft#2080, #2166).
+- Pre-vote, leadership transfer, and lease reads that skip the core task
+  (`get_local_read_linearizer`).
+- `openraft-rt-sim`, a runtime for simulation, to evaluate for the felix-sim
+  harness.
+- Startup refuses a store whose state machine misses purged logs
+  (openraft#2222), next to the purge-then-snapshot crash window in Felix
+  issue #1931.
+
+**Limits found in openraft are fixed upstream.** Felix files an openraft
+issue with the measured numbers and, where the fix is clear, sends the pull
+request. Felix does not switch libraries or keep a private fork. The likely
+first one is coalescing heartbeats per peer in `openraft-multi`
+(openraft#1959 reported high p99 from groups ticking together and noted
+batching as the real fix). A lease backed by broker liveness goes to the
+open LeaseGuard issue (openraft#1651) once the TLA+ model (issue #2198)
+covers it.
 
 What the adapter absorbs from 0.9 to 0.10:
 
@@ -394,8 +424,10 @@ What the adapter absorbs from 0.9 to 0.10:
 - The trigger handle gains `transfer_leader`, which the engine uses for a
   graceful hand-off on drain and rebalance, and `elect` takes a `pre_vote`
   choice.
-- Neither version steps a leader down when it loses its majority (Decisions,
-  5), so the write fence's check at acknowledgement time is Felix's own.
+- 0.9 does not step a leader down when it loses its majority, so the write
+  fence's check at acknowledgement time is Felix's own (Decisions, 5). 0.10.0
+  adds lease admission (above). The fence check stays until a test pins
+  0.10.0's behaviour.
 
 0.10 also has opt-in local lease reads. They could replace `Quorum` read
 rounds and save a round trip per read. That is a later option, taken only
