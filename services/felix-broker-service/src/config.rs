@@ -136,7 +136,8 @@ pub struct BrokerConfig {
     pub ack_on_commit: bool,
     /// If true, an acknowledged publish to a durable stream is answered after
     /// commit; an in-memory stream still answers on enqueue. On by default,
-    /// and off only when `FELIX_ACK_ON_COMMIT` is set to anything but true.
+    /// and off only when `FELIX_ACK_ON_COMMIT` is an explicit false value
+    /// (`0`, `false`, `no`, `off`).
     pub ack_durable_on_commit: bool,
     /// Store the publishing principal with each durable record, on a broker
     /// outside a cluster. In a cluster the fleet decides: see

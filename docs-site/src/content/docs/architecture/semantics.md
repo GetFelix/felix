@@ -210,16 +210,17 @@ follower had yet. Those were never acknowledged, and an idempotent producer
 sends them again to the new leader.
 
 `Leader` is one round trip instead of two, and it moves the moment you find out.
-If the leader dies holding a record nothing else has, the control plane will not
-promote a replica, because promoting one would open the shard **without** that
-record and no reader could tell. The shard is left unavailable until the old
-leader returns with its disk.
+When the leader dies, the control plane promotes a follower only if the
+leader's last replica report showed it caught up. Records the leader
+acknowledged after that report are lost, and the promoted shard opens without
+them. With no follower reported caught up, the shard stays unavailable until
+the old leader returns with its disk.
 
-So the trade is mostly about timing, not safety. Both refuse to lose a
-record acknowledged after it was written (for `Leader`, the default on a
-durable stream); they differ in **when you learn there is a problem**:
-`Quorum` at publish time, while you still hold the record, or `Leader` at
-failover time, when the only copy is on a broker that is gone.
+So the trade is more than timing. `Quorum` never loses an acknowledged record
+to a failover, and it tells you about a problem at publish time, while you
+still hold the record. `Leader` can lose the records acknowledged since the
+last report, and it tells you at failover time, when the only copy may be on a
+broker that is gone.
 
 [`task cluster:consistency`](/demos/cluster-consistency/) runs
 this: the same fault put to both, on a real three-node cluster.

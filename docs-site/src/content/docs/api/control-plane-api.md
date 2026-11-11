@@ -313,14 +313,23 @@ supports and the ones an operator has enabled:
   "enabled": [], "serving_nodes": 3 }
 ```
 
-This build implements four features: `generation_start`, `majority_ack`,
-`lease_free_reads` and `jump_hash_routing`.
+A broker reports thirteen features: `generation_start`, `majority_ack`,
+`lease_free_reads`, `jump_hash_routing`, `atomic_commit`,
+`publisher_principal`, `fenced_caches`, `stream_incarnations`,
+`group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
+`record_headers` and `record_generations`. Two more, `joint_fence` and
+`replica_election`, are never reported: an operator finalizes them once the
+brokers offer the peer capabilities they need (see
+[Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
 
 Support turns nothing on. `POST /v1/fleet/features/{feature}/finalize`
 (`node.manage:cluster:*`) enables a feature, and is refused with 409 unless
 every live or draining broker supports it. It is also refused before the
-features it only works alongside: `majority_ack` before `generation_start`,
-and `lease_free_reads` or `fenced_caches` before both. With `?dry_run=true` it
+features it only works alongside: `majority_ack` and `record_generations`
+before `generation_start`, `lease_free_reads` or `fenced_caches` before both
+`generation_start` and `majority_ack`, `joint_fence` before `generation_start`,
+`stream_incarnations` and `cache_incarnations`, and `replica_election` before
+all of those plus `majority_ack`, `lease_free_reads` and `joint_fence`. With `?dry_run=true` it
 changes nothing and answers whether it would be accepted, listing brokers that
 lack the feature as `lacking` and features to finalize first as `requires`:
 
