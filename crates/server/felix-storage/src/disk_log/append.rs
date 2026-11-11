@@ -336,7 +336,7 @@ impl LogInner {
             return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
-        let stamps = self.stamps_for(segments.active(), writers)?;
+        let stamps = self.stamps_for(segments.active(), writers, segments.tail_offset())?;
         let staged = segments.active_mut().stage_at(records, stamps)?;
         drop(segments);
 
@@ -378,18 +378,23 @@ impl LogInner {
         }))
     }
 
-    /// The generations a batch appended to `active` is stamped with: none
-    /// before v9, and otherwise the ones that wrote it. A leader's is the
-    /// generation it leads at ([`DiskLog::lead_at`]), and only while that is
-    /// the one this log accepted: a newer one means another leader holds it,
-    /// and stamping either would claim a generation that did not write the
-    /// record. Never raised to the floor; the writer refuses a stamp below
+    /// The generations a batch appended to `active` at `first` is stamped
+    /// with: none before v9, and otherwise the ones that wrote it. A leader's
+    /// is the generation it leads at ([`DiskLog::lead_at`]), and only while
+    /// that is the one this log accepted and the newest in its history, with
+    /// the batch at or past where the history says it starts. A newer
+    /// accepted generation belongs to another leader; a history that does
+    /// not yet hold the led one, or starts it past the batch, means the
+    /// append was admitted before this leadership's start was recorded.
+    /// Either way the stamp would disagree with the history, so the batch is
+    /// refused. Never raised to the floor; the writer refuses a stamp below
     /// it. Read under the append lock.
     #[inline]
     fn stamps_for<'a>(
         &self,
         active: &SegmentWriter,
         writers: &'a WrittenBy,
+        first: Offset,
     ) -> Result<Option<Stamps<'a>>> {
         if !active.holds_generations() {
             return Ok(None);
@@ -403,6 +408,15 @@ impl LogInner {
                         "this log does not lead at the generation it accepted",
                     ));
                 };
+                let started =
+                    self.epochs.lock().newest().is_some_and(|newest| {
+                        newest.generation == led && newest.start_offset <= first
+                    });
+                if !started {
+                    return Err(StorageError::WriterUnknown(
+                        "this log has not recorded where the generation it leads at starts",
+                    ));
+                }
                 Ok(Some(Stamps::All(led)))
             }
             WrittenBy::Writers(runs) => Ok(Some(Stamps::Runs(runs))),

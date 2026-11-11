@@ -183,13 +183,36 @@ impl SegmentSet {
             self.active.size_bytes(),
             &self.label,
         )?;
-        record_generation_at(
+        let generation = record_generation_at(
             self.active.path(),
             self.active.id(),
             &self.label,
             self.active.version(),
             position,
-        )
+        )?;
+        if generation != Some(crate::log::UNKNOWN_WRITER) {
+            return Ok(generation);
+        }
+        // An unknown writer is no floor: walk the kept records for the last
+        // known one, or fall back to the segment before.
+        let end = self.active_reader.position_of(
+            self.active.index(),
+            offset,
+            self.active.size_bytes(),
+            &self.label,
+        )?;
+        let kept = crate::segment::scan::scan_segment_upto(
+            self.active.path(),
+            Some(end),
+            self.active.id(),
+            &self.label,
+            self.config.index_spacing_bytes,
+            ScanStart::Full,
+            crate::segment::scan::TailRepair::default(),
+        )?;
+        Ok(kept
+            .last_generation
+            .or_else(|| self.sealed.last().and_then(|entry| entry.last_generation)))
     }
 
     /// Swap in an active writer over segment `id`, either reopened at

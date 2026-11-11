@@ -550,7 +550,10 @@ impl<'a> View<'a> {
                 opened.sealed.first_generation,
                 opened.sealed.last_generation,
             )?;
-            sealed.push(opened.sealed);
+            // A segment holding only unknown writers keeps the floor before it.
+            let mut planned = opened.sealed;
+            planned.last_generation = newest_generation;
+            sealed.push(planned);
         }
 
         // The newest segment is the only one that can have been mid-write when
@@ -703,16 +706,26 @@ impl<'a> View<'a> {
 
         // A resume scan sees only the segment's last records, which include
         // its last one but not its first.
-        let first_generation = if rebuilt_index {
-            outcome.first_generation
+        let (first_generation, last_generation) = if rebuilt_index {
+            (outcome.first_generation, outcome.last_generation)
         } else {
-            record_generation_at(
+            let first = record_generation_at(
                 &self.path(id),
                 id,
                 self.label,
                 header.version,
                 SEGMENT_HEADER_LEN,
-            )?
+            )?;
+            // A record of unknown writer at either end hides the known
+            // generation the floor needs, so walk the whole segment.
+            let hidden = first == Some(crate::log::UNKNOWN_WRITER)
+                || (header.holds_generations() && outcome.last_generation.is_none());
+            if hidden {
+                let full = self.scan(id, ScanStart::Full, sealed_repair)?;
+                (full.first_generation, full.last_generation)
+            } else {
+                (first, outcome.last_generation)
+            }
         };
         Ok(OpenedSealed {
             sealed: PlannedSealed {
@@ -726,7 +739,7 @@ impl<'a> View<'a> {
                 holds_marks: header.holds_marks(),
                 holds_trims: header.holds_trims(),
                 first_generation,
-                last_generation: outcome.last_generation,
+                last_generation,
             },
             next_offset: outcome.next_offset,
             rebuilt_index,

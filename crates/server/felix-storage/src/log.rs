@@ -293,6 +293,12 @@ pub struct LogRecord {
     pub generation: Option<u64>,
 }
 
+/// The generation a v9 segment stamps on a record whose writer nobody knows:
+/// one a sender held in an older segment, where no generation was kept. It
+/// is never compared: it neither raises nor breaks the floor. Generation 0 is
+/// also a shard's first, which loses nothing: no record precedes it.
+pub const UNKNOWN_WRITER: u64 = 0;
+
 /// Which generation wrote the records of a batch, for a log whose segment
 /// stamps each record with one (format v9). An older segment ignores it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -305,7 +311,8 @@ pub enum WrittenBy {
     Leader,
     /// Records copied from another log, at the generations that wrote them
     /// there: runs oldest first, each covering its records up to the next
-    /// run's start, the first starting at or before the batch.
+    /// run's start, the first starting at or before the batch. A run at
+    /// [`UNKNOWN_WRITER`] covers records whose writer the sender did not know.
     Writers(Vec<Epoch>),
     /// Records copied from a sender that did not say which generations wrote
     /// them. A v9 segment refuses them.

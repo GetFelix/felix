@@ -1917,12 +1917,12 @@ impl ReplicaHandler {
             }
             records.truncate(at);
         }
-        // Read once for the labels and the writers; a plain fetch reads none.
-        let history = (request.labelled || request.writers).then(|| log.generations());
+        // Read for the labels; a plain fetch reads none.
+        let history = request.labelled.then(|| log.generations());
         let history = history.as_deref().unwrap_or_default();
         // Cut before any fall in the generations; the reader asks again.
         let writers = (request.writers && request.labelled && request.timed).then(|| {
-            let (runs, covered) = replication::writers_to_wire(&records, history);
+            let (runs, covered) = replication::writers_to_wire(&records);
             records.truncate(covered);
             runs
         });

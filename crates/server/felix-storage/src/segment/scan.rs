@@ -360,7 +360,12 @@ pub(crate) fn scan_segment_upto(
         // Generations only rise along a log. A verified record that breaks
         // that was written wrong, not torn, so it is fatal unless it lies past
         // the durable mark.
-        if let Some(found) = decoded.header.generation {
+        // An unknown writer says nothing about the order.
+        if let Some(found) = decoded
+            .header
+            .generation
+            .filter(|found| *found != crate::log::UNKNOWN_WRITER)
+        {
             if let Some(previous) = state.last_generation
                 && found < previous
             {

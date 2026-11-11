@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use felix_storage::log::{Epoch, FsyncMode, LogConfig, LogRecord};
+use felix_storage::log::{FsyncMode, LogConfig, LogRecord};
 use felix_wire::internal::GenerationStart;
 use tempfile::TempDir;
 
@@ -64,12 +64,8 @@ fn start(generation: u64, start_offset: u64) -> GenerationStart {
 
 /// Ship `records` (a slice of a log) the way the shipper would, with the
 /// writers their stamps give, into `to`.
-async fn copy(
-    to: &StreamLog,
-    records: &[LogRecord],
-    history: &[Epoch],
-) -> std::result::Result<Applied, Divergence> {
-    let (writers, covered) = writers_to_wire(records, history);
+async fn copy(to: &StreamLog, records: &[LogRecord]) -> std::result::Result<Applied, Divergence> {
+    let (writers, covered) = writers_to_wire(records);
     assert_eq!(covered, records.len());
     let payloads: Vec<Bytes> = records.iter().map(|r| r.payload.clone()).collect();
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
@@ -109,9 +105,7 @@ async fn a_follower_keeps_the_generation_that_wrote_the_records() {
     assert_eq!(stamps(&led), vec![Some(3); 10]);
 
     let (follower, _f) = v9_log(1).await;
-    copy(&follower, &led[..5], &leader.generations())
-        .await
-        .expect("applied");
+    copy(&follower, &led[..5]).await.expect("applied");
     follower
         .accept_generation(4, Some("n"))
         .await
@@ -120,13 +114,9 @@ async fn a_follower_keeps_the_generation_that_wrote_the_records() {
 
     // The other node holds a copy and ships what the follower lacks.
     let (node, _n) = v9_log(2).await;
-    copy(&node, &led, &leader.generations())
-        .await
-        .expect("applied");
+    copy(&node, &led).await.expect("applied");
     let held = read_all(&node).await[1..].to_vec();
-    copy(&follower, &held[5..], &node.generations())
-        .await
-        .expect("applied");
+    copy(&follower, &held[5..]).await.expect("applied");
 
     assert_eq!(stamps(&read_all(&follower).await[1..]), stamps(&led));
 }
@@ -210,103 +200,92 @@ fn record(offset: u64, generation: Option<u64>) -> LogRecord {
     }
 }
 
-fn epoch(generation: u64, start_offset: u64) -> Epoch {
-    Epoch {
-        generation,
-        start_offset,
-    }
-}
-
 #[test]
 fn writers_merge_equal_generations_and_start_at_the_first_record() {
     let records: Vec<_> = [(7, 2), (8, 2), (9, 3), (10, 3), (11, 5)]
         .into_iter()
         .map(|(offset, generation)| record(offset, Some(generation)))
         .collect();
-    let (runs, covered) = writers_to_wire(&records, &[]);
+    let (runs, covered) = writers_to_wire(&records);
     assert_eq!(runs, vec![start(2, 7), start(3, 9), start(5, 11)]);
     assert_eq!(covered, 5);
 }
 
 #[test]
-fn unstamped_records_take_the_generation_the_history_gives() {
-    let history = [epoch(1, 0), epoch(4, 12), epoch(6, 20)];
-    let records: Vec<_> = (10..14).map(|offset| record(offset, None)).collect();
-    let (runs, covered) = writers_to_wire(&records, &history);
-    assert_eq!(runs, vec![start(1, 10), start(4, 12)]);
+fn unstamped_records_go_as_unknown_writers() {
+    let records = vec![
+        record(10, None),
+        record(11, None),
+        record(12, Some(2)),
+        record(13, Some(3)),
+        record(14, None),
+    ];
+    let (runs, covered) = writers_to_wire(&records);
+    assert_eq!(
+        runs,
+        vec![start(UNKNOWN_WRITER, 10), start(2, 12), start(3, 13)]
+    );
+    // An unknown writer after a known one is a fall: it starts the next batch.
     assert_eq!(covered, 4);
-
-    let (runs, _) = writers_to_wire(&records[..1], &[]);
-    assert_eq!(runs, vec![start(0, 10)], "no history is generation 0");
+    let (runs, covered) = writers_to_wire(&records[4..]);
+    assert_eq!((runs, covered), (vec![start(UNKNOWN_WRITER, 14)], 1));
 }
 
-#[test]
-fn stamps_and_history_mix() {
-    let history = [epoch(2, 0)];
-    let records = vec![
-        record(0, None),
-        record(1, Some(2)),
-        record(2, Some(3)),
-        record(3, None),
-    ];
-    let (runs, covered) = writers_to_wire(&records, &history);
-    // The last record has no stamp and the history says 2, below the 3 before it.
-    assert_eq!(runs, vec![start(2, 0), start(3, 2)]);
-    assert_eq!(covered, 3);
+/// Replicas' histories can disagree about records written before v9: one
+/// labels offset 12 with 5, another with 4. A follower that stamped 12 at 5
+/// and then hears from a leader whose own copies are unstamped must not be
+/// halted below its floor: the leader sends them as unknown writers, and the
+/// follower stores them as such.
+#[tokio::test]
+async fn inherited_records_never_put_a_healthy_follower_below_its_floor() {
+    let (follower, _f) = v9_log(0).await;
+    let stamped: Vec<LogRecord> = batch(&["a", "b"])
+        .into_iter()
+        .zip(1u64..)
+        .map(|(payload, offset)| LogRecord {
+            payload,
+            ..record(offset, Some(5))
+        })
+        .collect();
+    copy(&follower, &stamped).await.expect("applied");
+
+    // The new leader holds 3..5 in an older segment, and its history says
+    // generation 4 wrote them.
+    let inherited: Vec<LogRecord> = batch(&["c", "d"])
+        .into_iter()
+        .zip(3u64..)
+        .map(|(payload, offset)| LogRecord {
+            payload,
+            ..record(offset, None)
+        })
+        .collect();
+    copy(&follower, &inherited)
+        .await
+        .expect("not below the floor");
+    assert_eq!(
+        stamps(&read_all(&follower).await[1..]),
+        vec![Some(5), Some(5), Some(UNKNOWN_WRITER), Some(UNKNOWN_WRITER)]
+    );
+
+    // The floor is still 5: a known writer below it is refused.
+    let below: Vec<LogRecord> = batch(&["e"])
+        .into_iter()
+        .map(|payload| LogRecord {
+            payload,
+            ..record(5, Some(4))
+        })
+        .collect();
+    assert!(matches!(
+        copy(&follower, &below).await,
+        Err(Divergence::GenerationBelowFloor { floor: 5, .. })
+    ));
 }
 
 #[test]
 fn a_fall_cuts_the_batch_before_it() {
     let records = vec![record(4, Some(3)), record(5, Some(3)), record(6, Some(2))];
-    let (runs, covered) = writers_to_wire(&records, &[]);
+    let (runs, covered) = writers_to_wire(&records);
     assert_eq!(runs, vec![start(3, 4)]);
     assert_eq!(covered, 2);
-    assert_eq!(writers_to_wire(&[], &[]), (Vec::new(), 0));
-}
-
-/// The single walk over the history gives what looking each record up does,
-/// with epochs before the batch, between records and past it.
-#[test]
-fn one_walk_matches_a_lookup_per_record() {
-    let lookup = |history: &[Epoch], offset: u64| {
-        history
-            .iter()
-            .rev()
-            .find(|epoch| epoch.start_offset <= offset)
-            .map_or(0, |epoch| epoch.generation)
-    };
-    let mut state = 7u64;
-    let mut next = || {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
-        state >> 33
-    };
-    for _ in 0..200 {
-        let mut history = Vec::new();
-        let (mut generation, mut offset) = (0, next() % 4);
-        for _ in 0..next() % 6 {
-            generation += 1 + next() % 3;
-            offset += next() % 5;
-            // Two epochs may start at one offset: the first wrote nothing.
-            history.push(epoch(generation, offset));
-        }
-        let first = next() % 8;
-        let records: Vec<_> = (first..first + next() % 12)
-            .map(|offset| record(offset, None))
-            .collect();
-        let (runs, covered) = writers_to_wire(&records, &history);
-        assert_eq!(covered, records.len());
-        for record in &records {
-            let run = runs
-                .iter()
-                .rev()
-                .find(|run| run.start_offset <= record.offset)
-                .expect("covered");
-            assert_eq!(
-                run.generation,
-                lookup(&history, record.offset),
-                "{history:?} at {}",
-                record.offset
-            );
-        }
-    }
+    assert_eq!(writers_to_wire(&[]), (Vec::new(), 0));
 }

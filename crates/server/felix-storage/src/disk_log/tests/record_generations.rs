@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
-use crate::log::{Epoch, WrittenBy};
+use crate::log::{Epoch, UNKNOWN_WRITER, WrittenBy};
 use crate::segment::format::{decode_record_in, encode_record_at};
 use crate::segment::{
     GENERATION_VERSION, HEADERS_VERSION, OLDEST_READABLE_VERSION, SEGMENT_HEADER_LEN,
@@ -739,4 +739,82 @@ async fn malformed_runs_are_refused() {
         );
         assert_eq!(log.tail_offset().await.expect("tail"), 3, "{runs:?}");
     }
+}
+
+/// A leader's append is stamped only once the history records where its
+/// generation starts, at or below the append. Between taking the generation
+/// and recording its start, an append admitted under the old one would land
+/// below that start yet carry the new stamp, so it is refused.
+#[tokio::test]
+async fn a_leader_is_refused_until_its_start_is_recorded() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    lead(&log, 3).await;
+    log.append(&names(0, 1)).await.expect("append");
+
+    log.accept_generation(5, Some(LEADER))
+        .await
+        .expect("accept");
+    log.lead_at(5);
+    let refused = log.append(&names(1, 1)).await.err();
+    assert!(matches!(refused, Some(StorageError::WriterUnknown(_))));
+
+    // Recorded past the tail: an append at the tail would sit below it.
+    log.record_generation(5, 3).expect("record");
+    let refused = log.append(&names(1, 1)).await.err();
+    assert!(matches!(refused, Some(StorageError::WriterUnknown(_))));
+    assert_eq!(log.tail_offset().await.expect("tail"), 2);
+    assert_eq!(read_generations(&log, 1).await, [Some(3)]);
+}
+
+/// A record whose writer the sender did not know is stamped
+/// [`UNKNOWN_WRITER`]. It passes under any floor and leaves the floor where
+/// it was, after a roll, a reopen (the unknown records at a sealed segment's
+/// ends hide its known ones from a resume scan) and a cut just past one.
+#[tokio::test]
+async fn unknown_writers_leave_the_floor_where_it_was() {
+    let dir = tempdir().expect("dir");
+    let log = v9_log(&dir).await;
+    let unknown = || WrittenBy::Writers(vec![run(UNKNOWN_WRITER, 0)]);
+    copy_in(&log, 1, &names(0, 1), unknown())
+        .await
+        .expect("copy");
+    copy_in(&log, 2, &names(1, 1), WrittenBy::Writers(vec![run(5, 2)]))
+        .await
+        .expect("copy");
+    copy_in(&log, 3, &names(2, 2), unknown())
+        .await
+        .expect("copy");
+    let below = || WrittenBy::Writers(vec![run(4, 0)]);
+    let refused = copy_in(&log, 5, &names(4, 1), below()).await.err();
+    assert_below(refused, 4, 5);
+
+    log.roll_now().await.expect("roll");
+    let log = reopen(&dir, log).await;
+    let refused = copy_in(&log, 5, &names(4, 1), below()).await.err();
+    assert_below(refused, 4, 5);
+    assert_eq!(
+        read_generations(&log, 1).await,
+        [Some(0), Some(5), Some(0), Some(0)]
+    );
+
+    // A cut that leaves an unknown writer newest finds the known one before.
+    log.roll_now().await.expect("roll");
+    copy_in(&log, 5, &names(4, 1), unknown())
+        .await
+        .expect("copy");
+    copy_in(&log, 6, &names(5, 1), WrittenBy::Writers(vec![run(8, 6)]))
+        .await
+        .expect("copy");
+    log.truncate(6).await.expect("truncate");
+    let refused = copy_in(&log, 6, &names(5, 1), below()).await.err();
+    assert_below(refused, 4, 5);
+    copy_in(&log, 6, &names(5, 1), WrittenBy::Writers(vec![run(6, 6)]))
+        .await
+        .expect("at or above the floor");
+    let log = reopen(&dir, log).await;
+    assert_eq!(
+        read_generations(&log, 1).await,
+        [Some(0), Some(5), Some(0), Some(0), Some(0), Some(6)]
+    );
 }

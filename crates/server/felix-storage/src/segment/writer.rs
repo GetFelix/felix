@@ -495,7 +495,10 @@ impl SegmentWriter {
             bytes,
             boundaries,
             file: Arc::clone(&self.sync_handle),
-            generation: stamps.map(|stamps| stamps.at(last_offset)),
+            // An unknown writer leaves the floor where it was.
+            generation: stamps
+                .map(|stamps| stamps.at(last_offset))
+                .filter(|generation| *generation != crate::log::UNKNOWN_WRITER),
         })
     }
 
@@ -713,11 +716,13 @@ impl Stamps<'_> {
         }
         let generation = self.at(first);
         match floor {
-            Some(floor) if generation < floor => Err(StorageError::GenerationBelowFloor {
-                offset: first,
-                generation,
-                floor,
-            }),
+            Some(floor) if generation < floor && generation != crate::log::UNKNOWN_WRITER => {
+                Err(StorageError::GenerationBelowFloor {
+                    offset: first,
+                    generation,
+                    floor,
+                })
+            }
             _ => {
                 debug_assert!(self.at(last) >= generation);
                 Ok(())

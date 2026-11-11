@@ -60,6 +60,9 @@ pub(crate) struct FollowerCursor {
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
+    /// The follower refused a batch that named no writers: it stamps records
+    /// though this log does not yet. It is sent them from then on.
+    pub(crate) wants_writers: bool,
     /// The storage identity the follower gave when this cursor's positions
     /// were learned; `None` from one that gives none. A different one is a
     /// different copy of the log, so the cursor starts over.
@@ -125,6 +128,7 @@ impl FollowerCursor {
             stalled: true,
             refused: false,
             legacy_frames: false,
+            wants_writers: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
             route_behind: false,
