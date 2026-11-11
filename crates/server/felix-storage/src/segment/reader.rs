@@ -138,6 +138,9 @@ impl SegmentReader {
             // Honour the budget, but never return an empty result for a range
             // that does have data.
             if !budget.admits(record_header.payload_len as usize) {
+                // The read ends here. Left unspent, the budget would let
+                // the next segment's first record in, past this one.
+                budget.max_records = 0;
                 break;
             }
 

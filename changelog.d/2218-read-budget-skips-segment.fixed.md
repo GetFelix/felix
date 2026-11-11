@@ -1,0 +1,1 @@
+- A range read whose byte budget refuses a record now ends there. It used to go on to the next segment and could return that segment's first record, leaving a hole where the refused record was: a skipped event in a history replay, shifted offsets on a follower (#2218).

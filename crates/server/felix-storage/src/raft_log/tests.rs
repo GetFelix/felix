@@ -546,3 +546,51 @@ async fn a_paged_read_restarts_when_the_head_is_removed_under_it() {
 
     assert_eq!(read.await.expect("join").expect("read"), entries[10..]);
 }
+
+/// A record the byte budget refuses ends the read. The next segment's first
+/// record fits what is left of the budget, and returning it would leave a
+/// hole where the refused record is.
+#[tokio::test]
+async fn a_read_stops_at_a_record_its_byte_budget_refuses() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let wide = "w".repeat(40);
+    let entries = [
+        blank(1, 0),
+        normal(1, 1, &wide),
+        normal(1, 2, &wide),
+        normal(1, 3, "d"),
+        blank(2, 4),
+    ];
+    store(&raft, &entries).await.expect("store");
+
+    let read = |start| {
+        let log = raft.disk_log().clone();
+        async move {
+            let range = ReadRange {
+                start,
+                max_bytes: 64,
+            };
+            let page = log.read_range_with_trims(range).await.expect("read");
+            page.iter().map(|record| record.offset).collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(read(0).await, [0, 1], "offset 2 does not fit");
+    assert_eq!(read(2).await, [2, 3, 4]);
+}
+
+/// The same through the reader, whose pages are bounded in bytes: a page
+/// that ends on a record too large for it is followed by one that starts
+/// there.
+#[tokio::test]
+async fn a_paged_read_crosses_a_record_too_large_for_its_page() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let entries = [
+        normal(1, 0, &"a".repeat(3 << 20)),
+        normal(1, 1, &"b".repeat(2 << 20)),
+        blank(2, 2),
+    ];
+    store(&raft, &entries).await.expect("store");
+    assert_eq!(all(&raft).await.expect("read"), entries);
+}
