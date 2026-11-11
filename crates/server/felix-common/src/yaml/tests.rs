@@ -86,7 +86,7 @@ fn null_and_empty_leave_a_setting_unset() {
 
 #[test]
 fn an_empty_or_comment_only_file_sets_nothing() {
-    for text in ["", "\n", "# nothing here\n", "---\n", "{}"] {
+    for text in ["", "\n", "# nothing here\n", "---\n", "---\n# note\n", "{}"] {
         assert_eq!(strict(text), Strict::default(), "{text:?}");
     }
 }

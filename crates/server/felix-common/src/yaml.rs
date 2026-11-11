@@ -23,7 +23,23 @@ pub type Error = serde_saphyr::Error;
 /// - Errors carry a line and column. A wrong-typed value is not quoted, since
 ///   the file may hold a credential; an unknown enum value is.
 pub fn from_str<T: DeserializeOwned>(text: &str) -> Result<T, Error> {
-    serde_saphyr::from_str_with_options(text, options())
+    serde_saphyr::from_str_with_options(if has_content(text) { text } else { "{}" }, options())
+}
+
+/// False for an empty, comment-only or `---`-only file, which means "no
+/// settings". serde-saphyr 2.1 reads those as a null document and refuses a
+/// struct. Mirrored in felix-client; change both.
+fn has_content(text: &str) -> bool {
+    let mut markers = 0;
+    for line in text.lines().map(str::trim) {
+        if line == "---" {
+            markers += 1;
+        }
+        if markers > 1 || !(line.is_empty() || line.starts_with('#') || line == "---") {
+            return true;
+        }
+    }
+    false
 }
 
 // Mirrored in felix-client's `ClientConfigOverride::parse`; change both.
