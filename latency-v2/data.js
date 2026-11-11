@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794435409757,
+  "lastUpdate": 1794441236390,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66264,6 +66264,72 @@ window.BENCHMARK_DATA = {
             "range": "999.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 555.00\nmean: 1017.40\nstdev: 999.38\ncv: 98.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1a7dfc6e93af0dd2f251a3ff55d096180fcd8c1b",
+          "message": "refactor(replication): engine trait additions for per-shard Raft (#2227) (#2301)\n\n* refactor(replication): engine trait additions for per-shard Raft (#2227)\n\nAdd appended, Written, admit_local_ack and placement_changed to Engine, and\nopened to EngineHost, implemented by the hybrid with what it already does.\nNothing is removed and no caller moves: read_skips_lease, await_readable,\ncommitted_bound and the cache and counter waits stay, and every lease check\nis where it was.\n\nThe hybrid marks the shard for a driver pass on appended, wakes the driver\non placement_changed, and always admits a local acknowledgement, because it\nchecks the lease when a write enters the write fence. Hybrid::wake_driver\nbinds the two wakes where node/cluster.rs starts the driver.\n\nSpec-Unaffected: additions to an internal trait with no caller on a shipping path; no protocol message, fence rule or promotion step changes.\n\n* docs(replication): say plainly what the hybrid's admit_local_ack and the default opened do not check\n\nSpec-Unaffected: doc comments only",
+          "timestamp": "2026-11-11T23:47:44Z",
+          "tree_id": "7ca3c60ed31c37c787e6c45478e7fa547d2c03c3",
+          "url": "https://github.com/GetFelix/felix/commit/1a7dfc6e93af0dd2f251a3ff55d096180fcd8c1b"
+        },
+        "date": 1794441227889,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.40\nstdev: 2.70\ncv: 2.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 163,
+            "range": "3.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 164.20\nstdev: 3.42\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 208,
+            "range": "206.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 302.80\nstdev: 206.05\ncv: 68.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 108.00\nstdev: 1.58\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 236,
+            "range": "65.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 236.00\nmean: 282.20\nstdev: 65.80\ncv: 23.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 492,
+            "range": "890.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 492.00\nmean: 998.60\nstdev: 890.97\ncv: 89.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
