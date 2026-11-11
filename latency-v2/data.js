@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794408309210,
+  "lastUpdate": 1794412933140,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -65934,6 +65934,72 @@ window.BENCHMARK_DATA = {
             "range": "1121.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 394.00\nmean: 1077.00\nstdev: 1121.12\ncv: 104.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "19f8bf3747b633b1bf67b7472e959bd852a53aa5",
+          "message": "fix(config): adopt serde-saphyr 2.1; empty and marker-only YAML still parse (#2191) (#2205)\n\nBumps serde-saphyr to 2.1. An empty, comment-only or '---'-only config parses as an empty map in felix-common and felix-client; '---\\n---' is still refused. Regression tests in both crates. Standalone lockfiles refreshed.",
+          "timestamp": "2026-11-11T15:58:38Z",
+          "tree_id": "2d7c051976e894c97055ab534419db37c9bd90cc",
+          "url": "https://github.com/GetFelix/felix/commit/19f8bf3747b633b1bf67b7472e959bd852a53aa5"
+        },
+        "date": 1794412926160,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "2.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 65.40\nstdev: 2.30\ncv: 3.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 86,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 87.40\nstdev: 3.05\ncv: 3.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 110,
+            "range": "4.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 110.00\nmean: 112.00\nstdev: 4.64\ncv: 4.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 83.40\nstdev: 0.55\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 182,
+            "range": "11.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 185.40\nstdev: 11.48\ncv: 6.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 322,
+            "range": "830.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 322.00\nmean: 719.80\nstdev: 830.67\ncv: 115.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
