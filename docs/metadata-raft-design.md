@@ -828,7 +828,7 @@ One directory per member, under the Raft data directory:
 | --- | --- | --- |
 | `store/log/` | The Raft log: a `DiskLog` opened as a Raft log. Each entry is one record, the record's offset is the entry's index, and the term is in the record header. The vote and the committed index live in the log's ballot and replica-state files. | The `raft_log` adapter |
 | `store/snapshot` | The current snapshot: last log id, membership, the state machine's bytes, one checksum. | Rename into place |
-| `store/member` | The cluster id and the vote-withheld flag. | Rename into place |
+| `store/member` | The cluster id, the vote-withheld flag, and two marks the upgrade uses: *converted* and *started*. | Rename into place |
 
 Rules for the log:
 
@@ -867,14 +867,46 @@ which replaces redb's single writer. This keeps the rule from
 [Snapshots, compaction, recovery](#snapshots-compaction-recovery): a build
 that finishes after a newer install is dropped.
 
-**Purge follows the snapshot.** The log is purged only up to the stored
-snapshot. openraft 0.10 already runs the purge after the install it
-belongs to, which closes the crash window of issue
-[#1931](https://github.com/GetFelix/felix/issues/1931). The store enforces
-the same rule itself: a purge past the stored snapshot hides the entries at
-once but does not remove them from disk until a snapshot covers them. So a
-restart never finds a log that starts after its snapshot
-(`PurgedCoveredBySnapshot`).
+**Purge follows the snapshot.** openraft 0.10 runs a purge only after the
+snapshot it belongs to is stored (`PurgeLog` carries a snapshot condition in
+`engine/command.rs`), which closes the crash window of issue
+[#1931](https://github.com/GetFelix/felix/issues/1931). The store keeps the
+rule itself, in three parts:
+
+- A purge up to the stored snapshot removes entries from disk.
+- A purge past the stored snapshot only hides entries. They stay on disk
+  until a snapshot covers them, so a crash brings them back and a restart
+  never finds a log that starts after its snapshot
+  (`PurgedCoveredBySnapshot`).
+- An append must continue the log that is on disk, or start right after the
+  stored snapshot. Any other append fails with a storage error and the
+  member stops. Without this, a purge past the end of the log, ahead of its
+  snapshot, would let entries be acknowledged after a gap that a crash then
+  exposes. 0.10's ordering means the state is not reached; the check is
+  there for the day it is.
+
+After an install the snapshot can be past the end of the log. The purge that
+follows empties the log and sets its next index to the one after the
+snapshot. If a crash comes between the two, the open does the same.
+
+**Nothing uncommitted is applied at restart.** Issue #1931 objected that
+keeping entries a purge wanted gone could let a restart apply entries that
+were never committed. It cannot, for two reasons:
+
+- Entries at or below the stored snapshot are never applied, whatever the
+  log holds. The open drops them.
+- Above the snapshot, a restart applies only up to the saved committed id.
+  openraft saves that id on one path only, just before it applies log
+  entries (`SaveCommittedAndApply`). A snapshot install never saves it. So
+  when the id was saved, the log matched the leader's up to it, and every
+  entry at or below it that is still on disk is committed. Entries above it
+  are kept but not applied until a leader confirms or replaces them.
+
+The open checks this instead of trusting it. If the saved id is past the
+recovered log it is lowered to the log's end (issue
+[#2221](https://github.com/GetFelix/felix/issues/2221), rule 1). If the log
+holds an entry at that index with another term, the member refuses to
+start.
 
 **Build.** The store takes the state and the applied id under the apply
 lock, as today, and writes the file outside it. The data is stored as raw
@@ -892,9 +924,25 @@ today.
 
 The workspace pins `openraft = "=0.10.0"`. The control plane moves to that
 pin first, still on redb and still with its current leader id, so the
-library change and the store change are separate steps. Stored data and the
-JSON peer format are the same in 0.9 and 0.10 for those types, so this step
-can roll one member at a time.
+library change and the store change are separate steps.
+
+This step must roll one member at a time, and roll back, so nothing a 0.9
+member reads may change:
+
+- **The peer format is Felix's, not the library's.** Each peer request and
+  response is a Felix type that mirrors the 0.9 JSON, checked against bytes
+  captured from the last release. The library's own types are not put on
+  the wire.
+- **Snapshots still travel in chunks, with a snapshot id.** 0.10 sends a
+  snapshot in one piece and has no snapshot id. The network layer cuts the
+  piece into the 0.9 chunk requests on the way out and joins them on the
+  way in, and names the transfer by the snapshot's last log id. A 0.9
+  leader can then bring a lagging 0.10 member up to date, and the reverse.
+- **The stored snapshot meta keeps its id field**, so a 0.9 binary started
+  on a store a 0.10 binary wrote still parses it.
+
+Chunks and the snapshot id go away with the new peer prefix, in the store
+step, where no 0.9 member can be on the other end.
 
 What changes in `src/raft/`:
 
@@ -907,6 +955,9 @@ What changes in `src/raft/`:
 | Snapshot id in the snapshot meta | none; a snapshot is named by its last log id |
 | `RaftNetwork`, snapshot in chunks | `RaftNetworkV2`, snapshot in one piece |
 | `loosen-follower-log-revert` feature | `Config::allow_log_reversion` |
+
+The table is the library's API. None of it reaches the wire or the redb
+file in this step.
 
 Behaviour that changes, each pinned by a test before the step merges:
 
@@ -923,8 +974,9 @@ Behaviour that changes, each pinned by a test before the step merges:
 - **What a held member is sent** ([Upgrading](#upgrading)) depends on how
   openraft retries. The hold tests run again on 0.10.
 
-Leadership transfer on drain and pre-vote come after the store has
-switched, each as its own change.
+Leadership transfer on drain comes after the store has switched. Pre-vote
+(`Config::enable_pre_vote`, off unless set) stays off; see the open
+questions.
 
 ### Upgrading an existing cluster
 
@@ -942,28 +994,38 @@ to agree first.
 
 Two rules make the copy exact:
 
-- **A log id's term becomes `term * 65536 + node id`.** Today's log ids
+- **A log id's term becomes `term * 2^32 + node id`.** Today's log ids
   carry the leader's node id, because two leaders can share a term. The new
   log id has only a term. Dropping the node id would give two different
   entries the same id. The mapping keeps the order and keeps them apart.
-  The tool refuses a store with a node id of 65536 or more, or a term of
-  2^32 or more.
-- **The vote is raised to term 2^48, for the member itself, not
+- **The vote is raised to term 2^63, for the member itself, not
   committed.** That is what a member does when it times out and stands for
-  election, so it is always allowed. Every mapped id is below 2^48 and every
+  election, so it is always allowed. Every mapped id is below 2^63 and every
   term used after the conversion is above it. So no term used after the
   conversion can equal one an unconverted member still holds.
 
-**Converted and unconverted members never talk.** The peer routes move to a
-new prefix, so a Raft request between the two gets a 404. To Raft that is a
-partition. A group that is upgraded one member at a time therefore stays
-safe: the old members keep a majority until the member that tips it stops,
-and then the converted members have one. Any entry the old majority
-committed is on at least one converted member, and no member without it
-can win the election.
+The mapping needs every node id below 2^32 and every term below 2^31. The
+tool refuses a store outside those bounds and changes nothing. A term that
+high is not reachable. `FELIX_RAFT_NODE_ID` is any 64-bit number, so a node
+id can be. Such a group first replaces its large-id members with small-id
+ones through an ordinary membership change on 0.7, then waits for a
+snapshot and purge to pass the last entry a large-id leader wrote.
+`verify` reports when every member's store is inside the bounds.
 
-The procedure the docs give is still a whole-group stop, because it leaves
-one clean point to go back to:
+**Converted and unconverted members never talk.** Every route on the peer
+listener moves to a new prefix: append entries, vote, snapshot install,
+propose, standing, the catch-up target and the leader route. A request
+between the two kinds of member gets a 404. To Raft that is a partition. A
+group that is upgraded one member at a time therefore stays safe: the old
+members keep a majority until the member that tips it stops, and then the
+converted members have one. Any entry the old majority committed is on at
+least one converted member, and no member without it can win the election.
+
+A converted member in the minority has no leader. Its local reads return
+the state it had when it stopped, for as long as it stays in rotation.
+
+The procedure the docs give is a whole-group stop. It has no such window,
+and it leaves one clean point to go back to:
 
 1. Upgrade to the last 0.7 release.
 2. Stop every control-plane member. Brokers keep serving, as during any
@@ -975,37 +1037,79 @@ What the tool does to one directory:
 
 1. Opens the redb file. redb takes an exclusive lock, so this fails while
    the member runs.
-2. Reads everything and checks it: no hole in the log, ids in order, the
-   snapshot at or past the purge point.
-3. Builds the new store in a temporary directory and fsyncs it.
+2. Reads everything and checks it: no hole in the log, ids in order and
+   inside the bounds, the snapshot at or past the purge point.
+3. Builds the new store in a temporary directory, with the *converted* mark
+   set in its member file, and fsyncs it.
 4. Verifies it. It reopens the new store with the code the service uses,
    compares every entry and id with redb, rebuilds the state machine from
    both stores up to the committed index, and compares the two snapshots
    byte for byte.
-5. Renames the temporary directory to `store/`. This is the commit.
-6. Renames `raft.redb` to `raft.redb.pre-segment`. It is never modified or
-   deleted.
-7. Leaves a stub `raft.redb` that holds only a cluster id no configuration
-   matches. The 0.7 builds check the cluster id before anything else, so
-   an older binary started on this directory refuses to start. Without the
-   stub it would find an empty directory and come up as a new, empty
-   member.
+5. Hard-links `raft.redb` as `raft.redb.pre-segment`. Converting and
+   rolling back never modify or delete the original.
+6. Renames a stub over `raft.redb`. The stub is a redb file with an empty
+   log and an empty cluster id. The name `raft.redb` exists at every
+   moment, as the original or as the stub.
+7. Renames the temporary directory to `store/`. This is the commit.
 
-A crash at any step leaves the directory in a state the tool finishes or
-restarts from on its next run. The service refuses to start while a
-`raft.redb` that is not the stub exists.
+Each rename and link is followed by an fsync of the directory.
 
-**Going back.** Three cases:
+**What an older binary does with the stub.** It opens the file, commits an
+empty transaction that creates tables the stub already has, reads the
+cluster id and refuses to start, because its own configured id is never
+empty (configuration rejects an empty `FELIX_RAFT_CLUSTER_ID`). The write
+changes nothing the check reads. Without a stub the older binary would find
+no store and come up as a new, empty member.
 
-- **Before the tool runs**, nothing has changed.
-- **After the tool, before the new build starts**, `tool rollback` moves
-  `store/` aside and puts the redb file back. Nothing is lost.
-- **After the new group has taken writes**, going back returns the cluster
-  to the conversion point and loses what was committed since. It is a
-  restore, with the same rules as
-  [Restoring beyond quorum loss](#restoring-beyond-quorum-loss): every
-  member, and with brokers stopped, because a generation given out since
-  can be given out again.
+**How the service decides, without reading redb.** It looks at names and at
+its own member file only:
+
+| `raft.redb` | `store/` | The service |
+| --- | --- | --- |
+| absent | absent | Starts as a new member. |
+| absent | present | Starts. |
+| present | present, with the converted mark | Starts. The mark is written before step 6 and `store/` appears after it, so the file is the stub. |
+| present | absent, or without the mark | Refuses to start and names the tool. |
+
+On its first start on a store, before it opens the peer listener, the
+service sets the *started* mark in the member file and makes it durable.
+From then on this member may have voted or acknowledged in the new group.
+
+**What the tool finds on a second run:**
+
+| Found | The tool |
+| --- | --- |
+| A real `raft.redb`, no `store/` | Starts again from step 1. A leftover link or temporary directory is removed. |
+| The stub, a `raft.redb.pre-segment`, no `store/` | Converts from the linked file and finishes. |
+| `store/` with the converted mark, not started | Reports that the directory is converted. |
+| `store/` with the started mark | Refuses. It never replaces a store. |
+
+**Going back.** There are two commands, and the started mark picks which
+one is allowed.
+
+- **`rollback`, before the member has started on the new store.** It moves
+  `store/` aside, then renames `raft.redb.pre-segment` over the stub.
+  Nothing is lost. It refuses when the started mark is set.
+- **`restore`, after.** A member that has started may hold a vote or an
+  entry of the new group. Putting its old file back makes it forget them,
+  and one member that forgets can vote twice in a term or help commit a
+  second entry at an index the others already filled. So one member can
+  never go back alone. `restore` takes a new cluster id. It moves `store/`
+  aside, puts the redb file back and writes the new id into it. Every
+  member is restored with the same new id and
+  `FELIX_RAFT_CLUSTER_ID` is changed to match. A member that was left out
+  still names the old id, and the peer listener refuses it with a 403. A
+  member given the new id in its configuration but not restored refuses to
+  start, because its store names the old one.
+
+  A restore returns the cluster to the conversion point and loses what was
+  committed since. It follows the rules of
+  [Restoring beyond quorum loss](#restoring-beyond-quorum-loss): brokers
+  stopped, because a generation given out since can be given out again.
+
+Putting `raft.redb.pre-segment` back by hand skips these checks. It is the
+same as restoring one member from an old backup, which Raft does not
+survive.
 
 The old file holds every tenant's signing keys. Delete it once the upgrade
 is settled.
@@ -1053,9 +1157,9 @@ fsynced, including a rename whose directory was not fsynced.
 | An append, after the fsync | The entries | Kept. A new leader keeps or truncates them, as Raft does. |
 | A truncation | The cut is on disk before any later append is reported flushed | A cut tail never comes back under a committed id (`TruncateNotDurable`). |
 | A vote save | The old vote or the new one | The higher of the two files is read, so the vote never goes down (`VoteNeverLowers`). |
-| Saving the committed index | An index that may be past the recovered log | Clamped to the log at open, and checked against the entry's term (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
+| Saving the committed index | An index that may be past the recovered log | Lowered to the log's end at open. An entry at that index with another term stops the member (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
 | A snapshot build or install | The old snapshot or the new one; maybe a temporary file | The temporary file is deleted. The log still holds everything after the stored snapshot. |
-| A purge | Entries removed up to some point at or before the stored snapshot | The log starts at or before the snapshot's next index. |
+| A purge | Entries removed up to some point at or before the stored snapshot. Entries a purge hid past the snapshot are back. | The log starts at or before the snapshot's next index and has no gap. Entries at or below the snapshot are not applied. |
 | A write of the member file | The old file or the new one | The vote-withheld flag is durable before the member acts on it, as today. |
 
 What a member does with damage:
@@ -1065,7 +1169,8 @@ What a member does with damage:
 | A torn tail | Repair, then start. |
 | A damaged record inside the log, or a snapshot that fails its checksum | Refuse to start. Never guess, and never fall back to an older state. |
 | A log that starts after the snapshot | Refuse to start. The purge rule makes this unreachable, so it means a bug or a damaged disk. |
-| A redb file that is not the stub | Refuse to start, before writing. |
+| A `raft.redb` beside no store, or a store without the converted mark | Refuse to start, before writing. |
+| A saved committed id whose entry has another term | Refuse to start. |
 | An empty directory | Withhold the vote and rejoin ([Rejoining after a lost volume](#rejoining-after-a-lost-volume)). |
 | A write or fsync error while running | Stop the member. openraft treats a failed flush as fatal, and a failed fsync is never retried. |
 
@@ -1084,8 +1189,15 @@ The switch does not merge until all of these pass on the new store.
   a crash at every step of an append, a truncation, a vote save, a
   committed-index save, a snapshot build, a snapshot install, a purge and a
   member-file write. After each, the store opens, the vote has not gone
-  down, no flushed entry is missing, and the log does not start after the
-  snapshot.
+  down, no flushed entry is missing, and the log has no gap and does not
+  start after the snapshot. Two named cases: a purge past the end of the
+  log with no snapshot stored, then an append, which must fail; and a
+  follower with an unconfirmed tail that crashes during a snapshot install,
+  which must not apply that tail at restart (the objection in #1931).
+- **Mixed versions.** A group of 0.9 and 0.10 members on redb, with the
+  last released binary: a 0.9 leader sends a snapshot to a lagging 0.10
+  member, a 0.10 leader sends one to a lagging 0.9 member, and a member is
+  downgraded to 0.9 on a store a 0.10 binary wrote a snapshot into.
 - **A model-based test.** Random sequences of the same operations and
   crashes, checked against a small reference that follows `FelixRaft.tla`.
 - **The chaos test.** `tests/raft_chaos.rs` unchanged, plus two cases: a
@@ -1105,13 +1217,19 @@ The switch does not merge until all of these pass on the new store.
   first, for a baseline, then on the new store.
 - **The conversion.** Stores written by released binaries, converted and
   compared. Random stores that hold same-term entries from two leaders. A
-  crash at every step of the tool, then a second run. A three-member group
-  under traffic, converted whole and one member at a time, with every
-  acknowledged write present on every member afterwards. Rollback. An older
-  binary on a converted directory refuses to start.
+  crash at every step of the tool, then a second run, with an older binary
+  and the new service each tried on the directory between the two. A
+  three-member group under traffic, converted whole and one member at a
+  time, with every acknowledged write present on every member afterwards.
+  `rollback` before a start; `rollback` and a second `convert` refused
+  after one; `restore` of two members of three, where the third is refused
+  by its peers. An older binary on a converted directory refuses to start
+  and leaves the stub's cluster id empty. A store with a node id of 2^32 is
+  refused untouched.
 - **TLA+.** The `FelixRaft` configs for snapshots, purge and the committed
-  index. A config for the conversion, with two twins that must fail: one
-  drops the node id, one does not raise the vote.
+  index. A config for the conversion, with three twins that must fail:
+  one drops the node id, one does not raise the vote, one rolls a single
+  started member back.
 - **What already exists and must keep passing.** The determinism harness,
   the contract suites, and the rolling-restart test.
 
@@ -1145,13 +1263,13 @@ Each step is safe to merge on its own.
 | Step | Issue | Why it is safe alone |
 | --- | --- | --- |
 | 1. The benchmark and the redb baseline | [#2224](https://github.com/GetFelix/felix/issues/2224) | Test code only. |
-| 2. openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | Stored data and the peer format are unchanged, so a group can roll. |
+| 2. openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | The peer format and the stored forms are pinned to 0.9's, snapshots included, so a group can roll and a member can go back. |
 | 3. History mode with a real metadata group | [#2226](https://github.com/GetFelix/felix/issues/2226) | Test code only. Gives the redb baseline. |
 | 4. The snapshot file and the member file | [#2228](https://github.com/GetFelix/felix/issues/2228) | New code with crash-point tests. Nothing calls it. |
 | 5. The new store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | No shipped build turns the switch on. CI runs both sides. |
 | 6. Simulator mode for the metadata group | [#2232](https://github.com/GetFelix/felix/issues/2232) | Test code only. |
-| 7. The conversion tool | [#2234](https://github.com/GetFelix/felix/issues/2234) | A separate binary. It never modifies the redb file. |
-| 8. Turn the switch on and delete the redb store | [#2236](https://github.com/GetFelix/felix/issues/2236) | Merges only with the test plan and the perf gate passed. |
+| 7. The conversion tool | [#2234](https://github.com/GetFelix/felix/issues/2234) | A separate binary. Converting never modifies the redb file. |
+| 8. Turn the switch on and delete the redb store | [#2236](https://github.com/GetFelix/felix/issues/2236) | Merges only with the test plan and the perf gate passed. Safe for an existing cluster only with the started mark, the whole-group restore and the stub as described above. |
 | 9. Leadership transfer on drain, and pre-vote | [#2237](https://github.com/GetFelix/felix/issues/2237) | Each is one setting with its own chaos run. |
 
 Step 5 needs the adapter's purge and snapshot part. Step 8 needs every
@@ -1176,20 +1294,30 @@ Each has a recommendation, judged on safety and performance only.
    *Recommendation: copy each member's state. It needs no agreement between
    members and no change to a released line, and it stays safe if an
    operator rolls members one at a time by mistake.*
-3. **Whole-group stop, or one member at a time?** Both are safe with the
-   copy. *Recommendation: document the whole-group stop, because it has a
-   point to go back to where nothing is lost. Test both, because a
-   StatefulSet rolls by default.*
+3. **Whole-group stop, or one member at a time?** Going forward, both are
+   safe with the copy. One at a time has a cost: a converted minority has
+   no leader and serves stale local reads until the majority tips. Going
+   back is different: once a member has started, only the whole group can
+   go back, and the tool enforces it with the started mark and a new
+   cluster id. *Recommendation: document the whole-group stop. Test both
+   directions of travel, because a StatefulSet rolls by default.*
 4. **What should an older binary find in a converted directory?** The old
    file left in place (it starts on stale state), nothing (it starts as an
    empty member, and forms an empty group if `new` was left in its
    configuration), or the stub. *Recommendation: the stub.*
-5. **Move to 0.10 on redb first, or change both at once?** *Recommendation:
-   0.10 first. A failure in the chaos or history runs then points at one
-   change, and the perf gate compares stores on the same library.*
+5. **Move to 0.10 on redb first, or change both at once?** 0.10 first is
+   only a safe step if a mixed group can pass a snapshot both ways and a
+   member can be downgraded. That needs the 0.9 chunk requests and the
+   snapshot id kept through the roll, as above. *Recommendation: 0.10
+   first, on that condition. A failure in the chaos or history runs then
+   points at one change, and the perf gate compares stores on the same
+   library. If keeping the 0.9 forms proves fragile, change both at once
+   behind the new prefix.*
 6. **Should the store enforce the purge rule when openraft 0.10 already
-   orders it?** *Recommendation: yes. The rule is then Felix's own and has a
-   crash-point test, where today it is one line in a library.*
+   orders it?** Enforcing it means hiding instead of deleting, refusing an
+   append that would leave a gap, and never applying past the saved
+   committed id. *Recommendation: yes. The rule is then Felix's own and has
+   crash-point tests, where today it is one line in a library.*
 7. **Fsync on commit only, with no setting?** *Recommendation: yes. Any
    other mode acknowledges an entry before it is on disk, which the model
    rejects (`AckBeforeFlush`).*
@@ -1197,9 +1325,14 @@ Each has a recommendation, judged on safety and performance only.
    switch, or follow-ups?** *Recommendation: part of the gate. Without them
    the metadata group has no deterministic crash coverage under broker
    traffic and no history coverage at all.*
-9. **Pre-vote on by default?** *Recommendation: yes, after the switch.
-   It changes no safety rule and stops a returning member from deposing a
-   working leader.*
+9. **Pre-vote: on, and when?** openraft 0.10 has it as
+   `Config::enable_pre_vote`, off unless set, with its own peer request. A
+   peer that does not implement the request counts as granting it. A member
+   whose vote is withheld must not grant a pre-vote or start one, and
+   nothing tests that yet. *Recommendation: leave it off at the switch.
+   Decide after
+   [#2237](https://github.com/GetFelix/felix/issues/2237) has run the chaos
+   suite with vote-withheld members.*
 
 ## Sequencing
 
