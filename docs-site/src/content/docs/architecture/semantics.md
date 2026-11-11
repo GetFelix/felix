@@ -212,13 +212,13 @@ sends them again to the new leader.
 `Leader` is one round trip instead of two, and it moves the moment you find out.
 When the leader dies, the control plane promotes a follower only if the
 leader's last replica report showed it caught up. Records the leader
-acknowledged after that report are lost, and the promoted shard opens without
-them. With no follower reported caught up, the shard stays unavailable until
+acknowledged after that report may be lost: the promoted follower keeps
+whatever had reached it by then, and the shard opens without the rest. With no follower reported caught up, the shard stays unavailable until
 the old leader returns with its disk.
 
 So the trade is more than timing. `Quorum` never loses an acknowledged record
 to a failover, and it tells you about a problem at publish time, while you
-still hold the record. `Leader` can lose the records acknowledged since the
+still hold the record. `Leader` can lose records acknowledged since the
 last report, and it tells you at failover time, when the only copy may be on a
 broker that is gone.
 
