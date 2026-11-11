@@ -496,7 +496,7 @@ expectations=(
   "FelixRaftTornTailKept violates LogMatching"
   "FelixRaftTruncateNotDurable violates StateMachineSafety"
   "FelixRaftRecoveredTailUnsynced violates AckedSurvive"
-  "FelixRaftSaveCommittedUnflushed violates StateMachineSafety"
+  "FelixRaftSaveCommittedUnflushed violates AckedDelivered"
   "FelixRaftPurgeBeforeSnapshot violates AckedSurvive"
   "FelixRaftSnapshotTwoRenames violates StateMachineSafety"
   "FelixRaftCommitPriorTerm violates LeaderCompleteness"
@@ -818,6 +818,8 @@ weights=(
   "FelixRaftSnapshotReplace 6"
   "FelixRaftOffsetsFailover 7"
   "FelixRaftFourTerms 45"
+  "FelixRaftCommitPriorTerm 1"
+  "FelixRaftSaveCommittedUnflushed 2"
 )
 
 weight_of() {
@@ -840,6 +842,15 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
     f="${f##*/}"
     changed_cfgs="$changed_cfgs${f%.cfg} "
   done <<<"$changed_files"
+  # FelixRaft.tla is behind few configurations, so a change to it counts as a
+  # change to each: FelixRaftFourTerms is the only passing check of the
+  # commit rule for earlier terms and is over ten minutes.
+  if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
+    for f in "$SPEC_DIR"/FelixRaft*.cfg; do
+      f="${f##*/}"
+      changed_cfgs="$changed_cfgs${f%.cfg} "
+    done
+  fi
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
@@ -868,7 +879,7 @@ fi
 # ten minutes, except changed ones of 30 minutes or less. A changed one over
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
-# them. Pull requests check that tier; the rest run when the spec changes on
+# them. FelixRaft.tla is the exception (see `changed_cfgs`). Pull requests check that tier; the rest run when the spec changes on
 # main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.

@@ -71,6 +71,10 @@
 (*   DeliveredInOrder        -- the k-th delivery is the k-th committed    *)
 (*                              record.                                    *)
 (*   VoteNeverLowers         -- the stored vote only rises.                *)
+(*   AckedDelivered          -- when nothing more can happen under a       *)
+(*                              leader no broker has outvoted, the         *)
+(*                              subscriber holds every acknowledged        *)
+(*                              record (no snapshot).                      *)
 (*   QuiescentServed         -- when nothing more can happen and a leader  *)
 (*                              of the highest term stands, every record   *)
 (*                              it holds is acknowledged, applied on every *)
@@ -93,7 +97,8 @@
 (*                             flushed without an fsync.                   *)
 (*   SaveCommittedUnflushed -- the committed or applied index read back at *)
 (*                             startup is past the recovered log, so the   *)
-(*                             broker's state machine has a hole.          *)
+(*                             broker's log starts past entries it lost    *)
+(*                             and, leading, it cannot serve them.         *)
 (*   PurgeBeforeSnapshot    -- `purge` runs before the snapshot covering   *)
 (*                             it is stored, so an acknowledged record     *)
 (*                             leaves the disk.                            *)
@@ -639,6 +644,14 @@ QuiescentServed ==
         /\ (Consumer /\ MaxSnapshots = 0) =>
                 \A i \in 1..Len(log[l]) : log[l][i].kind = "record" =>
                     \E k \in 1..Len(got) : got[k].off = i
+
+\* What the subscriber is owed: once nothing more can happen under a leader
+\* no broker has outvoted, it holds every acknowledged record. Without a
+\* snapshot the checks above imply it. A leader whose log starts past a
+\* record it never stored a snapshot of cannot serve that record.
+AckedDelivered ==
+    (~ENABLED Next /\ Consumer /\ MaxSnapshots = 0 /\ \E l \in Servers : TopLeader(l)) =>
+        \A v \in acked : \E k \in 1..Len(got) : got[k].val = v
 
 ----------------------------------------------------------------------------
 \* Witnesses. Each says something never happens and must be violated, to

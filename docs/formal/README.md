@@ -569,7 +569,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaderResumes.cfg` | a restarted leader leads again in its stored term | violate `LogMatching` |
 | `FelixRaftTornTailKept.cfg` | recovery reads a torn record as an entry | violate `LogMatching` |
 | `FelixRaftTruncateNotDurable.cfg` | `truncate_after` returns before the cut is on disk; the next flush makes it durable | violate `StateMachineSafety` |
-| `FelixRaftSaveCommittedUnflushed.cfg` | the committed or applied index read back is past the recovered log | violate `StateMachineSafety` |
+| `FelixRaftSaveCommittedUnflushed.cfg` | the committed or applied index read back is past the recovered log, the subscriber reading | violate `AckedDelivered` |
 | `FelixRaftPurgeBeforeSnapshot.cfg` | purge runs before the snapshot covering it is stored | violate `AckedSurvive` |
 | `FelixRaftSnapshotTwoRenames.cfg` | the snapshot's data and id are replaced by two renames | violate `StateMachineSafety` |
 | `FelixRaftCommitPriorTerm.cfg` | a leader commits an earlier term's entry by counting copies, four terms | violate `LeaderCompleteness` |
@@ -2169,13 +2169,14 @@ the model has witnesses that the behaviour the checks are about is reached.
 | `LogMatching` | Two logs that agree on an entry's term agree on everything up to it. | `LeaderResumes`: a restarted leader leads again in its stored term. `TornTailKept`: recovery reads a torn record as an entry. |
 | `TermsMonotone` | Terms never go down along a log. The open-time scan refuses a log that breaks this. | None. It holds whenever the others do. |
 | `LeaderCompleteness` | A leader holds every entry committed in an earlier term. | `CommitPriorTerm`: a leader commits an earlier term's entry by counting copies. |
-| `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. `TruncateNotDurable`: `truncate_after` returns before the cut is on disk. `SaveCommittedUnflushed`: the committed or applied index read back is past the recovered log. |
+| `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. `TruncateNotDurable`: `truncate_after` returns before the cut is on disk. |
 | `AppliedInLog` | No cut reaches below what a broker applied, and the log holds everything applied except between a snapshot's install and its purge. `DiskLog`'s own commit offset is not modelled; kept at or below the applied index, its `BelowCommit` refusal never meets a correct cut. | None. It holds whenever the others do. |
 | `AckedSurvive` | An acknowledged record is on the disks of a majority. | `AckBeforeFlush`: the callback fires before the fsync. `RecoveredTailUnsynced`: entries found at the open are reported flushed without an fsync. `PurgeBeforeSnapshot`: purge runs before the snapshot covering it is stored. |
 | `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | None of its own. `PurgeBeforeSnapshot` and `SaveCommittedUnflushed` break it first, and their configurations are held to the harm that follows. |
 | `OffsetsDense` | Delivered offsets, less the skipped ones each serving broker reports from its own log, have no gap. | `SkipsNotCounted`: a batch does not report them. `DeliverUncommitted`: a subscriber is given entries above the commit index. |
 | `OffsetNeverReused`, `DeliveredInOrder` | A delivered offset holds that record in the committed sequence, and the k-th delivery is the k-th committed record. | `DeliverUncommitted`: a subscriber is given entries above the commit index. |
 | `VoteNeverLowers` | The stored vote only rises. | None. |
+| `AckedDelivered` | When nothing more can happen under a leader no broker has outvoted, the subscriber holds every acknowledged record. Checked where there is a subscriber and no snapshot (`FelixRaft.cfg`, `FelixRaftOffsets.cfg`, `FelixRaftOffsetsFailover.cfg`). | `SaveCommittedUnflushed`: the committed or applied index read back is past the recovered log. |
 | `QuiescentServed` | When nothing more can happen and a leader no broker has outvoted stands, it has committed its whole log, acknowledged every record in it, brought every broker level and fed the subscriber. | None. This is the liveness check. |
 
 `OffsetsDense` is the client's own drop check. The subscriber resumes after
@@ -2192,9 +2193,13 @@ Three dropped rules are held to the harm they cause, not to the check that
 restates them. `TruncateNotDurable` lets a follower learn the commit of the
 entry that replaced a cut tail before the cut is on disk. A crash brings the
 old tail back under the stored commit index and the restart applies an entry
-that was never committed. `SaveCommittedUnflushed` leaves a shard reporting
-an applied index whose entries it does not hold. `PurgeBeforeSnapshot` leaves
-an acknowledged record on one disk.
+that was never committed. `SaveCommittedUnflushed` leaves a broker whose log
+starts past entries it lost. The model marks them lost in its state machine,
+so `StateMachineSafety` would fail by construction and is not the check used.
+The harm shown is that the broker is elected and a subscriber resuming below
+the start of its log is never given an acknowledged record
+(`AckedDelivered`). `PurgeBeforeSnapshot` leaves an acknowledged record on
+one disk.
 
 The passing run is split by what it varies, each with three brokers:
 
