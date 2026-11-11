@@ -43,30 +43,60 @@ passes on a rerun counts as red until the first failure is explained.
 "Sim" is the deterministic simulator (`crates/testing/felix-sim`). "History"
 is the campaign on real processes
 (`crates/testing/felix-cluster/src/history`). A gap number points at
-"Gaps" below.
+"Gaps" below. The tier of each row is in section 4.
+
+Three terms have one meaning in every row:
+
+- **Served**: 60 s after the heal the shard has exactly one leader, and a
+  `Quorum` write to it is acknowledged. For a group that must re-form, the
+  60 s start when the last of its voters' brokers is reachable again.
+- **Fails over**: a `Quorum` write to the shard is acknowledged by a new
+  leader within 20 s of the kill.
+- **Settles**: 120 s after the heal the group has as many voters as its
+  factor, no learner and no joint membership.
 
 | # | Fault | Harness | Size | Passes when |
 | --- | --- | --- | --- | --- |
-| 1 | Process, link, clock and disk faults | Sim modes `off` and `clocks`. History nemeses `all` and `adversarial` | 2000 seeds per mode. 20 minutes per nemesis, three seeds | History clean. Every shard has one leader 60 s after the heal |
-| 2 | Power loss of one broker | Sim mode `power-loss`. Storage power-loss suite | 2000 seeds. 110 storage seeds | History clean. Every torn tail is repaired. No vote is lower after the restart than before it |
-| 3 | Power loss of a majority | Sim mode `power-loss` with two of three brokers cut together | Part of the 2000 seeds, at least 200 with a majority cut | With fsync on commit nothing acknowledged is lost. Every shard is served again |
-| 4 | A wiped copy: one shard directory, and a whole data root | Sim and history wipe fault (gap 1). Cluster test ported from `failures/wiped.rs` | 2000 seeds in `placement`. One 20 minute history run | The copy comes back with a new copy id as a learner. It never votes under its old id. History clean |
-| 5 | Wiped copies, a majority of one group | Sim wipe fault (gap 1) | At least 200 of the 2000 seeds | The group re-forms. Only records that no disk holds are lost, and the checker is told which. Offsets are never reused |
-| 6 | One shard directory restored to an older copy | Sim restore fault (gap 2), aimed inside one mark interval of an acknowledged write | 2000 seeds, and one pinned seed for the example in "What this does not catch" | With the exact mark: the copy rotates its id and no acknowledged record is lost. With the trailing floor the pinned seed is an expected violation and single-directory restore is documented as unsupported |
-| 7 | A whole data root restored to an older copy | Sim restore fault (gap 2). Cluster test | 2000 seeds | The broker starts no member until the restore check has run. Every copy id in the root rotates |
-| 8 | Re-form after rotated voters, RF 3 and RF 1 | Sim kills under relaxed fsync, and the wipe fault (gap 1). Cluster test for the operator command | 2000 seeds | Every shard is served. The base is the highest reported log id. A retired member never votes or acknowledges in the old epoch |
-| 9 | A partition during a re-form | Sim faults aimed at a re-form in progress (gap 3) | 2000 seeds. Pinned seeds for each step | No commit in the old epoch after any voter retired. With an unreachable voter the control plane waits. No two bases for one epoch |
-| 10 | Control plane down, then a leader crash | History nemesis `election`. Sim control-plane pause for a whole run. Failover test | 20 minutes, three seeds. 2000 seeds. Three rounds | Failover completes. `Quorum` acknowledgements and consumer groups continue. The acknowledgement path makes no control-plane request |
-| 11 | Faults on the control plane's own group | History mode with three control-plane members (#2226). Sim mode with the metadata group (#2232) | 20 minutes, three seeds. 2000 seeds | History clean. A member's vote never goes down. No acknowledged metadata write is lost |
-| 12 | Membership change under load | Sim mode `placement`. History kinds `MoveShard`, `Drain` and `InterruptedMove` | 2000 seeds. Part of `all` and `adversarial` | History clean. No group stops on an index collision. A move ends or is undone. The write pause is within the cell in section 3 |
-| 13 | Sleep and wake | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | 2000 seeds. 20 minutes. Nightly at 2,000 members | `SleepersWake` and `AsleepIsLevel` hold. History clean. No election storm stalls the run |
-| 14 | The switch, with faults | Sim switch under every mode (#2242). History switch campaign (gap 5) | 2000 seeds per mode. 20 minutes, three seeds | History clean across the switch. A generation 0 record is never read as a Raft entry. Only copies that acknowledged the base vote |
-| 15 | A crash in the middle of the switch | Sim crash at each step of the switch (#2242). The upgrade test (#2257) | Every step, on leader, follower and control plane | The shard is a closed hybrid shard or a Raft shard with one base, never both. A voter that crashed before its member start comes up from the recorded base |
-| 16 | The bridge upgrade | Upgrade test (#2257): the latest v0.7 release with data, to the bridge build, switch under faults, latch, to the candidate | One run per release candidate, with clients writing the whole time | History clean over the whole path (gap 6). Every acknowledged record is readable at its offset on the candidate. 0.8.0 refuses an unlatched cluster and writes nothing |
-| 17 | Rollback | Upgrade test, backwards (gap 6): candidate to bridge build, and bridge build to v0.7 before anything is finalized | One run per release candidate | The older build starts on the newer build's directories and serves. Each rollback the table in `hybrid-retirement.md` marks "No" is refused at start and changes nothing |
+| 1 | Process, link, clock and disk faults | Sim modes `off` and `clocks`. History nemeses `all` and `adversarial` | 2000 seeds per mode. 20 minutes per nemesis, three seeds | History clean. Every shard is served |
+| 2 | Power loss of one broker, fsync on commit | Sim mode `power-loss`. Storage power-loss suite | 2000 seeds. 110 storage seeds | History clean. Every torn tail is repaired. No vote is lower after the restart than before it |
+| 3 | Power loss of a majority at once, fsync on commit | Sim majority cut (gap 10) | 2000 seeds, at least 200 with two of three cut together | Nothing acknowledged is lost. No copy id rotates. Every shard is served, with no re-form |
+| 4 | A wiped copy: one shard directory, and a whole data root | Sim and history wipe fault (gap 1). Cluster test ported from `failures/wiped.rs` | 2000 seeds. One 20 minute history run | The copy comes back with a new copy id as a learner. It never votes under its old id. History clean. The group settles |
+| 5 | Wiped copies, a majority of one group | Sim wipe fault (gap 1) | 2000 seeds, at least 200 with a majority wiped | The group re-forms and is served. Only records that no disk holds are lost, and the checker is told which. Offsets are never reused |
+| 6 | One shard directory restored to an older copy | Sim restore fault (gap 2), with a nemesis aimed inside one mark interval of an acknowledged write, and one pinned seed for the example in "What this does not catch" | 2000 seeds | See "Row 6" below |
+| 7 | A whole data root restored to an older copy | Sim restore fault (gap 2). Cluster test | 2000 seeds | The broker starts no member until the restore check has run. Every copy id in the root rotates. History clean |
+| 8 | Re-form after rotated voters, RF 3 and RF 1 | Sim wipe fault (gap 1) and relaxed-fsync power loss (gap 10). Cluster test for the operator command | 2000 seeds | Every shard is served. The base is the highest reported log id. A retired member never votes or acknowledges in the old epoch |
+| 9 | A partition during a re-form | Sim faults aimed at a re-form in progress (gap 3) | 2000 seeds. A pinned seed for each step | No commit in the old epoch after any voter retired. While a voter is unreachable the control plane writes no new epoch, for a partition of at least 120 s. No epoch has two bases. Served after the heal |
+| 10 | Control plane down, then a leader crash | History nemesis `election`. Sim control-plane pause for a whole run. Failover test | 20 minutes, three seeds. 2000 seeds. Six rounds | Every shard the killed broker led fails over. `Quorum` acknowledgements and consumer groups continue. The acknowledgement path makes no control-plane request, counted |
+| 11 | Faults on the control plane's own group | History mode with three control-plane members (#2226). Sim mode with the metadata group (#2232) | 20 minutes, three seeds. 2000 seeds | History clean. A member's vote never goes down. No acknowledged metadata write is lost. Every member's state is equal at the same applied index |
+| 12 | Membership change under load | Sim mode `placement`. History kinds `MoveShard`, `Drain` and `InterruptedMove` | 2000 seeds. Part of `all` and `adversarial` | History clean. No group stops on an index collision. Every group settles. The write pause is within cell 12 |
+| 13 | Sleep and wake | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | 2000 seeds. 20 minutes. Nightly at 2,000 members | `SleepersWake` and `AsleepIsLevel` hold. History clean. Every shard is served. No group uses more terms than `2 * faults + 2`. With liveness missing a dead broker, a leader is elected within two audit periods (40 s in this mode) |
+| 14 | The switch, with faults, stream and cache shards | Sim switch under every mode (#2242). History switch campaign (gap 5). Cache shard schedules (gap 12) | 2000 seeds per mode. 20 minutes, three seeds | History clean across the switch. A generation 0 record is never read as a Raft entry. Only copies that acknowledged the base vote. For a cache shard: two copies with skewed clocks compute the same digest, and the counter sums after the switch equal the checkpoint |
+| 15 | A crash in the middle of the switch, stream and cache shards | Sim crash at each step of the switch (#2242), including the counter checkpoint and the state digest (gap 12). The upgrade test (#2257) | Every step, on leader, follower and control plane | The shard is a closed hybrid shard or a Raft shard with one base, never both. A copy that failed its digest is a learner |
+| 16 | The bridge upgrade | Upgrade test (#2257, gaps 6 and 11): the latest v0.7 release with data, to the bridge build, switch under faults, latch, to the candidate | One run per night and per release candidate, with clients writing the whole time | History clean over the whole path. Every acknowledged record is readable at its offset on the candidate. 0.8.0 refuses an unlatched cluster and writes nothing. After the latch: a voter that crashed between the compare-and-swap and its member start comes up from the recorded base; a learner left from a failed first seal comes up as a learner; a directory with no member mark after a re-form starts from the current epoch, base and voters |
+| 17 | Rollback | Upgrade test, backwards (gap 6): candidate to bridge build, and bridge build to v0.7 before anything is finalized | The same runs as row 16 | The older build starts on the newer build's directories and is served. Each rollback the table in `hybrid-retirement.md` marks "No" is refused at start and changes nothing |
+| 18 | The control plane's log across the upgrade | Upgrade test (gap 11) | The same runs as row 16 | A hybrid command committed after the latch applies as a no-op on both builds. A candidate member that replaces one before every member has purged stops, writes nothing and starts again on the bridge build. A snapshot from before the latch is refused. Every member's state is equal at the same applied index, across mixed builds |
+| 19 | Races with the switch and the latch | Sim aimed schedules (gap 12) | A pinned seed each, and 2000 seeds with the schedules on | `placement abandon` before the compare-and-swap makes the switch start over; after it, abandon is refused. A shard created between the operator's check and the latch entry leaves the latch unset and is named, or is a Raft shard |
+| 20 | Two records at one offset on a `Leader` stream | History duplicate-offset nemesis (gap 13) | 20 minutes, three seeds | No QUIC subscriber, Kafka consumer or cache watcher holds two records at one offset |
+| 21 | The redb conversion | The tool's tests (#2234), and inside the upgrade test (gap 11) | A crash at every step of `convert` and of `restore`. One member at a time under traffic | Every acknowledged metadata write is on every member afterwards. A second `convert` after a crashed `restore` refuses. An older binary on a converted directory refuses and changes nothing |
+| 22 | Re-form races | Sim aimed schedules (gap 3) | A pinned seed each, and 2000 seeds with the schedules on | A voter of a newer membership that the control plane does not know is waited for. A voter missing from a forced re-form that comes back under its old id stops, and nothing it sends is accepted. A retired copy whose group elected anyway rotates its copy id and rejoins as a learner |
+| 23 | Power loss under relaxed fsync, one broker and a majority | Sim relaxed-fsync power loss (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. A cut majority re-forms and is served. Only records no surviving disk holds are lost |
 
 Rows 1, 2, 10 and 12 run today on the hybrid. The others wait for the code
-or the harness they name.
+or the harness they name. Row 23 applies only to logs that accept a relaxed
+fsync mode (#2248).
+
+**Row 6.** The decision on the per-shard log mark (#2245) is: build the
+exact mark, and ship it if cell 11 shows it is free. Row 6 is written for
+both outcomes.
+
+- The exact mark ships: all 2000 seeds pass with the aimed nemesis on. The
+  copy rotates its id and no acknowledged record is lost.
+- The trailing floor ships: the aimed nemesis is off in the sweep, because
+  any seed can hit the window. The 2000 seeds run with restores older than
+  one mark interval and must pass. The window is pinned by the model twin
+  and the one pinned seed, both recorded as expected violations, and
+  restoring a single shard directory is documented as unsupported. This is
+  the one decided exception to "not written up as a limit".
 
 ## 2. History checker assertions
 
@@ -88,10 +118,24 @@ New for Raft:
 | Check | Fails when | Reads |
 | --- | --- | --- |
 | No two leaders per term | Two brokers open one shard at one term, or a broker opens at a term whose blank entry it never committed | Broker logs, collected in every run and not only in `election` (#2258) |
-| `AckedSurvive` | After the final heal, a record acknowledged at `Quorum` is missing, at its offset, from any copy that is a voter, or from a majority of the placed set. Or two copies hold different terms for one entry above the base | A dump of every copy's log at the end of the run (gap 7) |
+| `AckedSurvive` | See below | A dump of every copy's log and commit index at the end of the run (gap 7) |
 | Stream reads | A `Quorum` read of a stream misses a record whose append was acknowledged before the read began. Rule 7 says this for cache keys only | The history (gap 7) |
-| Two records at one offset | A QUIC subscriber, a Kafka consumer or a cache watcher holds two records at one offset on a `Leader` stream whose leader was partitioned | The duplicate-offset nemesis of the engine page |
+| Two records at one offset | A QUIC subscriber, a Kafka consumer or a cache watcher holds two records at one offset on a `Leader` stream whose leader was partitioned | The duplicate-offset nemesis (gap 13) |
 | Lost records are named | A run that re-forms a group or cuts a majority's power loses a record that some surviving disk still holds | The same dump. The checker gets the list of records no disk holds and excuses only those (gap 7) |
+
+**`AckedSurvive`.** After the final heal the checker waits, for at most
+60 s, until every live voter of a group reports the leader's commit index.
+A group that does not get there fails on that alone. Then it fails when:
+
+- A record acknowledged at `Quorum` is above the commit index.
+- Such a record is missing, at its offset, from any voter.
+- Two voters hold different terms for one entry at or below the commit
+  index and above the base. Entries above the commit index are not
+  compared: an uncommitted tail may differ.
+- The voters that hold the record are fewer than a majority of the placed
+  set, unless the control plane shows the shard as under-replicated. After
+  a re-form a group may have one voter. Then the record must be on every
+  voter there is, and the run reports the shard.
 
 Rule 1 already says an acknowledged write is in the final read. `AckedSurvive`
 is stronger: it looks at the disks, so it catches a record that one more
@@ -108,45 +152,69 @@ There are two comparisons, with different rules.
 | Comparison | Sides | Rule |
 | --- | --- | --- |
 | Engine A/B | Raft and the hybrid, same commit | Throughput at least 0.90 and p99 at most 1.20 of the hybrid, in every cell (criteria 2 and 3) |
-| Release A/B | The candidate and the latest v0.7 release | No regression: the candidate is no worse than the release by more than the cell's noise band |
+| Release A/B | The candidate and the latest v0.7 release | No regression: the paired rule below, with a bound of 0.97 |
 
-**Noise.** Every perf job runs three sides on one runner: the baseline, the
-candidate, and the baseline a second time. The sides alternate trial by
-trial and the first side rotates each round. The two baseline sides are an
-A/A pair. A cell's noise band is the difference between their medians, and
-never less than 3%. A cell whose band is over 10% for throughput or 20% for
-p99 measured nothing and is rerun, on a dedicated runner if it happens
-twice. A release cell fails if the candidate's median is worse than the
-baseline's by more than the band. Six rounds of 30 seconds is the minimum.
+The bridge candidate runs the release A/B twice: on Raft, which a new
+cluster gets, and on the hybrid, which an upgraded cluster keeps until its
+operator switches. Both must pass. The 0.8.0 candidate has one engine.
 
-**What a cell may claim.** Latency comes only from cells with batch 1.
-Batched cells count for throughput only. Throughput is what publishers sent
-and delivered throughput is what subscribers got, reported apart. Both sides
-use the same harness and load generator, built from the candidate. Nothing
-is compiled on the runner while a trial runs, and each trial starts from an
-empty data directory.
+**The paired rule.** The sides alternate trial by trial on one runner and
+the side that goes first flips each round, so each round is a pair. For
+each round take the ratio that is above 1 when the candidate is better:
+candidate over baseline for throughput, baseline over candidate for latency
+and outage. The figure for a cell is the median of those ratios, with a 95%
+bootstrap interval (10,000 resamples of the rounds).
 
-| # | Cell | Sizes | Release A/B rule | Engine A/B rule |
+- Pass: the interval's lower bound is above the bound (0.97 for steady and
+  single-node cells).
+- Fail: its upper bound is below the bound.
+- Otherwise the cell is undecided and rounds are added: 6, then 12, then
+  24. A cell still undecided at 24 rounds fails as not measured, and is
+  rerun on a dedicated runner.
+
+So a real regression of 3% or more passes at most one time in forty, and a
+candidate equal to the release passes once the interval's half width is
+under 3%, which is what the added rounds buy. Each side's own median is
+printed for reading and decides nothing.
+
+**A/A is a validity check, not the band.** Each job also pairs the baseline
+with itself. If that interval does not contain 1.0, or its half width is
+over 3% at the final round count, the runner was not steady and the cell's
+verdict is void.
+
+**What a cell may claim.** Request latency comes only from cells with batch
+1. A batched cell is judged on throughput and on its batch latency, which
+compares the two sides and says nothing about one request. Throughput is
+what publishers sent and delivered throughput is what subscribers got,
+reported apart. Both sides use the same harness and load generator, built
+from the candidate. Nothing is compiled on the runner while a trial runs,
+and each trial starts from an empty data directory. A trial is 30 seconds.
+
+| # | Cell | Sizes | Release A/B | Engine A/B |
 | --- | --- | --- | --- | --- |
-| 1 | Single node, RF 1 | 1 KiB and 64 KiB, batch 1 and batched | Within the band | 0.90 and 1.20 |
-| 2 | RF 3 steady, `Quorum` | 1 KiB and 64 KiB, batch 1 and batched | Within the band | 0.90 and 1.20 |
-| 3 | RF 3 steady, `Leader`, delivered latency | 1 KiB, batch 1 | Within the band | At most one replication round trip over the hybrid |
-| 4 | Fanout 10, batch 64 | 16 KiB and 64 KiB | Within the band | 0.90 and 1.20 |
-| 5 | Cache, mixed puts and counter adds | 1 KiB | Within the band. Fsyncs per write no higher | 0.90 and 1.20 |
-| 6 | `Quorum` read p99 | 1 KiB | Within the band | 1.20 |
-| 7 | Failover time, control plane up | 300 RF 3 streams led by the killed broker | No longer than the release plus 5% | No longer than the hybrid plus 5% |
-| 8 | Failover time, control plane down | The same | Reported. v0.7 does not fail over this way by default | No longer than the hybrid with its election on, plus 5% |
+| 1 | Single node, RF 1 | 1 KiB and 64 KiB. Batch 1 for p50 and p99, batch 64 for throughput | 0.97 | 0.90 and 1.20 |
+| 2 | RF 3 steady, `Quorum` | The same | 0.97 | 0.90 and 1.20 |
+| 3 | RF 3 steady, `Leader`, delivered latency | 1 KiB, batch 1 | 0.97 | At most one replication round trip over the hybrid |
+| 4 | Fanout 10, batch 64 | 16 KiB and 64 KiB | 0.97 on delivered throughput. 0.90 on publish-to-delivery batch latency, p50 and p99 | 0.90 on delivered throughput, 1.20 on the batch latency |
+| 5 | Cache, mixed puts and counter adds | 1 KiB. Batch 1 for p99, batch 64 for throughput | 0.97. Fsyncs per write no higher, counted | 0.90 and 1.20 |
+| 6 | `Quorum` read p99 | 1 KiB, batch 1 | 0.97 | 1.20 |
+| 7 | Failover time, control plane up | 300 RF 3 streams led by the killed broker. Six rounds at least | 0.95 | 0.95, against the hybrid |
+| 8 | Failover time, control plane down | The same | Reported. v0.7 does not fail over this way by default | 0.95, against the hybrid with its election on |
 | 9 | RF 3 promotion burst | 1 KiB and 64 KiB | Reported and explained | Reported and explained |
-| 10 | Groups per broker, memory | 5,000 members per broker, three brokers, RF 3 | Total resident memory reported against the release on the same shards | Raft adds under 1 GB with one broker killed under load. Idle CPU under 5% of one core. Every group asleep, no ticks to sleeping groups |
-| 11 | The exact log mark | Cells 1 and 2 at batch 1, mark exact against the trailing floor, same commit | Not a release cell | Within the band in every cell, and no more synced writes per group commit, counted. If so the exact mark ships. If not, the trailing floor ships with the named residual |
-| 12 | Move under load, write pause | One RF 3 stream moved 20 times while publishers write at a fixed rate | Longest gap between acknowledgements no longer than the release plus 5%. No write fails for good | The same, against the hybrid |
+| 10 | Groups per broker | Three brokers, RF 3. 1,500 shards, the size v0.7 is tested at, and 5,000 | 0.97 on total resident memory and idle CPU at 1,500. Reported at 5,000 | At 5,000: Raft adds under 1 GB with one broker killed under load, idle CPU under 5% of one core, every group asleep, no ticks to sleeping groups |
+| 11 | The exact log mark | Cells 1 and 2 at batch 1, mark exact against the trailing floor, same commit | Not a release cell | 0.97, and no more synced writes per group commit, counted. If so the exact mark ships. If not, the trailing floor ships (row 6) |
+| 12 | Move under load, write pause | One RF 3 stream moved 20 times per round while publishers write at a fixed rate. Six rounds at least | 0.95 on the longest gap between acknowledgements. No write fails for good | The same, against the hybrid |
 | 13 | First write after sleep | p50 and p99 | Not a release cell | At most one round trip over a write to an awake group |
-| 14 | The control plane's group | The cells of `metadata-raft-design.md`, "Perf gate" (#2224) | Within the band, against redb on the same openraft version | Does not apply |
+| 14 | The control plane's group | The cells of `metadata-raft-design.md`, "Perf gate" (#2224) | 0.97 against the v0.7 release, and against redb on the same openraft version | Does not apply |
 
-Cells 7 to 9 follow the failover rule. A failover cost blocks the release
-when its cause can be isolated and fixed. A cost that is the price of safety
-ships, explained and documented. The 5% covers the failure-detection timer,
-which quantizes the outage.
+Cell 4 exists because of a regression the fast subset missed: p50 and p99
+rose four to seven times at 64 KiB, batch 64, fanout 10, with throughput
+unchanged. Throughput alone would pass it again.
+
+The 0.95 of cells 7, 8 and 12 covers the failure-detection timer, which
+quantizes an outage. Cells 7 to 9 also follow the failover rule: a cost
+blocks the release when its cause can be isolated and fixed, and a cost
+that is the price of safety ships, explained and documented.
 
 Cells 1, 2 and 4 on real networks (cloud VMs, a disk per broker) are run
 once per release for the write-up. They do not gate.
@@ -155,21 +223,28 @@ once per release for the write-up. They do not gate.
 
 | Check | Pull request CI | Nightly | Release gate |
 | --- | --- | --- | --- |
-| Simulator | Pinned seeds, on both engines while both exist | 2000 seeds in `off`. 250 seeds in each other mode, a window that moves each night. `sleep` joins the window | 2000 seeds in every mode, on the release commit |
-| History campaign | Process faults, short | `all` and `adversarial`, 20 minutes | `all`, `adversarial` and `election`, 20 minutes, three seeds each. The metadata group mode. The switch campaign |
+| Simulator modes `off`, `clocks`, `placement`, `power-loss`, `sleep` | Pinned seeds, on both engines while both exist | 2000 seeds in `off`. 250 seeds in each other mode, a window that moves each night | 2000 seeds in every mode, on the release commit |
+| Simulator faults: wipe, restore, re-form, majority cut, relaxed fsync, the switch and latch races (rows 3 to 9, 19, 22, 23) | The pinned seed of each | Each joins the moving window as its own mode | 2000 seeds each |
+| Simulator with the metadata group, and the switch (rows 11, 14, 15) | Pinned seeds | In the moving window | 2000 seeds each |
+| History campaign | Process faults, short | `all`, `adversarial` and `election`, 20 minutes, one seed. The metadata group mode. The switch campaign, while both engines are on main and on the bridge branch after that. The duplicate-offset nemesis | The same set, three seeds each |
 | Raft history rules | Unit tests of each rule, with a history that must fail it | In every campaign | In every campaign |
-| Crash points of the Raft log and the metadata store | Yes | Fuzz | Must be green on the release commit |
-| Storage power-loss suite | Eight seeds per scenario | 110 seeds | Must be green |
+| Crash points of the Raft log, the metadata store and the conversion tool | Yes | Fuzz | Green on the release commit |
+| Storage power-loss suite | Eight seeds per scenario | 110 seeds | Green |
 | TLA+ | The registered configs | Walks | Every `FelixRaft` config and twin that the pull requests name, including #2244, #2266 and #2267 |
-| Perf | The fast subset, advisory. Cells 1 and 2 as an engine A/B on pull requests that touch replication or storage | Nothing | Every cell of section 3, both comparisons |
+| Perf | The fast subset, advisory. Cells 1 and 2 as an engine A/B on pull requests that touch replication or storage | Cells 1, 2 and 4 as a release A/B, six rounds. A fail opens an issue | Every cell of section 3, both comparisons |
 | Failover | Cluster tests | Scale run with sleeping leaders | Cells 7 and 8 |
-| Groups per broker | No | 2,000 members | 5,000 members. 10,000 reported |
-| Upgrade and rollback | No | Weekly, on the bridge branch | Rows 16 and 17 on each release candidate |
+| Groups per broker | No | 2,000 members | 1,500 and 5,000 members. 10,000 reported |
+| Upgrade and rollback (rows 16 to 18, 21) | No | On main, with main as the candidate, every night. On the bridge branch, weekly | On each release candidate |
+
+The nightly upgrade run on main is what keeps the member start from a
+recorded base alive. 0.8.0 needs it to finish a latched cluster, and the
+pull requests that delete the hybrid could remove it with every other test
+still green.
 
 The release gate also needs two things that are not workflows:
 
 - The project's own long-running clusters have switched and latched on the
-  bridge build before the hybrid is compiled out of main.
+  bridge build before the hybrid is compiled out of main (Questions, 9).
 - The write-up in `docs/` with the numbers, the conditions of every cell and
   the size report of criterion 7.
 
@@ -182,99 +257,111 @@ it.
 | --- | --- | --- | --- |
 | 1 | A wipe fault in the simulator and the history campaign, for one shard directory and for a data root | #2273 | Matrix 4, 5, 8 |
 | 2 | A restore fault in the simulator: a shard directory or a data root put back to an older copy | #2274 | Matrix 6, 7 |
-| 3 | Simulator faults aimed at a re-form in progress | #2275 | Matrix 9 |
+| 3 | Simulator faults aimed at a re-form in progress, and the re-form races | #2275 | Matrix 9, 22 |
 | 4 | An idle phase in the history campaign, so groups sleep before the faults | #2276 | Matrix 13 |
 | 5 | A history campaign that switches shards from the hybrid to Raft under faults | #2277 | Matrix 14 |
 | 6 | The upgrade test does not go backwards, and does not check a client history across the path | #2278 | Matrix 16, 17 |
 | 7 | History rules that read the disks: `AckedSurvive`, term agreement, named losses. And a stale-read rule for streams | #2279 | Section 2 |
 | 8 | A perf cell for the write pause of a move under load | #2280 | Cell 12 |
-| 9 | A perf cell that prices the exact log mark, with a count of synced writes per group commit | #2281 | Cell 11 |
+| 9 | A perf cell that prices the exact log mark, with a count of synced writes per group commit | #2281 | Cell 11, matrix 6 |
+| 10 | The simulator cannot lose unsynced bytes under relaxed fsync, and cuts the power of one broker only | #2292 | Matrix 3, 8, 23 |
+| 11 | The upgrade test does not cover the control plane's log, the post-latch starts or the conversion, and does not run on main | #2293 | Matrix 16, 18, 21 |
+| 12 | Aimed schedules for abandon against the switch, a shard create against the latch, and cache shards in the switch | #2294 | Matrix 14, 15, 19 |
+| 13 | The duplicate-offset nemesis | #2295 | Matrix 20 |
 
 Already filed: the metadata group in the history campaign (#2226) and in the
-simulator (#2232), the metadata benchmark (#2224), the sleep mode (#2239),
-the switch in the simulator (#2242), the upgrade test (#2257) and the
-groups-per-broker run (#2243).
+simulator (#2232), the metadata benchmark (#2224), the conversion tool
+(#2234), the sleep mode (#2239), the switch in the simulator (#2242), the
+upgrade test (#2257) and the groups-per-broker run (#2243).
 
 ## How this maps to the gate workflows
 
 | Workflow | Covers | Does not cover yet |
 | --- | --- | --- |
-| `gate-history.yml` | Matrix 1, 2, 10, 12. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15. The Raft rules |
-| `gate-perf.yml` | Cells 1 and 2, batched only | Batch 1 cells. Cells 3 to 6 and 11 to 14. The A/A side. The engine A/B |
-| `gate-failover.yml` | Cell 7. Control plane down as pass or fail | Cell 8 as a time. Cell 9 |
+| `gate-history.yml` | Matrix 1, 2, 10, 12. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15, 19, 20, 22, 23. The Raft rules |
+| `gate-perf.yml` | Cells 1 and 2, batched only, judged on medians | The paired rule. Batch 1. Cells 3 to 6 and 11 to 14. The engine A/B |
+| `gate-failover.yml` | Cell 7. Control plane down as pass or fail | Cell 8 as a time. Cell 9. The paired rule |
 | `gate-groups.yml` | A stub | Cell 10 |
-| `gate.yml` | The report | Matrix 16 and 17. The stall comparison between engines |
+| `gate.yml` | The report | Matrix 16 to 18 and 21. The stall comparison between engines |
 
 Changes the workflows need, in the order the gate needs them:
 
-1. **An A/A side in `gate-perf.yml` and `gate-failover.yml`.** Run the
-   baseline twice, and have `gate_perf.py` compute the band and apply the
-   release rule. Keep 0.90 and 1.20 as the engine rule.
+1. **The paired rule in `gate_perf.py`**, for perf, failover and the move
+   pause: per-round ratios, the bootstrap interval, the three verdicts, and
+   more rounds for an undecided cell. Add the baseline-against-itself pair
+   as the validity check. Keep 0.90 and 1.20 on medians as the engine rule.
+   Drop the `failover_slack` input: the bound is 0.95.
 2. **A second comparison.** An input that picks what the baseline is: a
    release tag, or the other engine on the same commit. The engine A/B
-   builds once and sets the engine at start.
+   builds once and sets the engine at start. For the bridge candidate the
+   release A/B runs once per engine.
 3. **Batch 1 cells.** Today every cell is batched, so its p99 is not a
-   request latency. Add batch 1 for cells 1 and 2 and judge p99 only there.
+   request latency. Add batch 1 for cells 1 and 2 and take p50 and p99
+   only there.
 4. **A true single node.** The single-node cell starts three brokers with
    RF 1. Start one.
 5. **Cells 3 to 6**: `Leader` delivered latency, fanout 10 at 16 and 64
-   KiB, the cache mixed cell with fsyncs per write, and `Quorum` read p99.
+   KiB with delivered throughput and batch latency, the cache mixed cell
+   with fsyncs per write, and `Quorum` read p99.
 6. **Time the failover with the control plane down** on both sides, in
    place of pass or fail. Under Raft the `replica_election::` tests are
    retired, so take the test by a name that both engines have.
-7. **Simulator modes.** Add `sleep`, the metadata group mode and the switch
-   to `modes`. Let a mode be a list of faults, so wipe, restore and re-form
-   faults can be turned on without a new workflow.
+7. **Simulator modes.** Add `sleep`, the metadata group, the switch, and
+   one mode per fault of rows 3 to 9, 19, 22 and 23, so each can be swept
+   and can join the nightly window.
 8. **History campaigns.** Three seeds per nemesis. Add the metadata group
    mode, the switch campaign, the idle phase and the duplicate-offset
    nemesis. Drop the `lease` and `lease-free` choice when it goes.
 9. **The stall comparison.** `gate.yml` takes the run id of the other
    engine's sweep, and the report lists the seeds that stall on Raft only.
-10. **`gate-groups.yml`**: three brokers, 2,000, 5,000 and 10,000 members,
-    idle and with one broker killed under load, against the hybrid on the
-    same shards.
-11. **A `gate-upgrade.yml` part** for matrix 16 and 17. It runs on the
-    bridge branch too.
-12. **A dedicated runner for perf.** Hosted runners are noisy. The report
-    refuses a perf verdict from a cell whose band is over the cap.
+10. **`gate-groups.yml`**: three brokers at 1,500, 2,000, 5,000 and 10,000
+    members, idle and with one broker killed under load, against the hybrid
+    and against the release at 1,500.
+11. **A `gate-upgrade.yml` part** for matrix 16 to 18 and 21, callable from
+    a nightly schedule on main and a weekly one on the bridge branch.
+12. **Nightly callers** for the `election` nemesis, the metadata group
+    mode, the switch campaign and the release A/B of cells 1, 2 and 4.
+13. **A dedicated runner for perf.** Hosted runners are noisy. The report
+    prints no verdict for a cell whose validity check failed.
 
 ## Questions
 
 Each has a recommendation.
 
-1. **Is the release A/B rule "within the noise band", or the 0.90 and 1.20
-   of the engine gate?** Recommended: the band. The engine gate's 10% was
-   written for a new engine against the old one. Against a release it would
-   let 9% go every release.
+1. **Is the release A/B judged by the paired rule at 0.97, or by the 0.90
+   and 1.20 of the engine gate?** Recommended: the paired rule. The engine
+   gate's 10% was written for a new engine against the old one. Against a
+   release it would let 9% go every release.
 2. **How many history seeds per nemesis at the release gate?** Recommended:
-   three seeds of 20 minutes. One seed is one schedule. More than three
-   costs runner hours that the 2000 simulator seeds spend better.
+   three seeds of 20 minutes, and only because `election`, the metadata
+   group mode and the switch campaign also run every night. Without the
+   nightly runs three seeds are too few and the gate needs ten.
 3. **Does every simulator mode need 2000 seeds on both engines?**
    Recommended: yes for the first pass, because criterion 1 compares stalls
    seed by seed. For 0.8.0, Raft only.
-4. **Does total broker memory at 5,000 members gate against v0.7?**
-   Recommended: no. Gate on the 1 GB that Raft adds, as designed, and
-   report the total. If the total is more than 1.5 times the release, the
-   write-up says why.
+4. **Does total broker memory gate against v0.7?** Recommended: yes at
+   1,500 shards, the size v0.7 is tested at, with the paired rule. At 5,000
+   it is reported, and the gate there is the 1 GB that Raft adds.
 5. **Is control-plane-down failover time a release cell?** Recommended:
    reported against the release, gated against the hybrid with its election
    on. v0.7 ships with the election off, so the release has no number to
    match.
-6. **What does "no measurable cost" mean for the exact mark?** Recommended:
-   within the band in cells 1 and 2 at batch 1, and the counted synced
-   writes per group commit do not rise. The count is exact, so it decides
-   when the latency is inside the noise.
-7. **Does the trailing-floor fallback block the release if the exact mark
-   fails its cell?** Recommended: no. Ship the floor with the one second
-   interval, the pinned expected violation and the operations note, as the
-   design says.
+6. **What does "free" mean for the exact mark?** Recommended: cell 11
+   passes the paired rule at 0.97, and the counted synced writes per group
+   commit do not rise. The count is exact, so it decides when the latency
+   is undecided.
+7. **Is the bound for failover and the move pause 0.95?** Recommended: yes.
+   The failure-detection timer quantizes an outage, so 0.97 would fail on
+   one tick. Six rounds at least, where the workflow runs three today.
 8. **Must the upgrade test run from every v0.7 patch release?**
    Recommended: from the latest and from v0.7.0. The storage and metadata
    formats do not change inside the line.
 9. **How long must the project's own clusters run on the bridge build
    before the hybrid is compiled out?** Recommended: seven days after the
-   latch with no history or liveness finding. Shorter does not cover a
-   weekly job. Longer holds the deletion for no new information.
+   latch with no history or liveness finding, and only if in that time the
+   clusters went through at least one failover and one re-form. If they did
+   not, cause both on purpose. Days without either prove nothing about the
+   paths the hybrid's removal leaves alone to do the work.
 10. **Do the real-network cells gate?** Recommended: no. They cost cloud
     credit and vary by region. They are run once for the write-up, and a
     surprise there opens an issue.
