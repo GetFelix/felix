@@ -433,6 +433,7 @@ impl ReadPlan {
     /// The generation in the header of the record at `offset`, for a plan
     /// made with that offset as its start. `None` when the plan holds no
     /// such record; `Some(None)` when its segment predates v9.
+    #[cfg(feature = "raft")]
     pub(super) fn generation_at(&self, offset: Offset, label: &str) -> Result<Option<Option<u64>>> {
         // The record is in the first span or nowhere: a plan starts at the
         // segment holding its start.

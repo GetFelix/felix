@@ -198,6 +198,7 @@ impl SegmentReader {
     /// `position`, a record boundary at or before it. The outer `None` means
     /// no record at `offset` lies below `valid_bytes`; the inner one, a
     /// segment older than v9, whose records keep no generation.
+    #[cfg(feature = "raft")]
     pub(crate) fn generation_at(
         &self,
         mut position: u64,

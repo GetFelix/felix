@@ -45,9 +45,9 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
+use crate::log::Offset;
 #[cfg(doc)]
-use crate::log::RecordMark;
-use crate::log::{Offset, UNKNOWN_WRITER};
+use crate::log::{RecordMark, UNKNOWN_WRITER};
 
 /// The openraft type configs this log stores: a log id is a term and an
 /// index, and an entry is openraft's own [`Entry`].
@@ -169,11 +169,19 @@ where
     LogIdOf::<C>::new(CommittedLeaderIdOf::<C>::from(term), index)
 }
 
-/// The generation a record of `term` is stamped with: the term plus one, so
-/// that no term is stored as [`UNKNOWN_WRITER`].
-pub(crate) fn generation_of(term: u64) -> io::Result<u64> {
+/// The generation that stands for `term`, in a record header and in the
+/// ballot: the term plus one, so that no term is stored as
+/// [`UNKNOWN_WRITER`]. The inverse of [`term_of_generation`]; anything that
+/// moves between Raft terms and generations goes through this pair.
+pub fn generation_of(term: u64) -> io::Result<u64> {
     term.checked_add(1)
         .ok_or_else(|| invalid(format!("term {term} has no generation")))
+}
+
+/// The term `generation` stands for, or `None` for [`UNKNOWN_WRITER`], which
+/// stands for no term. The inverse of [`generation_of`].
+pub fn term_of_generation(generation: u64) -> Option<u64> {
+    generation.checked_sub(1)
 }
 
 /// The term of the record at `offset`, from the generation in its header.
@@ -182,10 +190,11 @@ fn term_of(generation: Option<u64>, offset: Offset) -> io::Result<u64> {
         None => Err(invalid(format!(
             "the record at offset {offset} is in a segment that keeps no generation, so it has no term"
         ))),
-        Some(UNKNOWN_WRITER) => Err(invalid(format!(
-            "the writer of the record at offset {offset} is unknown, so it has no term"
-        ))),
-        Some(generation) => Ok(generation - 1),
+        Some(generation) => term_of_generation(generation).ok_or_else(|| {
+            invalid(format!(
+                "the writer of the record at offset {offset} is unknown, so it has no term"
+            ))
+        }),
     }
 }
 

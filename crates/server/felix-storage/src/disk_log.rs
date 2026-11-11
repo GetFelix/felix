@@ -1118,6 +1118,7 @@ impl DiskLog {
     /// the log or the log is reset. A reader that pages through the log compares
     /// it before and after, since a cut in between can leave it holding
     /// records from both sides of the cut.
+    #[cfg(feature = "raft")]
     pub(crate) fn cuts(&self) -> u64 {
         self.inner.segments.read().generation()
     }
@@ -1191,8 +1192,9 @@ impl DiskLog {
 }
 
 /// What the log holds at one offset, as its record header says.
+#[cfg(feature = "raft")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WriterAt {
+pub(crate) enum WriterAt {
     /// No record: the offset is below the oldest segment, or at or past the
     /// tail.
     Absent,
@@ -1203,6 +1205,7 @@ pub enum WriterAt {
     Generation(u64),
 }
 
+#[cfg(feature = "raft")]
 impl DiskLog {
     /// Which generation wrote the record at `offset`, read from the record's
     /// own header and checked against the header checksum. The payload is
@@ -1211,14 +1214,16 @@ impl DiskLog {
     /// This is the log's answer, not the generation history's
     /// ([`AppendOnlyLog::generations`]), which is a hint that can be missing
     /// or short. A Raft term must come from here.
-    pub async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
+    // Only tests ask about one offset until the write side lands.
+    #[cfg(test)]
+    pub(crate) async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
         Ok(self.writers_at(Some(offset)).await?.1)
     }
 
     /// The offset of the last record and which generation wrote it, or `None`
     /// for a log that holds no record. One answer about one tail: a
     /// truncation in between restarts the read.
-    pub async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
+    pub(crate) async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
         let (tail, writer) = self.writers_at(None).await?;
         Ok(tail
             .checked_sub(1)
