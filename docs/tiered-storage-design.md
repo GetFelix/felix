@@ -96,9 +96,12 @@ copy, and one that does not fit is a no-op everywhere:
 All three also need the object's key to carry the group epoch and term of
 the log entry that names it (see "Keys"). A record that fails that is a
 no-op too. An entry's term is in its record header. Its epoch is the one it
-was written in: a copy keeps the base of each re-form with its snapshot, so
-an entry at or below a base belongs to the epoch before it, also when it is
-applied again after the re-form.
+was written in. This depends on a rule track 4 must add (#2250): a member
+makes its re-form base snapshot, tier state included, durable before it
+takes part in the new epoch. Then nothing at or below a base is applied
+again, and the current base plus the epoch before it tells which epoch an
+entry belongs to. Terms alone cannot, since a lost term can be reused in the
+next epoch.
 
 The range a record names can start inside its object. After a leader change
 the new leader's segments do not line up with the old ones, so its first
