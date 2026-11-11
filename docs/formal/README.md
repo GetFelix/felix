@@ -564,7 +564,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaderResumes.cfg` | a restarted leader leads again in its stored term | violate `LogMatching` |
 | `FelixRaftTornTailKept.cfg` | recovery reads a torn record as an entry | violate `LogMatching` |
 | `FelixRaftTruncateNotDurable.cfg` | a cut is not on disk before a later append is reported flushed | violate `TermsMonotone` |
-| `FelixRaftSaveCommittedUnflushed.cfg` | the committed index read back is past the recovered log | violate `PurgedCoveredBySnapshot` |
+| `FelixRaftSaveCommittedUnflushed.cfg` | the committed or applied index read back is past the recovered log | violate `PurgedCoveredBySnapshot` |
 | `FelixRaftPurgeBeforeSnapshot.cfg` | purge runs before the snapshot covering it is stored | violate `PurgedCoveredBySnapshot` |
 | `FelixRaftSnapshotTwoRenames.cfg` | the snapshot's data and id are replaced by two renames | violate `StateMachineSafety` |
 | `FelixRaftCommitPriorTerm.cfg` | a leader commits an earlier term's entry by counting copies, four terms | violate `LeaderCompleteness` |
@@ -2120,18 +2120,20 @@ reviews of the adapter are checked against it.
 
 Three brokers run elections and replicate a log of three kinds of entry: a
 leader's blank entry, a membership entry and a client record. The offset is
-the Raft index and the record's generation is its term. Votes are openraft's:
-a term, a broker and a committed flag, where a committed vote is above every
+the Raft index and the record's generation is its term. Votes are openraft's
+with one leader per term (`leader_id_std`): a term, a broker and a committed
+flag, where a committed vote is above every
 uncommitted vote of its term. A restarted broker is a follower even when its
 stored vote says it led.
 
 Storage is modelled at the level of the adapter's contract. `append` returns
 with the entries readable and not yet on disk, and a flush later moves the
-durable mark and fires the callback. A crash keeps any prefix of the log from
-the durable mark up, which is a torn tail cut off at the open.
-`truncate_after`, `purge`, the vote file and the snapshot file each take
-effect in one step, because each is on disk before the call returns and the
-files are replaced by rename. The state machine is rebuilt at a restart from
+durable mark and fires the callback. A crash keeps the log up to some point at or
+past the durable mark, and a record cut short there is dropped at the open.
+`truncate_after`, the vote file and the snapshot file each take effect in one
+step: the model treats each as on disk when the call returns, and the files
+are replaced by rename. A purge is one step too. The model does not ask
+whether it survives a crash, since a purge that is lost only leaves more log. The state machine is rebuilt at a restart from
 the snapshot and the log up to the committed index read back. One subscriber
 reads from brokers that believe they lead, up to the commit index, and each
 delivered record reports the blank and membership entries skipped before it.
@@ -2146,9 +2148,9 @@ the model has witnesses that the behaviour the checks are about is reached.
 | `TermsMonotone` | Terms never go down along a log. The open-time scan refuses a log that breaks this. | `TruncateNotDurable`: a cut is not on disk before a later append is reported flushed. |
 | `LeaderCompleteness` | A leader holds every entry committed in an earlier term. | `CommitPriorTerm`: a leader commits an earlier term's entry by counting copies. |
 | `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. |
-| `AppliedInLog` | No cut reaches below what a broker applied, so `DiskLog`'s `BelowCommit` refusal never fires. | None. It holds whenever the others do. |
+| `AppliedInLog` | No cut reaches below what a broker applied. `DiskLog`'s own commit offset is not modelled; kept at or below the applied index, its `BelowCommit` refusal never meets a correct cut. | None. It holds whenever the others do. |
 | `AckedSurvive` | An acknowledged record is on the disks of a majority. | `AckBeforeFlush`: the callback fires before the fsync. `RecoveredTailUnsynced`: entries found at the open are reported flushed without an fsync. |
-| `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | `PurgeBeforeSnapshot`: purge runs first. `SaveCommittedUnflushed`: the committed index read back is past the recovered log. |
+| `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | `PurgeBeforeSnapshot`: purge runs first. `SaveCommittedUnflushed`: the committed or applied index read back is past the recovered log. |
 | `OffsetsDense` | Delivered offsets, less the skipped ones each batch reports, have no gap. | `SkipsNotCounted`: a batch does not report them. |
 | `OffsetNeverReused`, `DeliveredInOrder` | A delivered offset holds that record in the committed sequence, and the k-th delivery is the k-th committed record. | `DeliverUncommitted`: a subscriber is given entries above the commit index. |
 | `VoteNeverLowers` | The stored vote only rises. | None. |
@@ -2184,17 +2186,18 @@ implements.
 | Model step | openraft call | Rule |
 | --- | --- | --- |
 | `LeaderAppend`, `Replicate`, `Flush` | `append` and its `IOFlushed` callback | Entries are readable when `append` returns. The callback fires only after the fsync that covers them. |
-| `Replicate` with a cut | `truncate_after` | The cut is on disk before the callback of any later append fires, so an old tail cannot come back behind a newer entry. |
+| `Replicate` with a cut | `truncate_after` | The cut is on disk before the call returns. The part of that the model depends on is that it is on disk before the callback of any later append fires, so an old tail cannot come back behind a newer entry. |
 | `Restart` | the open, then `get_log_state` | A torn record is cut off, never read as an entry. Everything reported at the open is on disk, because openraft takes it as flushed. `DiskLog`'s open already syncs the active segment before it returns. |
-| `Restart` | `read_committed` | The index read back is never past the recovered log. openraft commits an entry before the local copy is flushed, so the stored index has to be held back or clamped at the open. `DiskLog` loads its stored commit offset as it is, so the adapter has to do this. |
+| `Restart` | `read_committed`, `applied_state` | Neither index read back is past the recovered log. openraft commits an entry before the local copy is flushed, so the stored index has to be held back or clamped at the open. With `read_committed` past the log, openraft fails to re-apply and the broker does not start. With `applied_state` past it, openraft restarts the log at that index and trusts the state machine to hold what is missing; a shard's state machine is the log, so those records are gone from the replica. That second case is the one the model's knob takes. `DiskLog` loads its stored commit offset as it is, so the adapter has to clamp, and has to lower `DiskLog`'s own offset with it or a later correct cut is refused with `BelowCommit`. |
 | `SaveVote` | `save_vote`, `read_vote` | The vote, with its committed flag, is on disk before the call returns, and the stored vote never goes down. |
 | `BuildSnapshot`, `InstallSnapshot` | `build_snapshot`, `install_snapshot` | The snapshot's data and id change together. A crash leaves the old pair or the new pair. |
 | `Purge` | `purge` | Only up to the stored snapshot. |
 | `Deliver` | the broker's read bound | Subscribers read up to the commit index, and a batch reports the offsets blank and membership entries hold. |
 
 A restarted leader must not lead again in its stored term. openraft 0.10
-handles that itself: it lowers the committed flag in memory at startup and
-campaigns for a new term.
+handles that itself: it lowers the committed flag in memory at startup. It
+then campaigns for a new term when `enable_leader_restore` is on (the
+default) and the broker is a voter, and stays a follower otherwise.
 
 #### What it does not cover yet
 
@@ -2204,8 +2207,10 @@ index), the leader lease and its clock assumption, disk loss and storage ids,
 placement-driven moves, the switch from the hybrid protocol as a snapshot
 install, and `Leader`-level acknowledgements. A message is one step that reads
 both brokers, so the model has no lost, repeated or reordered messages beyond
-a leader acting on an old answer. The order of writes inside one adapter call
-is left to the simulator's power-loss crash points.
+a leader acting on an old answer. Installing a snapshot is one step here,
+where openraft cuts the conflicting tail, installs and purges as three writes
+that a crash can separate. The order of writes inside one adapter call is
+left to the simulator's power-loss crash points.
 
 ## Which configurations run where
 

@@ -29,9 +29,11 @@
 (* machine it is told is in memory. A shard's state machine is the log     *)
 (* itself, which behaves the same way.                                     *)
 (*                                                                         *)
-(* A restarted broker is a follower even when its stored vote says it led  *)
-(* (openraft 0.10 lowers the flag in memory only). A follower takes a      *)
-(* leader's committed vote over its own uncommitted one of the same term.  *)
+(* A restarted broker is a follower even when its stored vote says it led. *)
+(* openraft 0.10 lowers the flag in memory only; the model keeps the flag  *)
+(* and drops the role, which the vote order cannot tell apart. A follower  *)
+(* takes a leader's committed vote over its own uncommitted one of the     *)
+(* same term.                                                              *)
 (*                                                                         *)
 (* A message is one atomic step between two brokers that reads both. The   *)
 (* leader's knowledge of a follower (`match`) and the commit index it      *)
@@ -79,8 +81,8 @@
 (*                             later append is reported flushed.           *)
 (*   RecoveredTailUnsynced  -- entries found at startup are reported as    *)
 (*                             flushed without an fsync.                   *)
-(*   SaveCommittedUnflushed -- the committed index read back at startup    *)
-(*                             is past the recovered log.                  *)
+(*   SaveCommittedUnflushed -- the committed or applied index read back at *)
+(*                             startup is past the recovered log.          *)
 (*   PurgeBeforeSnapshot    -- `purge` runs before the snapshot covering   *)
 (*                             it is stored.                               *)
 (*   SnapshotTwoRenames     -- the snapshot's data and id are replaced by  *)
@@ -138,7 +140,7 @@ VARIABLES
     committed,  \* history: the committed sequence, each entry with the term that committed it
     acked,      \* record values acknowledged to their publisher
     got,        \* what the subscriber received: [off, val, skipped]
-    cursor,     \* the last index the subscriber was read
+    cursor,     \* the last index read to the subscriber
     skips,      \* skipped offsets since the last delivered record
     used        \* budgets spent: writes, members, crashes, snaps
 
@@ -159,7 +161,8 @@ Blank(t) == [term |-> t, kind |-> "blank", val |-> 0]
 NoVote == [term |-> 0, node |-> Nobody, committed |-> FALSE]
 NoTail == [from |-> 0, tail |-> <<>>]
 
-\* openraft's order on votes with one leader per term. Two uncommitted votes
+\* openraft's order on votes with one leader per term (`leader_id_std`,
+\* which docs/replication-engine.md pins). Two uncommitted votes
 \* of one term for different brokers do not compare; a committed vote is above
 \* every uncommitted vote of its term.
 VoteGE(a, b) ==
@@ -389,6 +392,8 @@ InstallSnapshot(i, j) ==
 \* than what was synced. The state machine is the snapshot plus the log up
 \* to the committed index read back, which is never past the recovered log.
 \* A snapshot past the recovered log makes the log restart at the snapshot.
+\* With SaveCommittedUnflushed the state machine reports an applied index
+\* past the log, and openraft restarts the log there, trusting it.
 Restart(s) ==
     /\ used.crashes < MaxCrashes
     /\ \E n \in Max(synced[s], base[s].idx)..LastIdx(s), torn \in BOOLEAN, back \in BOOLEAN :
@@ -502,8 +507,9 @@ AppliedAgree ==
     \A s, t \in Servers : \A i \in 1..Min(Len(applied[s]), Len(applied[t])) :
         applied[s][i] = applied[t][i]
 
-\* `truncate_after` never reaches the commit index, so DiskLog's
-\* `BelowCommit` refusal never fires for a correct cut.
+\* `truncate_after` never reaches what a broker applied. DiskLog's own commit
+\* offset is not modelled: it must be at or below this for `BelowCommit`
+\* never to refuse a correct cut.
 AppliedInLog ==
     \A s \in Servers :
         /\ Len(applied[s]) <= LastIdx(s)
@@ -518,8 +524,9 @@ OnDisk(s, v) ==
 AckedSurvive ==
     \A v \in acked : \E Q \in SUBSET Servers : Quorum(Q) /\ \A s \in Q : OnDisk(s, v)
 
-\* What openraft checks at startup: the state machine can be rebuilt only
-\* if the stored snapshot covers everything purged.
+\* A log that starts past its stored snapshot can be served only from a
+\* state machine that kept the entries between. A shard's state machine is
+\* the log, so there the entries are gone.
 PurgedCoveredBySnapshot == \A s \in Servers : base[s].idx <= snap[s].idx
 
 \* The client's drop check: the next event's offset is the last one's plus
