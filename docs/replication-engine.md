@@ -18,6 +18,10 @@ that work:
 Before the bespoke protocol is deleted, Raft must pass a no-regression gate
 against it, written down below before any numbers exist.
 
+Track 4 has its own page, [`per-shard-raft.md`](per-shard-raft.md): the node
+ticker, heartbeat coalescing, sleep and wake, the switch from the hybrid, the
+tests and the pull request split.
+
 ## What the engine is
 
 A shard is one ordered log of records. Its replica set is the brokers that
@@ -566,6 +570,7 @@ yet, but the engine interface must not assume one group per stream.
 
 Sleep and wake also get their own simulator nemesis: both CockroachDB and
 TiKV shipped bugs where idle groups failed to sleep or failed to wake.
+The nemesis is specified in [`per-shard-raft.md`](per-shard-raft.md), "Simulator: the sleep nemesis".
 
 ### Hybrid behaviour that does not fit cleanly
 
@@ -864,9 +869,9 @@ poll. A `Leader` write is acknowledged only if
     now < last_quorum_ack_sent + lease
 
 where `last_quorum_ack_sent` is when the leader sent the heartbeat or append
-that a majority last acknowledged. openraft reports the time since then
-(`millis_since_quorum_ack`, measured from the acknowledged message's send
-time). If the check fails, the write fence closes and the write is refused
+that a majority last acknowledged. openraft reports it as an instant
+(`last_quorum_acked`, the acknowledged message's send time; 0.10 deprecates
+the older `millis_since_quorum_ack`). If the check fails, the write fence closes and the write is refused
 with leadership lost; a group that has been idle first runs one quorum round
 (see "Many groups on one broker"). The check reads the same lease clock as
 today (`CLOCK_BOOTTIME` on Linux, see "The clock assumption, stated
