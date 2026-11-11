@@ -55,6 +55,7 @@ tempfile = { workspace = true }
 felix-storage = { path = ".", features = ["raft"] }
 # The storage suite needs a runtime to run in.
 openraft = { workspace = true, features = ["tokio-rt", "serde"] }
+serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = "0.3"
 

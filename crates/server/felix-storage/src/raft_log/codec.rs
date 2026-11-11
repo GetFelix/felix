@@ -18,7 +18,9 @@ use crate::log::{AppendRecord, LogRecord, Offset, RecordMark};
 pub trait EntryCodec<C: RaftTypeConfig>: Send + Sync + 'static {
     /// A command as the record that holds it. The record's mark must not be
     /// [`RecordMark::GenerationStart`] or [`RecordMark::Membership`], which
-    /// are how a blank and a membership entry are stored.
+    /// are how a blank and a membership entry are stored, nor a trim: a
+    /// trim sets a floor the log deletes below on its own, and only a purge
+    /// may delete entries.
     fn encode_data(&self, data: &C::D) -> io::Result<AppendRecord>;
 
     /// The command a record holds. Given every record that is not a blank or
@@ -109,7 +111,8 @@ where
             if matches!(
                 record.mark,
                 RecordMark::GenerationStart | RecordMark::Membership
-            ) {
+            ) || record.mark.is_trim()
+            {
                 return Err(invalid(format!(
                     "a command was encoded as a {:?} record",
                     record.mark

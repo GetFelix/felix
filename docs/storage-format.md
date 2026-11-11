@@ -76,6 +76,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
+    raft-purged                              ← a Raft log's last purged id
+    raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     producers                                ← producer snapshot, when any producer wrote here
     head                                     ← trim records' head entries, once the log holds a v7 segment
@@ -573,7 +575,10 @@ in six ways:
   refused on a Raft log and `note_commit_offset` does nothing. An offline
   `restore_to` saves the generation of the entry it lowers the offset to.
 
-Purge and snapshots are not built.
+A Raft log's directory also holds `raft-purged` and, when its state machine
+keeps a snapshot there, `raft-snapshot`. Both are described below. The log
+starts right after the purged id, whatever records remain below it, and a
+command stored as a trim record is refused.
 
 | Kind | Bits | From | Data |
 | --- | --- | --- | --- |
@@ -1036,6 +1041,56 @@ The one thing that lowers the commit offset is a restore to a backup point
 (`DiskLog::restore_to`), run offline against a copy: it writes the lowered
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
+
+## `raft-purged`: a Raft log's last purged id
+
+A Raft log (`LogConfig::raft_log`) that has purged entries holds a
+`raft-purged` file: the index of the last purged entry and the generation
+that stands for its term (the term plus one).
+
+```text
+ 0   4  magic        u32  "FLPG"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  index of the last purged entry
+16   8  generation   u64  that entry's term plus one, never zero
+24   4  crc          u32  crc32 over bytes 0..24
+```
+
+Written through a temporary, an fsync, a rename and a directory sync, before
+the purge deletes any segment. The log's first index is one past `index`,
+or the oldest segment's base when that is higher. Records at or below
+`index` that remain in a segment are not entries. When `index` is at or
+past the log's last record the log is empty, and the next append restarts
+the segments at `index + 1`.
+
+Nothing can rebuild this file, so one that is present and does not decode
+fails the open of the Raft log. Absent means nothing was purged.
+
+## `raft-snapshot`: a Raft group's snapshot
+
+One snapshot: the last entry it covers, the caller's metadata and the data.
+
+```text
+ 0   4  magic        u32  "FLSS"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  index of the last entry covered
+16   8  generation   u64  that entry's term plus one; zero when the
+                          snapshot covers nothing (index is then zero)
+24   4  meta length  u32
+28   8  data length  u64
+36   4  crc          u32  crc32 over bytes 0..36, the metadata and the data
+40      metadata, then data
+```
+
+Written through a temporary, an fsync, a rename and a directory sync. The
+id, the metadata and the data change in that one rename, so a reader never
+sees one snapshot's data under another's id. A snapshot that covers less
+than the stored one is not written. A file that does not decode, or whose
+lengths do not add up to the file's, fails the open: the log below the
+snapshot may be purged, so it cannot be read as "no snapshot". A
+`raft-snapshot.tmp` left by a crash is never read.
 
 ## `ballot`: whom the generation was accepted from
 

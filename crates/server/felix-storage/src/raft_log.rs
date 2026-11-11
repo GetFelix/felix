@@ -2,12 +2,13 @@
 //! record's offset is the entry's index, and the generation in the record's
 //! header gives its term.
 //!
-//! [`RaftLog`] implements openraft's `RaftLogStorage` (append, truncate and
-//! the vote) and [`LogReader`] its `RaftLogReader`. Purging and snapshots
-//! are not here yet. The design is in `docs/replication-engine.md`, "Raft
-//! log on the segment store".
+//! [`RaftLog`] implements openraft's `RaftLogStorage` (append, truncate,
+//! purge and the vote) and [`LogReader`] its `RaftLogReader`.
+//! [`SnapshotStore`] keeps a group's snapshot for the state machine that
+//! runs beside the log. The design is in `docs/replication-engine.md`,
+//! "Raft log on the segment store".
 //!
-//! Three rules hold everywhere in this module:
+//! These rules hold everywhere in this module:
 //!
 //! - **A record's generation is its entry's term plus one.** openraft writes
 //!   its first entry at term 0, and generation 0 in a record header means
@@ -23,17 +24,24 @@
 //! - **A record that cannot be an entry stops the read.** A record with no
 //!   generation, one below the log's first index, or a missing offset is an
 //!   error, never a guess.
+//! - **The log starts after the purged id.** The id is on disk before a
+//!   purge deletes anything, and segments go whole, so records at or below
+//!   it can remain. They are never read as entries.
 //!
 //! openraft types stay inside this module and the engine that drives it.
 
 mod codec;
+mod purged;
 mod reader;
+mod snapshot;
+mod state_file;
 #[cfg(test)]
 mod tests;
 mod writer;
 
 pub use codec::EntryCodec;
 pub use reader::LogReader;
+pub use snapshot::{SnapshotId, SnapshotStore, StoredSnapshot};
 
 use std::io;
 use std::ops::Deref;
@@ -44,6 +52,7 @@ use openraft::entry::{Entry, EntryPayload};
 use openraft::storage::LogState;
 use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
+use self::purged::Purged;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::Offset;
@@ -94,6 +103,10 @@ pub struct RaftLog<C, K> {
 struct Shared<K> {
     log: DiskLog,
     codec: K,
+    /// The last purged entry, as `raft-purged` holds it.
+    purged: parking_lot::Mutex<Option<Purged>>,
+    /// Set by [`RaftLog::purge_within`]: a purge stops at this snapshot.
+    covering: std::sync::OnceLock<SnapshotStore>,
     /// Read-held by each append until its callback has fired, and
     /// write-held by a truncation.
     flushing: Arc<tokio::sync::RwLock<()>>,
@@ -130,10 +143,13 @@ where
                 log.label()
             )));
         }
+        let purged = purged::load(log.dir())?;
         Ok(Self {
             shared: Arc::new(Shared {
                 log,
                 codec,
+                purged: parking_lot::Mutex::new(purged),
+                covering: std::sync::OnceLock::new(),
                 flushing: Arc::default(),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
@@ -152,28 +168,80 @@ where
         LogReader::new(Arc::clone(&self.shared))
     }
 
-    /// The last entry's id, as openraft's `get_log_state` wants it. The
-    /// applied state is not consulted.
+    /// Refuse any purge past the snapshot `snapshots` holds.
     ///
-    /// Nothing purges yet, so the purged id is always `None`, whatever
-    /// offset the log starts at.
+    /// For a group whose state machine cannot rebuild what the log has
+    /// dropped: one kept in memory, or a shard, whose state machine is the
+    /// log. openraft purges only up to a snapshot it built or installed, so
+    /// this refuses nothing it asks for; it is there for the case where the
+    /// snapshot did not reach disk. Fails if the log is already purged past
+    /// the snapshot, or a snapshot was already named.
+    pub fn purge_within(&self, snapshots: &SnapshotStore) -> io::Result<()> {
+        let log = &self.shared.log;
+        let purged = *self.shared.purged.lock();
+        let covered = snapshots.covers().map(|last| last.index);
+        if let Some(purged) = purged
+            && covered.is_none_or(|covered| covered < purged.index)
+        {
+            return Err(invalid(format!(
+                "{}: purged through index {}, past its snapshot, which covers {covered:?}",
+                log.label(),
+                purged.index
+            )));
+        }
+        self.shared.covering.set(snapshots.clone()).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{}: a snapshot already bounds its purges", log.label()),
+            )
+        })
+    }
+
+    /// The purged id and the last entry's id, as openraft's `get_log_state`
+    /// wants them. The applied state is not consulted. A log with no entry
+    /// above the purged id ends at the purged id.
     pub async fn log_state(&self) -> io::Result<LogState<C>> {
         let log = &self.shared.log;
+        let purged = self.shared.purged_id::<C>()?;
+        let first = self.shared.first_index();
         let last_log_id = match log.last_writer().await.map_err(io::Error::other)? {
-            None => None,
-            Some((last, writer)) => Some(log_id::<C>(term_at(writer, last)?, last)),
+            Some((last, writer)) if last >= first => {
+                Some(log_id::<C>(term_at(writer, last)?, last))
+            }
+            _ => purged.clone(),
         };
         Ok(LogState {
-            last_purged_log_id: None,
+            last_purged_log_id: purged,
             last_log_id,
         })
     }
 }
 
-/// The index of the first entry the log holds or will hold: where its oldest
-/// segment starts. Records below it are never read as entries.
-fn first_index(log: &DiskLog) -> Offset {
-    log.base_offset()
+impl<K> Shared<K> {
+    /// The index of the first entry the log holds or will hold: one past the
+    /// purged id, or where the oldest segment starts when nothing was
+    /// purged. Records below it are never read as entries.
+    fn first_index(&self) -> Offset {
+        let base = self.log.base_offset();
+        match *self.purged.lock() {
+            Some(purged) => base.max(purged.index + 1),
+            None => base,
+        }
+    }
+
+    fn purged_id<C>(&self) -> io::Result<Option<LogIdOf<C>>>
+    where
+        C: LogTypes,
+        CommittedLeaderIdOf<C>: From<u64> + Deref<Target = u64>,
+    {
+        let Some(purged) = *self.purged.lock() else {
+            return Ok(None);
+        };
+        Ok(Some(log_id::<C>(
+            term_of(Some(purged.generation), purged.index)?,
+            purged.index,
+        )))
+    }
 }
 
 fn log_id<C>(term: u64, index: Offset) -> LogIdOf<C>

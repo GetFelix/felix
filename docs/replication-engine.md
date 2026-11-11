@@ -303,13 +303,15 @@ adds the generation field to the record header and the record kinds below.
 
 **What is built.** The adapter is in
 `crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature.
-`RaftLog` implements openraft's `RaftLogStorage`: `append` with its
-`IOFlushed` callback, `truncate_after`, `save_vote` and the committed id. `LogReader`
-implements `RaftLogReader` (entries and the vote). Inside the crate,
-`DiskLog::writer_at` and `DiskLog::last_writer` give the generation in a
-record's header without reading its payload. `save_committed` and `read_committed` keep the
-committed id. Purge and snapshots are not built, so no engine runs on the
-adapter yet.
+`RaftLog` implements all of openraft's `RaftLogStorage`: `append` with its
+`IOFlushed` callback, `truncate_after`, `purge`, `save_vote` and the
+committed id. `LogReader` implements `RaftLogReader` (entries and the
+vote). `SnapshotStore` keeps a group's snapshot for the state machine that
+runs beside the log. Inside the crate, `DiskLog::writer_at` and
+`DiskLog::last_writer` give the generation in a record's header without
+reading its payload. The adapter passes openraft's whole storage suite
+(`Suite::test_all`, in `raft_log/tests/suite.rs`). No engine runs on it
+yet.
 
 **A Raft log is opened as one.** `LogConfig::raft_log` makes a log v9 from
 its first segment, lets it take membership records, and refuses retention
@@ -394,15 +396,98 @@ These rules, and the one above about a cut and later callbacks, were found
 by model checking
 ([#2221](https://github.com/GetFelix/felix/issues/2221)).
 
+**Purge.** `purge(id)` drops every entry up to and including `id`. It
+first writes the id to a small file, `raft-purged`, and only then deletes
+anything. From that write on, the log starts right after the id. Segments
+are deleted whole, oldest first, each unlink made durable before the next,
+so records at or below the id can remain in a segment that also holds
+later entries. They are no longer entries: no read returns them. The file
+is needed because the segments alone cannot say where a purge stopped, and
+because a purge can go past the log's end, where no entry is left to carry
+the id.
+
+openraft asks for a purge past the end at startup, when the state machine
+is ahead of the log (a snapshot was installed and the power went before
+the log was purged). The log is then empty and its last id is the purged
+id. The next append must be the entry right after it. If the power goes
+between the file write and the delete, the next open sees the same thing:
+the first index is above every record, and the next append restarts the
+segments there.
+
+A purge is refused when the log holds another term's entry at that index.
+`truncate_after` never reaches below the purged id: naming the purged id
+cuts every entry, and an id below it, or below the start of a log that
+purged nothing, is refused. `read_committed` never returns less than the
+purged id, since only committed entries are purged.
+
+**Snapshots.** `SnapshotStore` keeps one snapshot in one file,
+`raft-snapshot`: the id of the last entry it covers, the caller's metadata
+(the membership) and the data, under one checksum. It is replaced by one
+rename, so a crash leaves the old snapshot or the new one. Two files, one
+for the data and one for the id, could tear: the model's
+`SnapshotTwoRenames` knob shows new data read under the old id
+([#2221](https://github.com/GetFelix/felix/issues/2221)). A snapshot never
+goes back: one that covers less than the stored one is not written. A file
+that does not decode fails the open, because the log below it may already
+be purged.
+
+A log must not be purged past its stored snapshot when the state machine
+cannot rebuild what was dropped. That is the control plane, whose state
+machine is in memory, and a shard, whose state machine is the log.
+`RaftLog::purge_within(&snapshots)` turns the rule on: a purge past the
+snapshot is refused, and so is a log that is already purged past it.
+openraft purges only up to a snapshot it built or installed, so the check
+refuses nothing openraft asks for. It is there for a snapshot that did not
+reach disk.
+
+A follower installs a leader's snapshot in three calls, in this order:
+
+```mermaid
+sequenceDiagram
+    participant R as openraft
+    participant L as RaftLog
+    participant S as SnapshotStore
+    R->>L: truncate_after(committed), if the log conflicts
+    R->>S: install(id, membership, data)
+    Note over S: one rename, synced
+    R->>L: purge(id)
+    Note over L: raft-purged written, then segments deleted
+```
+
+A power cut after any step of any of the three leaves a directory that
+opens. Before the install, the follower is on its old snapshot with every
+committed entry. After it, the snapshot is ahead of the log, and openraft's
+startup purges up to it. The purged id is never past the snapshot.
+
+**Three smaller rules.**
+
+- A command stored as a trim record is refused. A trim sets a floor the
+  log deletes below on its own timer, and only a purge may delete a Raft
+  log's entries. Trims on a shard group need their own design
+  ([#2253](https://github.com/GetFelix/felix/issues/2253)).
+- One `append` larger than a segment is written a segment's worth at a
+  time. The log puts a batch into one segment whole, so the adapter splits
+  the entries into batches; the callback fires once the last is flushed.
+- The adapter keeps no list of membership offsets. openraft finds the
+  latest membership by reading the log backwards from its end, 64 entries
+  at a time, down to the last applied entry, so an open reads only the
+  unapplied tail. A list would have no caller.
+
 **Crash points.** Each write has power-loss tests on the simulator's
 filesystem (`raft_log/tests/crash_points.rs`,
+`raft_log/tests/install_crash_points.rs`,
 `disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
 inside the write and after its callback; a truncation cut after each
 unlink, after it returns and after a later append's callback; a committed
 id saved ahead of the flush; a vote save cut at every step. What reopens
 holds every entry whose callback fired, is a gap-free prefix of what was
 written, is never shorter than a truncation was asked to keep, and has the
-old vote or the new one.
+old vote or the new one. A purge, a snapshot write and a follower's
+snapshot install are each stopped at every step they have (each step of a
+file write, each unlink). What reopens then has no gap above the purged
+id, holds one whole snapshot, is never purged past it, and is accepted by
+openraft's own startup (`StorageHelper::get_initial_state`), after which
+the install can be finished and the log takes the next entry.
 
 **The term is the generation minus one.** openraft's `initialize` writes the
 first membership entry at term 0, and generation 0 in a record header means
@@ -837,9 +922,9 @@ replica's configuration reverts to the previous record. That is safe, because
 Raft treats an uncommitted configuration entry as one that can be truncated.
 A damaged membership record in the middle of a log is interior corruption and
 stops the open, like any other record. openraft reads the latest
-configuration back from the log on start, so the adapter keeps a derived list
-of membership offsets, rebuilt by the same scan. That keeps opening a log from
-reading it in full.
+configuration back from the log on start, backwards from the end and no
+further than the last applied entry, so opening a log does not read it in
+full and the adapter keeps no list of membership offsets.
 
 **Checked by.** The storage format fuzz and crash-recovery tests
 (`crates/server/felix-storage/tests/format_fuzz.rs`, `crash_recovery.rs`) with
