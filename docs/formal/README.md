@@ -551,6 +551,30 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardMoveGiveUpFailoverDrop.cfg` | a set of three whose leader is taken for dead, the failover dropping a follower | pass the invariants: the drop loses no record, it stalls |
 | `FelixShardMoveGiveUpFailoverStall.cfg` | the same for liveness | violate `EventuallyServes`: the promoted follower's fence needs the dead leader's given-up copy |
 | `FelixShardMoveGiveUpFailoverLive.cfg` | the failover keeping the destination in a set of three | pass the invariants and `EventuallyServes` (2.9M distinct states, 4 min) |
+| `FelixRaft.cfg` | `FelixRaft.tla`: one Raft group on the segment log with the `raft_log` adapter's rules, three brokers, two terms, one write, one crash, the subscriber reading | pass every check in [One engine: Raft on the segment log](#one-engine-raft-on-the-segment-log) (2.0M distinct states) |
+| `FelixRaftCrashes.cfg` | the same with two crashes and no subscriber | pass the same (1.6M distinct states) |
+| `FelixRaftTerms.cfg` | three terms, no write, no crash, no subscriber | pass the same (1.1M distinct states) |
+| `FelixRaftTermsFull.cfg` | the same with one write; not registered, run by dispatch | pass the same |
+| `FelixRaftSnapshot.cfg` | one snapshot, a purge up to it and a follower brought up by snapshot, one crash | pass the same (5.5M distinct states) |
+| `FelixRaftOffsets.cfg` | one term, two writes and a membership entry, the subscriber reading, no crash | pass the same (0.7M distinct states) |
+| `FelixRaftOffsetsFull.cfg` | two terms, one write and a membership entry, the subscriber reading; not registered, run by dispatch | pass the same |
+| `FelixRaftAckBeforeFlush.cfg` | the flush callback fires before the fsync | violate `AckedSurvive` |
+| `FelixRaftRecoveredTailUnsynced.cfg` | entries found at the open are reported flushed without an fsync | violate `AckedSurvive` |
+| `FelixRaftVoteNotDurable.cfg` | `save_vote` returns before the vote is on disk | violate `OneLeaderPerTerm` |
+| `FelixRaftLeaderResumes.cfg` | a restarted leader leads again in its stored term | violate `LogMatching` |
+| `FelixRaftTornTailKept.cfg` | recovery reads a torn record as an entry | violate `LogMatching` |
+| `FelixRaftTruncateNotDurable.cfg` | a cut is not on disk before a later append is reported flushed | violate `TermsMonotone` |
+| `FelixRaftSaveCommittedUnflushed.cfg` | the committed index read back is past the recovered log | violate `PurgedCoveredBySnapshot` |
+| `FelixRaftPurgeBeforeSnapshot.cfg` | purge runs before the snapshot covering it is stored | violate `PurgedCoveredBySnapshot` |
+| `FelixRaftSnapshotTwoRenames.cfg` | the snapshot's data and id are replaced by two renames | violate `StateMachineSafety` |
+| `FelixRaftCommitPriorTerm.cfg` | a leader commits an earlier term's entry by counting copies, four terms | violate `LeaderCompleteness` |
+| `FelixRaftDeliverUncommitted.cfg` | a subscriber is given entries above the commit index | violate `OffsetNeverReused` |
+| `FelixRaftSkipsNotCounted.cfg` | a batch does not report the offsets blank and membership entries hold | violate `OffsetsDense` |
+| `FelixRaftReachFailover.cfg` | witness: an acknowledged record held by a later leader after a crash | violate `NeverFailover` |
+| `FelixRaftReachTruncate.cfg` | witness: a follower cuts off a conflicting tail | violate `NeverTruncates` |
+| `FelixRaftReachLostTail.cfg` | witness: a crash loses an unflushed tail | violate `NeverLosesTail` |
+| `FelixRaftReachSkips.cfg` | witness: a blank entry between two delivered records | violate `NeverSkipsBetweenRecords` |
+| `FelixRaftReachInstall.cfg` | witness: a follower brought up by snapshot | violate `NeverInstallsSnapshot` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2083,6 +2107,105 @@ carries. The mark is the code's quorum offset, which right after an open can sit
 `VouchBelowStart` drops the start record and loses an acknowledged write, and `VouchMark` passes at the same bounds.
 `FelixShardUnifiedReadmit` and `FelixShardUnifiedDropEvidenced` run without client writes, so coverage is checked
 on start records. Their `Full` twins have one write and run nightly.
+
+### One engine: Raft on the segment log
+
+`FelixRaft.tla` is the first part of the model for the 0.8 engine: one Raft
+group whose log is Felix's segment log, as
+[The replication engine interface](../replication-engine.md) decides it. The
+`raft_log` adapter that puts openraft's log on `DiskLog` is not built yet
+(issue #2167), so every configuration's evidence line says so. The model is
+written first on purpose: it states what the adapter has to guarantee, and
+reviews of the adapter are checked against it.
+
+Three brokers run elections and replicate a log of three kinds of entry: a
+leader's blank entry, a membership entry and a client record. The offset is
+the Raft index and the record's generation is its term. Votes are openraft's:
+a term, a broker and a committed flag, where a committed vote is above every
+uncommitted vote of its term. A restarted broker is a follower even when its
+stored vote says it led.
+
+Storage is modelled at the level of the adapter's contract. `append` returns
+with the entries readable and not yet on disk, and a flush later moves the
+durable mark and fires the callback. A crash keeps any prefix of the log from
+the durable mark up, which is a torn tail cut off at the open.
+`truncate_after`, `purge`, the vote file and the snapshot file each take
+effect in one step, because each is on disk before the call returns and the
+files are replaced by rename. The state machine is rebuilt at a restart from
+the snapshot and the log up to the committed index read back. One subscriber
+reads from brokers that believe they lead, up to the commit index, and each
+delivered record reports the blank and membership entries skipped before it.
+
+Each check has a configuration that drops one rule and must violate it, and
+the model has witnesses that the behaviour the checks are about is reached.
+
+| Check | What it says | Dropped rule that breaks it |
+| --- | --- | --- |
+| `OneLeaderPerTerm` | No term elects two brokers. | `VoteNotDurable`: `save_vote` returns before the vote is on disk. |
+| `LogMatching` | Two logs that agree on an entry's term agree on everything up to it. | `LeaderResumes`: a restarted leader leads again in its stored term. `TornTailKept`: recovery reads a torn record as an entry. |
+| `TermsMonotone` | Terms never go down along a log. The open-time scan refuses a log that breaks this. | `TruncateNotDurable`: a cut is not on disk before a later append is reported flushed. |
+| `LeaderCompleteness` | A leader holds every entry committed in an earlier term. | `CommitPriorTerm`: a leader commits an earlier term's entry by counting copies. |
+| `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. |
+| `AppliedInLog` | No cut reaches below what a broker applied, so `DiskLog`'s `BelowCommit` refusal never fires. | None. It holds whenever the others do. |
+| `AckedSurvive` | An acknowledged record is on the disks of a majority. | `AckBeforeFlush`: the callback fires before the fsync. `RecoveredTailUnsynced`: entries found at the open are reported flushed without an fsync. |
+| `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | `PurgeBeforeSnapshot`: purge runs first. `SaveCommittedUnflushed`: the committed index read back is past the recovered log. |
+| `OffsetsDense` | Delivered offsets, less the skipped ones each batch reports, have no gap. | `SkipsNotCounted`: a batch does not report them. |
+| `OffsetNeverReused`, `DeliveredInOrder` | A delivered offset holds that record in the committed sequence, and the k-th delivery is the k-th committed record. | `DeliverUncommitted`: a subscriber is given entries above the commit index. |
+| `VoteNeverLowers` | The stored vote only rises. | None. |
+| `QuiescentServed` | When nothing more can happen and a leader no broker has outvoted stands, it has committed its whole log, acknowledged every record in it, brought every broker level and fed the subscriber. | None. This is the liveness check. |
+
+`OffsetsDense` is the client's own drop check, so what it shows is narrow:
+blank and membership entries can land anywhere among the records and the
+check never fires, and without `skipped_before` it fires at every one.
+`DeliveredInOrder` is the stronger statement. Numbering only the records
+gives a count with no gaps, and the subscriber receives exactly that
+sequence.
+
+The passing run is split by what it varies, each with three brokers:
+`FelixRaft.cfg` has two terms, one write, one crash and the subscriber;
+`FelixRaftCrashes.cfg` has two crashes; `FelixRaftTerms.cfg` has three terms,
+no write and no crash; `FelixRaftSnapshot.cfg` adds a snapshot, a purge and a
+follower brought up by snapshot; `FelixRaftOffsets.cfg` has two writes and a
+membership entry under one leader, with the subscriber.
+`FelixRaftTermsFull.cfg` (three terms with a write) and
+`FelixRaftOffsetsFull.cfg` (one write and a membership entry across a change
+of leader) are too large for every push and are not registered: run them by name
+through the CI workflow's dispatch (`tla_configs`). The five `FelixRaftReach*.cfg`
+witnesses each claim something never happens and must be violated: a record
+acknowledged under one leader held by a later one after a crash, a follower
+cutting off a conflicting tail, a crash losing an unflushed tail, a blank
+entry between two delivered records, and a follower brought up by snapshot.
+
+#### What the adapter must guarantee
+
+The model passes only with these rules, and each maps to a call the adapter
+implements.
+
+| Model step | openraft call | Rule |
+| --- | --- | --- |
+| `LeaderAppend`, `Replicate`, `Flush` | `append` and its `IOFlushed` callback | Entries are readable when `append` returns. The callback fires only after the fsync that covers them. |
+| `Replicate` with a cut | `truncate_after` | The cut is on disk before the callback of any later append fires, so an old tail cannot come back behind a newer entry. |
+| `Restart` | the open, then `get_log_state` | A torn record is cut off, never read as an entry. Everything reported at the open is on disk, because openraft takes it as flushed. `DiskLog`'s open already syncs the active segment before it returns. |
+| `Restart` | `read_committed` | The index read back is never past the recovered log. openraft commits an entry before the local copy is flushed, so the stored index has to be held back or clamped at the open. `DiskLog` loads its stored commit offset as it is, so the adapter has to do this. |
+| `SaveVote` | `save_vote`, `read_vote` | The vote, with its committed flag, is on disk before the call returns, and the stored vote never goes down. |
+| `BuildSnapshot`, `InstallSnapshot` | `build_snapshot`, `install_snapshot` | The snapshot's data and id change together. A crash leaves the old pair or the new pair. |
+| `Purge` | `purge` | Only up to the stored snapshot. |
+| `Deliver` | the broker's read bound | Subscribers read up to the commit index, and a batch reports the offsets blank and membership entries hold. |
+
+A restarted leader must not lead again in its stored term. openraft 0.10
+handles that itself: it lowers the committed flag in memory at startup and
+campaigns for a new term.
+
+#### What it does not cover yet
+
+Issue #2198 lists the rest, and none of it is in this model: membership
+changes that alter the voter set (a membership entry here only holds an
+index), the leader lease and its clock assumption, disk loss and storage ids,
+placement-driven moves, the switch from the hybrid protocol as a snapshot
+install, and `Leader`-level acknowledgements. A message is one step that reads
+both brokers, so the model has no lost, repeated or reordered messages beyond
+a leader acting on an old answer. The order of writes inside one adapter call
+is left to the simulator's power-loss crash points.
 
 ## Which configurations run where
 

@@ -104,6 +104,7 @@ tlc() {
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
     FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
   esac
@@ -481,6 +482,28 @@ expectations=(
   "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
   "FelixShardUnifiedCpLiveMoveRotated pass"
   "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
+  "FelixRaft pass"
+  "FelixRaftCrashes pass"
+  "FelixRaftTerms pass"
+  "FelixRaftSnapshot pass"
+  "FelixRaftOffsets pass"
+  "FelixRaftAckBeforeFlush violates AckedSurvive"
+  "FelixRaftVoteNotDurable violates OneLeaderPerTerm"
+  "FelixRaftLeaderResumes violates LogMatching"
+  "FelixRaftTornTailKept violates LogMatching"
+  "FelixRaftTruncateNotDurable violates TermsMonotone"
+  "FelixRaftRecoveredTailUnsynced violates AckedSurvive"
+  "FelixRaftSaveCommittedUnflushed violates PurgedCoveredBySnapshot"
+  "FelixRaftPurgeBeforeSnapshot violates PurgedCoveredBySnapshot"
+  "FelixRaftSnapshotTwoRenames violates StateMachineSafety"
+  "FelixRaftCommitPriorTerm violates LeaderCompleteness"
+  "FelixRaftDeliverUncommitted violates OffsetNeverReused"
+  "FelixRaftSkipsNotCounted violates OffsetsDense"
+  "FelixRaftReachFailover violates NeverFailover"
+  "FelixRaftReachTruncate violates NeverTruncates"
+  "FelixRaftReachLostTail violates NeverLosesTail"
+  "FelixRaftReachSkips violates NeverSkipsBetweenRecords"
+  "FelixRaftReachInstall violates NeverInstallsSnapshot"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -602,6 +625,8 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
+# FelixRaftTermsFull and FelixRaftOffsetsFull are not registered: neither has
+# been run to the end yet. Run them through the workflow's dispatch.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -779,6 +804,9 @@ weights=(
   "FelixShardElectRefusals 6"
   "FelixShardCpLiveSkippedGenerationUnknownPrior 32"
   "FelixShardCpDownNoSelfSuspicion 15"
+  "FelixRaft 3"
+  "FelixRaftCrashes 2"
+  "FelixRaftSnapshot 6"
 )
 
 weight_of() {
