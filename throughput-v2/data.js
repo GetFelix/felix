@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794408312920,
+  "lastUpdate": 1794412936686,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51948,6 +51948,58 @@ window.BENCHMARK_DATA = {
             "range": "4169.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 938367.89\nmean: 940194.44\nstdev: 4169.39\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "19f8bf3747b633b1bf67b7472e959bd852a53aa5",
+          "message": "fix(config): adopt serde-saphyr 2.1; empty and marker-only YAML still parse (#2191) (#2205)\n\nBumps serde-saphyr to 2.1. An empty, comment-only or '---'-only config parses as an empty map in felix-common and felix-client; '---\\n---' is still refused. Regression tests in both crates. Standalone lockfiles refreshed.",
+          "timestamp": "2026-11-11T15:58:38Z",
+          "tree_id": "2d7c051976e894c97055ab534419db37c9bd90cc",
+          "url": "https://github.com/GetFelix/felix/commit/19f8bf3747b633b1bf67b7472e959bd852a53aa5"
+        },
+        "date": 1794412935821,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 651152.61,
+            "range": "97215.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 651152.61\nmean: 653545.53\nstdev: 97215.83\ncv: 14.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 651152.61,
+            "range": "97215.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 651152.61\nmean: 653545.53\nstdev: 97215.83\ncv: 14.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 164222.75,
+            "range": "2458.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 164222.75\nmean: 164517.71\nstdev: 2458.81\ncv: 1.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1642227.47,
+            "range": "24588.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1642227.47\nmean: 1645177.05\nstdev: 24588.10\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
