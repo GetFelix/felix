@@ -248,8 +248,8 @@ says which layout its records have; a v8 record and a v9 record never decode
 as each other, because the header checksum sits at a different place.
 
 Generations never fall along a log. The startup scan checks this inside each
-segment, and the open checks it across segments: a segment's first record
-must not be below the last record of the segment before it. A record whose
+segment, and the open checks it across segments: a segment's first known
+generation must not be below the last known one before it. A record whose
 generation is below the one before it is `GenerationFell` corruption: every
 checksum held, so it was written that way.
 
@@ -272,13 +272,20 @@ leader that wrote the record, the same on every replica:
   takes the new leader's labels, since following a leader labels the history
   too. The generation must also be the newest in the log's history, starting
   at or before the append; an append that lands before the broker recorded
-  where its leadership starts is refused the same way.
+  where its leadership starts is refused the same way. The check runs when
+  the append is staged, and the history's start for a new generation is the
+  tail at the time, which an append still in flight has not moved yet. So a
+  record stamped with the previous generation can sit at or past where the
+  history says the next one starts. The stamp is still the true writer.
 - A record the sender holds in an older segment has no stamp to send. It
   goes as generation 0, "writer unknown", and is stored that way, never with
   the generation the sender's history gives it: histories label copied
   records with the generation they were copied under, so two replicas'
   histories can disagree about one record. Generation 0 is also a shard's
-  first generation, which loses nothing, since nothing comes before it.
+  first generation, so a generation-0 leader's records read as unknown.
+  That loses nothing for the floor, since nothing comes before them, and the
+  switch to Raft puts every unknown record below the snapshot base (see
+  "Unknown writers and the switch to Raft" in `docs/replication-engine.md`).
 - A follower stamps a replicated record with the generation the leader sent
   for it (`writer_generations` on the peer wire, see
   `docs/internal-protocol.md`), never its own. The same holds for a promoted
@@ -299,9 +306,12 @@ leader stops shipping to it, as for any divergence; the rebuild policy may
 then rebuild it. It is not truncated automatically, since the stamps do not
 say where the disagreement starts. The log keeps the floor across a roll, a
 reopen and a truncation. A reopen takes it from the active segment's full
-scan, or from the last record of the segment before it when the active one
-is empty. A cut takes it from the header of the record just below the cut. It
-never comes from a resume scan, which sees only the end of a segment.
+scan, or from the sealed segments before it when the active one holds no
+known generation. A sealed segment is not walked for it: the open reads its
+first record and its resume scan, and if neither shows a known generation
+the segment keeps the floor before it. Walking it would read the whole of a
+log copied from pre-v9 segments on every start. A cut takes the floor from
+the header of the record just below the cut.
 
 **Rollback.** A build that reads only up to v8 refuses a v9 segment with
 `SegmentVersion`, so a broker cannot roll back past the release that wrote

@@ -417,6 +417,59 @@ async fn a_generation_falling_across_segments_refuses_the_open() {
     }
 }
 
+/// A sealed segment of unknown writers opens from its index like any other,
+/// without a walk of the whole segment (which would see the damaged first
+/// record below), and a generation falling across it is still refused.
+#[tokio::test]
+async fn a_sealed_segment_of_unknown_writers_is_not_walked_on_open() {
+    let dir = tempdir().expect("dir");
+    let log = open_gated(&dir);
+    log.append_v9_for_tests(&records(&["a"]), 9)
+        .await
+        .expect("append");
+    log.roll_now().await.expect("roll");
+    log.append_v9_for_tests(&records(&["b", "c", "d"]), UNKNOWN_WRITER)
+        .await
+        .expect("append");
+    let unknown = log.segments().last().expect("active").id;
+    log.roll_now().await.expect("roll");
+    log.append_v9_for_tests(&records(&["e"]), 9)
+        .await
+        .expect("append");
+    let active = log.segments().last().expect("active").id;
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    // Damage the first record, which the index lets the open skip.
+    let path = dir.path().join(segment_file_name(unknown));
+    let mut bytes = std::fs::read(&path).expect("read");
+    let at = SEGMENT_HEADER_LEN as usize;
+    let (_, len) = decode_record_in(&bytes[at..], GENERATION_VERSION).expect("record");
+    bytes[at + len as usize - 1] ^= 0xff;
+    std::fs::write(&path, bytes).expect("write");
+    let log = open_gated(&dir);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    restamp_first(&dir, active, 3);
+    let refused = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        gated(&Arc::new(AtomicBool::new(true))),
+    )
+    .expect_err("a falling generation opened");
+    assert!(
+        matches!(
+            &refused,
+            StorageError::Corruption(corruption) if matches!(
+                corruption.kind,
+                crate::CorruptionKind::GenerationFell { previous: 9, found: 3 }
+            )
+        ),
+        "{refused}"
+    );
+}
+
 /// A committed vote is written as ballot format v2, which the previous
 /// release refuses, so it waits for the same gate as the segment format.
 #[tokio::test]
