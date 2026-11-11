@@ -961,6 +961,11 @@ vote, so a fresh start does not lose the rule that a wiped member does not vote.
 
 **Performance.** One file-existence check at start.
 
+**Proposed change.** `metadata-raft-design.md`
+("[Upgrading an existing cluster](metadata-raft-design.md#upgrading-an-existing-cluster)")
+proposes a separate tool that converts a stopped member's redb store. The
+refusal above stays. Until that is decided, this decision stands.
+
 ## Control-plane storage on the segment log
 
 This track does not depend on the shard side, and is ordered so it does not
@@ -995,7 +1000,8 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
   fresh, or import a snapshot export (the import path in
   `metadata-raft-design.md` reads one). A control plane that finds a redb
   file refuses to start, before it writes anything, with a message saying so
-  (Decisions, 7).
+  (Decisions, 7). A conversion tool is proposed in `metadata-raft-design.md`
+  and not yet decided.
 
 ### Why redb was chosen, and why that no longer holds
 
