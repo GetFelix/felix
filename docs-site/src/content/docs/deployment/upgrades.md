@@ -179,8 +179,11 @@ lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) and
 restart the broker
 ```
 
-With `FELIX_INTERNAL_FENCE=false` the message names `majority_ack` and says
-to unset `FELIX_INTERNAL_FENCE` instead. To recover, remove the setting from
+With `FELIX_INTERNAL_FENCE=false` the message lists every finalized feature the
+broker lacks (`majority_ack`, `lease_free_reads` and `fenced_caches`) and
+carries both hints: unset `FELIX_QUORUM_READS` and unset
+`FELIX_INTERNAL_FENCE`. If only the fence is off, the reads hint still shows,
+because `lease_free_reads` is among the missing features. To recover, remove the setting from
 that broker and restart it; it registers normally. If you meant the whole
 cluster to run with the setting, the features cannot be turned off again:
 create the cluster afresh (a new control-plane store and empty broker data
@@ -363,6 +366,20 @@ by the same round before it is acknowledged.
   fleet that already finalized `lease_free_reads`, remove
   `FELIX_QUORUM_READS=lease` from every broker, or each upgraded broker is
   refused.
+
+#### `atomic_commit`
+
+Once finalized, a cluster member accepts atomic commits: an event and its state
+updates written as one record. Until then a commit over QUIC is refused with
+`invalid_request` ("atomic commits are not enabled for this fleet"). The
+record needs storage format v5 and a replication mark an older build refuses.
+
+- **Replication carries it.** A replica that predates the record would refuse
+  the batch and stop replicating, so the cluster waits for the whole fleet.
+- **A single broker** accepts commits from the start: it has no replicas.
+- **A new cluster** starts with it finalized.
+- **What clients see.** Nothing until a client commits. See
+  [Atomic commits](/clients/rust/groups-and-commits/#atomic-commits).
 
 #### `publisher_principal`
 

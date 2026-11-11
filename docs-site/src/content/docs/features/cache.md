@@ -199,8 +199,8 @@ multiplier. Measure your own workload's shape; the concurrency sweep in
 
 A cache key hashes to one shard, and each shard has one owner. Any broker
 forwards an operation to the key's owner, so a value written through one
-broker is readable through every other and there is never a second copy to
-diverge. Concurrent writes to one key land in the order the owner applies
+broker is readable through every other and the owner is the one place a
+key is written. Concurrent writes to one key land in the order the owner applies
 them: last write wins.
 
 ```rust
