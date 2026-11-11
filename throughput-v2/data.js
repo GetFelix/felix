@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794355403778,
+  "lastUpdate": 1794368661672,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51792,6 +51792,58 @@ window.BENCHMARK_DATA = {
             "range": "9704.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1208537.87\nmean: 1212238.01\nstdev: 9704.19\ncv: 0.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eea215862b09021d55df9c6626629defaba9394a",
+          "message": "fix(storage): v9 writer generations part 2a: leader start rule, unknown writers, followers ahead of the finalize (#2199)\n\nPart of #2167. A v9 leader append is stamped only at or past its generation's recorded start; records whose writer is unknown carry generation 0 and are skipped by the floor; a follower that refuses unstamped batches is sent writers from then on; per-segment known-generation files keep the floor exact without re-reading segments on every start. Unknown writers stay below the Raft snapshot base (docs/replication-engine.md). Reviewed by three independent passes; all findings fixed.\n\nSpec-Unaffected: the v9 per-record generation is not modelled; leases, fencing, the quorum mark, promotion and divergence repair are unchanged.",
+          "timestamp": "2026-11-11T03:40:12Z",
+          "tree_id": "0c2c0e5825b2e8434beafa6fb74a8ae864be04af",
+          "url": "https://github.com/GetFelix/felix/commit/eea215862b09021d55df9c6626629defaba9394a"
+        },
+        "date": 1794368661209,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478632.23,
+            "range": "22623.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478632.23\nmean: 482285.69\nstdev: 22623.61\ncv: 4.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478632.23,
+            "range": "22623.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478632.23\nmean: 482285.69\nstdev: 22623.61\ncv: 4.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120245.24,
+            "range": "2617.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120245.24\nmean: 119139.55\nstdev: 2617.27\ncv: 2.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1202452.44,
+            "range": "26172.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1202452.44\nmean: 1191395.49\nstdev: 26172.75\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
