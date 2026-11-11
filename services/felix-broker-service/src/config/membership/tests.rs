@@ -84,13 +84,12 @@ fn a_broker_reports_fencing_every_change_only_with_the_fence() {
     assert!(!features_for(false, false).contains(every_change));
 }
 
-/// Every replica of a v9 log must negotiate `WRITER_GENERATIONS` before any
-/// log goes v9. The fleet feature is that gate: a broker reports
-/// `record_generations` only when its peers offer the capability, whatever
-/// its fence and election settings, and admission refuses a broker that does
-/// not report a finalized feature.
+/// A broker reports `record_generations` and offers `WRITER_GENERATIONS`
+/// together, whatever its fence and election settings. Peers negotiate the
+/// capability before any log goes v9, so the report must never run ahead of
+/// the offer.
 #[test]
-fn a_broker_reports_record_generations_only_offering_writer_generations() {
+fn a_broker_reports_record_generations_and_offers_writer_generations() {
     use felix_wire::internal::PeerCapabilities;
     for fences in [false, true] {
         for reads_by_lease in [false, true] {

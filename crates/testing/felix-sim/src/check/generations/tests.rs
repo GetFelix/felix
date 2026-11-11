@@ -77,14 +77,16 @@ fn the_tally_counts_compared_records_and_reads_back() {
         tally,
         Tally {
             compared: 2,
-            stamped: 1
+            stamped: 1,
+            unread: 0
         }
     );
     assert_eq!(
         Tally::parse(&tally.summary()),
         Some(Tally {
             compared: 2,
-            stamped: 1
+            stamped: 1,
+            unread: 0
         })
     );
 }
@@ -102,4 +104,37 @@ fn writers_4_and_5_for_the_same_payload_are_reported_and_0_and_5_are_not() {
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].0, 0);
     assert_eq!(found[0].1, vec![("b1", 4), ("b2", 5)]);
+}
+
+#[tokio::test]
+async fn a_head_trimmed_log_is_read_from_its_first_offset() {
+    let held = [record(5, "a", Some(3)), record(6, "b", Some(3))];
+    let read = read_pages(|next| {
+        let page: Vec<_> = held.iter().filter(|r| r.offset >= next).cloned().collect();
+        async move {
+            if next < 5 {
+                Err(BrokerError::CursorTooOld {
+                    requested: next,
+                    oldest: 5,
+                    trim_headers: None,
+                })
+            } else {
+                Ok(page)
+            }
+        }
+    })
+    .await;
+    assert_eq!(read.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_read_that_fails_is_an_error_not_an_empty_log() {
+    let read = read_pages(|_| async { Err(BrokerError::Storage("disk".into())) }).await;
+    assert!(read.is_err());
+    let tally = Tally {
+        compared: 3,
+        stamped: 1,
+        unread: 1,
+    };
+    assert_eq!(Tally::parse(&tally.summary()), Some(tally));
 }

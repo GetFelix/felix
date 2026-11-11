@@ -259,9 +259,9 @@ checksum held, so it was written that way.
 fleet has finalized `record_generations`, which an operator does; a new
 cluster does not. Every broker that reports the feature offers
 `WRITER_GENERATIONS` to its peers, and it needs `generation_start`. Once it
-is finalized, each stream log starts its next segment at v9 and stays there; the segment that was active is never
-rewritten. A lone broker has no fleet and stays on the older formats. Cache
-and counter logs stay on them too.
+is finalized, each stream log starts its next segment at v9 and stays there;
+the segment that was active is never rewritten. A lone broker has no fleet
+and stays on the older formats. Cache and counter logs stay on them too.
 
 **What goes in the field.** Every record in a v9 segment carries one: events,
 generation-start, commit and trim records alike. It is the generation of the

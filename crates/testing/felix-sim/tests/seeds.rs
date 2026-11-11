@@ -424,7 +424,7 @@ fn seed_3_replicas_agree_on_who_wrote_each_record() {
         .unwrap_or_else(|| panic!("the checker reported no tally:\n{outcome}"));
     println!("record-generations-agree: {tally:?}");
     assert!(
-        tally.compared > 0 && tally.stamped > 0,
+        tally.compared > 0 && tally.stamped > 0 && tally.unread == 0,
         "{tally:?}\n{outcome}"
     );
     let faults = &outcome.history.faults;

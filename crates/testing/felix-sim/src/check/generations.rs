@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use felix_broker::LogKind;
+use felix_broker::{BrokerError, LogKind};
 use felix_storage::log::{LogRecord, UNKNOWN_WRITER};
 
 use super::{CheckContext, Checker, Digest, Finding, Point};
@@ -44,6 +44,8 @@ pub struct Tally {
     pub compared: u64,
     /// Of those, records with two or more known stamps to compare.
     pub stamped: u64,
+    /// Replicas whose log could not be read, so they were left out.
+    pub unread: u64,
 }
 
 impl Tally {
@@ -51,8 +53,8 @@ impl Tally {
     /// back with [`Tally::parse`].
     pub fn summary(&self) -> String {
         format!(
-            "compared {} replicated records, {} with two or more known writers",
-            self.compared, self.stamped
+            "compared {} replicated records, {} with two or more known writers, {} unreadable replicas",
+            self.compared, self.stamped, self.unread
         )
     }
 
@@ -60,10 +62,12 @@ impl Tally {
     pub fn parse(summary: &str) -> Option<Tally> {
         let rest = summary.strip_prefix("compared ")?;
         let (compared, rest) = rest.split_once(" replicated records, ")?;
-        let (stamped, _) = rest.split_once(' ')?;
+        let (stamped, rest) = rest.split_once(" with two or more known writers, ")?;
+        let (unread, _) = rest.split_once(' ')?;
         Some(Tally {
             compared: compared.parse().ok()?,
             stamped: stamped.parse().ok()?,
+            unread: unread.parse().ok()?,
         })
     }
 }
@@ -122,24 +126,48 @@ fn disagreements<'a>(
     found
 }
 
-/// Every record of `shard`'s stream log on node `index`, or `None` if the node
-/// is down or does not hold it.
-async fn read_records(cluster: &SimCluster, index: usize, shard: u32) -> Option<Vec<LogRecord>> {
+/// Every record `read` returns, page by page from the first offset the log
+/// serves. A head-trimmed log answers `CursorTooOld` with where it starts, so the
+/// walk restarts there; any other error is the caller's to report.
+async fn read_pages<F, Fut>(mut read: F) -> Result<Vec<LogRecord>, BrokerError>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<LogRecord>, BrokerError>>,
+{
+    let mut records = Vec::new();
+    let mut next = 0;
+    let mut trimmed = false;
+    loop {
+        match read(next).await {
+            Ok(page) => {
+                let Some(last) = page.last() else {
+                    return Ok(records);
+                };
+                next = last.offset + 1;
+                records.extend(page);
+            }
+            Err(BrokerError::CursorTooOld { oldest, .. }) if !trimmed && records.is_empty() => {
+                trimmed = true;
+                next = oldest;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Every record of `shard`'s stream log on node `index`: `None` if the node
+/// is down or does not hold it, `Some(Err)` if the read failed.
+async fn read_records(
+    cluster: &SimCluster,
+    index: usize,
+    shard: u32,
+) -> Option<Result<Vec<LogRecord>, BrokerError>> {
     let handles = cluster.handles(index)?;
     let log = handles
         .broker
         .shard_log(LogKind::Stream, TENANT, NAMESPACE, STREAM, shard)
         .await?;
-    let mut records = Vec::new();
-    let mut next = 0;
-    loop {
-        let page = log.read_from(next, PAGE_BYTES).await.ok()?;
-        let Some(last) = page.last() else {
-            return Some(records);
-        };
-        next = last.offset + 1;
-        records.extend(page);
-    }
+    Some(read_pages(|next| log.read_from(next, PAGE_BYTES)).await)
 }
 
 #[async_trait::async_trait]
@@ -149,18 +177,29 @@ impl Checker for RecordGenerationsAgree {
     }
 
     async fn check(&mut self, ctx: &CheckContext) -> Vec<Finding> {
-        if ctx.point != Point::End {
+        let cluster = &ctx.cluster;
+        // Nothing is stamped until the feature is finalized, so other runs
+        // have nothing to compare.
+        if ctx.point != Point::End || cluster.config.finalize_record_generations.is_none() {
             return Vec::new();
         }
-        let cluster = &ctx.cluster;
         let mut findings = Vec::new();
         let mut tally = Tally::default();
         for shard in 0..cluster.config.shards {
             let key = stream_key(shard);
             let mut logs = Vec::new();
             for node in cluster.running().iter().map(|h| h.index) {
-                if let Some(records) = read_records(cluster, node, shard).await {
-                    logs.push((cluster.node_id(node).to_string(), records));
+                let name = cluster.node_id(node).to_string();
+                match read_records(cluster, node, shard).await {
+                    Some(Ok(records)) => logs.push((name, records)),
+                    Some(Err(error)) => {
+                        tally.unread += 1;
+                        findings.push(Finding::new(
+                            self.name(),
+                            format!("{}: could not read {name}'s log: {error}", describe(&key)),
+                        ));
+                    }
+                    None => {}
                 }
             }
             for (offset, stamps) in disagreements(&logs, &mut tally) {
