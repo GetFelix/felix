@@ -18,6 +18,10 @@ that work:
 Before the bespoke protocol is deleted, Raft must pass a no-regression gate
 against it, written down below before any numbers exist.
 
+Track 4 has its own page, [`per-shard-raft.md`](per-shard-raft.md): the node
+ticker, heartbeat coalescing, sleep and wake, the switch from the hybrid, the
+tests and the pull request split.
+
 ## What the engine is
 
 A shard is one ordered log of records. Its replica set is the brokers that
@@ -285,17 +289,140 @@ engine that writes through `DiskLog` keeps all of them.
 
 | Raft storage operation (openraft 0.10) | `DiskLog` today |
 | --- | --- |
-| `append`, then `IOFlushed` (`LogFlushed` in 0.9, which the control plane uses until it moves) | `append_pending_at` / `append_claimed_at` (`disk_log.rs:365`, `:340`), then `wait_durable` (`disk_log.rs:414`). Group commit is kept: the callback fires when the shared flush covers the offset. |
-| `truncate_after(Option<LogId>)`, cutting everything after the given id (0.9's `truncate(log_id)` cut from it) | The truncation path (`disk_log.rs:1227`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1242`). `restore_to` (`disk_log.rs:560`) is the offline variant. |
-| `purge(log_id)` of a committed prefix | `trim_before` (`disk_log.rs:495`) and retention (`disk_log/retention.rs`). |
-| `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:513`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
+| `append`, then `IOFlushed` (`LogFlushed` in 0.9, which the control plane uses until it moves) | `append_pending_at` / `append_claimed_at` (`disk_log.rs:377`, `:348`), then `wait_durable` (`disk_log.rs:429`). Group commit is kept: the callback fires when the shared flush covers the offset. |
+| `truncate_after(Option<LogId>)`, cutting everything after the given id (0.9's `truncate(log_id)` cut from it) | The truncation path (`disk_log.rs:1361`), refused below the commit offset with `BelowCommit` (`disk_log.rs:1376`). `restore_to` (`disk_log.rs:575`) is the offline variant. |
+| `purge(log_id)` of a committed prefix | `trim_before` (`disk_log.rs:510`) and retention (`disk_log/retention.rs`). |
+| `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:528`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
 | Term of each entry (`LogId` with `leader_id_std::LeaderId`) | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
 | `save_vote` / `read_vote` (`Vote` with its `committed` flag) | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:250-263`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file, which bumps the ballot format (see Format version 9). Storage errors reach openraft as `io::Error`. |
-| `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:703`). |
+| `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:740`). |
 
 The offset is the Raft index: one record is one entry. The startup scan, the
 torn-tail rule and the derived indexes keep working as they do; version 9
 adds the generation field to the record header and the record kinds below.
+
+**What is built.** The adapter is in
+`crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature.
+`RaftLog` implements openraft's `RaftLogStorage`: `append` with its
+`IOFlushed` callback, `truncate_after`, `save_vote` and the committed id. `LogReader`
+implements `RaftLogReader` (entries and the vote). Inside the crate,
+`DiskLog::writer_at` and `DiskLog::last_writer` give the generation in a
+record's header without reading its payload. `save_committed` and `read_committed` keep the
+committed id. Purge and snapshots are not built, so no engine runs on the
+adapter yet.
+
+**A Raft log is opened as one.** `LogConfig::raft_log` makes a log v9 from
+its first segment, lets it take membership records, and refuses retention
+bounds, since retention deleting head segments would look like a purge
+nothing asked for. `RaftLog::new` refuses a log opened without it.
+
+**Append returns before the flush.** openraft wants `append` to return once
+the entries can be read and to hear through the callback once they are
+durable:
+
+```mermaid
+sequenceDiagram
+    participant R as openraft
+    participant A as RaftLog
+    participant D as DiskLog
+    R->>A: append(entries, callback)
+    A->>D: append_pending_at(index, records, terms)
+    D-->>A: written, readable
+    A-->>R: Ok
+    Note over A,D: a task waits for the group commit
+    D-->>A: flush covers the entries
+    A-->>R: callback(Ok)
+```
+
+The append checks that the first entry is the next index under the same
+lock that assigns offsets, so a hole is refused with nothing written. The
+callback fires from a task that waits on the log's group commit, once per
+append. A flush covers a prefix of the log, so when the callback fires
+every entry below is durable too. The wait follows the log's fsync policy:
+under `FsyncMode::OnCommit` it is a real flush, and under the other modes
+the callback fires at once, as an acknowledgement does for a stream. A
+flush that fails reaches the callback as an error, which openraft treats as
+fatal for the node.
+
+**Truncation waits for those callbacks.** `truncate_after` first lets every
+earlier append's callback fire, then cuts. Cutting first would leave a
+flush waiting on entries that no longer exist; it would give up and report
+the append failed. The cut itself removes whole segments newest first and
+syncs the directory after each, then cuts the surviving segment, so a crash
+part way leaves a longer log and never a gap. `truncate_after` also checks
+the id it is given: if the log holds an entry of another term at that
+index, the caller is describing a different log and the cut is refused.
+The cut is on disk when `truncate_after` returns, so the callback of an
+append after it cannot fire ahead of the cut.
+
+**A vote only moves forward.** `save_vote` writes the ballot and returns
+once it is on disk. It accepts a higher term, or the vote already held
+turning committed, and saving the held vote again writes nothing. A lower
+term, another node in the same term, or a committed vote going back to
+uncommitted is refused with nothing written.
+
+**The committed id is never past the log.** `save_committed` keeps the id
+as the log's commit offset, which is written behind the call, so after a
+crash the id read back may be older. It must never be newer than the log:
+openraft can save a committed id whose entry is appended here but not yet
+flushed, and a power cut can then take the entry and keep the id. An open
+of a Raft log lowers a stored commit offset to the end of the recovered
+log and writes that back before anything is appended. Without the
+write-back, entries a later leader puts at the lost indexes would count as
+committed after the next crash, and a legal truncation of them would be
+refused.
+
+**The committed id names an entry, not an index.** The id's term is saved
+beside the commit offset, as a generation, in the same write. An open of a
+Raft log reads the record just below the offset and compares generations.
+If they differ, the log holds some other entry at that index, one that was
+never committed. The open then takes nothing in the log as committed: it
+lowers the commit offset to the log's first index, writes that back, and
+`read_committed` returns nothing until the leader sends an id again. When
+the open has already lowered the offset to the log's end, the record there
+is an earlier entry, so its generation may be lower than the saved one but
+never higher. The lowered offset and that entry's generation go to disk in
+one write. `read_committed` makes the same comparison on every call and
+fails on a mismatch. Nothing can cause one on an open log: the commit
+offset of a Raft log moves only with a term, so
+`DiskLog::advance_commit_offset` is refused and `note_commit_offset` does
+nothing there. A durable `truncate_after` is what
+keeps a cut tail off the disk. This check is for the case where the disk
+comes back with it anyway.
+
+These rules, and the one above about a cut and later callbacks, were found
+by model checking
+([#2221](https://github.com/GetFelix/felix/issues/2221)).
+
+**Crash points.** Each write has power-loss tests on the simulator's
+filesystem (`raft_log/tests/crash_points.rs`,
+`disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
+inside the write and after its callback; a truncation cut after each
+unlink, after it returns and after a later append's callback; a committed
+id saved ahead of the flush; a vote save cut at every step. What reopens
+holds every entry whose callback fired, is a gap-free prefix of what was
+written, is never shorter than a truncation was asked to keep, and has the
+old vote or the new one.
+
+**The term is the generation minus one.** openraft's `initialize` writes the
+first membership entry at term 0, and generation 0 in a record header means
+"writer unknown" (see "Unknown writers and the switch to Raft"). The adapter
+stamps a record with its entry's term plus one, and the ballot's generation
+is the vote's term plus one, so term 0 is stored as generation 1 and no
+entry is ever stored as 0. The shift is one exported pair,
+`raft_log::generation_of` and `raft_log::term_of_generation`, and the engine
+that drives the adapter calls the same pair when it opens the write fence at
+a term.
+
+**An empty log can start at any index.** openraft's storage suite appends to
+an empty store at index 1. The adapter takes the log's first index from
+where its oldest segment starts, and the first append to an empty log
+restarts it at that entry's index, so the log holds nothing below it. A log
+that holds entries takes an append only at its tail.
+
+**A read is one log's.** A read that spans several pages restarts if the log
+is truncated under it, so it never joins entries from before a truncation to
+ones written after.
 
 **The awkward part is entries that are not records.** Raft appends two kinds
 of entry no client wrote: a blank entry when a leader starts its term, and
@@ -357,6 +484,11 @@ used by every shard group and by the control plane, tested once.
   `services/felix-controlplane-service/src/raft/store/tests.rs:44`) runs
   against the adapter, alongside `felix-storage`'s existing torn-tail,
   power-loss and fault-injection tests.
+  The suite drives a whole store, so it runs in full only once purge and
+  snapshots exist. Until then
+  `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the 13
+  cases that need only reads, appends, truncation and the vote, all through
+  the adapter.
 - **One model.** What the adapter must guarantee to openraft is model-checked
   in `docs/formal/FelixRaft.tla`: when the flush callback may fire, what a
   crash may leave of the log, the vote and the snapshot, and what the
@@ -365,15 +497,15 @@ used by every shard group and by the control plane, tested once.
 - **Truncation is allowed.** `store.rs` says the segment store forbids
   truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported
-  operation (`disk_log.rs:1227`, and "Divergence and truncation" in
+  operation (`disk_log.rs:1361`, and "Divergence and truncation" in
   `replication-design.md`). That comment is corrected when the adapter lands.
 
 ### openraft version
 
 The adapter targets openraft 0.10, pinned to an exact version in
-`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10). Nothing in
-the workspace depends on 0.10 yet; the adapter PR adds `openraft = "=0.10.0"`
-as its first commit. The control plane runs 0.9.25 today
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10), and
+`[workspace.dependencies]` pins `openraft = "=0.10.0"`, which `felix-storage`
+uses behind its `raft` feature. The control plane runs 0.9.25 today
 (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
 pinned version as part of its storage track, so the workspace has one
 openraft. A version change is a reviewed update, never a side effect of
@@ -420,7 +552,8 @@ What the adapter absorbs from 0.9 to 0.10:
 
 - The `single-term-leader` feature is gone. The type config sets
   `LeaderId = leader_id_std::LeaderId`, which gives a log id of term and
-  index, the term being the record's generation.
+  index, the term being the record's generation minus one. The adapter's
+  `LogTypes` bound accepts no other leader id.
 - `truncate(log_id)` becomes `truncate_after(Option<LogId>)`, which keeps the
   named entry and cuts everything after it. The adapter maps it to `DiskLog`'s
   truncate at the next offset.
@@ -526,8 +659,8 @@ do. They also learned four things the design takes on:
 3. **No task per group.** CockroachDB moved from a task per range to a few
    per store, and TiKV drives regions from a small thread pool. openraft
    runs a task per group, so the first step of per-shard Raft measures
-   memory, idle CPU and scheduling with 5,000 and 10,000 groups on one
-   broker, before other work builds on it. Felix stays on openraft. If the
+   memory, idle CPU and scheduling with 5,000 groups on one broker (and
+   10,000 as a stress run), before other work builds on it. Felix stays on openraft. If the
    measurement finds a limit, it is fixed in openraft: Felix files the
    problem upstream with the numbers and, where the fix is clear, sends the
    pull request, rather than switching libraries or keeping a private fork.
@@ -540,8 +673,38 @@ do. They also learned four things the design takes on:
    this. The prototype also sets and tests a per-broker group budget at
    felixd's 1,000-workload scale.
 
+#### How many groups a broker carries
+
+A broker holds about `shards × RF / brokers` Raft members, a third of them
+leaders at RF 3. Three brokers with 300 streams of 4 shards carry 1,200
+members each; 2,000 small per-entity streams on three brokers carry 2,000.
+Kafka brokers usually run 1,000 to 4,000 partitions.
+
+- **Design point: 2,000 members per broker.** Defaults and docs assume this.
+- **Gate: 5,000 members per broker**, idle, with idle CPU near zero and
+  resident memory under 1 GB for Raft state (perf gate, criterion 6).
+- **10,000 is a stress run**, used to find limits to fix upstream. It is not
+  a supported size.
+- **`max_shards` caps a broker.** Past it, placement answers `at_capacity`
+  instead of the broker slowing down.
+
+Measured on openraft 0.10.0 (one process leading every group, stub
+followers, a 4-vCPU runner): about 180 KB and 10 tasks per leader member
+and 145 KB and 6 tasks per follower, whatever the timers. Idle CPU comes
+from each member's tick: 86% of a core per 1,000 members with the default
+timers, 0 with `enable_tick=false`. One node timer driving
+`Raft::trigger().tick()` (openraft 0.10.1) removes it. The other upstream
+asks (heartbeat coalescing per peer, idle groups that sleep, fewer tasks per
+member) are tracked in #2215.
+
+If per-entity streams push a broker past the gate, many small streams can
+share one Raft group, the way one CockroachDB range covers many keys, with
+groups splitting when hot and merging when cold. Nothing is built for this
+yet, but the engine interface must not assume one group per stream.
+
 Sleep and wake also get their own simulator nemesis: both CockroachDB and
 TiKV shipped bugs where idle groups failed to sleep or failed to wake.
+The nemesis is specified in [`per-shard-raft.md`](per-shard-raft.md), "Simulator: the sleep nemesis".
 
 ### Hybrid behaviour that does not fit cleanly
 
@@ -597,7 +760,7 @@ generation list in `disk_log/epochs.rs` cannot provide it: an absent or
 unreadable file loads as empty (`epochs.rs:204-228`), it keeps at most 512
 entries (`epochs.rs:34`), ranges that arrive after a cut are tracked only in
 memory (`epochs.rs:46-48`), and a truncation syncs the segments before it
-stores the list (`disk_log.rs:1642-1656`). That is fine for a hint, and it
+stores the list (`disk_log.rs:1784-1795`). That is fine for a hint, and it
 stays one. Making it safety state would need ordering and crash rules for
 every one of those paths. A header field is checksummed with the record, cut
 with the record on a torn tail, and needs no rules of its own.
@@ -709,7 +872,7 @@ past the last index openraft knew. On restart openraft reads the log's last
 that term. A new leader keeps them or truncates them. Either way no client
 was told they were committed, because `await_commit` returned only on the
 commit index. Truncation goes through `DiskLog`'s truncate, which refuses to
-go below the commit offset (`disk_log.rs:1242`). Raft never asks it to, so a
+go below the commit offset (`disk_log.rs:1376`). Raft never asks it to, so a
 refusal there is a bug to stop on, not a case to handle.
 
 One ordering rule matters. The broker and openraft must agree on the next
@@ -726,7 +889,7 @@ what the prototype measures. The gate's single-node and RF 3 steady cells at
 
 With the `client_write` fallback the payload `Bytes` move into the entry by
 reference, so nothing is copied. The adapter's `append` calls the same
-`append_claimed_at` and `wait_durable` (`disk_log.rs:340`, `:414`), so group
+`append_claimed_at` and `wait_durable` (`disk_log.rs:348`, `:429`), so group
 commit is kept and there is no second fsync. The costs are a channel hop to
 the group's Raft task before the append, and openraft's single task per group
 setting the order in place of `CommitSequencer`. The gate's p99 cells measure
@@ -743,7 +906,7 @@ broker library builds without openraft. The control plane and
 broker binary links openraft once the Raft engine lands, and does not before.
 Nothing in `DiskLog`'s append, flush or read path changes when the feature is
 on. The adapter calls `DiskLog`'s methods from inside the crate, including
-`pub(crate)` ones such as `trim_before` (`disk_log.rs:495`), and changes none
+`pub(crate)` ones such as `trim_before` (`disk_log.rs:510`), and changes none
 of them.
 
 **Safety.** The control plane gains a dependency on `felix-storage`, never on
@@ -840,9 +1003,9 @@ poll. A `Leader` write is acknowledged only if
     now < last_quorum_ack_sent + lease
 
 where `last_quorum_ack_sent` is when the leader sent the heartbeat or append
-that a majority last acknowledged. openraft reports the time since then
-(`millis_since_quorum_ack`, measured from the acknowledged message's send
-time). If the check fails, the write fence closes and the write is refused
+that a majority last acknowledged. openraft reports it as an instant
+(`last_quorum_acked`, the acknowledged message's send time; 0.10 deprecates
+the older `millis_since_quorum_ack`). If the check fails, the write fence closes and the write is refused
 with leadership lost; a group that has been idle first runs one quorum round
 (see "Many groups on one broker"). The check reads the same lease clock as
 today (`CLOCK_BOOTTIME` on Linux, see "The clock assumption, stated
@@ -932,6 +1095,11 @@ vote, so a fresh start does not lose the rule that a wiped member does not vote.
 
 **Performance.** One file-existence check at start.
 
+**Proposed change.** `metadata-raft-design.md`
+("[Upgrading an existing cluster](metadata-raft-design.md#upgrading-an-existing-cluster)")
+proposes a separate tool that converts a stopped member's redb store. The
+refusal above stays. Until that is decided, this decision stands.
+
 ## Control-plane storage on the segment log
 
 This track does not depend on the shard side, and is ordered so it does not
@@ -966,7 +1134,8 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
   fresh, or import a snapshot export (the import path in
   `metadata-raft-design.md` reads one). A control plane that finds a redb
   file refuses to start, before it writes anything, with a message saying so
-  (Decisions, 7).
+  (Decisions, 7). A conversion tool is proposed in `metadata-raft-design.md`
+  and not yet decided.
 
 ### Why redb was chosen, and why that no longer holds
 
@@ -976,10 +1145,10 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
 does not, today. The rule is that bytes are never rewritten in place, so
 recovery can trust that valid bytes end at EOF. Cutting a suffix off is a
 separate, supported operation: `DiskLog`'s truncate
-(`crates/server/felix-storage/src/disk_log.rs:1227`) cuts the log back to an
+(`crates/server/felix-storage/src/disk_log.rs:1361`) cuts the log back to an
 offset under the append and segment locks, and refuses with `BelowCommit` only
-when the cut would reach below the commit offset (`disk_log.rs:1242`). A
-diverged follower already uses it, and `restore_to` (`disk_log.rs:560`) goes
+when the cut would reach below the commit offset (`disk_log.rs:1376`). A
+diverged follower already uses it, and `restore_to` (`disk_log.rs:575`) goes
 through the same path. Raft truncates only entries that are not committed,
 so the guard never refuses a correct Raft truncation; it is a backstop
 against a wrong one.
@@ -1043,7 +1212,10 @@ fixed in the Raft engine, or the decision is reopened with the numbers in
 4. **Failover time** no worse than the hybrid in any cell.
 5. **Control plane down.** A leader crash while the control plane is down
    still fails over and keeps serving.
-6. **Size, reported only.** Lines of replication code and TLA+ specs and
+6. **Groups per broker.** 5,000 idle members on one broker with idle CPU
+   near zero and Raft resident memory under 1 GB (see
+   [How many groups a broker carries](#how-many-groups-a-broker-carries)).
+7. **Size, reported only.** Lines of replication code and TLA+ specs and
    configs each protocol keeps. Baseline today: `felix-replication/src` has
    about 26,000 lines of non-test code, and `docs/formal/FelixShard*.tla` is
    about 8,000 lines across 425 configs. This is reported with the results and

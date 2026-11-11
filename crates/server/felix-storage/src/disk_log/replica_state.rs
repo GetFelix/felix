@@ -27,8 +27,13 @@ use crate::{Result, StorageError};
 /// `"FLRS"`.
 const MAGIC: u32 = 0x464C_5253;
 const VERSION: u16 = 1;
+/// A file that also holds the committed generation. Only a Raft log writes
+/// one, so every other log's file stays readable by older builds.
+const VERSION_COMMITTED: u16 = 2;
 /// magic(4) + version(2) + flags(2) + generation(8) + commit(8) + crc(4)
-pub(super) const ENCODED_LEN: usize = 28;
+const ENCODED_LEN: usize = 28;
+/// [`ENCODED_LEN`] with the committed generation(8) before the crc.
+const ENCODED_LEN_COMMITTED: usize = 36;
 const FILE_NAME: &str = "replica";
 /// Retention is held at the commit offset. The flags were a reserved zero
 /// that no build checked, so an older build reads this file unchanged.
@@ -44,13 +49,22 @@ pub(super) struct ReplicaState {
     pub(super) commit_offset: Offset,
     /// See `DiskLog::hold_retention_at_commit`.
     pub(super) hold_at_commit: bool,
+    /// The generation of the record just below `commit_offset` when a Raft
+    /// log saved it, zero when not known. An index alone does not name an
+    /// entry: a log can hold another term's entry there.
+    pub(super) committed_generation: u64,
 }
 
 impl ReplicaState {
-    pub(super) fn encode(&self) -> [u8; ENCODED_LEN] {
-        let mut out = [0u8; ENCODED_LEN];
+    pub(super) fn encode(&self) -> Vec<u8> {
+        let (version, len) = if self.committed_generation == 0 {
+            (VERSION, ENCODED_LEN)
+        } else {
+            (VERSION_COMMITTED, ENCODED_LEN_COMMITTED)
+        };
+        let mut out = vec![0u8; len];
         out[0..4].copy_from_slice(&MAGIC.to_be_bytes());
-        out[4..6].copy_from_slice(&VERSION.to_be_bytes());
+        out[4..6].copy_from_slice(&version.to_be_bytes());
         let flags = if self.hold_at_commit {
             FLAG_HOLD_AT_COMMIT
         } else {
@@ -59,29 +73,49 @@ impl ReplicaState {
         out[6..8].copy_from_slice(&flags.to_be_bytes());
         out[8..16].copy_from_slice(&self.accepted_generation.to_be_bytes());
         out[16..24].copy_from_slice(&self.commit_offset.to_be_bytes());
-        let crc = crate::segment::format::crc32(&[&out[0..24]]);
-        out[24..28].copy_from_slice(&crc.to_be_bytes());
+        if version == VERSION_COMMITTED {
+            out[24..32].copy_from_slice(&self.committed_generation.to_be_bytes());
+        }
+        let body = len - 4;
+        let crc = crate::segment::format::crc32(&[&out[..body]]);
+        out[body..].copy_from_slice(&crc.to_be_bytes());
         out
     }
 
     pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != ENCODED_LEN {
+        if bytes.len() < ENCODED_LEN {
             return None;
         }
         let magic = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
         let version = u16::from_be_bytes(bytes[4..6].try_into().ok()?);
         let flags = u16::from_be_bytes(bytes[6..8].try_into().ok()?);
-        let crc = u32::from_be_bytes(bytes[24..28].try_into().ok()?);
-        if magic != MAGIC || version != VERSION {
+        let len = match version {
+            VERSION => ENCODED_LEN,
+            VERSION_COMMITTED => ENCODED_LEN_COMMITTED,
+            _ => return None,
+        };
+        if magic != MAGIC || bytes.len() != len {
             return None;
         }
-        if crate::segment::format::crc32(&[&bytes[0..24]]) != crc {
+        let body = len - 4;
+        let crc = u32::from_be_bytes(bytes[body..].try_into().ok()?);
+        if crate::segment::format::crc32(&[&bytes[..body]]) != crc {
+            return None;
+        }
+        let committed_generation = if version == VERSION_COMMITTED {
+            u64::from_be_bytes(bytes[24..32].try_into().ok()?)
+        } else {
+            0
+        };
+        // Version 2 with no generation is not something `encode` writes.
+        if version == VERSION_COMMITTED && committed_generation == 0 {
             return None;
         }
         Some(Self {
             accepted_generation: u64::from_be_bytes(bytes[8..16].try_into().ok()?),
             commit_offset: u64::from_be_bytes(bytes[16..24].try_into().ok()?),
             hold_at_commit: flags & FLAG_HOLD_AT_COMMIT != 0,
+            committed_generation,
         })
     }
 }

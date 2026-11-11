@@ -22,6 +22,9 @@ fault-injection = []
 sim = []
 # Entry points for the libFuzzer targets in `fuzz/`; not an API.
 fuzzing = []
+# `raft_log`: a `DiskLog` as an openraft log. Off for the broker library, so
+# it builds without openraft.
+raft = ["dep:openraft"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -34,6 +37,7 @@ crc32fast = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 object_store = { workspace = true }
+openraft = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -46,6 +50,13 @@ io-uring = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+# Turns `raft` on for this crate's own tests, so `cargo test` runs the
+# adapter's without a feature flag.
+felix-storage = { path = ".", features = ["raft"] }
+# The storage suite needs a runtime to run in.
+openraft = { workspace = true, features = ["tokio-rt", "serde"] }
+serde_json = { workspace = true }
+futures-util = "0.3"
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

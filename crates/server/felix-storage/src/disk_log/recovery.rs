@@ -124,8 +124,8 @@ fn apply(dir: &Path, label: &str, config: &LogConfig, plan: RecoveryPlan) -> Res
                 dir,
                 0,
                 now_micros(),
-                config.reserve_limit_bytes(),
-                config.index_spacing_bytes,
+                (config.reserve_limit_bytes(), config.index_spacing_bytes),
+                config.first_segment_version(),
             )?,
             truncated_bytes: 0,
             index_rebuilds: 0,
@@ -324,8 +324,8 @@ pub(super) fn place_empty_shard(
         dir,
         base_offset,
         now_micros(),
-        config.reserve_limit_bytes(),
-        config.index_spacing_bytes,
+        (config.reserve_limit_bytes(), config.index_spacing_bytes),
+        config.first_segment_version(),
     )?;
     // The header is flushed before anything can append to it, and its name by
     // `DiskLog::open_shared`'s directory sync: a base offset that did not

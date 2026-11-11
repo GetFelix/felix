@@ -138,6 +138,9 @@ impl SegmentReader {
             // Honour the budget, but never return an empty result for a range
             // that does have data.
             if !budget.admits(record_header.payload_len as usize) {
+                // The read ends here. Left unspent, the budget would let
+                // the next segment's first record in, past this one.
+                budget.max_records = 0;
                 break;
             }
 
@@ -191,6 +194,38 @@ impl SegmentReader {
             position += record_header.encoded_len();
         }
         Ok(valid_bytes)
+    }
+
+    /// The generation stamped on the record at exactly `offset`, read from
+    /// its header alone and checked against the header checksum. Walks from
+    /// `position`, a record boundary at or before it. The outer `None` means
+    /// no record at `offset` lies below `valid_bytes`; the inner one, a
+    /// segment older than v9, whose records keep no generation.
+    #[cfg(feature = "raft")]
+    pub(crate) fn generation_at(
+        &self,
+        mut position: u64,
+        offset: Offset,
+        valid_bytes: u64,
+        shard_label: &str,
+    ) -> Result<Option<Option<u64>>> {
+        let version = self.version(shard_label)?;
+        let header_len = record_header_len(version) as usize;
+        let mut cursor = SegmentCursor::new(&self.file);
+        while position < valid_bytes {
+            let header_slice = cursor.slice_at(position, header_len)?;
+            let record_header = RecordHeader::decode_in(header_slice, version).map_err(|err| {
+                StorageError::Corruption(err.in_segment(shard_label, self.id).at_position(position))
+            })?;
+            if record_header.offset == offset {
+                return Ok(Some(record_header.generation));
+            }
+            if record_header.offset > offset {
+                break;
+            }
+            position += record_header.encoded_len();
+        }
+        Ok(None)
     }
 
     /// The segment header's version, read once per reader.

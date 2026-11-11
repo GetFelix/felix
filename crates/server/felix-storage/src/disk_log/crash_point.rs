@@ -16,7 +16,7 @@ struct Watch {
 /// Count the steps of writes under `dir`. With `stop_at`, that step and
 /// every one after it fails, as a dead process would never run them.
 #[cfg(test)]
-pub(super) fn watch(dir: &Path, stop_at: Option<usize>) {
+pub(crate) fn watch(dir: &Path, stop_at: Option<usize>) {
     WATCHED
         .lock()
         .insert(dir.to_path_buf(), Watch { seen: 0, stop_at });
@@ -24,13 +24,13 @@ pub(super) fn watch(dir: &Path, stop_at: Option<usize>) {
 
 /// Stop watching `dir`; returns how many steps ran or were refused.
 #[cfg(test)]
-pub(super) fn unwatch(dir: &Path) -> usize {
+pub(crate) fn unwatch(dir: &Path) -> usize {
     WATCHED.lock().remove(dir).map_or(0, |watch| watch.seen)
 }
 
 /// A step of a write under `dir`. Fails from a watching test's stop on.
 #[cfg(test)]
-pub(super) fn reached(dir: &Path) -> std::io::Result<()> {
+pub(crate) fn reached(dir: &Path) -> std::io::Result<()> {
     let mut watched = WATCHED.lock();
     let Some(watch) = watched.get_mut(dir) else {
         return Ok(());
@@ -45,6 +45,6 @@ pub(super) fn reached(dir: &Path) -> std::io::Result<()> {
 
 #[cfg(not(test))]
 #[inline(always)]
-pub(super) fn reached(_dir: &Path) -> std::io::Result<()> {
+pub(crate) fn reached(_dir: &Path) -> std::io::Result<()> {
     Ok(())
 }

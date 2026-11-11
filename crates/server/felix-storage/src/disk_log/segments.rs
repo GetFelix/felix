@@ -12,7 +12,7 @@ mod truncation;
 mod test_support;
 
 pub(super) use rollover::RollOutcome;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub(super) use truncation::{stop_after_unlinks, stop_point};
 
 use std::path::{Path, PathBuf};
@@ -426,6 +426,34 @@ impl ReadPlan {
             }
         }
         Ok(out)
+    }
+}
+
+impl ReadPlan {
+    /// The generation in the header of the record at `offset`, for a plan
+    /// made with that offset as its start. `None` when the plan holds no
+    /// such record; `Some(None)` when its segment predates v9.
+    #[cfg(feature = "raft")]
+    pub(super) fn generation_at(&self, offset: Offset, label: &str) -> Result<Option<Option<u64>>> {
+        // The record is in the first span or nowhere: a plan starts at the
+        // segment holding its start.
+        match self.spans.first() {
+            None => Ok(None),
+            Some(ReadSpan::Sealed(locator)) => {
+                let handle = locator.open(&self.files, label)?;
+                handle.reader.generation_at(
+                    handle.index.seek_position(offset),
+                    offset,
+                    locator.valid_bytes(),
+                    label,
+                )
+            }
+            Some(ReadSpan::Active {
+                reader,
+                position,
+                valid_bytes,
+            }) => reader.generation_at(*position, offset, *valid_bytes, label),
+        }
     }
 }
 

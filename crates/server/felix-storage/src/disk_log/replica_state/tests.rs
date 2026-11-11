@@ -9,6 +9,7 @@ fn state_round_trips() {
         accepted_generation: 7,
         commit_offset: 1234,
         hold_at_commit: true,
+        committed_generation: 0,
     };
     store(dir.path(), &state).expect("store");
     assert_eq!(load(dir.path()).expect("load"), state);
@@ -30,6 +31,7 @@ fn a_damaged_file_fails_rather_than_reading_as_zero() {
             accepted_generation: 3,
             commit_offset: 10,
             hold_at_commit: false,
+            committed_generation: 0,
         },
     )
     .expect("store");
@@ -47,8 +49,32 @@ fn a_file_with_no_flags_reads_as_not_held() {
         accepted_generation: 2,
         commit_offset: 5,
         hold_at_commit: false,
+        committed_generation: 0,
     };
     let bytes = state.encode();
     assert_eq!(&bytes[6..8], &[0, 0]);
     assert_eq!(ReplicaState::decode(&bytes), Some(state));
+}
+
+#[test]
+fn the_committed_generation_round_trips_and_leaves_other_files_as_they_were() {
+    let plain = ReplicaState {
+        accepted_generation: 4,
+        commit_offset: 9,
+        hold_at_commit: false,
+        committed_generation: 0,
+    };
+    // What builds before the field wrote, byte for byte.
+    assert_eq!(plain.encode().len(), 28);
+    assert_eq!(&plain.encode()[4..6], &[0, 1]);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = ReplicaState {
+        committed_generation: 3,
+        ..plain
+    };
+    store(dir.path(), &state).expect("store");
+    assert_eq!(load(dir.path()).expect("load"), state);
+    // A file cut to the older length is damage, not the older format.
+    assert_eq!(ReplicaState::decode(&state.encode()[..28]), None);
 }
