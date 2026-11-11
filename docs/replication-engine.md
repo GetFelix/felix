@@ -1121,8 +1121,9 @@ both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
 only `felix-broker` differs. The figure for a cell is the median over the
 rounds, and `scripts/ci/gate_perf.py` applies the rules: throughput at least
 0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
-(the `failover_slack` input loosens that when the runner is noisy; say so in
-the write-up if you use it).
+plus the `failover_slack` input, 5% by default: failover is quantized by the
+failure-detection timer, and a half-millisecond difference is not a regression.
+Set it to 0 for the literal rule.
 
 The last job, `report`, assembles `gate-report.md` (also in the run summary and
 in the `gate-report-<engine>` artifact): one row per criterion with pass, fail
