@@ -392,15 +392,16 @@ async fn ship_batch<R: PeerRequester>(
 
     // The generation that wrote each record goes along, so a follower that
     // stamps records keeps it. Rebuild and catch-up ship through here too.
-    // Only once this log stamps records, or its gate says it may: until then
-    // no follower stamps either, and the batch goes as it always did. The
-    // batch is cut before any fall in the generations (see
+    // Only once this log stamps records, or its gate says it may, or the
+    // follower asked by refusing a batch without them (it heard the finalize
+    // first): until then no follower stamps either, and the batch goes as it
+    // always did. The batch is cut before any fall in the generations (see
     // `writers_to_wire`); the rest goes in the next one.
     let writers = (carries_headers
         && offered.is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS))
-        && log.stamps_generations())
+        && (cursor.wants_writers || log.stamps_generations()))
     .then(|| {
-        let (runs, covered) = felix_broker::replication::writers_to_wire(&records, &history);
+        let (runs, covered) = felix_broker::replication::writers_to_wire(&records);
         records.truncate(covered);
         runs
     });
@@ -530,16 +531,22 @@ async fn ship_batch<R: PeerRequester>(
             .request(&cursor.node_id, cursor.addr, without_commit(request))
             .await;
     }
-    // A follower that stamps writers refuses a batch that names none, and the
-    // same batch goes again next pass. Said once a minute, not each pass.
+    // A follower that stamps writers refuses a batch that names none. If it
+    // offers the capability, the next pass sends them; otherwise it stays
+    // behind. Said once a minute, not each pass.
     if let Ok(InternalMessage::ReplicateError(refusal)) = &answer
         && refusal.code == ErrorCode::UnsupportedKind
         && refusal.detail.contains("writer_generations")
     {
-        if WRITER_REFUSALS_LOGGED.due(&format!(
-            "{}/{}/{}/{}/{}",
-            cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
-        )) {
+        cursor.wants_writers |= carries_headers
+            && offered
+                .is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS));
+        if !cursor.wants_writers
+            && WRITER_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            ))
+        {
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,

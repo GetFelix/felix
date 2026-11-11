@@ -189,6 +189,7 @@ fn reopen_resumes_appending_where_recovery_left_off() {
             index: outcome.index,
             version: outcome.header.version,
             generation_floor: outcome.last_generation,
+            known: None,
         },
         0,
         4096,
@@ -234,6 +235,7 @@ fn reopen_truncates_a_torn_tail_off_the_file() {
             index: outcome.index,
             version: outcome.header.version,
             generation_floor: outcome.last_generation,
+            known: None,
         },
         0,
         4096,
@@ -708,6 +710,37 @@ fn a_v9_writer_refuses_a_falling_generation() {
     assert_eq!(writer.next_offset(), 1);
     writer.sync().expect("sync");
     assert_eq!(scan(&dir).last_generation, Some(5));
+}
+
+/// Unknown records are exempt from the floor, so a batch that opens with
+/// them is checked at its first known run: storing 5, 0, 4 would read as a
+/// falling generation on the next start.
+#[test]
+fn a_v9_writer_checks_the_first_known_run_against_the_floor() {
+    let dir = tempdir().expect("dir");
+    let mut writer = v9_writer(&dir);
+    writer.append_at(&[record("a")], Some(5)).expect("append");
+    let before = writer.size_bytes();
+    let runs = [
+        crate::log::Epoch {
+            generation: crate::log::UNKNOWN_WRITER,
+            start_offset: 1,
+        },
+        crate::log::Epoch {
+            generation: 4,
+            start_offset: 2,
+        },
+    ];
+    assert!(matches!(
+        writer.stage_at(&[record("b"), record("c")], Some(Stamps::Runs(&runs))),
+        Err(StorageError::GenerationBelowFloor {
+            offset: 2,
+            generation: 4,
+            floor: 5
+        })
+    ));
+    assert_eq!(writer.size_bytes(), before);
+    assert_eq!(writer.next_offset(), 1);
 }
 
 /// A v9 segment needs a generation on every record, and an older one has

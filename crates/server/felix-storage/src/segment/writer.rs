@@ -33,6 +33,7 @@ use crate::segment::format::{
     record_len_in,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
+use crate::segment::known::{KnownGenerations, known_file_name};
 use crate::segment::reservation::{Extension, Reservation};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
@@ -78,6 +79,9 @@ pub struct SegmentWriter {
     /// segment. A batch below it is refused, since the scan would then call
     /// the segment corrupt.
     last_generation: Option<u64>,
+    /// Where this segment's first and last known generations sit, for the
+    /// file written beside it at seal. `None` once a cut left it unknown.
+    known: Option<KnownGenerations>,
 }
 
 impl SegmentWriter {
@@ -190,6 +194,7 @@ impl SegmentWriter {
             index,
             version,
             generation_floor,
+            known,
         } = resume;
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new().write(true).open(&path)?;
@@ -228,6 +233,7 @@ impl SegmentWriter {
             fail_next_sync: false,
             version,
             last_generation: generation_floor,
+            known,
         })
     }
 
@@ -297,6 +303,12 @@ impl SegmentWriter {
     /// holds no v9 record.
     pub(crate) fn last_generation(&self) -> Option<u64> {
         self.last_generation
+    }
+
+    /// Where this segment's first and last known generations sit, or `None`
+    /// when a cut left that unknown.
+    pub(crate) fn known_generations(&self) -> Option<KnownGenerations> {
+        self.known
     }
 
     /// Carry the generation floor over from the segment this one follows, so
@@ -477,10 +489,13 @@ impl SegmentWriter {
         // never needs a second pass over the batch.
         let mut boundaries = Vec::with_capacity(records.len());
         let mut position = self.size_bytes;
+        let mut known = KnownGenerations::default();
         for (offset, record) in (self.next_offset..).zip(records) {
+            let stamp = stamps.map(|stamps| stamps.at(offset));
+            known.observe(position, stamp);
             let written = encode_record_at(
                 &mut bytes,
-                stamps.map(|stamps| stamps.at(offset)),
+                stamp,
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -495,7 +510,11 @@ impl SegmentWriter {
             bytes,
             boundaries,
             file: Arc::clone(&self.sync_handle),
-            generation: stamps.map(|stamps| stamps.at(last_offset)),
+            known,
+            // An unknown writer leaves the floor where it was.
+            generation: stamps
+                .map(|stamps| stamps.at(last_offset))
+                .filter(|generation| *generation != crate::log::UNKNOWN_WRITER),
         })
     }
 
@@ -511,6 +530,7 @@ impl SegmentWriter {
             bytes,
             boundaries,
             generation,
+            known,
             ..
         } = staged;
         let len = bytes.len() as u64;
@@ -536,6 +556,10 @@ impl SegmentWriter {
         let first_offset = self.next_offset;
         if generation.is_some() {
             self.last_generation = generation;
+        }
+        if let Some(segment) = &mut self.known {
+            segment.first = segment.first.or(known.first);
+            segment.last = known.last.or(segment.last);
         }
         self.size_bytes += len;
         self.next_offset += boundaries.len() as u64;
@@ -624,6 +648,19 @@ impl SegmentWriter {
             self.poison_after_failed_sync();
             return Err(StorageError::SyncFailed(err.to_string()));
         }
+        // Spares the next open a walk of the segment to find its generations.
+        // Written once the records are durable, and derived, so a failure
+        // costs only that walk.
+        if self.holds_generations()
+            && let Some(known) = self.known
+            && let Err(err) = known.persist(
+                &self.path.with_file_name(known_file_name(self.id)),
+                self.base_offset,
+                self.size_bytes,
+            )
+        {
+            tracing::warn!(segment = self.id, error = %err, "could not write a sealed segment's known generations");
+        }
         Ok(self.descriptor())
     }
 
@@ -670,6 +707,8 @@ pub(crate) struct StagedAppend {
     file: Arc<File>,
     /// The last record's generation, the floor for the next append.
     generation: Option<u64>,
+    /// Where the batch's first and last known generations sit.
+    known: KnownGenerations,
 }
 
 /// The generations a batch is stamped with in a v9 segment.
@@ -711,17 +750,30 @@ impl Stamps<'_> {
                 ));
             }
         }
-        let generation = self.at(first);
-        match floor {
-            Some(floor) if generation < floor => Err(StorageError::GenerationBelowFloor {
-                offset: first,
-                generation,
-                floor,
-            }),
-            _ => {
-                debug_assert!(self.at(last) >= generation);
-                Ok(())
+        // Unknown records are exempt, so the batch's first known record is
+        // the one the scan compares with the floor.
+        let first_known = match self {
+            Self::All(generation) => Some((first, generation)),
+            Self::Runs(runs) => {
+                let from = runs.iter().rposition(|run| run.start_offset <= first);
+                runs[from.unwrap_or(0)..]
+                    .iter()
+                    .take_while(|run| run.start_offset <= last)
+                    .find(|run| run.generation != crate::log::UNKNOWN_WRITER)
+                    .map(|run| (run.start_offset.max(first), run.generation))
             }
+        };
+        match (first_known, floor) {
+            (Some((offset, generation)), Some(floor))
+                if generation < floor && generation != crate::log::UNKNOWN_WRITER =>
+            {
+                Err(StorageError::GenerationBelowFloor {
+                    offset,
+                    generation,
+                    floor,
+                })
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -858,6 +910,7 @@ impl BlankSegment {
             fail_next_sync: false,
             version,
             last_generation: None,
+            known: Some(KnownGenerations::default()),
         })
     }
 
@@ -918,6 +971,9 @@ pub struct ResumeState {
     /// before it when this one holds no v9 record; a resume scan sees only
     /// part of a segment and must not supply it.
     pub generation_floor: Option<u64>,
+    /// Where this segment's first and last known generations sit, from a
+    /// full scan; `None` when they are not known.
+    pub(crate) known: Option<KnownGenerations>,
 }
 
 /// Refuse a record too large to write. A log checks this before it rolls for

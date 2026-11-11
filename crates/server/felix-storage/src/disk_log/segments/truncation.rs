@@ -8,6 +8,7 @@ use crate::disk_log::now_micros;
 use crate::io::sync_dir;
 use crate::log::{Offset, SegmentId};
 use crate::segment::format::SEGMENT_HEADER_LEN;
+use crate::segment::known::known_file_name;
 use crate::segment::scan::record_generation_at;
 use crate::segment::writer::ResumeState;
 use crate::segment::{
@@ -110,6 +111,13 @@ impl SegmentSet {
     /// Reopen a sealed segment as the active one so appends resume inside it.
     fn adopt_sealed_as_active(&mut self, entry: SealedEntry) -> Result<()> {
         self.forget(&entry);
+        // Appends will change what the file beside it describes. Durably gone,
+        // so a crash cannot pair it with the segment once it is sealed again.
+        match crate::fs::remove_file(self.dir.join(known_file_name(entry.descriptor.id))) {
+            Ok(()) => sync_dir(&self.dir)?,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
         let outcome = scan_segment(
             &self.dir.join(segment_file_name(entry.descriptor.id)),
             entry.descriptor.id,
@@ -132,6 +140,7 @@ impl SegmentSet {
                 generation_floor: outcome
                     .last_generation
                     .or_else(|| self.sealed.last().and_then(|entry| entry.last_generation)),
+                known: Some(outcome.known),
             },
             self.config.reserve_limit_bytes(),
             self.config.index_spacing_bytes,
@@ -183,13 +192,36 @@ impl SegmentSet {
             self.active.size_bytes(),
             &self.label,
         )?;
-        record_generation_at(
+        let generation = record_generation_at(
             self.active.path(),
             self.active.id(),
             &self.label,
             self.active.version(),
             position,
-        )
+        )?;
+        if generation != Some(crate::log::UNKNOWN_WRITER) {
+            return Ok(generation);
+        }
+        // An unknown writer is no floor: walk the kept records for the last
+        // known one, or fall back to the segment before.
+        let end = self.active_reader.position_of(
+            self.active.index(),
+            offset,
+            self.active.size_bytes(),
+            &self.label,
+        )?;
+        let kept = crate::segment::scan::scan_segment_upto(
+            self.active.path(),
+            Some(end),
+            self.active.id(),
+            &self.label,
+            self.config.index_spacing_bytes,
+            ScanStart::Full,
+            crate::segment::scan::TailRepair::default(),
+        )?;
+        Ok(kept
+            .last_generation
+            .or_else(|| self.sealed.last().and_then(|entry| entry.last_generation)))
     }
 
     /// Swap in an active writer over segment `id`, either reopened at
@@ -202,6 +234,18 @@ impl SegmentSet {
         generation_floor: Option<u64>,
     ) -> Result<()> {
         let path = self.dir.join(segment_file_name(id));
+        // A cut keeps the known generations only if they all sit below it.
+        let known = self
+            .active
+            .known_generations()
+            .filter(|_| self.active.id() == id)
+            .and_then(|known| match known.first {
+                Some((first, _)) if first >= valid_bytes => Some(Default::default()),
+                _ => known
+                    .last
+                    .is_none_or(|(last, _)| last < valid_bytes)
+                    .then_some(known),
+            });
         self.active = if crate::fs::exists(&path) {
             let index = SparseIndex::load(&self.dir.join(index_file_name(id)), base_offset)
                 .unwrap_or_else(|| SparseIndex::new(base_offset));
@@ -218,6 +262,7 @@ impl SegmentSet {
                     index: rebuild_index_prefix(index, valid_bytes),
                     version: read_segment_header(&path, id, &self.label)?.version,
                     generation_floor,
+                    known,
                 },
                 self.config.reserve_limit_bytes(),
                 self.config.index_spacing_bytes,

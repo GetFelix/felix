@@ -1419,6 +1419,9 @@ async fn pre_vote<R: PeerRequester + Send + Sync + 'static>(
 }
 
 /// Whether the shard opened at `generation`: its start record is written.
+// The history gains `generation` only from the shard lifecycle's
+// `record_term_start`, which also sets `StreamLog::lead_at`, so an elected
+// leader that opened stamps its v9 appends.
 fn opened(log: &StreamLog, generation: u64) -> bool {
     log.generations()
         .iter()

@@ -163,6 +163,15 @@ impl SealedLocator {
                 if let Err(err) = outcome.index.persist(&index_path) {
                     tracing::warn!(shard = label, segment = id, error = %err, "could not rewrite a sealed segment's index");
                 }
+                if outcome.header.holds_generations()
+                    && let Err(err) = outcome.known.persist(
+                        &self.dir.join(crate::segment::known::known_file_name(id)),
+                        base_offset,
+                        outcome.valid_bytes,
+                    )
+                {
+                    tracing::warn!(shard = label, segment = id, error = %err, "could not rewrite a sealed segment's known generations");
+                }
                 outcome.index
             }
         };

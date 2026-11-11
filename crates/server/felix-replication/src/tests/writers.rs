@@ -13,7 +13,8 @@ fn offers_writers() -> PeerCapabilities {
         .union(PeerCapabilities::WRITER_GENERATIONS)
 }
 
-/// A v9 leader log: two records written at generation 3, then two at 5.
+/// A v9 leader log: a filler at offset 0, then two records written at
+/// generation 3 and two at 5.
 async fn log_over_two_generations() -> (StreamLog, TempDir, felix_broker::Broker) {
     log_over_two_generations_gated(Arc::new(AtomicBool::new(true))).await
 }
@@ -26,7 +27,7 @@ async fn log_over_two_generations_gated(
     let storage = DurableStorage::open(
         dir.path(),
         LogConfig {
-            segment_size_bytes: 64 * 1024,
+            segment_size_bytes: 256,
             index_spacing_bytes: 256,
             fsync_mode: FsyncMode::None,
             preallocate_segments: false,
@@ -41,6 +42,11 @@ async fn log_over_two_generations_gated(
         .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
         .await
         .expect("open");
+    // Only a segment started after the gate opened is v9. This record fills
+    // the first one, so the records after it start a new segment.
+    log.append(&[Bytes::from(vec![0u8; 512])])
+        .await
+        .expect("filler");
     for (generation, values) in [(3, ["a", "b"]), (5, ["c", "d"])] {
         log.accept_generation(generation, Some("broker-a"))
             .await
@@ -70,11 +76,11 @@ async fn the_writers_ride_with_the_records() {
             Some(vec![
                 GenerationStart {
                     generation: 3,
-                    start_offset: 0,
+                    start_offset: 1,
                 },
                 GenerationStart {
                     generation: 5,
-                    start_offset: 2,
+                    start_offset: 3,
                 },
             ]),
         ),
@@ -85,8 +91,8 @@ async fn the_writers_ride_with_the_records() {
             None,
         ),
     ] {
-        let follower = ScriptedFollower::new([Ok(stored(4))]).offering(capabilities);
-        let mut cursor = cursor(0);
+        let follower = ScriptedFollower::new([Ok(stored(5))]).offering(capabilities);
+        let mut cursor = cursor(1);
         let progress = ship_once(
             &follower,
             &log,
@@ -97,7 +103,7 @@ async fn the_writers_ride_with_the_records() {
             &Rebuilds::disabled(),
         )
         .await;
-        assert_eq!(progress, Progress::Stored { durable_offset: 4 });
+        assert_eq!(progress, Progress::Stored { durable_offset: 5 });
         let batch = follower.batches().remove(0);
         assert_eq!(batch.writers, expected);
         assert_eq!(batch.payloads.len(), 4);
@@ -107,7 +113,8 @@ async fn the_writers_ride_with_the_records() {
 /// **Until the log stamps records or its gate opens, a follower offering
 /// `WRITER_GENERATIONS` is sent the frame it always was**: no writers, so no
 /// extra bytes and no work to build them. Once the gate says yes, the same
-/// records go with the writers their history names.
+/// records go as unknown writers: they sit in an older segment, and the
+/// history's labels are not a record's writer.
 #[tokio::test]
 async fn no_writers_ride_until_the_log_stamps_records() {
     let open = Arc::new(AtomicBool::new(false));
@@ -115,23 +122,18 @@ async fn no_writers_ride_until_the_log_stamps_records() {
     assert!(!log.stamps_generations());
     for (gate, expected) in [
         (false, None),
+        // Written before the gate opened, so their writers are unknown.
         (
             true,
-            Some(vec![
-                GenerationStart {
-                    generation: 3,
-                    start_offset: 0,
-                },
-                GenerationStart {
-                    generation: 5,
-                    start_offset: 2,
-                },
-            ]),
+            Some(vec![GenerationStart {
+                generation: felix_storage::log::UNKNOWN_WRITER,
+                start_offset: 1,
+            }]),
         ),
     ] {
         open.store(gate, Ordering::Release);
-        let follower = ScriptedFollower::new([Ok(stored(4))]).offering(offers_writers());
-        let mut cursor = cursor(0);
+        let follower = ScriptedFollower::new([Ok(stored(5))]).offering(offers_writers());
+        let mut cursor = cursor(1);
         let progress = ship_once(
             &follower,
             &log,
@@ -142,11 +144,59 @@ async fn no_writers_ride_until_the_log_stamps_records() {
             &Rebuilds::disabled(),
         )
         .await;
-        assert_eq!(progress, Progress::Stored { durable_offset: 4 });
+        assert_eq!(progress, Progress::Stored { durable_offset: 5 });
         let batch = follower.batches().remove(0);
         assert_eq!(batch.writers, expected, "gate {gate}");
         let kind = InternalMessage::ReplicateRecords(batch).kind();
         let stamped = felix_wire::internal::Kind::ReplicateStampedRecords;
         assert_eq!(kind == stamped, gate, "gate {gate}: {kind:?}");
+    }
+}
+
+/// **A follower that heard the `record_generations` finalize before its
+/// leader is sent writers once it refuses a batch without them.** Under
+/// `Quorum` RF 3 with both followers ahead of the leader, neither would
+/// otherwise store anything until the leader heard it too, and writes would
+/// stall. With the gate still closed here, each follower is refused once and
+/// stores the retry, which carries the records as unknown writers.
+#[tokio::test]
+async fn followers_ahead_of_the_finalize_get_writers_after_one_refusal() {
+    let open = Arc::new(AtomicBool::new(false));
+    let (log, _dir, _broker) = log_over_two_generations_gated(open).await;
+    assert!(!log.stamps_generations());
+    let wants = InternalMessage::ReplicateError(felix_wire::internal::ReplicateError {
+        correlation_id: 0,
+        code: ErrorCode::UnsupportedKind,
+        expected_offset: 0,
+        detail: "the leader must offer writer_generations".to_string(),
+        reason: None,
+    });
+    for _follower in 0..2 {
+        let follower =
+            ScriptedFollower::new([Ok(wants.clone()), Ok(stored(5))]).offering(offers_writers());
+        let mut cursor = cursor(1);
+        for _pass in 0..2 {
+            ship_once(
+                &follower,
+                &log,
+                &shard(),
+                felix_broker::LogKind::Stream,
+                &mut cursor,
+                BATCH_BYTES,
+                &Rebuilds::disabled(),
+            )
+            .await;
+        }
+        assert_eq!(cursor.next_offset, 5, "the retry was stored");
+        let batches = follower.batches();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].writers, None);
+        assert_eq!(
+            batches[1].writers,
+            Some(vec![GenerationStart {
+                generation: felix_storage::log::UNKNOWN_WRITER,
+                start_offset: 1,
+            }])
+        );
     }
 }

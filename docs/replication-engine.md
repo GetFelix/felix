@@ -613,6 +613,30 @@ starts fresh (decision 7) and only control-plane members read its log, so its
 log is version 9 from the first record, with no fleet gate and no rollback
 concern.
 
+**Unknown writers and the switch to Raft.** A record copied from a
+pre-version-9 segment carries generation 0, "writer unknown", because no
+replica can say for sure which generation wrote it. Replicas roll segments at
+different offsets, so one replica can hold 0 at an offset where another holds
+the real generation. Raft needs every replica to agree on each entry's term,
+so these records never become Raft entries:
+
+- When a shard switches to Raft, the leader takes the shard's committed end
+  as the snapshot point. Every record before it, 0s included, is the
+  snapshot base. Raft never compares terms below a snapshot, so the
+  disagreement is never read. Uncommitted tails are dropped at the switch.
+- The snapshot's term is above every generation the shard has used, so a
+  later entry always compares newer than the base.
+- Records are not rewritten to fix their generations. Recovery trusts that
+  valid bytes end at the end of the file, and that only holds while records
+  are never rewritten.
+- The `raft_log` adapter treats a generation-0 record, or any record below
+  the Raft log's first index, as an error, never as a term-0 entry: openraft
+  uses term 0 for its initial state, so a stray 0 would read as valid.
+
+The TLA+ model of the one engine (issue #2198) models the switch as a
+snapshot install, with a twin that compares terms below the base and must
+fail.
+
 **Checked by.** Crash-point tests with the power-loss model for a torn
 header and a torn generation field. Format fuzz over the new header. A
 rollback test where a version 8 reader refuses the segment.

@@ -33,7 +33,7 @@
 //! survived a failure it would not have survived — and under
 //! `ConsistencyLevel::Quorum` that belief is the guarantee.
 use bytes::Bytes;
-use felix_storage::log::{Epoch, LogRecord, ProducerBatch, RecordMark, WrittenBy};
+use felix_storage::log::{Epoch, LogRecord, ProducerBatch, RecordMark, UNKNOWN_WRITER, WrittenBy};
 use felix_wire::internal::{GenerationStart, ProducerMark};
 
 use crate::durable::StreamLog;
@@ -300,33 +300,22 @@ async fn apply_at_tail(
 /// The runs of generations that wrote `records`, for the wire, and how many
 /// leading records they cover.
 ///
-/// A record's own stamp is its writer; one without a stamp (an older segment)
-/// has the generation `history` assigns its offset, the last epoch starting at
-/// or before it, or 0. Equal neighbours merge, and the first run starts at the
-/// first record.
+/// A record's own stamp is its writer. One without a stamp (an older segment)
+/// goes as [`UNKNOWN_WRITER`], never as the generation the history gives its
+/// offset: histories label records they copied with the generation they were
+/// copied under, so two replicas' histories can disagree about the same
+/// record, and a follower stamping either would disagree with the other. Equal
+/// neighbours merge, and the first run starts at the first record.
 ///
-/// Generations only rise along a log. If they fall (a bad history mixed with
-/// stamps), the batch is cut before the fall: the frame's runs must strictly
-/// increase, and sending a malformed frame would halt the follower on a batch
-/// the next, shorter one can carry. The caller ships only the covered prefix.
-pub fn writers_to_wire(records: &[LogRecord], history: &[Epoch]) -> (Vec<GenerationStart>, usize) {
+/// Known generations only rise along a log, but an unknown one can follow
+/// them. The frame's runs must strictly increase, so the batch is cut before
+/// any fall and the caller ships only the covered prefix; the next batch
+/// starts with the rest.
+pub fn writers_to_wire(records: &[LogRecord]) -> (Vec<GenerationStart>, usize) {
     let mut runs: Vec<GenerationStart> = Vec::new();
     let mut covered = 0;
-    // Records and history both ascend, so one cursor walks the history once.
-    // `epoch` is how many epochs start at or before the current record.
-    let mut epoch = records.first().map_or(0, |first| {
-        history.partition_point(|epoch| epoch.start_offset <= first.offset)
-    });
     for record in records {
-        while history
-            .get(epoch)
-            .is_some_and(|next| next.start_offset <= record.offset)
-        {
-            epoch += 1;
-        }
-        let generation = record
-            .generation
-            .unwrap_or_else(|| epoch.checked_sub(1).map_or(0, |at| history[at].generation));
+        let generation = record.generation.unwrap_or(UNKNOWN_WRITER);
         match runs.last() {
             Some(last) if generation < last.generation => break,
             Some(last) if generation == last.generation => {}

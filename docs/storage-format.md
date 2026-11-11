@@ -42,7 +42,8 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 The small state files have magics of their own, listed with each file below.
 The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`, and the
 run state's `0x464C524E` (`FLRN`), apart from the replica state's `FLRS`.
-The control-plane view's is `0x464C4356` (`FLCV`).
+The control-plane view's is `0x464C4356` (`FLCV`), and the known-generations
+file's `0x464C4B47` (`FLKG`).
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
@@ -68,6 +69,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
+    00000000000000000000.gen                 ← a sealed v9 segment's known generations
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
@@ -248,8 +250,8 @@ says which layout its records have; a v8 record and a v9 record never decode
 as each other, because the header checksum sits at a different place.
 
 Generations never fall along a log. The startup scan checks this inside each
-segment, and the open checks it across segments: a segment's first record
-must not be below the last record of the segment before it. A record whose
+segment, and the open checks it across segments: a segment's first known
+generation must not be below the last known one before it. A record whose
 generation is below the one before it is `GenerationFell` corruption: every
 checksum held, so it was written that way.
 
@@ -270,7 +272,22 @@ leader that wrote the record, the same on every replica:
   another leader landed, so the append is refused (`WriterUnknown`), never
   stamped with the newer generation. That holds even after the log's history
   takes the new leader's labels, since following a leader labels the history
-  too.
+  too. The generation must also be the newest in the log's history, starting
+  at or before the append; an append that lands before the broker recorded
+  where its leadership starts is refused the same way. The check runs when
+  the append is staged, and the history's start for a new generation is the
+  tail at the time, which an append still in flight has not moved yet. So a
+  record stamped with the previous generation can sit at or past where the
+  history says the next one starts. The stamp is still the true writer.
+- A record the sender holds in an older segment has no stamp to send. It
+  goes as generation 0, "writer unknown", and is stored that way, never with
+  the generation the sender's history gives it: histories label copied
+  records with the generation they were copied under, so two replicas'
+  histories can disagree about one record. Generation 0 is also a shard's
+  first generation, so a generation-0 leader's records read as unknown.
+  That loses nothing for the floor, since nothing comes before them, and the
+  switch to Raft puts every unknown record below the snapshot base (see
+  "Unknown writers and the switch to Raft" in `docs/replication-engine.md`).
 - A follower stamps a replicated record with the generation the leader sent
   for it (`writer_generations` on the peer wire, see
   `docs/internal-protocol.md`), never its own. The same holds for a promoted
@@ -281,8 +298,9 @@ leader that wrote the record, the same on every replica:
 
 Membership and counter records are still not written.
 
-**The floor.** Generations along a log never fall. The writer refuses a
-record below the newest record's generation (`GenerationBelowFloor`) instead
+**The floor.** Known generations along a log never fall; generation 0 is
+skipped by the floor and by the startup scan's check. The writer refuses a
+record below the newest known generation (`GenerationBelowFloor`) instead
 of raising it, because a raised stamp would name a generation that did not
 write the record. On a follower that refusal means its record before the
 batch disagrees with the leader's, so it answers `LogConflict` and the
@@ -290,9 +308,12 @@ leader stops shipping to it, as for any divergence; the rebuild policy may
 then rebuild it. It is not truncated automatically, since the stamps do not
 say where the disagreement starts. The log keeps the floor across a roll, a
 reopen and a truncation. A reopen takes it from the active segment's full
-scan, or from the last record of the segment before it when the active one
-is empty. A cut takes it from the header of the record just below the cut. It
-never comes from a resume scan, which sees only the end of a segment.
+scan, or from the sealed segments before it when the active one holds no
+known generation. A sealed segment's first and last known generations come
+from its [known-generations file](#known-generations-file), so the open
+does not walk the segment for them; a segment with none keeps the floor
+before it. A cut takes the floor from the header of the record just below
+the cut.
 
 **Rollback.** A build that reads only up to v8 refuses a v9 segment with
 `SegmentVersion`, so a broker cannot roll back past the release that wrote
@@ -599,6 +620,41 @@ sealed, so after a crash the active segment's index can be short. Recovery
 scans the active segment in full and rewrites its index, so that costs nothing.
 A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
+
+## Known-generations file
+
+`<id>.gen` names where a sealed v9 segment's first and last known
+generations sit (the first and last records not stamped 0). The open uses
+the first for the cross-segment check and the last for the floor. Without
+the file the open would have to walk every sealed segment whose ends hold
+unknown records, on every start: a log copied from pre-v9 segments is all
+unknown.
+
+It is written when a segment is sealed, once its records are durable and
+off the lock appends take, and whenever recovery or a read rebuilds the
+segment's index. It is not synced. Like the index it is
+**never trusted**: the open uses it only when its checksum holds, its
+`base_offset` and `segment_len` match the segment, and the record at each
+position decodes with its header checksum intact and carries the
+generation named. The resume scan's last known generation, when it sees
+one, must also match. Otherwise the open walks the segment once, rebuilds
+its index and rewrites this file, so the verdict never depends on whether
+it was there. A truncation that reopens a sealed segment for appends,
+and recovery cutting the torn tail of a segment whose seal never finished,
+delete the file and sync the directory first.
+
+| Offset | Size | Field | Value |
+| --- | --- | --- | --- |
+| 0 | 4 | `magic` | `0x464C4B47` (`"FLKG"`) |
+| 4 | 2 | `version` | `1` |
+| 6 | 2 | `reserved` | `0` |
+| 8 | 8 | `base_offset` | the segment's |
+| 16 | 8 | `segment_len` | the segment's length in bytes |
+| 24 | 8 | `first_position` | `0` when no record is known |
+| 32 | 8 | `first_generation` | |
+| 40 | 8 | `last_position` | `0` when no record is known |
+| 48 | 8 | `last_generation` | |
+| 56 | 4 | `checksum` | CRC-32 (IEEE) over bytes `0..56` |
 
 ## Compatibility and corruption behaviour
 
