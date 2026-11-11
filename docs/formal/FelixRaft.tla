@@ -23,6 +23,10 @@
 (*               rename, so a crash leaves the old vote or the new one.    *)
 (*   snap     -- the snapshot file, replaced by rename the same way.       *)
 (*   base     -- the id of the last purged entry.                          *)
+(*   inst     -- a snapshot a follower is installing. openraft does it as  *)
+(*               three writes (cut a conflicting tail, replace the         *)
+(*               snapshot, purge the log up to it) and a crash can fall    *)
+(*               between any two.                                          *)
 (*                                                                         *)
 (* The state machine is rebuilt at a restart from the snapshot and the     *)
 (* log up to the committed index read back, as openraft does for a state   *)
@@ -38,7 +42,8 @@
 (* A message is one atomic step between two brokers that reads both. The   *)
 (* leader's knowledge of a follower (`match`) and the commit index it      *)
 (* derives are kept, so a leader can act on an answer after the follower   *)
-(* has moved on. One subscriber reads from brokers that believe they lead. *)
+(* has moved on. One subscriber reads from brokers that believe they lead, *)
+(* and each broker counts `skipped_before` from its own log.               *)
 (*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
@@ -52,12 +57,15 @@
 (*                              sequence.                                  *)
 (*   AppliedAgree            -- no two brokers differ on an applied entry. *)
 (*   AppliedInLog            -- no cut reaches below what a broker         *)
-(*                              applied.                                   *)
+(*                              applied, and the log holds what was        *)
+(*                              applied except between a snapshot's        *)
+(*                              install and its purge.                     *)
 (*   AckedSurvive            -- an acknowledged record is on the disks of  *)
 (*                              a majority.                                *)
 (*   PurgedCoveredBySnapshot -- no log is purged past its stored snapshot. *)
 (*   OffsetsDense            -- delivered offsets, less the skipped ones   *)
-(*                              each batch reports, have no gap.           *)
+(*                              each serving broker reports from its own   *)
+(*                              log, have no gap.                          *)
 (*   OffsetNeverReused       -- a delivered offset holds that record in    *)
 (*                              the committed sequence.                    *)
 (*   DeliveredInOrder        -- the k-th delivery is the k-th committed    *)
@@ -77,14 +85,18 @@
 (*                             committed for itself leads again in that    *)
 (*                             term.                                       *)
 (*   TornTailKept           -- recovery reads a torn record as an entry.   *)
-(*   TruncateNotDurable     -- `truncate_after` is not on disk before a    *)
-(*                             later append is reported flushed.           *)
+(*   TruncateNotDurable     -- `truncate_after` returns before the cut is  *)
+(*                             on disk. The next flush makes it durable,   *)
+(*                             which is too late: the commit index can     *)
+(*                             pass the cut first.                         *)
 (*   RecoveredTailUnsynced  -- entries found at startup are reported as    *)
 (*                             flushed without an fsync.                   *)
 (*   SaveCommittedUnflushed -- the committed or applied index read back at *)
-(*                             startup is past the recovered log.          *)
+(*                             startup is past the recovered log, so the   *)
+(*                             broker's state machine has a hole.          *)
 (*   PurgeBeforeSnapshot    -- `purge` runs before the snapshot covering   *)
-(*                             it is stored.                               *)
+(*                             it is stored, so an acknowledged record     *)
+(*                             leaves the disk.                            *)
 (*   SnapshotTwoRenames     -- the snapshot's data and id are replaced by  *)
 (*                             two renames, so a crash between them leaves *)
 (*                             new data under the old id.                  *)
@@ -137,18 +149,17 @@ VARIABLES
     match,      \* a leader's view of each follower's flushed, matching prefix
     applied,    \* the entries a broker's state machine has applied, from index 1
     snap,       \* the snapshot file: [idx, term, state]
+    inst,       \* the snapshot being installed and its next write; lost in a crash
     committed,  \* history: the committed sequence, each entry with the term that committed it
     acked,      \* record values acknowledged to their publisher
-    got,        \* what the subscriber received: [off, val, skipped]
-    cursor,     \* the last index read to the subscriber
-    skips,      \* skipped offsets since the last delivered record
+    got,        \* what the subscriber received: [off, val, skipped, by]
     used        \* budgets spent: writes, members, crashes, snaps
 
 election == <<role, vote, voteDisk, granted, elected>>
 storage == <<log, base, flushed, synced, stale>>
 machine == <<applied, snap, committed, acked>>
-reader == <<got, cursor, skips>>
-vars == <<election, storage, machine, reader, match, used>>
+reader == <<got>>
+vars == <<election, storage, machine, reader, match, used, inst>>
 
 Symm == Permutations(Servers)
 
@@ -160,6 +171,10 @@ Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 Blank(t) == [term |-> t, kind |-> "blank", val |-> 0]
 NoVote == [term |-> 0, node |-> Nobody, committed |-> FALSE]
 NoTail == [from |-> 0, tail |-> <<>>]
+NoSnap == [idx |-> 0, term |-> 0, state |-> <<>>]
+NoInstall == [step |-> "none", snap |-> NoSnap]
+\* What a shard's state machine holds where its log lost an applied entry.
+Lost == [term |-> 0, kind |-> "lost", val |-> 0]
 
 \* openraft's order on votes with one leader per term (`leader_id_std`,
 \* which docs/replication-engine.md pins). Two uncommitted votes
@@ -187,7 +202,11 @@ Common(i, j) ==
         /\ p >= base[j].idx
         /\ TermAt(i, p) = TermAt(j, p)}
 
-Following(i, j) == i # j /\ role[i] = "leader" /\ vote[j] = vote[i]
+\* openraft moves its in-memory log state when it queues an install's three
+\* writes, so the broker takes no other step until they land or it crashes.
+Idle(s) == inst[s] = NoInstall
+
+Following(i, j) == i # j /\ role[i] = "leader" /\ vote[j] = vote[i] /\ Idle(j)
 
 Init ==
     /\ role = [s \in Servers |-> "follower"]
@@ -202,12 +221,11 @@ Init ==
     /\ stale = [s \in Servers |-> NoTail]
     /\ match = [s \in Servers |-> [t \in Servers |-> 0]]
     /\ applied = [s \in Servers |-> <<>>]
-    /\ snap = [s \in Servers |-> [idx |-> 0, term |-> 0, state |-> <<>>]]
+    /\ snap = [s \in Servers |-> NoSnap]
+    /\ inst = [s \in Servers |-> NoInstall]
     /\ committed = <<>>
     /\ acked = {}
     /\ got = <<>>
-    /\ cursor = 0
-    /\ skips = 0
     /\ used = [writes |-> 0, members |-> 0, crashes |-> 0, snaps |-> 0]
 
 \* `save_vote`: on disk before it returns.
@@ -217,16 +235,18 @@ SaveVote(s, v) ==
 
 Campaign(c) ==
     /\ role[c] # "leader"
+    /\ Idle(c)
     /\ vote[c].term < MaxTerm
     /\ SaveVote(c, [term |-> vote[c].term + 1, node |-> c, committed |-> FALSE])
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {c}]
-    /\ UNCHANGED <<elected, storage, machine, reader, match, used>>
+    /\ UNCHANGED <<elected, storage, machine, reader, match, used, inst>>
 
 \* A voter compares the candidate's last entry with its own, unflushed
 \* entries included, and stores the vote before it answers.
 GrantVote(s, c) ==
     /\ s # c
+    /\ Idle(s)
     /\ role[c] = "candidate"
     /\ s \notin granted[c]
     /\ VoteGE(vote[c], vote[s])
@@ -237,7 +257,7 @@ GrantVote(s, c) ==
     /\ role' = [role EXCEPT ![s] = IF vote[s].term < vote[c].term THEN "follower" ELSE @]
     /\ granted' = [granted EXCEPT ![c] = @ \cup {s},
                                   ![s] = IF vote[s].term < vote[c].term THEN {} ELSE @]
-    /\ UNCHANGED <<elected, storage, machine, reader, match, used>>
+    /\ UNCHANGED <<elected, storage, machine, reader, match, used, inst>>
 
 \* The winner stores its vote as committed, then appends its blank entry.
 BecomeLeader(c) ==
@@ -249,25 +269,26 @@ BecomeLeader(c) ==
     /\ log' = [log EXCEPT ![c] = Append(@, Blank(vote[c].term))]
     /\ flushed' = IF AckBeforeFlush THEN [flushed EXCEPT ![c] = LastIdx(c) + 1] ELSE flushed
     /\ match' = [match EXCEPT ![c] = [t \in Servers |-> 0]]
-    /\ UNCHANGED <<granted, base, synced, stale, machine, reader, used>>
+    /\ UNCHANGED <<granted, base, synced, stale, machine, reader, used, inst>>
 
 \* A follower stores the leader's committed vote before it takes anything
 \* from that leader.
 AcceptLeader(i, j) ==
     /\ i # j
+    /\ Idle(j)
     /\ role[i] = "leader"
     /\ vote[j] # vote[i]
     /\ VoteGE(vote[i], vote[j])
     /\ SaveVote(j, vote[i])
     /\ role' = [role EXCEPT ![j] = "follower"]
     /\ granted' = [granted EXCEPT ![j] = {}]
-    /\ UNCHANGED <<elected, storage, machine, reader, match, used>>
+    /\ UNCHANGED <<elected, storage, machine, reader, match, used, inst>>
 
 LeaderAppend(i, e) ==
     /\ role[i] = "leader"
     /\ log' = [log EXCEPT ![i] = Append(@, e)]
     /\ flushed' = IF AckBeforeFlush THEN [flushed EXCEPT ![i] = LastIdx(i) + 1] ELSE flushed
-    /\ UNCHANGED <<election, base, synced, stale, machine, reader, match>>
+    /\ UNCHANGED <<election, base, synced, stale, machine, reader, match, inst>>
 
 AppendRecord(i) ==
     /\ used.writes < MaxWrites
@@ -282,15 +303,18 @@ AppendMember(i) ==
     /\ used' = [used EXCEPT !.members = @ + 1]
 
 \* One fsync covers everything appended so far, and the callback fires.
+\* It also makes a cut durable that TruncateNotDurable left in memory.
 Flush(s) ==
+    /\ Idle(s)
     /\ synced[s] < LastIdx(s)
     /\ synced' = [synced EXCEPT ![s] = LastIdx(s)]
     /\ flushed' = [flushed EXCEPT ![s] = LastIdx(s)]
-    /\ UNCHANGED <<election, log, base, stale, machine, reader, match, used>>
+    /\ stale' = [stale EXCEPT ![s] = NoTail]
+    /\ UNCHANGED <<election, log, base, machine, reader, match, used, inst>>
 
 \* AppendEntries with one entry, after the highest index the two logs agree
-\* on. A follower holding something else there cuts it off first
-\* (`truncate_after`), and the cut is on disk before the append.
+\* on. A follower holding something else there cuts it off first, and the
+\* cut is on disk before `truncate_after` returns.
 Replicate(i, j) ==
     /\ Following(i, j)
     /\ Common(i, j) # {}
@@ -304,7 +328,7 @@ Replicate(i, j) ==
                 IF cut /\ TruncateNotDurable
                 THEN [from |-> p, tail |-> SubSeq(log[j], p - base[j].idx + 1, Len(log[j]))]
                 ELSE @]
-    /\ UNCHANGED <<election, base, machine, reader, match, used>>
+    /\ UNCHANGED <<election, base, machine, reader, match, used, inst>>
 
 \* The follower's answer: how far its log matches the leader's and is flushed.
 Ack(i, j) ==
@@ -313,7 +337,7 @@ Ack(i, j) ==
     /\ LET p == Min(MaxOf(Common(i, j)), flushed[j])
        IN /\ p > match[i][j]
           /\ match' = [match EXCEPT ![i][j] = p]
-    /\ UNCHANGED <<election, storage, machine, reader, used>>
+    /\ UNCHANGED <<election, storage, machine, reader, used, inst>>
 
 Agree(i, k) == {j \in Servers : IF j = i THEN flushed[i] >= k ELSE match[i][j] >= k}
 
@@ -334,7 +358,7 @@ AdvanceCommit(i) ==
                 ELSE committed \o [x \in 1..(k - Len(committed)) |->
                         [e |-> EntryAt(i, Len(committed) + x), by |-> vote[i].term]]
           /\ acked' = acked \cup {new[x].val : x \in {y \in DOMAIN new : new[y].kind = "record"}}
-    /\ UNCHANGED <<election, storage, snap, reader, match, used>>
+    /\ UNCHANGED <<election, storage, snap, reader, match, used, inst>>
 
 \* A follower applies up to the leader's commit index, as far as its log
 \* matches the leader's. Its own copy need not be flushed.
@@ -344,11 +368,12 @@ LearnCommit(i, j) ==
     /\ LET k == Min(MaxOf(Common(i, j)), Len(applied[i]))
        IN /\ k > Len(applied[j])
           /\ applied' = [applied EXCEPT ![j] = @ \o Entries(j, Len(@), k)]
-    /\ UNCHANGED <<election, storage, snap, committed, acked, reader, match, used>>
+    /\ UNCHANGED <<election, storage, snap, committed, acked, reader, match, used, inst>>
 
 \* The snapshot, data and id together, is replaced by one rename: a crash
 \* leaves the old one or the new one, so the write is one step.
 BuildSnapshot(s) ==
+    /\ Idle(s)
     /\ used.snaps < MaxSnapshots
     /\ Len(applied[s]) > snap[s].idx
     /\ \E half \in BOOLEAN :
@@ -359,43 +384,78 @@ BuildSnapshot(s) ==
                       term |-> applied[s][Len(applied[s])].term,
                       state |-> applied[s]]]
     /\ used' = [used EXCEPT !.snaps = @ + 1]
-    /\ UNCHANGED <<election, storage, applied, committed, acked, reader, match>>
+    /\ UNCHANGED <<election, storage, applied, committed, acked, reader, match, inst>>
 
 \* Only up to the stored snapshot.
 Purge(s) ==
+    /\ Idle(s)
     /\ MaxSnapshots > 0
     /\ LET k == IF PurgeBeforeSnapshot THEN Len(applied[s]) ELSE snap[s].idx
        IN /\ k > base[s].idx
           /\ k <= LastIdx(s)
           /\ base' = [base EXCEPT ![s] = [idx |-> k, term |-> TermAt(s, k)]]
           /\ log' = [log EXCEPT ![s] = SubSeq(@, k - base[s].idx + 1, Len(@))]
-    /\ UNCHANGED <<election, flushed, synced, stale, machine, reader, match, used>>
+    /\ UNCHANGED <<election, flushed, synced, stale, machine, reader, match, used, inst>>
 
-\* A follower whose log ends below the leader's purged id takes the
-\* leader's snapshot and restarts its log there.
-InstallSnapshot(i, j) ==
+\* A follower with no point of agreement at or above the leader's purged id
+\* takes the leader's snapshot. openraft does it as three writes, and this is
+\* the first: a log that holds another entry at the snapshot's index is cut
+\* back to the commit index.
+InstallCut(i, j) ==
     /\ Following(i, j)
     /\ Common(i, j) = {}
     /\ snap[i].idx >= base[i].idx
     /\ snap[i].idx = Len(snap[i].state)
     /\ snap[i].idx > Len(applied[j])
-    /\ snap' = [snap EXCEPT ![j] = snap[i]]
-    /\ base' = [base EXCEPT ![j] = [idx |-> snap[i].idx, term |-> snap[i].term]]
+    /\ LET at == snap[i].idx
+           keep == Len(applied[j])
+           cut == /\ base[j].idx <= at
+                  /\ at <= LastIdx(j)
+                  /\ TermAt(j, at) # snap[i].term
+       IN /\ log' = [log EXCEPT ![j] = IF cut THEN SubSeq(@, 1, keep - base[j].idx) ELSE @]
+          /\ flushed' = [flushed EXCEPT ![j] = IF cut THEN Min(@, keep) ELSE @]
+          /\ synced' = [synced EXCEPT ![j] = IF cut THEN Min(@, keep) ELSE @]
+          /\ stale' = [stale EXCEPT ![j] =
+                IF cut /\ TruncateNotDurable
+                THEN [from |-> keep, tail |-> SubSeq(log[j], keep - base[j].idx + 1, Len(log[j]))]
+                ELSE @]
+    /\ inst' = [inst EXCEPT ![j] = [step |-> "install", snap |-> snap[i]]]
+    /\ UNCHANGED <<election, base, machine, reader, match, used>>
+
+\* The second write replaces the snapshot file and the state machine. Until
+\* the third, the log ends below what the broker applied.
+InstallState(j) ==
+    /\ inst[j].step = "install"
+    /\ snap' = [snap EXCEPT ![j] = inst[j].snap]
+    /\ applied' = [applied EXCEPT ![j] = inst[j].snap.state]
+    /\ inst' = [inst EXCEPT ![j].step = "purge"]
+    /\ UNCHANGED <<election, storage, committed, acked, reader, match, used>>
+
+\* The third purges up to the snapshot's id. The log ends below it (TypeOK),
+\* so the purge is past the log's end and the log restarts there.
+InstallPurge(j) ==
+    /\ inst[j].step = "purge"
+    /\ base' = [base EXCEPT ![j] = [idx |-> inst[j].snap.idx, term |-> inst[j].snap.term]]
     /\ log' = [log EXCEPT ![j] = <<>>]
-    /\ flushed' = [flushed EXCEPT ![j] = snap[i].idx]
-    /\ synced' = [synced EXCEPT ![j] = snap[i].idx]
+    /\ flushed' = [flushed EXCEPT ![j] = inst[j].snap.idx]
+    /\ synced' = [synced EXCEPT ![j] = inst[j].snap.idx]
     /\ stale' = [stale EXCEPT ![j] = NoTail]
-    /\ applied' = [applied EXCEPT ![j] = snap[i].state]
-    /\ UNCHANGED <<election, committed, acked, reader, match, used>>
+    /\ inst' = [inst EXCEPT ![j] = NoInstall]
+    /\ UNCHANGED <<election, machine, reader, match, used>>
 
 \* A crash and the open that follows. The log keeps a prefix no shorter
 \* than what was synced. The state machine is the snapshot plus the log up
 \* to the committed index read back, which is never past the recovered log.
-\* A snapshot past the recovered log makes the log restart at the snapshot.
-\* With SaveCommittedUnflushed the state machine reports an applied index
-\* past the log, and openraft restarts the log there, trusting it.
+\* A snapshot past the recovered log makes the log restart at the snapshot:
+\* openraft purges up to the applied index at startup, past the log's end.
+\* That is also how a crash between an install's second and third write
+\* opens. With SaveCommittedUnflushed the state machine reports an applied
+\* index past the log and openraft restarts the log there, trusting it. A
+\* shard's state machine is the log, so the entries between are lost.
+\* openraft refuses to start a state machine that is behind the purged log.
 Restart(s) ==
     /\ used.crashes < MaxCrashes
+    /\ base[s].idx <= snap[s].idx
     /\ \E n \in Max(synced[s], base[s].idx)..LastIdx(s), torn \in BOOLEAN, back \in BOOLEAN :
         /\ torn => TornTailKept /\ n < LastIdx(s)
         /\ back => /\ TruncateNotDurable /\ ~torn
@@ -421,13 +481,15 @@ Restart(s) ==
                    /\ flushed' = [flushed EXCEPT ![s] = last]
                    /\ synced' = [synced EXCEPT ![s] = last]
                    /\ applied' = [applied EXCEPT ![s] =
-                          IF snap[s].idx >= saved THEN snap[s].state ELSE SubSeq(@, 1, saved)]
+                          IF snap[s].idx >= saved THEN snap[s].state
+                          ELSE snap[s].state \o [x \in 1..(saved - snap[s].idx) |-> Lost]]
               ELSE /\ base' = base
                    /\ log' = [log EXCEPT ![s] = disk]
                    /\ flushed' = [flushed EXCEPT ![s] = end]
                    /\ synced' = [synced EXCEPT ![s] = IF RecoveredTailUnsynced THEN @ ELSE end]
                    /\ applied' = [applied EXCEPT ![s] = snap[s].state \o replay]
     /\ stale' = [stale EXCEPT ![s] = NoTail]
+    /\ inst' = [inst EXCEPT ![s] = NoInstall]
     /\ vote' = [vote EXCEPT ![s] = voteDisk[s]]
     /\ role' = [role EXCEPT ![s] =
             IF LeaderResumes /\ voteDisk[s].committed /\ voteDisk[s].node = s
@@ -437,22 +499,30 @@ Restart(s) ==
     /\ used' = [used EXCEPT !.crashes = @ + 1]
     /\ UNCHANGED <<voteDisk, elected, snap, committed, acked, reader>>
 
-\* The subscriber is read one index at a time, up to the commit index. A
-\* blank or membership entry is not delivered; the next record's batch
-\* reports it in `skipped_before`.
+\* The subscriber resumes after the last offset it received.
+LastOff == IF got = <<>> THEN 0 ELSE got[Len(got)].off
+
+\* The offsets directly below `o` that hold no event in `s`'s own log. The
+\* serving broker knows nothing else: not what an earlier leader delivered.
+SkippedBefore(s, o) ==
+    Cardinality({i \in (base[s].idx + 1)..(o - 1) :
+        \A k \in i..(o - 1) : EntryAt(s, k).kind # "record"})
+
+\* A broker that believes it leads reads the subscriber the next record in
+\* its log, up to the commit index. A blank or membership entry is not
+\* delivered; the record's batch reports it in `skipped_before`.
 Deliver(s) ==
     /\ Consumer
     /\ role[s] = "leader"
-    /\ Has(s, cursor + 1)
-    /\ cursor + 1 <= IF DeliverUncommitted THEN LastIdx(s) ELSE Len(applied[s])
-    /\ LET e == EntryAt(s, cursor + 1)
-       IN IF e.kind = "record"
-          THEN /\ got' = Append(got, [off |-> cursor + 1, val |-> e.val, skipped |-> skips])
-               /\ skips' = 0
-          ELSE /\ got' = got
-               /\ skips' = IF SkipsNotCounted THEN skips ELSE skips + 1
-    /\ cursor' = cursor + 1
-    /\ UNCHANGED <<election, storage, machine, match, used>>
+    /\ base[s].idx <= LastOff
+    /\ LET bound == IF DeliverUncommitted THEN LastIdx(s) ELSE Min(Len(applied[s]), LastIdx(s))
+           recs == {i \in (LastOff + 1)..bound : EntryAt(s, i).kind = "record"}
+       IN /\ recs # {}
+          /\ LET o == CHOOSE i \in recs : \A k \in recs : i <= k
+             IN got' = Append(got, [off |-> o, val |-> EntryAt(s, o).val,
+                                    skipped |-> IF SkipsNotCounted THEN 0 ELSE SkippedBefore(s, o),
+                                    by |-> vote[s].term])
+    /\ UNCHANGED <<election, storage, machine, match, used, inst>>
 
 Next ==
     \/ \E s \in Servers :
@@ -460,11 +530,12 @@ Next ==
         \/ AppendRecord(s) \/ AppendMember(s)
         \/ Flush(s) \/ AdvanceCommit(s)
         \/ BuildSnapshot(s) \/ Purge(s)
+        \/ InstallState(s) \/ InstallPurge(s)
         \/ Restart(s) \/ Deliver(s)
     \/ \E i, j \in Servers :
         \/ GrantVote(i, j) \/ AcceptLeader(i, j)
         \/ Replicate(i, j) \/ Ack(i, j) \/ LearnCommit(i, j)
-        \/ InstallSnapshot(i, j)
+        \/ InstallCut(i, j)
 
 Spec == Init /\ [][Next]_vars
 
@@ -477,8 +548,10 @@ TypeOK ==
         /\ synced[s] <= LastIdx(s)
         /\ flushed[s] <= LastIdx(s)
         /\ base[s].idx <= Len(applied[s])
+        /\ inst[s].step \in {"none", "install", "purge"}
+        /\ ~Idle(s) => LastIdx(s) < inst[s].snap.idx
     /\ acked \subseteq 1..MaxWrites
-    /\ cursor <= Len(committed) \/ DeliverUncommitted
+    /\ LastOff <= Len(committed) \/ DeliverUncommitted
 
 OneLeaderPerTerm == \A a, b \in elected : a[1] = b[1] => a[2] = b[2]
 
@@ -509,9 +582,11 @@ AppliedAgree ==
 
 \* `truncate_after` never reaches what a broker applied. DiskLog's own commit
 \* offset is not modelled: it must be at or below this for `BelowCommit`
-\* never to refuse a correct cut.
+\* never to refuse a correct cut. Between a snapshot's install and its purge
+\* the log is the old one: it ends below the snapshot and can hold entries
+\* the snapshot replaced.
 AppliedInLog ==
-    \A s \in Servers :
+    \A s \in Servers : inst[s].step # "purge" =>
         /\ Len(applied[s]) <= LastIdx(s)
         /\ \A i \in 1..Len(applied[s]) : Has(s, i) => EntryAt(s, i) = applied[s][i]
 
@@ -524,13 +599,16 @@ OnDisk(s, v) ==
 AckedSurvive ==
     \A v \in acked : \E Q \in SUBSET Servers : Quorum(Q) /\ \A s \in Q : OnDisk(s, v)
 
-\* A log that starts past its stored snapshot can be served only from a
-\* state machine that kept the entries between. A shard's state machine is
-\* the log, so there the entries are gone.
+\* At startup openraft refuses a state machine that is behind the purged
+\* log, and rebuilds a snapshot that is behind it from the state machine. A
+\* shard's state machine is the log, which cannot give purged entries back,
+\* so the stored snapshot has to cover every purge.
 PurgedCoveredBySnapshot == \A s \in Servers : base[s].idx <= snap[s].idx
 
 \* The client's drop check: the next event's offset is the last one's plus
-\* one plus what the batch says was skipped.
+\* one plus what the batch says was skipped. The count comes from the log of
+\* whichever broker serves, so this fails if that log differs below the
+\* record from what the subscriber was given.
 OffsetsDense ==
     \A k \in 1..Len(got) :
         got[k].off = (IF k = 1 THEN 0 ELSE got[k - 1].off) + got[k].skipped + 1
@@ -558,7 +636,9 @@ QuiescentServed ==
         /\ Len(applied[l]) = LastIdx(l)
         /\ \A i \in 1..Len(log[l]) : log[l][i].kind = "record" => log[l][i].val \in acked
         /\ \A s \in Servers : applied[s] = applied[l]
-        /\ (Consumer /\ MaxSnapshots = 0) => cursor = LastIdx(l)
+        /\ (Consumer /\ MaxSnapshots = 0) =>
+                \A i \in 1..Len(log[l]) : log[l][i].kind = "record" =>
+                    \E k \in 1..Len(got) : got[k].off = i
 
 ----------------------------------------------------------------------------
 \* Witnesses. Each says something never happens and must be violated, to
@@ -590,5 +670,17 @@ NeverSkipsBetweenRecords == \A k \in 2..Len(got) : got[k].skipped = 0
 \* A follower is brought up by a leader's snapshot.
 NeverInstallsSnapshot ==
     [][\A s \in Servers : snap'[s] # snap[s] => snap'[s].idx = Len(applied[s])]_vars
+
+\* A broker crashes between an install's second and third write and opens.
+NeverCrashesMidInstall ==
+    [][\A s \in Servers :
+        (inst[s].step = "purge" /\ used'.crashes > used.crashes) => inst'[s] = inst[s]]_vars
+
+\* A broker replaces a snapshot it already stored.
+NeverReplacesSnapshot ==
+    [][\A s \in Servers : snap'[s] # snap[s] => snap[s] = NoSnap]_vars
+
+\* Two records in a row reach the subscriber from leaders of different terms.
+NeverDeliversAcrossFailover == \A k \in 2..Len(got) : got[k].by = got[k - 1].by
 
 =============================================================================
