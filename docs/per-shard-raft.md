@@ -165,6 +165,26 @@ affected, so failover with the control plane down still works. What waits
 is the restarted broker's own vote. The check is once per broker start, not
 per shard.
 
+**Per directory, not only per root.** The check above judges a data root,
+and the copy id is per shard directory, so two more things are checked when
+a member opens its directory:
+
+- The directory records the storage id its copy id was minted under. If
+  that is not the root's current storage id, the copy is rotated. This
+  also makes rotation lazy: when the storage id rotates, one synced write
+  at the root does it, and each shard directory is judged when it is
+  opened. There is no pass over thousands of directories that a crash
+  could leave half done. A new copy id and its storage id are written
+  together by one rename.
+- The root keeps a high-water mark for each shard: the vote and a last log
+  id. If a directory's vote or last log id is below its mark, that one
+  directory was restored or copied back, and its copy is rotated. The vote
+  is marked on every vote save, which is synced anyway. The last log id is
+  marked in batches, one synced write per root per interval, so it is a
+  floor that can trail the log by that interval. A copy that went back by
+  less than the floor's lag is caught by the leader instead, which stops on
+  a follower that goes backwards (below).
+
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
 come back with a shorter log under the same id. Off, a leader that sees a
 follower go backwards stops instead of carrying on. That protects a leader.
@@ -192,34 +212,65 @@ mechanism as the switch from the hybrid: a base recorded once in the
 control plane.
 
 1. A broker that holds a copy of a group that has had no leader for the
-   re-form time reports to the control plane what its directory holds: the
-   old member id if it still has one, or that it rotated, and the last log
-   id of the records on disk. A rotated copy still reports its records. They
-   are evidence, not votes.
-2. When every voter of the last committed membership the control plane
-   knows is accounted for by such a report, the control plane picks the
-   report with the highest last log id and writes, by compare-and-swap on
-   the group epoch: the next epoch, the base (that log id), and the voter
-   set, which is exactly the copies whose reports hold the base. Everyone
-   else is a learner.
-3. Members start at the new epoch from the base, as in the switch. A member
-   of the old epoch stops when it learns of the new one. Messages carry the
-   epoch, so the two never mix.
+   re-form time retires the copy and then reports it. Retiring comes first:
+   the broker stops its member of the current epoch and fsyncs a marker in
+   the shard directory that says so. A retired member never votes,
+   acknowledges or appends in that epoch again, also after a restart. The
+   report is therefore a promise, not a snapshot of a moment. It names the
+   old member id if the copy still has one, or says that it rotated, the
+   last log id of the records on disk, and the newest membership in the
+   copy's log, committed or not. A rotated copy still reports its records.
+   They are evidence, not votes.
+2. The control plane collects the voters of every membership that any
+   report names, both halves of a joint one. Its own record of the
+   membership comes from broker reports and can be stale, so it is only one
+   more input. A report that names a membership with further voters widens
+   the set, and the control plane waits for those too. When every voter in
+   the set has reported, it picks the report with the highest last log id
+   and writes, by compare-and-swap on the group epoch: the next epoch, the
+   base (that log id), and the voter set, which is exactly the copies whose
+   reports hold the base. Everyone else is a learner.
+3. Members start at the new epoch from the base, as in the switch. Messages
+   carry the epoch, so the two never mix.
 
-Why it is safe: the old epoch cannot commit anything more, because a
-majority of its voters no longer exist under their old ids. Every record
-any disk still holds is at or below the chosen base or is cut as
+Why it is safe: the old epoch cannot commit anything more, because every
+voter of it has either rotated or durably retired before the control plane
+acts. It does not matter why the group was leaderless. Three intact copies
+that were only partitioned from each other all retire before they report,
+so when the partition heals none of them can commit in the old epoch. Every
+record any reporting disk holds is at or below the chosen base or is cut as
 uncommitted. What is lost is only a record that no surviving disk holds,
 which is the loss relaxed fsync already documents for a majority losing
-power. With fsync on commit a crash does not rotate ids, and this path is
-not reached.
+power. With fsync on commit a crash does not rotate ids, and a re-form then
+loses nothing.
 
-If an old voter's broker cannot be reached, the control plane waits. An
-operator can force the re-form without it. The command names the missing
-copies and says that records only they held are lost. An RF 1 shard whose
+Step 2 closes the stale-membership case: the group went from {A, B, C} to
+{A, B, D}, the control plane still has {A, B, C}, and A and B rotate with
+short logs. A's or B's report names {A, B, D} if the change reached their
+disk, and D is waited for. If the change reached neither, it was never
+acknowledged by a majority that still holds it, which is the relaxed-fsync
+loss again.
+
+A retired copy whose group goes on without a re-form, because the others
+elected a leader after all, cannot take its promise back. It rotates its
+copy id and rejoins as a learner.
+
+If a voter's broker cannot be reached, the control plane waits. An operator
+can force the re-form without it. The command names the missing copies and
+says two things: records only they held are lost, and they made no promise,
+so they must not come back under their old ids (the new epoch makes their
+messages void, and they stop when they learn of it). An RF 1 shard whose
 only copy is gone is re-formed empty the same way, by an operator, and the
 new base is not below the highest offset the control plane has seen
 reported for the shard, so offsets are not reused. See Questions, 10.
+
+**After a re-form the group may have one voter.** If only one report holds
+the base, that copy is the only voter and the rest are learners. The leader
+promotes each learner by a membership change as soon as it has caught up.
+Until the voters are again a majority of the placed set, the control plane
+shows the shard as under-replicated and does not count it as RF 3, and a
+`Quorum` acknowledgement rests on as many disks as there are voters, which
+can be one. The same holds for a switch that started with two voters.
 
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
@@ -256,10 +307,24 @@ openraft, not by a publish. If a publish has claimed offset `X` in
 collide. So the engine never lets them race. Before it calls `add_learner`
 or `change_membership`, the engine closes the write fence for the shard,
 waits until the host reports `quiesced` (no claim outstanding) and every
-`appended` has been handed to openraft, and only then makes the call. The
-fence opens again when the call returns, with the same term. The blank
-entry at the start of a term needs none of this, because the fence is still
-closed then.
+`appended` has been handed to openraft, and only then makes the call.
+
+The fence opens again, at the same term, only when every entry the call
+proposed is known to be committed or known to be dead. Dead means openraft
+refused the proposal before appending it, or this broker was deposed, in
+which case the fence stays closed for that reason. A call that returned is
+not enough, and neither is a timeout: an entry still queued inside openraft
+would take the next index after the fence opened. So the engine runs the
+call in a task it owns, never in a caller's future that can be dropped, and
+on a timeout it keeps the fence closed and keeps waiting on the log.
+
+`add_learner` is called without blocking on catch-up. It returns when the
+learner's membership entry is committed, the fence opens, and the learner
+catches up while writes flow. The engine watches replication progress and
+starts the joint step when the learner is level.
+
+The blank entry at the start of a term needs none of this, because the
+fence is still closed then.
 
 The cost is a write pause on that shard for each membership step: the drain
 plus one commit round for a learner, and two rounds for a joint change. A
@@ -378,8 +443,12 @@ engine page ("What other multi-Raft systems learned", 1):
   involved, so a control-plane outage does not stop failover.
 - **Tied to the disk.** A broker writes and fsyncs a small probe file on each
   volume that holds shard logs, once per interval. It sends liveness
-  heartbeats only while the last probe finished recently. A broker whose
-  disk has stalled goes silent, even if its process and network are fine.
+  heartbeats only while the last probe finished within the stall limit. A
+  broker whose disk has stalled goes silent, even if its process and
+  network are fine. The stall limit is several probe intervals and is
+  separate from the time after which a peer withdraws support for silence:
+  one slow fsync (`F_FULLFSYNC` can take over a second) must not silence a
+  healthy broker.
 - **Epochs.** Each broker has a store epoch that rises at every start. A peer
   that sees a new epoch knows the broker restarted.
 
@@ -582,7 +651,7 @@ confirmed, which is what kept shards unreadable in issue #1914.
 The control plane still chooses the replica set and paces moves. The group's
 leader makes Raft's membership match it:
 
-1. Add each new member as a learner and wait until it has caught up.
+1. Add each new member as a learner. Catch-up happens with the fence open.
 2. Call `change_membership` with the new set. openraft goes through joint
    consensus on its own and commits the membership as the typed record.
 3. If the leader is not in the new set, transfer leadership first.
@@ -654,8 +723,8 @@ sequenceDiagram
    and appends the generation-start record at offset `N`, but does not open
    for writes. For a cache shard it first appends one counter checkpoint
    holding the counter log's sums, so the cache log alone carries the state.
-   The record at `N` carries a digest of every record below it (see "What a
-   holder holds").
+   The record at `N` names a start offset `S` and carries a digest of the
+   records from `S` up to `N` (see "What a holder holds").
 2. **Record the base.** A follower acknowledges the record at `N` with its
    copy id, and only if its own digest matches. When a majority of the
    hybrid's set has acknowledged, the leader reports `(G, N)` and the copy
@@ -705,6 +774,23 @@ switch does not rest on the hybrid's log matching for prefixes with
 generation 0, which has not been verified: a copy that differs below `N`
 fails its digest and is rebuilt as a learner. Computing it reads each
 shard's log once on each copy, which is part of what paces the switch.
+
+Hybrid copies do not share a log start. Retention is local, and a rebuilt
+follower starts later than its leader (`replication-design.md`,
+"Replication"). So the digest cannot start at each copy's own
+first record. Followers send their log start with their fence promise, and
+the seal names `S`, the highest start among the leader and the copies that
+answered. Every one of them holds `S` up to `N`. A copy whose log starts
+above `S` cannot acknowledge and becomes a learner. Records below `S` stay
+readable on the copies that have them, as today, and the switch proves
+nothing about them.
+
+A cache shard has no range to digest, because each copy compacts its cache
+log on its own and the copies hold different records for the same state.
+For a cache shard the digest is over the live state at `N`: every live
+key with its value, expiry and version, in key order, and the counter
+checkpoint. A voter's base snapshot is that state, and the log below `N` is
+never compared.
 
 The shard is closed from the seal until the Raft leader opens: one hybrid
 promotion plus one Raft election. Shards switch a few at a time, paced like
@@ -813,8 +899,11 @@ lets it vote, and must fail the same way. This is the model's side of
 **Re-forming.** Add the group epoch and the re-form step: a new base and
 voter set chosen from reports of every old voter. Check that a record held
 by any reporting copy and committed in the old epoch is in the base. Twins
-that must fail: re-forming before every old voter has reported, and old
-and new epochs exchanging messages.
+that must fail: re-forming before every old voter has reported; old and new
+epochs exchanging messages; a report that is not a promise (three intact,
+partitioned voters report, the partition heals, and the old epoch commits a
+record before it learns of the new one); and waiting only for the control
+plane's own, stale membership while a newer voter holds the records.
 
 **Membership and adoption.** A twin where a publish claims an offset while
 a membership entry is proposed must reach the stop.
@@ -981,8 +1070,10 @@ Each has a recommendation, judged on safety and performance only.
 
 4. **Which timer values?** Recommended to start: tick 50 ms, heartbeat
    200 ms, election timeout 1 to 2 s, liveness heartbeat 500 ms with support
-   withdrawn after 1.5 s. A restarted member is held until it hears a
-   leader, or for the suspect time plus one election timeout. The liveness
+   withdrawn after 1.5 s of silence. The disk probe has its own limit: a
+   broker stops sending only when no probe has finished for 5 s, so a
+   single slow fsync withdraws nothing. A restarted member is held until it
+   hears a leader, or for the suspect time plus one election timeout. The liveness
    interval is half of the first draft's so that a leader notices a
    restarted follower's epoch well inside that hold. This is a quarter of
    the default heartbeat traffic and tick cost. A sleeping group's
@@ -1028,9 +1119,12 @@ Each has a recommendation, judged on safety and performance only.
    the gate, and only after the model's lease configs pass.
 
 10. **Is re-forming a group automatic?** Recommended: automatic only when
-    every voter of the last known membership has reported what its disk
-    holds, because then no information is missing and the choice is the
-    best any operator could make. If a voter's broker is unreachable, wait,
-    and let an operator force it with a command that states which copies
-    are missing. Never re-form on a timer alone: that would turn a long
-    partition into data loss.
+    every voter of every membership the reports name has reported, and
+    only because each report is a durable promise to stop in the old epoch.
+    Without those two rules automatic re-forming is not safe: intact voters
+    could commit after reporting, and a voter the control plane did not
+    know about could hold the records. With them no information is missing
+    and the choice is the best any operator could make. If a voter's broker
+    is unreachable, wait, and let an operator force it with a command that
+    states which copies are missing. Never re-form on a timer alone: that
+    would turn a long partition into data loss.
