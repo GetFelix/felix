@@ -104,6 +104,12 @@ tlc() {
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixRaftMembership*) module="FelixRaftMembership" ;;
+    FelixRaftIdentity*) module="FelixRaftIdentity" ;;
+    FelixRaftReform*) module="FelixRaftReform" ;;
+    FelixRaftLease*) module="FelixRaftLease" ;;
+    FelixRaftSleep*) module="FelixRaftSleep" ;;
+    FelixRaftSwitch*) module="FelixRaftSwitch" ;;
     FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
     FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
@@ -511,6 +517,58 @@ expectations=(
   "FelixRaftReachInstallCrash violates NeverCrashesMidInstall"
   "FelixRaftReachSnapshotReplace violates NeverReplacesSnapshot"
   "FelixRaftReachDeliverFailover violates NeverDeliversAcrossFailover"
+  "FelixRaftMembership pass"
+  "FelixRaftMembershipFailover pass"
+  "FelixRaftMembershipSkipJoint violates OneLeaderPerTerm"
+  "FelixRaftMembershipChangeBeforeCommit violates StateMachineSafety"
+  "FelixRaftMembershipLearnerCounts violates AckedSurvive"
+  "FelixRaftMembershipClaimRaces violates NeverStops"
+  "FelixRaftMembershipReopenOnReturn violates NeverStops"
+  "FelixRaftMembershipReachMove violates NeverMoves"
+  "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
+  "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftIdentity pass"
+  "FelixRaftIdentityRelaxedCrash pass"
+  "FelixRaftIdentityRootRestore pass"
+  "FelixRaftIdentityDirRestore pass"
+  "FelixRaftIdentityMarkExact pass"
+  "FelixRaftIdentityWipeThenRestore pass"
+  "FelixRaftIdentityMarkBatched violates AckedHeldByLeader"
+  "FelixRaftIdentityRootRestoreSameRun violates OneLeaderPerTerm"
+  "FelixRaftIdentityWipeKeepsId violates LeaderCompleteness"
+  "FelixRaftIdentityNoRestoreCheck violates LeaderCompleteness"
+  "FelixRaftIdentityNoStorageIdCheck violates LeaderCompleteness"
+  "FelixRaftIdentityMarkForgetsCopy violates LeaderCompleteness"
+  "FelixRaftIdentityNoVoteMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityVoteBeforeMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityRejoins violates NeverRejoins"
+  "FelixRaftIdentityRejoinLeads violates NeverRotatedLeads"
+  "FelixRaftIdentityRestoreCaught violates NeverRotates"
+  "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
+  "FelixRaftSwitch pass"
+  "FelixRaftSwitchLag pass"
+  "FelixRaftSwitchLagWipe pass"
+  "FelixRaftSwitchWiped pass"
+  "FelixRaftSwitchGenZero pass"
+  "FelixRaftSwitchStarts pass"
+  "FelixRaftSwitchDiffers pass"
+  "FelixRaftSwitchReseal pass"
+  "FelixRaftSwitchDigestCoversGeneration pass"
+  "FelixRaftSwitchAllVoters violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBase violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBaseCuts violates NeverCutsHeldRecord"
+  "FelixRaftSwitchNoDigest violates LeaderCompleteness"
+  "FelixRaftSwitchDigestFromOwnStart violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWrite violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWriteTwoBases violates OneBase"
+  "FelixRaftSwitchStaleIdVotes violates LeaderCompleteness"
+  "FelixRaftSwitchReachCommit violates NeverCommitsAboveBase"
+  "FelixRaftSwitchReachPromote violates NeverPromotes"
+  "FelixRaftSwitchReachPromotedLeads violates NeverPromotedLeads"
+  "FelixRaftSwitchReachInstall violates NeverInstalls"
+  "FelixRaftSwitchReachGenZero violates NeverElects"
+  "FelixRaftSwitchReachWipedSwitch violates NeverSwitches"
+  "FelixRaftSwitchReachReseal violates NeverSwitchesAfterReseal"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -845,12 +903,26 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # FelixRaft.tla is behind few configurations, so a change to it counts as a
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
+  # The track 4 modules beside it are each behind their own few, the same way.
+  raft_parts="Membership Identity Reform Lease Sleep Switch"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"
+      for part in $raft_parts; do
+        case "$f" in FelixRaft"$part"*) continue 2 ;; esac
+      done
       changed_cfgs="$changed_cfgs${f%.cfg} "
     done
   fi
+  for part in $raft_parts; do
+    if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft$part.tla"; then
+      for f in "$SPEC_DIR"/FelixRaft"$part"*.cfg; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        changed_cfgs="$changed_cfgs${f%.cfg} "
+      done
+    fi
+  done
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
