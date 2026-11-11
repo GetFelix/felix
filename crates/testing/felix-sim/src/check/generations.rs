@@ -36,6 +36,38 @@ impl Default for RecordGenerationsAgree {
     }
 }
 
+/// What a run looked at, so a run that compared nothing can be told from one
+/// that agreed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Tally {
+    /// Records held by two or more replicas.
+    pub compared: u64,
+    /// Of those, records with two or more known stamps to compare.
+    pub stamped: u64,
+}
+
+impl Tally {
+    /// The summary of the warning that reports it; the seed test reads it
+    /// back with [`Tally::parse`].
+    pub fn summary(&self) -> String {
+        format!(
+            "compared {} replicated records, {} with two or more known writers",
+            self.compared, self.stamped
+        )
+    }
+
+    /// The tally in a [`Tally::summary`].
+    pub fn parse(summary: &str) -> Option<Tally> {
+        let rest = summary.strip_prefix("compared ")?;
+        let (compared, rest) = rest.split_once(" replicated records, ")?;
+        let (stamped, _) = rest.split_once(' ')?;
+        Some(Tally {
+            compared: compared.parse().ok()?,
+            stamped: stamped.parse().ok()?,
+        })
+    }
+}
+
 /// One replica's stamp for an offset.
 type Stamp<'a> = (&'a str, u64);
 
@@ -43,7 +75,10 @@ type Stamp<'a> = (&'a str, u64);
 /// a known writer, with the stamps. Records with a different payload at an
 /// offset are not compared: that is a divergence other checks report, and
 /// the stamps of a record that was replaced mean nothing.
-fn disagreements<'a>(logs: &'a [(String, Vec<LogRecord>)]) -> Vec<(u64, Vec<Stamp<'a>>)> {
+fn disagreements<'a>(
+    logs: &'a [(String, Vec<LogRecord>)],
+    tally: &mut Tally,
+) -> Vec<(u64, Vec<Stamp<'a>>)> {
     let mut by_offset: BTreeMap<u64, Vec<(&str, &LogRecord)>> = BTreeMap::new();
     for (name, records) in logs {
         for record in records {
@@ -75,6 +110,10 @@ fn disagreements<'a>(logs: &'a [(String, Vec<LogRecord>)]) -> Vec<(u64, Vec<Stam
             }
         }
         for (_, stamps) in same {
+            tally.compared += 1;
+            if stamps.len() >= 2 {
+                tally.stamped += 1;
+            }
             if stamps.windows(2).any(|pair| pair[0].1 != pair[1].1) {
                 found.push((offset, stamps));
             }
@@ -115,6 +154,7 @@ impl Checker for RecordGenerationsAgree {
         }
         let cluster = &ctx.cluster;
         let mut findings = Vec::new();
+        let mut tally = Tally::default();
         for shard in 0..cluster.config.shards {
             let key = stream_key(shard);
             let mut logs = Vec::new();
@@ -123,7 +163,7 @@ impl Checker for RecordGenerationsAgree {
                     logs.push((cluster.node_id(node).to_string(), records));
                 }
             }
-            for (offset, stamps) in disagreements(&logs) {
+            for (offset, stamps) in disagreements(&logs, &mut tally) {
                 if !self.digest.admit(&format!("{}@{offset}", describe(&key))) {
                     continue;
                 }
@@ -145,6 +185,7 @@ impl Checker for RecordGenerationsAgree {
             }
         }
         findings.extend(self.digest.rest(self.name()));
+        findings.push(Finding::warning(self.name(), tally.summary()));
         findings
     }
 }

@@ -174,7 +174,7 @@ impl Node {
         let mut broker_config = SimBrokerConfig::new(&self.id, self.dir.path());
         broker_config.advertise_addr = self.advertise;
         broker_config.fsync_mode = config.fsync_mode;
-        if config.finalize_record_generations {
+        if config.finalize_record_generations.is_some() {
             broker_config.segment_size_bytes = Some(RECORD_GENERATIONS_SEGMENT_BYTES);
         }
         let link = NodeLink::new(cp.link(), self.cut.clone());

@@ -35,6 +35,9 @@
 //! A seed whose bug is still open is pinned with `#[ignore = "#<issue>"]` and
 //! runs with `cargo test -p felix-sim --test seeds -- --ignored`.
 
+use std::time::Duration;
+
+use felix_sim::check::Tally;
 use felix_sim::clock::{Clocks, NodeClock, PPM};
 use felix_sim::cluster::SimConfig;
 use felix_sim::nemesis::clocks::{BOUNDED_RATE_PPM, ClockPlan, ClockSkew};
@@ -399,26 +402,41 @@ fn seed_3_power_cuts_run_the_same_twice_and_are_repaired() {
     assert!(!found(&first, "torn-tail-repaired"), "{first}");
 }
 
-/// With `record_generations` finalized and small segments, leaders are killed
-/// and followers catch up from records stamped by different writers; every
-/// replica must name the same writer for the records it holds
-/// (`record-generations-agree`).
+/// Writes start before `record_generations` is final, so older segments hold
+/// unstamped records; it is finalized mid-run and brokers are killed after,
+/// so followers catch up across both kinds of segment. Every replica must name
+/// the same writer for the records it holds (`record-generations-agree`),
+/// and the run must have compared some, or it proves nothing.
 #[test]
 fn seed_3_replicas_agree_on_who_wrote_each_record() {
     log();
     let config = SimConfig {
-        finalize_record_generations: true,
+        finalize_record_generations: Some(Duration::from_secs(20)),
         ..SimConfig::for_seed(3)
     };
     let outcome = run_seed(3, config);
-    assert!(!found(&outcome, "record-generations-agree"), "{outcome}");
+    assert!(outcome.passed(), "{outcome}");
+    let tally = outcome
+        .findings
+        .iter()
+        .filter(|f| f.checker == "record-generations-agree")
+        .find_map(|f| Tally::parse(&f.summary))
+        .unwrap_or_else(|| panic!("the checker reported no tally:\n{outcome}"));
+    println!("record-generations-agree: {tally:?}");
     assert!(
-        outcome
-            .history
-            .faults
+        tally.compared > 0 && tally.stamped > 0,
+        "{tally:?}\n{outcome}"
+    );
+    let faults = &outcome.history.faults;
+    let finalized = faults
+        .iter()
+        .position(|f| f.what == "finalize record_generations")
+        .unwrap_or_else(|| panic!("record_generations was not finalized:\n{outcome}"));
+    assert!(
+        faults[finalized..]
             .iter()
-            .any(|fault| fault.what.starts_with("kill b")),
-        "no broker was killed:\n{outcome}"
+            .any(|f| f.what.starts_with("kill b")),
+        "no broker was killed after the finalize:\n{outcome}"
     );
 }
 

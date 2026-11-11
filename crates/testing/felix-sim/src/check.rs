@@ -73,7 +73,7 @@ mod power;
 
 pub use self::acked::AckedHeldByLeader;
 pub use self::burn::GenerationBurn;
-pub use self::generations::RecordGenerationsAgree;
+pub use self::generations::{RecordGenerationsAgree, Tally};
 pub use self::leadership::{AdoptedMatchesOpened, AtMostOneServing, OneLeaderPerGeneration};
 pub use self::power::TornTailRepaired;
 
