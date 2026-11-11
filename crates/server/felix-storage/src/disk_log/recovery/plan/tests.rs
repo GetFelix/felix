@@ -353,8 +353,14 @@ fn a_torn_retired_segment_is_planned_through_its_repair() {
     let dir = tempdir().expect("dir");
     populate(&dir, 12);
     let (retired, active, kept) = tear_the_retired_segment(&dir);
+    // Appends may bring the cut segment back to the length this describes.
+    let known = dir
+        .path()
+        .join(crate::segment::known::known_file_name(retired));
+    std::fs::write(&known, b"stale").expect("write");
 
     let plan = plan_then_recover(&dir, &config());
+    assert!(!known.exists(), "the cut kept its known generations");
     assert!(plan.steps.iter().any(|step| matches!(
         step,
         Step::CutRetired { id, valid_bytes, drop_next: Some(next) }

@@ -33,7 +33,7 @@ use crate::segment::format::{
     record_len_in,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
-use crate::segment::known::KnownGenerations;
+use crate::segment::known::{KnownGenerations, known_file_name};
 use crate::segment::reservation::{Extension, Reservation};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
@@ -647,6 +647,19 @@ impl SegmentWriter {
         if let Err(err) = sync_data(&self.file) {
             self.poison_after_failed_sync();
             return Err(StorageError::SyncFailed(err.to_string()));
+        }
+        // Spares the next open a walk of the segment to find its generations.
+        // Written once the records are durable, and derived, so a failure
+        // costs only that walk.
+        if self.holds_generations()
+            && let Some(known) = self.known
+            && let Err(err) = known.persist(
+                &self.path.with_file_name(known_file_name(self.id)),
+                self.base_offset,
+                self.size_bytes,
+            )
+        {
+            tracing::warn!(segment = self.id, error = %err, "could not write a sealed segment's known generations");
         }
         Ok(self.descriptor())
     }

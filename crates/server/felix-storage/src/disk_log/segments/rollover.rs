@@ -252,17 +252,6 @@ impl SegmentSet {
             },
         );
         self.sealed.push(entry);
-        // Spares the next open a walk of the segment to find its generations.
-        if retired.holds_generations()
-            && let Some(known) = retired.known_generations()
-            && let Err(err) = known.persist(
-                &self.dir.join(known_file_name(retired.id())),
-                retired.base_offset(),
-                retired.size_bytes(),
-            )
-        {
-            tracing::warn!(shard = %self.label, segment = retired.id(), error = %err, "could not write a sealed segment's known generations");
-        }
         Ok(())
     }
 

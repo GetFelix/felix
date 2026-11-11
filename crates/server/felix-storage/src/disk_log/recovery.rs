@@ -212,6 +212,13 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 "repairing the torn tail of a segment whose seal never finished",
             );
             crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
+            // The segment may be appended to again and sealed at the same
+            // length, so its old file must not survive to describe it.
+            match crate::fs::remove_file(dir.join(known_file_name(id))) {
+                Ok(()) => sync_dir(dir)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
             if let Some(next) = drop_next {
                 crate::fs::note_torn_tail(&dir.join(segment_file_name(next)));
                 remove_segment_files(dir, next)?;

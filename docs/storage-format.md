@@ -630,16 +630,18 @@ the file the open would have to walk every sealed segment whose ends hold
 unknown records, on every start: a log copied from pre-v9 segments is all
 unknown.
 
-It is written when a segment is sealed and whenever recovery or a read
-rebuilds the segment's index, and it is not synced. Like the index it is
+It is written when a segment is sealed, once its records are durable and
+off the lock appends take, and whenever recovery or a read rebuilds the
+segment's index. It is not synced. Like the index it is
 **never trusted**: the open uses it only when its checksum holds, its
 `base_offset` and `segment_len` match the segment, and the record at each
 position decodes with its header checksum intact and carries the
 generation named. The resume scan's last known generation, when it sees
 one, must also match. Otherwise the open walks the segment once, rebuilds
 its index and rewrites this file, so the verdict never depends on whether
-it was there. A truncation that reopens a sealed segment for appends
-deletes the file and syncs the directory first.
+it was there. A truncation that reopens a sealed segment for appends,
+and recovery cutting the torn tail of a segment whose seal never finished,
+delete the file and sync the directory first.
 
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
