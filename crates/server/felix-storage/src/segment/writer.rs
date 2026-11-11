@@ -714,19 +714,30 @@ impl Stamps<'_> {
                 ));
             }
         }
-        let generation = self.at(first);
-        match floor {
-            Some(floor) if generation < floor && generation != crate::log::UNKNOWN_WRITER => {
+        // Unknown records are exempt, so the batch's first known record is
+        // the one the scan compares with the floor.
+        let first_known = match self {
+            Self::All(generation) => Some((first, generation)),
+            Self::Runs(runs) => {
+                let from = runs.iter().rposition(|run| run.start_offset <= first);
+                runs[from.unwrap_or(0)..]
+                    .iter()
+                    .take_while(|run| run.start_offset <= last)
+                    .find(|run| run.generation != crate::log::UNKNOWN_WRITER)
+                    .map(|run| (run.start_offset.max(first), run.generation))
+            }
+        };
+        match (first_known, floor) {
+            (Some((offset, generation)), Some(floor))
+                if generation < floor && generation != crate::log::UNKNOWN_WRITER =>
+            {
                 Err(StorageError::GenerationBelowFloor {
-                    offset: first,
+                    offset,
                     generation,
                     floor,
                 })
             }
-            _ => {
-                debug_assert!(self.at(last) >= generation);
-                Ok(())
-            }
+            _ => Ok(()),
         }
     }
 }

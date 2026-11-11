@@ -715,17 +715,16 @@ impl<'a> View<'a> {
                 self.label,
                 header.version,
                 SEGMENT_HEADER_LEN,
-            )?;
-            // A record of unknown writer at either end hides the known
-            // generation the floor needs, so walk the whole segment.
-            let hidden = first == Some(crate::log::UNKNOWN_WRITER)
-                || (header.holds_generations() && outcome.last_generation.is_none());
-            if hidden {
-                let full = self.scan(id, ScanStart::Full, sealed_repair)?;
-                (full.first_generation, full.last_generation)
-            } else {
-                (first, outcome.last_generation)
-            }
+            )?
+            .filter(|generation| *generation != crate::log::UNKNOWN_WRITER);
+            // Unknown writers at an end can hide the segment's known
+            // generations. Walking the whole segment to find them would read
+            // all of a log copied from pre-v9 segments on every start, so the
+            // ends decide: the cross-segment check uses the known generation
+            // nearest the start, and a segment showing none keeps the floor
+            // before it. The writer kept the generations inside it rising.
+            let last = outcome.last_generation.or(first);
+            (first.or(last), last)
         };
         Ok(OpenedSealed {
             sealed: PlannedSealed {
