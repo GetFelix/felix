@@ -21,8 +21,50 @@ use crate::quorum::{Access, CacheWrite, QuorumError, QuorumMarks, ShardServing, 
 use crate::replica::ReplicaHandler;
 use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage, PeerCapabilities};
 
+/// Why the engine cannot say a write is committed.
+pub use crate::quorum::QuorumError as CommitError;
+
+/// Where a write landed: the offset one past its last record, and the
+/// generation it was written at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Written {
+    pub end: u64,
+    pub generation: u64,
+}
+
+impl Written {
+    /// Where the batch in `outcome`, written at `generation`, landed. `None`
+    /// for an ephemeral stream, which has no offsets.
+    pub fn of(outcome: &felix_broker::PublishOutcome, generation: u64) -> Option<Self> {
+        let (_, last) = outcome.offsets?;
+        Some(Self {
+            end: last + 1,
+            generation,
+        })
+    }
+}
+
+/// The brokers the control plane placed a shard on, by node id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Placement {
+    pub nodes: Vec<String>,
+}
+
+impl Placement {
+    /// A placement on `nodes`.
+    pub fn new(nodes: Vec<String>) -> Self {
+        Self { nodes }
+    }
+}
+
 /// What a durable write and a read ask of a shard's replication.
 pub trait Engine: Send + Sync {
+    /// Records of `shard` up to `written.end` are durable on this leader's
+    /// log, in the broker's commit order: get them to the other copies. Call
+    /// it after the batch is durable. It never waits.
+    fn appended(&self, shard: &ShardKey, written: Written);
+
     /// Wait until the batch in `outcome`, written at `generation`, is
     /// committed: held by enough of the shard's replicas that no later leader
     /// can lose it. Returns at once for a stream that does not acknowledge by
@@ -38,6 +80,12 @@ pub trait Engine: Send + Sync {
         generation: u64,
         timeout: Duration,
     ) -> impl Future<Output = anyhow::Result<()>> + Send;
+
+    /// Whether a write to `shard` at `generation` may be acknowledged on
+    /// local durability alone, as a `Leader` stream's is. On an error the
+    /// caller waits on [`Engine::await_commit`] instead. A refusal never
+    /// closes the shard.
+    fn admit_local_ack(&self, shard: &ShardKey, generation: u64) -> Result<(), CommitError>;
 
     /// The end of what a reader of `shard` may see, or `None` when its reads
     /// are not bounded by replication.
@@ -107,6 +155,9 @@ pub trait Engine: Send + Sync {
         timeout: Duration,
     ) -> impl Future<Output = Result<(), QuorumError>> + Send;
 
+    /// The control plane placed `shard` on `placement`. Safe to repeat.
+    fn placement_changed(&self, shard: &ShardKey, placement: &Placement);
+
     /// Answer a peer's replication request, follower side: a batch to store,
     /// a bootstrap or rebuild, a fence, a fetch or a pre-vote. `from` is the
     /// peer's node id when it named itself, `caller` what it advertised.
@@ -137,6 +188,14 @@ pub struct Hybrid<S: ?Sized> {
     marks: Option<Arc<QuorumMarks>>,
     serving: Option<Arc<S>>,
     replica: OnceLock<ReplicaHandler>,
+    driver: OnceLock<DriverWakes>,
+}
+
+/// What wakes the driver for a pass.
+struct DriverWakes {
+    /// Holds the shards that took an append.
+    broker: Arc<felix_broker::Broker>,
+    routes_changed: Arc<tokio::sync::Notify>,
 }
 
 impl<S: ?Sized> Hybrid<S> {
@@ -146,7 +205,23 @@ impl<S: ?Sized> Hybrid<S> {
             marks,
             serving,
             replica: OnceLock::new(),
+            driver: OnceLock::new(),
         }
+    }
+
+    /// Wake the driver that ships `broker`'s logs, and that `routes_changed`
+    /// already wakes, on [`Engine::appended`] and
+    /// [`Engine::placement_changed`]. Until this is called, and on a broker
+    /// that runs no driver, those two do nothing. Only the first call counts.
+    pub fn wake_driver(
+        &self,
+        broker: Arc<felix_broker::Broker>,
+        routes_changed: Arc<tokio::sync::Notify>,
+    ) {
+        let _ = self.driver.set(DriverWakes {
+            broker,
+            routes_changed,
+        });
     }
 
     /// Answer peers' replication requests with `replica` ([`Engine::handle`]).
@@ -185,6 +260,15 @@ impl<S: ?Sized> Default for Hybrid<S> {
 }
 
 impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
+    /// The driver ships from its own cursors up to the log's tail, so the
+    /// position is not used: the shard is marked for a pass, as the broker
+    /// core marks it when a publish becomes durable.
+    fn appended(&self, shard: &ShardKey, _written: Written) {
+        if let Some(driver) = self.driver.get() {
+            crate::quorum::wake_pass(&driver.broker, shard);
+        }
+    }
+
     async fn await_commit(
         &self,
         handle: &felix_broker::StreamHandle,
@@ -203,6 +287,13 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
             timeout,
         )
         .await
+    }
+
+    /// Always admitted. The hybrid checks the lease when the write enters the
+    /// write fence, and a close waits for every write inside, so it has no
+    /// second check at the acknowledgement.
+    fn admit_local_ack(&self, _shard: &ShardKey, _generation: u64) -> Result<(), CommitError> {
+        Ok(())
     }
 
     fn read_bound(
@@ -314,6 +405,14 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
             timeout,
         )
         .await
+    }
+
+    /// The driver reads the set from the routing table on its next pass, so
+    /// this only asks for that pass, as the routing feed does.
+    fn placement_changed(&self, _shard: &ShardKey, _placement: &Placement) {
+        if let Some(driver) = self.driver.get() {
+            driver.routes_changed.notify_one();
+        }
     }
 
     async fn handle(

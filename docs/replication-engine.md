@@ -174,66 +174,84 @@ chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`quorum.rs:1574`) and
 
 ## The proposed interface
 
-Two traits. `Engine` is what the broker asks of replication. `EngineHost` is
-what replication asks of the broker, and folds together the seams above.
+Two traits in `crates/server/felix-replication/src/engine.rs`. `Engine` is
+what the broker asks of replication. `EngineHost` (`engine/host.rs`) is what
+replication asks of the broker, and folds together the seams above.
 
-```rust
-/// What the broker asks of a shard's replication.
-pub trait Engine: Send + Sync {
-    /// A durable append landed on this leader's log for `key`.
-    fn appended(&self, key: &ShardKey);
+The trait is built. It holds what per-shard Raft needs and, until the hybrid
+is deleted, what only the hybrid needs. The Raft pull requests add to it and
+change no method that is there. It narrows once, when the hybrid is deleted.
 
-    /// Wait until the batch written at `generation` is committed: no later
-    /// leader can lose it. Errors when this broker cannot say so in time.
-    fn await_commit(&self, key: &ShardKey, written: Written, generation: u64, timeout: Duration)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+| Question | `Engine` method | How the hybrid answers |
+| --- | --- | --- |
+| Append | `appended(shard, Written)` | Marks the shard for a driver pass, the same mark the broker core makes when a publish becomes durable. The driver ships from its own cursors, so the position is not used |
+| Commit mark | `await_commit(handle, shard, outcome, generation, timeout)` | `quorum::await_quorum`: at once for a `Leader` stream, on the mark and then the lease for `Quorum` |
+| Commit mark | `admit_local_ack(shard, generation)` | Always yes. The hybrid checks the lease when a write enters the write fence, and has no second check when it acknowledges |
+| Read bound | `read_bound(consistency, shard)` | `quorum::read_bound`: the mark at the served generation, for `Quorum` only |
+| Read bound | `committed_bound(shard)` | `quorum::committed_bound`: the same mark plus the lease check, for the broker core's readers |
+| Leadership for a read | `confirm_read(shard)` | The lease, or a read round |
+| Membership change | `placement_changed(shard, Placement)` | Wakes the driver, which reads the new set from the routing table, as the routing feed's wake does |
+| Peer messages | `handle(from, caller, request)` | The replica handler |
 
-    /// One past the highest offset a reader of `key` may see: the commit
-    /// offset, at every consistency level. `None` only for a shard with no
-    /// replicas, whose commit is the local durable append.
-    fn read_bound(&self, key: &ShardKey) -> Result<Option<u64>, Unreadable>;
+`Written` is where a write landed: `end`, one past its last record, and the
+`generation` it was written at. `Written::of` builds it from a publish
+outcome. `Placement` is the brokers the control plane placed the shard on.
+`CommitError` is `quorum::QuorumError` under the name the engine uses.
 
-    /// Confirm this broker still leads `key` at `generation` for a read.
-    fn confirm_read(&self, key: &ShardKey, generation: u64)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+Five more methods exist only for the hybrid and go when it does:
+`cache_write_at`, `await_cache_quorum`, `await_counter_quorum`,
+`read_skips_lease` and `await_readable`. `committed_bound` merges into
+`read_bound` at the same time. [`per-shard-raft.md`](per-shard-raft.md), "The
+engine interface", says why each is safe to drop then and not before.
 
-    /// The control plane placed `key` on a new replica set.
-    fn placement_changed(&self, key: &ShardKey);
+`EngineHost` has five methods:
 
-    /// A peer's replication request, follower side.
-    fn handle(&self, from: &PeerIdentity, request: InternalMessage)
-        -> impl Future<Output = InternalMessage> + Send;
-}
+| Method | Meaning | Hybrid |
+| --- | --- | --- |
+| `generation(shard)` | The generation this broker serves the shard at | The ingress router |
+| `replicated(shard)` | Whether the shard has followers | The ingress router |
+| `quiesced(shard)` | The write fence is closed with no write inside | `ShardFence` |
+| `opened(shard, generation)` | This broker leads the shard and may take writes | Never called. A promoted leader asks the broker to open through `PromotionGate::open`, which writes the generation-start record and can refuse |
+| `deposed(shard, generation)` | A newer leader exists: stop taking writes | `ShardFence` |
 
-/// What the engine needs from the broker, and the events it reports.
-pub trait EngineHost: Send + Sync {
-    fn generation(&self, key: &ShardKey) -> Option<u64>;
-    fn replicated(&self, key: &ShardKey) -> bool;
-    fn quiesced(&self, key: &ShardKey) -> bool;
-    /// `key` may take writes at `generation`, admitted as `serves` says.
-    fn opened(&self, key: &ShardKey, generation: u64, serves: Serves);
-    /// A newer leader exists than `generation`: stop taking writes.
-    fn deposed(&self, key: &ShardKey, generation: u64);
-}
+`opened` reaches the broker as `WriteFence::opened`, which does nothing by
+default. The hybrid's other callbacks (`withheld`, `gave_up_at`,
+`refused_at`, `probed`, `opened_since`, `promoting`, the lease) stay on
+`HybridHost`, which extends `EngineHost`, because no other engine has those
+states.
 
-/// How an opened leader is admitted.
-pub enum Serves {
-    /// Only while its control-plane lease is valid (hybrid, `Leader` shards).
-    ByLease,
-    /// By its followers' acknowledgements, with no lease.
-    ByFollowers,
-}
-```
+### What calls the new methods
 
-Caches and counters get the same `await_commit` and `read_bound` with a log
-kind argument. The exact signatures settle as each refactor step routes its
-callers through them; the shape above is the target.
+Nothing on a shipping path yet. `appended`, `admit_local_ack`,
+`placement_changed` and `opened` were added so that the Raft engine has them
+from its first pull request. The hybrid implements each with what it already
+does, so calling one changes nothing:
 
-The hybrid engine implements `Engine` with the code it has today. The host is
-the existing `IngressRouter` plus `ShardFence`. Their extra hybrid callbacks
-(`withheld`, `gave_up_at`, `refused_at`, `probed`, `opened_since`,
-`promoting`) stay on the hybrid's own host trait, which extends
-`EngineHost`, because no other engine has those states.
+- The broker core still marks the shard itself when a publish becomes
+  durable (`Completion::commit`), and the routing feed still wakes the
+  driver. `Hybrid::wake_driver` hands the engine the same two wakes when
+  replication starts. On a broker with no driver, `appended` and
+  `placement_changed` do nothing.
+- The publish order is unchanged: `begin_append`, then `commit`, then the
+  commit wait, then fanout.
+
+### What later pull requests add
+
+The rest of per-shard Raft fits without changing a method:
+
+- **Sleep and wake.** Every event that wakes a group already enters through
+  the trait: a write through `appended`, a read round through
+  `confirm_read`, a placement change through `placement_changed`, and a Raft
+  message through `handle`. The node ticker, the audit timer and the sleep
+  handshake are inside the engine.
+- **Store liveness.** The liveness heartbeat is a peer message and arrives
+  through `handle`. It replaces `suspicion.rs`, which the hybrid starts
+  itself.
+- **Closing the fence for a membership step.** `EngineHost` gains one
+  method that closes a shard without deposing it. The engine waits on
+  `quiesced` and reopens with `opened` at the same generation.
+- **The switch from the hybrid.** `Placement` gains the shard's engine, its
+  base and its voters. It is `non_exhaustive` for that reason.
 
 ## Per-shard Raft behind the same traits
 
@@ -244,8 +262,7 @@ leader lease.
 
 - `appended` feeds the Raft leader's replication. `await_commit` waits on the
   Raft commit index, which is the same thing as the quorum mark.
-- `opened` and `deposed` come from Raft's role changes. Every opened leader
-  is `ByFollowers`.
+- `opened` and `deposed` come from Raft's role changes.
 - `placement_changed` turns into a Raft membership change toward the new set,
   with joint consensus covering what the joint fence covers today.
 - `confirm_read` is a read-index round, the same round `ReadIndex` sends
@@ -1286,8 +1303,7 @@ unit, integration and simulator seed tests pass unchanged after each.
    pairs an `IngressRouter` with a `ShardFence` and implements both traits, and
    `ShardServing` and `WriteFence`, by delegating, so those two traits and their
    implementors are unchanged. `node/cluster.rs` hands the driver the `Host`
-   as its fence. The `opened(key, generation, serves)` event of the sketch above is
-   not built: today it is three separate fence calls whose order matters.
+   as its fence.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns
    today (driver, replica handler, reporter, elections, suspicion), and
    `peer_dispatch.rs` routes replication requests to `Engine::handle`.
@@ -1323,6 +1339,17 @@ unit, integration and simulator seed tests pass unchanged after each.
    the peer listener binds. A second set is an error. Until then
    `Engine::handle` refuses a replication request as `Unavailable`, which a
    peer retries.
+
+9. The additions per-shard Raft needs: `appended`, `Written`,
+   `admit_local_ack` and `placement_changed` on `Engine`, and `opened` on
+   `EngineHost`. Nothing is removed.
+   Done as built: see "The proposed interface". `Hybrid::appended` marks the
+   shard in `AppendedShards`, `Hybrid::placement_changed` notifies the
+   driver's `routes_changed`, and `Hybrid::admit_local_ack` always admits.
+   `node/cluster.rs` binds the two wakes with `Hybrid::wake_driver` where it
+   starts the driver. `EngineHost::opened` forwards to a new
+   `WriteFence::opened` that defaults to nothing. No caller moved, so every
+   lease check and bound is where it was.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.

@@ -18,6 +18,10 @@ pub(crate) trait EngineHost: Send + Sync {
     fn replicated(&self, key: &ShardKey) -> bool;
     /// Whether `key` is closed with no write still inside.
     fn quiesced(&self, key: &ShardKey) -> bool;
+    /// This broker leads `key` at `generation` and may take writes. The
+    /// hybrid does not report it: its promoted leader asks the broker to open
+    /// through `PromotionGate::open`, which can refuse.
+    fn opened(&self, key: &ShardKey, generation: u64);
     /// `key` has a newer leader than `generation`: stop taking writes.
     fn deposed(&self, key: &ShardKey, generation: u64);
 }
@@ -72,6 +76,10 @@ impl<S: ShardServing + ?Sized, F: WriteFence + ?Sized> EngineHost for Host<S, F>
 
     fn quiesced(&self, key: &ShardKey) -> bool {
         self.fence.quiesced(key)
+    }
+
+    fn opened(&self, key: &ShardKey, generation: u64) {
+        self.fence.opened(key, generation);
     }
 
     fn deposed(&self, key: &ShardKey, generation: u64) {
@@ -142,6 +150,10 @@ impl<S: ShardServing + ?Sized, F: WriteFence + ?Sized> WriteFence for Host<S, F>
 
     fn passed(&self, key: &ShardKey, generation: u64) {
         HybridHost::passed(self, key, generation);
+    }
+
+    fn opened(&self, key: &ShardKey, generation: u64) {
+        EngineHost::opened(self, key, generation);
     }
 
     fn deposed(&self, key: &ShardKey, generation: u64) {
