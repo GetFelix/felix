@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794435107614,
+  "lastUpdate": 1794435414351,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52156,6 +52156,58 @@ window.BENCHMARK_DATA = {
             "range": "28340.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 798606.63\nmean: 792587.25\nstdev: 28340.19\ncv: 3.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "869db7fbaffacf18a5d7e47f2713f2dd8a8e6c34",
+          "message": "feat(storage): purge, the purged id and snapshots for the Raft log adapter (#2167) (#2255)\n\n* wip: purge, purged id, snapshot store\n\n* feat(storage): purge, the purged id and snapshots for the Raft log adapter (#2167)\n\npurge keeps the purged id in raft-purged, written before anything is\ndeleted, and works past the log's end, as openraft asks at startup.\nSnapshotStore keeps a snapshot's id, membership and data in one file\nreplaced by one rename (#2221). purge_within refuses a purge past the\nstored snapshot. The adapter passes openraft's Suite::test_all, and a\npurge, a snapshot write and a follower's snapshot install open cleanly\nafter a power cut at every step.\n\nAlso: trim records are refused, a large append is written a segment at a\ntime, and truncate_after never reaches below the purged id or the base.\n\nSpec-Unaffected: implements the storage rules of the FelixRaft model in #2220 (Purge, BuildSnapshot, InstallSnapshot, Restart); no spec file changes here.",
+          "timestamp": "2026-11-11T14:05:10-08:00",
+          "tree_id": "ec619521b8747352582296b134b3665e355cd059",
+          "url": "https://github.com/GetFelix/felix/commit/869db7fbaffacf18a5d7e47f2713f2dd8a8e6c34"
+        },
+        "date": 1794435413569,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355280,
+            "range": "7425.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355280.00\nmean: 355804.46\nstdev: 7425.69\ncv: 2.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355280,
+            "range": "7425.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355280.00\nmean: 355804.46\nstdev: 7425.69\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81830.08,
+            "range": "2483.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81830.08\nmean: 80906.79\nstdev: 2483.49\ncv: 3.07%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 818300.84,
+            "range": "24834.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 818300.84\nmean: 809067.87\nstdev: 24834.90\ncv: 3.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
