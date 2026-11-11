@@ -2049,7 +2049,9 @@ Current builds never create either directory.
 ## Tiered storage: offload
 
 Offload is the first part of tiered storage
-([#172](https://github.com/GetFelix/felix/issues/172)). It copies sealed
+([#172](https://github.com/GetFelix/felix/issues/172)). The design for the rest
+(a shared tier recorded through Raft, and cold reads) is in
+[`tiered-storage-design.md`](tiered-storage-design.md). Offload copies sealed
 segments to an object store, and it makes retention wait for a copy before it
 deletes a segment. It is off by default. `FELIX_DURABLE_OFFLOAD_DIR` turns it
 on for stream logs (`LogConfig::offload` in the library). Cache, counter and
