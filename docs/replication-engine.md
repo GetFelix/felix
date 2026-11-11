@@ -366,9 +366,9 @@ used by every shard group and by the control plane, tested once.
 ### openraft version
 
 The adapter targets openraft 0.10, pinned to an exact version in
-`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10); the workspace
-pin moves from `0.10.0-alpha.38` to it as the first commit of the adapter
-work. The control plane runs 0.9.25 today
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10). Nothing in
+the workspace depends on 0.10 yet; the adapter PR adds `openraft = "=0.10.0"`
+as its first commit. The control plane runs 0.9.25 today
 (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
 pinned version as part of its storage track, so the workspace has one
 openraft. A version change is a reviewed update, never a side effect of
