@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794435414351,
+  "lastUpdate": 1794441239992,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52208,6 +52208,58 @@ window.BENCHMARK_DATA = {
             "range": "24834.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 818300.84\nmean: 809067.87\nstdev: 24834.90\ncv: 3.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1a7dfc6e93af0dd2f251a3ff55d096180fcd8c1b",
+          "message": "refactor(replication): engine trait additions for per-shard Raft (#2227) (#2301)\n\n* refactor(replication): engine trait additions for per-shard Raft (#2227)\n\nAdd appended, Written, admit_local_ack and placement_changed to Engine, and\nopened to EngineHost, implemented by the hybrid with what it already does.\nNothing is removed and no caller moves: read_skips_lease, await_readable,\ncommitted_bound and the cache and counter waits stay, and every lease check\nis where it was.\n\nThe hybrid marks the shard for a driver pass on appended, wakes the driver\non placement_changed, and always admits a local acknowledgement, because it\nchecks the lease when a write enters the write fence. Hybrid::wake_driver\nbinds the two wakes where node/cluster.rs starts the driver.\n\nSpec-Unaffected: additions to an internal trait with no caller on a shipping path; no protocol message, fence rule or promotion step changes.\n\n* docs(replication): say plainly what the hybrid's admit_local_ack and the default opened do not check\n\nSpec-Unaffected: doc comments only",
+          "timestamp": "2026-11-11T23:47:44Z",
+          "tree_id": "7ca3c60ed31c37c787e6c45478e7fa547d2c03c3",
+          "url": "https://github.com/GetFelix/felix/commit/1a7dfc6e93af0dd2f251a3ff55d096180fcd8c1b"
+        },
+        "date": 1794441239326,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495859.42,
+            "range": "29033.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495859.42\nmean: 488597.25\nstdev: 29033.76\ncv: 5.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495859.42,
+            "range": "29033.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495859.42\nmean: 488597.25\nstdev: 29033.76\ncv: 5.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 113279.72,
+            "range": "1281.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 113279.72\nmean: 113706.37\nstdev: 1281.00\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1132797.19,
+            "range": "12809.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1132797.19\nmean: 1137063.69\nstdev: 12809.99\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
