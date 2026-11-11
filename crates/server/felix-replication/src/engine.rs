@@ -289,9 +289,9 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
         .await
     }
 
-    /// Always admitted. The hybrid checks the lease when the write enters the
-    /// write fence, and a close waits for every write inside, so it has no
-    /// second check at the acknowledgement.
+    /// Always admitted. The hybrid checks the lease only when the write enters
+    /// the write fence, so a lease that lapses between entry and ack is still
+    /// acknowledged. Raft must check here instead; don't copy this.
     fn admit_local_ack(&self, _shard: &ShardKey, _generation: u64) -> Result<(), CommitError> {
         Ok(())
     }

@@ -315,7 +315,9 @@ pub trait WriteFence: Send + Sync {
 
     /// An engine that elects its own leaders opened `key` at `generation`:
     /// this broker leads it and may take writes. The hybrid never calls it. It
-    /// opens a shard through [`crate::promotion::PromotionGate::open`].
+    /// opens a shard through [`crate::promotion::PromotionGate::open`]. The
+    /// default does nothing, so a shard opened this way stays closed until a
+    /// fence implements it.
     fn opened(&self, _key: &crate::ShardKey, _generation: u64) {}
 
     /// `key` has a newer leader than `generation`: a follower refused its
