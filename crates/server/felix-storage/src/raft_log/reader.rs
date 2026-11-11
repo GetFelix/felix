@@ -56,9 +56,6 @@ where
             // ones written after it, so the read starts again.
             let cuts = log.cuts();
             let first = self.shared.first_index();
-            // A purge past the log's end leaves the first index above the
-            // tail until the next append; nothing is there to read.
-            let end = end.min(log.tail_offset().await.map_err(io::Error::other)?);
             let mut next = start.max(first);
             let mut entries = Vec::new();
             while next < end {

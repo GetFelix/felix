@@ -25,6 +25,7 @@ use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
 use crate::log::{AppendOnlyLog, AppendRecord, Epoch, Offset, WrittenBy};
+use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
 where
@@ -117,7 +118,11 @@ where
         let now = now_micros();
         // The log writes a batch into one segment whole, so the entries go
         // down in batches of about a segment each.
-        let batch_bytes = log.config().segment_size_bytes;
+        let batch_bytes = log
+            .config()
+            .segment_size_bytes
+            .saturating_sub(SEGMENT_HEADER_LEN);
+        let record_header = record_header_len(GENERATION_VERSION);
         let mut batches: Vec<Batch> = Vec::new();
         let mut next = None;
         for entry in entries {
@@ -130,7 +135,12 @@ where
             }
             next = Some(index + 1);
             let (record, generation) = record_from_entry::<C, K>(&shared.codec, &entry, now)?;
-            let bytes = record.payload.len() as u64;
+            let bytes = record_header
+                + record.payload.len() as u64
+                + record
+                    .headers
+                    .as_ref()
+                    .map_or(0, |headers| headers.len() as u64);
             if batches
                 .last()
                 .is_none_or(|batch| batch.bytes + bytes > batch_bytes)

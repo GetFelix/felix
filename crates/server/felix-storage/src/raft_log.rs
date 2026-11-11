@@ -8,7 +8,7 @@
 //! runs beside the log. The design is in `docs/replication-engine.md`,
 //! "Raft log on the segment store".
 //!
-//! Three rules hold everywhere in this module:
+//! These rules hold everywhere in this module:
 //!
 //! - **A record's generation is its entry's term plus one.** openraft writes
 //!   its first entry at term 0, and generation 0 in a record header means
