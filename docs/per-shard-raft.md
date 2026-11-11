@@ -80,8 +80,8 @@ pub trait Engine: Send + Sync {
     fn confirm_read(&self, shard: &ShardKey)
         -> impl Future<Output = Result<(), CommitError>> + Send;
 
-    /// The control plane placed `shard` on `set`.
-    fn placement_changed(&self, shard: &ShardKey, set: &ReplicaSet);
+    /// The control plane placed `shard` on `placement`.
+    fn placement_changed(&self, shard: &ShardKey, placement: &Placement);
 
     /// A peer's replication message.
     fn handle(&self, from: Option<&str>, caller: PeerCapabilities, request: InternalMessage)

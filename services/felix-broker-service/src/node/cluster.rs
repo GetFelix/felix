@@ -286,6 +286,7 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
     pub(super) peers: &'a Option<Arc<R>>,
     pub(super) broker: &'a Arc<Broker>,
+    pub(super) engine: &'a Arc<shard_routing::StreamEngine>,
     pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
     pub(super) shard_status: &'a Arc<replication::status::ShardStatusBoard>,
@@ -330,6 +331,7 @@ where
         client_endpoints,
         peers,
         broker,
+        engine,
         quorum_marks,
         halted_replicas,
         shard_status,
@@ -463,6 +465,7 @@ where
             // standing on it. Only when there is a peer transport: without
             // one the replica set is a plan nobody can act on.
             let replication = peers.as_ref().map(|pool| {
+                engine.wake_driver(Arc::clone(broker), Arc::clone(&routes_changed));
                 replication::engine::Hybrid::<shard_routing::IngressRouter>::start(
                     replication::engine::StartDeps {
                         requester: Arc::clone(pool),

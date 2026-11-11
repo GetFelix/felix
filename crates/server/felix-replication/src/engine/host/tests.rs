@@ -74,6 +74,10 @@ impl WriteFence for Fence {
         self.saw("passed", generation);
     }
 
+    fn opened(&self, _key: &ShardKey, generation: u64) {
+        self.saw("opened", generation);
+    }
+
     fn deposed(&self, _key: &ShardKey, generation: u64) {
         self.saw("deposed", generation);
     }
@@ -155,6 +159,17 @@ fn quiesced_and_deposed_go_to_the_fence() {
     EngineHost::deposed(&host, &key(), 5);
 
     assert_eq!(*fence.calls.lock(), vec![("quiesced", 0), ("deposed", 5)]);
+}
+
+#[test]
+fn opened_goes_to_the_fence_through_either_trait() {
+    let (host, serving, fence) = host();
+
+    EngineHost::opened(&host, &key(), 5);
+    WriteFence::opened(&host, &key(), 6);
+
+    assert_eq!(*fence.calls.lock(), vec![("opened", 5), ("opened", 6)]);
+    assert_eq!(serving.refusals.load(SeqCst), 0);
 }
 
 #[test]
