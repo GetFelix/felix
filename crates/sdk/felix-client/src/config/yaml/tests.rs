@@ -70,3 +70,13 @@ fn config_yaml_options_match_the_services() {
         Some("aGk=")
     );
 }
+
+#[test]
+fn an_empty_or_marker_only_file_sets_nothing() {
+    for text in ["", "\n", "# nothing here\n", "---\n", "--- \n# note\n"] {
+        let parsed =
+            ClientConfigOverride::parse(text).unwrap_or_else(|err| panic!("{text:?}: {err}"));
+        assert_eq!(parsed.bench_embed_ts, None, "{text:?}");
+    }
+    assert!(ClientConfigOverride::parse("---\n---\n").is_err());
+}

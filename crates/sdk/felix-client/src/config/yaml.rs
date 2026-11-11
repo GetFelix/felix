@@ -53,12 +53,29 @@ pub(super) fn options() -> serde_saphyr::Options {
     }
 }
 
+/// False for an empty, comment-only or `---`-only file, which means "no
+/// settings". serde-saphyr 2.1 reads those as a null document and refuses a
+/// struct. Mirrored in `felix_common::yaml`; change both.
+fn has_content(text: &str) -> bool {
+    let mut markers = 0;
+    for line in text.lines().map(str::trim) {
+        if line == "---" {
+            markers += 1;
+        }
+        if markers > 1 || !(line.is_empty() || line.starts_with('#') || line == "---") {
+            return true;
+        }
+    }
+    false
+}
+
 impl ClientConfigOverride {
     /// Read a config file with the same rules the services use: only
     /// `true`/`false` are booleans, `<<` is not a merge, duplicate keys and
     /// unknown tags are refused, and a wrong-typed value is not quoted in an
     /// error, since the file may hold the auth token.
     pub(super) fn parse(text: &str) -> Result<Self, serde_saphyr::Error> {
+        let text = if has_content(text) { text } else { "{}" };
         serde_saphyr::from_str_with_options(text, options())
     }
 
