@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794435102730,
+  "lastUpdate": 1794435409757,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66198,6 +66198,72 @@ window.BENCHMARK_DATA = {
             "range": "19.46",
             "unit": "us",
             "extra": "trials: 5\nmedian: 574.00\nmean: 577.20\nstdev: 19.46\ncv: 3.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "869db7fbaffacf18a5d7e47f2713f2dd8a8e6c34",
+          "message": "feat(storage): purge, the purged id and snapshots for the Raft log adapter (#2167) (#2255)\n\n* wip: purge, purged id, snapshot store\n\n* feat(storage): purge, the purged id and snapshots for the Raft log adapter (#2167)\n\npurge keeps the purged id in raft-purged, written before anything is\ndeleted, and works past the log's end, as openraft asks at startup.\nSnapshotStore keeps a snapshot's id, membership and data in one file\nreplaced by one rename (#2221). purge_within refuses a purge past the\nstored snapshot. The adapter passes openraft's Suite::test_all, and a\npurge, a snapshot write and a follower's snapshot install open cleanly\nafter a power cut at every step.\n\nAlso: trim records are refused, a large append is written a segment at a\ntime, and truncate_after never reaches below the purged id or the base.\n\nSpec-Unaffected: implements the storage rules of the FelixRaft model in #2220 (Purge, BuildSnapshot, InstallSnapshot, Restart); no spec file changes here.",
+          "timestamp": "2026-11-11T14:05:10-08:00",
+          "tree_id": "ec619521b8747352582296b134b3665e355cd059",
+          "url": "https://github.com/GetFelix/felix/commit/869db7fbaffacf18a5d7e47f2713f2dd8a8e6c34"
+        },
+        "date": 1794435400246,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.00\nstdev: 0.71\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "5.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 205.60\nstdev: 5.46\ncv: 2.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 259,
+            "range": "11.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 260.20\nstdev: 11.45\ncv: 4.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "11.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 203.00\nstdev: 11.77\ncv: 5.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 394,
+            "range": "444.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 394.00\nmean: 589.80\nstdev: 444.55\ncv: 75.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 555,
+            "range": "999.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 555.00\nmean: 1017.40\nstdev: 999.38\ncv: 98.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
