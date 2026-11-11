@@ -88,3 +88,18 @@ fn the_tally_counts_compared_records_and_reads_back() {
         })
     );
 }
+
+#[test]
+fn writers_4_and_5_for_the_same_payload_are_reported_and_0_and_5_are_not() {
+    let held = logs(
+        vec![
+            record(0, "same", Some(4)),
+            record(1, "same", Some(UNKNOWN_WRITER)),
+        ],
+        vec![record(0, "same", Some(5)), record(1, "same", Some(5))],
+    );
+    let found = disagreements(&held, &mut Tally::default());
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].0, 0);
+    assert_eq!(found[0].1, vec![("b1", 4), ("b2", 5)]);
+}
