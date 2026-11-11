@@ -300,11 +300,12 @@ adds the generation field to the record header and the record kinds below.
 **What is built.** The adapter is in
 `crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature.
 `RaftLog` implements openraft's `RaftLogStorage`: `append` with its
-`IOFlushed` callback, `truncate_after` and `save_vote`. `LogReader`
+`IOFlushed` callback, `truncate_after`, `save_vote` and the committed id. `LogReader`
 implements `RaftLogReader` (entries and the vote). Inside the crate,
 `DiskLog::writer_at` and `DiskLog::last_writer` give the generation in a
-record's header without reading its payload. Purge, the saved committed id and snapshots are not
-built, so no engine runs on the adapter yet.
+record's header without reading its payload. `save_committed` and `read_committed` keep the
+committed id. Purge and snapshots are not built, so no engine runs on the
+adapter yet.
 
 **A Raft log is opened as one.** `LogConfig::raft_log` makes a log v9 from
 its first segment, lets it take membership records, and refuses retention
@@ -347,6 +348,8 @@ syncs the directory after each, then cuts the surviving segment, so a crash
 part way leaves a longer log and never a gap. `truncate_after` also checks
 the id it is given: if the log holds an entry of another term at that
 index, the caller is describing a different log and the cut is refused.
+The cut is on disk when `truncate_after` returns, so the callback of an
+append after it cannot fire ahead of the cut.
 
 **A vote only moves forward.** `save_vote` writes the ballot and returns
 once it is on disk. It accepts a higher term, or the vote already held
@@ -354,11 +357,25 @@ turning committed, and saving the held vote again writes nothing. A lower
 term, another node in the same term, or a committed vote going back to
 uncommitted is refused with nothing written.
 
+**The committed id is never past the log.** `save_committed` keeps the id
+as the log's commit offset, which is written behind the call, so after a
+crash the id read back may be older. It must never be newer than the log:
+openraft can save a committed id whose entry is appended here but not yet
+flushed, and a power cut can then take the entry and keep the id. An open
+of a Raft log lowers a stored commit offset to the end of the recovered
+log and writes that back before anything is appended. Without the
+write-back, entries a later leader puts at the lost indexes would count as
+committed after the next crash, and a legal truncation of them would be
+refused. These two rules, and the one above about a cut and later
+callbacks, were found by model checking
+([#2221](https://github.com/GetFelix/felix/issues/2221)).
+
 **Crash points.** Each write has power-loss tests on the simulator's
 filesystem (`raft_log/tests/crash_points.rs`,
 `disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
 inside the write and after its callback; a truncation cut after each
-unlink and after it returns; a vote save cut at every step. What reopens
+unlink, after it returns and after a later append's callback; a committed
+id saved ahead of the flush; a vote save cut at every step. What reopens
 holds every entry whose callback fired, is a gap-free prefix of what was
 written, is never shorter than a truncation was asked to keep, and has the
 old vote or the new one.

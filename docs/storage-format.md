@@ -544,7 +544,7 @@ can hold several terms. Truncation is the log's suffix truncation, and a
 vote is saved to the `ballot` file.
 
 A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
-in four ways:
+in five ways:
 
 - **Version 9 from its first segment.** Every entry needs a term, so no
   segment is written in an older format, whatever the fleet gate says. If
@@ -558,6 +558,11 @@ in four ways:
 - **An empty log can start at any index.** The first append to an empty log
   restarts it at that entry's index. After that an append must start at the
   tail.
+
+- **The commit offset is lowered to the log's end at open.** openraft can
+  save a committed id before its entry is flushed, so a crash can leave the
+  offset in `replica` past the recovered log. The open writes the lower
+  value back before anything is appended.
 
 Purge and snapshots are not built.
 
