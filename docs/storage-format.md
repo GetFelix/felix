@@ -254,9 +254,10 @@ generation is below the one before it is `GenerationFell` corruption: every
 checksum held, so it was written that way.
 
 **When a log moves onto v9.** A broker in a cluster writes v9 only once its
-fleet has finalized `record_generations`. No broker reports that feature yet,
-so no cluster writes v9 yet. Once it can be finalized, each stream log starts
-its next segment at v9 and stays there; the segment that was active is never
+fleet has finalized `record_generations`, which an operator does; a new
+cluster does not. Every broker that reports the feature offers
+`WRITER_GENERATIONS` to its peers, and it needs `generation_start`. Once it
+is finalized, each stream log starts its next segment at v9 and stays there; the segment that was active is never
 rewritten. A lone broker has no fleet and stays on the older formats. Cache
 and counter logs stay on them too.
 

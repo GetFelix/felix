@@ -1,4 +1,4 @@
-use super::{election_features, features_for, is_host_port};
+use super::{cluster_features, election_features, features_for, is_host_port};
 
 #[test]
 fn a_client_advertise_address_is_a_host_and_a_port() {
@@ -82,4 +82,30 @@ fn a_broker_reports_fencing_every_change_only_with_the_fence() {
     assert!(features_for(true, false).contains(every_change));
     assert!(features_for(true, true).contains(every_change));
     assert!(!features_for(false, false).contains(every_change));
+}
+
+/// Every replica of a v9 log must negotiate `WRITER_GENERATIONS` before any
+/// log goes v9. The fleet feature is that gate: a broker reports
+/// `record_generations` only when its peers offer the capability, whatever
+/// its fence and election settings, and admission refuses a broker that does
+/// not report a finalized feature.
+#[test]
+fn a_broker_reports_record_generations_only_offering_writer_generations() {
+    use felix_wire::internal::PeerCapabilities;
+    for fences in [false, true] {
+        for reads_by_lease in [false, true] {
+            for election in [false, true] {
+                let reports = cluster_features(fences, reads_by_lease, election)
+                    .contains(felix_common::fleet::RECORD_GENERATIONS.name());
+                let offers = felix_replication::peer::PeerTransportConfig {
+                    fence: fences,
+                    election,
+                    ..Default::default()
+                }
+                .capabilities()
+                .contains(PeerCapabilities::WRITER_GENERATIONS);
+                assert!(reports && offers, "{fences} {reads_by_lease} {election}");
+            }
+        }
+    }
 }

@@ -530,7 +530,7 @@ record before it; the scan checks this, and a log that breaks the rule is
 corrupt.
 
 **Rollout.** Brokers write version 9 only after a fleet feature,
-`record_generations`, says every broker reads it (replication now carries the generation that wrote each record to followers, `WRITER_GENERATIONS`, but brokers do not report the feature yet), and a broker that predates it refuses a version 9 segment,
+`record_generations`, says every broker reads it and every peer negotiates `WRITER_GENERATIONS`, which carries the generation that wrote each record to followers. An operator finalizes it; a new cluster does not. A broker that predates it refuses a version 9 segment,
 so a broker cannot roll back once it has written one. The control plane
 starts fresh (decision 7) and only control-plane members read its log, so its
 log is version 9 from the first record, with no fleet gate and no rollback

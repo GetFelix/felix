@@ -130,16 +130,23 @@ fn follower_features_wait_for_generation_start() {
 }
 
 /// A new cluster starts with every feature this build implements but
-/// `publisher_principal`; a feature added later fails this until it picks.
+/// `publisher_principal` and `record_generations`; a feature added later
+/// fails this until it picks.
 #[test]
 fn a_new_cluster_leaves_publisher_principal_to_the_operator() {
     let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
         .iter()
         .filter(|feature| !NEW_CLUSTER.contains(feature))
         .collect();
-    assert_eq!(manual, [&felix_common::fleet::PUBLISHER_PRINCIPAL]);
     assert_eq!(
-        NEW_CLUSTER.len() + 1,
+        manual,
+        [
+            &felix_common::fleet::PUBLISHER_PRINCIPAL,
+            &felix_common::fleet::RECORD_GENERATIONS
+        ]
+    );
+    assert_eq!(
+        NEW_CLUSTER.len() + 2,
         felix_common::fleet::IMPLEMENTED.len()
     );
 }
@@ -379,17 +386,10 @@ fn other_features_pass_the_election_check() {
     assert!(check_election(&nodes, "majority_ack", false).is_ok());
 }
 
-/// Replication does not yet carry the writer's generation, so finalizing
-/// `record_generations` would let replicas disagree on a record's term.
+/// Replication carries the writer's generation, so the operator may finalize
+/// `record_generations`.
 #[test]
-fn record_generations_cannot_be_finalized_until_the_writer_generation_replicates() {
-    let err = check_operator_finalizable("record_generations").expect_err("refused");
-    let StoreError::Conflict(message) = err else {
-        panic!("expected a conflict");
-    };
-    assert!(
-        message.contains("generation that wrote each record"),
-        "{message}"
-    );
+fn record_generations_can_be_finalized() {
+    check_operator_finalizable("record_generations").expect("finalizable");
     assert!(check_operator_finalizable("head_trim").is_ok());
 }

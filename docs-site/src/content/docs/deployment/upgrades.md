@@ -145,8 +145,8 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id, `record_generations` (not finalizable yet; see
-[`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
+its publisher's id, `record_generations`, the one-way move to a new storage
+format (see [`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
 finalizes (see [Failover without the control
 plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
@@ -586,14 +586,17 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every
-entry in the log itself. It **cannot be finalized yet**: brokers do not
-report it and the control plane refuses it with 409. Replication now
-carries the generation that wrote each record to followers, so a follower
-stamps what the leader wrote; what is left is a performance check on
-replicated clusters before brokers report it. Once it can be
-finalized, each durable stream log will start its next segment in storage
-format v9, with an 8-byte generation in every record header. Clients will see
-nothing: reads, offsets and payloads are unchanged.
+entry in the log itself. Once it is finalized, each durable stream log starts
+its next segment in storage format v9, with an 8-byte generation in every
+record header: the generation of the leader that wrote the record, carried to
+every follower with it. Clients see nothing: reads, offsets and payloads are
+unchanged. Finalize `generation_start` first; the control plane refuses this
+one until it is.
+
+```sh
+felixctl features finalize record_generations --dry-run
+felixctl features finalize record_generations --yes
+```
 
 - **It is the one-way step.** A broker older than this release refuses to
   open a v9 segment, so after the finalize no broker can be rolled back to
@@ -609,8 +612,11 @@ nothing: reads, offsets and payloads are unchanged.
   `record-generations` marker in the data directory before the first v9
   segment, and a broker holding it that registers with a fleet that has not
   finalized the feature deregisters and stops with an error saying so.
-- **A new cluster** does not finalize it. A single broker has no fleet and
-  stays on the older format.
+- **A new cluster** does not finalize it; it stays the operator's step until
+  replicated clusters are measured with it on. A single broker has no fleet
+  and stays on the older format.
+- **Records written before the finalize** keep no generation. A follower on
+  v9 stores them as written by an unknown generation (0) rather than guess.
 
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
