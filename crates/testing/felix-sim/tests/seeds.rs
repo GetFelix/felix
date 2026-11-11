@@ -399,6 +399,29 @@ fn seed_3_power_cuts_run_the_same_twice_and_are_repaired() {
     assert!(!found(&first, "torn-tail-repaired"), "{first}");
 }
 
+/// With `record_generations` finalized and small segments, leaders are killed
+/// and followers catch up from records stamped by different writers; every
+/// replica must name the same writer for the records it holds
+/// (`record-generations-agree`).
+#[test]
+fn seed_3_replicas_agree_on_who_wrote_each_record() {
+    log();
+    let config = SimConfig {
+        finalize_record_generations: true,
+        ..SimConfig::for_seed(3)
+    };
+    let outcome = run_seed(3, config);
+    assert!(!found(&outcome, "record-generations-agree"), "{outcome}");
+    assert!(
+        outcome
+            .history
+            .faults
+            .iter()
+            .any(|fault| fault.what.starts_with("kill b")),
+        "no broker was killed:\n{outcome}"
+    );
+}
+
 // Placement faults. Each test pins a seed whose run reaches one shape, checks
 // that the run did reach it, and that the seed is the same run twice. They
 // assert nothing about what the checkers found: the seeds that fail are

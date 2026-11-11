@@ -24,6 +24,10 @@ use crate::link::{Cut, NodeLink, REQUEST_TIMEOUT};
 use crate::nemesis::Stop;
 use crate::net::{SimNet, SimNode};
 
+/// The segment size with `record_generations` on: small enough that a run's
+/// logs roll onto v9 segments after the feature is finalized.
+const RECORD_GENERATIONS_SEGMENT_BYTES: u64 = 8 * 1024;
+
 /// How long a crash waits for the dead incarnation's tasks to notice, so a
 /// restart does not open files one of them is still writing.
 const CRASH_DRAIN: Duration = Duration::from_millis(250);
@@ -170,6 +174,9 @@ impl Node {
         let mut broker_config = SimBrokerConfig::new(&self.id, self.dir.path());
         broker_config.advertise_addr = self.advertise;
         broker_config.fsync_mode = config.fsync_mode;
+        if config.finalize_record_generations {
+            broker_config.segment_size_bytes = Some(RECORD_GENERATIONS_SEGMENT_BYTES);
+        }
         let link = NodeLink::new(cp.link(), self.cut.clone());
         let opened = clock::on(
             self.owner(),

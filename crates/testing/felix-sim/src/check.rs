@@ -67,11 +67,13 @@ use crate::nemesis::Plan;
 
 mod acked;
 mod burn;
+mod generations;
 mod leadership;
 mod power;
 
 pub use self::acked::AckedHeldByLeader;
 pub use self::burn::GenerationBurn;
+pub use self::generations::RecordGenerationsAgree;
 pub use self::leadership::{AdoptedMatchesOpened, AtMostOneServing, OneLeaderPerGeneration};
 pub use self::power::TornTailRepaired;
 
@@ -178,6 +180,7 @@ pub fn default_checkers() -> Vec<Box<dyn Checker>> {
         Box::new(AdoptedMatchesOpened::default()),
         Box::new(GenerationBurn::default()),
         Box::new(TornTailRepaired),
+        Box::new(RecordGenerationsAgree::default()),
     ]
 }
 
