@@ -176,6 +176,15 @@ impl DiskLog {
         self.inner.ballot.read().committed
     }
 
+    /// The accepted generation, its leader and whether the vote is
+    /// committed, read together so a vote saved in between cannot be seen
+    /// half changed.
+    #[cfg(feature = "raft")]
+    pub(crate) fn accepted_vote(&self) -> (u64, Option<Arc<str>>, bool) {
+        let ballot = self.inner.ballot.read();
+        (ballot.generation, ballot.leader.clone(), ballot.committed)
+    }
+
     /// Accept `leader` at `generation`, persisting it first if it is new.
     ///
     /// Returns once a raised generation is on disk, so a caller that

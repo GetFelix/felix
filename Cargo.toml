@@ -116,6 +116,10 @@ utoipa = "6.0.0"
 # a config file means. Moving to 1.4 should be a deliberate bump.
 serde-saphyr = { version = "~2.1", default-features = false }
 bytes = "1"
+# Pinned exactly: a version change is a reviewed update with the storage suite
+# and crash-point tests re-run, never a lockfile refresh. See
+# docs/replication-engine.md, "openraft version".
+openraft = { version = "=0.10.0", default-features = false }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
