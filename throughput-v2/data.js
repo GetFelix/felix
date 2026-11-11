@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794380052732,
+  "lastUpdate": 1794408312920,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -51896,6 +51896,58 @@ window.BENCHMARK_DATA = {
             "range": "46011.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1196600.13\nmean: 1186305.24\nstdev: 46011.74\ncv: 3.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9cd681f477e1f56d9d576efc43da1649dd93c0df",
+          "message": "docs: six claims the code did not back (#2134) (#2204)\n\nLeader failover: promotion needs a follower the leader's last report showed caught up, and records acknowledged after that report may be lost; Quorum loses none. Fleet features (13) and prerequisites match fleet.rs; the fence-off refusal text and atomic_commit; a cache key has a single owner; the ack_on_commit comment. Refused-broker exit confirmed.",
+          "timestamp": "2026-11-11T06:37:43-08:00",
+          "tree_id": "52dc40acbc1dca06a81cd84e223847a870ab4ecd",
+          "url": "https://github.com/GetFelix/felix/commit/9cd681f477e1f56d9d576efc43da1649dd93c0df"
+        },
+        "date": 1794408312308,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 395744.19,
+            "range": "29221.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 395744.19\nmean: 402696.66\nstdev: 29221.89\ncv: 7.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 395744.19,
+            "range": "29221.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 395744.19\nmean: 402696.66\nstdev: 29221.89\ncv: 7.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93836.79,
+            "range": "416.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93836.79\nmean: 94019.44\nstdev: 416.94\ncv: 0.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 938367.89,
+            "range": "4169.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 938367.89\nmean: 940194.44\nstdev: 4169.39\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
