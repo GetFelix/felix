@@ -39,6 +39,12 @@ class PerfRules(unittest.TestCase):
         self.assertFalse(gate_perf.judge(data)[0]["ok"])
         self.assertTrue(gate_perf.judge(data, failover_slack=0.01)[0]["ok"])
 
+    def test_failover_variants_are_judged_on_the_outage_alone(self):
+        data = {"failover-with_election": {"baseline": [{"outage_max_ms": 10}], "head": [{"outage_max_ms": 9}]}}
+        verdicts = gate_perf.judge(data)
+        self.assertEqual([v["metric"] for v in verdicts], ["outage_max_ms"])
+        self.assertTrue(verdicts[0]["ok"])
+
     def test_failover_line_parses_every_unit(self):
         line = "failover heal: outage: 9 of 9 served, p50 Some(1.2s) p99 Some(2s) max Some(2.5s); 0 silent"
         self.assertEqual(gate_perf.failover_max_ms(line), 2500.0)

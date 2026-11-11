@@ -8,7 +8,7 @@ RESULTS has one JSON object per trial:
 
   {"side": "baseline" | "head", "cell": "rf3-1k", "round": 1,
    "msg_s": 12345.0, "p99_us": 900.0}                 throughput cell
-  {"side": ..., "cell": "failover", "round": 1, "outage_max_ms": 2100.0}
+  {"side": ..., "cell": "failover-<variant>", "round": 1, "outage_max_ms": 2100.0}
 
 Each side's figure for a cell is the median over its rounds. The gate
 (docs/replication-engine.md, "The no-regression gate"): throughput within 10%
@@ -45,7 +45,7 @@ def judge(cells, failover_slack=0.0):
     """One verdict per (cell, metric): {cell, metric, baseline, head, ratio, ok}."""
     verdicts = []
     for cell, sides in sorted(cells.items()):
-        if cell == "failover":
+        if cell.startswith("failover"):
             metrics = [("outage_max_ms", 1.0 + failover_slack, False)]
         else:
             metrics = [("msg_s", THROUGHPUT_FLOOR, True), ("p99_us", P99_CEILING, False)]

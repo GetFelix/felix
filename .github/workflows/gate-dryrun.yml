@@ -8,67 +8,6 @@ permissions:
   contents: read
 
 jobs:
-  history:
-    uses: ./.github/workflows/gate-history.yml
-    with: { engine: hybrid, seeds: "8", shards: "2", modes: "off", nemeses: "all,election", duration_secs: "120", parallel: "2" }
-  perf:
-    uses: ./.github/workflows/gate-perf.yml
-    with: { engine: hybrid, rounds: "2", seconds: "8" }
   failover:
     uses: ./.github/workflows/gate-failover.yml
     with: { engine: hybrid, rounds: "1", streams: "30" }
-  groups:
-    uses: ./.github/workflows/gate-groups.yml
-    with: { engine: hybrid }
-  report:
-    needs: [history, perf, failover, groups]
-    if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: gate-result-*
-          path: results
-        continue-on-error: true
-      - run: |
-          mkdir -p results
-          python3 -I scripts/ci/gate_report.py results . --engine hybrid --sha "$GITHUB_SHA" --out gate-report.md || true
-          cat gate-report.md >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
-        with:
-          name: gate-report-hybrid
-          path: gate-report.md
-  raft-history:
-    uses: ./.github/workflows/gate-history.yml
-    with: { engine: raft }
-  raft-perf:
-    uses: ./.github/workflows/gate-perf.yml
-    with: { engine: raft }
-  raft-failover:
-    uses: ./.github/workflows/gate-failover.yml
-    with: { engine: raft }
-  raft-groups:
-    uses: ./.github/workflows/gate-groups.yml
-    with: { engine: raft }
-  raft-report:
-    needs: [raft-history, raft-perf, raft-failover, raft-groups]
-    if: ${{ always() && !cancelled() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: gate-result-*-raft
-          path: results
-        continue-on-error: true
-      - run: |
-          mkdir -p results
-          python3 -I scripts/ci/gate_report.py results . --engine raft --sha "$GITHUB_SHA" --out gate-report.md || echo "exit $?"
-          cat gate-report.md >> "$GITHUB_STEP_SUMMARY"

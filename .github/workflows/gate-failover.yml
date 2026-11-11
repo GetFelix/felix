@@ -195,6 +195,7 @@ jobs:
       # killed or restarted; the shard must keep serving.
       - name: Control plane down
         id: cpdown
+        if: always() && steps.ab.outcome != 'skipped'
         env:
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
