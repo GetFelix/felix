@@ -598,7 +598,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
-| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue to file). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue to file). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
 | `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
 | `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
 | `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
@@ -608,7 +608,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityNoStorageIdCheck.cfg` | a copy cut short by a relaxed-fsync crash keeps its id | violate `LeaderCompleteness` |
 | `FelixRaftIdentityNoVoteMark.cfg` | a directory restored to an older vote with the same log votes twice in a term | violate `OneLeaderPerTerm` |
 | `FelixRaftIdentityVoteBeforeMark.cfg` | the vote is answered before its mark is synced, and the directory goes back in between | violate `OneLeaderPerTerm` |
-| `FelixRaftIdentityMarkForgetsCopy.cfg` | the marks are reset at a rotation and the old directory, put back, passes them | violate `LeaderCompleteness` |
+| `FelixRaftIdentityMarkForgetsCopy.cfg` | the marks are reset at a rotation and the old directory, put back, passes them | violate `LeaderCompleteness` (issue #2303) |
 | `FelixRaftIdentityRejoins.cfg` | witness: a rotated copy is swapped in by a committed membership change | violate `NeverRejoins` |
 | `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
@@ -619,7 +619,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (9.2M distinct states, 2 min) |
 | `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes; not registered, run by dispatch | pass the same (107M distinct states, 28 min locally) |
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
-| `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned |
+| `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned (issue #2305) |
 | `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg` (0.7M distinct states) |
 | `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch; not registered, run by dispatch | pass the same (33.9M distinct states, 8 min locally) |
 | `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
@@ -636,8 +636,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformRetireNotDurable.cfg` | two retired voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
 | `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter report | violate `AckedSurvive` |
 | `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
-| `FelixRaftReformRotatedNotWaited.cfg` | a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` |
-| `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` |
+| `FelixRaftReformRotatedNotWaited.cfg` | a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |

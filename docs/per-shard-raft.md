@@ -195,6 +195,17 @@ notice. Whole-root restores are not affected: the incarnation check and
 the run witness catch those whatever their age. Whether to accept this
 residual or pay for an exact mark is Questions, 11.
 
+**Open, found by the model.** Two cases this section does not yet close,
+both in issue #2303:
+
+- A root restored from a backup taken during the run it interrupts carries
+  the current incarnation and run token, and its marks go back with it, so
+  the gate reads it as a crash. "Whatever their age" above is wrong for a
+  live snapshot. `FelixRaftIdentityRootRestoreSameRun.cfg` pins it.
+- The marks must name the copy id they were written for. A directory whose
+  copy id is not the one the root's marks name rotates. Without that, a
+  wipe resets the marks and the old directory put back afterwards passes.
+
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
 come back with a shorter log under the same id. Off, a leader that sees a
 follower go backwards stops instead of carrying on. That protects a leader.
@@ -273,6 +284,23 @@ A retired copy whose group goes on without a re-form, because a voter that
 was asked never retired and a leader was elected after all, cannot take its
 promise back. It rotates its
 copy id and rejoins as a learner.
+
+**Open, found by the model.** Three things in the steps above, each with a
+configuration that pins it:
+
+- A report must not outlive the copy that made it. A retired copy that
+  rotates and rejoins leaves its old report with the control plane, and a
+  later re-form can pick a base below records the new copy holds. The
+  missing rule: a copy with a new id tells the control plane before it
+  joins, and the control plane drops that broker's earlier report (issue
+  #2304).
+- In step 4, "known to have rotated" does not excuse a voter from
+  reporting. Its disk still holds records, and the control plane waits for
+  a retire report from its current copy (issue #2304).
+- After a majority loses power on relaxed fsync, the base is below the lost
+  acknowledged records and the new epoch reuses their offsets. The floor
+  promised below for a forced RF 1 re-form is not applied here (issue
+  #2305).
 
 If a voter's broker cannot be reached, the control plane waits. An operator
 can force the re-form without it. The command names the missing copies and
@@ -754,7 +782,9 @@ sequenceDiagram
    This write is the switch. Before it, the shard is a hybrid shard that
    happens to be closed, and can be opened again. After it, no broker runs
    the hybrid for this shard. If the generation or the set changed in
-   between, the write fails and the seal starts over. If no majority
+   between, the write fails and the seal starts over. The write itself
+   bumps the replica set version, so a second report of the same seal fails
+   the compare. If no majority
    acknowledges because followers fail the digest, the shard opens again as
    a hybrid shard, each mismatching copy is rebuilt from the leader by the
    hybrid's ordinary rebuild, and the seal is retried afterwards.
