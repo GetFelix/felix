@@ -767,11 +767,16 @@ records, a `count` of zero, a first `start_offset` other than `first_offset`,
 offsets that do not strictly increase or reach past the last record, and
 generations that do not strictly increase; and on an empty batch, any run. The
 encoder refuses a shape the decoder would. The runs are not covered by the
-checksum. A batch without them travels as before, byte for byte.
+checksum. A batch without them travels as before, byte for byte. A run at
+generation 0 covers records whose writer the sender does not know (it holds
+them in a segment older than v9); the follower stores them as such, and the
+generation floor skips them.
 
 A follower whose log stamps each record with its writer's generation never
 stamps its own. It refuses a batch without runs with `UnsupportedKind`, storing
-nothing, since such a leader never offered the capability. It answers
+nothing. A leader that hears that refusal from a follower offering
+`WRITER_GENERATIONS` sends it runs from then on, whether or not its own log
+stamps records yet. It answers
 `LogConflict` to a run below the generation of the record before it, storing
 nothing and truncating nothing: the leader halts that follower as diverged, and
 a rebuild is the way back.

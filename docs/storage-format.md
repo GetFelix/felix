@@ -270,7 +270,15 @@ leader that wrote the record, the same on every replica:
   another leader landed, so the append is refused (`WriterUnknown`), never
   stamped with the newer generation. That holds even after the log's history
   takes the new leader's labels, since following a leader labels the history
-  too.
+  too. The generation must also be the newest in the log's history, starting
+  at or before the append; an append that lands before the broker recorded
+  where its leadership starts is refused the same way.
+- A record the sender holds in an older segment has no stamp to send. It
+  goes as generation 0, "writer unknown", and is stored that way, never with
+  the generation the sender's history gives it: histories label copied
+  records with the generation they were copied under, so two replicas'
+  histories can disagree about one record. Generation 0 is also a shard's
+  first generation, which loses nothing, since nothing comes before it.
 - A follower stamps a replicated record with the generation the leader sent
   for it (`writer_generations` on the peer wire, see
   `docs/internal-protocol.md`), never its own. The same holds for a promoted
@@ -281,8 +289,9 @@ leader that wrote the record, the same on every replica:
 
 Membership and counter records are still not written.
 
-**The floor.** Generations along a log never fall. The writer refuses a
-record below the newest record's generation (`GenerationBelowFloor`) instead
+**The floor.** Known generations along a log never fall; generation 0 is
+skipped by the floor and by the startup scan's check. The writer refuses a
+record below the newest known generation (`GenerationBelowFloor`) instead
 of raising it, because a raised stamp would name a generation that did not
 write the record. On a follower that refusal means its record before the
 batch disagrees with the leader's, so it answers `LogConflict` and the

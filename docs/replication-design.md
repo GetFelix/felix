@@ -3417,8 +3417,11 @@ each record in the record itself (see `docs/storage-format.md`,
 "Generations"), and every replica must hold the same one at each offset. So a
 leader also sends, to a follower that offered `WRITER_GENERATIONS`, the
 writers of the batch (`ReplicateStampedRecords`): runs of the generation that
-wrote each record, taken from the records' own stamps, or from the history
-for a record in an older segment. A tail fetch asks for them the same way
+wrote each record, taken from the records' own stamps. A record in an older
+segment has none, and goes as generation 0, "writer unknown", rather than the
+generation the history gives it: F may hold offset 12 labelled 5 from A's
+history while B's history says 4, and a follower stamping either would then be
+refused below its floor by the other. A tail fetch asks for them the same way
 (`ReplicateStampedFetch`), and a rebuild or catch-up copies through the same
 batches, so a copy keeps the original stamps rather than the sender's
 current generation. Until the leader's log is on v9 or the fleet has
@@ -3430,7 +3433,10 @@ while its log has accepted nothing newer. Following a leader labels a log's
 history with that leader's generations, so a deposed leader's history can
 end in a generation it never led: L leads 3, takes N's fence at 4 and N's
 batch written at 4, and an append still in flight on L is refused rather than
-stamped 4.
+stamped 4. The generation must also be the newest in the log's history, at
+or below the append's offset: between taking a generation and recording where
+it starts, an append admitted under the older one would otherwise be stamped
+with the newer one at an offset the history gives the older.
 
 The follower stamps the records with those writers, never with its own
 accepted generation. Take a leader L at generation 3 that wrote 0..10, a
@@ -3439,7 +3445,10 @@ stamps 5..10 with 3, as L did. Two refusals keep a replica from inventing a
 stamp:
 
 - A follower on v9 refuses a batch without writers (`UnsupportedKind`),
-  storing nothing. The leader holds it there until it offers the capability.
+  storing nothing. If it offered the capability, the leader sends it writers
+  from then on, even before its own log stamps: a follower that hears the
+  finalize first would otherwise wait for its leader, and under `Quorum` with
+  a majority ahead, so would writes. One that did not offer it stays behind.
 - A writer below the generation of the follower's newest record breaks the
   rule that generations along a log never fall. It shows the follower's
   record before the batch disagrees with the leader's, so the follower
