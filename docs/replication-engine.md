@@ -490,19 +490,12 @@ do. They also learned four things the design takes on:
    per store, and TiKV drives regions from a small thread pool. openraft
    runs a task per group, so the first step of per-shard Raft measures
    memory, idle CPU and scheduling with 5,000 and 10,000 groups on one
-   broker, before other work builds on it. If it fails, the first fix is
-   within openraft: fewer groups per broker, or one runtime task driving
-   several groups if its API allows it. `raft-rs`, TiKV's library, is the
-   last resort, and it is not a drop-in swap. It is a synchronous state
-   machine with no runtime: the caller ticks it, feeds it messages, and for
-   each batch of output it hands back, persists entries and the vote in
-   order, sends messages and applies committed entries. That fits many
-   groups (TiKV drives regions from a small thread pool), and because it
-   does no I/O itself, Felix's async storage and network still do the I/O.
-   But its `Storage` trait is synchronous, so the adapter needs a
-   non-blocking read path (entries cached or read ahead), and Felix would
-   write the driving loop, snapshot transfer and membership plumbing that
-   openraft provides. That is more hand-built code, which counts against it.
+   broker, before other work builds on it. Felix stays on openraft. If the
+   measurement finds a limit, it is fixed in openraft: Felix files the
+   problem upstream with the numbers and, where the fix is clear, sends the
+   pull request, rather than switching libraries or keeping a private fork.
+   Fewer groups per broker (point 4) is the interim lever while an upstream
+   fix lands.
 4. **Fewer groups is the first fix.** Each system's first advice for an
    overloaded node is fewer groups (TiKV merges regions, YugabyteDB
    measured about 2.8% of a CPU per 100 tablets before batching). Folding
