@@ -1,25 +1,21 @@
-//! openraft's storage suite, the cases the log can answer without a purge
-//! or a state machine.
+//! openraft's storage suite, all of it, over the adapter and a state
+//! machine that keeps its snapshot in a [`SnapshotStore`].
 //!
 //! The suite wants one type that is both the log and its reader, so
-//! [`Store`] hands each call to the adapter. Cases that purge, apply or
-//! snapshot wait for those parts.
+//! [`Store`] hands each call to the adapter.
+//!
+//! [`SnapshotStore`]: crate::raft_log::SnapshotStore
 
 use std::io;
 
-use futures_util::Stream;
-use openraft::storage::{
-    EntryResponder, IOFlushed, LogState, RaftLogReader, RaftLogStorage, RaftSnapshotBuilder,
-    RaftStateMachine,
-};
+use openraft::storage::{IOFlushed, LogState, RaftLogReader, RaftLogStorage};
 use openraft::testing::log::{StoreBuilder, Suite};
 use openraft::type_config::TypeConfigExt;
-use openraft::type_config::alias::{
-    LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf, VoteOf,
-};
+use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::{OptionalSend, StorageError};
 use tempfile::TempDir;
 
+use super::machine::Machine;
 use super::{Codec, Types, open};
 use crate::raft_log::{LogReader, RaftLog};
 
@@ -61,6 +57,14 @@ impl RaftLogStorage<Types> for Store {
         self.0.save_vote(vote).await
     }
 
+    async fn save_committed(&mut self, committed: Option<LogIdOf<Types>>) -> io::Result<()> {
+        self.0.save_committed(committed).await
+    }
+
+    async fn read_committed(&mut self) -> io::Result<Option<LogIdOf<Types>>> {
+        self.0.read_committed().await
+    }
+
     async fn append<I>(&mut self, entries: I, callback: IOFlushed<Types>) -> io::Result<()>
     where
         I: IntoIterator<Item = super::TestEntry> + OptionalSend,
@@ -78,94 +82,20 @@ impl RaftLogStorage<Types> for Store {
     }
 }
 
-/// The suite wants a state machine beside the log. None of the cases run
-/// here use it.
-struct NoStateMachine;
-
-impl RaftSnapshotBuilder<Types> for NoStateMachine {
-    type SnapshotData = ();
-
-    async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<Types, ()>> {
-        Err(unsupported())
-    }
-}
-
-impl RaftStateMachine<Types> for NoStateMachine {
-    type SnapshotData = ();
-    type SnapshotBuilder = NoStateMachine;
-
-    async fn applied_state(
-        &mut self,
-    ) -> io::Result<(Option<LogIdOf<Types>>, StoredMembershipOf<Types>)> {
-        Err(unsupported())
-    }
-
-    async fn apply<Strm>(&mut self, _entries: Strm) -> io::Result<()>
-    where
-        Strm: Stream<Item = io::Result<EntryResponder<Types>>> + Unpin + OptionalSend,
-    {
-        Err(unsupported())
-    }
-
-    async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        NoStateMachine
-    }
-
-    async fn install_snapshot(
-        &mut self,
-        _meta: &SnapshotMetaOf<Types>,
-        _snapshot: (),
-    ) -> io::Result<()> {
-        Err(unsupported())
-    }
-
-    async fn get_current_snapshot(&mut self) -> io::Result<Option<SnapshotOf<Types, ()>>> {
-        Err(unsupported())
-    }
-}
-
-fn unsupported() -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, "no state machine here")
-}
-
 struct Builder;
 
-impl StoreBuilder<Types, Store, NoStateMachine, TempDir> for Builder {
-    async fn build(&self) -> Result<(TempDir, Store, NoStateMachine), StorageError<Types>> {
+impl StoreBuilder<Types, Store, Machine, TempDir> for Builder {
+    async fn build(&self) -> Result<(TempDir, Store, Machine), StorageError<Types>> {
         let dir = tempfile::tempdir().expect("dir");
         let raft = open(&dir);
-        Ok((dir, Store(raft), NoStateMachine))
+        let machine = Machine::open(dir.path());
+        Ok((dir, Store(raft), machine))
     }
-}
-
-type Cases = Suite<Types, Store, NoStateMachine, Builder, TempDir>;
-
-macro_rules! run {
-    ($($case:ident),+ $(,)?) => {$(
-        let (_dir, store, sm) = Builder.build().await.expect("build");
-        Cases::$case(store, sm)
-            .await
-            .unwrap_or_else(|err| panic!("{}: {err}", stringify!($case)));
-    )+};
 }
 
 #[test]
-fn the_log_passes_the_storage_suite_cases_that_need_no_purge_or_state_machine() {
+fn the_log_passes_the_whole_storage_suite() {
     Types::run(async {
-        run!(
-            last_membership_in_log_initial,
-            last_membership_in_log_multi_step,
-            save_vote,
-            get_log_entries,
-            limited_get_log_entries,
-            leader_bounded_stream,
-            entries_stream,
-            log_reader_reads_new_entries,
-            initial_logs,
-            delete_logs_after_11,
-            delete_logs_after_5,
-            delete_logs_after_0,
-            delete_logs_after_none,
-        );
+        Suite::test_all(Builder).await.expect("suite");
     });
 }

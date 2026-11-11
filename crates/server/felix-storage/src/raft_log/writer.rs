@@ -15,15 +15,16 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
 
 use super::codec::record_from_entry;
+use super::purged::{self, Purged};
 use super::{
-    EntryCodec, LogReader, LogTypes, RaftLog, first_index, generation_of, invalid, log_id, term_at,
+    EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
     term_of_generation,
 };
 #[cfg(doc)]
 use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
-use crate::log::{AppendOnlyLog, Epoch, WrittenBy};
+use crate::log::{AppendOnlyLog, AppendRecord, Epoch, Offset, WrittenBy};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
 where
@@ -73,15 +74,16 @@ where
     /// entry. An open lowers a saved id whose entry a crash took before it
     /// was flushed, and drops one whose index holds another term's entry.
     /// A mismatch found here, on an open log, is an error.
+    ///
+    /// Only committed entries are purged, so a saved id at or below the
+    /// purged id, or none at all, reads back as the purged id.
     async fn read_committed(&mut self) -> io::Result<Option<LogIdOf<C>>> {
         let log = &self.shared.log;
         let (offset, saved) = log.committed();
-        let Some(index) = offset.checked_sub(1) else {
-            return Ok(None);
+        let index = match offset.checked_sub(1) {
+            Some(index) if index >= self.shared.first_index() => index,
+            _ => return self.shared.purged_id::<C>(),
         };
-        if index < first_index(log) {
-            return Ok(None);
-        }
         let writer = log.writer_at(index).await.map_err(io_error)?;
         let term = term_at(writer, index)?;
         if generation_of(term)? != saved {
@@ -113,9 +115,10 @@ where
         let shared = &self.shared;
         let log = &shared.log;
         let now = now_micros();
-        let mut records = Vec::new();
-        // One run per term, as the segment stamps them.
-        let mut writers: Vec<Epoch> = Vec::new();
+        // The log writes a batch into one segment whole, so the entries go
+        // down in batches of about a segment each.
+        let batch_bytes = log.config().segment_size_bytes;
+        let mut batches: Vec<Batch> = Vec::new();
         let mut next = None;
         for entry in entries {
             let index = entry.index();
@@ -127,18 +130,29 @@ where
             }
             next = Some(index + 1);
             let (record, generation) = record_from_entry::<C, K>(&shared.codec, &entry, now)?;
-            if writers
+            let bytes = record.payload.len() as u64;
+            if batches
+                .last()
+                .is_none_or(|batch| batch.bytes + bytes > batch_bytes)
+            {
+                batches.push(Batch::starting_at(index));
+            }
+            let batch = batches.last_mut().expect("pushed above");
+            batch.bytes += bytes;
+            // One run per term, as the segment stamps them.
+            if batch
+                .writers
                 .last()
                 .is_none_or(|run| run.generation != generation)
             {
-                writers.push(Epoch {
+                batch.writers.push(Epoch {
                     generation,
                     start_offset: index,
                 });
             }
-            records.push(record);
+            batch.records.push(record);
         }
-        let Some(first) = next.map(|next| next - records.len() as u64) else {
+        let Some(first) = batches.first().map(|batch| batch.first) else {
             callback.io_completed(Ok(()));
             return Ok(());
         };
@@ -147,23 +161,46 @@ where
         // has fired, so a truncation waits for it.
         let flushing = Arc::clone(&shared.flushing).read_owned().await;
         let tail = log.tail_offset().await.map_err(io_error)?;
-        if first > tail && tail == first_index(log) {
-            log.reset_to(first).await.map_err(io_error)?;
-        }
-        let pending = log
-            .append_pending_at(first, &records, WrittenBy::Writers(writers))
-            .await
-            .map_err(io_error)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "{}: an append at index {first} does not continue the log, which ends at {tail}",
+        let purged = *shared.purged.lock();
+        // No entry above the purged id: the log restarts where this append
+        // begins. That is right after the purged id when there is one, and
+        // anywhere when nothing was ever purged.
+        if tail <= shared.first_index() {
+            if purged.is_some_and(|purged| purged.index + 1 != first) {
+                return Err(invalid(format!(
+                    "{}: an append at index {first} does not follow the purged id",
                     log.label()
-                ))
-            })?;
+                )));
+            }
+            if first > tail {
+                log.reset_to(first).await.map_err(io_error)?;
+            }
+        }
+        let mut written = Vec::with_capacity(batches.len());
+        for batch in batches {
+            let pending = log
+                .append_pending_at(batch.first, &batch.records, WrittenBy::Writers(batch.writers))
+                .await
+                .map_err(io_error)?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{}: an append at index {} does not continue the log, which ended at {tail}",
+                        log.label(),
+                        batch.first
+                    ))
+                })?;
+            written.push(pending);
+        }
 
         let shared = Arc::clone(shared);
         tokio::spawn(async move {
-            let flushed = shared.log.commit(&pending).await.map_err(io_error);
+            let mut flushed = Ok(());
+            for pending in &written {
+                flushed = shared.log.commit(pending).await.map_err(io_error);
+                if flushed.is_err() {
+                    break;
+                }
+            }
             callback.io_completed(flushed);
             drop(flushing);
         });
@@ -181,33 +218,132 @@ where
         // A flush still waiting on entries this cuts would never reach them
         // and would report the append failed. Each one finishes first.
         let _flushed = self.shared.flushing.write().await;
+        let first = self.shared.first_index();
         let keep = match last_log_id {
-            None => first_index(log),
+            None => first,
             Some(id) => {
                 let index = id.index();
-                let writer = log.writer_at(index).await.map_err(io_error)?;
-                if index >= first_index(log) && writer != WriterAt::Absent {
-                    let term = term_at(writer, index)?;
-                    if term != **id.committed_leader_id() {
-                        return Err(invalid(format!(
-                            "{}: asked to keep through index {index} of term {}, but the entry there is of term {term}",
-                            log.label(),
-                            **id.committed_leader_id()
-                        )));
+                let asked = **id.committed_leader_id();
+                let held = if index >= first {
+                    match log.writer_at(index).await.map_err(io_error)? {
+                        WriterAt::Absent => None,
+                        writer => Some(term_at(writer, index)?),
                     }
+                } else {
+                    // Below the log: only the purged id itself can be named.
+                    match self.shared.purged_id::<C>()? {
+                        Some(purged) if purged.index() == index => {
+                            Some(**purged.committed_leader_id())
+                        }
+                        _ => {
+                            return Err(invalid(format!(
+                                "{}: asked to keep through index {index}, below the log's first index {first}",
+                                log.label()
+                            )));
+                        }
+                    }
+                };
+                if held.is_some_and(|term| term != asked) {
+                    return Err(invalid(format!(
+                        "{}: asked to keep through index {index} of term {asked}, but the entry there is of term {}",
+                        log.label(),
+                        held.unwrap_or_default()
+                    )));
                 }
                 index + 1
             }
         };
+        // After a purge past the log's end the first index is above the
+        // tail, and there is nothing to cut.
+        if keep >= log.tail_offset().await.map_err(io_error)? {
+            return Ok(());
+        }
         log.truncate(keep).await.map_err(io_error)
     }
 
-    /// Not built yet: purge arrives with snapshots.
-    async fn purge(&mut self, _log_id: LogIdOf<C>) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "the Raft log does not purge yet",
-        ))
+    /// Drop every entry up to and including `log_id`. The id is on disk
+    /// before anything is deleted, and from then on the log starts after
+    /// it. Segments wholly at or below it are deleted, oldest first, each
+    /// unlink made durable before the next, so a crash part way leaves a
+    /// log with no gap.
+    ///
+    /// An id past the log's end empties the log, which then starts right
+    /// after the id. openraft asks for that at startup when the state
+    /// machine is ahead of the log.
+    ///
+    /// Refused when the log holds another term's entry at that index, and,
+    /// under [`RaftLog::purge_within`], past the stored snapshot. An id at
+    /// or below the purged id does nothing.
+    async fn purge(&mut self, log_id: LogIdOf<C>) -> io::Result<()> {
+        let shared = &self.shared;
+        let log = &shared.log;
+        // A purge past the end drops entries a flush may still be waiting
+        // on, as a truncation does.
+        let _flushed = shared.flushing.write().await;
+        let index = log_id.index();
+        let term = **log_id.committed_leader_id();
+        if shared
+            .purged
+            .lock()
+            .is_some_and(|purged| index <= purged.index)
+        {
+            return Ok(());
+        }
+        if let Some(snapshots) = shared.covering.get() {
+            let covered = snapshots.covers().map(|last| last.index);
+            if covered.is_none_or(|covered| covered < index) {
+                return Err(invalid(format!(
+                    "{}: asked to purge through index {index}, past the stored snapshot, which covers {covered:?}",
+                    log.label()
+                )));
+            }
+        }
+        let tail = log.tail_offset().await.map_err(io_error)?;
+        if index >= shared.first_index() && index < tail {
+            let held = term_at(log.writer_at(index).await.map_err(io_error)?, index)?;
+            if held != term {
+                return Err(invalid(format!(
+                    "{}: asked to purge through index {index} of term {term}, but the entry there is of term {held}",
+                    log.label()
+                )));
+            }
+        }
+
+        let purged = Purged {
+            index,
+            generation: generation_of(term)?,
+        };
+        let dir = log.dir().to_path_buf();
+        felix_common::blocking::spawn(move || purged::store(&dir, &purged))
+            .await
+            .map_err(io::Error::other)??;
+        *shared.purged.lock() = Some(purged);
+
+        let first: Offset = index + 1;
+        if first >= tail {
+            log.reset_to(first).await.map_err(io_error)
+        } else {
+            log.trim_before(first).await.map(drop).map_err(io_error)
+        }
+    }
+}
+
+/// Entries of one append that go to the log as one batch.
+struct Batch {
+    first: Offset,
+    records: Vec<AppendRecord>,
+    writers: Vec<Epoch>,
+    bytes: u64,
+}
+
+impl Batch {
+    fn starting_at(first: Offset) -> Self {
+        Self {
+            first,
+            records: Vec::new(),
+            writers: Vec::new(),
+            bytes: 0,
+        }
     }
 }
 

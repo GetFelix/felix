@@ -1,0 +1,1 @@
+//! The snapshot file.

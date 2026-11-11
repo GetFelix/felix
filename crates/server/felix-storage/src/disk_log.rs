@@ -1332,6 +1332,11 @@ impl DiskLog {
         self.raise_commit_offset(offset).await
     }
 
+    /// The directory that holds the log's files.
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.inner.dir
+    }
+
     /// The commit offset and the generation saved with it, zero for none.
     pub(crate) fn committed(&self) -> (Offset, u64) {
         let committed = self.inner.committed_generation.lock();
