@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794412936686,
+  "lastUpdate": 1794416866380,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52000,6 +52000,58 @@ window.BENCHMARK_DATA = {
             "range": "24588.10",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1642227.47\nmean: 1645177.05\nstdev: 24588.10\ncv: 1.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a65aad1a5ceff606d390034ba4de8a3f100fdeeb",
+          "message": "test(placement): pin the stall of a readmitted learner under a given-up leader (#2206) (#2214)\n\nPlacement cannot promote the furthest copy when it is a learner and the\nleader the control plane named at the collided generation gave the shard up.\nThe test asserts today's stall and says what a fix flips.",
+          "timestamp": "2026-11-11T17:02:49Z",
+          "tree_id": "b64098e021704e780b82105790d72c649d8f9d0a",
+          "url": "https://github.com/GetFelix/felix/commit/a65aad1a5ceff606d390034ba4de8a3f100fdeeb"
+        },
+        "date": 1794416865693,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359957.91,
+            "range": "8789.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359957.91\nmean: 356331.86\nstdev: 8789.50\ncv: 2.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359957.91,
+            "range": "8789.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359957.91\nmean: 356331.86\nstdev: 8789.50\ncv: 2.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82101.88,
+            "range": "811.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82101.88\nmean: 81904.28\nstdev: 811.73\ncv: 0.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 821018.82,
+            "range": "8117.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 821018.82\nmean: 819042.77\nstdev: 8117.31\ncv: 0.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
