@@ -243,6 +243,45 @@ async fn a_cut_is_on_disk_before_a_later_appends_callback() {
     }
 }
 
+/// A follower cuts its tail, appends the new leader's entries, hears they
+/// are committed, and loses power before its flush. The cut was on disk
+/// when `truncate_after` returned, so the old tail does not come back under
+/// the committed id (#2221).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_tail_never_returns_under_a_committed_id() {
+    for seed in 0..SEEDS {
+        let sim = Sim::new("cut-commit", seed);
+        let mut raft = sim.open();
+        append_flushed(&mut raft, &entries(0..90)).await;
+        raft.truncate_after(Some(entry(12).log_id))
+            .await
+            .expect("truncate");
+        let mut written = entries(0..13);
+        written.extend((13..20).map(|index| normal(40, index, "the new leader's")));
+
+        let log = raft.disk_log().clone();
+        let held = log.hold_flushes().await;
+        let _unflushed = append(&mut raft, &written[13..]).await.expect("append");
+        raft.save_committed(Some(written[17].log_id))
+            .await
+            .expect("save");
+        log.commit_offset_persisted().await;
+        sim_fs::crash(&sim.0, seed).expect("crash");
+        drop(held);
+
+        let mut raft = sim.open();
+        let found = all(&raft).await.expect("read after the cut");
+        assert!(
+            found.len() >= 13 && found == written[..found.len()],
+            "seed {seed}: the cut tail came back"
+        );
+        let committed = raft.read_committed().await.expect("committed");
+        let expected = found.len().min(18) - 1;
+        assert_eq!(committed, Some(written[expected].log_id), "seed {seed}");
+        raft.disk_log().shutdown().await.expect("shutdown");
+    }
+}
+
 /// openraft saves a committed id before the entry it names is flushed here.
 /// A power cut can then take the entry and keep the id. The id read back is
 /// never past the log, and stays where it was lowered to: entries another
