@@ -45,8 +45,8 @@
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
-//! - `raft_log`, behind the `raft` feature: a [`DiskLog`] read as an
-//!   openraft log, one record per entry.
+//! - `raft_log`, behind the `raft` feature: a [`DiskLog`] as an openraft
+//!   log, one record per entry.
 //! - [`tiered`] is an interface with no implementation yet.
 //! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
 //!   reach decoders this crate does not export.
