@@ -48,12 +48,23 @@ is the campaign on real processes
 Three terms have one meaning in every row:
 
 - **Served**: 60 s after the heal the shard has exactly one leader, and a
-  `Quorum` write to it is acknowledged. For a group that must re-form, the
-  60 s start when the last of its voters' brokers is reachable again.
+  `Quorum` write to it is acknowledged. A group that must re-form gets 90 s,
+  counted from when the last of its voters' brokers is reachable again: the
+  re-form time, then the same 60 s. The design gives the re-form time no
+  value yet (#2296). The gate assumes 30 s.
 - **Fails over**: a `Quorum` write to the shard is acknowledged by a new
-  leader within 20 s of the kill.
-- **Settles**: 120 s after the heal the group has as many voters as its
-  factor, no learner and no joint membership.
+  leader within 20 s of the kill. This applies only while a majority of the
+  shard's voters stays reachable. Without one the shard cannot elect, and
+  the row's "served" decides after the heal.
+- **Settles**: the group has as many voters as its factor, no learner and
+  no joint membership, 120 s after the heal plus 30 s for each other move
+  in flight at the heal. This assumes the control plane's default pacing:
+  one move at a time (`FELIX_SHARD_MOVES_MAX_CONCURRENT=1`) and a reconcile
+  every 5 s. A run that changes either says so and scales the bound.
+
+Every time above is multiplied by `FELIX_TEST_TIMEOUT_SCALE`, as the
+liveness check of the history campaign is today
+([`history-checker.md`](history-checker.md), "Liveness").
 
 | # | Fault | Harness | Size | Passes when |
 | --- | --- | --- | --- | --- |
@@ -69,7 +80,7 @@ Three terms have one meaning in every row:
 | 10 | Control plane down, then a leader crash | History nemesis `election`. Sim control-plane pause for a whole run. Failover test | 20 minutes, three seeds. 2000 seeds. Six rounds | Every shard the killed broker led fails over. `Quorum` acknowledgements and consumer groups continue. The acknowledgement path makes no control-plane request, counted |
 | 11 | Faults on the control plane's own group | History mode with three control-plane members (#2226). Sim mode with the metadata group (#2232) | 20 minutes, three seeds. 2000 seeds | History clean. A member's vote never goes down. No acknowledged metadata write is lost. Every member's state is equal at the same applied index |
 | 12 | Membership change under load | Sim mode `placement`. History kinds `MoveShard`, `Drain` and `InterruptedMove` | 2000 seeds. Part of `all` and `adversarial` | History clean. No group stops on an index collision. Every group settles. The write pause is within cell 12 |
-| 13 | Sleep and wake | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | 2000 seeds. 20 minutes. Nightly at 2,000 members | `SleepersWake` and `AsleepIsLevel` hold. History clean. Every shard is served. No group uses more terms than `2 * faults + 2`. With liveness missing a dead broker, a leader is elected within two audit periods (40 s in this mode) |
+| 13 | Sleep and wake | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | 2000 seeds. 20 minutes. Nightly at 2,000 members | `SleepersWake` and `AsleepIsLevel` hold. History clean. Every shard is served. The term limits below hold. With liveness missing a dead broker, a leader is elected within two audit periods (40 s in this mode) |
 | 14 | The switch, with faults, stream and cache shards | Sim switch under every mode (#2242). History switch campaign (gap 5). Cache shard schedules (gap 12) | 2000 seeds per mode. 20 minutes, three seeds | History clean across the switch. A generation 0 record is never read as a Raft entry. Only copies that acknowledged the base vote. For a cache shard: two copies with skewed clocks compute the same digest, and the counter sums after the switch equal the checkpoint |
 | 15 | A crash in the middle of the switch, stream and cache shards | Sim crash at each step of the switch (#2242), including the counter checkpoint and the state digest (gap 12). The upgrade test (#2257) | Every step, on leader, follower and control plane | The shard is a closed hybrid shard or a Raft shard with one base, never both. A copy that failed its digest is a learner |
 | 16 | The bridge upgrade | Upgrade test (#2257, gaps 6 and 11): the latest v0.7 release with data, to the bridge build, switch under faults, latch, to the candidate | One run per night and per release candidate, with clients writing the whole time | History clean over the whole path. Every acknowledged record is readable at its offset on the candidate. 0.8.0 refuses an unlatched cluster and writes nothing. After the latch: a voter that crashed between the compare-and-swap and its member start comes up from the recorded base; a learner left from a failed first seal comes up as a learner; a directory with no member mark after a re-form starts from the current epoch, base and voters |
@@ -84,6 +95,21 @@ Three terms have one meaning in every row:
 Rows 1, 2, 10 and 12 run today on the hybrid. The others wait for the code
 or the harness they name. Row 23 applies only to logs that accept a relaxed
 fsync mode (#2248).
+
+**Row 13, term limits.** A count of terms per fault says little: one real
+failure may cost several terms and a harmless event must cost none. The
+limits are per kind of fault, from "When a broker dies with sleeping
+leaders" in [`per-shard-raft.md`](per-shard-raft.md):
+
+| Fault | Limit |
+| --- | --- |
+| A false liveness alarm about a healthy leader's broker | No new term in any group |
+| A follower's broker restarts | No new term in any group it follows |
+| Sleep or wake messages are dropped | No new term |
+| A broker that leads sleeping groups dies | On each surviving broker, the elections started in one tick interval are at or under the ticker's cap. The rest queue |
+
+A leader transfer that the control plane asks for and a move are not
+faults here. The terms they add are not counted.
 
 **Row 6.** The decision on the per-shard log mark (#2245) is: build the
 exact mark, and ship it if cell 11 shows it is free. Row 6 is written for
@@ -152,35 +178,68 @@ There are two comparisons, with different rules.
 | Comparison | Sides | Rule |
 | --- | --- | --- |
 | Engine A/B | Raft and the hybrid, same commit | Throughput at least 0.90 and p99 at most 1.20 of the hybrid, in every cell (criteria 2 and 3) |
-| Release A/B | The candidate and the latest v0.7 release | No regression: the paired rule below, with a bound of 0.97 |
+| Release A/B | The candidate and the latest v0.7 release | No regression: the paired rule below. Throughput is at least 0.97 of the release. p99 is at most 1.10 of it |
 
 The bridge candidate runs the release A/B twice: on Raft, which a new
 cluster gets, and on the hybrid, which an upgraded cluster keeps until its
 operator switches. Both must pass. The 0.8.0 candidate has one engine.
 
 **The paired rule.** The sides alternate trial by trial on one runner and
-the side that goes first flips each round, so each round is a pair. For
-each round take the ratio that is above 1 when the candidate is better:
-candidate over baseline for throughput, baseline over candidate for latency
-and outage. The figure for a cell is the median of those ratios, with a 95%
-bootstrap interval (10,000 resamples of the rounds).
+the side that goes first flips each round, so each round is a pair. Each
+round gives one ratio, candidate over baseline. The figure for a cell is the
+median of those ratios, with the exact 99% interval for a median. That
+interval is read off the sorted ratios and assumes nothing about their
+shape:
 
-- Pass: the interval's lower bound is above the bound (0.97 for steady and
-  single-node cells).
-- Fail: its upper bound is below the bound.
-- Otherwise the cell is undecided and rounds are added: 6, then 12, then
-  24. A cell still undecided at 24 rounds fails as not measured, and is
-  rerun on a dedicated runner.
+| Rounds | Lower end | Upper end |
+| --- | --- | --- |
+| 6 | The smallest ratio | The largest |
+| 12 | The 2nd smallest | The 2nd largest |
+| 24 | The 6th smallest | The 6th largest |
 
-So a real regression of 3% or more passes at most one time in forty, and a
-candidate equal to the release passes once the interval's half width is
-under 3%, which is what the added rounds buy. Each side's own median is
-printed for reading and decides nothing.
+Throughput, where higher is better, has a bound of 0.97:
+
+- Pass: the interval's lower end is above 0.97.
+- Fail: its upper end is below 0.97.
+
+p99, where lower is better, has its own bound of 1.10. Decided: a tail is
+noisier than a median, so it is held to "no worse than 10%":
+
+- Pass: the interval's upper end is under 1.10.
+- Fail: its lower end is above 1.10.
+
+Any other figure where lower is better (p50, an outage, a pause) is turned
+over, baseline over candidate, and judged like throughput against the
+bound its cell names.
+
+Otherwise the cell is undecided and rounds are added: 6, then 12, then 24.
+A cell still undecided at 24 rounds fails as not measured, and is rerun on
+a dedicated runner. So every cell is decided within 24 rounds.
+
+**What the rule promises.** The interval is 99% and not 95% because it is
+looked at three times and six rounds are few. A candidate whose true
+median is exactly at the bound passes with a chance of 1 in 64 at 6 rounds
+and under 1 in 300 at each later look, 2.0% over the three looks. A worse
+candidate passes less often. So:
+
+- A true 3% throughput regression is caught at least 98 times in 100. It
+  ends as a fail or as not measured, never as a pass. The same holds for a
+  true 10% p99 regression.
+- How soon a regression is called a fail depends on the noise, taken here
+  as the standard deviation of the round ratios. At 2%, a 5% regression
+  fails outright 88 times in 100 and a 6% one nearly always.
+- A candidate equal to the release passes 99.7 times in 100 when that
+  noise is 2%, and 86 in 100 when it is 3%. For p99 the same figures hold
+  at a noise of 6% and of 9.5%. A noisier cell needs the dedicated runner.
+
+Each side's own median is printed for reading and decides nothing.
 
 **A/A is a validity check, not the band.** Each job also pairs the baseline
-with itself. If that interval does not contain 1.0, or its half width is
-over 3% at the final round count, the runner was not steady and the cell's
-verdict is void.
+with itself. If the half width of that interval at the final round count is
+wider than the cell's margin (3% for a bound of 0.97, 5% for 0.95, 10% for
+p99), the runner was not steady and the cell's verdict is void. Whether
+the interval contains 1.0 is not tested: across thirty cells a steady
+runner would miss it somewhere in most runs.
 
 **What a cell may claim.** Request latency comes only from cells with batch
 1. A batched cell is judged on throughput and on its batch latency, which
@@ -192,17 +251,17 @@ and each trial starts from an empty data directory. A trial is 30 seconds.
 
 | # | Cell | Sizes | Release A/B | Engine A/B |
 | --- | --- | --- | --- | --- |
-| 1 | Single node, RF 1 | 1 KiB and 64 KiB. Batch 1 for p50 and p99, batch 64 for throughput | 0.97 | 0.90 and 1.20 |
-| 2 | RF 3 steady, `Quorum` | The same | 0.97 | 0.90 and 1.20 |
-| 3 | RF 3 steady, `Leader`, delivered latency | 1 KiB, batch 1 | 0.97 | At most one replication round trip over the hybrid |
-| 4 | Fanout 10, batch 64 | 16 KiB and 64 KiB | 0.97 on delivered throughput. 0.90 on publish-to-delivery batch latency, p50 and p99 | 0.90 on delivered throughput, 1.20 on the batch latency |
-| 5 | Cache, mixed puts and counter adds | 1 KiB. Batch 1 for p99, batch 64 for throughput | 0.97. Fsyncs per write no higher, counted | 0.90 and 1.20 |
-| 6 | `Quorum` read p99 | 1 KiB, batch 1 | 0.97 | 1.20 |
+| 1 | Single node, RF 1 | 1 KiB and 64 KiB. Batch 1 for p50 and p99, batch 64 for throughput | 0.97. p99 1.10 | 0.90 and 1.20 |
+| 2 | RF 3 steady, `Quorum` | The same | 0.97. p99 1.10 | 0.90 and 1.20 |
+| 3 | RF 3 steady, `Leader`, delivered latency | 1 KiB, batch 1 | 0.97 for p50. p99 1.10 | At most one replication round trip over the hybrid |
+| 4 | Fanout 10, batch 64 | 16 KiB and 64 KiB | 0.97 on delivered throughput. On publish-to-delivery batch latency, 0.90 for p50 and 1.10 for p99 | 0.90 on delivered throughput, 1.20 on the batch latency |
+| 5 | Cache, mixed puts and counter adds | 1 KiB. Batch 1 for p99, batch 64 for throughput | 0.97. p99 1.10. Fsyncs per write no higher, counted | 0.90 and 1.20 |
+| 6 | `Quorum` read p99 | 1 KiB, batch 1 | 1.10 | 1.20 |
 | 7 | Failover time, control plane up | 300 RF 3 streams led by the killed broker. Six rounds at least | 0.95 | 0.95, against the hybrid |
 | 8 | Failover time, control plane down | The same | Reported. v0.7 does not fail over this way by default | 0.95, against the hybrid with its election on |
 | 9 | RF 3 promotion burst | 1 KiB and 64 KiB | Reported and explained | Reported and explained |
-| 10 | Groups per broker | Three brokers, RF 3. 1,500 shards, the size v0.7 is tested at, and 5,000 | 0.97 on total resident memory and idle CPU at 1,500. Reported at 5,000 | At 5,000: Raft adds under 1 GB with one broker killed under load, idle CPU under 5% of one core, every group asleep, no ticks to sleeping groups |
-| 11 | The exact log mark | Cells 1 and 2 at batch 1, mark exact against the trailing floor, same commit | Not a release cell | 0.97, and no more synced writes per group commit, counted. If so the exact mark ships. If not, the trailing floor ships (row 6) |
+| 10 | Groups per broker | Three brokers, RF 3. 1,500 shards, the size v0.7 is tested at, and 5,000 | At 1,500, per broker, idle: resident memory at most 250 MB over the v0.7 release on the same shards, and idle CPU under 2% of one core. Total memory reported at 5,000 | At 5,000: Raft adds under 1 GB with one broker killed under load, idle CPU under 5% of one core, every group asleep, no ticks to sleeping groups |
+| 11 | The exact log mark | Cells 1 and 2 at batch 1, mark exact against the trailing floor, same commit | Not a release cell | 0.97, p99 1.10, and no more synced writes per group commit, counted. If so the exact mark ships. If not, the trailing floor ships (row 6) |
 | 12 | Move under load, write pause | One RF 3 stream moved 20 times per round while publishers write at a fixed rate. Six rounds at least | 0.95 on the longest gap between acknowledgements. No write fails for good | The same, against the hybrid |
 | 13 | First write after sleep | p50 and p99 | Not a release cell | At most one round trip over a write to an awake group |
 | 14 | The control plane's group | The cells of `metadata-raft-design.md`, "Perf gate" (#2224) | 0.97 against the v0.7 release, and against redb on the same openraft version | Does not apply |
@@ -210,6 +269,16 @@ and each trial starts from an empty data directory. A trial is 30 seconds.
 Cell 4 exists because of a regression the fast subset missed: p50 and p99
 rose four to seven times at 64 KiB, batch 64, fanout 10, with throughput
 unchanged. Throughput alone would pass it again.
+
+**Cell 10's budget.** Decided: memory and idle CPU are absolute limits, not
+ratios. With three brokers at RF 3 each broker holds 1,500 members, about
+500 of them leaders. The design measured 180 KB per leader member and
+145 KB per follower, so Raft's state is about 235 MB. The budget is 250 MB
+per broker on top of what the v0.7 release uses on the same 1,500 shards,
+measured in the same job, 60 s after settling. Idle CPU is the design's
+limit for 2,000 members, under 2% of one core. A ratio would not work for
+either: v0.7's idle CPU is close to zero, and a small base makes a ratio
+of memory swing.
 
 The 0.95 of cells 7, 8 and 12 covers the failure-detection timer, which
 quantizes an outage. Cells 7 to 9 also follow the failover rule: a cost
@@ -287,9 +356,9 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 Changes the workflows need, in the order the gate needs them:
 
 1. **The paired rule in `gate_perf.py`**, for perf, failover and the move
-   pause: per-round ratios, the bootstrap interval, the three verdicts, and
-   more rounds for an undecided cell. Add the baseline-against-itself pair
-   as the validity check. Keep 0.90 and 1.20 on medians as the engine rule.
+   pause: per-round ratios, the exact 99% interval, the three verdicts, the
+   separate p99 bound, and more rounds for an undecided cell. Add the
+   baseline-against-itself pair as the validity check, on half width only. Keep 0.90 and 1.20 on medians as the engine rule.
    Drop the `failover_slack` input: the bound is 0.95.
 2. **A second comparison.** An input that picks what the baseline is: a
    release tag, or the other engine on the same commit. The engine A/B
@@ -315,8 +384,8 @@ Changes the workflows need, in the order the gate needs them:
 9. **The stall comparison.** `gate.yml` takes the run id of the other
    engine's sweep, and the report lists the seeds that stall on Raft only.
 10. **`gate-groups.yml`**: three brokers at 1,500, 2,000, 5,000 and 10,000
-    members, idle and with one broker killed under load, against the hybrid
-    and against the release at 1,500.
+    members, idle and with one broker killed under load, against the hybrid,
+    and at 1,500 against the release with the absolute budget of cell 10.
 11. **A `gate-upgrade.yml` part** for matrix 16 to 18 and 21, callable from
     a nightly schedule on main and a weekly one on the bridge branch.
 12. **Nightly callers** for the `election` nemesis, the metadata group
@@ -328,10 +397,13 @@ Changes the workflows need, in the order the gate needs them:
 
 Each has a recommendation.
 
-1. **Is the release A/B judged by the paired rule at 0.97, or by the 0.90
-   and 1.20 of the engine gate?** Recommended: the paired rule. The engine
-   gate's 10% was written for a new engine against the old one. Against a
-   release it would let 9% go every release.
+1. **Is the release A/B judged by the paired rule, or by the 0.90 and 1.20
+   of the engine gate?** Decided: the paired rule, with two bounds.
+   Throughput must be at least 0.97 of the release. p99 has its own bound:
+   the upper end of its 99% interval must be under 1.10. Both are decided
+   within 24 rounds. The engine gate's 10% on throughput was written for a
+   new engine against the old one. Against a release it would let 9% go
+   every release.
 2. **How many history seeds per nemesis at the release gate?** Recommended:
    three seeds of 20 minutes, and only because `election`, the metadata
    group mode and the switch campaign also run every night. Without the
@@ -339,15 +411,17 @@ Each has a recommendation.
 3. **Does every simulator mode need 2000 seeds on both engines?**
    Recommended: yes for the first pass, because criterion 1 compares stalls
    seed by seed. For 0.8.0, Raft only.
-4. **Does total broker memory gate against v0.7?** Recommended: yes at
-   1,500 shards, the size v0.7 is tested at, with the paired rule. At 5,000
-   it is reported, and the gate there is the 1 GB that Raft adds.
+4. **Does total broker memory gate against v0.7?** Decided: yes, as an
+   absolute budget per broker at 1,500 shards, the size v0.7 is tested at:
+   at most 250 MB over the release, and idle CPU under 2% of one core. At
+   5,000 the total is reported, and the gate there is the 1 GB that Raft
+   adds with one broker killed.
 5. **Is control-plane-down failover time a release cell?** Recommended:
    reported against the release, gated against the hybrid with its election
    on. v0.7 ships with the election off, so the release has no number to
    match.
 6. **What does "free" mean for the exact mark?** Recommended: cell 11
-   passes the paired rule at 0.97, and the counted synced writes per group
+   passes the paired rule (0.97, and 1.10 for p99), and the counted synced writes per group
    commit do not rise. The count is exact, so it decides when the latency
    is undecided.
 7. **Is the bound for failover and the move pause 0.95?** Recommended: yes.
