@@ -274,8 +274,7 @@ impl DiskLog {
             if raised {
                 let state = replica_state::ReplicaState {
                     accepted_generation: generation,
-                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
-                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
+                    ..inner.replica_state()
                 };
                 replica_state::store(&inner.dir, &state)?;
                 inner

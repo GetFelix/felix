@@ -366,8 +366,25 @@ of a Raft log lowers a stored commit offset to the end of the recovered
 log and writes that back before anything is appended. Without the
 write-back, entries a later leader puts at the lost indexes would count as
 committed after the next crash, and a legal truncation of them would be
-refused. These two rules, and the one above about a cut and later
-callbacks, were found by model checking
+refused.
+
+**The committed id names an entry, not an index.** The id's term is saved
+beside the commit offset, as a generation, in the same write. An open of a
+Raft log reads the record just below the offset and compares generations.
+If they differ, the log holds some other entry at that index, one that was
+never committed. The open then takes nothing in the log as committed: it
+lowers the commit offset to the log's first index, writes that back, and
+`read_committed` returns nothing until the leader sends an id again. When
+the open has already lowered the offset to the log's end, the record there
+is an earlier entry, so its generation may be lower than the saved one but
+never higher. `read_committed` makes the same comparison on every call and
+fails on a mismatch, which an open log cannot reach unless something moved
+the commit offset around the adapter. A durable `truncate_after` is what
+keeps a cut tail off the disk. This check is for the case where the disk
+comes back with it anyway.
+
+These rules, and the one above about a cut and later callbacks, were found
+by model checking
 ([#2221](https://github.com/GetFelix/felix/issues/2221)).
 
 **Crash points.** Each write has power-loss tests on the simulator's

@@ -394,3 +394,69 @@ async fn an_older_log_moves_onto_v9_at_its_first_entry() {
         Some(log_id(4, 2))
     );
 }
+
+/// A committed id names an entry, not an index. Here the disk comes back
+/// with the tail a truncation cut, as if the cut had never reached it, under
+/// a committed id saved for the entry that replaced it. The index is inside
+/// the log, so lowering the id to the log's end does nothing: only the term
+/// tells the two entries apart. The cut tail was never committed and must
+/// not read back as committed.
+#[tokio::test]
+async fn a_committed_id_is_not_another_terms_entry_at_its_index() {
+    let dir = tempdir().expect("dir");
+    let stale = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let old: Vec<_> = (0..6).map(|index| normal(1, index, "old")).collect();
+    append_flushed(&mut raft, &old).await;
+    raft.save_committed(Some(log_id(1, 2))).await.expect("save");
+    raft.disk_log().shutdown().await.expect("shutdown");
+    let segments = |dir: &TempDir| {
+        std::fs::read_dir(dir.path())
+            .expect("dir")
+            .map(|entry| entry.expect("entry").path())
+            .filter(|path| path.file_name().is_some_and(|name| name != "replica"))
+            .collect::<Vec<_>>()
+    };
+    for path in segments(&dir) {
+        std::fs::copy(&path, stale.path().join(path.file_name().expect("name"))).expect("copy");
+    }
+
+    raft.truncate_after(Some(log_id(1, 3))).await.expect("cut");
+    let new = [normal(2, 4, "new"), normal(2, 5, "new")];
+    append_flushed(&mut raft, &new).await;
+    raft.save_committed(Some(log_id(2, 5))).await.expect("save");
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(2, 5))
+    );
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+
+    // The reopen in between shows the id itself survives one.
+    let mut raft = open(&dir);
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(2, 5))
+    );
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+
+    for path in segments(&dir) {
+        std::fs::remove_file(path).expect("remove");
+    }
+    for path in segments(&stale) {
+        std::fs::copy(&path, dir.path().join(path.file_name().expect("name"))).expect("copy");
+    }
+    let mut raft = open(&dir);
+    assert_eq!(all(&raft).await.expect("read"), old, "the cut tail is back");
+    assert_eq!(raft.read_committed().await.expect("read"), None);
+    // The leader can cut what is not committed, and the id it then sends
+    // is saved over the dropped one.
+    raft.truncate_after(Some(log_id(1, 3))).await.expect("cut");
+    append_flushed(&mut raft, &new).await;
+    raft.save_committed(Some(log_id(2, 5))).await.expect("save");
+    assert_eq!(
+        raft.read_committed().await.expect("read"),
+        Some(log_id(2, 5))
+    );
+}

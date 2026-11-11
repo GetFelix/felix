@@ -563,6 +563,12 @@ in five ways:
   save a committed id before its entry is flushed, so a crash can leave the
   offset in `replica` past the recovered log. The open writes the lower
   value back before anything is appended.
+- **The commit offset is saved with a generation.** `replica` holds the
+  generation of the committed entry beside the offset (version 2 of the
+  file, below). An open compares it with the record just below the offset.
+  If that record is another generation's, the offset is lowered to the
+  log's first offset and written back: the log holds a different entry
+  there, and nothing in it is known committed.
 
 Purge and snapshots are not built.
 
@@ -993,6 +999,17 @@ Read back behind after a crash, it permits *more* truncation than it should:
 records committed since are unguarded until the leader's next batch carries the
 offset again. It is never read back ahead. Why that is acceptable is in
 `docs/replication-design.md`, "Divergence and truncation".
+
+A Raft log writes version 2, which adds the generation of the committed
+record before the checksum:
+
+```text
+24   8  committed    u64  generation of the record at commit - 1, never zero
+32   4  crc          u32  crc32 over bytes 0..32
+```
+
+Every other log writes version 1, so its file is unchanged for older builds.
+See "Records as Raft entries" above for how an open uses the generation.
 
 The flags were a reserved zero before the hold was recorded, and no build
 checked them, so a file without the flag reads as not held and an older build

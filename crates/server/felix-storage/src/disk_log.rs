@@ -592,12 +592,15 @@ impl DiskLog {
             {
                 let mut persisted = operation.replica_persisted.lock();
                 if operation.commit_offset.load(Ordering::Acquire) > offset {
+                    // The generation named the record below the old offset.
+                    let mut committed = operation.committed_generation.lock();
                     let state = replica_state::ReplicaState {
-                        accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
                         commit_offset: offset,
-                        hold_at_commit: operation.hold_at_commit.load(Ordering::Acquire),
+                        committed_generation: 0,
+                        ..operation.replica_state_with(*committed)
                     };
                     replica_state::store(&operation.dir, &state)?;
+                    *committed = 0;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
                     *persisted = (state, Some(tokio::time::Instant::now()));
@@ -984,6 +987,25 @@ impl DiskLog {
             recovered.active,
             files,
         )?;
+        #[cfg(feature = "raft")]
+        if config.raft_log {
+            let found = committed_generation_here(&segments, &replica, past_the_log, &label)?;
+            if found.is_none() {
+                tracing::warn!(
+                    shard = %label,
+                    commit_offset = replica.commit_offset,
+                    committed_generation = replica.committed_generation,
+                    "the entry below the saved commit offset is not the one that was committed; \
+                     nothing in this log is taken as committed"
+                );
+                replica.commit_offset = segments.base_offset();
+            }
+            let found = found.unwrap_or(0);
+            if found != replica.committed_generation {
+                replica.committed_generation = found;
+                replica_state::store(&epochs_dir, &replica)?;
+            }
+        }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
         let producer_state =
@@ -1034,6 +1056,7 @@ impl DiskLog {
             wiped: RwLock::new(wiped),
             commit_offset: AtomicU64::new(replica.commit_offset),
             commit_persisted: AtomicU64::new(replica.commit_offset),
+            committed_generation: Mutex::new(replica.committed_generation),
             // Set before retention starts below, so a sweep after a restart
             // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
@@ -1223,6 +1246,59 @@ impl DiskLog {
     /// Stop the next truncation or reset after `unlinks` unlinks.
     pub(crate) fn stop_after_unlinks(&self, unlinks: usize) {
         segments::stop_after_unlinks(&self.inner.dir, unlinks);
+    }
+}
+
+/// The generation of the record below a Raft log's saved commit offset, or
+/// `None` when that record is some other entry than the one that was
+/// committed: its generation is not the one saved with the offset.
+///
+/// When the open lowered the offset to the log's end (`lowered`), the record
+/// there is an earlier entry of the committed one's log, so its generation
+/// may be lower and never higher. An offset at or below the base names no
+/// record this log holds, and what was saved stands.
+#[cfg(feature = "raft")]
+fn committed_generation_here(
+    segments: &SegmentSet,
+    replica: &replica_state::ReplicaState,
+    lowered: bool,
+    label: &str,
+) -> Result<Option<u64>> {
+    let saved = replica.committed_generation;
+    let Some(last) = replica.commit_offset.checked_sub(1) else {
+        return Ok(Some(saved));
+    };
+    if last < segments.base_offset() {
+        return Ok(Some(saved));
+    }
+    let Some(Some(found)) = segments.read_plan(last).generation_at(last, label)? else {
+        return Ok(None);
+    };
+    let same_entry = found == saved || (lowered && found < saved);
+    Ok((saved != 0 && same_entry).then_some(found))
+}
+
+#[cfg(feature = "raft")]
+impl DiskLog {
+    /// Record that the entry at `index`, written by `generation`, and every
+    /// entry below it are committed. [`Self::advance_commit_offset`] with
+    /// the generation kept beside the offset, so an open can tell that
+    /// entry from another at the same index.
+    pub(crate) async fn save_committed(&self, index: Offset, generation: u64) -> Result<()> {
+        let offset = index + 1;
+        {
+            let mut committed = self.inner.committed_generation.lock();
+            if offset >= self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel) {
+                *committed = generation;
+            }
+        }
+        self.advance_commit_offset(offset).await
+    }
+
+    /// The commit offset and the generation saved with it, zero for none.
+    pub(crate) fn committed(&self) -> (Offset, u64) {
+        let committed = self.inner.committed_generation.lock();
+        (self.commit_offset(), *committed)
     }
 }
 
@@ -1557,6 +1633,11 @@ struct LogInner {
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
+    /// The generation of the record just below `commit_offset`, as a Raft
+    /// log saved it; zero when not known. The two change together under
+    /// this lock, so the file never pairs one id's index with another's
+    /// term.
+    committed_generation: Mutex<u64>,
     /// The commit offset `replica` last held on disk, so a raise whose write
     /// failed or is still due is told apart from one already written.
     commit_persisted: AtomicU64,
@@ -1912,16 +1993,30 @@ impl LogInner {
     }
 }
 
+impl LogInner {
+    /// The replica state as memory has it.
+    fn replica_state(&self) -> replica_state::ReplicaState {
+        let committed = self.committed_generation.lock();
+        self.replica_state_with(*committed)
+    }
+
+    /// [`Self::replica_state`] for a caller that holds `committed_generation`.
+    fn replica_state_with(&self, committed_generation: u64) -> replica_state::ReplicaState {
+        replica_state::ReplicaState {
+            accepted_generation: self.accepted_generation.load(Ordering::Acquire),
+            commit_offset: self.commit_offset.load(Ordering::Acquire),
+            hold_at_commit: self.hold_at_commit.load(Ordering::Acquire),
+            committed_generation,
+        }
+    }
+}
+
 /// Write the replica state if memory is ahead of disk. A write is refused
 /// once the log is closed: its directory may already be another log's.
 async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
     felix_common::blocking::spawn(move || {
         let mut persisted = inner.replica_persisted.lock();
-        let state = replica_state::ReplicaState {
-            accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
-            commit_offset: inner.commit_offset.load(Ordering::Acquire),
-            hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
-        };
+        let state = inner.replica_state();
         if state == persisted.0 {
             return Ok(());
         }

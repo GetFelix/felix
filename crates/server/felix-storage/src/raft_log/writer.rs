@@ -17,6 +17,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use super::codec::record_from_entry;
 use super::{
     EntryCodec, LogReader, LogTypes, RaftLog, first_index, generation_of, invalid, log_id, term_at,
+    term_of_generation,
 };
 #[cfg(doc)]
 use crate::DiskLog;
@@ -53,32 +54,47 @@ where
             .map_err(io_error)
     }
 
-    /// Kept as the log's commit offset, which is written behind the call:
-    /// after a crash the id read back may be older, never newer.
+    /// Kept as the log's commit offset with the id's term beside it, written
+    /// behind the call: after a crash the id read back may be older, never
+    /// newer.
     async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> io::Result<()> {
         match committed {
             None => Ok(()),
             Some(id) => self
                 .shared
                 .log
-                .advance_commit_offset(id.index() + 1)
+                .save_committed(id.index(), generation_of(**id.committed_leader_id())?)
                 .await
                 .map_err(io_error),
         }
     }
 
-    /// The last committed id saved, never past the log: an open lowers a
-    /// saved id whose entry a crash took before it was flushed.
+    /// The last committed id saved, and only while the log holds that
+    /// entry. An open lowers a saved id whose entry a crash took before it
+    /// was flushed, and drops one whose index holds another term's entry.
+    /// A mismatch found here, on an open log, is an error.
     async fn read_committed(&mut self) -> io::Result<Option<LogIdOf<C>>> {
         let log = &self.shared.log;
-        let Some(index) = log.commit_offset().checked_sub(1) else {
+        let (offset, saved) = log.committed();
+        let Some(index) = offset.checked_sub(1) else {
             return Ok(None);
         };
         if index < first_index(log) {
             return Ok(None);
         }
         let writer = log.writer_at(index).await.map_err(io_error)?;
-        Ok(Some(log_id::<C>(term_at(writer, index)?, index)))
+        let term = term_at(writer, index)?;
+        if generation_of(term)? != saved {
+            return Err(invalid(format!(
+                "{}: index {index} was saved as committed at {}, but the entry there is of term {term}",
+                log.label(),
+                match term_of_generation(saved) {
+                    Some(term) => format!("term {term}"),
+                    None => "no term".to_string(),
+                }
+            )));
+        }
+        Ok(Some(log_id::<C>(term, index)))
     }
 
     /// Returns once the entries are written and a reader sees them.
