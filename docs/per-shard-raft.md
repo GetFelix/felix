@@ -178,12 +178,22 @@ a member opens its directory:
   together by one rename.
 - The root keeps a high-water mark for each shard: the vote and a last log
   id. If a directory's vote or last log id is below its mark, that one
-  directory was restored or copied back, and its copy is rotated. The vote
-  is marked on every vote save, which is synced anyway. The last log id is
-  marked in batches, one synced write per root per interval, so it is a
-  floor that can trail the log by that interval. A copy that went back by
-  less than the floor's lag is caught by the leader instead, which stops on
-  a follower that goes backwards (below).
+  directory was restored or copied back, and its copy is rotated. The order
+  is pinned: the vote mark is synced at the root before `save_vote`
+  returns, and both the mark and the vote are durable before the vote is
+  answered to anyone. The last log id is marked in batches, one synced
+  write per root per mark interval, so it is a floor that trails the log by
+  up to that interval.
+
+**What this does not catch.** A single shard directory that goes back to a
+state younger than one mark interval, with no vote saved since, passes
+both checks. A steady leader's term does not change, so the copy's vote
+equals its mark, and its log is above the trailing floor. Example: A and C
+acknowledge R inside the last interval, C's shard directory goes back to
+before R, A dies, and C votes for B, which lacks R. No leader is left to
+notice. Whole-root restores are not affected: the incarnation check and
+the run witness catch those whatever their age. Whether to accept this
+residual or pay for an exact mark is Questions, 11.
 
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
 come back with a shorter log under the same id. Off, a leader that sees a
@@ -212,25 +222,33 @@ mechanism as the switch from the hybrid: a base recorded once in the
 control plane.
 
 1. A broker that holds a copy of a group that has had no leader for the
-   re-form time retires the copy and then reports it. Retiring comes first:
-   the broker stops its member of the current epoch and fsyncs a marker in
-   the shard directory that says so. A retired member never votes,
-   acknowledges or appends in that epoch again, also after a restart. The
-   report is therefore a promise, not a snapshot of a moment. It names the
-   old member id if the copy still has one, or says that it rotated, the
-   last log id of the records on disk, and the newest membership in the
-   copy's log, committed or not. A rotated copy still reports its records.
-   They are evidence, not votes.
-2. The control plane collects the voters of every membership that any
-   report names, both halves of a joint one. Its own record of the
+   re-form time tells the control plane so. This first report promises
+   nothing and stops nothing. It names the old member id if the copy still
+   has one, or says that it rotated, and the newest membership in the
+   copy's log, committed or not.
+2. The control plane asks the copies to retire only in one of two cases:
+   every voter's broker is reachable and reports the group leaderless, or a
+   majority of the voters has already rotated. In any other case it does
+   nothing, and the group is left to elect. With A down and B and C merely
+   slow to elect, A is unreachable and nobody has rotated, so nothing is
+   retired and the stall heals by itself.
+3. A broker that is asked retires the copy and then reports it. Retiring
+   comes first: the broker stops its member of the current epoch and fsyncs
+   a marker in the shard directory that says so. A retired member never
+   votes, acknowledges or appends in that epoch again, also after a
+   restart. This second report is therefore a promise, not a snapshot of a
+   moment. It adds the last log id of the records on disk. A rotated copy
+   still reports its records. They are evidence, not votes.
+4. "Every voter" means the voters of every membership that any report
+   names, both halves of a joint one. Its own record of the
    membership comes from broker reports and can be stale, so it is only one
    more input. A report that names a membership with further voters widens
    the set, and the control plane waits for those too. When every voter in
-   the set has reported, it picks the report with the highest last log id
+   the set has retired and reported, or is known to have rotated, it picks the report with the highest last log id
    and writes, by compare-and-swap on the group epoch: the next epoch, the
    base (that log id), and the voter set, which is exactly the copies whose
    reports hold the base. Everyone else is a learner.
-3. Members start at the new epoch from the base, as in the switch. Messages
+5. Members start at the new epoch from the base, as in the switch. Messages
    carry the epoch, so the two never mix.
 
 Why it is safe: the old epoch cannot commit anything more, because every
@@ -244,15 +262,16 @@ which is the loss relaxed fsync already documents for a majority losing
 power. With fsync on commit a crash does not rotate ids, and a re-form then
 loses nothing.
 
-Step 2 closes the stale-membership case: the group went from {A, B, C} to
+Step 4 closes the stale-membership case: the group went from {A, B, C} to
 {A, B, D}, the control plane still has {A, B, C}, and A and B rotate with
 short logs. A's or B's report names {A, B, D} if the change reached their
 disk, and D is waited for. If the change reached neither, it was never
 acknowledged by a majority that still holds it, which is the relaxed-fsync
 loss again.
 
-A retired copy whose group goes on without a re-form, because the others
-elected a leader after all, cannot take its promise back. It rotates its
+A retired copy whose group goes on without a re-form, because a voter that
+was asked never retired and a leader was elected after all, cannot take its
+promise back. It rotates its
 copy id and rejoins as a learner.
 
 If a voter's broker cannot be reached, the control plane waits. An operator
@@ -735,7 +754,10 @@ sequenceDiagram
    This write is the switch. Before it, the shard is a hybrid shard that
    happens to be closed, and can be opened again. After it, no broker runs
    the hybrid for this shard. If the generation or the set changed in
-   between, the write fails and the seal starts over.
+   between, the write fails and the seal starts over. If no majority
+   acknowledges because followers fail the digest, the shard opens again as
+   a hybrid shard, each mismatching copy is rebuilt from the leader by the
+   hybrid's ordinary rebuild, and the seal is retried afterwards.
 3. **Start the voters.** A copy whose copy id is in the recorded voter set
    cuts anything above `N` and starts its Raft member with the log purged
    up to `(G, N)`, the base as its snapshot id, and the recorded
@@ -789,7 +811,9 @@ A cache shard has no range to digest, because each copy compacts its cache
 log on its own and the copies hold different records for the same state.
 For a cache shard the digest is over the live state at `N`: every live
 key with its value, expiry and version, in key order, and the counter
-checkpoint. A voter's base snapshot is that state, and the log below `N` is
+checkpoint. Whether a key is live is judged from the log at `N`, by the
+time the record at `N` carries, and never from a copy's own clock, so two
+copies with skewed clocks compute the same digest. A voter's base snapshot is that state, and the log below `N` is
 never compared.
 
 The shard is closed from the seal until the Raft leader opens: one hybrid
@@ -893,8 +917,10 @@ the first commits, and a learner counted toward a quorum.
 **Member identity.** A wipe gives a copy a new member id. A twin where a
 wiped copy keeps its id and votes must violate `LeaderCompleteness`. A
 second twin restores a copy to an older log and vote under its old id and
-lets it vote, and must fail the same way. This is the model's side of
-#1331.
+lets it vote, and must fail the same way. A third restores one shard
+directory to a state younger than the log mark with no vote since, which
+shows the residual of Questions, 11 and is pinned as an expected violation
+if that residual is accepted. This is the model's side of #1331.
 
 **Re-forming.** Add the group epoch and the re-form step: a new base and
 voter set chosen from reports of every old voter. Check that a record held
@@ -1119,8 +1145,10 @@ Each has a recommendation, judged on safety and performance only.
    the gate, and only after the model's lease configs pass.
 
 10. **Is re-forming a group automatic?** Recommended: automatic only when
-    every voter of every membership the reports name has reported, and
-    only because each report is a durable promise to stop in the old epoch.
+    every voter of every membership the reports name has retired at the
+    control plane's request and reported, and only because that report is a
+    durable promise to stop in the old epoch. The control plane asks only
+    when every voter is reachable or a majority has already rotated.
     Without those two rules automatic re-forming is not safe: intact voters
     could commit after reporting, and a voter the control plane did not
     know about could hold the records. With them no information is missing
@@ -1128,3 +1156,20 @@ Each has a recommendation, judged on safety and performance only.
     is unreachable, wait, and let an operator force it with a command that
     states which copies are missing. Never re-form on a timer alone: that
     would turn a long partition into data loss.
+
+11. **Is the per-shard log mark exact, or a floor that trails?** A shard
+    directory that goes back by less than one mark interval, with no vote
+    saved since, can vote for a candidate that lacks an acknowledged record
+    ("What this does not catch"). Two options. (a) Accept it as a named
+    residual: keep the trailing floor with a short interval (start: one
+    second), say in the operations docs that restoring a single shard
+    directory is unsupported unless its copy id is removed first, and pin
+    the model twin as an expected violation. (b) Make the mark exact by
+    syncing it on the group-commit flush, so any reverted directory is
+    below its mark. That is a second synced write on the hot path, and an
+    A/B cell must price it. Recommended: (a). The fault needs something
+    outside Felix to roll back one directory under a running data root
+    within a second of an acknowledged write, and whole-root restores,
+    wipes and crashes are all caught by other checks. (b) charges every
+    write for it. If the A/B cell shows the exact mark is free because it
+    shares the flush that already happens, take (b).
