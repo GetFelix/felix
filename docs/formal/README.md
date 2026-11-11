@@ -598,7 +598,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
-| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue to file). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue #2303). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
 | `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
 | `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
 | `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
@@ -621,11 +621,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
 | `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned (issue #2305) |
 | `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg` (0.7M distinct states) |
-| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch; not registered, run by dispatch | pass the same (33.9M distinct states, 8 min locally) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass the same (33.9M distinct states, 34 min in CI) |
 | `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
 | `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, the control plane's record possibly stale, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.7M distinct states) |
-| `FelixRaftReformStaleMembership.cfg` | the same with one copy rotating with a short log; not registered, run by dispatch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (23.2M distinct states, 11.5 min locally) |
-| `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write and two rotations; not registered, run by dispatch | pass the same (not run locally) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one copy rotating with a short log | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (23.2M distinct states, 40 min in CI) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the design as written: the same with two copies rotating with empty logs, so no report names d and d's disk holds the entry | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write; not registered | violate `AckedSurvive` in a dispatch run, as the row above |
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
 | `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (7.5M distinct states) |
 | `FelixRaftReformOneReplicaCommits.cfg` | a witness: the re-formed single voter commits | violate `NeverCommitsAfterReform` |
@@ -643,7 +644,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |
 | `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (56 distinct states) |
 | `FelixRaftSwitchGenZero.cfg` | any copy may carry generation 0 on a prefix of its records | pass the same (10.6M distinct states, 4 min) |
-| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted; not registered, run by dispatch | pass the same (19.2M distinct states, 7 min locally) |
+| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 28 min in CI) |
 | `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 3 min) |
 | `FelixRaftSwitchDiffers.cfg` | a follower may hold a different record below `N`; it fails its digest and starts as a learner | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.1M distinct states, 2.5 min) |
@@ -663,6 +664,52 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchReachGenZero.cfg` | `FelixRaftSwitchDigestCoversGeneration.cfg`'s copies with the rule on | violate `NeverElects`: the switch completes and a leader is elected |
 | `FelixRaftSwitchReachWipedSwitch.cfg` | a witness for `FelixRaftSwitchWiped.cfg` | violate `NeverSwitches`: the control plane records the switch with c wiped |
 | `FelixRaftSwitchReachReseal.cfg` | a witness for `FelixRaftSwitchReseal.cfg` | violate `NeverSwitchesAfterReseal`: the switch completes from the second seal |
+| `FelixRaftLease.cfg` | `FelixRaftLease.tla`: the first version's lease, three brokers, two terms, clocks gaining 1 or 2 units a tick, lease 2 against an election timeout of 4, no write, no bound on time | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.57M distinct states) |
+| `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
+| `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
+| `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) |
+| `FelixRaftLeaseRestartForgets.cfg` | the design as written: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
+| `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
+| `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
+| `FelixRaftLeaseVoteInWindow.cfg` | a follower grants a vote inside its refusal window | violate `LeaseExclusive` |
+| `FelixRaftLeaseAckLong.cfg` | `FelixRaftLeaseAck.cfg` with a lease of 2 against an election timeout of 2 | violate `NoAckBehindNewLeader` |
+| `FelixRaftLeaseDeliverUncommitted.cfg` | the subscriber reads the leader's whole log | violate `DeliveredNeverReplaced` |
+| `FelixRaftLeaseReachLocalAck.cfg` | witness: a write acknowledged on local durability under the lease | violate `NeverLocalAck` |
+| `FelixRaftLeaseReachRenewed.cfg` | witness: a lapsed lease makes a write wait for commit and that commit renews it | violate `NeverLapsedThenRenewed` |
+| `FelixRaftLeaseReachFailover.cfg` | witness: a failover after the old lease ran out, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftLeaseStore.cfg` | later design: store-liveness leases with the group asleep, three liveness heartbeats, one restart, epochs to 3, lease 1 against support of 2 | pass `LeaseExclusive`, `NoAckBehindNewLeader`, `OneLeaderPerTerm` (1.6M distinct states) |
+| `FelixRaftLeaseStoreWide.cfg` | four liveness heartbeats; not registered, run by dispatch | pass the same |
+| `FelixRaftLeaseStoreStall.cfg` | one broker's disk stalls, no restart | pass the same and `StalledLeaseLapses` (1.2M distinct states) |
+| `FelixRaftLeaseStoreNotDurable.cfg` | support is lost at a restart | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreVote.cfg` | a vote is granted while support for the leader's store stands | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreKept.cfg` | a restarted leader leads on and its lease check does not compare epochs | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreResupport.cfg` | a withdrawal does not raise the epoch | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreWithdrawEarly.cfg` | support is withdrawn before its expiry | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreLong.cfg` | a lease of 2 against support of 2 | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreStalledAsks.cfg` | a broker with a stalled disk keeps sending liveness heartbeats | violate `StalledLeaseLapses` |
+| `FelixRaftLeaseStoreReachLocalAck.cfg` | witness: the first write after sleep acknowledged locally with no group message | violate `NeverLocalAck` |
+| `FelixRaftLeaseStoreReachFailover.cfg` | witness: a failover after support was withdrawn, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass |
+| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass |
+| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass |
+| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass |
+| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody | pass |
+| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader | pass |
+| `FelixRaftSleepAnyState.cfg` | Members fall asleep in any state with no handshake; safety only | pass |
+| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass |
+| `FelixRaftSleepNoWake.cfg` | Neither wake path: the group never elects | violate `QuiescentLed` |
+| `FelixRaftSleepCampaignOnWake.cfg` | A woken follower campaigns without asking | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepRestartNoHold.cfg` | A restarted member ticks at once | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepLeaderSleepsFirst.cfg` | The leader sleeps before the followers answer | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepAcceptUnchecked.cfg` | A sleep request accepted without comparing the log position | violate `AsleepIsLevel` |
+| `FelixRaftSleepHeartbeatKeepsProposal.cfg` | A heartbeat during the handshake leaves the proposal open | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepSleepUnsupported.cfg` | A follower sleeps for a leader it no longer supports | violate `QuiescentLed` |
+| `FelixRaftSleepFalseAlarmFollower.cfg` | Design as written: a false alarm about a follower lets the leader sleep without it | violate `NoNeedlessDeposal` (issue #2310) |
+| `FelixRaftSleepFalseAlarmFollowerBehind.cfg` | Design as written: the same alarm leaves the whole group asleep with a member behind | violate `AsleepIsLevel` (issue #2310) |
+| `FelixRaftSleepReachWakeOnWrite.cfg` | Witness: a group sleeps, wakes on a write and sleeps again | violate `NeverWakesOnWrite` |
+| `FelixRaftSleepReachAuditElection.cfg` | Witness: an election through the audit alone | violate `NeverElectsAfterDyingAsleep` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2342,8 +2389,8 @@ default) and the broker is a voter, and stays a follower otherwise.
 
 Issue #2198 lists the rest, and none of it is in this module (a membership
 entry here only holds an index). Membership changes, copy identity,
-re-forming a group and the switch from the hybrid protocol each have a module
-of their own, in the sections below. They leave storage abstract, because
+re-forming a group, the switch from the hybrid protocol, the leader lease and
+sleep each have a module of their own, in the sections below. They leave storage abstract, because
 this module covers the adapter's crash rules. A message is one step that reads
 both brokers, so the model has no lost, repeated or reordered messages beyond
 a leader acting on an old answer. A broker in the middle of a snapshot
@@ -2585,6 +2632,151 @@ the seal are left out, so a copy that lags or was wiped stays so until Raft
 brings it up. The promotion adds one voter in one step. Records below `S`
 are outside the check, as the design says. Cache shards, whose digest is
 over live state, are not modelled.
+
+### Raft leader leases
+
+`FelixRaftLease.tla` models the lease that lets a `Leader` write be
+acknowledged on local durability, as
+[Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
+[The replication engine interface](../replication-engine.md) (Decisions, 5)
+decide it. Its configurations gate the pull request that turns on
+`admit_local_ack`. The module has two parts. The first is the lease the first
+version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
+later design in "Leases that survive sleep" and is not in the first version.
+
+**Time.** Real time moves in ticks, and in each tick every broker's clock
+gains between `RateLo` and `RateHi` units, chosen again at every tick. A
+broker only reads its own clock, and only to ask how long ago something
+happened, so the model keeps ages instead of clock readings. An age stops
+growing once no rule can tell it from an older one, which makes the state
+space finite without a bound on how long a run lasts. The inequality the
+config must satisfy is `Lease * DriftHi <= ElectionTimeout * DriftLo`, the
+integer form of `lease * (1 + p) / (1 - p) <= election_timeout_max`.
+
+**The first version's lease.** A leader's append or heartbeat is in flight,
+so its hand-off time, the time the follower takes it and the time the answer
+returns all differ. The lease runs from the hand-off time of the newest
+message a majority has answered (openraft's `last_quorum_acked`). A follower
+refuses to vote, and does not campaign, for the election timeout from the
+moment it took a leader's message. A write is acknowledged on local
+durability while the lease check passes and otherwise waits for commit, which
+is what a `Quorum` write does. A failed check changes no role. The subscriber
+is given records up to the commit index.
+
+Checked:
+
+- `LeaseExclusive`: no two brokers pass the lease check at one real time.
+- `NoAckBehindNewLeader`: no write is acknowledged on local durability once a
+  leader of a higher term has been elected. This is the edge of the `Leader`
+  loss window: a record acknowledged this way can be lost only to a failover
+  that starts after the acknowledgement.
+- `AckedSurvive`, `StateMachineSafety`, `OneLeaderPerTerm`, and
+  `DeliveredNeverReplaced`: what the subscriber was given is what every
+  broker has committed at that offset.
+
+**A restarted follower.** The refusal window lives in memory. openraft 0.10.0
+builds the stored vote with a zero lease at startup, so a follower that
+answers the leader, restarts and is then asked for a vote grants it at once.
+`FelixRaftLeaseRestartForgets.cfg` shows the old leader still passing the
+lease check when the new one is elected. The design's hold on a restarted
+member stops it campaigning, and the model keeps that hold; it does not stop
+it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
+rule that closes it: a restarted broker refuses votes for one election
+timeout from its start. The design page does not state this rule yet
+(issue #2307).
+
+**Store-liveness leases (later design).** The group sends nothing of its own.
+Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's
+store support for an epoch until an expiry on its own clock, keeps that on
+disk, and withdraws only after the expiry. Withdrawing raises the epoch it
+will accept, so withdrawn support never returns at the same epoch. A store's
+epoch rises at every start, and when a peer reports it withdrew. A voter that
+elects a leader whose store it supports records that epoch on disk and
+refuses to vote for anyone else until it has withdrawn. The leader's lease
+holds while a majority has recorded its current epoch and has answered a
+liveness heartbeat handed off less than a lease ago. A broker whose disk has
+stalled sends no liveness heartbeats and grants none. The same
+`LeaseExclusive` is checked, and `StalledLeaseLapses`: a broker whose disk
+has been stalled for a lease does not pass the check. A stalled broker that
+kept asking would lose no record, since it cannot write, but it would keep
+the lease and block the failover.
+
+Two rules here are not in the design page's one-paragraph description. A
+vote for another broker waits for the withdrawal, not just the expiry, and a
+withdrawal raises the epoch. Without the second
+(`FelixRaftLeaseStoreResupport.cfg`) a follower withdraws, votes, then
+supports the old leader at the same epoch again and its lease comes back. The expiry is kept on
+disk, so the implementation has to read it on a clock that keeps running
+across a restart, or wait out a full support period after one.
+
+**Abstracted.** Storage (log, term and vote survive a restart whole;
+`FelixRaft.tla` has the fsync rules). Elections are one atomic step over a
+majority, since vote messages in flight could only make an election later. An
+append carries the leader's whole log. In the later design a liveness
+heartbeat is taken the moment it is handed off, the earliest its support can
+start, and only its answer is in flight. The heartbeat batch window and the
+tick interval are not separate steps: the window sits between the hand-off,
+where the stamp is taken, and the send, so it is part of a message delay that
+has no upper bound in the model, and a timeout noticed at the next tick is a
+vote or campaign taken later than allowed. Neither can break a check. The
+lease check must read the clock when it runs; a check that used a value
+cached at the last tick would add the tick to the lease. No blank entries,
+membership changes, snapshots, pre-vote or leadership transfer.
+
+### Raft sleep and wake
+
+`FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
+[Per-shard Raft](../per-shard-raft.md) describes ("Store liveness", "Sleep and wake"). A member that is asleep gets no ticks: it starts no
+election, and a sleeping leader sends no heartbeat. Votes, appends and commits still work
+on any message, and a Raft message wakes the member it reaches.
+
+The model has the sleep handshake (the request names vote, last log id and commit index,
+followers sleep first, the leader last), every wake path (a write, a Raft message, a
+liveness change, the audit timer), the ask a follower sends before it campaigns, the hold
+on a restarted member, and store liveness with false alarms and missed failures.
+
+Time is abstract. A timeout is a step that is enabled only when the event that would have
+beaten it cannot happen. For example, a hold ends only while no live leader exists that
+would have answered.
+
+Liveness is checked on states where nothing more can happen (`QuiescentLed`,
+`QuiescentLevel`), as `FelixRaft.tla` does. Every budget is bounded, so every behaviour
+ends, and `FelixRaftSleepEnds` checks that as a temporal property. This keeps the main
+checks invariants, which run with the symmetry set.
+
+What is checked:
+
+- The safety checks of `FelixRaft.tla`, with members falling asleep at any moment with no
+  handshake (`MaxDozes`). Safety does not rest on the handshake.
+- `QuiescentLed`: with a majority alive the group ends with a live leader.
+- `QuiescentLevel`: under that leader every write is committed and every live member has it.
+- `AsleepIsLevel`: if every live member is asleep, they share last log id and commit index.
+- `NoNeedlessDeposal`: no election unless a leader's broker died or restarted. A violation
+  costs availability, not safety.
+
+Knobs, each dropping one rule: `NoLivenessWake`, `NoAudit`, `AcceptUnchecked`,
+`CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`. Two more drop rules the design page
+does not state yet and the model needs: `HeartbeatKeepsProposal` (a heartbeat during the
+handshake does not close the proposal) and `SleepUnsupported` (a follower accepts a sleep
+request from a leader whose broker it does not support). Issue #2310 has both.
+
+A third gap has no rule yet. The design leaves out of the handshake a member whose broker
+store liveness says is down. When that alarm is false the member is healthy and awake: it
+hears nothing from the sleeping leader and deposes it
+(`FelixRaftSleepFalseAlarmFollower.cfg`), or it accepts an older sleep request and the
+whole group sleeps with it behind (`FelixRaftSleepFalseAlarmFollowerBehind.cfg`). Both are
+the design as written and are pinned as expected violations (issue #2310). The passing
+configurations only raise false alarms about a leader's broker.
+
+Two twins show less than the others. `FelixRaftSleepAcceptUnchecked.cfg` violates
+`AsleepIsLevel`, which restates the rule it drops: the model has no lasting harm for it
+that does not also need the third gap. `FelixRaftSleepLeaderSleepsFirst.cfg` reaches a
+needless deposal, not a member left behind for good. All the harms in this module are
+availability: the safety checks pass with members asleep in any state.
+
+Not modelled: storage (an append is durable), snapshots, membership changes, read rounds,
+leases, pre-vote, ranked starts and the per-tick election cap. Messages are atomic steps
+except the sleep request. Only a leader's broker dies, and a disk stall counts as a death.
 
 ## Which configurations run where
 

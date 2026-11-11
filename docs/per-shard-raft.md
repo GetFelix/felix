@@ -285,8 +285,8 @@ was asked never retired and a leader was elected after all, cannot take its
 promise back. It rotates its
 copy id and rejoins as a learner.
 
-**Open, found by the model.** Three things in the steps above, each with a
-configuration that pins it:
+**Open, found by the model.** Things the steps above do not close, each
+with a configuration that pins it:
 
 - A report must not outlive the copy that made it. A retired copy that
   rotates and rejoins leaves its old report with the control plane, and a
@@ -301,6 +301,13 @@ configuration that pins it:
   acknowledged records and the new epoch reuses their offsets. The floor
   promised below for a forced RF 1 re-form is not applied here (issue
   #2305).
+
+A fourth, in the stale-membership case above. If A and B both rotate with
+empty logs after the change to {A, B, D} was committed, no report names D
+and the control plane re-forms {A, B, C} from an empty base. D's disk
+survived and still holds the acknowledged entry, so "only a record that no
+surviving disk holds" is not true here.
+`FelixRaftReformStaleMembershipTwoRotated.cfg` pins it (issue #2311).
 
 If a voter's broker cannot be reached, the control plane waits. An operator
 can force the re-form without it. The command names the missing copies and
@@ -551,6 +558,24 @@ heartbeat wakes the followers again.
 A follower that is behind cannot be put to sleep, because the request names
 the exact log position.
 
+**Open, found by the model.** Three things the steps above do not yet say,
+all in issue #2310. Each costs availability and none loses a record.
+
+- A heartbeat or append the leader sends while a sleep proposal is open
+  closes the proposal. Without that, the heartbeat wakes a follower that
+  already answered, the last answer arrives, the leader sleeps, and the
+  woken follower deposes it.
+- A follower refuses a sleep request while it does not support the leader's
+  broker, or while it is held after a liveness wake or a restart. Without
+  that, a request from a leader that has just died puts its followers back
+  to sleep and only the audit elects.
+- A false alarm at the leader about a follower's broker. The member left out
+  is healthy and awake, hears nothing from the sleeping leader and deposes
+  it. It can also accept an older sleep request and sleep behind the
+  others. There is no rule for this yet;
+  `FelixRaftSleepFalseAlarmFollower.cfg` and
+  `FelixRaftSleepFalseAlarmFollowerBehind.cfg` pin it.
+
 ### Waking
 
 Any of these wakes a member. Waking always happens before the event is
@@ -606,6 +631,17 @@ liveness suspect time plus one election timeout has passed since it
 started. Without the hold it would campaign 1 to 2 seconds after start,
 before the sleeping leaders on other brokers have noticed its new epoch and
 sent a heartbeat.
+
+**Open, found by the model.** The hold stops a restarted member campaigning.
+It does not stop it granting a vote, and the leader lease needs that too. A
+follower's promise not to vote for one election timeout after it took a
+leader's message is kept in memory, and openraft 0.10.0 starts with a zero
+lease on the stored vote. A follower that answered the leader, restarted and
+is then asked for a vote grants it at once, and the new leader passes the
+lease check while the old lease still runs. The missing rule: a restarted
+member refuses to grant a vote for `election_timeout_max` from its start.
+`FelixRaftLeaseRestartForgets.cfg` pins it, and `admit_local_ack` stays off
+until the rule is built (issue #2307).
 
 ### What sleep costs a write
 
