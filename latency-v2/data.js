@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794416859443,
+  "lastUpdate": 1794426021491,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66066,6 +66066,72 @@ window.BENCHMARK_DATA = {
             "range": "1103.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2069.00\nmean: 1687.40\nstdev: 1103.53\ncv: 65.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc8e8c69a28ad611d5b25df9cdaa6f9c163791a8",
+          "message": "feat(storage): write side of the Raft log adapter over DiskLog (#2167) (#2222)\n\n* wip: write side of the Raft log adapter\n\nSpec-Unaffected: save_vote is a new entry to the same ballot-then-replica write; no rule the model checks changes.\n\n* wip: tests and docs\n\nSpec-Unaffected: no ballot rule changes.\n\n* feat(storage): write side of the Raft log adapter over DiskLog (#2167)\n\nappend with the IOFlushed callback, truncate_after and save_vote on RaftLog.\nLogConfig::raft_log: v9 from the first segment, membership records allowed,\nretention bounds refused, an empty log starts at any index.\n\nSpec-Unaffected: DiskLog::save_vote is a new caller of the same ballot-then-replica write; no rule the model checks changes.\n\n* test(storage): committed id never past the log; a cut is on disk before a later callback (#2221)\n\n* docs(replication): the committed id and the cut-before-callback rule (#2221)\n\n* test(storage): a cut tail never returns under a committed id (#2221)\n\n* fix(storage): a read ends at a record its byte budget refuses (#2218)\n\nA refused record stopped the read of its segment but left the budget\nunspent, so the plan went on to the next segment and returned its first\nrecord past a hole. The Raft log reader pages by bytes and failed on it.\n\nSpec-Unaffected: read path only; no replication or election rule changes.\n\n* fix(storage): the committed id is checked by term, not only by index (#2221)\n\nThe replica file of a Raft log keeps the committed entry's generation\nbeside the commit offset (version 2; other logs still write version 1).\nAn open compares it with the record below the offset and takes nothing as\ncommitted when another term's entry is there. read_committed checks again.\n\nSpec-Unaffected: ballot.rs only builds the replica state through a shared helper; the rule added is the FelixRaft model's committed-id check, which is in #2220.\n\n* fix(storage): review follow-ups for the committed id (#2221)\n\n- An open that lowers the commit offset writes it with its entry's\n  generation in one write. Two writes left the lower offset beside the\n  higher generation in between, and the next open dropped the commit.\n- A Raft log's commit offset moves only with a term: advance_commit_offset\n  is refused and note_commit_offset does nothing there. restore_to saves\n  the generation of the entry it lowers the offset to.\n- append takes the flushing guard before it writes.\n- Tests for the read_committed check and for a lowered id under a later\n  term's entry.\n\nSpec-Unaffected: storage rules under the FelixRaft model's committed-id check (#2220); no election or replication rule changes.",
+          "timestamp": "2026-11-11T11:33:10-08:00",
+          "tree_id": "8f6fb399535686130648e4100e5800ff3beb500d",
+          "url": "https://github.com/GetFelix/felix/commit/dc8e8c69a28ad611d5b25df9cdaa6f9c163791a8"
+        },
+        "date": 1794426010629,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 118,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 118.60\nstdev: 1.95\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "39.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 221.60\nstdev: 39.55\ncv: 17.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 734,
+            "range": "334.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 734.00\nmean: 661.40\nstdev: 334.52\ncv: 50.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 148,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 148.00\nstdev: 0.71\ncv: 0.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 303,
+            "range": "18.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 303.00\nmean: 309.40\nstdev: 18.45\ncv: 5.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 481,
+            "range": "607.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 481.00\nmean: 730.60\nstdev: 607.38\ncv: 83.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
