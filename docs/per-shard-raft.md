@@ -962,7 +962,9 @@ acknowledged record.
 lease that holds while a majority supports the leader's store, and a vote
 refused while support stands. Not needed for the first version.
 
-The hybrid's `FelixShard*` specs stay until the gate passes.
+The hybrid's `FelixShard*` specs stay until the gate passes. How they and the
+rest of the hybrid are removed is in
+[`hybrid-retirement.md`](hybrid-retirement.md).
 
 ## Performance plan
 
