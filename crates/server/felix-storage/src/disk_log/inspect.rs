@@ -362,6 +362,7 @@ fn describe(step: &Step) -> Option<Action> {
                 IndexRebuild::Missing => "missing",
                 IndexRebuild::Mismatch => "does not match its segment",
                 IndexRebuild::VerifyAll => "verify-all-on-open walks every segment",
+                IndexRebuild::Generations => "its known generations are missing or stale",
             },
         },
         Step::CutRetired {

@@ -16,6 +16,7 @@ use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
 use crate::log::{AppendRecord, SegmentId};
 use crate::segment::format::GENERATION_VERSION;
+use crate::segment::known::known_file_name;
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
 use crate::{StorageError, metrics_names};
@@ -152,7 +153,7 @@ impl SegmentSet {
 
         metrics::counter!(metrics_names::SEGMENT_ROLL_TOTAL).increment(1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
-        Ok(RollOutcome::Installed(retired))
+        Ok(RollOutcome::Installed(Box::new(retired)))
     }
 
     /// Seal the active segment and start a new one at the current tail.
@@ -217,8 +218,9 @@ impl SegmentSet {
         } else {
             let path = retired.path().to_path_buf();
             let index = self.dir.join(index_file_name(retired.id()));
+            let known = self.dir.join(known_file_name(retired.id()));
             drop(retired);
-            for path in [path, index] {
+            for path in [path, index, known] {
                 match crate::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -250,6 +252,17 @@ impl SegmentSet {
             },
         );
         self.sealed.push(entry);
+        // Spares the next open a walk of the segment to find its generations.
+        if retired.holds_generations()
+            && let Some(known) = retired.known_generations()
+            && let Err(err) = known.persist(
+                &self.dir.join(known_file_name(retired.id())),
+                retired.base_offset(),
+                retired.size_bytes(),
+            )
+        {
+            tracing::warn!(shard = %self.label, segment = retired.id(), error = %err, "could not write a sealed segment's known generations");
+        }
         Ok(())
     }
 
@@ -322,7 +335,7 @@ impl PreparedSegment {
 #[derive(Debug)]
 pub(crate) enum RollOutcome {
     /// Installed as the active segment. Carries the retired writer to be sealed.
-    Installed(SegmentWriter),
+    Installed(Box<SegmentWriter>),
     /// Rejected: the tail moved past the offset it was built for. Handed back
     /// so the caller can delete its files — dropping it would leave them on
     /// disk for recovery to clean up instead.

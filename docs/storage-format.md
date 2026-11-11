@@ -42,7 +42,8 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 The small state files have magics of their own, listed with each file below.
 The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`, and the
 run state's `0x464C524E` (`FLRN`), apart from the replica state's `FLRS`.
-The control-plane view's is `0x464C4356` (`FLCV`).
+The control-plane view's is `0x464C4356` (`FLCV`), and the known-generations
+file's `0x464C4B47` (`FLKG`).
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
@@ -68,6 +69,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
+    00000000000000000000.gen                 ← a sealed v9 segment's known generations
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
@@ -307,11 +309,11 @@ then rebuild it. It is not truncated automatically, since the stamps do not
 say where the disagreement starts. The log keeps the floor across a roll, a
 reopen and a truncation. A reopen takes it from the active segment's full
 scan, or from the sealed segments before it when the active one holds no
-known generation. A sealed segment is not walked for it: the open reads its
-first record and its resume scan, and if neither shows a known generation
-the segment keeps the floor before it. Walking it would read the whole of a
-log copied from pre-v9 segments on every start. A cut takes the floor from
-the header of the record just below the cut.
+known generation. A sealed segment's first and last known generations come
+from its [known-generations file](#known-generations-file), so the open
+does not walk the segment for them; a segment with none keeps the floor
+before it. A cut takes the floor from the header of the record just below
+the cut.
 
 **Rollback.** A build that reads only up to v8 refuses a v9 segment with
 `SegmentVersion`, so a broker cannot roll back past the release that wrote
@@ -618,6 +620,39 @@ sealed, so after a crash the active segment's index can be short. Recovery
 scans the active segment in full and rewrites its index, so that costs nothing.
 A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
+
+## Known-generations file
+
+`<id>.gen` names where a sealed v9 segment's first and last known
+generations sit (the first and last records not stamped 0). The open uses
+the first for the cross-segment check and the last for the floor. Without
+the file the open would have to walk every sealed segment whose ends hold
+unknown records, on every start: a log copied from pre-v9 segments is all
+unknown.
+
+It is written when a segment is sealed and whenever recovery or a read
+rebuilds the segment's index, and it is not synced. Like the index it is
+**never trusted**: the open uses it only when its checksum holds, its
+`base_offset` and `segment_len` match the segment, and the record at each
+position decodes with its header checksum intact and carries the
+generation named. The resume scan's last known generation, when it sees
+one, must also match. Otherwise the open walks the segment once, rebuilds
+its index and rewrites this file, so the verdict never depends on whether
+it was there. A truncation that reopens a sealed segment for appends
+deletes the file and syncs the directory first.
+
+| Offset | Size | Field | Value |
+| --- | --- | --- | --- |
+| 0 | 4 | `magic` | `0x464C4B47` (`"FLKG"`) |
+| 4 | 2 | `version` | `1` |
+| 6 | 2 | `reserved` | `0` |
+| 8 | 8 | `base_offset` | the segment's |
+| 16 | 8 | `segment_len` | the segment's length in bytes |
+| 24 | 8 | `first_position` | `0` when no record is known |
+| 32 | 8 | `first_generation` | |
+| 40 | 8 | `last_position` | `0` when no record is known |
+| 48 | 8 | `last_generation` | |
+| 56 | 4 | `checksum` | CRC-32 (IEEE) over bytes `0..56` |
 
 ## Compatibility and corruption behaviour
 

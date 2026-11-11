@@ -68,6 +68,8 @@ pub struct ScanOutcome {
     /// The generation of the first intact record in the scanned span, which
     /// for a [`ScanStart::Full`] scan is the segment's first record.
     pub first_generation: Option<u64>,
+    /// Where the span's first and last known generations sit.
+    pub(crate) known: crate::segment::known::KnownGenerations,
 }
 
 impl ScanOutcome {
@@ -102,6 +104,7 @@ struct ScanState {
     marks: Vec<(Offset, RecordMark, u64)>,
     last_generation: Option<u64>,
     first_generation: Option<u64>,
+    known: crate::segment::known::KnownGenerations,
 }
 
 impl ScanState {
@@ -116,6 +119,7 @@ impl ScanState {
             marks: self.marks,
             last_generation: self.last_generation,
             first_generation: self.first_generation,
+            known: self.known,
         }
     }
 
@@ -289,6 +293,7 @@ pub(crate) fn scan_segment_upto(
         marks: Vec::new(),
         last_generation: None,
         first_generation: None,
+        known: Default::default(),
     };
     let header_len = record_header_len(header.version);
 
@@ -380,6 +385,7 @@ pub(crate) fn scan_segment_upto(
             }
             state.last_generation = Some(found);
             state.first_generation.get_or_insert(found);
+            state.known.observe(position, Some(found));
         }
 
         state.observe(decoded.header.offset, position, total_len);
