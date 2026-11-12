@@ -1,7 +1,7 @@
 # The metadata Raft benchmark
 
 This page says how to measure the control plane's Raft group, and records the
-numbers for today's store (redb, openraft 0.9). The store change in
+numbers for today's store (redb, openraft 0.10). The store change in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store) is held to
 "no cell worse than these".
 
@@ -46,7 +46,8 @@ drift on the runner lands on both sides. Each load cell throws away a warmup
 before its measured window. Per metric the median of the runs is compared; a
 cell's noise band is the spread of the base runs, (max - min) / median, never
 under 10%. Head fails a cell when it is worse than the base median by more than
-the band. A cell head does not report fails. Throughput, `ok` and `rounds` are
+the band (one wild base run widens it without limit; an interquartile spread or
+more runs would be safer). A cell head does not report fails. Throughput, `ok` and `rounds` are
 better higher; every other metric is better lower, so a failed round or a
 snapshot install that did not complete fails the cell. Both sides run the head
 commit's benchmark file, so a base that predates it still works as long as the
