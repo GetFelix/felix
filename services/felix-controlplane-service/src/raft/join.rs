@@ -59,10 +59,11 @@ pub(super) enum Answer {
     /// membership at index 0 does not count: every first-boot member has
     /// those before anyone leads.
     Exists,
-    /// No answer at all.
+    /// Nothing there: the connection failed or timed out.
     Unreachable(String),
-    /// A refusal, such as the 403 another cluster's member gives, or a body
-    /// that is not a [`Standing`]. Neither empty nor a group.
+    /// Something is there and its answer cannot be used: a refusal, such as
+    /// the 403 another cluster's member gives or a failed TLS handshake, or
+    /// a body that is not a [`Standing`]. Neither empty nor a group.
     Unreadable(String),
 }
 
@@ -124,7 +125,13 @@ async fn probe(client: &reqwest::Client, base: Option<&str>) -> Answer {
         .await
     {
         Ok(response) => response,
-        Err(err) => return Answer::Unreachable(err.to_string()),
+        // Only a peer that is not there is silent. One that refuses the
+        // handshake or drops the request is up, and a waiver must not
+        // excuse it.
+        Err(err) if !tls_failure(&err) && (err.is_connect() || err.is_timeout()) => {
+            return Answer::Unreachable(format!("{err:#}"));
+        }
+        Err(err) => return Answer::Unreadable(format!("the request failed: {err:#}")),
     };
     let status = response.status();
     if !status.is_success() {
@@ -138,6 +145,21 @@ async fn probe(client: &reqwest::Client, base: Option<&str>) -> Answer {
         Ok(_) => Answer::Empty,
         Err(err) => Answer::Unreadable(format!("its answer did not decode: {err}")),
     }
+}
+
+/// Whether a request failed in TLS: the peer's certificate was not
+/// accepted, or the peer refused this member's.
+fn tls_failure(err: &(dyn std::error::Error + 'static)) -> bool {
+    if err.is::<rustls::Error>() {
+        return true;
+    }
+    // rustls errors arrive inside `io::Error`s, whose `source` skips the
+    // error they wrap.
+    let wrapped = err
+        .downcast_ref::<std::io::Error>()
+        .and_then(std::io::Error::get_ref)
+        .map(|inner| inner as &(dyn std::error::Error + 'static));
+    wrapped.or_else(|| err.source()).is_some_and(tls_failure)
 }
 
 const RETRY_INTERVAL: Duration = Duration::from_millis(200);

@@ -300,8 +300,11 @@ A first boot acts on answers, never on silence:
   came back. The cost is that a cluster's first start needs every member
   up, once.
 - **Only a decoded, empty answer is empty.** A 403 (the member belongs to
-  another cluster), any other refusal and a body that does not decode all
-  block a first boot. None of them counts as "the group exists" either.
+  another cluster), any other refusal, a failed TLS handshake and a body
+  that does not decode all block a first boot. None of them counts as "the
+  group exists" either.
+- **Each member has its own address.** `FELIX_RAFT_PEERS` is refused when
+  two ids share one, since one machine would then answer for both.
 - **The group exists when a log holds an entry at index 1 or above.** Every
   first-boot member writes the same membership at index 0 and may vote for
   itself before anyone leads, so neither says a group exists. An entry at
@@ -333,8 +336,9 @@ may form the group without an answer from that slot.
 What the waiver does and does not do:
 
 - **It excuses silence only.** If the waived slot answers, its answer counts
-  like any other: a group that exists is caught up with, and a 403 or an
-  undecodable answer still blocks.
+  like any other: a group that exists is caught up with, and a 403, a
+  failed TLS handshake or an undecodable answer still blocks. Silence is a
+  connection that fails or times out.
 - **It names a minority.** The members that answer empty, this one included,
   must still be a majority of the configured group.
 - **It is used once.** The member removes the file before it initializes.

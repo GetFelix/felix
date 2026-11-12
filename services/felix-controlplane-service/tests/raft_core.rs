@@ -939,6 +939,78 @@ async fn form_without_never_overrides_an_answering_peer() {
     }
 }
 
+/// A peer that fails the TLS handshake is up, not silent, so the waiver
+/// for its slot does not excuse it. Here slot 2's certificate is from
+/// another CA, as a member of some other cluster's would be.
+#[tokio::test]
+async fn form_without_does_not_excuse_a_failed_tls_handshake() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let pki_dir = tempfile::tempdir().expect("tempdir");
+    let other_pki_dir = tempfile::tempdir().expect("tempdir");
+    let tls = peer_pki(pki_dir.path());
+    let other_tls = peer_pki(other_pki_dir.path());
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        let mut settings = settings(id, dir.path().into());
+        settings.security.tls = Some(if id == 2 {
+            other_tls.clone()
+        } else {
+            tls.clone()
+        });
+        if id != 2 {
+            waive_the_second(dir.path()).expect("write the waiver");
+        }
+        let handle = RaftHandle::start(settings, Arc::new(KvApp::default()))
+            .await
+            .expect("start raft node");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = {
+            let handle = handle.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                handle
+                    .serve_peers(listener, shutdown)
+                    .await
+                    .expect("serve peers");
+            })
+        };
+        nodes.push((handle, port, server));
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, (_, port, _))| ((i + 1) as NodeId, format!("localhost:{port}")))
+        .collect();
+    for (handle, ..) in [&nodes[0], &nodes[2]] {
+        handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .expect("enter group");
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for (handle, ..) in [&nodes[0], &nodes[2]] {
+        let status = handle.status();
+        assert_eq!(status.leader, None, "member {} found a leader", status.id);
+        assert!(status.voters.is_empty(), "member {} formed", status.id);
+    }
+    for dir in [&dirs[0], &dirs[2]] {
+        assert!(dir.path().join("form-without").exists(), "waiver used");
+    }
+    shutdown.cancel();
+    for (handle, _, server) in nodes {
+        let _ = handle.shutdown().await;
+        server.abort();
+    }
+}
+
 /// The case the waiver is for: two members started, waited on a dead third,
 /// and were stopped. Each has a store by then but no Raft state, so the tool
 /// accepts them and the next start forms.

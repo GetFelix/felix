@@ -8,3 +8,6 @@
   before the group ever formed, `felix-controlplane raft form-without
   --data-dir <dir> --cluster-id <id> --slot <n>` lets the other members form
   without it, once.
+- `FELIX_RAFT_PEERS` is refused when two ids share an address (#2371). One
+  machine would answer for both, and a first start could form without asking
+  the member the second id stands for.
