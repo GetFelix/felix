@@ -180,7 +180,7 @@ pub(super) async fn start(
                     &membership.node_id,
                     &membership.features,
                     witnesses,
-                    super::storage::this_boot(),
+                    super::storage::this_boot_of(root),
                 ) {
                     Ok(view) => {
                         tracing::warn!(

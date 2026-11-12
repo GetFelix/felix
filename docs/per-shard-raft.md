@@ -962,7 +962,9 @@ sequenceDiagram
    This write is the switch. Before it, the shard is a hybrid shard that
    happens to be closed, and can be opened again. After it, no broker runs
    the hybrid for this shard. If the generation or the set changed in
-   between, the write fails and the seal starts over. If no majority
+   between, the write fails and the seal starts over. The write itself
+   bumps the replica set version, so a second report of the same seal fails
+   the compare. If no majority
    acknowledges because followers fail the digest, the shard opens again as
    a hybrid shard, each mismatching copy is rebuilt from the leader by the
    hybrid's ordinary rebuild, and the seal is retried afterwards.

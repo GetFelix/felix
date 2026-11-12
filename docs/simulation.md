@@ -41,7 +41,9 @@ waits on a timer, which holds the paused clock still; the finding says so and
 prints no census, since the busy task would hold that up too.
 
 `FELIX_SIM_POWER_LOSS=1` turns on power cuts ([Power loss](#power-loss)) the
-same way.
+same way. `FELIX_SIM_POWER_LOSS=relaxed` cuts them under brokers that do not
+sync before they acknowledge. `FELIX_SIM_MAJORITY_CUT=1` and
+`FELIX_SIM_WIPE=1` add the faults in [Faults that change disks](#faults-that-change-disks).
 
 `FELIX_SIM_PLACEMENT=1` turns on placement faults (below) for `seeds`,
 `replay` and `each_seed_runs_the_same_twice`:
@@ -262,6 +264,57 @@ device holds at the cut does not depend on thread timing and a seed replays
 exactly. The faults list says, for each cut, whether it landed in an
 append.
 
+### Faults that change disks
+
+Three more faults take bytes off a broker's disk, and a checker holds each to
+what it may lose. They are off by default and draw from their own random
+streams, so turning one on keeps every other fault of a seed.
+
+| Mode (`FELIX_SIM_MODE` in `scripts/sim-sweep.sh`) | Environment | What happens |
+| --- | --- | --- |
+| `relaxed-power-loss` | `FELIX_SIM_POWER_LOSS=relaxed` | The power cuts of the section above, on brokers with `FsyncMode::None`. Bytes a broker acknowledged without syncing are lost or torn. |
+| `majority-cut` | `FELIX_SIM_MAJORITY_CUT=1` | One or two times a run, two brokers or a majority of the cluster lose power in the same instant, on brokers that sync on commit. |
+| `majority-cut-relaxed` | `FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1` | The same, without the sync. |
+| `wipe` | `FELIX_SIM_WIPE=1` | Every 20 to 40 seconds one broker, or two, are stopped and one stream shard directory or the whole data directory is emptied on each. |
+
+A relaxed run has a boot id per simulated machine. It stays the same through
+crashes and changes when a cut is rebooted, so the restart of a broker whose
+power went out reads its run state as a crash in an earlier boot and takes a new
+storage id, as a real broker does (`run_state::begin`).
+
+Each of these faults runs alone (a lock in the nemesis). It reads every
+broker's stream shards just before it changes the disks and again after. A
+fault of several brokers changes all their disks in one instant, so nothing is
+acknowledged between the read and the change. The `acked-on-some-disk` checker
+then holds it to this:
+
+- A record acknowledged to a client is held by a quorum, so one fault that
+  changes one broker's disk never takes it off every disk.
+- A power cut under sync-on-commit never takes an acknowledged record off any
+  disk, however many brokers it cuts.
+- A relaxed power cut or a wipe may take a record off every disk only when
+  it changed every disk that held the record and at least two disks lost it.
+  A copy an earlier fault took counts toward the two until the record is on
+  two disks again. The run names the loss, and only those records become
+  unknown in the history (`forget_lost`). A read that saw one is dropped.
+  Every other append and read of the shard is still checked.
+- The cache's disks are not read. When a fault may have taken the last copy
+  of a cache write, every cache write that finished before it becomes
+  unknown, and cache reads from before it are dropped. Cache operations after
+  the fault are checked as usual.
+- A record acknowledged while only one disk held it, or that no disk held
+  before the fault, is a finding.
+- At the end of the run every broker's disk is read once more. An
+  acknowledged record that no fault took must be on one of them, whether or
+  not its shard could be read back through a broker.
+
+A wiped broker comes back as a broker with no copy, or with a new storage id
+when its whole directory went. On the hybrid, one-broker wipes can leave
+stream shards that nothing holds on purpose with no leader: the named leader
+stays in `fencing` while a replica with as long a log is up (#2336). These
+are not exempt, so they fail `election-settles` and `final-reads`. See the
+known failing seeds below.
+
 ### Placement faults
 
 Most liveness and safety bugs in replication have needed a shard's set or
@@ -462,6 +515,14 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
 
+With the disk faults on, built with the flag, as of #2327:
+
+| Mode | Seeds | What fails | Issue |
+| --- | --- | --- | --- |
+| `wipe` | 1, 2 | Stream shards served by nobody after one-broker wipes, the leader stuck in `fencing` (`election-settles`, `final-reads`). | #2336 |
+| `wipe` | 3 | Shards served by nobody after both data directories of a group's majority are wiped. The group needs the operator re-form, which the mode does not run. | |
+| `majority-cut-relaxed` | 2 | cache/3 served by nobody: the named leader has an empty log and phase `failed`, the replicas hold the records. | #2336 |
+
 With power loss on, seed 3 cuts the power during an append, and
 `seed_3_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays
 the same and that recovery repairs the torn tail.
@@ -504,6 +565,8 @@ A failing seed is sorted by its log:
 | --- | --- | --- |
 | Real bug | A history violation, an undecided cache key, a safety finding (`at-most-one-serving`, `one-leader-per-generation`, `acked-held-by-leader`, ...) or a crash. | Fails the shard. A scheduled run opens an issue labelled `dst-nightly`, which a green night closes. |
 | Tracked stall | Only the liveness findings `stalled`, `election-settles` and `final-reads`, listed above under known failing seeds. | Listed apart in the summary. Fails nothing. |
+
+One stall is tracked inside a test. `seed_3_replicas_agree_on_who_wrote_each_record` prints `tracked stall #2206` and passes when the only failing finding is `election-settles` with every stuck shard in the #2206 shape: the leader's phase is `failed`, the control plane is `Assigning`, and no other copy is ready to take over. The stuck shards must be named in the census, which the checker prints for at most three, so four or more never match. Any history violation, other finding or other shape still fails it.
 
 Each line in the run summary gives the seed, its categories and the exact
 command that replays it, for example

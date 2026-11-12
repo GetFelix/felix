@@ -7,7 +7,6 @@ use std::collections::{BTreeSet, HashMap};
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
-use felix_controlplane_service::store::ControlPlaneStore;
 use felix_wire::AckMode;
 use felix_wire::routing::{ShardRouting, shard_for_routing};
 use serial_test::serial;

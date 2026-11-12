@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 pub(super) use file::Flags;
 pub(crate) use file::MemFile;
-pub(crate) use registry::{claim, register, tree_at, unregister};
+pub(crate) use registry::{claim, in_memory, register, tree_at, unregister};
 pub(super) use registry::{is_above_a_root, route};
 
 /// One registered root and everything below it.
@@ -48,6 +48,9 @@ pub(crate) struct Tree {
     /// How many more flushes succeed before one fails, and how many have
     /// been asked for. See [`Tree::fail_flush`].
     flush_fault: Mutex<FlushFault>,
+    /// How many power cuts this machine has come back from. Each is a new
+    /// boot, which is what a relaxed run's crash record is compared against.
+    boots: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -142,6 +145,7 @@ impl Tree {
             torn_tails: Mutex::new(Vec::new()),
             opened: Mutex::new(Opened::default()),
             flush_fault: Mutex::new(FlushFault::default()),
+            boots: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -465,7 +469,37 @@ impl Tree {
         state.root = rebooted;
         state.pending.clear();
         self.opened.lock().since_reboot.clear();
+        self.boots.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         true
+    }
+
+    /// The number of reboots after a power cut so far.
+    pub(crate) fn boots(&self) -> u64 {
+        self.boots.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Delete `below` (a file or a directory) from the device, or everything
+    /// under the root when `below` is empty, and make the deletion durable.
+    pub(crate) fn wipe(&self, below: &Path) -> io::Result<()> {
+        let doomed = if below.as_os_str().is_empty() {
+            self.list(below)?
+                .into_iter()
+                .map(|(name, _)| PathBuf::from(name))
+                .collect()
+        } else {
+            vec![below.to_path_buf()]
+        };
+        for path in doomed {
+            match self.remove_dir_all(&path) {
+                Err(err) if err.kind() == io::ErrorKind::NotADirectory => {
+                    self.remove_file(&path)?;
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                other => other?,
+            }
+        }
+        self.sync_all();
+        Ok(())
     }
 
     /// Called after an append of `end - from` bytes at `from` to the segment

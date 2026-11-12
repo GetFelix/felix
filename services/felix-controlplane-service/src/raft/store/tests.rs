@@ -1,4 +1,5 @@
-use openraft::testing::{StoreBuilder, Suite};
+use openraft::testing::log::{StoreBuilder, Suite};
+use openraft::type_config::TypeConfigExt;
 
 use super::*;
 
@@ -24,7 +25,9 @@ struct Builder;
 struct Guard(#[allow(dead_code)] tempfile::TempDir);
 
 impl StoreBuilder<TypeConfig, LogStore, StateMachineStore, Guard> for Builder {
-    async fn build(&self) -> Result<(Guard, LogStore, StateMachineStore), StorageError> {
+    async fn build(
+        &self,
+    ) -> Result<(Guard, LogStore, StateMachineStore), openraft::StorageError<TypeConfig>> {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = open(&dir.path().join("raft.redb")).expect("open store");
         let log_store = LogStore::new(Arc::clone(&db));
@@ -41,7 +44,9 @@ impl StoreBuilder<TypeConfig, LogStore, StateMachineStore, Guard> for Builder {
 /// author's tests, not ours to re-invent.
 #[test]
 fn satisfies_openrafts_storage_contract() {
-    Suite::test_all(Builder).expect("storage suite");
+    TypeConfig::run(async {
+        Suite::test_all(Builder).await.expect("storage suite");
+    });
 }
 
 /// The one property the suite cannot see: state survives closing and
@@ -57,8 +62,8 @@ fn vote_and_purge_marker_survive_reopen() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("raft.redb");
 
-        let vote = openraft::Vote::new(7, 3);
-        let purged = LogId::new(openraft::CommittedLeaderId::new(7, 3), 11);
+        let vote = Vote::new(7, 3);
+        let purged = LogId::new(leader(7, 3), 11);
         {
             let db = open(&path).expect("open");
             let mut store = LogStore::new(db);
@@ -89,15 +94,18 @@ fn a_data_dir_keeps_the_cluster_id_it_first_saw() {
     assert!(err.to_string().contains("prod-a"), "{err}");
 }
 
+fn leader(term: u64, node_id: u64) -> super::super::types::LeaderId {
+    super::super::types::LeaderId { term, node_id }
+}
+
 fn log_id(term: u64, index: u64) -> LogId {
-    LogId::new(openraft::CommittedLeaderId::new(term, 1), index)
+    LogId::new(leader(term, 1), index)
 }
 
 fn snapshot_meta(last: LogId) -> SnapshotMeta {
     SnapshotMeta {
         last_log_id: Some(last),
         last_membership: StoredMembership::default(),
-        snapshot_id: format!("{}-test", last.index),
     }
 }
 
@@ -161,13 +169,9 @@ impl AppStateMachine for HeldApp {
     }
 }
 
-async fn install(
-    store: &mut StateMachineStore,
-    last: LogId,
-    data: &[u8],
-) -> Result<(), StorageError> {
+async fn install(store: &mut StateMachineStore, last: LogId, data: &[u8]) -> Result<(), io::Error> {
     store
-        .install_snapshot(&snapshot_meta(last), Box::new(Cursor::new(data.to_vec())))
+        .install_snapshot(&snapshot_meta(last), Cursor::new(data.to_vec()))
         .await
 }
 
@@ -183,7 +187,7 @@ async fn stored_snapshot(store: &mut StateMachineStore) -> (Option<LogId>, Vec<u
 /// Waits, bounded, until the store's snapshot is the one at `index`.
 async fn until_stored(db: &Database, index: u64) {
     for _ in 0..1000 {
-        let meta: Option<SnapshotMeta> = read_meta(db, KEY_SNAPSHOT_META).expect("read meta");
+        let meta: Option<wire::SnapshotMeta> = read_meta(db, KEY_SNAPSHOT_META).expect("read meta");
         if meta.and_then(|meta| meta.last_log_id).map(|id| id.index) == Some(index) {
             return;
         }
@@ -368,5 +372,149 @@ fn a_crash_before_the_snapshot_commit_keeps_the_previous_snapshot() {
             (Some(log_id(1, 5)), b"older".to_vec())
         );
         assert_eq!(app.state(), b"older");
+    });
+}
+
+fn fixture(name: &str) -> Vec<u8> {
+    crate::raft::wire::tests::fixture(name)
+}
+
+fn raw_meta(db: &Database, key: &str) -> Vec<u8> {
+    let txn = db.begin_read().expect("read");
+    let table = txn.open_table(META).expect("meta table");
+    let value = table.get(key).expect("get").expect("the key is stored");
+    value.value().to_vec()
+}
+
+fn raw_log(db: &Database, index: u64) -> Vec<u8> {
+    let txn = db.begin_read().expect("read");
+    let table = txn.open_table(LOGS).expect("log table");
+    let value = table.get(index).expect("get").expect("the entry is stored");
+    value.value().to_vec()
+}
+
+const ENTRY_FIXTURES: [(u64, &str); 4] = [
+    (16, "stored_entry_blank"),
+    (17, "stored_entry_normal"),
+    (18, "stored_entry_membership"),
+    (19, "stored_entry_joint_membership"),
+];
+
+/// A member rolled back to a release that ran openraft 0.9 opens the store
+/// this build wrote. So what is written must be what 0.9 wrote, byte for
+/// byte, snapshot id included.
+#[test]
+fn the_store_writes_the_bytes_0_9_wrote() {
+    current_thread().block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open(&dir.path().join("raft.redb")).expect("open");
+        let mut log = LogStore::new(Arc::clone(&db));
+
+        let vote: wire::Vote = serde_json::from_slice(&fixture("stored_vote")).expect("vote");
+        log.save_vote(&vote.into()).await.expect("save vote");
+        assert_eq!(raw_meta(&db, KEY_VOTE), fixture("stored_vote"));
+
+        for (index, name) in ENTRY_FIXTURES {
+            let entry: wire::Entry = serde_json::from_slice(&fixture(name)).expect("entry");
+            log.append([entry.into()], IOFlushed::Noop)
+                .await
+                .expect("append");
+            assert_eq!(raw_log(&db, index), fixture(name), "{name}");
+        }
+
+        let committed: Option<wire::LogId> =
+            serde_json::from_slice(&fixture("stored_committed")).expect("committed");
+        log.save_committed(wire::lib_log_id(committed))
+            .await
+            .expect("save committed");
+        assert_eq!(raw_meta(&db, KEY_COMMITTED), fixture("stored_committed"));
+
+        let purged: wire::LogId =
+            serde_json::from_slice(&fixture("stored_last_purged")).expect("purged");
+        log.purge(purged.into()).await.expect("purge");
+        assert_eq!(
+            raw_meta(&db, KEY_LAST_PURGED),
+            fixture("stored_last_purged")
+        );
+
+        // The snapshot meta differs from 0.9's in the id alone: 0.9 made one
+        // up, this build derives it from the position.
+        let theirs: wire::SnapshotMeta =
+            serde_json::from_slice(&fixture("stored_snapshot_meta")).expect("meta");
+        let mut machine = StateMachineStore::open(Arc::clone(&db), Arc::new(NullApp))
+            .await
+            .expect("open state machine");
+        machine
+            .install_snapshot(&theirs.clone().into(), Cursor::new(vec![1, 2]))
+            .await
+            .expect("install");
+        let ours: wire::SnapshotMeta =
+            serde_json::from_slice(&raw_meta(&db, KEY_SNAPSHOT_META)).expect("stored meta");
+        assert_eq!(ours.snapshot_id, "3-2-18");
+        assert_eq!(
+            wire::SnapshotMeta {
+                snapshot_id: theirs.snapshot_id.clone(),
+                ..ours
+            },
+            theirs
+        );
+    });
+}
+
+/// The other direction: a member upgraded from a release that ran 0.9 opens
+/// the store that release wrote.
+#[test]
+fn the_store_reads_what_0_9_wrote() {
+    current_thread().block_on(async {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = open(&dir.path().join("raft.redb")).expect("open");
+        {
+            let txn = db.begin_write().expect("write");
+            {
+                let mut logs = txn.open_table(LOGS).expect("log table");
+                for (index, name) in ENTRY_FIXTURES {
+                    logs.insert(index, fixture(name).as_slice())
+                        .expect("insert");
+                }
+                let mut meta = txn.open_table(META).expect("meta table");
+                let data = serde_json::to_vec(&vec![1u8, 2]).expect("data");
+                for (key, bytes) in [
+                    (KEY_VOTE, fixture("stored_vote")),
+                    (KEY_COMMITTED, fixture("stored_committed")),
+                    (KEY_SNAPSHOT_META, fixture("stored_snapshot_meta")),
+                    (KEY_SNAPSHOT_DATA, data),
+                ] {
+                    meta.insert(key, bytes.as_slice()).expect("insert");
+                }
+            }
+            txn.commit().expect("commit");
+        }
+
+        let mut log = LogStore::new(Arc::clone(&db));
+        let vote = log.read_vote().await.expect("read vote").expect("a vote");
+        assert_eq!(
+            serde_json::to_vec(&wire::Vote::from(&vote)).expect("vote"),
+            fixture("stored_vote")
+        );
+        assert_eq!(persisted_committed_index(&db), Some(17));
+        let entries = log.try_get_log_entries(16..20).await.expect("read entries");
+        assert_eq!(entries.len(), 4);
+        for (entry, (_, name)) in entries.iter().zip(ENTRY_FIXTURES) {
+            assert_eq!(
+                serde_json::to_vec(&wire::Entry::from(entry)).expect("entry"),
+                fixture(name),
+                "{name}"
+            );
+        }
+
+        let mut machine = StateMachineStore::open(Arc::clone(&db), Arc::new(NullApp))
+            .await
+            .expect("open state machine");
+        let (applied, membership) = machine.applied_state().await.expect("applied state");
+        assert_eq!(applied.map(|id| id.index), Some(18));
+        assert_eq!(membership.voter_ids().collect::<Vec<_>>(), vec![1, 2, 3]);
+        let (last, data) = stored_snapshot(&mut machine).await;
+        assert_eq!(last.map(|id| id.index), Some(18));
+        assert_eq!(data, vec![1, 2]);
     });
 }

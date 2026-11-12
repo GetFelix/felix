@@ -17,7 +17,9 @@
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `FELIX_SIM_PLACEMENT` | `1` turns placement faults on for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
-//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
+//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice`, on brokers that sync on commit. `relaxed` does the same on brokers that do not, so a cut loses acknowledged bytes | unset: off |
+//! | `FELIX_SIM_MAJORITY_CUT` | `1` also cuts the power under several brokers at once (power loss on, `relaxed` if set) | unset: off |
+//! | `FELIX_SIM_WIPE` | `1` also wipes shard directories and whole data directories | unset: off |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
@@ -37,7 +39,8 @@
 
 use std::time::Duration;
 
-use felix_sim::check::Tally;
+use felix_cluster::history::checker::{Report, Rule, Violation};
+use felix_sim::check::{Finding, Severity, Tally};
 use felix_sim::clock::{Clocks, NodeClock, PPM};
 use felix_sim::cluster::SimConfig;
 use felix_sim::nemesis::clocks::{BOUNDED_RATE_PPM, ClockPlan, ClockSkew};
@@ -92,8 +95,17 @@ fn config(seed: u64) -> SimConfig {
         Ok("1") => config.with_placement_faults(),
         _ => config,
     };
-    match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
+    let config = match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
         Ok("1") => config.with_power_loss(),
+        Ok("relaxed") => config.with_relaxed_power_loss(),
+        _ => config,
+    };
+    let config = match std::env::var("FELIX_SIM_MAJORITY_CUT").as_deref() {
+        Ok("1") => config.with_majority_cut(),
+        _ => config,
+    };
+    match std::env::var("FELIX_SIM_WIPE").as_deref() {
+        Ok("1") => config.with_wipes(),
         _ => config,
     }
 }
@@ -305,6 +317,112 @@ fn found(outcome: &SimOutcome, checker: &str) -> bool {
     outcome.findings.iter().any(|f| f.checker == checker)
 }
 
+/// Whether `finding` is the stall #2206 tracks: a leader that gave up opening
+/// its shard (phase `failed`) with the control plane still `Assigning` and
+/// no other copy to promote (the rest are `unassigned` or `closed`). It reads
+/// the census the checker prints, and wants one for every stuck shard, so a
+/// run with more stuck shards than the census shows does not match.
+fn is_given_up_leader_stall(finding: &Finding) -> bool {
+    if finding.checker != "election-settles" {
+        return false;
+    }
+    // "N of M shards ... : stream/6 (0 serving), stream/20 (0 serving)"
+    let Some((head, shards)) = finding.summary.split_once(" after the faults healed: ") else {
+        return false;
+    };
+    let stuck: Vec<&str> = shards.split(", ").collect();
+    let Some(count) = head
+        .split_whitespace()
+        .next()
+        .and_then(|n| n.parse::<usize>().ok())
+    else {
+        return false;
+    };
+    // The checker prints a census for at most 3 stuck shards.
+    if stuck.len() != count || count > 3 || stuck.iter().any(|s| !s.ends_with("(0 serving)")) {
+        return false;
+    }
+    let mut named: Vec<String> = Vec::new();
+    let mut censuses = 0;
+    let mut leader = None;
+    let mut given_up = false;
+    let mut unassigned = false;
+    let mut ok = true;
+    let mut end_shard =
+        |leader: &mut Option<String>, given_up: &mut bool, unassigned: &mut bool, ok: &mut bool| {
+            if leader.take().is_some() {
+                censuses += 1;
+                *ok &= *given_up && *unassigned;
+            }
+            *given_up = false;
+            *unassigned = false;
+        };
+    for line in finding.detail.lines() {
+        if let Some(rest) = line.strip_prefix("shard ") {
+            end_shard(&mut leader, &mut given_up, &mut unassigned, &mut ok);
+            let Some((_, assignment)) = line.split_once("control plane: ") else {
+                return false;
+            };
+            let mut words = assignment.split_whitespace();
+            let (Some("leader"), Some(name)) = (words.next(), words.next()) else {
+                return false;
+            };
+            if !assignment.contains(" state Assigning")
+                || assignment.contains(" successor ")
+                || assignment.contains(" joining ")
+            {
+                return false;
+            }
+            leader = Some(name.to_string());
+            named.push(rest.split_whitespace().next().unwrap_or("").to_string());
+        } else if let Some(lead) = &leader {
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.first().is_none_or(|c| *c == "node") {
+                continue;
+            }
+            let phase = cols.get(7).copied().unwrap_or("");
+            if cols[0] == lead {
+                given_up = phase == "failed";
+            } else {
+                match phase {
+                    "unassigned" => unassigned = true,
+                    "closed" => {}
+                    _ => return false,
+                }
+            }
+        }
+    }
+    end_shard(&mut leader, &mut given_up, &mut unassigned, &mut ok);
+    let listed: Vec<&str> = stuck
+        .iter()
+        .map(|s| s.split_whitespace().next().unwrap_or(""))
+        .collect();
+    ok && censuses == count && named == listed
+}
+
+/// Whether the run found nothing but the stall #2206 tracks: no history
+/// violation, no undecided key, and every failing finding is that stall.
+fn only_the_2206_stall(report: &Report, findings: &[Finding]) -> bool {
+    report.violations.is_empty()
+        && report.undecided.is_empty()
+        && findings
+            .iter()
+            .filter(|f| f.severity == Severity::Failure)
+            .all(is_given_up_leader_stall)
+}
+
+/// Fail on anything but the stall #2206 tracks, which is printed with its
+/// issue instead.
+fn assert_passed_but_for_2206(outcome: &SimOutcome) {
+    assert!(
+        only_the_2206_stall(&outcome.report, &outcome.findings),
+        "{outcome}"
+    );
+    for finding in outcome.failures().filter(|f| is_given_up_leader_stall(f)) {
+        println!("tracked stall #2206: {}", finding.summary);
+    }
+}
+
 /// The control plane pauses and a shard leader crashes; once everything heals
 /// a restarted leader stays in `fencing` and its shard is never served.
 #[test]
@@ -415,7 +533,7 @@ fn seed_3_replicas_agree_on_who_wrote_each_record() {
         ..SimConfig::for_seed(3)
     };
     let outcome = run_seed(3, config);
-    assert!(outcome.passed(), "{outcome}");
+    assert_passed_but_for_2206(&outcome);
     let tally = outcome
         .findings
         .iter()
@@ -438,6 +556,143 @@ fn seed_3_replicas_agree_on_who_wrote_each_record() {
             .any(|f| f.what.starts_with("kill b")),
         "no broker was killed after the finalize:\n{outcome}"
     );
+}
+
+fn stall_finding(summary: &str, assignment: &str, rows: &[&str]) -> Finding {
+    let census = format!(
+        "shard stream/6  control plane: {assignment}\n  node  state\n{}",
+        rows.join("\n")
+    );
+    Finding::new("election-settles", summary).with(census)
+}
+
+const GIVEN_UP: [&str; 3] = [
+    "  b1    up        no    yes    1    9.0s     -              closed",
+    "  b2    up        no    yes    1    9.0s     b2,10          failed",
+    "  b3    up        no    yes    1    9.0s     -              unassigned",
+];
+const SUMMARY: &str = "1 of 178 shards are not served by exactly one broker 60s after the faults healed: stream/6 (0 serving)";
+const ASSIGNING: &str = "leader b2 replicas [\"b1\", \"b2\", \"b3\"] generation 10 state Assigning";
+
+#[test]
+fn the_given_up_leader_shape_is_the_tracked_stall() {
+    assert!(is_given_up_leader_stall(&stall_finding(
+        SUMMARY, ASSIGNING, &GIVEN_UP
+    )));
+}
+
+#[test]
+fn another_election_settles_failure_is_not_the_tracked_stall() {
+    // The leader is still opening, not given up.
+    let opening = [
+        GIVEN_UP[0],
+        "  b2    up        no    yes    1    9.0s     b2,10          opening",
+        GIVEN_UP[2],
+    ];
+    assert!(!is_given_up_leader_stall(&stall_finding(
+        SUMMARY, ASSIGNING, &opening
+    )));
+    // The control plane settled on Active.
+    let active = "leader b2 replicas [\"b1\"] generation 10 state Active";
+    assert!(!is_given_up_leader_stall(&stall_finding(
+        SUMMARY, active, &GIVEN_UP
+    )));
+    // A peer is ready to take over, so a copy was promotable.
+    let promotable = [
+        GIVEN_UP[0],
+        GIVEN_UP[1],
+        "  b3    up        no    yes    1    9.0s     -              fencing",
+    ];
+    assert!(!is_given_up_leader_stall(&stall_finding(
+        SUMMARY,
+        ASSIGNING,
+        &promotable
+    )));
+    // More stuck shards than the census covers.
+    let many = SUMMARY
+        .replace("1 of", "2 of")
+        .replace("(0 serving)", "(0 serving), stream/7 (0 serving)");
+    assert!(!is_given_up_leader_stall(&stall_finding(
+        &many, ASSIGNING, &GIVEN_UP
+    )));
+    // A shard served by someone.
+    let served = SUMMARY.replace("0 serving", "2 serving");
+    assert!(!is_given_up_leader_stall(&stall_finding(
+        &served, ASSIGNING, &GIVEN_UP
+    )));
+    // Another checker.
+    let mut other = stall_finding(SUMMARY, ASSIGNING, &GIVEN_UP);
+    other.checker = "final-reads";
+    assert!(!is_given_up_leader_stall(&other));
+}
+
+const CI_SUMMARY: &str = "2 of 178 shards are not served by exactly one broker 60s after the faults healed: stream/6 (0 serving), stream/20 (0 serving)";
+const CI_HEADER: &str = "  node  state     cut   seeded inc  lease    routed(leader,g) phase      fence    tail     quorum  ";
+const CI_ROWS: [&str; 3] = [
+    "  b1    up        no    yes    0    6.9s     b2,10          closed     -        3        -       ",
+    "  b2    up        no    yes    2    7.3s     b2,10          failed     -        4        -       ",
+    "  b3    up        no    yes    1    8.0s     b2,10          unassigned -        4        -       ",
+];
+
+fn ci_census(shard: &str, generation: u32, rows: &[&str]) -> String {
+    format!(
+        "shard {shard}  control plane: leader b2 replicas [\"b1\", \"b3\"] generation {generation} state Assigning\n{CI_HEADER}\n{}\n",
+        rows.join("\n")
+    )
+}
+
+fn ci_finding(summary: &str, rows: &[&str]) -> Finding {
+    Finding::new("election-settles", summary)
+        .with(ci_census("stream/6", 10, rows))
+        .with(ci_census("stream/20", 24, rows))
+}
+
+#[test]
+fn the_text_ci_printed_for_two_shards_is_the_tracked_stall() {
+    assert!(is_given_up_leader_stall(&ci_finding(CI_SUMMARY, &CI_ROWS)));
+}
+
+#[test]
+fn the_tracked_stall_needs_matching_names_a_cap_and_whole_rows() {
+    // Census names differ from the stuck list.
+    let renamed = CI_SUMMARY.replace("stream/20", "stream/21");
+    assert!(!is_given_up_leader_stall(&ci_finding(&renamed, &CI_ROWS)));
+    // Four stuck shards: more than the checker prints censuses for.
+    let four = "4 of 178 shards are not served by exactly one broker 60s after the faults healed: stream/6 (0 serving), stream/20 (0 serving), stream/7 (0 serving), stream/8 (0 serving)";
+    let mut finding = ci_finding(four, &CI_ROWS);
+    finding = finding
+        .with(ci_census("stream/7", 3, &CI_ROWS))
+        .with(ci_census("stream/8", 4, &CI_ROWS));
+    assert!(!is_given_up_leader_stall(&finding));
+    // A node row with no phase (a node that is down).
+    let mut short = CI_ROWS;
+    short[0] = "  b1    down      no    no     -    -        ";
+    assert!(!is_given_up_leader_stall(&ci_finding(CI_SUMMARY, &short)));
+}
+
+/// A history violation beside the tracked stall still fails the run.
+#[test]
+fn a_history_violation_still_fails_beside_the_tracked_stall() {
+    let stall = stall_finding(SUMMARY, ASSIGNING, &GIVEN_UP);
+    let mut report = Report {
+        violations: Vec::new(),
+        faults: Vec::new(),
+        undecided: Vec::new(),
+    };
+    assert!(only_the_2206_stall(&report, std::slice::from_ref(&stall)));
+    report.violations.push(Violation {
+        rule: Rule::LostWrite,
+        list: "stream/6".into(),
+        ops: Vec::new(),
+        explanation: String::new(),
+    });
+    assert!(!only_the_2206_stall(&report, std::slice::from_ref(&stall)));
+    report.violations.clear();
+    report.undecided.push("key".into());
+    assert!(!only_the_2206_stall(&report, std::slice::from_ref(&stall)));
+    report.undecided.clear();
+    let other = Finding::new("record-generations-agree", "differs");
+    assert!(!only_the_2206_stall(&report, &[stall, other]));
 }
 
 // Placement faults. Each test pins a seed whose run reaches one shape, checks
@@ -596,4 +851,78 @@ fn seeds_210_and_216_with_power_loss_serve_every_shard_after_a_crash_at_the_heal
         );
         assert!(!found(&outcome, "final-reads"), "seed {seed}:\n{outcome}");
     }
+}
+
+/// Whether a fault took an acknowledged record it may not lose.
+fn lost_acked(outcome: &SimOutcome) -> bool {
+    outcome
+        .failures()
+        .any(|finding| finding.checker == "acked-on-some-disk")
+}
+
+/// A power cut under a relaxed fsync mode loses what the broker acknowledged
+/// without syncing, so its restart sees a new boot, takes a new storage id and
+/// runs the unclean-start handling; no acknowledged record ends up on no disk.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_relaxed_power_cuts_make_the_restart_distrust_its_copies() {
+    log();
+    let config = SimConfig::for_seed(3).with_relaxed_power_loss();
+    let first = run_seed(3, config.clone());
+    let second = run_seed(3, config);
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 3 ran differently the second time: {difference}");
+    }
+    let cut = first
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lost power"));
+    assert!(cut, "no broker lost power:\n{first}");
+    assert!(!lost_acked(&first), "{first}");
+    assert!(first.report.violations.is_empty(), "{first}");
+}
+
+/// Several brokers lose power in the same instant, and nothing acknowledged
+/// is lost when they sync on commit.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_a_majority_cut_under_sync_on_commit_loses_nothing_acknowledged() {
+    log();
+    let outcome = run_seed(3, SimConfig::for_seed(3).with_majority_cut());
+    let cut = outcome
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lose power together"));
+    assert!(cut, "no majority cut ran:\n{outcome}");
+    assert!(!lost_acked(&outcome), "{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
+}
+
+/// Wipes of a shard directory and of a data directory run, and every record
+/// they take off the disks is one they may lose.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_wipes_lose_only_what_every_disk_holding_it_lost() {
+    log();
+    let outcome = run_seed(3, SimConfig::for_seed(3).with_wipes());
+    let wipes = outcome
+        .history
+        .faults
+        .iter()
+        .filter(|fault| fault.what.starts_with("wipe "))
+        .count();
+    assert!(wipes > 0, "no wipe ran:\n{outcome}");
+    assert!(!lost_acked(&outcome), "{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
 }

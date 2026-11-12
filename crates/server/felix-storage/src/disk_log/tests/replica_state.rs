@@ -159,6 +159,54 @@ async fn a_given_up_generation_takes_no_leader_until_a_newer_one() {
     assert!(!log.gave_up());
 }
 
+/// A candidate that lost votes for itself, then follows the winner at the
+/// same term: openraft saves the committed vote over its own.
+#[tokio::test]
+async fn a_losing_candidate_follows_the_committed_vote_of_the_winner() {
+    let dir = tempdir().expect("tempdir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.save_vote(5, "broker-a", false).await.expect("own vote");
+        log.save_vote(5, "broker-b", true).await.expect("winner");
+        assert_eq!(log.accepted_leader().as_deref(), Some("broker-b"));
+        // The winner is the only leader the term takes now.
+        log.save_vote(5, "broker-a", true)
+            .await
+            .expect_err("a second committed leader");
+        log.save_vote(5, "broker-b", false)
+            .await
+            .expect_err("uncommitted after committed");
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-b"));
+}
+
+#[tokio::test]
+async fn a_second_uncommitted_vote_for_another_node_in_a_term_is_refused() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.save_vote(5, "broker-a", false).await.expect("vote");
+    log.save_vote(5, "broker-b", false)
+        .await
+        .expect_err("a second vote in the term");
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+}
+
+#[tokio::test]
+async fn a_vote_at_a_lower_term_is_refused() {
+    let dir = tempdir().expect("tempdir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.save_vote(5, "broker-a", false).await.expect("vote");
+    for committed in [false, true] {
+        log.save_vote(4, "broker-b", committed)
+            .await
+            .expect_err("a lower term");
+    }
+    assert_eq!(log.accepted_generation(), 5);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+}
+
 #[tokio::test]
 async fn a_generation_accepted_without_a_leader_takes_the_first_one_named() {
     let dir = tempdir().expect("tempdir");

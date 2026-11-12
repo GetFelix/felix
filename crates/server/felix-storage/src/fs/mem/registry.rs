@@ -74,6 +74,11 @@ pub(in crate::fs) fn is_above_a_root(path: &Path) -> bool {
     ANY.load(Ordering::Acquire) && ROOTS.read().keys().any(|root| root.starts_with(path))
 }
 
+/// Whether `path` is under a registered root, so in memory.
+pub(crate) fn in_memory(path: &Path) -> bool {
+    route(path).is_some()
+}
+
 /// The tree registered at exactly `root`.
 pub(crate) fn tree_at(root: &Path) -> Option<Arc<Tree>> {
     ROOTS.read().get(root).cloned()

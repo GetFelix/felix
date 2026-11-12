@@ -69,3 +69,108 @@ fn a_shard_is_reported_only_when_every_replica_is_caught_up_at_its_generation() 
     assert!(gap(3, &replicas, Some(&report(3, &["b"]))).is_some());
     assert!(gap(3, &replicas, Some(&report(3, &["b", "c"]))).is_none());
 }
+
+/// A metadata group keeps answering at its one address while a member is
+/// down, and its members agree again once everything is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_metadata_group_survives_losing_its_leader_and_converges() {
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+        .await
+        .expect("start the group");
+    let group = control_plane.group().expect("a group").clone();
+    let base_url = control_plane.base_url.clone();
+
+    let killed = group.kill_leader().await.expect("kill the leader");
+    // A survivor leads within the election timeout, and the front reaches it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if group.leader().await.is_some_and(|leader| leader != killed) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no new leader");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let response = answers(&base_url).join().expect("request thread");
+    assert!(response.expect("answered").starts_with("HTTP/1.1 "));
+
+    // Restart the killed member so the group has three again, then cut the
+    // leader off.
+    group.restart(killed).await.expect("restart");
+    let isolated = group.isolate_leader().await.expect("isolate the leader");
+    // The other two elect a new leader without it, and the group takes a
+    // write while the old leader is still cut off.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if group
+            .leader()
+            .await
+            .is_some_and(|leader| leader != isolated)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no leader without {isolated}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    group
+        .acknowledge_write()
+        .await
+        .expect("a write while the leader is cut off");
+    group.heal_partition();
+    group
+        .converge(Duration::from_secs(60))
+        .await
+        .unwrap_or_else(|err| panic!("members disagree after isolating {isolated}: {err:#}"));
+    control_plane.shutdown().await;
+}
+
+/// The harness goes through a running member, not the one it first held:
+/// member 0 restarted must not leave it writing to a handle that is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn harness_writes_survive_the_first_member_restarting() {
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+        .await
+        .expect("start the group");
+    let group = control_plane.group().expect("a group").clone();
+    group.kill(0).await.expect("kill member 0");
+    group.restart(0).await.expect("restart member 0");
+    group
+        .converge(Duration::from_secs(30))
+        .await
+        .expect("converge");
+    control_plane
+        .seed_tenant("tenant-b")
+        .await
+        .expect("a write after member 0 restarted");
+    control_plane
+        .unreported_shards()
+        .await
+        .expect("a read after member 0 restarted");
+    control_plane.shutdown().await;
+}
+
+/// A write the group acknowledged and then lost fails the convergence check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn converge_fails_when_an_acknowledged_write_is_missing() {
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+        .await
+        .expect("start the group");
+    let group = control_plane.group().expect("a group").clone();
+    group.acknowledge_write().await.expect("a real write");
+    group
+        .converge(Duration::from_secs(30))
+        .await
+        .expect("a held write converges");
+    group.claim_acknowledged("never-written");
+    let err = group
+        .converge(Duration::from_secs(3))
+        .await
+        .expect_err("a lost write must not converge");
+    assert!(
+        format!("{err:#}").contains("lost the acknowledged write"),
+        "{err:#}"
+    );
+    control_plane.shutdown().await;
+}

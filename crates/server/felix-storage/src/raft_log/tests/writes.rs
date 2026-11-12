@@ -15,7 +15,7 @@ use crate::segment::GENERATION_VERSION;
 type Flushed = std::pin::Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
 
 /// Append, returning the callback's receiver once the append has returned.
-pub(super) async fn append(
+pub(crate) async fn append(
     raft: &mut RaftLog<Types, Codec>,
     entries: &[TestEntry],
 ) -> io::Result<Flushed> {
@@ -28,7 +28,7 @@ pub(super) async fn append(
 
 /// Append a few entries at a time, waiting for each callback. A batch goes
 /// into one segment whole, so several are what spread a log over segments.
-pub(super) async fn append_flushed(raft: &mut RaftLog<Types, Codec>, entries: &[TestEntry]) {
+pub(crate) async fn append_flushed(raft: &mut RaftLog<Types, Codec>, entries: &[TestEntry]) {
     for batch in entries.chunks(3) {
         let flushed = append(raft, batch).await.expect("append");
         flushed.await.expect("flush");

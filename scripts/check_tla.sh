@@ -104,6 +104,12 @@ tlc() {
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixRaftMembership*) module="FelixRaftMembership" ;;
+    FelixRaftIdentity*) module="FelixRaftIdentity" ;;
+    FelixRaftReform*) module="FelixRaftReform" ;;
+    FelixRaftLease*) module="FelixRaftLease" ;;
+    FelixRaftSleep*) module="FelixRaftSleep" ;;
+    FelixRaftSwitch*) module="FelixRaftSwitch" ;;
     FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
     FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
@@ -515,6 +521,134 @@ expectations=(
   "FelixRaftReachInstallCrash violates NeverCrashesMidInstall"
   "FelixRaftReachSnapshotReplace violates NeverReplacesSnapshot"
   "FelixRaftReachDeliverFailover violates NeverDeliversAcrossFailover"
+  "FelixRaftMembership pass"
+  "FelixRaftMembershipFailover pass"
+  "FelixRaftMembershipSkipJoint violates OneLeaderPerTerm"
+  "FelixRaftMembershipChangeBeforeCommit violates StateMachineSafety"
+  "FelixRaftMembershipLearnerCounts violates AckedSurvive"
+  "FelixRaftMembershipClaimRaces violates NeverStops"
+  "FelixRaftMembershipReopenOnReturn violates NeverStops"
+  "FelixRaftMembershipReachMove violates NeverMoves"
+  "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
+  "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftIdentity pass"
+  "FelixRaftIdentityRelaxedCrash pass"
+  "FelixRaftIdentityRootRestore pass"
+  "FelixRaftIdentityDirRestore pass"
+  "FelixRaftIdentityMarkExact pass"
+  "FelixRaftIdentityWipeThenRestore pass"
+  "FelixRaftIdentityMarkBatched violates AckedHeldByLeader"
+  "FelixRaftIdentityRootRestoreSameRun violates OneLeaderPerTerm"
+  "FelixRaftIdentityWipeKeepsId violates LeaderCompleteness"
+  "FelixRaftIdentityNoRestoreCheck violates LeaderCompleteness"
+  "FelixRaftIdentityNoStorageIdCheck violates LeaderCompleteness"
+  "FelixRaftIdentityMarkForgetsCopy violates LeaderCompleteness"
+  "FelixRaftIdentityNoVoteMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityVoteBeforeMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityRejoins violates NeverRejoins"
+  "FelixRaftIdentityRejoinLeads violates NeverRotatedLeads"
+  "FelixRaftIdentityRestoreCaught violates NeverRotates"
+  "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
+  "FelixRaftSwitch pass"
+  "FelixRaftSwitchLag pass"
+  "FelixRaftSwitchLagWipe pass"
+  "FelixRaftSwitchWiped pass"
+  "FelixRaftSwitchGenZero pass"
+  "FelixRaftSwitchStarts pass"
+  "FelixRaftSwitchDiffers pass"
+  "FelixRaftSwitchReseal pass"
+  "FelixRaftSwitchDigestCoversGeneration pass"
+  "FelixRaftSwitchAllVoters violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBase violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBaseCuts violates NeverCutsHeldRecord"
+  "FelixRaftSwitchNoDigest violates LeaderCompleteness"
+  "FelixRaftSwitchDigestFromOwnStart violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWrite violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWriteTwoBases violates OneBase"
+  "FelixRaftSwitchStaleIdVotes violates LeaderCompleteness"
+  "FelixRaftSwitchReachCommit violates NeverCommitsAboveBase"
+  "FelixRaftSwitchReachPromote violates NeverPromotes"
+  "FelixRaftSwitchReachPromotedLeads violates NeverPromotedLeads"
+  "FelixRaftSwitchReachInstall violates NeverInstalls"
+  "FelixRaftSwitchReachGenZero violates NeverElects"
+  "FelixRaftSwitchReachWipedSwitch violates NeverSwitches"
+  "FelixRaftSwitchReachReseal violates NeverSwitchesAfterReseal"
+  "FelixRaftReform pass"
+  "FelixRaftReformTwoRotated pass"
+  "FelixRaftReformRejoin pass"
+  "FelixRaftReformStaleMembershipIntact pass"
+  "FelixRaftReformOneReplica pass"
+  "FelixRaftReformBeforeAll violates AckedSurvive"
+  "FelixRaftReformEpochNotChecked violates AckedSurvive"
+  "FelixRaftReformReportNotPromise violates AckedSurvive"
+  "FelixRaftReformOwnMembershipOnly violates AckedSurvive"
+  "FelixRaftReformRetireNotDurable violates AckedSurvive"
+  "FelixRaftReformBaseNotHighest violates AckedSurvive"
+  "FelixRaftReformRotatedNotWaited violates AckedSurvive"
+  "FelixRaftReformJoinKeepsReport violates AckedSurvive"
+  "FelixRaftReformNoCas violates StateMachineSafety"
+  "FelixRaftReformTwoRotatedOffsets violates OffsetNeverReused"
+  "FelixRaftReformCommits violates NeverCommitsAfterReform"
+  "FelixRaftReformOneReplicaCommits violates NeverCommitsAfterReform"
+  "FelixRaftReformSlow violates NeverSlowGroupElects"
+  "FelixRaftReformTwoRotatedOneVoter violates NeverOneVoterCommits"
+  "FelixRaftReformRejoinHappens violates NeverRetiredRejoins"
+  "FelixRaftReformStaleMembership pass"
+  "FelixRaftReformRejoinFull pass"
+  "FelixRaftSwitchGenZeroFull pass"
+  "FelixRaftMembershipTerms pass"
+  "FelixRaftReformTwoRotatedFull pass"
+  "FelixRaftReformStaleMembershipHappens violates NeverReformsAfterChange"
+  "FelixRaftReformStaleMembershipTwoRotated violates AckedSurvive"
+  "FelixRaftReformLearnerHolds violates AckedSurvive"
+  "FelixRaftReformLearnerWaited pass"
+  "FelixRaftLease pass"
+  "FelixRaftLeaseAck pass"
+  "FelixRaftLeaseDeliver pass"
+  "FelixRaftLeaseRestart pass"
+  "FelixRaftLeaseStore pass"
+  "FelixRaftLeaseStoreStall pass"
+  "FelixRaftLeaseStoreWide pass"
+  "FelixRaftLeaseRestartForgets violates LeaseExclusive"
+  "FelixRaftLeaseLong violates LeaseExclusive"
+  "FelixRaftLeaseDrift violates LeaseExclusive"
+  "FelixRaftLeaseFromAck violates LeaseExclusive"
+  "FelixRaftLeaseVoteInWindow violates LeaseExclusive"
+  "FelixRaftLeaseStoreNotDurable violates LeaseExclusive"
+  "FelixRaftLeaseStoreVote violates LeaseExclusive"
+  "FelixRaftLeaseStoreKept violates LeaseExclusive"
+  "FelixRaftLeaseStoreResupport violates LeaseExclusive"
+  "FelixRaftLeaseStoreWithdrawEarly violates LeaseExclusive"
+  "FelixRaftLeaseStoreLong violates LeaseExclusive"
+  "FelixRaftLeaseAckLong violates NoAckBehindNewLeader"
+  "FelixRaftLeaseDeliverUncommitted violates DeliveredNeverReplaced"
+  "FelixRaftLeaseReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseReachRenewed violates NeverLapsedThenRenewed"
+  "FelixRaftLeaseReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
+  "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftSleep pass"
+  "FelixRaftSleepWrite pass"
+  "FelixRaftSleepLeaderDies pass"
+  "FelixRaftSleepLivenessMisses pass"
+  "FelixRaftSleepFalseAlarm pass"
+  "FelixRaftSleepRestart pass"
+  "FelixRaftSleepAnyState pass"
+  "FelixRaftSleepEnds pass"
+  "FelixRaftSleepNoWake violates QuiescentLed"
+  "FelixRaftSleepSleepUnsupported violates QuiescentLed"
+  "FelixRaftSleepCampaignOnWake violates NoNeedlessDeposal"
+  "FelixRaftSleepRestartNoHold violates NoNeedlessDeposal"
+  "FelixRaftSleepLeaderSleepsFirst violates NoNeedlessDeposal"
+  "FelixRaftSleepHeartbeatKeepsProposal violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollower violates NoNeedlessDeposal"
+  "FelixRaftSleepAskLost violates NoNeedlessDeposal"
+  "FelixRaftSleepHoldTooShort violates NoNeedlessDeposal"
+  "FelixRaftSleepAcceptUnchecked violates AsleepIsLevel"
+  "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
+  "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
+  "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -636,6 +770,11 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
+# FelixRaftReformStaleMembership{Relaxed,Placed} and FelixRaftLeaseAckWide are
+# not registered: each is registered once a dispatch run gives its declared
+# outcome.
+# FelixRaftReformStaleMembershipFull is not registered either: it gives the
+# violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -825,6 +964,32 @@ weights=(
   "FelixRaftOffsetsFailoverCrash 41"
   "FelixRaftCommitPriorTerm 1"
   "FelixRaftSaveCommittedUnflushed 2"
+  "FelixRaftMembership 4"
+  "FelixRaftMembershipFailover 8"
+  "FelixRaftIdentityDirRestore 2"
+  "FelixRaftIdentityWipeThenRestore 2"
+  "FelixRaftSwitchGenZero 6"
+  "FelixRaftSwitchStarts 11"
+  "FelixRaftSwitchReseal 4"
+  "FelixRaftReform 7"
+  "FelixRaftReformTwoRotated 6"
+  "FelixRaftReformOneReplica 2"
+  "FelixRaftReformOwnMembershipOnly 4"
+  "FelixRaftReformStaleMembershipTwoRotated 2"
+  "FelixRaftReformStaleMembership 40"
+  "FelixRaftReformRejoinFull 34"
+  "FelixRaftSwitchGenZeroFull 37"
+  "FelixRaftMembershipTerms 109"
+  "FelixRaftReformTwoRotatedFull 112"
+  "FelixRaftReformLearnerWaited 8"
+  "FelixRaftLeaseAck 2"
+  "FelixRaftLeaseDeliver 6"
+  "FelixRaftLeaseRestart 6"
+  "FelixRaftLeaseStore 2"
+  "FelixRaftLeaseStoreStall 2"
+  "FelixRaftLeaseStoreWide 36"
+  "FelixRaftSleep 2"
+  "FelixRaftSleepEnds 2"
 )
 
 # Minutes a configuration took on a pull request's runner, from the `Finished
@@ -895,12 +1060,26 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # FelixRaft.tla is behind few configurations, so a change to it counts as a
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
+  # The track 4 modules beside it are each behind their own few, the same way.
+  raft_parts="Membership Identity Reform Lease Sleep Switch"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"
+      for part in $raft_parts; do
+        case "$f" in FelixRaft"$part"*) continue 2 ;; esac
+      done
       changed_cfgs="$changed_cfgs${f%.cfg} "
     done
   fi
+  for part in $raft_parts; do
+    if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft$part.tla"; then
+      for f in "$SPEC_DIR"/FelixRaft"$part"*.cfg; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        changed_cfgs="$changed_cfgs${f%.cfg} "
+      done
+    fi
+  done
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
@@ -929,8 +1108,10 @@ fi
 # ten minutes, except changed ones of 30 minutes or less. A changed one over
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
-# them. FelixRaft.tla is the exception (see `changed_cfgs`). Pull requests check that tier; the rest run when the spec changes on
-# main. Configurations named on the command line always run. FelixShard,
+# them. FelixRaft.tla and the track 4 modules beside it are the exceptions:
+# a change to one counts as a change to each of its configurations (see
+# `changed_cfgs`). Pull requests check that tier; the rest run when the spec
+# changes on main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
