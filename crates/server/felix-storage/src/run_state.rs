@@ -556,8 +556,11 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// Record that the run under way on `root` may have lost records it
 /// acknowledged without a machine crash: a failed fsync may have dropped the
 /// pages it could not write, or a stop could not flush them. A crash after
-/// this rotates the id whatever the boot. Only a relaxed run's record names a
-/// boot, so any other is left as it is.
+/// this rotates the id whatever the boot. A relaxed run's record loses its
+/// boot, and an `OnCommit` run's, which names none, becomes a relaxed run
+/// without one: the page cache keeps the unsynced marker on the same boot,
+/// and a poisoned `OnCommit` log may hold bytes the failed flush never wrote.
+/// A clean stop is left as it is.
 ///
 /// Not synced. Only a crash of the process has to find it, and the page cache
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
@@ -570,7 +573,16 @@ pub fn forget_boot(root: &Path) -> Result<()> {
     };
     match decode(&bytes) {
         Some(Record {
-            id, boot: Some(_), ..
+            state: RUNNING,
+            id,
+            boot: Some(_),
+            ..
+        })
+        | Some(Record {
+            state: RUNNING,
+            id,
+            flags: 0,
+            boot: None,
         }) => write(root, &encode(RUNNING, RELAXED, id), false),
         _ => Ok(()),
     }

@@ -60,7 +60,8 @@ fn the_storage_id_is_kept_on_disk_and_random_without_one() {
 /// starts under a new storage id (#1284)**, since its unsynced tail may be
 /// gone. On Linux a process crash in the same boot keeps it (#1367): the
 /// page cache kept the tail. A clean stop keeps the id under every mode, and so does a
-/// crash under `OnCommit`, which acknowledged nothing it had not synced.
+/// crash under `OnCommit`, which acknowledged nothing it had not synced,
+/// unless a failed fsync forgot the boot first.
 #[test]
 fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
     let modes = [
@@ -92,12 +93,13 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
         let killed = begin_run(root.path(), &log, None).expect("after a process crash");
         assert_eq!(killed.rotated, relaxed && !known_boot, "{fsync_mode:?}");
         // A failed fsync, or a boot that cannot be compared, leaves the
-        // boot unknown, as a machine crash does.
+        // boot unknown, as a machine crash does. That includes `OnCommit`:
+        // a poisoned log may hold bytes its failed flush never wrote.
         forget_boot(root.path()).expect("forget the boot");
         let third = begin_run(root.path(), &log, None).expect("after a crash");
-        assert_eq!(third.rotated, relaxed, "{fsync_mode:?}");
+        assert!(third.rotated, "{fsync_mode:?}");
         let third = third.id;
-        assert_eq!(third != killed.id, relaxed, "{fsync_mode:?}");
+        assert_ne!(third, killed.id, "{fsync_mode:?}");
         assert_eq!(
             storage_id(Some(root.path())).expect("load"),
             third,

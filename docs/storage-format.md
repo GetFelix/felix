@@ -79,6 +79,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     raft-purged                              ← a Raft log's last purged id
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
+    poisoned                                 ← only after a failed fsync: the mark as of the failure
     producers                                ← producer snapshot, when any producer wrote here
     head                                     ← trim records' head entries, once the log holds a v7 segment
     offload.manifest                         ← segments copied to the object store, once offload has run
@@ -1594,7 +1595,8 @@ A 32-byte file, rewritten in place whenever a flush, roll or seal moves it forwa
 ```text
  0   4  magic         u32  "FLSM"
  4   2  version       u16
- 6   2  reserved      u16
+ 6   1  mode          u8   0 here; the failed run's fsync mode in `poisoned`
+ 7   1  reserved      u8
  8   8  segment       u64  segment id the mark refers to
 16   8  synced_bytes  u64  bytes of that segment known to be on the device
 24   4  crc           u32  crc32 over bytes 0..24
@@ -1615,6 +1617,19 @@ after a power loss it can lag by the filesystem's writeback delay; it is
 synced at open (with its directory entry, so a fresh shard's first segment has
 a mark), at clean shutdown and close, and after a truncation or reset. A
 missing or corrupt mark reads as absent.
+
+A log that a failed fsync poisons also writes a `poisoned` file of the same
+32 bytes and layout, holding the last point a sync reached and, in the mode
+byte, the fsync mode of the run that failed: 1 for `None`, 2 for `Periodic`,
+3 for `OnCommit`. Any other value reads as a relaxed mode, which keeps the
+records. The crc covers the byte. The file is not synced.
+
+The next open of the log reads it before recovery. Under mode 3 it cuts the
+log back to that mark and rewrites `durable.mark` to it. Under any other mode
+it reads every byte past the mark back and writes it again, then syncs. Either
+way it writes the state files again and removes `poisoned` last. A file that
+does not decode cuts and rewrites nothing, logs a warning, and still triggers
+the rewrite of the state files.
 
 ## `storage-id`: the data directory's identity
 
