@@ -1222,6 +1222,23 @@ impl DiskLog {
         self.inner.segments.read().generation()
     }
 
+    /// The tail as it is now, without a future to poll.
+    #[cfg(feature = "raft")]
+    pub(crate) fn tail_now(&self) -> Offset {
+        self.inner.segments.read().tail_offset()
+    }
+
+    /// What [`Self::commit`] answers when it has nothing to wait for, and
+    /// `None` when a flush must cover the batch first.
+    #[cfg(feature = "raft")]
+    pub(crate) fn commit_now(&self, pending: &PendingAppend) -> Option<Result<()>> {
+        let durability = &self.inner.durability;
+        if durability.acknowledges_before_sync() && !pending.holds_trim {
+            return Some(Ok(()));
+        }
+        (durability.durable_upto() >= pending.durable_target).then(|| self.inner.check_healthy())
+    }
+
     /// The read behind both `read_range` methods, and the tail it ran to.
     /// Without trims a start below the head floor is refused; with them only
     /// one below the oldest segment is, since replication ships from there.

@@ -24,7 +24,8 @@ pub trait EntryCodec<C: RaftTypeConfig>: Send + Sync + 'static {
     fn encode_data(&self, data: &C::D) -> io::Result<AppendRecord>;
 
     /// The command a record holds. Given every record that is not a blank or
-    /// a membership entry.
+    /// a membership entry. Its `checksum` is 0 when the record comes from
+    /// memory and not from a segment, so a command must not depend on it.
     fn decode_data(&self, record: LogRecord) -> io::Result<C::D>;
 
     /// A membership as a [`RecordMark::Membership`] record's payload.

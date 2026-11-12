@@ -31,10 +31,12 @@
 //! openraft types stay inside this module and the engine that drives it.
 
 mod codec;
+mod flush_queue;
 mod purged;
 mod reader;
 mod snapshot;
 mod state_file;
+mod tail_cache;
 #[cfg(test)]
 mod tests;
 mod writer;
@@ -52,7 +54,9 @@ use openraft::entry::{Entry, EntryPayload};
 use openraft::storage::LogState;
 use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
+use self::flush_queue::FlushQueue;
 use self::purged::Purged;
+use self::tail_cache::TailCache;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::Offset;
@@ -107,13 +111,18 @@ struct Shared<K> {
     purged: parking_lot::Mutex<Option<Purged>>,
     /// Set by [`RaftLog::purge_within`]: a purge stops at this snapshot.
     covering: std::sync::OnceLock<SnapshotStore>,
-    /// Read-held by each append until its callback has fired, and
-    /// write-held by a truncation.
-    flushing: Arc<tokio::sync::RwLock<()>>,
+    /// Appends whose callback has not fired. A truncation waits for it to
+    /// empty.
+    flushes: FlushQueue,
+    /// The newest entries, so replication reads them without the segments.
+    tail: parking_lot::Mutex<TailCache>,
     /// Holds the next paged read after its first page: the read signals the
     /// sender, then waits for the receiver.
     #[cfg(test)]
     pause_after_page: parking_lot::Mutex<Option<tests::PagePause>>,
+    /// Reads of the segments, as against the tail cache.
+    #[cfg(test)]
+    segment_reads: std::sync::atomic::AtomicU64,
 }
 
 impl<C, K> Clone for RaftLog<C, K> {
@@ -150,9 +159,12 @@ where
                 codec,
                 purged: parking_lot::Mutex::new(purged),
                 covering: std::sync::OnceLock::new(),
-                flushing: Arc::default(),
+                flushes: FlushQueue::default(),
+                tail: parking_lot::Mutex::default(),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
+                #[cfg(test)]
+                segment_reads: std::sync::atomic::AtomicU64::new(0),
             }),
             types: std::marker::PhantomData,
         })

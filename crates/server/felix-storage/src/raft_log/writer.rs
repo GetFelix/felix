@@ -6,7 +6,6 @@
 
 use std::io;
 use std::ops::Deref;
-use std::sync::Arc;
 
 use openraft::OptionalSend;
 use openraft::entry::RaftEntry;
@@ -15,6 +14,7 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
 
 use super::codec::record_from_entry;
+use super::flush_queue::FlushQueue;
 use super::purged::{self, Purged};
 use super::{
     EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
@@ -24,7 +24,9 @@ use super::{
 use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
-use crate::log::{AppendOnlyLog, AppendRecord, Epoch, Offset, WrittenBy};
+use crate::log::{
+    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, UNKNOWN_WRITER, WrittenBy,
+};
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
@@ -101,7 +103,7 @@ where
     }
 
     /// Returns once the entries are written and a reader sees them.
-    /// `callback` fires from another task, once the log's fsync policy is
+    /// `callback` fires once the log's fsync policy is
     /// met for everything up to the last of them: under
     /// `FsyncMode::OnCommit`, once a flush has covered them. A flush covers
     /// a prefix of the log, so nothing below them is left out.
@@ -123,7 +125,9 @@ where
             .segment_size_bytes
             .saturating_sub(SEGMENT_HEADER_LEN);
         let record_header = record_header_len(GENERATION_VERSION);
-        let mut batches: Vec<Batch> = Vec::new();
+        // Only an append larger than a segment fills `earlier`.
+        let mut earlier: Vec<Batch> = Vec::new();
+        let mut batch = Batch::default();
         let mut next = None;
         for entry in entries {
             let index = entry.index();
@@ -141,13 +145,11 @@ where
                     .headers
                     .as_ref()
                     .map_or(0, |headers| headers.len() as u64);
-            if batches
-                .last()
-                .is_none_or(|batch| batch.bytes + bytes > batch_bytes)
-            {
-                batches.push(Batch::starting_at(index));
+            if batch.records.is_empty() {
+                batch.first = index;
+            } else if batch.bytes + bytes > batch_bytes {
+                earlier.push(std::mem::replace(&mut batch, Batch::starting_at(index)));
             }
-            let batch = batches.last_mut().expect("pushed above");
             batch.bytes += bytes;
             // One run per term, as the segment stamps them.
             if batch
@@ -162,15 +164,13 @@ where
             }
             batch.records.push(record);
         }
-        let Some(first) = batches.first().map(|batch| batch.first) else {
+        if batch.records.is_empty() {
             callback.io_completed(Ok(()));
             return Ok(());
-        };
+        }
+        let first = earlier.first().map_or(batch.first, |batch| batch.first);
 
-        // Taken before the entries are written and held until the callback
-        // has fired, so a truncation waits for it.
-        let flushing = Arc::clone(&shared.flushing).read_owned().await;
-        let tail = log.tail_offset().await.map_err(io_error)?;
+        let tail = log.tail_now();
         let purged = *shared.purged.lock();
         // No entry above the purged id: the log restarts where this append
         // begins. That is right after the purged id when there is one, and
@@ -186,10 +186,16 @@ where
                 log.reset_to(first).await.map_err(io_error)?;
             }
         }
-        let mut written = Vec::with_capacity(batches.len());
-        for batch in batches {
+        // Read before the write: see `TailCache`.
+        let cuts = log.cuts();
+        let mut last = None;
+        for batch in earlier.into_iter().chain([batch]) {
             let pending = log
-                .append_pending_at(batch.first, &batch.records, WrittenBy::Writers(batch.writers))
+                .append_pending_at(
+                    batch.first,
+                    &batch.records,
+                    WrittenBy::Writers(batch.writers.clone()),
+                )
                 .await
                 .map_err(io_error)?
                 .ok_or_else(|| {
@@ -199,21 +205,28 @@ where
                         batch.first
                     ))
                 })?;
-            written.push(pending);
+            shared.tail.lock().extend(cuts, batch.into_log_records());
+            last = Some(pending);
         }
+        // A flush covers a prefix of the log, so the last batch's wait
+        // stands for the append.
+        let last = last.expect("at least one batch");
 
-        let shared = Arc::clone(shared);
-        tokio::spawn(async move {
-            let mut flushed = Ok(());
-            for pending in &written {
-                flushed = shared.log.commit(pending).await.map_err(io_error);
-                if flushed.is_err() {
-                    break;
-                }
-            }
-            callback.io_completed(flushed);
-            drop(flushing);
-        });
+        // Fired here only when no earlier callback is still to come, so
+        // callbacks keep the order of their appends.
+        let flushed = if shared.flushes.is_empty() {
+            log.commit_now(&last)
+        } else {
+            None
+        };
+        match flushed {
+            Some(flushed) => callback.io_completed(flushed.map_err(io_error)),
+            None => FlushQueue::push(
+                shared,
+                last,
+                Box::new(move |flushed| callback.io_completed(flushed)),
+            ),
+        }
         Ok(())
     }
 
@@ -227,7 +240,9 @@ where
         let log = &self.shared.log;
         // A flush still waiting on entries this cuts would never reach them
         // and would report the append failed. Each one finishes first.
-        let _flushed = self.shared.flushing.write().await;
+        self.shared.flushes.drained().await;
+        // Before the cut, so no read finds here an entry the log has lost.
+        self.shared.tail.lock().clear();
         let first = self.shared.first_index();
         let keep = match last_log_id {
             None => first,
@@ -265,7 +280,7 @@ where
         };
         // After a purge past the log's end the first index is above the
         // tail, and there is nothing to cut.
-        if keep >= log.tail_offset().await.map_err(io_error)? {
+        if keep >= log.tail_now() {
             return Ok(());
         }
         log.truncate(keep).await.map_err(io_error)
@@ -289,7 +304,7 @@ where
         let log = &shared.log;
         // A purge past the end drops entries a flush may still be waiting
         // on, as a truncation does.
-        let _flushed = shared.flushing.write().await;
+        shared.flushes.drained().await;
         let index = log_id.index();
         let term = **log_id.committed_leader_id();
         if shared
@@ -308,7 +323,7 @@ where
                 )));
             }
         }
-        let tail = log.tail_offset().await.map_err(io_error)?;
+        let tail = log.tail_now();
         if index >= shared.first_index() && index < tail {
             let held = term_at(log.writer_at(index).await.map_err(io_error)?, index)?;
             if held != term {
@@ -339,6 +354,7 @@ where
 }
 
 /// Entries of one append that go to the log as one batch.
+#[derive(Default)]
 struct Batch {
     first: Offset,
     records: Vec<AppendRecord>,
@@ -350,15 +366,39 @@ impl Batch {
     fn starting_at(first: Offset) -> Self {
         Self {
             first,
-            records: Vec::new(),
-            writers: Vec::new(),
-            bytes: 0,
+            ..Self::default()
         }
+    }
+
+    /// The records as a read of the log returns them, but for the
+    /// checksum, which only the segment holds.
+    fn into_log_records(self) -> impl Iterator<Item = LogRecord> {
+        let Self { first, writers, .. } = self;
+        let mut runs = writers.into_iter().peekable();
+        let mut generation = UNKNOWN_WRITER;
+        self.records
+            .into_iter()
+            .zip(first..)
+            .map(move |(record, offset)| {
+                while let Some(run) = runs.next_if(|run| run.start_offset <= offset) {
+                    generation = run.generation;
+                }
+                LogRecord {
+                    offset,
+                    timestamp_micros: record.timestamp_micros,
+                    checksum: 0,
+                    payload: record.payload,
+                    mark: record.mark,
+                    publisher: record.publisher,
+                    headers: record.headers,
+                    generation: Some(generation),
+                }
+            })
     }
 }
 
 /// A storage error as openraft takes it, keeping an I/O error's kind.
-fn io_error(err: StorageError) -> io::Error {
+pub(super) fn io_error(err: StorageError) -> io::Error {
     match err {
         StorageError::Io(err) => err,
         other => io::Error::other(other),

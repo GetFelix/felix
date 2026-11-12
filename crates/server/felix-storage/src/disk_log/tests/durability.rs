@@ -340,3 +340,30 @@ async fn opening_a_log_flushes_its_directory_once() {
         }
     }
 }
+
+/// `commit_now` answers what `commit` would without waiting, and nothing
+/// when a flush has to cover the batch first.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn commit_now_answers_only_when_there_is_nothing_to_wait_for() {
+    let dir = tempdir().expect("dir");
+    let relaxed = open(&dir, FsyncMode::None);
+    let pending = relaxed
+        .append_pending(&records(&["a"]))
+        .await
+        .expect("append");
+    assert!(matches!(relaxed.commit_now(&pending), Some(Ok(()))));
+
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let pending = log.append_pending(&records(&["a"])).await.expect("append");
+    assert!(log.commit_now(&pending).is_none(), "nothing is flushed yet");
+    log.commit(&pending).await.expect("commit");
+    assert!(matches!(log.commit_now(&pending), Some(Ok(()))));
+
+    // A covered batch on a log that has since failed is not acknowledged.
+    log.fail_next_flush();
+    let unflushed = log.append_pending(&records(&["b"])).await.expect("append");
+    log.commit(&unflushed).await.expect_err("the flush failed");
+    assert!(matches!(log.commit_now(&pending), Some(Err(_))));
+}

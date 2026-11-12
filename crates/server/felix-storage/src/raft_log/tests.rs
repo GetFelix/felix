@@ -3,12 +3,14 @@
 
 #[cfg(feature = "sim")]
 mod crash_points;
+mod flush_queue;
 #[cfg(feature = "sim")]
 mod install_crash_points;
 mod machine;
 mod purge;
 mod snapshots;
 mod suite;
+mod tail;
 mod writes;
 
 use std::io;
