@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794517972215,
+  "lastUpdate": 1794519412306,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53248,6 +53248,58 @@ window.BENCHMARK_DATA = {
             "range": "10849.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812823.07\nmean: 813862.27\nstdev: 10849.96\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d88ecd43492af0450dd2fbaf4089ad3f94f367f1",
+          "message": "feat(wire): subscribe with an end offset (#1053) (#1909)\n\n* feat(wire): subscribe with an end offset (#1053)\n\nA subscribe may carry end: the subscription delivers [start, end) of a\ndurable stream shard and finishes with subscription_ended. A range at or\nbelow the committed tail is read from disk and never joins fanout; one\nabove it follows live delivery and the receiver cuts the batch at end.\nNegotiated with FEATURE_SUBSCRIBE_END (0x40, extended word).\n\nCloses #1053\n\n* fix(wire): a bounded replay pages a dropped gap below end before stopping (#1053)\n\n* chore: spec pairing for subscribe end offset\n\nSpec-Unaffected: the end offset only stops delivery to one subscriber at a bound it chose; read order, the readable bound, offsets and fencing in FelixShardSessions are unchanged.\n\n* test(broker-service): bounded subscription is exact while publishing\n\n* docs: subscribe end bit in the changelog fragment, history-only bound",
+          "timestamp": "2026-11-12T21:32:57Z",
+          "tree_id": "8a38cd2d61a744d0da5e9f134f109826663c4f64",
+          "url": "https://github.com/GetFelix/felix/commit/d88ecd43492af0450dd2fbaf4089ad3f94f367f1"
+        },
+        "date": 1794519411388,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 620238.78,
+            "range": "32072.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 620238.78\nmean: 621669.82\nstdev: 32072.68\ncv: 5.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 620238.78,
+            "range": "32072.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 620238.78\nmean: 621669.82\nstdev: 32072.68\ncv: 5.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 148373.2,
+            "range": "8865.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 148373.20\nmean: 144661.14\nstdev: 8865.89\ncv: 6.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1483731.98,
+            "range": "88658.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1483731.98\nmean: 1446611.44\nstdev: 88658.91\ncv: 6.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
