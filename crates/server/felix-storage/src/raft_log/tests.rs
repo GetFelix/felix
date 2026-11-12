@@ -600,5 +600,9 @@ async fn a_paged_read_crosses_a_record_too_large_for_its_page() {
     assert_eq!(all(&raft).await.expect("read"), entries);
 }
 
+pub(crate) use machine::Machine;
 /// What tests outside this module need to drive the log.
-pub(crate) use openraft::storage::{RaftLogReader as LogReads, RaftLogStorage as LogWrites};
+#[cfg(feature = "sim")]
+pub(crate) use openraft::storage::RaftLogReader as LogReads;
+pub(crate) use openraft::storage::RaftLogStorage as LogWrites;
+pub(crate) use suite::Store as SuiteStore;

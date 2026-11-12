@@ -161,23 +161,22 @@ impl<K> Shared<K> {
         }
     }
 
-    /// Purge through `asked`, or with `None` only catch the disk up with
-    /// what is hidden: remove what the stored snapshot covers and hide the
-    /// rest. The caller holds the `flushing` write lock.
+    /// Purge through `asked`: remove what the stored snapshot covers and
+    /// hide the rest. An id at or below the purged id asks for nothing new,
+    /// and still removes what a snapshot has come to cover since. The caller
+    /// holds the `flushing` write lock.
     pub(super) async fn purge_hiding(
         &self,
         snapshots: &SnapshotStore,
-        asked: Option<Purged>,
+        asked: Purged,
     ) -> io::Result<()> {
         let bounds = *self.bounds.lock();
-        let target = match (bounds.purged(), asked) {
-            (Some(purged), Some(asked)) if asked.index <= purged.index => purged,
-            (_, Some(asked)) => {
+        let target = match bounds.purged() {
+            Some(purged) if asked.index <= purged.index => purged,
+            _ => {
                 self.check_held(asked).await?;
                 asked
             }
-            (Some(purged), None) => purged,
-            (None, None) => return Ok(()),
         };
         // The snapshot's own id when it stops short of the target.
         let removable = match stored(snapshots)? {
@@ -203,14 +202,9 @@ impl<K> Shared<K> {
         Ok(())
     }
 
-    /// Let an append that begins at `first` in, or refuse it. Returns the
-    /// `flushing` read lock the append holds until its callback has fired.
-    ///
-    /// Let in: an append that continues the entries on disk, one that
-    /// starts right after the id in `raft-purged` or right after the stored
-    /// snapshot when no entry is above them, and the first append to a log
-    /// that has no entry, no purged id and no snapshot at all, which has
-    /// nothing to leave a hole after.
+    /// Let an append that begins at `first` in, or refuse it with the log
+    /// untouched. Returns the `flushing` read lock the append holds until
+    /// its callback has fired. The rule is [`admission`].
     pub(super) async fn admit(
         self: &Arc<Self>,
         snapshots: &SnapshotStore,
@@ -219,7 +213,7 @@ impl<K> Shared<K> {
         let log = &self.log;
         let reading = Arc::clone(&self.flushing).read_owned().await;
         let tail = log.tail_offset().await.map_err(io_error)?;
-        if self.bounds.lock().hidden.is_none() && first == tail && tail >= self.first_on_disk() {
+        if self.bounds.lock().hidden.is_none() && first == tail && tail > self.first_on_disk() {
             return Ok(reading);
         }
         drop(reading);
@@ -228,51 +222,86 @@ impl<K> Shared<K> {
         // find gone. openraft sends one write at a time, so nothing else
         // gets in between the two locks.
         let writing = Arc::clone(&self.flushing).write_owned().await;
-        self.purge_hiding(snapshots, None).await?;
         let tail = log.tail_offset().await.map_err(io_error)?;
         let bounds = *self.bounds.lock();
         let covered = stored(snapshots)?;
-        let refused = |why: &str| {
-            Err(invalid(format!(
-                "{}: an append at index {first} {why} (entries on disk end at {tail}, purged \
+        // Decided before anything is removed, so a refusal changes nothing.
+        let purge =
+            admission(bounds, covered, self.first_on_disk(), tail, first).map_err(|why| {
+                invalid(format!(
+                    "{}: an append at index {first} {why} (entries on disk end at {tail}, purged \
                  through {:?} on disk and {:?} in memory, snapshot through {:?})",
-                log.label(),
-                bounds.on_disk.map(|purged| purged.index),
-                bounds.hidden.map(|purged| purged.index),
-                covered.map(|stored| stored.index),
-            )))
-        };
-        if let Some(hidden) = bounds.hidden {
-            if first <= hidden.index {
-                return refused("is at or below the purged id");
-            }
-            if first != tail {
-                return refused(
-                    "would leave a log that starts after its snapshot: the entries below it \
-                     were purged past the stored snapshot",
-                );
-            }
-        } else if tail > self.first_on_disk() {
-            if first != tail {
-                return refused("does not continue the log");
-            }
-        } else {
-            match (bounds.on_disk, covered) {
-                (Some(purged), _) if purged.index + 1 == first => {}
-                (purged, Some(stored))
-                    if stored.index + 1 == first
-                        && purged.is_none_or(|purged| purged.index < stored.index) =>
-                {
-                    self.remove_through(stored).await?;
-                }
-                (None, None) if first >= tail => {}
-                _ => return refused("follows neither the purged id nor the stored snapshot"),
-            }
-            if first > log.tail_offset().await.map_err(io_error)? {
-                log.reset_to(first).await.map_err(io_error)?;
-            }
+                    log.label(),
+                    bounds.on_disk.map(|purged| purged.index),
+                    bounds.hidden.map(|purged| purged.index),
+                    covered.map(|stored| stored.index),
+                ))
+            })?;
+        if let Some(purge) = purge {
+            self.check_held(purge).await?;
+            self.remove_through(purge).await?;
+        }
+        if first > log.tail_offset().await.map_err(io_error)? {
+            log.reset_to(first).await.map_err(io_error)?;
         }
         Ok(writing.downgrade())
+    }
+}
+
+/// Whether an append that begins at `first` may be written, and the id to
+/// purge through on disk before it is. `Err` says why not.
+///
+/// `first_on_disk..tail` are the entries on disk. Let in:
+/// - an append that continues them, unless a hidden id says they are
+///   purged and no stored snapshot covers it;
+/// - with no entry left above the purged id, one that starts right after
+///   it or right after the stored snapshot;
+/// - the first append to a log with no entry, no purged id and no stored
+///   snapshot, which has nothing to leave a hole after.
+///
+/// A hidden id the stored snapshot covers counts as purged on disk, and is
+/// the id returned.
+fn admission(
+    bounds: Bounds,
+    covered: Option<Purged>,
+    first_on_disk: Offset,
+    tail: Offset,
+    first: Offset,
+) -> Result<Option<Purged>, &'static str> {
+    const NO_HOLE: &str = "would leave a log that starts after its snapshot: the entries below it \
+                           were purged past the stored snapshot";
+    const NOT_NEXT: &str = "does not continue the log";
+    let hidden = match bounds.hidden {
+        Some(hidden) if first <= hidden.index => return Err("is at or below the purged id"),
+        Some(hidden) if covered.is_none_or(|stored| stored.index < hidden.index) => {
+            // Stays hidden, so the entries on disk must reach this append.
+            return if first == tail {
+                Ok(None)
+            } else {
+                Err(NO_HOLE)
+            };
+        }
+        hidden => hidden,
+    };
+    let purged = hidden.or(bounds.on_disk);
+    let first_kept = purged.map_or(first_on_disk, |purged| first_on_disk.max(purged.index + 1));
+    if tail > first_kept {
+        return if first == tail {
+            Ok(hidden)
+        } else {
+            Err(NOT_NEXT)
+        };
+    }
+    match (purged, covered) {
+        (Some(purged), _) if purged.index + 1 == first => Ok(hidden),
+        (purged, Some(stored))
+            if stored.index + 1 == first
+                && purged.is_none_or(|purged| purged.index < stored.index) =>
+        {
+            Ok(Some(stored))
+        }
+        (None, None) if first >= tail => Ok(None),
+        _ => Err("follows neither the purged id nor the stored snapshot"),
     }
 }
 

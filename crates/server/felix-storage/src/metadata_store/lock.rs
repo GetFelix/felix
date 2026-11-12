@@ -20,9 +20,8 @@ static CLAIMED: parking_lot::Mutex<Option<HashSet<PathBuf>>> = parking_lot::Mute
 /// The lock on one store, given up when dropped.
 #[derive(Debug)]
 pub(super) enum StoreLock {
-    /// Closing the file releases the lock.
     #[cfg(unix)]
-    File(#[allow(dead_code)] std::fs::File),
+    File(std::fs::File),
     Claim(PathBuf),
 }
 
@@ -44,10 +43,22 @@ impl StoreLock {
 
 impl Drop for StoreLock {
     fn drop(&mut self) {
-        if let Self::Claim(key) = self
-            && let Some(claimed) = CLAIMED.lock().as_mut()
-        {
-            claimed.remove(key);
+        match self {
+            // Unlocked, not just closed: a child process forked while the
+            // store was open holds a copy of the descriptor until it execs,
+            // and a close alone would leave the lock held through it.
+            #[cfg(unix)]
+            Self::File(file) => {
+                use std::os::fd::AsRawFd;
+                // SAFETY: `file` is open, and `flock` only reads the
+                // descriptor.
+                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+            }
+            Self::Claim(key) => {
+                if let Some(claimed) = CLAIMED.lock().as_mut() {
+                    claimed.remove(key);
+                }
+            }
         }
     }
 }

@@ -7,11 +7,11 @@ use std::ops::Deref;
 use std::path::PathBuf;
 
 use super::{LOG_DIR, MemberFile, STORE_DIR, Started, decide_start};
-use crate::DiskLog;
 use crate::log::{FsyncMode, LogConfig};
 use crate::raft_log::{
     CommittedLeaderIdOf, EntryCodec, LogReader, LogTypes, RaftLog, SnapshotStore,
 };
+use crate::{DiskLog, StorageError};
 
 /// One member's metadata store. The only way to open one.
 ///
@@ -40,7 +40,8 @@ where
     ///
     /// Refused, with the store left as found:
     /// - a log purged past the stored snapshot, which has lost entries;
-    /// - a saved committed id whose entry is of another term.
+    /// - a saved committed id whose entry is of another term: the log is
+    ///   not the one that id was saved for.
     ///
     /// Repaired:
     /// - a snapshot that covers the log's last entry empties the log, so it
@@ -71,7 +72,7 @@ where
 
     /// [`Self::open`] with the log's sizes taken from `config`. What makes
     /// it a Raft log, and when it is fsynced, is not the caller's to set.
-    async fn open_configured(
+    pub(super) async fn open_configured(
         data_dir: PathBuf,
         cluster_id: &str,
         codec: K,
@@ -90,8 +91,9 @@ where
             retention_age: None,
             ..config
         };
-        let disk =
-            DiskLog::open(store_dir.join(LOG_DIR), label, config).map_err(io::Error::other)?;
+        // Fails on a saved committed id whose entry is of another term.
+        let disk = DiskLog::open_refusing_other_commit(store_dir.join(LOG_DIR), label, config)
+            .map_err(io_error)?;
         let opened = async {
             let log = RaftLog::new(disk.clone(), codec)?;
             let snapshots = SnapshotStore::open(&store_dir)?;
@@ -104,7 +106,6 @@ where
                 member.set_vote_withheld(true).await?;
             }
             log.start_after_snapshot(&snapshots).await?;
-            log.check_committed().await?;
             Ok::<_, io::Error>((log, snapshots, !blank || covered))
         }
         .await;
@@ -138,7 +139,9 @@ where
         self.log.reader()
     }
 
-    /// Where the state machine keeps its snapshot.
+    /// Where the state machine keeps its snapshot. The log measures its
+    /// purges against this store, so the state machine must write through
+    /// a clone of it and never open a second one on the directory.
     pub fn snapshots(&self) -> &SnapshotStore {
         &self.snapshots
     }
@@ -161,10 +164,14 @@ where
     /// Flush and close the log. The lock is released when the store and
     /// every clone of its member file are dropped.
     pub async fn shutdown(self) -> io::Result<()> {
-        self.log
-            .disk_log()
-            .shutdown()
-            .await
-            .map_err(io::Error::other)
+        self.log.disk_log().shutdown().await.map_err(io_error)
+    }
+}
+
+/// A storage error as an I/O error, keeping an I/O error's kind.
+fn io_error(err: StorageError) -> io::Error {
+    match err {
+        StorageError::Io(err) => err,
+        other => io::Error::other(other),
     }
 }

@@ -804,9 +804,9 @@ rule and `MetadataStore::open`, which checks the start rules below. Nothing
 in the control plane calls them yet: no routes, no state machine on the
 snapshot file, no build switch, no conversion tool. Everything above
 describes what runs today: openraft with its log, vote and snapshot in one
-redb file. This section
-is the plan to move that state onto `felix-storage`, so a Felix node has one
-storage engine (issue [#2167](https://github.com/GetFelix/felix/issues/2167)).
+redb file. This section is the plan to move that state onto `felix-storage`,
+so a Felix node has one storage engine (issue
+[#2167](https://github.com/GetFelix/felix/issues/2167)).
 The reasons, and the answer to "the segment store cannot truncate", are in
 [replication-engine.md](replication-engine.md#control-plane-storage-on-the-segment-log).
 
@@ -881,8 +881,9 @@ allow new data under the old id, which the model rejects
 (`SnapshotTwoRenames`).
 
 **Never backward.** A snapshot is stored only if it is not behind the stored
-one: its last index is at or past the stored one's. The check and the rename happen under one lock in the store,
-which replaces redb's single writer. This keeps the rule from
+one: its last index is at or past the stored one's. The check and the rename
+happen under one lock in the store, which replaces redb's single writer.
+This keeps the rule from
 [Snapshots, compaction, recovery](#snapshots-compaction-recovery): a build
 that finishes after a newer install is dropped.
 

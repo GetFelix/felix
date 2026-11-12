@@ -66,8 +66,10 @@ impl MemberFile {
         if !super::present(&dir)? {
             create(&dir, cluster_id)?;
         }
-        // Before the file is read: every change is written from the copy
-        // read here, so a second holder would undo the first's changes.
+        // A damaged store is refused before the lock file is made in it.
+        existing(&dir)?;
+        // Before the file is read for use: every change is written from the
+        // copy read here, so a second holder would undo the first's changes.
         let lock = StoreLock::take(&dir)?;
         let member = existing(&dir)?;
         if member.cluster_id != cluster_id {

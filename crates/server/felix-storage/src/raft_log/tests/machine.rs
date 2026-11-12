@@ -20,12 +20,33 @@ pub(super) struct State {
     pub(super) commands: Vec<String>,
 }
 
-pub(super) struct Machine {
+pub(crate) struct Machine {
     pub(super) snapshots: SnapshotStore,
     pub(super) state: State,
-    /// Store a snapshot after every apply, so that what is applied is
-    /// always what the stored snapshot covers.
-    pub(super) snapshot_each_apply: bool,
+    /// Where each apply leaves a snapshot of what it applied, for
+    /// [`Unstored::store`].
+    pub(super) unstored: Option<Unstored>,
+}
+
+/// A snapshot of what a [`Machine`] last applied, not yet stored. openraft
+/// purges only what a stored snapshot covers; a test that purges what it
+/// has only applied stores this first.
+#[derive(Clone)]
+pub(crate) struct Unstored {
+    snapshot: std::sync::Arc<parking_lot::Mutex<Option<StoredSnapshot>>>,
+    snapshots: SnapshotStore,
+}
+
+impl Unstored {
+    /// Store the snapshot of the last apply, if there was one since the
+    /// last call.
+    pub(crate) async fn store(&self) -> io::Result<()> {
+        let snapshot = self.snapshot.lock().take();
+        if let Some(snapshot) = snapshot {
+            self.snapshots.install(snapshot).await?;
+        }
+        Ok(())
+    }
 }
 
 impl Machine {
@@ -35,8 +56,23 @@ impl Machine {
         Self {
             snapshots: SnapshotStore::open(dir).expect("snapshots"),
             state: State::default(),
-            snapshot_each_apply: false,
+            unstored: None,
         }
+    }
+
+    /// An empty state machine over `snapshots`, and the snapshot of its
+    /// last apply for the caller to store.
+    pub(crate) fn with_unstored(snapshots: SnapshotStore) -> (Self, Unstored) {
+        let unstored = Unstored {
+            snapshot: std::sync::Arc::default(),
+            snapshots: snapshots.clone(),
+        };
+        let machine = Self {
+            snapshots,
+            state: State::default(),
+            unstored: Some(unstored.clone()),
+        };
+        (machine, unstored)
     }
 
     fn meta(state: &State) -> SnapshotMetaOf<Types> {
@@ -62,7 +98,7 @@ fn stored(meta: &SnapshotMetaOf<Types>, data: Vec<u8>) -> io::Result<StoredSnaps
     })
 }
 
-pub(super) struct Builder {
+pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
 }
@@ -114,10 +150,10 @@ impl RaftStateMachine<Types> for Machine {
                 responder.send(response);
             }
         }
-        if self.snapshot_each_apply {
+        if let Some(unstored) = &self.unstored {
             let meta = Self::meta(&self.state);
             let data = json(&self.state)?;
-            self.snapshots.install(stored(&meta, data)?).await?;
+            *unstored.snapshot.lock() = Some(stored(&meta, data)?);
         }
         Ok(())
     }

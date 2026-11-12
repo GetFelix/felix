@@ -1085,12 +1085,14 @@ gone. The metadata store's log keeps that from happening
   stored snapshot covers it.
 - An append must continue the entries on disk, or start right after the id
   in `raft-purged` or right after the stored snapshot when no entry is above
-  them. Any other append is a storage error. A purge past the log's end with
-  no snapshot, then an append, is the case this refuses: on disk it would
-  leave a hole nothing covers.
+  them. Any other append is a storage error, and it is decided before
+  anything is removed, so a refused append leaves the log as it was. A purge
+  past the log's end with no snapshot, then an append, is the case this
+  refuses: on disk it would leave a hole nothing covers.
 
-A log that holds no entry, no purged id and no snapshot at all starts where
-its first append begins. There is nothing before it to leave a hole after.
+A log that holds no entry, no purged id (on disk or hidden) and no snapshot
+starts where its first append begins. There is nothing before it to leave a
+hole after.
 
 A shard group's log refuses a purge past its snapshot instead
 (`RaftLog::purge_within`).
@@ -1213,7 +1215,11 @@ Per-shard log directories are not locked yet
 2. It opens the member file, creating the store if there is none, and takes
    the lock.
 3. It opens `log/` as a Raft log that is fsynced on commit. Neither is a
-   setting.
+   setting. A saved committed id whose index holds another term's entry
+   refuses the open: the id was saved for some other log, and a restart
+   must not apply entries up to it. The id is left on disk, so the next
+   open refuses too. (A shard group's log takes nothing as committed
+   instead and opens.)
 4. It opens the snapshot and refuses a log whose `raft-purged` id is past
    it: that log has lost entries.
 5. If the log holds no vote, no record and no purged id (a *blank* log) and
@@ -1225,8 +1231,6 @@ Per-shard log directories are not locked yet
 6. If the snapshot covers the log's last entry, it empties the log so that
    it starts right after the snapshot. A snapshot install ends with that
    purge, and a crash before it leaves it for the open.
-7. It reads the saved committed id. One whose entry is of another term
-   refuses the start: the entries up to it are not the committed ones.
 
 ### Whether a member may start
 

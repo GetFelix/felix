@@ -308,7 +308,7 @@ where
             generation: generation_of(term)?,
         };
         if let Some(snapshots) = shared.hides() {
-            return shared.purge_hiding(snapshots, Some(purged)).await;
+            return shared.purge_hiding(snapshots, purged).await;
         }
         if shared
             .bounds
@@ -338,15 +338,6 @@ where
     CommittedLeaderIdOf<C>: From<u64> + Deref<Target = u64>,
     K: EntryCodec<C>,
 {
-    /// Fails when the saved committed id names an index that holds another
-    /// term's entry: the entries up to it were not the committed ones, and
-    /// a restart must not apply them.
-    pub async fn check_committed(&self) -> io::Result<()> {
-        RaftLogStorage::read_committed(&mut self.clone())
-            .await
-            .map(drop)
-    }
-
     /// Whether the log holds nothing a member could have voted from: no
     /// vote, no record and no purged id. A member that never voted leaves
     /// this, and so does a log directory that was emptied.

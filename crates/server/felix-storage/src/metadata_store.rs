@@ -5,8 +5,8 @@
 //! the snapshot in `store/raft-snapshot` ([`SnapshotStore`], shared with
 //! every other Raft group), the member file in `store/member`
 //! ([`MemberFile`]) and the lock file `store/lock`. [`MetadataStore::open`]
-//! is the one way to open them together. A directory an older release wrote holds `raft.redb`
-//! instead. The design is in `docs/metadata-raft-design.md`, "Moving to the
+//! is the one way to open them together. A directory an older release wrote
+//! holds `raft.redb` instead. The design is in `docs/metadata-raft-design.md`, "Moving to the
 //! segment store"; the byte formats are in `docs/storage-format.md`.
 //!
 //! [`decide_start`] reads names and the member file only. It never opens

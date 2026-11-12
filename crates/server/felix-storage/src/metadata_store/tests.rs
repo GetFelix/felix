@@ -2,7 +2,11 @@
 
 #[cfg(feature = "sim")]
 mod crash_points;
+#[cfg(feature = "sim")]
+mod model;
 mod store;
+#[cfg(feature = "sim")]
+mod store_crash_points;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -119,6 +123,7 @@ async fn changes_read_back_after_a_reopen() {
         listing(dir.path()),
         [
             (STORE_DIR.to_string(), Vec::new()),
+            (format!("{STORE_DIR}/lock"), Vec::new()),
             (format!("{STORE_DIR}/{LOG_DIR}"), Vec::new()),
             (
                 format!("{STORE_DIR}/member"),
