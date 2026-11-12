@@ -110,6 +110,26 @@ pub fn segments_opened(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(tree(root)?.opened_segments())
 }
 
+/// Fail one flush under `root` (of a file or a directory) with an I/O
+/// error, after `skip` more have succeeded. The failed flush makes nothing
+/// durable, so a [`crash`] after it may drop what it was asked to keep, as
+/// a kernel may after a failed writeback.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn fail_flush(root: &Path, skip: u64) -> io::Result<()> {
+    tree(root)?.fail_flush(skip);
+    Ok(())
+}
+
+/// Disarm [`fail_flush`], and say whether its flush had failed.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn flush_failed(root: &Path) -> io::Result<bool> {
+    Ok(tree(root)?.flush_failed())
+}
+
 fn tree(root: &Path) -> io::Result<std::sync::Arc<crate::fs::Tree>> {
     crate::fs::tree_at(root).ok_or_else(|| {
         io::Error::new(

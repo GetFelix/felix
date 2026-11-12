@@ -155,12 +155,12 @@ pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&state.encode()).map_err(StorageError::Io)?;
         step()?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
+        crate::io::sync_all(&file)?;
     }
     step()?;
     crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     step()?;
-    sync_dir(dir).map_err(StorageError::Io)?;
+    sync_dir(dir)?;
     metrics::counter!(crate::metrics_names::REPLICA_STATE_WRITES_TOTAL).increment(1);
     metrics::histogram!(crate::metrics_names::REPLICA_STATE_WRITE_DURATION_SECONDS)
         .record(started.elapsed().as_secs_f64());

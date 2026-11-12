@@ -170,9 +170,14 @@ impl MemFile {
         data.reserved = data.reserved.max(offset.saturating_add(len));
     }
 
-    /// Make the file's bytes and length durable.
-    pub(crate) fn sync(&self) {
+    /// Make the file's bytes and length durable, unless the tree has a
+    /// flush failure armed for this one.
+    pub(crate) fn sync(&self) -> io::Result<()> {
+        if let Some(tree) = self.tree.upgrade() {
+            tree.before_flush()?;
+        }
         self.node.data.lock().sync();
+        Ok(())
     }
 
     fn readable(&self) -> io::Result<()> {
