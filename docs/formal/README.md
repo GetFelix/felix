@@ -672,7 +672,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule the design and openraft 0.10.0 lack (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule that is not built and openraft 0.10.0 lacks (issue #2307), so it does not yet gate the lease pull request |
 | `FelixRaftLeaseRestartForgets.cfg` | the design as written and the engine as it is: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
@@ -2515,6 +2515,15 @@ are what the command still has to do. It stands where `AskRetire` does, and
 it must list every placed broker, a move's target included, which is
 `WaitPlaced` below (issue #2311).
 
+The design page now has a rule for each hole this model found, in its table
+"Rules the model found" (issues #2304, #2305 and #2311). They are rules for
+the operator's command, and they are not the two rules of issue #2304 that
+the passing configurations here run with: the command stores no report, so
+nothing is left to drop. The model has not been moved to them yet. Where a
+row, a header or the text below says the design lacks a rule, or calls
+something the design as written, it means the automatic design this module
+models. Nothing is built either way.
+
 A group id carries an
 epoch that starts at 0. A member id is a broker and a copy id. A copy that
 rotates has a new id that never voted and keeps what is left of its log as
@@ -2690,8 +2699,8 @@ acknowledged on local durability, as
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
 `admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that openraft 0.10.0 and the
-design page lack (issue #2307, under "A restarted follower" below). The
+ones either have no restart or pass on a rule that is not built and that
+openraft 0.10.0 lacks (issue #2307, under "A restarted follower" below). The
 module has two parts. The first is the lease the first
 version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
 later design in "Leases that survive sleep" and is not in the first version.
@@ -2734,8 +2743,9 @@ lease check when the new one is elected. The design's hold on a restarted
 member stops it campaigning, and the model keeps that hold; it does not stop
 it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
 rule that closes it: a restarted broker refuses votes for one election
-timeout from its start. Neither the design page nor openraft 0.10.0 has
-this rule yet (issue #2307). Until it is built, `FelixRaftLeaseRestart.cfg`
+timeout from its start. The design page now has this rule, as the vote hold
+(issue #2307). openraft 0.10.0 does not, and it is not built. Until it is
+built, `FelixRaftLeaseRestart.cfg`
 passing says only that the rule would be enough, and
 `FelixRaftLeaseRestartForgets.cfg` is what the engine does.
 
@@ -2781,7 +2791,10 @@ membership changes, snapshots, pre-vote or leadership transfer.
 
 Sleep and wake are deferred to v0.9.0, with the store liveness they rest on
 (decided in issue #2167). Nothing in this section gates 0.8. The configurations stay
-registered so the design keeps its checks until it is built.
+registered so the design keeps its checks until it is built. The design page
+keeps sleep under "Deferred: sleep and wake", and its table "Rules the model found" now
+states the two rules of issue #2310 that this section says the design lacks, with three
+more the model does not have yet.
 
 `FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
 [Per-shard Raft](../per-shard-raft.md) describes ("Store liveness", "Sleep and wake"). A member that is asleep gets no ticks: it starts no

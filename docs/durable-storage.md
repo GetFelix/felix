@@ -575,14 +575,64 @@ Four properties:
    its placed base). A zeroed header on a longer first segment stays fatal,
    even if the bytes after it are zeros too. See
    `docs/storage-format.md`, "What recovery may repair".
-   A **failed fsync poisons the log**, whichever path issued it (the group
-   commit flush, the io_uring flusher, a seal, a truncation): the durable bound
-   never moves again, and every later append, commit, flush and shutdown on that
-   log returns the error until the process restarts and recovery re-reads what
-   actually reached the disk. Linux may drop the dirty pages a failed writeback
+   A **failed fsync poisons the log**, whichever path issued it. That covers
+   the group commit flush, the io_uring flusher, a seal and its index, a new
+   segment's directory entry, a truncation, a retention removal, and the small
+   state files beside the segments (the ballot, the replica set, the replica
+   state with the commit offset, the generation history). A directory sync
+   counts as a flush. The durable bound never moves again. The operation
+   that hit the failure returns `StorageError::SyncFailed`, and so does every
+   append waiting on that flush. Every later append, commit, flush, state
+   write and shutdown on that log returns `StorageError::Poisoned`, which
+   names the shard and the first failure. Nothing is retried.
+
+   The log stays poisoned until it is reopened, which in a broker means a
+   restart. After a reboot or a power loss that is safe: recovery reads only
+   what reached the disk, as it does after any crash. A restart on the same
+   boot is not covered yet
+   ([#2308](https://github.com/GetFelix/felix/issues/2308)). The bytes of the
+   failed flush can still be in the page cache. Recovery reads them as if
+   they were on disk, and its own fsync of them succeeds without writing
+   anything, so records acknowledged after the restart can sit above a range
+   a later power loss takes away. The same goes for a state file whose flush
+   failed. So after a failed flush, find out what is wrong with the disk
+   first, and reboot the host before the broker starts again. Under a
+   relaxed fsync mode a broker that does restart on the same boot takes a
+   new storage id (see "Storage identity"), so a replicated shard does not
+   trust that copy on its own word. Under `OnCommit`, and for a single-copy
+   stream, nothing guards that restart.
+
+   The reason is that Linux may drop the dirty pages a failed writeback
    could not write, so the *next* fsync returns success having flushed nothing
    ("fsyncgate"). Believing it would acknowledge records that are gone, which is
-   the same silent loss the checksum rule above refuses to risk.
+   the same silent loss the checksum rule above refuses to risk. For a state
+   file the failure also leaves memory and disk apart: the file on disk may be
+   the old one or the new one, and memory keeps the old value. Stopping the
+   log keeps anything from being decided on that difference.
+
+   A broker with a poisoned log answers `/ready` with 503, so a load
+   balancer or an orchestrator takes it out of rotation. The body has one
+   line per poisoned log, naming the shard and what stopped it, for example
+   `log acme/prod/orders/0 is poisoned: a flush of the replica state failed
+   (...)`. The broker also attests no trusted copy to a fence from then on.
+   See "A failed flush" in [replication-engine.md](replication-engine.md) for
+   what a replicated shard does.
+
+   One poisoned log failing the whole broker's `/ready` is an interim rule.
+   The decided behaviour is per shard
+   ([#2300](https://github.com/GetFelix/felix/issues/2300)): only the
+   poisoned log's shard stops taking writes, its leader steps down so another
+   copy takes over, `/ready` stays 200 for the broker's healthy shards, and
+   the poisoned log is reported in metrics and in the broker's status. Until
+   that lands a broker cannot hand off one shard by itself, so taking the
+   whole broker out of rotation is the only way to move its traffic.
+
+   > `disk_log/tests/flush_failures.rs` fails each flush of an append, a
+   > rollover, a seal, a truncation, a retention removal and each state-file
+   > write in turn on the simulator's filesystem, then cuts the power and
+   > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
+   > reports.
+
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
    resumed subscription, a Kafka Fetch (and its high watermark) and a group
@@ -2049,7 +2099,9 @@ Current builds never create either directory.
 ## Tiered storage: offload
 
 Offload is the first part of tiered storage
-([#172](https://github.com/GetFelix/felix/issues/172)). It copies sealed
+([#172](https://github.com/GetFelix/felix/issues/172)). The design for the rest
+(a shared tier recorded through Raft, and cold reads) is in
+[`tiered-storage-design.md`](tiered-storage-design.md). Offload copies sealed
 segments to an object store, and it makes retention wait for a copy before it
 deletes a segment. It is off by default. `FELIX_DURABLE_OFFLOAD_DIR` turns it
 on for stream logs (`LogConfig::offload` in the library). Cache, counter and

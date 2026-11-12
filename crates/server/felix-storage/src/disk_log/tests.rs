@@ -6,6 +6,8 @@ mod append_and_read;
 mod commit;
 mod conditional;
 mod durability;
+#[cfg(feature = "sim")]
+mod flush_failures;
 mod generation_start;
 mod head_floor;
 mod headers;

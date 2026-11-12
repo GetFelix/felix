@@ -1,0 +1,119 @@
+name: Gate - no-regression report
+
+# The whole no-regression gate for one engine (docs/replication-engine.md, "The
+# no-regression gate"): the history and simulator sweeps, the performance A/B,
+# failover and control plane down, and groups per broker, then one markdown
+# report. Run it with `engine: hybrid` for today's numbers and with `engine:
+# raft` once the Raft engine exists; the second run reads as "not available"
+# until then. "How to run the gate" in the same doc says how to read the report.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Replication engine under test"
+        type: choice
+        options: [hybrid, raft]
+        default: hybrid
+      baseline_ref:
+        description: "Baseline tag or commit for the perf and failover A/B"
+        type: string
+        default: "v0.7.1"
+      seeds:
+        description: "Simulator seeds per mode (2000 for the gate)"
+        type: string
+        default: "2000"
+      shards:
+        description: "Jobs each mode's seeds are split across"
+        type: string
+        default: "50"
+      history_duration_secs:
+        description: "How long each history nemesis runs"
+        type: string
+        default: "1200"
+      perf_rounds:
+        description: "Perf A/B rounds (even)"
+        type: string
+        default: "6"
+      perf_seconds:
+        description: "Seconds per perf trial"
+        type: string
+        default: "30"
+      failover_rounds:
+        description: "Failover A/B rounds"
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate-${{ github.ref }}-${{ inputs.engine }}
+  cancel-in-progress: true
+
+jobs:
+  history:
+    uses: ./.github/workflows/gate-history.yml
+    with:
+      engine: ${{ inputs.engine }}
+      seeds: ${{ inputs.seeds }}
+      shards: ${{ inputs.shards }}
+      duration_secs: ${{ inputs.history_duration_secs }}
+
+  perf:
+    uses: ./.github/workflows/gate-perf.yml
+    with:
+      engine: ${{ inputs.engine }}
+      baseline_ref: ${{ inputs.baseline_ref }}
+      rounds: ${{ inputs.perf_rounds }}
+      seconds: ${{ inputs.perf_seconds }}
+
+  failover:
+    uses: ./.github/workflows/gate-failover.yml
+    with:
+      engine: ${{ inputs.engine }}
+      baseline_ref: ${{ inputs.baseline_ref }}
+      rounds: ${{ inputs.failover_rounds }}
+
+  groups:
+    uses: ./.github/workflows/gate-groups.yml
+    with:
+      engine: ${{ inputs.engine }}
+
+  report:
+    needs: [history, perf, failover, groups]
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: gate-result-*
+          path: results
+        continue-on-error: true
+
+      - name: Write the report
+        env:
+          ENGINE: ${{ inputs.engine }}
+          SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set +e
+          mkdir -p results
+          python3 -I scripts/ci/gate_report.py results . --engine "$ENGINE" --sha "$SHA" \
+            --run-url "$RUN_URL" --out gate-report.md > /dev/null
+          code=$?
+          cat gate-report.md >> "$GITHUB_STEP_SUMMARY"
+          # Red only when the gate failed, not when the engine is missing.
+          exit $code
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gate-report-${{ inputs.engine }}
+          path: gate-report.md
+          retention-days: 90

@@ -112,6 +112,35 @@ pub fn any_log_poisoned() -> bool {
     ANY_POISONED.load(Ordering::Acquire)
 }
 
+/// A log a failure stopped, for a readiness probe to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoisonedLog {
+    pub shard: String,
+    /// The first failure, which is not always a flush: a truncation that
+    /// failed partway poisons too.
+    pub reason: String,
+}
+
+/// One entry per shard, with its first failure. Like [`ANY_POISONED`], never
+/// cleared.
+static POISONED: Mutex<Vec<PoisonedLog>> = Mutex::new(Vec::new());
+
+/// The logs a failure has stopped in this process, each with the failure that
+/// stopped it first.
+pub fn poisoned_logs() -> Vec<PoisonedLog> {
+    POISONED.lock().clone()
+}
+
+fn note_poisoned(shard: &str, reason: &str) {
+    let mut poisoned = POISONED.lock();
+    if !poisoned.iter().any(|log| log.shard == shard) {
+        poisoned.push(PoisonedLog {
+            shard: shard.to_string(),
+            reason: reason.to_string(),
+        });
+    }
+}
+
 /// What [`DiskLog::accept_generation`] found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerationCheck {
@@ -611,7 +640,10 @@ impl DiskLog {
                         committed_generation: below,
                         ..operation.replica_state_with(*committed)
                     };
-                    replica_state::store(&operation.dir, &state)?;
+                    operation.poison_on_sync_failure(
+                        "the replica state",
+                        replica_state::store(&operation.dir, &state),
+                    )?;
                     *committed = below;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
@@ -647,7 +679,11 @@ impl DiskLog {
             epochs.record(epoch.generation, epoch.start_offset.max(from));
         }
         if epochs.entries() != before.as_slice() {
-            epochs::store(&self.inner.dir, &epochs)?;
+            self.inner.check_not_poisoned()?;
+            self.inner.poison_on_sync_failure(
+                "the generation history",
+                epochs::store(&self.inner.dir, &epochs),
+            )?;
         }
         Ok(())
     }
@@ -1332,6 +1368,11 @@ impl DiskLog {
         self.raise_commit_offset(offset).await
     }
 
+    /// The directory that holds the log's files.
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.inner.dir
+    }
+
     /// The commit offset and the generation saved with it, zero for none.
     pub(crate) fn committed(&self) -> (Offset, u64) {
         let committed = self.inner.committed_generation.lock();
@@ -1489,10 +1530,14 @@ impl AppendOnlyLog for DiskLog {
         let segments = self.inner.segments.read();
         segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
+        self.inner.check_not_poisoned()?;
         if !epochs.record(generation, start_offset) {
             return Ok(false);
         }
-        epochs::store(&self.inner.dir, &epochs)?;
+        self.inner.poison_on_sync_failure(
+            "the generation history",
+            epochs::store(&self.inner.dir, &epochs),
+        )?;
         Ok(true)
     }
 
@@ -1544,13 +1589,19 @@ impl AppendOnlyLog for DiskLog {
                     Ok(sealed) => sealed,
                     Err(err) => {
                         inner.poison_after_writer_failure(&segments);
-                        return Err(err);
+                        // The index, which the writer does not own.
+                        return inner.poison_on_sync_failure("a segment seal", Err(err));
                     }
                 };
                 // Start a fresh segment so the sealed one is immutable from here
                 // on, which is what makes its checksum meaningful.
                 if segments.active().record_count() > 0 {
-                    segments.roll()?;
+                    if let Err(err) = segments.roll() {
+                        inner.poison_after_writer_failure(&segments);
+                        // Appends would otherwise go on into a segment whose
+                        // directory entry may not survive a crash.
+                        return inner.poison_on_sync_failure("a segment rollover", Err(err));
+                    }
                     inner.note_sealed_before(segments.active().id());
                 }
                 Ok(SealedSegment {
@@ -2063,7 +2114,13 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         if inner.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(inner.label.clone()));
         }
-        replica_state::store(&inner.dir, &state)?;
+        // Not retried once poisoned: the write behind would otherwise try
+        // again, and a retry after a failed flush proves nothing.
+        inner.check_not_poisoned()?;
+        inner.poison_on_sync_failure(
+            "the replica state",
+            replica_state::store(&inner.dir, &state),
+        )?;
         #[cfg(test)]
         inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
@@ -2127,7 +2184,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            if inner.closed.load(Ordering::Acquire) {
+            // A poisoned log writes nothing more, so there is nothing to
+            // retry.
+            if inner.closed.load(Ordering::Acquire) || inner.is_poisoned() {
                 return;
             }
             if persist_replica_state(Arc::clone(&inner)).await.is_err() {

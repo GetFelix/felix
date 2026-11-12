@@ -174,66 +174,84 @@ chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`quorum.rs:1574`) and
 
 ## The proposed interface
 
-Two traits. `Engine` is what the broker asks of replication. `EngineHost` is
-what replication asks of the broker, and folds together the seams above.
+Two traits in `crates/server/felix-replication/src/engine.rs`. `Engine` is
+what the broker asks of replication. `EngineHost` (`engine/host.rs`) is what
+replication asks of the broker, and folds together the seams above.
 
-```rust
-/// What the broker asks of a shard's replication.
-pub trait Engine: Send + Sync {
-    /// A durable append landed on this leader's log for `key`.
-    fn appended(&self, key: &ShardKey);
+The trait is built. It holds what per-shard Raft needs and, until the hybrid
+is deleted, what only the hybrid needs. The Raft pull requests add to it and
+change no method that is there. It narrows once, when the hybrid is deleted.
 
-    /// Wait until the batch written at `generation` is committed: no later
-    /// leader can lose it. Errors when this broker cannot say so in time.
-    fn await_commit(&self, key: &ShardKey, written: Written, generation: u64, timeout: Duration)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+| Question | `Engine` method | How the hybrid answers |
+| --- | --- | --- |
+| Append | `appended(shard, Written)` | Marks the shard for a driver pass, the same mark the broker core makes when a publish becomes durable. The driver ships from its own cursors, so the position is not used |
+| Commit mark | `await_commit(handle, shard, outcome, generation, timeout)` | `quorum::await_quorum`: at once for a `Leader` stream, on the mark and then the lease for `Quorum` |
+| Commit mark | `admit_local_ack(shard, generation)` | Always yes. The hybrid checks the lease when a write enters the write fence, and has no second check when it acknowledges |
+| Read bound | `read_bound(consistency, shard)` | `quorum::read_bound`: the mark at the served generation, for `Quorum` only |
+| Read bound | `committed_bound(shard)` | `quorum::committed_bound`: the same mark plus the lease check, for the broker core's readers |
+| Leadership for a read | `confirm_read(shard)` | The lease, or a read round |
+| Membership change | `placement_changed(shard, Placement)` | Wakes the driver, which reads the new set from the routing table, as the routing feed's wake does |
+| Peer messages | `handle(from, caller, request)` | The replica handler |
 
-    /// One past the highest offset a reader of `key` may see: the commit
-    /// offset, at every consistency level. `None` only for a shard with no
-    /// replicas, whose commit is the local durable append.
-    fn read_bound(&self, key: &ShardKey) -> Result<Option<u64>, Unreadable>;
+`Written` is where a write landed: `end`, one past its last record, and the
+`generation` it was written at. `Written::of` builds it from a publish
+outcome. `Placement` is the brokers the control plane placed the shard on.
+`CommitError` is `quorum::QuorumError` under the name the engine uses.
 
-    /// Confirm this broker still leads `key` at `generation` for a read.
-    fn confirm_read(&self, key: &ShardKey, generation: u64)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+Five more methods exist only for the hybrid and go when it does:
+`cache_write_at`, `await_cache_quorum`, `await_counter_quorum`,
+`read_skips_lease` and `await_readable`. `committed_bound` merges into
+`read_bound` at the same time. [`per-shard-raft.md`](per-shard-raft.md), "The
+engine interface", says why each is safe to drop then and not before.
 
-    /// The control plane placed `key` on a new replica set.
-    fn placement_changed(&self, key: &ShardKey);
+`EngineHost` has five methods:
 
-    /// A peer's replication request, follower side.
-    fn handle(&self, from: &PeerIdentity, request: InternalMessage)
-        -> impl Future<Output = InternalMessage> + Send;
-}
+| Method | Meaning | Hybrid |
+| --- | --- | --- |
+| `generation(shard)` | The generation this broker serves the shard at | The ingress router |
+| `replicated(shard)` | Whether the shard has followers | The ingress router |
+| `quiesced(shard)` | The write fence is closed with no write inside | `ShardFence` |
+| `opened(shard, generation)` | This broker leads the shard and may take writes | Never called. A promoted leader asks the broker to open through `PromotionGate::open`, which writes the generation-start record and can refuse |
+| `deposed(shard, generation)` | A newer leader exists: stop taking writes | `ShardFence` |
 
-/// What the engine needs from the broker, and the events it reports.
-pub trait EngineHost: Send + Sync {
-    fn generation(&self, key: &ShardKey) -> Option<u64>;
-    fn replicated(&self, key: &ShardKey) -> bool;
-    fn quiesced(&self, key: &ShardKey) -> bool;
-    /// `key` may take writes at `generation`, admitted as `serves` says.
-    fn opened(&self, key: &ShardKey, generation: u64, serves: Serves);
-    /// A newer leader exists than `generation`: stop taking writes.
-    fn deposed(&self, key: &ShardKey, generation: u64);
-}
+`opened` reaches the broker as `WriteFence::opened`, which does nothing by
+default. The hybrid's other callbacks (`withheld`, `gave_up_at`,
+`refused_at`, `probed`, `opened_since`, `promoting`, the lease) stay on
+`HybridHost`, which extends `EngineHost`, because no other engine has those
+states.
 
-/// How an opened leader is admitted.
-pub enum Serves {
-    /// Only while its control-plane lease is valid (hybrid, `Leader` shards).
-    ByLease,
-    /// By its followers' acknowledgements, with no lease.
-    ByFollowers,
-}
-```
+### What calls the new methods
 
-Caches and counters get the same `await_commit` and `read_bound` with a log
-kind argument. The exact signatures settle as each refactor step routes its
-callers through them; the shape above is the target.
+Nothing on a shipping path yet. `appended`, `admit_local_ack`,
+`placement_changed` and `opened` were added so that the Raft engine has them
+from its first pull request. The hybrid implements each with what it already
+does, so calling one changes nothing:
 
-The hybrid engine implements `Engine` with the code it has today. The host is
-the existing `IngressRouter` plus `ShardFence`. Their extra hybrid callbacks
-(`withheld`, `gave_up_at`, `refused_at`, `probed`, `opened_since`,
-`promoting`) stay on the hybrid's own host trait, which extends
-`EngineHost`, because no other engine has those states.
+- The broker core still marks the shard itself when a publish becomes
+  durable (`Completion::commit`), and the routing feed still wakes the
+  driver. `Hybrid::wake_driver` hands the engine the same two wakes when
+  replication starts. On a broker with no driver, `appended` and
+  `placement_changed` do nothing.
+- The publish order is unchanged: `begin_append`, then `commit`, then the
+  commit wait, then fanout.
+
+### What later pull requests add
+
+The rest of per-shard Raft fits without changing a method:
+
+- **Sleep and wake.** Every event that wakes a group already enters through
+  the trait: a write through `appended`, a read round through
+  `confirm_read`, a placement change through `placement_changed`, and a Raft
+  message through `handle`. The node ticker, the audit timer and the sleep
+  handshake are inside the engine.
+- **Store liveness.** The liveness heartbeat is a peer message and arrives
+  through `handle`. It replaces `suspicion.rs`, which the hybrid starts
+  itself.
+- **Closing the fence for a membership step.** `EngineHost` gains one
+  method that closes a shard without deposing it. The engine waits on
+  `quiesced` and reopens with `opened` at the same generation.
+- **The switch from the hybrid.** `Placement` gains the shard's engine, its
+  base and its voters. It is `non_exhaustive` for that reason.
 
 ## Per-shard Raft behind the same traits
 
@@ -244,8 +262,7 @@ leader lease.
 
 - `appended` feeds the Raft leader's replication. `await_commit` waits on the
   Raft commit index, which is the same thing as the quorum mark.
-- `opened` and `deposed` come from Raft's role changes. Every opened leader
-  is `ByFollowers`.
+- `opened` and `deposed` come from Raft's role changes.
 - `placement_changed` turns into a Raft membership change toward the new set,
   with joint consensus covering what the joint fence covers today.
 - `confirm_read` is a read-index round, the same round `ReadIndex` sends
@@ -265,7 +282,8 @@ or the publish path hands the batch to `client_write` and the adapter calls
 `begin_append` and `commit` from inside it. The first keeps the hot path
 untouched and is what the prototype tries first. If openraft cannot accept
 entries it did not append, the second is the fallback, and its cost shows up
-in the gate's latency cells. Decided: adopt first, see Decisions, 2.
+in the gate's latency cells. Decided since (issue #2167): 0.8 takes the
+second, see Decisions, 2.
 
 ### Raft log on the segment store
 
@@ -303,13 +321,15 @@ adds the generation field to the record header and the record kinds below.
 
 **What is built.** The adapter is in
 `crates/server/felix-storage/src/raft_log.rs`, behind the `raft` feature.
-`RaftLog` implements openraft's `RaftLogStorage`: `append` with its
-`IOFlushed` callback, `truncate_after`, `save_vote` and the committed id. `LogReader`
-implements `RaftLogReader` (entries and the vote). Inside the crate,
-`DiskLog::writer_at` and `DiskLog::last_writer` give the generation in a
-record's header without reading its payload. `save_committed` and `read_committed` keep the
-committed id. Purge and snapshots are not built, so no engine runs on the
-adapter yet.
+`RaftLog` implements all of openraft's `RaftLogStorage`: `append` with its
+`IOFlushed` callback, `truncate_after`, `purge`, `save_vote` and the
+committed id. `LogReader` implements `RaftLogReader` (entries and the
+vote). `SnapshotStore` keeps a group's snapshot for the state machine that
+runs beside the log. Inside the crate, `DiskLog::writer_at` and
+`DiskLog::last_writer` give the generation in a record's header without
+reading its payload. The adapter passes openraft's whole storage suite
+(`Suite::test_all`, in `raft_log/tests/suite.rs`). No engine runs on it
+yet.
 
 **A Raft log is opened as one.** `LogConfig::raft_log` makes a log v9 from
 its first segment, lets it take membership records, and refuses retention
@@ -343,6 +363,39 @@ under `FsyncMode::OnCommit` it is a real flush, and under the other modes
 the callback fires at once, as an acknowledgement does for a stream. A
 flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
+
+**A failed flush.** A failed fsync or directory sync poisons the log it
+happened on (`docs/durable-storage.md`, "A failed fsync poisons the log"):
+the log refuses every later append, flush and state write with
+`StorageError::Poisoned` until it is reopened. The rule for a replicated
+shard is the same under either engine, and it follows from that one error:
+
+- **A follower does not acknowledge.** Its append or its flush fails, so it
+  answers the leader with an error and its copy stops counting toward a
+  quorum. It cannot save a vote or a set either, so it promises nothing new.
+- **A leader stops leading.** It cannot append, so it acknowledges nothing
+  more. It does not keep the role on the strength of what it holds in
+  memory: the records it acknowledged may no longer be on its disk.
+- **The broker says so.** `/ready` answers 503 and names each poisoned log
+  with what stopped it. That is broker-wide for now. The decided behaviour is
+  per shard ([#2300](https://github.com/GetFelix/felix/issues/2300)): the
+  leader of the poisoned shard steps down, the broker stays ready for its
+  healthy shards, and the poisoned log shows in metrics and status. The log
+  stays poisoned until the broker restarts; `docs/durable-storage.md` says
+  when a restart is safe.
+
+On the hybrid, a poisoned process attests no trusted copy to a fence, and a
+promotion does not let it continue as leader, so another copy takes over
+through the usual fence. Under Raft the adapter passes the error on
+unchanged: the `IOFlushed` callback of the append carries it, and
+`save_vote`, `append` and `truncate_after` return it from then on. openraft
+treats a storage error as fatal and stops that group's node, which stops
+its heartbeats, and the other members elect a leader. Nothing engine
+specific decides when a log is poisoned, so an engine built on the adapter
+inherits the rule.
+
+> `raft_log/tests/writes.rs`, `a_failed_flush_fails_the_callback` and
+> `a_failed_flush_stops_every_later_write`.
 
 **Truncation waits for those callbacks.** `truncate_after` first lets every
 earlier append's callback fire, then cuts. Cutting first would leave a
@@ -394,15 +447,98 @@ These rules, and the one above about a cut and later callbacks, were found
 by model checking
 ([#2221](https://github.com/GetFelix/felix/issues/2221)).
 
+**Purge.** `purge(id)` drops every entry up to and including `id`. It
+first writes the id to a small file, `raft-purged`, and only then deletes
+anything. From that write on, the log starts right after the id. Segments
+are deleted whole, oldest first, each unlink made durable before the next,
+so records at or below the id can remain in a segment that also holds
+later entries. They are no longer entries: no read returns them. The file
+is needed because the segments alone cannot say where a purge stopped, and
+because a purge can go past the log's end, where no entry is left to carry
+the id.
+
+openraft asks for a purge past the end at startup, when the state machine
+is ahead of the log (a snapshot was installed and the power went before
+the log was purged). The log is then empty and its last id is the purged
+id. The next append must be the entry right after it. If the power goes
+between the file write and the delete, the next open sees the same thing:
+the first index is above every record, and the next append restarts the
+segments there.
+
+A purge is refused when the log holds another term's entry at that index.
+`truncate_after` never reaches below the purged id: naming the purged id
+cuts every entry, and an id below it, or below the start of a log that
+purged nothing, is refused. `read_committed` never returns less than the
+purged id, since only committed entries are purged.
+
+**Snapshots.** `SnapshotStore` keeps one snapshot in one file,
+`raft-snapshot`: the id of the last entry it covers, the caller's metadata
+(the membership) and the data, under one checksum. It is replaced by one
+rename, so a crash leaves the old snapshot or the new one. Two files, one
+for the data and one for the id, could tear: the model's
+`SnapshotTwoRenames` knob shows new data read under the old id
+([#2221](https://github.com/GetFelix/felix/issues/2221)). A snapshot never
+goes back: one that covers less than the stored one is not written. A file
+that does not decode fails the open, because the log below it may already
+be purged.
+
+A log must not be purged past its stored snapshot when the state machine
+cannot rebuild what was dropped. That is the control plane, whose state
+machine is in memory, and a shard, whose state machine is the log.
+`RaftLog::purge_within(&snapshots)` turns the rule on: a purge past the
+snapshot is refused, and so is a log that is already purged past it.
+openraft purges only up to a snapshot it built or installed, so the check
+refuses nothing openraft asks for. It is there for a snapshot that did not
+reach disk.
+
+A follower installs a leader's snapshot in three calls, in this order:
+
+```mermaid
+sequenceDiagram
+    participant R as openraft
+    participant L as RaftLog
+    participant S as SnapshotStore
+    R->>L: truncate_after(committed), if the log conflicts
+    R->>S: install(id, membership, data)
+    Note over S: one rename, synced
+    R->>L: purge(id)
+    Note over L: raft-purged written, then segments deleted
+```
+
+A power cut after any step of any of the three leaves a directory that
+opens. Before the install, the follower is on its old snapshot with every
+committed entry. After it, the snapshot is ahead of the log, and openraft's
+startup purges up to it. The purged id is never past the snapshot.
+
+**Three smaller rules.**
+
+- A command stored as a trim record is refused. A trim sets a floor the
+  log deletes below on its own timer, and only a purge may delete a Raft
+  log's entries. Trims on a shard group need their own design
+  ([#2253](https://github.com/GetFelix/felix/issues/2253)).
+- One `append` larger than a segment is written a segment's worth at a
+  time. The log puts a batch into one segment whole, so the adapter splits
+  the entries into batches; the callback fires once the last is flushed.
+- The adapter keeps no list of membership offsets. openraft finds the
+  latest membership by reading the log backwards from its end, 64 entries
+  at a time, down to the last applied entry, so an open reads only the
+  unapplied tail. A list would have no caller.
+
 **Crash points.** Each write has power-loss tests on the simulator's
 filesystem (`raft_log/tests/crash_points.rs`,
+`raft_log/tests/install_crash_points.rs`,
 `disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
 inside the write and after its callback; a truncation cut after each
 unlink, after it returns and after a later append's callback; a committed
 id saved ahead of the flush; a vote save cut at every step. What reopens
 holds every entry whose callback fired, is a gap-free prefix of what was
 written, is never shorter than a truncation was asked to keep, and has the
-old vote or the new one.
+old vote or the new one. A purge, a snapshot write and a follower's
+snapshot install are each stopped at every step they have (each step of a
+file write, each unlink). What reopens then has no gap above the purged
+id, holds one whole snapshot, is never purged past it, and is accepted by
+openraft's own startup (`StorageHelper::get_initial_state`), after which
+the install can be finished and the log takes the next entry.
 
 **The term is the generation minus one.** openraft's `initialize` writes the
 first membership entry at term 0, and generation 0 in a record header means
@@ -842,9 +978,9 @@ replica's configuration reverts to the previous record. That is safe, because
 Raft treats an uncommitted configuration entry as one that can be truncated.
 A damaged membership record in the middle of a log is interior corruption and
 stops the open, like any other record. openraft reads the latest
-configuration back from the log on start, so the adapter keeps a derived list
-of membership offsets, rebuilt by the same scan. That keeps opening a log from
-reading it in full.
+configuration back from the log on start, backwards from the end and no
+further than the last applied entry, so opening a log does not read it in
+full and the adapter keeps no list of membership offsets.
 
 **Checked by.** The storage format fuzz and crash-recovery tests
 (`crates/server/felix-storage/tests/format_fuzz.rs`, `crash_recovery.rs`) with
@@ -852,6 +988,13 @@ the new kind. A test that no client read path returns it. A rollback test
 where a version 8 reader refuses the segment.
 
 ### 2. The leader's entries are adopted from disk first
+
+**Decided since (issue #2167).** 0.8 does not adopt. A write goes through
+`client_write` and the adapter appends, which is the fallback named below.
+Adoption comes back only if the gate's latency cells need it, and only
+after it is modelled. See [`per-shard-raft.md`](per-shard-raft.md),
+"Writing through openraft". The rest of this decision is kept as the
+design for that later step.
 
 **Decision.** The broker keeps appending on the leader (`begin_append`, then
 `commit`). openraft adopts entries already durable at their offsets. If
@@ -1198,6 +1341,9 @@ removed. The in-memory backend stays, for tests only.
 
 ## The no-regression gate
 
+What each criterion must prove, with the fault matrix, the perf cells and
+where each check runs, is in [`release-gate.md`](release-gate.md).
+
 Written before any numbers exist. Raft is the target, and this gate is what
 it must pass before the bespoke shard protocol and its models are deleted
 (issue #2167, track 5). It applies to the shard side only; the control-plane
@@ -1239,6 +1385,54 @@ Both engines run the same tests, on the same commit, on the same runners:
 - **Duplicate-offset nemesis** in the history checker: a `Leader` stream's
   leader is partitioned while it takes writes; no QUIC subscriber, Kafka
   consumer or cache watcher may hold two records at one offset (Decisions, 5).
+
+### How to run the gate
+
+Everything runs in GitHub Actions, never on a laptop. Start **Gate - no-regression
+report** (`gate.yml`) with "Run workflow", pick the `engine` (`hybrid` or `raft`)
+and leave the sizes at their defaults for the real gate. It calls four parts
+and writes one report:
+
+| Workflow | Criterion | What it runs |
+|---|---|---|
+| `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
+| `gate-perf.yml` | 2, 3 | RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
+| `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
+| `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
+
+Each part also runs alone with its own "Run workflow" button. Small sizes make
+a dry run: for example `seeds: 8`, `shards: 2`, `modes: off`,
+`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `rounds: 2`,
+`seconds: 5` for `gate-perf.yml`.
+
+The perf and failover parts build the baseline (default `v0.7.1`, the last
+v0.7.x release) and this commit, then alternate the two sides trial by trial
+with the side that goes first flipping each round, so runner drift lands on
+both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
+only `felix-broker` differs. The figure for a cell is the median over the
+rounds both sides completed. A cell with no results, or with fewer than half
+the rounds completed by both sides, fails. `scripts/ci/gate_perf.py` applies
+the rules: throughput at least
+0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
+plus the `failover_slack` input, 5% by default: failover is quantized by the
+failure-detection timer, and a half-millisecond difference is not a regression.
+Set it to 0 for the literal rule.
+
+The last job, `report`, assembles `gate-report.md` (also in the run summary and
+in the `gate-report-<engine>` artifact): one row per criterion with pass, fail
+or "unavailable", the tables, the failing seeds with replay commands, and the
+code size of criterion 7. The workflow is red only when a criterion fails. With
+`engine: raft` before the engine exists, each part writes "unavailable" and the
+report says NOT AVAILABLE.
+
+The history part lists simulator stalls but does not fail on them, and the
+report does not yet compare stalls between engines; the stall rule of
+criterion 1 is judged by hand until #2298 lands. Replay any seed with the command in the failing shard's summary
+([simulation](simulation.md)).
+
+The history campaigns use the same runners as `history.yml`. A hosted-runner
+perf run is noisy; for numbers that go in the write-up, set `FELIX_LARGE_RUNNER`
+to a dedicated runner label so both sides share one machine.
 
 ## Refactor plan
 
@@ -1291,8 +1485,7 @@ unit, integration and simulator seed tests pass unchanged after each.
    pairs an `IngressRouter` with a `ShardFence` and implements both traits, and
    `ShardServing` and `WriteFence`, by delegating, so those two traits and their
    implementors are unchanged. `node/cluster.rs` hands the driver the `Host`
-   as its fence. The `opened(key, generation, serves)` event of the sketch above is
-   not built: today it is three separate fence calls whose order matters.
+   as its fence.
 6. Construction: one `Hybrid::start` that owns what `node/cluster.rs` spawns
    today (driver, replica handler, reporter, elections, suspicion), and
    `peer_dispatch.rs` routes replication requests to `Engine::handle`.
@@ -1328,6 +1521,17 @@ unit, integration and simulator seed tests pass unchanged after each.
    the peer listener binds. A second set is an error. Until then
    `Engine::handle` refuses a replication request as `Unavailable`, which a
    peer retries.
+
+9. The additions per-shard Raft needs: `appended`, `Written`,
+   `admit_local_ack` and `placement_changed` on `Engine`, and `opened` on
+   `EngineHost`. Nothing is removed.
+   Done as built: see "The proposed interface". `Hybrid::appended` marks the
+   shard in `AppendedShards`, `Hybrid::placement_changed` notifies the
+   driver's `routes_changed`, and `Hybrid::admit_local_ack` always admits.
+   `node/cluster.rs` binds the two wakes with `Hybrid::wake_driver` where it
+   starts the driver. `EngineHost::opened` forwards to a new
+   `WriteFence::opened` that defaults to nothing. No caller moved, so every
+   lease check and bound is where it was.
 
 After step 7 the Raft prototype can land as a second implementation behind a
 build-time switch that no release enables.

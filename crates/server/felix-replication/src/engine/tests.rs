@@ -812,3 +812,264 @@ async fn handle_without_a_replica_says_so() {
         other => panic!("{other:?}"),
     }
 }
+
+/// Serves the shard as its fields say, with a lease a test can lapse, and
+/// counts the acknowledgements the lease refused.
+struct Leased {
+    generation: Option<u64>,
+    replicated: bool,
+    lease: std::sync::atomic::AtomicBool,
+    refusals: std::sync::atomic::AtomicU64,
+}
+
+impl Leased {
+    fn new(generation: Option<u64>, replicated: bool, lease: bool) -> Self {
+        Self {
+            generation,
+            replicated,
+            lease: lease.into(),
+            refusals: 0.into(),
+        }
+    }
+
+    fn refusals(&self) -> u64 {
+        self.refusals.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl ShardServing for Leased {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        self.replicated
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        self.generation
+    }
+
+    fn lease_valid(&self) -> bool {
+        self.lease.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn record_ack_refusal(&self) {
+        self.refusals
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// The bounds as a caller that knows only the trait gets them.
+fn bounds_of<E: Engine>(
+    engine: &E,
+    consistency: Option<ConsistencyLevel>,
+) -> (Result<Option<u64>, Unreadable>, felix_broker::ReadBound) {
+    (
+        engine.read_bound(consistency, &key()),
+        engine.committed_bound(&key()),
+    )
+}
+
+/// Every mix of serving, lease and mark gives the bounds the quorum functions
+/// give for the same inputs, and the additions to the trait take no part.
+#[test]
+fn the_hybrid_behind_the_trait_bounds_reads_as_the_quorum_functions_do() {
+    use felix_broker::ReadBound;
+    enum Mark {
+        None,
+        Earlier,
+        Current,
+        ByFollowers,
+    }
+    let mut lapsed_refusals = 0;
+    for mark in [Mark::None, Mark::Earlier, Mark::Current, Mark::ByFollowers] {
+        let marks = Arc::new(QuorumMarks::new());
+        match mark {
+            Mark::None => {}
+            Mark::Earlier => marks.publish(&key(), 3, 5),
+            Mark::Current => marks.publish(&key(), 4, 7),
+            Mark::ByFollowers => marks.publish_by_followers(&key(), 4, 7),
+        }
+        for generation in [None, Some(4)] {
+            for replicated in [false, true] {
+                for lease in [false, true] {
+                    let serving = Arc::new(Leased::new(generation, replicated, lease));
+                    let engine = Hybrid::new(Some(Arc::clone(&marks)), Some(Arc::clone(&serving)));
+                    for consistency in [
+                        None,
+                        Some(ConsistencyLevel::Leader),
+                        Some(ConsistencyLevel::Quorum),
+                    ] {
+                        let (read, committed) = bounds_of(&engine, consistency);
+                        assert_eq!(
+                            read,
+                            crate::quorum::read_bound(
+                                consistency,
+                                &key(),
+                                Some(&*marks),
+                                Some(&*serving)
+                            )
+                        );
+                        assert_eq!(
+                            committed,
+                            crate::quorum::committed_bound(&key(), &marks, &*serving)
+                        );
+                        // The lease bounds the broker core's readers and
+                        // never `read_bound`.
+                        if generation.is_some() && replicated && !lease {
+                            assert_eq!(committed, ReadBound::Refused);
+                            lapsed_refusals += 1;
+                        }
+                        if consistency == Some(ConsistencyLevel::Quorum)
+                            && generation.is_some()
+                            && replicated
+                        {
+                            let expected = match mark {
+                                Mark::None | Mark::Earlier => Err(Unreadable::Settling),
+                                Mark::Current | Mark::ByFollowers => Ok(Some(7)),
+                            };
+                            assert_eq!(read, expected);
+                        }
+                    }
+                    assert_eq!(engine.admit_local_ack(&key(), 4), Ok(()));
+                    engine.appended(
+                        &key(),
+                        super::Written {
+                            end: 9,
+                            generation: 4,
+                        },
+                    );
+                    engine.placement_changed(&key(), &super::Placement::new(vec!["n1".into()]));
+                    assert_eq!(bounds_of(&engine, Some(ConsistencyLevel::Quorum)), {
+                        let quorum = Some(ConsistencyLevel::Quorum);
+                        (
+                            crate::quorum::read_bound(
+                                quorum,
+                                &key(),
+                                Some(&*marks),
+                                Some(&*serving),
+                            ),
+                            crate::quorum::committed_bound(&key(), &marks, &*serving),
+                        )
+                    });
+                    assert_eq!(serving.refusals(), 0);
+                }
+            }
+        }
+    }
+    assert_eq!(lapsed_refusals, 12, "every lapsed-lease case was reached");
+}
+
+/// A `Quorum` write whose mark the followers did not decide is released on
+/// the lease, and refused once it has lapsed. The local acknowledgement of a
+/// `Leader` write asks nothing at that point.
+#[tokio::test]
+async fn the_hybrid_behind_the_trait_keeps_the_lease_check_on_a_quorum_acknowledgement() {
+    async fn commit<E: Engine>(
+        engine: &E,
+        handle: &felix_broker::StreamHandle,
+        outcome: &felix_broker::PublishOutcome,
+    ) -> anyhow::Result<()> {
+        engine
+            .await_commit(handle, Some(&key()), outcome, 4, Duration::from_secs(60))
+            .await
+    }
+    let (_broker, handle, outcome, _dir) = written(ConsistencyLevel::Quorum).await;
+
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish(&key(), 4, 1);
+    let serving = Arc::new(Leased::new(Some(4), true, true));
+    let engine = Hybrid::new(Some(Arc::clone(&marks)), Some(Arc::clone(&serving)));
+    commit(&engine, &handle, &outcome)
+        .await
+        .expect("released on a valid lease");
+    assert_eq!(serving.refusals(), 0);
+
+    serving
+        .lease
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let err = commit(&engine, &handle, &outcome)
+        .await
+        .expect_err("the lease lapsed");
+    assert!(matches!(
+        err.downcast_ref::<QuorumError>(),
+        Some(QuorumError::LeadershipLost {
+            detail: "the lease lapsed",
+            ..
+        })
+    ));
+    assert_eq!(serving.refusals(), 1);
+    assert_eq!(engine.admit_local_ack(&key(), 4), Ok(()));
+    assert_eq!(serving.refusals(), 1, "a local acknowledgement counts none");
+
+    // A mark the followers decided needs no lease.
+    let marks = Arc::new(QuorumMarks::new());
+    marks.publish_by_followers(&key(), 4, 1);
+    let serving = Arc::new(Leased::new(Some(4), true, false));
+    let engine = Hybrid::new(Some(Arc::clone(&marks)), Some(Arc::clone(&serving)));
+    commit(&engine, &handle, &outcome)
+        .await
+        .expect("released by the followers");
+    assert_eq!(serving.refusals(), 0);
+}
+
+#[test]
+fn written_ends_one_past_the_batch() {
+    let outcome = felix_broker::PublishOutcome {
+        subscribers: 0,
+        offsets: Some((3, 6)),
+    };
+    assert_eq!(
+        super::Written::of(&outcome, 4),
+        Some(super::Written {
+            end: 7,
+            generation: 4
+        })
+    );
+    let ephemeral = felix_broker::PublishOutcome {
+        subscribers: 0,
+        offsets: None,
+    };
+    assert_eq!(super::Written::of(&ephemeral, 4), None);
+}
+
+/// `appended` marks the shard the way a durable publish does, and
+/// `placement_changed` wakes the driver the way the routing feed does. Only
+/// once a driver is bound, and only the first one.
+#[tokio::test]
+async fn the_hybrid_wakes_its_driver_on_an_append_and_a_placement_change() {
+    use futures::FutureExt;
+    let (broker, _handle, outcome, _dir) = written(ConsistencyLevel::Quorum).await;
+    let slot = felix_broker::AppendedShards::slot("t1", "ns", "orders", 0);
+    assert!(
+        broker.appended_shards().take().contains(slot),
+        "the publish marked its shard"
+    );
+    let woken = || {
+        broker
+            .appended_shards()
+            .wake()
+            .notified()
+            .now_or_never()
+            .is_some()
+    };
+    assert!(woken(), "and left its wake");
+    let at = super::Written::of(&outcome, 4).expect("offsets");
+    let placement = super::Placement::new(vec!["n1".to_string(), "n2".to_string()]);
+    let engine = hybrid(&Arc::new(QuorumMarks::new()), served_at_4());
+    let routes_changed = Arc::new(tokio::sync::Notify::new());
+
+    engine.appended(&key(), at);
+    engine.placement_changed(&key(), &placement);
+    assert!(!broker.appended_shards().take().contains(slot));
+    assert!(!woken());
+    assert!(routes_changed.notified().now_or_never().is_none());
+
+    engine.wake_driver(Arc::clone(&broker), Arc::clone(&routes_changed));
+    let ignored = Arc::new(tokio::sync::Notify::new());
+    engine.wake_driver(Arc::clone(&broker), Arc::clone(&ignored));
+
+    engine.appended(&key(), at);
+    assert!(broker.appended_shards().take().contains(slot));
+    assert!(woken());
+    engine.placement_changed(&key(), &placement);
+    assert!(routes_changed.notified().now_or_never().is_some());
+    assert!(ignored.notified().now_or_never().is_none());
+}

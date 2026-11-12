@@ -3,6 +3,11 @@
 
 #[cfg(feature = "sim")]
 mod crash_points;
+#[cfg(feature = "sim")]
+mod install_crash_points;
+mod machine;
+mod purge;
+mod snapshots;
 mod suite;
 mod writes;
 

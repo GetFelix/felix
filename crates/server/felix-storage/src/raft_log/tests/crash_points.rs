@@ -24,7 +24,7 @@ use crate::sim_fs;
 
 const SEEDS: u64 = 8;
 
-fn config() -> LogConfig {
+pub(super) fn config() -> LogConfig {
     LogConfig {
         // A few pages per segment, so a cut lands inside and between them.
         segment_size_bytes: 2 * 4096 + 300,
@@ -38,7 +38,7 @@ fn config() -> LogConfig {
 
 /// The entry at `index`: ten to a term, each term opening with a blank
 /// entry and changing membership half way.
-fn entry(index: u64) -> TestEntry {
+pub(super) fn entry(index: u64) -> TestEntry {
     let term = 1 + index / 10;
     match index % 10 {
         0 => blank(term, index),
@@ -54,14 +54,14 @@ fn entry(index: u64) -> TestEntry {
     }
 }
 
-fn entries(range: std::ops::Range<u64>) -> Vec<TestEntry> {
+pub(super) fn entries(range: std::ops::Range<u64>) -> Vec<TestEntry> {
     range.map(entry).collect()
 }
 
-struct Sim(PathBuf);
+pub(super) struct Sim(pub(super) PathBuf);
 
 impl Sim {
-    fn new(name: &str, seed: u64) -> Self {
+    pub(super) fn new(name: &str, seed: u64) -> Self {
         let root = std::env::temp_dir().join(format!(
             "felix-simfs-raft-{}-{name}-{seed}",
             std::process::id()
@@ -70,7 +70,7 @@ impl Sim {
         Self(root)
     }
 
-    fn open(&self) -> RaftLog<Types, Codec> {
+    pub(super) fn open(&self) -> RaftLog<Types, Codec> {
         let log = DiskLog::open(self.0.join("log"), "t/ns/raft/0", config()).expect("open");
         RaftLog::new(log, Codec).expect("a Raft log")
     }

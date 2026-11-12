@@ -240,11 +240,14 @@ pub(crate) fn preallocate(file: &File, offset: u64, len: u64) -> io::Result<()> 
 /// The measured cost is the same either way (~4ms per flush on APFS), which is
 /// itself the evidence that the flush is reaching the device.
 pub(crate) fn sync_data(file: &File) -> io::Result<()> {
+    sync_data_unmarked(file).map_err(SyncFailure::mark)
+}
+
+fn sync_data_unmarked(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::Data)?;
     #[cfg(feature = "sim")]
     if let Some(mem) = file.as_mem() {
-        mem.sync();
-        return Ok(());
+        return mem.sync();
     }
     let file = os(file);
     #[cfg(target_os = "macos")]
@@ -276,6 +279,10 @@ pub(crate) fn sync_data(file: &File) -> io::Result<()> {
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
+    sync_dir_unmarked(path).map_err(SyncFailure::mark)
+}
+
+fn sync_dir_unmarked(path: &std::path::Path) -> io::Result<()> {
     before_sync_dir(path)?;
     #[cfg(feature = "sim")]
     if let Some(flushed) = crate::fs::sync_simulated_dir(path) {
@@ -402,13 +409,46 @@ pub(crate) fn devices_under(
 /// renamed into place (indexes, generation history), where the extra metadata
 /// round trip does not matter.
 pub(crate) fn sync_all(file: &File) -> io::Result<()> {
+    sync_all_unmarked(file).map_err(SyncFailure::mark)
+}
+
+fn sync_all_unmarked(file: &File) -> io::Result<()> {
     before_sync(file, SyncKind::All)?;
     #[cfg(feature = "sim")]
     if let Some(mem) = file.as_mem() {
-        mem.sync();
-        return Ok(());
+        return mem.sync();
     }
     os(file).sync_all()
+}
+
+/// Marks an error as a failed flush, whichever call issued it, so the log
+/// that hears of it can stop. After one the kernel may have dropped the dirty
+/// pages, and a retry would report success for data that never reached disk.
+#[derive(Debug)]
+pub(crate) struct SyncFailure(io::Error);
+
+impl SyncFailure {
+    /// Keeps the kind, so a caller matching on it still can.
+    fn mark(err: io::Error) -> io::Error {
+        io::Error::new(err.kind(), Self(err))
+    }
+
+    /// Whether `err` came from a failed flush.
+    pub(crate) fn is(err: &io::Error) -> bool {
+        err.get_ref().is_some_and(|inner| inner.is::<Self>())
+    }
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "flush failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for SyncFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
 }
 
 /// The OS file under `file`, or `None` for one a simulation keeps in memory.

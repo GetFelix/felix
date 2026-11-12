@@ -8,9 +8,10 @@
 //! durability plumbing is the last place Felix should be inventive
 //! (`docs/metadata-raft-design.md#library`).
 //!
-//! This log is deliberately **not** `felix-storage`: Raft truncates
-//! divergent uncommitted suffixes, and the segment store's never-rewritten
-//! invariant exists precisely to forbid that. Separate log, separate rules.
+//! This log is not `felix-storage` yet. The segment store now has a Raft
+//! log (`felix_storage::raft_log`, which cuts uncommitted suffixes without
+//! rewriting a record), and the control plane moves onto it
+//! (`docs/replication-engine.md`, "Raft log on the segment store").
 //!
 //! The state machine itself is volatile and rebuilt on startup from the
 //! persisted snapshot plus log replay — the "persistent snapshot" option in

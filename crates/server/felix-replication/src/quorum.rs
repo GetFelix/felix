@@ -1141,7 +1141,7 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 }
 
 /// Ask for a pass over `shard`, which just took a write.
-fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
+pub(crate) fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
     broker
         .appended_shards()
         .mark(felix_broker::AppendedShards::slot(

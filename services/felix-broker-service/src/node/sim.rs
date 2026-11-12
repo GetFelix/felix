@@ -490,6 +490,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             client_endpoints: &client_endpoints,
             peers: &peers,
             broker: &broker,
+            engine: &engine,
             quorum_marks: &quorum_marks,
             halted_replicas: &halted_replicas,
             shard_status: &shard_status,
