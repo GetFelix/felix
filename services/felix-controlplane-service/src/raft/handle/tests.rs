@@ -134,25 +134,38 @@ async fn a_lease_expired_refusal_is_not_forwarded() {
     handle.shutdown().await.expect("shutdown");
 }
 
-/// A start that fails after the store is open closes it again, so a retry
-/// in the same process can open it instead of finding it busy.
+/// A start that fails once the node is running stops the node and closes
+/// the store, so a retry in the same process can open it.
 #[tokio::test]
-async fn a_failed_start_releases_the_store() {
+async fn a_start_that_fails_after_the_node_runs_releases_the_store() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let mut bad = settings(dir.path());
-    // Refused by openraft's config check, after the store is open.
-    bad.election_timeout = (Duration::from_millis(300), Duration::from_millis(150));
-    RaftHandle::start(bad, Arc::new(NullApp))
+    let mut failing = settings(dir.path());
+    failing.faults.fail_after_node_start = true;
+    RaftHandle::start(failing, Arc::new(NullApp))
         .await
         .err()
-        .expect("an invalid config is refused");
+        .expect("the start fails");
 
     let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
         .await
         .expect("restart after the failed start");
     handle.shutdown().await.expect("shutdown");
+}
+
+/// A shutdown whose node stop fails still closes the store.
+#[tokio::test]
+async fn a_failed_stop_still_releases_the_store() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut failing = settings(dir.path());
+    failing.faults.fail_node_stop = true;
+    let stopping = RaftHandle::start(failing, Arc::new(NullApp))
+        .await
+        .expect("start");
+    stopping.shutdown().await.expect_err("the stop fails");
+
     let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
         .await
-        .expect("restart after a shutdown");
+        .expect("restart while the stopped handle is still held");
     handle.shutdown().await.expect("shutdown");
+    drop(stopping);
 }

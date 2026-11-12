@@ -115,6 +115,18 @@ pub struct RaftSettings {
     /// config change rather than a membership change. Empty means the
     /// recorded addresses are used as they are.
     pub peer_addrs: BTreeMap<NodeId, String>,
+    #[cfg(test)]
+    pub(crate) faults: Faults,
+}
+
+/// Failures a unit test injects into a member's start and stop.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Faults {
+    /// The start fails once the node is running.
+    pub(crate) fail_after_node_start: bool,
+    /// The node's stop reports an error.
+    pub(crate) fail_node_stop: bool,
 }
 
 impl RaftSettings {
@@ -132,6 +144,8 @@ impl RaftSettings {
             snapshot_logs_since_last: 500,
             logs_kept_behind_snapshot: 100,
             write_timeout: Duration::from_secs(10),
+            #[cfg(test)]
+            faults: Faults::default(),
         }
     }
 }

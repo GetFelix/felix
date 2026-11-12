@@ -20,6 +20,8 @@ use super::{
 pub struct RaftHandle {
     pub(super) raft: Raft,
     pub(super) id: NodeId,
+    #[cfg(test)]
+    faults: super::Faults,
     pub(super) write_timeout: Duration,
     /// For forwarding proposals to the leader; pooled per host underneath.
     pub(super) forward: reqwest::Client,
@@ -156,7 +158,13 @@ impl RaftHandle {
         // missing entries it committed in its previous life, and requests
         // routed to it read a world that never existed. The chaos suite
         // caught exactly that.
-        if let Err(err) = Self::replayed(&raft, committed_floor).await {
+        let replayed = Self::replayed(&raft, committed_floor).await;
+        #[cfg(test)]
+        let replayed = match settings.faults.fail_after_node_start {
+            true => Err(anyhow::anyhow!("injected: the start fails")),
+            false => replayed,
+        };
+        if let Err(err) = replayed {
             stop_failed_start(&raft).await;
             return Err(err);
         }
@@ -171,6 +179,8 @@ impl RaftHandle {
         let handle = Self {
             raft,
             id: settings.node_id,
+            #[cfg(test)]
+            faults: settings.faults,
             write_timeout: settings.write_timeout,
             forward,
             security: Arc::new(settings.security),
@@ -356,6 +366,11 @@ impl RaftHandle {
             .shutdown()
             .await
             .map_err(|err| anyhow::anyhow!("raft shutdown: {err}"));
+        #[cfg(test)]
+        let stopped = match self.faults.fail_node_stop {
+            true => Err(anyhow::anyhow!("injected: the stop fails")),
+            false => stopped,
+        };
         let closed = self.member.close().await;
         stopped.and(closed)
     }
