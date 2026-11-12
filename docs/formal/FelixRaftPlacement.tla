@@ -77,7 +77,9 @@
 (*                     and heartbeats a member answers while its vote is   *)
 (*                     withheld. This is what the metadata group does      *)
 (*                     today, and it loses a committed entry (issue        *)
-(*                     2365).                                              *)
+(*                     2365). With the rule on, three members are safe and *)
+(*                     five are not: the member can vote twice in the term *)
+(*                     it forgot (FelixRaftPlacementSameIdFive.cfg).       *)
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
@@ -88,6 +90,8 @@
 (* Abstracted: storage, snapshots, the fence, the lease. A message is one  *)
 (* atomic step between two brokers. A leader counts the answers it has,    *)
 (* whatever became of the copies that gave them.                           *)
+(* The read-index round is one step that reads every broker's term at      *)
+(* once, which is stricter than a round of answers collected over time.    *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 

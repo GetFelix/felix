@@ -294,10 +294,11 @@ refuses vote requests and does not stand for election. It asks its peers
 **Known gap (#2365).** Only the vote is withheld. The member still answers
 appends and heartbeats, and a leader counts them. It forgot the term it last
 voted in, so a leader of an older term can commit with it after a newer
-leader was elected on its vote, and that entry is then cut. The rule that
-closes it: no leader counts a member while its vote is withheld
-(`docs/formal/FelixRaftPlacementSameId.cfg` passes with it,
-`FelixRaftPlacementSameIdCounted.cfg` shows the loss without it).
+leader was elected on its vote, and that entry is then cut
+(`docs/formal/FelixRaftPlacementSameIdCounted.cfg`). A rule that no leader
+counts a member while its vote is withheld closes this for three members
+(`FelixRaftPlacementSameId.cfg`). It does not for five: the member can vote
+a second time in the term it forgot (`FelixRaftPlacementSameIdFive.cfg`).
 
 The withheld vote is written to the member's store before any of this, so a
 crash half-way through catching up restarts still withholding it, not as a

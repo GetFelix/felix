@@ -624,6 +624,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementStaleFull.cfg` | the same with two terms | not registered: unfinished after eight minutes on a laptop; run through the dispatch |
 | `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
 | `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
+| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
 | `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |
 | `FelixRaftPlacementAnswerAnyId.cfg` | a wiped copy answers a request that names the copy id it replaced | violate `LeaderCompleteness` |
@@ -2582,6 +2583,16 @@ finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
 (#2365). The wiped member forgot the term it voted in, so the leader of
 an older term commits with it after a newer leader was elected on its vote.
 The config is pinned as an expected violation until the rule is built.
+
+Not counting a withheld member is needed, and it is enough for three members
+(`FelixRaftPlacementSameId.cfg` passes). It is not enough for five:
+`FelixRaftPlacementSameIdFive.cfg` elects two leaders in one term. A
+candidate holds the wiped member's vote and is one vote short. The member
+catches up with the older leader, votes again, and grants a second vote in
+the term it forgot. With three members the candidate already has its
+majority when the member votes, so the older leader cannot be confirmed. A
+sure fix gives the wiped member a new id through a membership change, as
+shard groups do, or has it hear from every other member before it votes.
 
 `FelixRaftPlacementTwoWipes.cfg` pins the bound instead of a rule: a group of
 three survives one lost disk at a time.

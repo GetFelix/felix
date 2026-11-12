@@ -1061,7 +1061,9 @@ step. It adds the two rules above (a request names its member id, a removed
 copy is deleted only after it has no vote) and checks the offsets
 subscribers were given. The same module has the metadata group's rejoin,
 where a wiped member keeps its id, and found that a leader must not count
-such a member while its vote is withheld (#2365).
+such a member while its vote is withheld, and that with five members even
+that is not enough (#2365). Shard groups do not have the problem, because a
+wiped copy takes a new id.
 
 **Later, with store-liveness leases:** support with epochs and expiry, a
 lease that holds while a majority supports the leader's store, and a vote
