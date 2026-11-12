@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794449238584,
+  "lastUpdate": 1794451741100,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52416,6 +52416,58 @@ window.BENCHMARK_DATA = {
             "range": "50259.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1624552.96\nmean: 1608909.10\nstdev: 50259.94\ncv: 3.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "800c4de428e27a82dcaa331256cacd5699fc2e78",
+          "message": "ci(gate): paired rule, batch 1 cells and a single node for the perf gate (#2321)\n\n* ci(gate): the paired rule, batch 1 cells and a single node for the perf gate (#2298)\n\nPer-round candidate/baseline ratios, the exact interval of the median\n(6, 12, 24 rounds), 0.97 for throughput, 1.10 for p99, 0.95 for failover,\na baseline A/A half-width check, and more rounds for undecided cells.\nThe engine A/B keeps 0.90 and 1.20 on medians. Cells 1 and 2 gain batch 1\ncells for p50 and p99, 64 KiB uses batch 64, and RF 1 starts one broker.\n\nSpec-Unaffected: CI scripts and workflows only\n\n* temp: push trigger for the proof run\n\n* Remove the temporary push trigger\n\n* ci(gate): non-pass perf verdicts fail the part, head stays in the middle slot, docs match\n\nSpec-Unaffected: CI scripts and docs only",
+          "timestamp": "2026-11-12T02:40:41Z",
+          "tree_id": "4c8710404a11d039fb1660f5d148e2bd87d1d106",
+          "url": "https://github.com/GetFelix/felix/commit/800c4de428e27a82dcaa331256cacd5699fc2e78"
+        },
+        "date": 1794451740232,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362459.46,
+            "range": "16125.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362459.46\nmean: 360329.19\nstdev: 16125.47\ncv: 4.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362459.46,
+            "range": "16125.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362459.46\nmean: 360329.19\nstdev: 16125.47\ncv: 4.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81339.95,
+            "range": "493.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81339.95\nmean: 81423.56\nstdev: 493.40\ncv: 0.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 813399.53,
+            "range": "4934.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 813399.53\nmean: 814235.61\nstdev: 4934.01\ncv: 0.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
