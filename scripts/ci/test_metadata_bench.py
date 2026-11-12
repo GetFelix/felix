@@ -57,7 +57,7 @@ class Bands(CompareTest):
         self.assertEqual(self.compare(base, self.runs(ops(600))), 0)
 
     def test_lower_is_better_for_latency(self):
-        cell = lambda p99: {"propose": {"p99_ms": p99}}
+        cell = lambda p50: {"propose": {"p50_ms": p50}}
         base = self.runs(cell(10))
         self.assertEqual(self.compare(base, self.runs(cell(12))), 1)
         self.assertEqual(self.compare(base, self.runs(cell(5))), 0)
@@ -65,6 +65,15 @@ class Bands(CompareTest):
     def test_a_missing_cell_fails(self):
         base = self.runs({"a": {"p99_ms": 1}})
         self.assertEqual(self.compare(base, self.runs({"b": {"p99_ms": 1}})), 1)
+
+
+class Tails(CompareTest):
+    def test_a_tail_latency_gets_a_wider_floor_than_a_median(self):
+        cell = lambda p50, p99: {"propose": {"p50_ms": p50, "p99_ms": p99}}
+        base = self.runs(cell(10, 10))
+        self.assertEqual(self.compare(base, self.runs(cell(10, 12.5))), 0)
+        self.assertEqual(self.compare(base, self.runs(cell(12.5, 10))), 1)
+        self.assertEqual(self.compare(base, self.runs(cell(10, 14))), 1)
 
 
 class Flags(CompareTest):

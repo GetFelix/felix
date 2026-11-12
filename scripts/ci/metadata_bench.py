@@ -8,7 +8,7 @@ Each file is the output of `tests/metadata_bench.rs`: {"cells": {cell: {metric: 
 Pass several runs per side, taken alternately (base, head, base, head, ...) so
 runner drift lands on both. Each metric is the median of its runs. A cell's
 noise band is the spread of the base runs ((max - min) / median), never under
---floor (10% by default). HEAD fails a cell only when it is worse than BASE
+--floor (10% by default; 30% for tail latencies). HEAD fails a cell only when it is worse than BASE
 by more than the band. A cell HEAD does not report fails: a missing
 measurement is never a pass. Throughput, `ok` and `rounds` are better higher;
 everything else (times, sizes, costs, `failed`, `failed_rounds`) is better lower.
@@ -19,6 +19,10 @@ import statistics
 import sys
 
 HIGHER_IS_BETTER = {"ops_per_s", "ok", "rounds"}
+# A tail over a few hundred samples moves a lot between identical runs, so
+# these get a wider floor than the means and medians.
+TAIL = {"p99_ms", "max_ms", "longest_write_ms"}
+TAIL_FLOOR = 0.30
 
 
 def flatten(path):
@@ -63,7 +67,7 @@ def compare(args):
             rows.append((name, reference, None, None, None, "FAIL (missing)"))
             failed = True
             continue
-        band = args.floor
+        band = max(args.floor, TAIL_FLOOR) if metric in TAIL else args.floor
         if reference != 0:
             band = max(band, (max(runs) - min(runs)) / abs(reference))
         value = statistics.median(head[name])
