@@ -16,13 +16,14 @@ use std::sync::Arc;
 use super::DirNode;
 use crate::io::writeback::{SECTOR, SplitMix64, Writeback, crash_contents};
 
-/// Told the segment a cut tore, below the root, and where its append began.
+/// Told the segment a cut tore, below the root, and where what came back
+/// stops being whole records: see [`torn_append`].
 pub(crate) type OnCut = Box<dyn FnOnce(&Path, u64) + Send>;
 
 pub(super) enum Power {
     On,
     /// The next append to a segment cuts the power. `on_cut` is told the
-    /// segment, below the root, and where the append started.
+    /// segment, below the root, and where its whole records end.
     Armed {
         seed: u64,
         on_cut: OnCut,
@@ -36,13 +37,19 @@ pub(super) enum Power {
 /// `current[from..end]`, the newest bytes of the file. The bytes before it
 /// follow the crash model, with the size reaching at least `from`. The
 /// append's own size and sectors are drawn so it never comes back whole.
+///
+/// Also returns where the whole records of the append end in what came back:
+/// `from` when its first record is short or damaged, or when anything before
+/// the append was lost. An append can hold
+/// several records, and a size that stops between two of them with every
+/// sector there leaves a clean log that recovery has nothing to cut from.
 pub(super) fn torn_append(
     durable: &[u8],
     current: &[u8],
     from: usize,
     end: usize,
     rng: &mut SplitMix64,
-) -> Vec<u8> {
+) -> (Vec<u8>, usize) {
     let mut out = crash_contents(durable, &current[..from], rng, Writeback::AnySubset);
     // A size that covers the append covers everything before it; bytes the
     // model lost there read as zeros.
@@ -82,5 +89,38 @@ pub(super) fn torn_append(
             out.extend((start..stop).map(old));
         }
     }
-    out
+    // Unsynced bytes before the append can be lost too, and then recovery
+    // owes a cut back to them however much of the append is whole.
+    if out[..from] != current[..from] {
+        return (out, from);
+    }
+    let intact = out[from..]
+        .iter()
+        .zip(&current[from..])
+        .take_while(|(kept, written)| kept == written)
+        .count();
+    let whole = whole_records(&current[..end], from, from + intact);
+    (out, whole)
+}
+
+/// The end of the last record of `segment[from..]` that ends at or before
+/// `limit`, or `from`. The bytes are the writer's own, so a header that does
+/// not decode means this is not a segment of records, and nothing is whole.
+fn whole_records(segment: &[u8], from: usize, limit: usize) -> usize {
+    use crate::segment::format::{RecordHeader, SEGMENT_HEADER_LEN, SegmentHeader};
+    let Some(Ok(header)) = segment
+        .get(..SEGMENT_HEADER_LEN as usize)
+        .map(SegmentHeader::decode)
+    else {
+        return from;
+    };
+    let mut at = from;
+    while let Ok(record) = RecordHeader::decode_in(&segment[at..], header.version) {
+        let next = at + record.encoded_len() as usize;
+        if next > limit {
+            break;
+        }
+        at = next;
+    }
+    at
 }

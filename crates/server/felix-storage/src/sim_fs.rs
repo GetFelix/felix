@@ -47,13 +47,18 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 }
 
 /// Cut the power under `root` during the next append to a log segment, then
-/// call `on_cut` with that segment's path below `root` and the offset the
-/// append started at.
+/// call `on_cut` with that segment's path below `root` and the offset where
+/// its whole records end.
 ///
 /// Every file and directory keeps what [`crash`] with `seed` would leave,
 /// and the append in flight is then forced to come back short or torn: its
 /// size reached the disk in full or in part, and each sector of its data
-/// arrived or did not, at least one not. Recovery has to repair that tail.
+/// arrived or did not, at least one not. Recovery has to repair that tail,
+/// unless the append held several records and the size stopped between two
+/// of them with nothing missing before it. The offset is where the append
+/// began, moved past each of its records that came back whole, so a segment
+/// no longer than it has no tail to repair. It stays where the append began
+/// when unsynced bytes before the append were lost.
 /// The device's contents are fixed at the cut; whatever the process writes
 /// after it is lost at [`reboot`].
 ///
@@ -102,12 +107,19 @@ pub fn torn_tails_repaired(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
 
 /// The segments, as paths below `root`, that were opened, in order. A
 /// segment appears once for each stretch between reboots in which it was
-/// opened.
+/// opened. Opens made inside [`unobserved`] are left out.
 ///
 /// # Errors
 /// `NotFound` when `root` was not registered.
 pub fn segments_opened(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(tree(root)?.opened_segments())
+}
+
+/// Run `read`, a look at the devices from outside any broker, without
+/// counting the segments it opens in [`segments_opened`]. It covers opens made
+/// on the calling thread.
+pub fn unobserved<R>(read: impl FnOnce() -> R) -> R {
+    crate::fs::unobserved(read)
 }
 
 /// Fail one flush under `root` (of a file or a directory) with an I/O

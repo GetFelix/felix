@@ -438,6 +438,15 @@ What the waiver does and does not do:
   cluster's data and returns, the group formed without it has replaced it.
   Use the waiver only under a cluster id that no volume has ever held.
 
+**Known gap (#2365).** Only the vote is withheld. The member still answers
+appends and heartbeats, and a leader counts them. It forgot the term it last
+voted in, so a leader of an older term can commit with it after a newer
+leader was elected on its vote, and that entry is then cut
+(`docs/formal/FelixRaftPlacementSameIdCounted.cfg`). A rule that no leader
+counts a member while its vote is withheld closes this for three members
+(`FelixRaftPlacementSameId.cfg`). It does not for five: the member can vote
+a second time in the term it forgot (`FelixRaftPlacementSameIdFive.cfg`).
+
 The withheld vote is written to the member's store before any of this, so a
 crash half-way through catching up restarts still withholding it, not as a
 voter with half a log. Membership never changes: a demote-and-promote would

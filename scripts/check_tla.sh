@@ -106,6 +106,7 @@ tlc() {
     FelixGroups*) module="FelixGroups" ;;
     FelixRaftMembership*) module="FelixRaftMembership" ;;
     FelixRaftIdentity*) module="FelixRaftIdentity" ;;
+    FelixRaftPlacement*) module="FelixRaftPlacement" ;;
     FelixRaftReform*) module="FelixRaftReform" ;;
     FelixRaftLease*) module="FelixRaftLease" ;;
     FelixRaftSleep*) module="FelixRaftSleep" ;;
@@ -549,6 +550,35 @@ expectations=(
   "FelixRaftIdentityRejoinLeads violates NeverRotatedLeads"
   "FelixRaftIdentityRestoreCaught violates NeverRotates"
   "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
+  "FelixRaftPlacement pass"
+  "FelixRaftPlacementFailover pass"
+  "FelixRaftPlacementReseat pass"
+  "FelixRaftPlacementShrink pass"
+  "FelixRaftPlacementMoveWipe pass"
+  "FelixRaftPlacementStale pass"
+  "FelixRaftPlacementStaleFull pass"
+  "FelixRaftPlacementSameId pass"
+  "FelixRaftPlacementReseatWrites pass"
+  "FelixRaftPlacementSameIdWrites pass"
+  "FelixRaftPlacementShrinkRetain pass"
+  "FelixRaftPlacementReturnWipe pass"
+  "FelixRaftPlacementStaleWipe violates AckedOnDisk"
+  "FelixRaftPlacementSameIdCounted violates AckedSurvive"
+  "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
+  "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
+  "FelixRaftPlacementNoWithhold violates LeaderCompleteness"
+  "FelixRaftPlacementAnswerAnyId violates LeaderCompleteness"
+  "FelixRaftPlacementDeleteOnTarget violates AckedOnDisk"
+  "FelixRaftPlacementTwoWipes violates AckedOnDisk"
+  "FelixRaftPlacementNoWithholdOffsets violates OffsetNeverReused"
+  "FelixRaftPlacementPlaceDoomed violates AckedOnDisk"
+  "FelixRaftPlacementReachMove violates NeverMoves"
+  "FelixRaftPlacementReachShrink violates NeverShrinks"
+  "FelixRaftPlacementReachDelete violates NeverDeletes"
+  "FelixRaftPlacementReachReseat violates NeverReseats"
+  "FelixRaftPlacementReachWipedLeads violates NeverWipedLeads"
+  "FelixRaftPlacementReachVotesAgain violates NeverVotesAgain"
+  "FelixRaftPlacementReachForm violates NeverForms"
   "FelixRaftSwitch pass"
   "FelixRaftSwitchLag pass"
   "FelixRaftSwitchLagWipe pass"
@@ -775,6 +805,9 @@ fi
 # outcome.
 # FelixRaftReformStaleMembershipFull is not registered either: it gives the
 # violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
+# FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
+# (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
+# hours, so nothing checks it yet.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -968,6 +1001,15 @@ weights=(
   "FelixRaftMembershipFailover 8"
   "FelixRaftIdentityDirRestore 2"
   "FelixRaftIdentityWipeThenRestore 2"
+  "FelixRaftPlacementFailover 10"
+  "FelixRaftPlacementReseat 2"
+  "FelixRaftPlacementReseatWrites 7"
+  "FelixRaftPlacementMoveWipe 3"
+  "FelixRaftPlacementStaleWipe 5"
+  "FelixRaftPlacementReturnWipe 2"
+  "FelixRaftPlacementStaleFull 49"
+  "FelixRaftPlacementSameId 2"
+  "FelixRaftPlacementSameIdFive 20"
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
@@ -1061,7 +1103,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Reform Lease Sleep Switch"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"

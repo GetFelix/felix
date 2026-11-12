@@ -770,3 +770,148 @@ fn a_cut_with_no_append_keeps_what_was_synced() {
     assert_eq!(fs::read(&path).expect("read"), b"synced");
     assert!(!sim_fs::reboot(&sim.root).expect("reboot"), "only once");
 }
+
+#[test]
+fn an_unobserved_open_of_a_segment_is_not_recorded() {
+    let sim = Sim::new("unobserved");
+    let segment = sim.path(SEGMENT);
+    sim_fs::unobserved(|| durable_file(&segment, &bytes(100, 1)));
+    sim_fs::unobserved(|| fs::read(&segment).expect("read"));
+    assert!(
+        sim_fs::segments_opened(&sim.root)
+            .expect("opened")
+            .is_empty()
+    );
+    // The broker's own open afterwards still counts.
+    fs::read(&segment).expect("read");
+    assert_eq!(
+        sim_fs::segments_opened(&sim.root).expect("opened"),
+        vec![PathBuf::from(SEGMENT)]
+    );
+}
+
+/// The offset a cut reports is where recovery's scan stops finding whole
+/// records, so a segment longer than it has a torn tail and one that is not
+/// has none. An append of several records can come back as some of them,
+/// whole, which is a clean log.
+#[test]
+fn a_cut_reports_where_the_whole_records_end() {
+    use crate::segment::format::{SegmentHeader, encode_record};
+    use crate::segment::{ScanStart, scan_segment};
+
+    let header = SegmentHeader::new(0, 1).encode().to_vec();
+    let mut records = Vec::new();
+    let mut ends = Vec::new();
+    for offset in 0..8 {
+        encode_record(
+            &mut records,
+            offset,
+            100 + offset,
+            b"12345678",
+            None,
+            None,
+            &Default::default(),
+        );
+        ends.push((header.len() + records.len()) as u64);
+    }
+    let (mut clean, mut torn) = (0, 0);
+    for seed in 0..2000 {
+        let sim = Sim::new("whole");
+        let segment = sim.path(SEGMENT);
+        durable_file(&segment, &header);
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&reported);
+        sim_fs::arm_power_cut(&sim.root, seed, move |_, from| {
+            *slot.lock().unwrap() = Some(from);
+        })
+        .expect("arm");
+        io::write_at(&seg, &records, header.len() as u64).expect("append");
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+
+        let reported = reported.lock().unwrap().expect("cut");
+        let len = fs::metadata(&segment).expect("stat").len();
+        assert!(
+            reported == header.len() as u64 || ends.contains(&reported),
+            "seed {seed}: {reported} is between records"
+        );
+        let scan = scan_segment(&segment, 0, "t/ns/s/0", 4096, ScanStart::Full, true);
+        let nothing_to_repair = scan.is_ok_and(|outcome| outcome.torn_tail.is_none());
+        assert_eq!(
+            nothing_to_repair,
+            len <= reported,
+            "seed {seed}: {len} bytes came back, whole records end at {reported}"
+        );
+        if nothing_to_repair {
+            clean += 1;
+        } else {
+            torn += 1;
+        }
+    }
+    assert!(clean > 0 && torn > 0, "{clean} clean, {torn} torn");
+}
+
+/// Unsynced records before the append can be lost while records of the
+/// append come back whole. Recovery owes a cut there, so the cut must not
+/// report the append's whole records as the end of a clean log.
+#[test]
+fn a_cut_that_loses_bytes_before_the_append_reports_where_it_began() {
+    use crate::segment::format::{SegmentHeader, encode_record};
+    use crate::segment::{ScanStart, scan_segment};
+
+    let header = SegmentHeader::new(0, 1).encode().to_vec();
+    let record = |out: &mut Vec<u8>, offset: u64| {
+        encode_record(
+            out,
+            offset,
+            100 + offset,
+            b"12345678",
+            None,
+            None,
+            &Default::default(),
+        );
+    };
+    // An earlier batch nobody synced, then the append the cut lands in.
+    let (mut earlier, mut append) = (Vec::new(), Vec::new());
+    (0..4).for_each(|offset| record(&mut earlier, offset));
+    (4..12).for_each(|offset| record(&mut append, offset));
+    let from = (header.len() + earlier.len()) as u64;
+    let each = (append.len() / 8) as u64;
+
+    let mut lost_before_whole_after = 0;
+    for seed in 0..4000 {
+        let sim = Sim::new("before");
+        let segment = sim.path(SEGMENT);
+        durable_file(&segment, &header);
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        io::write_at(&seg, &earlier, header.len() as u64).expect("earlier batch");
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&reported);
+        sim_fs::arm_power_cut(&sim.root, seed, move |_, from| {
+            *slot.lock().unwrap() = Some(from);
+        })
+        .expect("arm");
+        io::write_at(&seg, &append, from).expect("append");
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+
+        let reported = reported.lock().unwrap().expect("cut");
+        let after = fs::read(&segment).expect("read");
+        let len = after.len() as u64;
+        let scan = scan_segment(&segment, 0, "t/ns/s/0", 4096, ScanStart::Full, true);
+        let nothing_to_repair = scan.is_ok_and(|outcome| outcome.torn_tail.is_none());
+        assert_eq!(
+            nothing_to_repair,
+            len <= reported,
+            "seed {seed}: {len} bytes came back, whole records end at {reported}"
+        );
+        let kept = &after[from as usize..];
+        if after[header.len()..from as usize] != earlier[..]
+            && (kept.len() as u64).is_multiple_of(each)
+            && *kept == append[..kept.len()]
+        {
+            assert_eq!(reported, from, "seed {seed}");
+            lost_before_whole_after += 1;
+        }
+    }
+    assert!(lost_before_whole_after > 0);
+}
