@@ -31,6 +31,7 @@ use felix_authz::{
     cache_resource, stream_resource,
 };
 use felix_broker::{Broker, SequenceReuse};
+use felix_replication::engine::Engine;
 use felix_router::{Resolution, ShardRouter};
 use felix_wire::internal::{
     CacheOpKind, ErrorCode, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk,
@@ -42,7 +43,7 @@ use felix_wire::internal::{
 use crate::serving::auth::{AuthContext, BrokerAuth};
 use crate::serving::lease::LeaseMint;
 use crate::shards::lifecycle::fence::Fenced;
-use crate::shards::routing::{Dispatch, IngressRouter};
+use crate::shards::routing::{Dispatch, IngressRouter, StreamEngine};
 use crate::shards::{ShardKey, ShardKind};
 use felix_replication::peer::metrics;
 use felix_replication::peer::server::PeerRequestHandler;
@@ -55,7 +56,7 @@ pub struct ForwardingHandler {
     /// This broker's own internal address, so a `NotLeader` that names *this*
     /// node at a newer generation is one the requester can act on.
     advertise_addr: String,
-    /// How far a majority of each shard's replica set has got.
+    /// What a write waits on before it is acknowledged.
     ///
     /// A forwarded publish is still a publish to this stream, so it owes the
     /// client the guarantee the stream asks for. Acknowledging on local
@@ -63,7 +64,7 @@ pub struct ForwardingHandler {
     /// happened to reach — honoured when it talked to the leader, silently
     /// downgraded to `Leader` through any other broker, which is where a
     /// failover then lost the record.
-    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    engine: Arc<StreamEngine>,
     quorum_timeout: std::time::Duration,
     /// Verifies the client credential a forward carries, against the same
     /// keys a direct request is checked with.
@@ -73,22 +74,30 @@ pub struct ForwardingHandler {
 impl ForwardingHandler {
     pub fn new(
         broker: Arc<Broker>,
-        ingress: Arc<IngressRouter>,
+        engine: Arc<StreamEngine>,
         router: Arc<ShardRouter>,
         advertise_addr: String,
-        marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
         quorum_timeout: std::time::Duration,
         auth: Arc<BrokerAuth>,
     ) -> Self {
+        let ingress = engine
+            .serving()
+            .cloned()
+            .expect("a forwarding handler needs an engine with shard routing");
         Self {
             broker,
             ingress,
             router,
             advertise_addr,
-            marks,
+            engine,
             quorum_timeout,
             auth,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<StreamEngine> {
+        &self.engine
     }
 
     pub(crate) async fn apply(&self, publish: ForwardPublish) -> InternalMessage {
@@ -192,15 +201,16 @@ impl ForwardingHandler {
                 // publish is still a publish to this stream, and the client on
                 // the other end of the forward asked for the stream's guarantee,
                 // not for whichever one this path happened to provide.
-                if let Err(err) = felix_replication::quorum::await_quorum(
-                    &handle,
-                    Some(&key),
-                    &outcome,
-                    self.marks.as_deref(),
-                    Some(self.ingress.as_ref()),
-                    self.quorum_timeout,
-                )
-                .await
+                if let Err(err) = self
+                    .engine
+                    .await_commit(
+                        &handle,
+                        Some(&key),
+                        &outcome,
+                        publish.shard.generation,
+                        self.quorum_timeout,
+                    )
+                    .await
                 {
                     metrics::record_served(metrics::OUTCOME_ERROR);
                     // A sequenced forward can be sent again to whoever leads
@@ -358,8 +368,9 @@ impl ForwardingHandler {
             None
         };
         // Taken before the write, as on the local path.
-        let entry_expires_at = (op.ttl_ms > 0)
-            .then(|| std::time::SystemTime::now() + std::time::Duration::from_millis(op.ttl_ms));
+        let entry_expires_at = (op.ttl_ms > 0).then(|| {
+            felix_common::clock::system_time() + std::time::Duration::from_millis(op.ttl_ms)
+        });
 
         // A read follows the lease as a write does: another broker may be
         // leading the shard by now, with writes this one never saw. A fleet
@@ -367,13 +378,7 @@ impl ForwardingHandler {
         // instead.
         if matches!(op.op, CacheOpKind::Get | CacheOpKind::CounterGet)
             && !self.ingress.fence().lease_valid()
-            && !felix_replication::quorum::read_skips_lease(
-                &self.broker,
-                &key,
-                self.marks.as_deref(),
-                Some(self.ingress.as_ref()),
-            )
-            .await
+            && !self.engine.read_skips_lease(&self.broker, &key).await
         {
             crate::cluster::lease::metrics::record_refusal(
                 crate::cluster::lease::metrics::BOUNDARY_READ,
@@ -396,6 +401,13 @@ impl ForwardingHandler {
                         .into_cache_answer(correlation_id);
                 }
             }
+        } else {
+            None
+        };
+        let at = if writes {
+            self.engine
+                .cache_write_at(&self.broker, &key, op.shard.generation)
+                .await
         } else {
             None
         };
@@ -526,19 +538,20 @@ impl ForwardingHandler {
         // The same wait the requester's own path makes for a local write or
         // read: the client asked for the cache's guarantee, wherever the key
         // happens to live.
-        if let Err(err) = felix_replication::quorum::await_cache_quorum(
-            &self.broker,
-            &key,
-            self.marks.as_deref(),
-            Some(self.ingress.as_ref()),
-            self.quorum_timeout,
-            if writes {
-                felix_replication::quorum::Access::Write
-            } else {
-                felix_replication::quorum::Access::Read
-            },
-        )
-        .await
+        if let Err(err) = self
+            .engine
+            .await_cache_quorum(
+                &self.broker,
+                &key,
+                self.quorum_timeout,
+                if writes {
+                    felix_replication::quorum::Access::Write
+                } else {
+                    felix_replication::quorum::Access::Read
+                },
+                at,
+            )
+            .await
         {
             metrics::record_served(metrics::OUTCOME_ERROR);
             return InternalMessage::ForwardCacheError(ForwardCacheError {
@@ -845,7 +858,7 @@ impl ForwardingHandler {
                 drop(_fenced);
                 match added {
                     Ok((sum, offset)) => self
-                        .counter_quorum(key, Some(offset + 1), "counter add")
+                        .counter_quorum(key, Some(offset + 1), op.shard.generation, "counter add")
                         .await
                         .map(|()| Some(sum))
                         .map_err(|detail| (ErrorCode::StorageFailed, detail)),
@@ -865,7 +878,7 @@ impl ForwardingHandler {
                     .map_err(|err| (ErrorCode::Unavailable, err.to_string()));
                 match sum {
                     Ok(sum) => self
-                        .counter_quorum(key, None, "read")
+                        .counter_quorum(key, None, op.shard.generation, "read")
                         .await
                         .map(|()| sum)
                         .map_err(|detail| (ErrorCode::Unavailable, detail)),
@@ -890,25 +903,26 @@ impl ForwardingHandler {
         }
     }
 
-    /// [`felix_replication::quorum::await_counter_quorum`] for a forwarded
+    /// [`Engine::await_counter_quorum`] for a forwarded
     /// counter op, as the requester's own path waits for a local one.
     async fn counter_quorum(
         &self,
         key: &ShardKey,
         end: Option<u64>,
+        generation: u64,
         what: &'static str,
     ) -> Result<(), String> {
-        felix_replication::quorum::await_counter_quorum(
-            &self.broker,
-            key,
-            self.marks.as_deref(),
-            Some(self.ingress.as_ref()),
-            self.quorum_timeout,
-            end,
-            what,
-        )
-        .await
-        .map_err(|err| err.to_string())
+        self.engine
+            .await_counter_quorum(
+                &self.broker,
+                key,
+                self.quorum_timeout,
+                end,
+                generation,
+                what,
+            )
+            .await
+            .map_err(|err| err.to_string())
     }
 }
 

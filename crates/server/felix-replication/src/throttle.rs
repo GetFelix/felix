@@ -50,12 +50,12 @@ impl MoveThrottle {
         Self::new(0)
     }
 
-    pub fn is_limited(&self) -> bool {
+    pub(crate) fn is_limited(&self) -> bool {
         self.bytes_per_sec > 0
     }
 
     /// How long until the next batch may go.
-    pub fn wait(&self) -> Duration {
+    pub(crate) fn wait(&self) -> Duration {
         if !self.is_limited() {
             return Duration::ZERO;
         }
@@ -69,7 +69,7 @@ impl MoveThrottle {
     }
 
     /// Charge a batch that was sent.
-    pub fn charge(&self, bytes: u64) {
+    pub(crate) fn charge(&self, bytes: u64) {
         if !self.is_limited() {
             return;
         }

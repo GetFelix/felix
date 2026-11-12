@@ -76,6 +76,49 @@ impl Core {
         handed.offset().await
     }
 
+    /// Queue a batch for the producer's task and return once it is queued.
+    pub(crate) async fn hand_off_batch(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        key: Option<Bytes>,
+        payloads: Vec<Vec<u8>>,
+    ) -> anyhow::Result<felix_client::Handed> {
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_batch(tenant_id, namespace, stream, key, payloads)
+            .await
+    }
+
+    pub(crate) async fn hand_off_batches(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> anyhow::Result<felix_client::Handed> {
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_batches(tenant_id, namespace, stream, batches)
+            .await
+    }
+
+    pub(crate) async fn hand_off_abandon(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> anyhow::Result<felix_client::Handed> {
+        let slot = self.slot.lock().await;
+        let producer = slot.as_ref().ok_or_else(closed)?;
+        producer
+            .hand_off_abandon(tenant_id, namespace, stream)
+            .await
+    }
+
     pub(crate) async fn publish_batches(
         &self,
         tenant_id: &str,

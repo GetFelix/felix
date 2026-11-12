@@ -57,12 +57,23 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // mid-move, one whose writes need a majority.
     const MOVABLE_STREAM: &str = "conformance-movable";
     const QUORUM_STREAM: &str = "conformance-quorum";
+    // Lease tokens: the cache the brokers mint for, and one output stream per
+    // key a client suite may claim. The template slot is the cache's name.
+    const LEASE_CACHE: &str = "leases";
+    const LEASE_KEYS: [&str; 6] = ["c", "c2", "cs", "cs2", "ts", "ts2"];
+    // A fixed key is fine: the brokers live as long as this process and trust
+    // nothing outside it. Thirty-two bytes, base64.
+    const LEASE_KEY: &str = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=";
     // One shard, so its owner is one broker the link interposer can sit in
     // front of.
     const LINK_STREAM: &str = "conformance-link";
     // Head trims are refused on a stream that has commits, so the suites trim
     // one nothing else writes to.
     const TRIM_STREAM: &str = "conformance-trim";
+
+    let lease_key_file = format!("{ca_file}.lease-key");
+    std::fs::write(&lease_key_file, format!("{LEASE_KEY}\n"))
+        .with_context(|| format!("write the lease key to {lease_key_file}"))?;
 
     eprintln!("starting a {node_count}-node cluster for a client conformance suite...");
     let cluster = Cluster::start(ClusterConfig {
@@ -82,21 +93,39 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
             StreamSpec::quorum(QUORUM_STREAM, 1, node_count as u32),
             StreamSpec::replicated(LINK_STREAM, 1, node_count as u32),
             StreamSpec::quorum(TRIM_STREAM, 1, node_count as u32),
-        ],
+        ]
+        .into_iter()
+        .chain(
+            LEASE_KEYS
+                .iter()
+                .map(|key| StreamSpec::replicated(format!("wl.{key}.out"), 1, node_count as u32)),
+        )
+        .collect(),
         caches: vec![
             CacheSpec::replicated(CACHE, 4, node_count as u32),
             CacheSpec::replicated(SINGLE_SHARD_CACHE, 1, node_count as u32),
+            CacheSpec::replicated(LEASE_CACHE, 1, node_count as u32),
         ],
+        broker_env: vec![(
+            "FELIX_LEASE_TOKEN_KEY_FILE".to_string(),
+            lease_key_file.clone(),
+        )],
         inherit_output: std::env::var("FELIX_CLUSTER_VERBOSE").is_ok(),
         ..Default::default()
     })
     .await?;
-    // Commits and trims are refused until the fleet finalizes the feature, and a record
+    // Commits and trims are refused until the fleet finalizes the feature, a record
     // carries its publisher only once it finalizes the opt-in
-    // `publisher_principal`, as in any real cluster.
+    // `publisher_principal`, and a record takes headers only once it finalizes
+    // `record_headers`, as in any real cluster.
     cluster
         .finalize_fleet_features(
-            &["atomic_commit", "publisher_principal", "head_trim"],
+            &[
+                "atomic_commit",
+                "publisher_principal",
+                "head_trim",
+                "record_headers",
+            ],
             Duration::from_secs(30),
         )
         .await?;
@@ -105,7 +134,13 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     // them, and a PEM bundle holding several is exactly how that is spelled.
     // The broker that advertises no commits adds its own.
     let bare = bare_broker::BareBroker::start()?;
+    // A second stub that only serves clients presenting a certificate.
+    let (mtls, client_cert) = bare_broker::BareBroker::start_requiring_client_cert()?;
     let mut bundle = bare.cert_pem.clone();
+    if !bundle.ends_with('\n') {
+        bundle.push('\n');
+    }
+    bundle.push_str(&mtls.cert_pem);
     if !bundle.ends_with('\n') {
         bundle.push('\n');
     }
@@ -125,6 +160,13 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     }
     std::fs::write(&ca_file, &bundle)
         .with_context(|| format!("write the certificate bundle to {ca_file}"))?;
+
+    let client_cert_file = format!("{ca_file}.client-cert.pem");
+    let client_key_file = format!("{ca_file}.client-key.pem");
+    std::fs::write(&client_cert_file, &client_cert.cert_pem)
+        .with_context(|| format!("write the client certificate to {client_cert_file}"))?;
+    std::fs::write(&client_key_file, &client_cert.key_pem)
+        .with_context(|| format!("write the client key to {client_key_file}"))?;
 
     let link_owner = cluster.owner(LINK_STREAM).await?;
     let link_upstream = cluster
@@ -169,10 +211,17 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
         link_addr: Some(link.addr().to_string()),
         link_stream: Some(LINK_STREAM.to_string()),
         group_operator_token: Some(cluster.group_operator_token()),
+        inspector_token: Some(cluster.inspector_token()),
         trimmer_token: Some(cluster.trimmer_token()),
         trim_stream: Some(TRIM_STREAM.to_string()),
+        lease_cache: Some(LEASE_CACHE.to_string()),
+        lease_node_token: Some(cluster.lease_node_token(&cluster.namespace, LEASE_CACHE)),
+        lease_keys: LEASE_KEYS.iter().map(ToString::to_string).collect(),
         records_publishers: true,
         no_commit_addrs: vec![bare.addr.to_string()],
+        mtls_addr: Some(mtls.addr.to_string()),
+        client_cert_file: Some(client_cert_file.clone()),
+        client_key_file: Some(client_key_file.clone()),
         faults: felix_conformance::kit::catalogue()?.fault_scenarios(),
     };
     let body = serde_json::to_vec_pretty(&fixture).context("encode the fixture")?;
@@ -184,6 +233,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     println!("control   {control_url}");
     println!("link      {} -> {link_owner}", link.addr());
     println!("no commit {}", fixture.no_commit_addrs.join(", "));
+    println!("mtls      {}", mtls.addr);
     eprintln!("\nholding the fixture. press Ctrl-C to tear it down.");
 
     // A placement pass on a timer, which is what makes the reconnect scenario
@@ -214,7 +264,10 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
     let _ = placement.await;
     eprintln!("\ntearing down...");
     let _ = std::fs::remove_file(&out);
+    let _ = std::fs::remove_file(&client_cert_file);
+    let _ = std::fs::remove_file(&client_key_file);
     drop(bare);
+    drop(mtls);
     drop(cluster);
     Ok(())
 }

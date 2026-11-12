@@ -7,14 +7,22 @@ use felix_broker::DurableStorage;
 use felix_router::NodeRef;
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig};
-use felix_wire::internal::FenceOk;
+use felix_wire::internal::{ErrorCode, FenceOk, RefusalReason, ReplicaLog, ReplicateError};
 
 use super::*;
 use crate::peer::{PeerError, PeerIdentity};
 
 const LOCAL: &str = "broker-a";
 
-/// Followers answering a fence with where their copies end, or not at all.
+/// What a follower that does not vote answers with, in place of a log end.
+const NOT_A_VOTER: u64 = u64::MAX;
+
+/// For `ByLog`: a log end of 3 from a learner that answers the unified fence
+/// rather than refusing it, attesting it keeps no promise.
+const UNIFIED_LEARNER: u64 = u64::MAX - 1;
+
+/// Followers answering a fence with where their copies end, refusing it as a
+/// non-voter (`NOT_A_VOTER`), or not at all.
 struct Followers(HashMap<&'static str, Option<u64>>);
 
 impl PeerRequester for Followers {
@@ -26,11 +34,20 @@ impl PeerRequester for Followers {
     ) -> std::result::Result<InternalMessage, PeerError> {
         assert!(matches!(message, InternalMessage::Fence(_)), "{message:?}");
         match self.0.get(node_id).copied().flatten() {
+            Some(NOT_A_VOTER) => Ok(InternalMessage::ReplicateError(ReplicateError {
+                correlation_id: 0,
+                code: ErrorCode::Unauthorized,
+                expected_offset: 0,
+                detail: "this broker does not vote until a set change re-admits it".to_string(),
+                reason: Some(RefusalReason::NotVoter),
+            })),
             Some(log_end) => Ok(InternalMessage::FenceOk(FenceOk {
                 correlation_id: 0,
                 log_end,
                 commit_offset: 0,
                 last_generation: 0,
+                kept_ballot: false,
+                attestation: None,
             })),
             None => Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -89,6 +106,7 @@ fn route() -> Route {
         fence_storage_ids: None,
         member_storage_ids: None,
         pending: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -209,6 +227,311 @@ async fn a_follower_not_heard_from_reports_nothing() {
     );
 }
 
+/// **A follower that refuses as a non-voter has no position** (#2066). With
+/// three replicas the one follower that counts does not meet every majority,
+/// so the report is held: nobody is named caught up, the copy is not
+/// reclaimable, and the refuser's offset is left out.
+#[tokio::test]
+async fn a_non_voting_follower_holds_the_shard() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(8)),
+        ("broker-c", Some(NOT_A_VOTER)),
+    ]));
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("both followers answered");
+
+    assert!(!probe.reclaimable);
+    assert!(probe.report.given_up);
+    assert!(
+        probe.report.caught_up.is_empty(),
+        "{:?}",
+        probe.report.caught_up
+    );
+    let mut offsets = probe.report.offsets.clone();
+    offsets.sort();
+    assert_eq!(
+        offsets,
+        vec![("broker-a".to_string(), 5), ("broker-b".to_string(), 8)]
+    );
+    assert_eq!(probe.report.storage_ids.len(), 1);
+}
+
+/// A follower behind this broker, beside a refuser, does not make the copy
+/// reclaimable either: the refuser may hold what neither has.
+#[tokio::test]
+async fn a_non_voting_follower_blocks_a_reclaim() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(3)),
+        ("broker-c", Some(NOT_A_VOTER)),
+    ]));
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("both followers answered");
+
+    assert!(!probe.reclaimable);
+    assert!(probe.report.caught_up.is_empty());
+}
+
+/// A silent follower beside a refuser: the silent one, answering, could still
+/// make the counted followers meet every majority, so nothing is reported.
+/// Once the answers in hand make that impossible, the held report goes.
+#[tokio::test]
+async fn silence_waits_unless_the_verdict_is_already_held() {
+    let (broker, _dir) = holding(5).await;
+    let waiting = Followers(HashMap::from([("broker-b", Some(8)), ("broker-c", None)]));
+    assert!(
+        probe(&waiting, &broker, LOCAL, &key(), &route())
+            .await
+            .is_none()
+    );
+
+    let mut five = route();
+    five.replicas.push(node("broker-d", 7004));
+    five.replicas.push(node("broker-e", 7005));
+    let held = Followers(HashMap::from([
+        ("broker-b", Some(8)),
+        ("broker-c", Some(NOT_A_VOTER)),
+        ("broker-d", Some(NOT_A_VOTER)),
+        ("broker-e", None),
+    ]));
+    let probe = probe(&held, &broker, LOCAL, &key(), &five)
+        .await
+        .expect("a silent member cannot lift a hold");
+    assert!(probe.report.caught_up.is_empty() && !probe.reclaimable);
+}
+
+/// With five replicas, one refuser leaves three trusted followers, which meet
+/// every majority: the furthest is named.
+#[tokio::test]
+async fn followers_that_meet_every_majority_still_name_the_furthest() {
+    let (broker, _dir) = holding(5).await;
+    let mut five = route();
+    five.replicas.push(node("broker-d", 7004));
+    five.replicas.push(node("broker-e", 7005));
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(8)),
+        ("broker-c", Some(6)),
+        ("broker-d", Some(7)),
+        ("broker-e", Some(NOT_A_VOTER)),
+    ]));
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &five)
+        .await
+        .expect("every follower answered");
+
+    assert_eq!(probe.report.caught_up, vec!["broker-b".to_string()]);
+}
+
+/// **A pending change's old set must be met too.** Both followers answer,
+/// and they meet every majority of the new set, but none belongs to the set
+/// being left, which could hold acknowledged records alone: the report is
+/// held. Without the pending change the furthest is named.
+#[tokio::test]
+async fn followers_must_meet_the_set_a_pending_change_leaves() {
+    let (broker, _dir) = holding(5).await;
+    let followers = Followers(HashMap::from([
+        ("broker-b", Some(8)),
+        ("broker-c", Some(6)),
+    ]));
+    let settled = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("every follower answered");
+    assert_eq!(settled.report.caught_up, vec!["broker-b".to_string()]);
+
+    let mut joint = route();
+    joint.pending = Some(Arc::new(felix_router::PendingChange {
+        generation: 3,
+        leaving: ["broker-a", "broker-d", "broker-e", "broker-f"]
+            .map(String::from)
+            .to_vec(),
+    }));
+    let held = probe(&followers, &broker, LOCAL, &key(), &joint)
+        .await
+        .expect("every follower answered");
+    assert!(held.report.given_up && !held.reclaimable);
+    assert!(
+        held.report.caught_up.is_empty(),
+        "{:?}",
+        held.report.caught_up
+    );
+}
+
+/// Followers answering a fence on each log with where their copy ends and
+/// the generation of its last record, or refusing it as a non-voter
+/// (`NOT_A_VOTER` for the end).
+struct ByLog(Vec<(&'static str, ReplicaLog, u64, u64)>);
+
+impl PeerRequester for ByLog {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        let InternalMessage::Fence(fence) = message else {
+            panic!("{message:?}");
+        };
+        let &(_, _, log_end, last_generation) = self
+            .0
+            .iter()
+            .find(|(node, log, ..)| *node == node_id && *log == fence.log)
+            .expect("an answer for every follower and log");
+        if log_end == NOT_A_VOTER {
+            return Followers(HashMap::from([("refuser", Some(NOT_A_VOTER))]))
+                .request("refuser", addr, InternalMessage::Fence(fence))
+                .await;
+        }
+        let learner = log_end == UNIFIED_LEARNER;
+        Ok(InternalMessage::FenceOk(FenceOk {
+            correlation_id: 0,
+            log_end: if learner { 3 } else { log_end },
+            commit_offset: 0,
+            last_generation,
+            kept_ballot: false,
+            attestation: learner.then_some(felix_wire::internal::FenceAttestation {
+                kept_from: u64::MAX,
+                trusted: false,
+                by_record: false,
+            }),
+        }))
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        Followers(HashMap::new()).identity(node_id, addr).await
+    }
+}
+
+/// This broker, with a counter store and a `Quorum` cache named as `key()`.
+async fn holding_a_cache() -> (Arc<Broker>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let broker = Arc::new(
+        Broker::new(Box::new(
+            felix_storage::LogCache::open(dir.path().join("caches"), config.clone())
+                .expect("cache"),
+        ))
+        .with_durable_storage(
+            DurableStorage::open(dir.path().join("streams"), config.clone()).expect("storage"),
+        )
+        .with_counters(Arc::new(
+            felix_storage::CounterStore::open(dir.path().join("counters"), config)
+                .expect("counters"),
+        )),
+    );
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_cache(
+            "t1",
+            "ns",
+            "orders",
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Quorum,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("cache");
+    (broker, dir)
+}
+
+/// **The probe names the followers holding the generation it gave up**, so
+/// placement can re-admit a learner whose leader crashed before a pass
+/// reported it holding the start record. A follower whose last record is of
+/// an older generation does not hold it, however far its copy goes.
+#[tokio::test]
+async fn the_probe_names_a_follower_holding_the_generation_it_gave_up() {
+    let (broker, _dir) = holding(5).await;
+    let followers = ByLog(vec![
+        ("broker-b", ReplicaLog::Stream, 5, 4),
+        ("broker-c", ReplicaLog::Stream, 9, 3),
+    ]);
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("every follower answered");
+
+    assert_eq!(probe.report.holds_start, vec!["broker-b".to_string()]);
+}
+
+/// A follower that refused the fence has no answer to judge, so it is never
+/// named holding the start, even beside one that is.
+#[tokio::test]
+async fn a_refusing_follower_is_not_named_holding_the_start() {
+    let (broker, _dir) = holding(5).await;
+    let followers = ByLog(vec![
+        ("broker-b", ReplicaLog::Stream, 5, 4),
+        ("broker-c", ReplicaLog::Stream, NOT_A_VOTER, 4),
+    ]);
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("both followers answered");
+
+    assert_eq!(probe.report.holds_start, vec!["broker-b".to_string()]);
+}
+
+/// **A learner that answers the unified fence is not named.** It attests it
+/// keeps no promise: it has not admitted itself, however far its copy goes.
+#[tokio::test]
+async fn a_learner_answering_the_unified_fence_is_not_named_holding_the_start() {
+    let (broker, _dir) = holding(5).await;
+    let followers = ByLog(vec![
+        ("broker-b", ReplicaLog::Stream, 5, 4),
+        ("broker-c", ReplicaLog::Stream, UNIFIED_LEARNER, 4),
+    ]);
+
+    let probe = probe(&followers, &broker, LOCAL, &key(), &route())
+        .await
+        .expect("both followers answered");
+
+    assert_eq!(probe.report.holds_start, vec!["broker-b".to_string()]);
+}
+
+/// **A cache needs the generation on every log.** broker-c holds it on the
+/// counter log but its cache log ends at an older generation, and broker-d
+/// the other way round, so only broker-b, which holds it on both, is named.
+#[tokio::test]
+async fn a_follower_behind_the_generation_on_one_log_is_not_named_holding_it() {
+    let (broker, _dir) = holding_a_cache().await;
+    let cache = ShardKey {
+        kind: ShardKind::Cache,
+        ..key()
+    };
+    let followers = ByLog(vec![
+        ("broker-b", ReplicaLog::Cache, 3, 4),
+        ("broker-b", ReplicaLog::Counters, 1, 4),
+        ("broker-c", ReplicaLog::Cache, 2, 3),
+        ("broker-c", ReplicaLog::Counters, 1, 4),
+        ("broker-d", ReplicaLog::Cache, 3, 4),
+        ("broker-d", ReplicaLog::Counters, 2, 3),
+    ]);
+    let mut four = route();
+    four.replicas.push(node("broker-d", 7004));
+
+    let probe = probe(&followers, &broker, LOCAL, &cache, &four)
+        .await
+        .expect("every follower answered");
+
+    assert_eq!(probe.report.holds_start, vec!["broker-b".to_string()]);
+}
+
 fn at(not_behind: bool, furthest: &[&str]) -> LogPosition {
     LogPosition {
         not_behind,
@@ -255,6 +578,7 @@ fn a_refusal_report_carries_the_refusal_and_no_positions() {
     let refused = RefusedGeneration {
         generation: 6,
         promised_to: "broker-d".to_string(),
+        ballot: 0,
     };
 
     let report = refusal_report(&key(), refused.clone());

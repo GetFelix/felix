@@ -71,6 +71,10 @@ impl DurableStorageConfig {
             offload: None,
             // Set from the broker's cluster configuration when the stores open.
             retention_hold: LogConfig::default().retention_hold,
+            // Each store's provider gives its logs a gate of their own.
+            generations: Default::default(),
+            // The broker's own logs are stream, cache and counter logs.
+            raft_log: false,
         };
         let offload_dir = std::env::var("FELIX_DURABLE_OFFLOAD_DIR")
             .ok()
@@ -163,7 +167,7 @@ fn storage_node_id(root: &Path) -> Result<String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(err).with_context(|| format!("read {}", path.display())),
     }
-    let id = uuid::Uuid::new_v4().simple().to_string();
+    let id = felix_common::random::uuid_v4().simple().to_string();
     std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
     // Written whole and renamed into place, so a crash never leaves a
     // half-written id to be read back.

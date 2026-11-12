@@ -11,9 +11,8 @@ tasks, so a green local run of the ones below predicts a green CI run.
 - **Rust 1.99.1**, pinned in `rust-toolchain.toml` with `rustfmt` and `clippy`.
   The workspace is edition 2024 with `rust-version = "1.97"`.
 - **[Task](https://taskfile.dev)** for the shortcuts.
-- **Docker or Podman**, optional. `task test` uses one to start Postgres for
-  the control plane's Postgres tests and skips them without either.
-  `CONTAINER_ENGINE` picks one; see [Docker or Podman](/getting-started/containers/).
+- **Docker or Podman**, optional. The compose smoke test, `task tla:check` and
+  the Kafka listener tests use one. `CONTAINER_ENGINE` picks one; see [Docker or Podman](/getting-started/containers/).
 - For the extras only: nightly Rust and `cargo-fuzz` for
   [fuzzing](/development/fuzzing/), Java, Docker or Podman for `task tla:check`,
   Node for the docs site, and `helm` with PyYAML for `task chart:check`.
@@ -48,20 +47,12 @@ cargo test -p felix-broker --test durable_streams <name>   # one integration tes
 cargo test -p felix-broker-service --test quic_subscribe   # one QUIC integration test
 ```
 
-`task test` does more than `cargo test --workspace`:
+`task test` does one thing more than `cargo test --workspace`:
 
 1. It builds `felix-loadgen` first. A test in `felix-cluster` shells out to that
    binary, and `cargo test` would not build it.
-2. Outside CI it runs `task pg:up`, a `postgres:16-alpine` container named
-   `felix-pg-tests` on port 55432.
-3. With `FELIX_TEST_DATABASE_URL` set, or Docker or Podman available, it runs the
-   workspace tests with `--features felix-controlplane-service/pg-tests`, so the
-   Postgres store tests run too. Otherwise it runs plain `cargo test --workspace`.
-4. Outside CI it runs `task pg:down`.
-
-To point the Postgres tests at a database of your own, set
-`FELIX_TEST_DATABASE_URL`. CI does this with a Postgres service container. If an
-interrupted run leaves test containers behind, `task pg:sweep` removes them.
+2. It runs `cargo test --workspace`. No database is needed: the control
+   plane's tests run against its in-memory and Raft stores.
 
 Cluster and distributed tests are covered in
 [How Felix Is Tested](/architecture/testing/).
@@ -113,7 +104,7 @@ task coverage
 ```
 
 This needs `cargo-llvm-cov`. It builds `felix-loadgen` into
-`target/llvm-cov-target`, starts Postgres the same way `task test` does, and
+`target/llvm-cov-target` and
 writes `lcov.info` for the whole workspace with `--all-features`. It ignores
 `demos/` and `src/bin/`. `task coverage:demos` covers only the demos.
 `.github/workflows/coverage.yml` runs `task coverage` on pushes to main and on
@@ -131,13 +122,23 @@ when nothing did. Each workflow ends with a job that always runs, `CI ok` and
 checks `main` requires, so `gh pr merge --auto --squash` waits for them. A
 docs-only change gets both within a minute or two.
 
-`coverage` itself runs only on pushes to main, where it publishes the badge;
-on a pull request it is skipped and `Coverage ok` passes.
+A draft pull request skips the heavy jobs in both workflows, and `CI ok` and
+`Coverage ok` fail with a "draft" message so a draft cannot look mergeable.
+Marking the pull request ready starts the jobs.
+
+`coverage` runs on pushes to main, where it publishes the badge, and on pull
+requests, where it fails if line coverage drops by more than 0.3 points. On a
+pull request it is also the workspace test run: `task coverage` runs every
+crate's tests, `felix-cluster` included, so `Coverage ok` fails on a failing
+test, and the job summary lists the failed tests by name. `ci.yml`'s `test` job
+then runs only what coverage skips (coverage's timeout scale is 5, CI's 3) (`task test:residual`: doctests, and the
+tests that need the `telemetry` feature off), plus the stress test. Pushes to
+main still run the full `task test:workspace` there.
 
 Its jobs, in [`ci.yml`](https://github.com/GetFelix/felix/blob/main/.github/workflows/ci.yml),
 which is the authority for what each one runs:
 
-- `test`: the workspace tests except `felix-cluster`, then the stress tests.
+- `test`: on main, the workspace tests except `felix-cluster`, then the stress tests. On a pull request, the stress tests and the tests `coverage.yml` does not run (see above).
 - `cluster`: the `felix-cluster` suites, split into `routing`, `failures`, `history` and the rest.
 - `checks`: lint, `cargo-deny`, publish and toolchain checks, `task docs:evidence`, the changelog and release-version checks, and `task demo:check`.
 - `images`: builds the broker and control-plane images and checks each starts, serves `/ready` and does not run as root.
@@ -152,9 +153,9 @@ which is the authority for what each one runs:
 [deny.toml](https://github.com/GetFelix/felix/blob/main/deny.toml), then checks
 the upstream versions of the crates under `vendor/` for advisories.
 
-Other workflows:
+Other workflows, among others:
 
-- `coverage.yml`: `task coverage`.
+- `coverage.yml`: `task coverage`, the coverage gate, and on pull requests the workspace tests.
 - `pages.yml`: builds and deploys this docs site.
 - `history.yml`: the nightly history-checker campaign.
 - `fuzz-nightly.yml`: the long fuzz campaign.
@@ -288,8 +289,8 @@ and uploads them to the existing release; it refuses a name that is not a tag
 or has no published release. It defaults to a dry run:
 
 ```bash
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2            # build and smoke only
-gh workflow run release-capi-archives.yml -f tag=v0.7.0-preview.2 -f dry_run=false
+gh workflow run release-capi-archives.yml -f tag=v0.7.2            # build and smoke only
+gh workflow run release-capi-archives.yml -f tag=v0.7.2 -f dry_run=false
 ```
 
 Uploading again replaces the files already there.
@@ -464,7 +465,7 @@ it were `tag`, so the rehearsal can run before the tag exists:
 
 ```bash
 gh workflow run release.yml --ref main \
-  -f tag=v0.7.0-preview.2 -f ref=main -f dry_run=true
+  -f tag=v0.7.2 -f ref=main -f dry_run=true
 ```
 
 `ref` without `dry_run` fails the run. The felixctl archives are kept as a

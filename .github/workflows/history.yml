@@ -16,7 +16,12 @@ name: History checker (nightly)
 # time, on three brokers; `adversarial` injects the compound ones (overlapping
 # faults, a partition that forces a failover, moves cut short, restart loops,
 # torn writes, drains that change replica sets) on four. The nightly run does
-# both, as two jobs with their own seeds.
+# all three, as jobs with their own seeds. `metadata` runs the control plane as
+# a real three-member Raft group and kills a member, kills its leader and cuts
+# the leader off; after each heal the members must agree on every assignment.
+# A manual run can also pick `election`: leaders killed while the control plane
+# is down, with replica_election on, so every failover is an election among
+# the replicas.
 
 on:
   schedule:
@@ -48,6 +53,8 @@ on:
           - both
           - all
           - adversarial
+          - metadata
+          - election
         default: both
 
 permissions:
@@ -77,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial"]' || format('["{0}"]', inputs.nemesis)) }}
+        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial","metadata"]' || format('["{0}"]', inputs.nemesis)) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -129,6 +136,7 @@ jobs:
           FELIX_HISTORY_MODE: ${{ steps.seed.outputs.mode }}
           FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs || '1200' }}
+          FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
           set -o pipefail
           cargo test -p felix-cluster --test history -- --nocapture --include-ignored 2>&1 | tee ${{ runner.temp }}/history-output.txt
@@ -163,3 +171,14 @@ jobs:
           name: history-output-${{ matrix.nemesis }}
           path: ${{ runner.temp }}/history-output.txt
           retention-days: 30
+
+      # The output keeps only the end of each broker log; the whole logs are
+      # what a failed election or a lost write is read from.
+      - name: Upload the broker logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: history-cluster-logs-${{ matrix.nemesis }}
+          path: ${{ runner.temp }}/cluster-logs
+          if-no-files-found: ignore
+          retention-days: 7

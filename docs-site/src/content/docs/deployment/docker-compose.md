@@ -11,14 +11,14 @@ differ.
 The images are published to GHCR and are pullable without credentials:
 
 ```bash
-docker pull ghcr.io/getfelix/felix-broker:0.7.0-preview.2
-docker pull ghcr.io/getfelix/felix-controlplane:0.7.0-preview.2
+docker pull ghcr.io/getfelix/felix-broker:0.7.2
+docker pull ghcr.io/getfelix/felix-controlplane:0.7.2
 ```
 
 Releases before 0.6.0-preview.2 are under `ghcr.io/gabloe`, the project's previous owner.
 
-Each release publishes the full version (`0.7.0-preview.2`). A release without a
-pre-release suffix also publishes its minor series (`0.6`) and `latest`. Use a
+Each release publishes the full version (`0.7.2`). A release without a
+pre-release suffix also publishes its minor series (`0.7`) and `latest`. Use a
 full version tag in anything you deploy, because the other two move. A client
 negotiates its features with the broker it connects to, so a newer client
 against older images runs without whatever the images predate.
@@ -68,7 +68,7 @@ profile, as the `felixctl` service does, and it starts the broker even when
 `felix-dev-auth` fails, because it treats that dependency as merely stopped.
 
 The images default to the release the file was last bumped for. Set
-`FELIX_VERSION` to run another tag (`FELIX_VERSION=0.7.0-preview.2 docker
+`FELIX_VERSION` to run another tag (`FELIX_VERSION=0.7.2 docker
 compose up`).
 
 Once the broker is ready, the stack prints its connection settings. In a second
@@ -85,18 +85,32 @@ docker compose run --rm felixctl pub orders 'hello'
 ```
 
 The subscriber prints `hello`. That `felixctl` runs inside the stack, with the
-settings already in its environment. To use one installed on your machine
-instead, copy the token and the broker's certificate out and add a context:
+settings already in its environment. To use a `felixctl` installed on your
+machine instead, do these three steps in order. Step 1 matters: the context
+points at those files, so `felixctl` fails with a "does not exist" error if you
+skip it.
 
-```bash
-docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
-docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
-docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
-felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
-  --token-file felix-dev.jwt --ca-file felix-dev.pem \
-  --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
-felixctl pub orders 'hello'
-```
+1. Copy the development credentials out of the broker:
+
+   ```bash
+   docker compose exec -T felix-broker cat /var/lib/felix/client.jwt > felix-dev.jwt
+   docker compose exec -T felix-broker cat /var/lib/felix/controlplane.jwt > felix-dev-cp.jwt
+   docker compose exec -T felix-broker cat /var/lib/felix/broker-cert.pem > felix-dev.pem
+   ```
+
+2. Add a context that uses them:
+
+   ```bash
+   felixctl context add felix-dev --brokers 127.0.0.1:5000 --tenant dev \
+     --token-file felix-dev.jwt --ca-file felix-dev.pem \
+     --controlplane-url http://127.0.0.1:8443 --controlplane-token-file felix-dev-cp.jwt --use
+   ```
+
+3. Subscribe:
+
+   ```bash
+   felixctl sub orders
+   ```
 
 The broker makes a new certificate every time it starts, so copy
 `broker-cert.pem` again after a restart.
@@ -180,26 +194,24 @@ ownership from the image. A bind mount must be writable by that uid.
 
 ## Broker and control plane
 
-A control plane over Postgres and one durable broker:
+A one-member Raft control plane and one durable broker. One member keeps its
+metadata on a volume but cannot survive losing that instance; production runs
+three (see [Control-plane HA](/deployment/control-plane-ha/)):
 
 ```yaml
 services:
-  postgres:
-    image: docker.io/library/postgres:16-alpine
-    environment:
-      POSTGRES_USER: felix
-      POSTGRES_PASSWORD: felix
-      POSTGRES_DB: felix
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U felix -d felix"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   felix-controlplane:
-    image: ghcr.io/getfelix/felix-controlplane:0.7.0-preview.2
+    image: ghcr.io/getfelix/felix-controlplane:0.7.2
     environment:
-      - FELIX_CONTROLPLANE_POSTGRES_URL=postgres://felix:felix@postgres:5432/felix
+      - FELIX_RAFT_NODE_ID=1
+      - FELIX_RAFT_DATA_DIR=/var/lib/felix/raft
+      - FELIX_RAFT_PEERS=1=felix-controlplane:8444
+      - FELIX_RAFT_BIND_ADDR=0.0.0.0:8444
+      - FELIX_RAFT_CLUSTER_ID=compose
+      # At least 32 random characters, from a secret in anything but a demo.
+      - FELIX_RAFT_PEER_TOKEN=change-me-change-me-change-me-change-me
+      # First start only matters: it lets an empty member form the group.
+      - FELIX_RAFT_INITIAL_CLUSTER_STATE=new
       # Day 0 only: the bootstrap API is how the broker credential is made.
       # Remove these three once it exists.
       - FELIX_BOOTSTRAP_ENABLED=true
@@ -209,12 +221,11 @@ services:
     ports:
       - "8443:8443"            # REST API
       - "127.0.0.1:9095:9095"  # bootstrap, loopback only
-    depends_on:
-      postgres:
-        condition: service_healthy
+    volumes:
+      - felix-controlplane-data:/var/lib/felix
 
   felix-broker:
-    image: ghcr.io/getfelix/felix-broker:0.7.0-preview.2
+    image: ghcr.io/getfelix/felix-broker:0.7.2
     environment:
       - FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
       - FELIX_NODE_TOKEN_FILE=/run/secrets/felix-node-token
@@ -238,10 +249,11 @@ secrets:
 
 volumes:
   felix-data:
+  felix-controlplane-data:
 ```
 
-Without `FELIX_CONTROLPLANE_POSTGRES_URL` the control plane keeps its metadata
-in memory and loses it on restart.
+Without the `FELIX_RAFT_*` variables the control plane keeps its metadata in
+memory and loses it on restart.
 
 Outside Compose, mount the token file read-only, for example
 `-v /path/to/node.token:/etc/felix/node.token:ro` with

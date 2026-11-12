@@ -24,22 +24,37 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// it serves; whether this start rotated it: after a crash that may have
 /// lost records the broker acknowledged, or because `registered`, the
 /// control plane's record of this node, names a later incarnation than the
-/// one the directory recorded; and whether `registered` names another
-/// storage id (see [`start_run`]).
+/// one the directory recorded; whether `registered` names another
+/// storage id; and what the directory kept of its ballots ([`Kept`]).
 pub(crate) fn open(
     config: &BrokerConfig,
     registered: Option<&Registered>,
-) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool)> {
-    let durable_config = DurableStorageConfig::from_env()?;
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
+    open_with(config, DurableStorageConfig::from_env()?, registered)
+}
+
+/// [`open`] with the durable settings given rather than read from the
+/// environment.
+pub(crate) fn open_with(
+    config: &BrokerConfig,
+    durable_config: Option<DurableStorageConfig>,
+    registered: Option<&Registered>,
+) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
-    let (storage_id, unclean, replaced) = match &durable_config {
-        Some(durable) => start_run(&durable.root, &durable.log, registered)?,
-        None => (storage_id(None)?, false, false),
+    let (storage_id, unclean, replaced, kept) = match &durable_config {
+        Some(durable) => start_run(
+            &durable.root,
+            &durable.log,
+            registered,
+            witness_dir().as_deref(),
+        )?,
+        // Nothing on disk outlives the process, so a restart is a wipe.
+        None => (storage_id(None)?, false, false, Kept::default()),
     };
     let hold = retention_hold(config);
     let durable_storage = match &durable_config {
@@ -167,7 +182,7 @@ pub(crate) fn open(
         }
         None => broker,
     };
-    Ok((broker, durable_storage, storage_id, unclean, replaced))
+    Ok((broker, durable_storage, storage_id, unclean, replaced, kept))
 }
 
 /// Start a run on `root` and say what it started under: the storage id,
@@ -179,24 +194,185 @@ pub(crate) fn open(
 /// knows. A node the control plane never registered, or one registered before
 /// storage ids, held nothing under another id, so a new broker's copies vote
 /// however new its directory is.
+///
+/// The last flag says the rotation was this directory's own crash, and that
+/// the directory never replaced a lost copy ([`note_lost_copy`]). Ballots
+/// are always synced, so such a crash kept every one. A restore rolls them
+/// back, and a wiped directory's ballots may have been taken after the node
+/// lost others, so neither keeps every promise it made. Without the control
+/// plane's record of this node, or one without a storage id, nothing shows
+/// the rotation was not a lost copy, so the flag is false (#2047).
+///
+/// Every run also writes a new run witness under `witness`, whether or not
+/// the control plane answered, so a later start from the view never takes a
+/// copy from before this run for the directory.
 fn start_run(
     root: &Path,
     log: &felix_storage::log::LogConfig,
     registered: Option<&Registered>,
-) -> Result<(StorageId, bool, bool)> {
+    witness: Option<&Path>,
+) -> Result<(StorageId, bool, bool, Kept)> {
+    // The id before this run rotates it: the control plane naming that one
+    // is what tells a crash of this directory from a lost copy.
+    let before = felix_storage::storage_identity::load(root)
+        .with_context(|| format!("read the storage id under {}", root.display()))?;
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
-    let replaced_now = registered
+    felix_storage::run_state::witness::witness(
+        root,
+        witness,
+        this_boot_of(root),
+        fresh_storage_id(),
+    )
+    .with_context(|| format!("write the run witness for {}", root.display()))?;
+    let restored = begun.origin == felix_storage::storage_identity::Origin::Loaded
+        && begun.recorded.behind(registered.map(|r| r.incarnation));
+    let before_id =
+        before.filter(|_| begun.origin == felix_storage::storage_identity::Origin::Loaded);
+    let before = before_id.map(|id| id.to_hex());
+    // Before `note_replaced`, which may write its marker for this crash.
+    let lost = note_lost_copy(root, before.as_deref(), restored, registered)?;
+    let own_id = registered
         .and_then(|r| r.storage_id.as_deref())
-        .is_some_and(|prior| prior != begun.id.to_hex());
-    if replaced_now {
-        felix_storage::run_state::record_replaced(root)
+        .is_some_and(|prior| before.as_deref() == Some(prior));
+    let kept = Kept {
+        promises: begun.rotated && !restored && own_id && !lost,
+        // A record from before storage ids cannot tell this directory from a
+        // wiped one, as for `promises` (#2047).
+        ballots: !restored
+            && !lost
+            && (!begun.rotated || own_id)
+            && registered.is_none_or(|r| r.storage_id.is_some()),
+        // A set names a copy by the id the control plane registered, so
+        // without one no set can readmit it.
+        readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+        minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
+        deferred: false,
+    };
+    // Before the new id registers: a set written since names that one, and
+    // one written before names this, still the directory's own copy.
+    if kept.promises
+        && let Some(before) = before_id
+    {
+        felix_storage::run_state::record_rotated_id(root, before)
+            .with_context(|| format!("record the rotated storage id under {}", root.display()))?;
+    }
+    let replaced = note_replaced(root, begun.id, registered)?;
+    Ok((begun.id, begun.rotated, replaced, kept))
+}
+
+/// What a start found its directory kept of the ballots it took.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Kept {
+    /// An unclean start whose crash kept every ballot: the flag
+    /// [`start_run`]'s documentation describes.
+    pub(crate) promises: bool,
+    /// The directory kept every ballot it ever took, at a clean start or an
+    /// unclean one: never restored, never a replacement for a lost copy,
+    /// not registered under a record without a storage id, and after a
+    /// rotation the control plane's record names the id it had before. What
+    /// a fence answer attests as kept.
+    pub(crate) ballots: bool,
+    /// When `ballots` is false, a copy here counts again once a set
+    /// introduced after the loss readmits it: the start was checked against
+    /// a control plane record with a storage id.
+    pub(crate) readmits: bool,
+    /// This start minted the storage id, by rotating it or writing a new one, so
+    /// no set written before it names the id. A lost copy with no recorded
+    /// floor is readmitted only then.
+    pub(crate) minted: bool,
+    /// A start from the view that kept it: what a fence answer attests is
+    /// decided by the deferred restore check ([`Self::checked`]), and is
+    /// nothing until then.
+    pub(crate) deferred: bool,
+}
+
+impl Kept {
+    /// What a fence answer may attest as kept, or readmitted. A start from the view has not
+    /// checked the directory against the control plane, and a restored one
+    /// reads as kept until it has (`CountsForgotten`, `TrustsRegistered` in
+    /// `docs/formal/FelixShardUnified.tla`), so such a run attests nothing.
+    pub(crate) fn attested(self, from_view: bool) -> Self {
+        Self {
+            promises: self.promises,
+            ballots: self.ballots && !from_view,
+            readmits: self.readmits && !from_view,
+            ..self
+        }
+    }
+
+    /// What a start from the view attests as kept once its deferred restore
+    /// check found the directory current against `registered`: what a start
+    /// that asked first would have. `self` is the run's own, not
+    /// [`Self::attested`]. The check stops the broker on a restored or
+    /// replaced directory, and the view is kept only by a run that did not
+    /// rotate the id, so of [`start_run`]'s conditions only the record's
+    /// storage id is left to apply. Readmission then follows the asked
+    /// start's rule too: the run itself had no record to check it against.
+    pub(crate) fn checked(self, registered: Option<&Registered>) -> Self {
+        Self {
+            ballots: self.ballots && registered.is_none_or(|r| r.storage_id.is_some()),
+            readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+            deferred: false,
+            ..self
+        }
+    }
+}
+
+/// Whether the directory at `root` replaced a copy the node lost, now or at
+/// any start since, recorded on disk before it returns. Now when `restored`,
+/// or when `registered` names a storage id other than `before`, the id the
+/// directory had before this start rotated it (`None` for a directory with
+/// none). A directory without the marker that has the replaced-storage one
+/// counts as lost: an older build wrote that one after a crash too, so it
+/// cannot say which it was.
+pub(crate) fn note_lost_copy(
+    root: &Path,
+    before: Option<&str>,
+    restored: bool,
+    registered: Option<&Registered>,
+) -> Result<bool> {
+    let context = || format!("read the lost-copy marker under {}", root.display());
+    let marked = felix_storage::run_state::lost_copy(root).with_context(context)?;
+    let earlier = match marked {
+        Some(lost) => lost,
+        None => felix_storage::run_state::replaced(root).with_context(context)?,
+    };
+    let now = restored
+        || registered
+            .and_then(|r| r.storage_id.as_deref())
+            .is_some_and(|prior| before != Some(prior));
+    let lost = earlier || now;
+    if marked != Some(lost) {
+        felix_storage::run_state::record_lost_copy(root, lost)
+            .with_context(|| format!("record the lost-copy marker under {}", root.display()))?;
+    }
+    Ok(lost)
+}
+
+/// Whether the node held copies under a storage id other than `id`: the
+/// control plane's record `registered` names another one, now or at any
+/// earlier start on `root`. Recorded on disk before it returns.
+pub(crate) fn note_replaced(
+    root: &Path,
+    id: StorageId,
+    registered: Option<&Registered>,
+) -> Result<bool> {
+    let replaced_after = registered
+        .filter(|r| {
+            r.storage_id
+                .as_deref()
+                .is_some_and(|prior| prior != id.to_hex())
+        })
+        .map(|r| r.incarnation);
+    let replaced_now = replaced_after.is_some();
+    if let Some(after) = replaced_after {
+        felix_storage::run_state::record_replaced(root, id, after)
             .with_context(|| format!("record a replaced storage id under {}", root.display()))?;
     }
-    let replaced = replaced_now
+    Ok(replaced_now
         || felix_storage::run_state::replaced(root).with_context(|| {
             format!("read the replaced-storage marker under {}", root.display())
-        })?;
-    Ok((begun.id, begun.rotated, replaced))
+        })?)
 }
 
 /// The id kept under the durable root, or, without durable storage, a random
@@ -226,7 +402,7 @@ fn begin_run(
         root,
         relaxed,
         registered,
-        this_boot(),
+        this_boot_of(root),
         || felix_storage::inspect::any_repair_pending(root, log),
         fresh_storage_id,
     )
@@ -242,10 +418,15 @@ fn begin_run(
     Ok(begun)
 }
 
+/// Where run witnesses are kept. See `felix_storage::run_state::witness`.
+pub(crate) fn witness_dir() -> Option<std::path::PathBuf> {
+    felix_storage::run_state::witness::default_dir()
+}
+
 /// The machine's boot id. Debug builds take it from the file
 /// `FELIX_STORAGE_BOOT_ID_FILE` names when it exists, which is how the
 /// cluster harness restarts a broker as if its machine had rebooted.
-fn this_boot() -> Option<felix_storage::run_state::BootId> {
+pub(crate) fn this_boot() -> Option<felix_storage::run_state::BootId> {
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("FELIX_STORAGE_BOOT_ID_FILE")
         && let Ok(text) = std::fs::read_to_string(path)
@@ -253,6 +434,17 @@ fn this_boot() -> Option<felix_storage::run_state::BootId> {
         return felix_storage::run_state::BootId::parse(&text);
     }
     felix_storage::run_state::this_boot()
+}
+
+/// The boot the machine holding `root` is in. A simulated directory has its
+/// own, which changes when a simulated power cut is rebooted.
+pub(crate) fn this_boot_of(root: &Path) -> Option<felix_storage::run_state::BootId> {
+    #[cfg(feature = "sim")]
+    if let Ok(boot) = felix_storage::sim_fs::boot_id(root) {
+        return Some(boot);
+    }
+    let _ = root;
+    this_boot()
 }
 
 /// Record that this run on `root` may have lost records it acknowledged with
@@ -272,12 +464,23 @@ pub(crate) fn mark_clean_stop(root: &Path, id: StorageId) -> Result<()> {
 /// Give the data directory under `root` a new storage id, for when its
 /// contents have become an older copy of themselves.
 pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
-    felix_storage::storage_identity::replace(root, fresh_storage_id())
+    rotate_storage_id_after(root, |_| Ok(()))
+}
+
+/// [`rotate_storage_id`], running `before` with the new id first.
+pub(crate) fn rotate_storage_id_after(
+    root: &Path,
+    before: impl FnOnce(StorageId) -> Result<()>,
+) -> Result<StorageId> {
+    let fresh = fresh_storage_id();
+    before(StorageId::from_bytes(fresh))?;
+    // Through copy-trust, so every copy on the directory is distrusted first.
+    felix_storage::run_state::copy_trust::rotate_storage_id(root, fresh)
         .with_context(|| format!("write a new storage id under {}", root.display()))
 }
 
 fn fresh_storage_id() -> [u8; 16] {
-    uuid::Uuid::new_v4().into_bytes()
+    felix_common::random::uuid_v4().into_bytes()
 }
 
 /// How stream and cache logs treat a retention hold they saved.

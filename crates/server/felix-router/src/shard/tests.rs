@@ -433,6 +433,7 @@ fn placed(stream: &str, shard: u32, routing: ShardRouting) -> Placed {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -499,4 +500,19 @@ fn a_prior_set_answers_only_for_its_route_generation() {
                 .with_priors(HashMap::from([(key(0), prior.clone())]));
         assert_eq!(table.prior_set(&key(0)).is_some(), known, "{generation}");
     }
+}
+
+/// A walk of the table is in key order, not the map's, so work done shard by
+/// shard repeats in a replay of a simulated seed.
+#[test]
+fn a_walk_of_the_table_is_in_key_order() {
+    let nodes = catalog(&[node("broker-a", 7001, "us-west-2", true)]);
+    let table = RoutingTable::build(
+        (0..64u32)
+            .rev()
+            .map(|shard| (key(shard), "broker-a".to_string(), Vec::new(), 1)),
+        &nodes,
+    );
+    let walked: Vec<u32> = table.iter().map(|(key, _)| key.shard).collect();
+    assert_eq!(walked, (0..64).collect::<Vec<_>>());
 }

@@ -31,6 +31,12 @@ One shard, three brokers, one control plane, discrete time.
   own: from then on the control plane renews nothing for it, which is every
   later heartbeat lost, and placement still waits out the timeout and margin
   from the node's last heartbeat before promoting (`left_within_lease`).
+  The control plane renews only a broker it names leader at the generation
+  the broker believes it leads. The code's lease is per broker, so it holds
+  a broker marked down until its routes show what changed while it was away;
+  `FelixShardLeaseAnyHeartbeat.cfg` checks the code's old rule in place of
+  this one. `FelixShardLeaseRoutesHeartbeat.cfg` checks the new one, assuming
+  what its head check gives: the routes it waits for show the move.
 - **Writes.** Admission checks the broker is serving. The write then waits,
   and claims its place in the log; with `FenceAtClaim` the claim checks the
   handoff fence again. `AckOnAdmit` acknowledges a `Leader` write when it is
@@ -199,6 +205,14 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
 | `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
+| `OwnBallotCaughtUp` | The control plane's leader does not stay open at its generation while its own copy holds its own ballot above it. While it does, it never counts its own copy, so with one follower down nothing it writes is acknowledged (#1933). A temporal property, checked under `RenameSpec` in the `FelixShardElectRouteLag*.cfg` configurations. |
+| `OwnBallotFenceCaughtUp` | Nor does it stay fencing at its generation while its own copy holds its own ballot above it. The code's open takes the generation's ballot on its own copy, which refuses it, so it never opens there (#1940). Checked under `RenameSpec` in the `FelixShardElectRouteLagFence*.cfg` configurations. |
+| `CollisionSuperseded` | With the control plane up, it does not stay at a generation whose leader can never open, because another broker was elected there and opened, while that broker still leads. A temporal property, checked under `ReissueSpec` in `FelixShardElectLiveReissue.cfg`. |
+| `CpLeaderServes` | With the control plane up and every stopped broker back, the leader it names ends up open at its generation, serving with a mark over its whole log and a majority of its set taking its batches, and stays (`<>[](LeaderServes /\ ServesWith(leader))`). Checked under `CpLiveSpec` in `FelixShardCpLive.cfg` and its twins. |
+| `CpDownServesInBound` | With the control plane stopped for good, some live leader ends up open and serving on a majority that holds its generation for it, and stays (`CpDownServes`), or elections stop only at the model's bound with a broker that would still stand (`Exhausted`). Checked under `CpDownSpec` in `FelixShardCpDown*.cfg`. |
+| `CpDownFullyBacked` | The same, with every live member of the leader's set behind it. Not owed: `FelixShardCpDownDegraded.cfg` is its witness. |
+| `EventuallyServes` | In `FelixShardUnified.tla`: once faults stop, some leader serves for good, unless a majority of the nodes lost their trusted logs, which waits for the operator by design. Checked under `LiveSpec` in the `FelixShardUnifiedCpLive*.cfg` configurations. |
+| `NoContinuingOnForeignBallot` | In `FelixShardUnified.tla`: no continuing fence opens counting a crashed copy whose ballot names another leader. A reachability probe: under the rule this happens and is safe, so `FelixShardUnifiedContinuingDoubted.cfg` must find it. |
 
 ## The configurations, and what each must do
 
@@ -210,6 +224,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardLease.cfg` | drifting clocks, no writes: heartbeats, lapses, promotions | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
+| `FelixShardLeaseAnyHeartbeat.cfg` | `FelixShardLease.cfg` with a heartbeat renewing a broker the control plane no longer names leader, as the code did before it waited on its routes | violate `AtMostOneServing`: a leader promoted away heartbeats again and renews at its old generation beside its successor |
+| `FelixShardLeaseRoutesHeartbeat.cfg` | `FelixShardLease.cfg` with the code's rule: that broker's renewal waits for routes at the assignment feed's head as of the accept, which name its successor | pass `AtMostOneServing` and `NoStaleCommit` (0.78M distinct states) |
 | `FelixShardLogOrder.cfg` | both lease checks, `Quorum`, two writes, promotion by log order | pass every invariant (1.52M distinct states) |
 | `FelixShardThinMargin.cfg` | drifting clocks with `Margin = 0` and `Eps = 0` | violate `AtMostOneServing` |
 | `FelixShardRealMarginsLease.cfg` | the margins the code runs: the broker gives up a quarter of the lease (`Eps = 1` of `L = 4`), and the control plane marks it down a quarter past its expiry (`Margin = 1`), against clocks that drift by a quarter; no writes | pass `AtMostOneServing` and `NoStaleCommit` (2.10M distinct states); with `Margin = 0` it finds two brokers serving |
@@ -227,15 +243,18 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectNoBallot.cfg` | the same without ballots, one generation of elections and no writes | violate `OneLeaderPerGeneration` |
 | `FelixShardElectStaleSet.cfg` | `FelixShardElect.cfg` with a follower replacement, as in `FelixShardFencedAckSeat.cfg`, and one generation of elections past the control plane's | violate `AckedHeldByLeader`: the replica that left stands on the set it started in, and opens without a record the new set acknowledged |
 | `FelixShardElectAdopt.cfg` | `FelixShardElectStaleSet.cfg` with the set check, the joint fence, and the control plane adopting elected leaders up to generation 2 (`Adopt = 2`, which also bounds the generations replicas stand for) and replacing followers under them | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (not yet measured) |
+| `FelixShardElectAdoptAboveKeptSet.cfg` | `FelixShardElectReissueReplace.cfg` with no writes, adoption up to generation 4, refusals that teach no set and candidates standing no lower than the generation of the set they keep (`StandsAboveKeptSet`) | violate `AdoptedMatchesOpened` (#1929, about 15 s): placement names a leader at a generation it then refuses, a candidate elected there on its stale set is the control plane's own leader, and adoption takes the generation alone (`adopting_elected_set` returns before comparing the sets) |
+| `FelixShardElectAdoptAboveKeptSetReissued.cfg` | the same with the control plane's own leader elected on another set reissued on it (`ReissueOwnOnOtherSet`, #1930) | pass; not registered: no violation in 3.9M distinct states and seven minutes on a laptop, where the twin above violates in 15 s |
 | `FelixShardElectAdoptTwoWrites.cfg` | the same with two writes | pass, the same invariants (nightly) |
 | `FelixShardElectAdoptFailover.cfg` | `FelixShardElectAdopt.cfg` taken to a failover after a recorded-only adoption: placement promotes on suspicion up to generation 3 (`Suspicions = 3`), so the control plane's set and the set in the promoted broker's log can differ, and the fence takes a majority of both (`FenceRecordedSet` beside `FenceOwnSet`) | too big for one run (192.5M distinct states at depth 20, no violation, after six hours); checked in the pieces below |
 | `FelixShardElectAdoptFailover{Same,Apart}{0,1}{,Stood}Gen{2,3,4}.cfg`, `FelixShardElectAdoptFailoverSame{0,1}Stood{One,Several}{Dest,Other}Gen2.cfg` | `FelixShardElectAdoptFailover.cfg` split at its first failover (`SplitAtFailover`, `CutOverPiece`): the promoted broker's own set is the control plane's or not, 0 or 1 writes were admitted before it, a replica had stood past the control plane's generation or not, and the failover takes generation 2, 3, or 4 and up (`PieceGens`). Each piece also checks everything before its failover, so together they reach every state the whole does | pass, the same invariants. Twelve pieces hold no failover: they hold just the 1.48M distinct states before one (depth 36, 3 to 5 min on a four-core CI runner) and check that they stay empty (`NoCutOverInPiece`). `Apart0Gen4` 13.5M distinct, 46 min; `Apart1Gen4` 15.5M, 54 min; `Same0Gen4` 36.3M, 2 h 15 min; these run nightly. `Same1Gen4` 56.8M, 3 h 40 min, and `Same1Gen2` 149.3M, depth 51, 5 h 20 min (close to the six-hour job limit), also run nightly. Five did not finish in six hours, with no violation by then: `Same0Gen2` (130M distinct), `Same0Gen3` (224M), `Same1Gen3` (111M), `Apart0Gen3` (108M), `Apart1Gen3` (156M). They need another split and are not checked yet. `Same0StoodGen2` ran out of runner disk and `Same1StoodGen2` did not finish, so each is split again into `Stood{One,Several}{Dest,Other}` (`PieceStoodCounts`, `PieceDestStood`: one or several replicas stood, the promoted broker among them or not). Those eight are not measured yet |
 | `FelixShardElectSwap.cfg` | `FelixShardElectStaleSet.cfg` with a cut-over that changes the set by more than one member at once (`Swaps = 1`), fenced jointly, the set check, one generation of elections, two writes | pass, the same invariants, checked in the fifteen pieces below: one run did not finish in six hours |
 | `FelixShardElectSwap{Keep,Drop}{0,1,2}{,Stood}.cfg` | `FelixShardElectSwap.cfg` split by how its cut-over went: the new set keeps or drops the old leader, 0, 1 or 2 writes were admitted before it, and a replica had stood past the control plane's generation or not (`SplitAtCutOver`, `CutOverPiece`). `Drop0Stood` did not finish in six hours and `Drop1Stood` took 5 h 15 min, so each is split again by whether one or several replicas had promised past that generation and whether the destination was one of them (`FelixShardElectSwapDrop{0,1}Stood{One,Several}{Dest,Other}.cfg`). Each piece also checks everything before its cut-over, so together they reach every state the whole does. `QuietView` merges states that differ only in what no step reads again | pass, the same invariants. On a four-core CI runner: `Keep2` 2.46M distinct, 5 min; `Drop2` 1.45M, 5 min; `Drop1` 7.17M, 17 min; `Keep1` 9.23M, 27 min; `Drop0` 17.9M, 43 min; `Keep0` 17.7M, 53 min; `Keep2Stood` 47.9M, 1 h 58 min; `Drop2Stood` 35.5M, 2 h 9 min; `Keep1Stood` 97.0M, 2 h 49 min; `Keep0Stood` 97.1M, 2 h 50 min; `Drop0StoodSeveralOther` 5,189, 3 s; `Drop0StoodOneOther` 4.24M, 13 min; `Drop0StoodOneDest` 17.9M, 39 min; `Drop0StoodSeveralDest` 84.0M, 2 h 37 min; `Drop1StoodSeveralOther` 5,189, 2 s; `Drop1StoodOneOther` 1.91M, 3 min; `Drop1StoodOneDest` 7.17M, 12 min. Those over 45 minutes run nightly. The two `StoodSeveralOther` pieces hold no cut-over: the old leader must still lead when it cuts over, and it stops leading once it answers a fence, so besides the destination only the third member can have stood. They hold just the states before a cut-over and check that they stay empty (`NoCutOverInPiece`) |
 | `FelixShardElectRename.cfg` | `FelixShardElectSwap.cfg` with one write, generation 3 in reach (`Adopt = 3`), and the control plane naming its leader again, fenced, one generation up, once that leader reports it cannot serve a generation a recorded election moved the control plane to, or its fence at the control plane's generation is refused on either set (`Renames`, `CpRename`); `QuietView` | too big for one run (no violation in its first 5.8M distinct states); checked in the pieces below |
-| `FelixShardElectRenameDue.cfg` | its witness | violate `NeverRenameDue` (35K distinct states, depth 11, 1 s): after a cut-over, a replica on the set being left is elected at generation 3, the control plane records only that generation, and a majority of the pending set promised it away, so the destination's fence cannot reach one |
-| `FelixShardElectRenameFencingDue.cfg` | its witness for the leader that took the generation | violate `NeverRenameWhileFencing` (170 distinct states, depth 6, 1 s): the leader fences jointly while a set change is pending, and a replica on the set being left stood at that generation and won another's promise, so a majority of the old set is out of reach |
+| `FelixShardElectRenameDue.cfg` | its witness | violate `NeverRenameDue` with `StandsOnPendingSet` on (835 distinct states, depth 9, 1 s; the broker refuses to stand while a change to its kept set is pending, so with the refusal modelled this is unreachable, and the witness shows what it protects): after a cut-over, a replica on the set being left is elected at generation 3, the control plane records only that generation, and a majority of the pending set promised it away, so the destination's fence cannot reach one |
+| `FelixShardElectRenameFencingDue.cfg` | its witness for the leader that took the generation | violate `NeverRenameWhileFencing` with `StandsOnPendingSet` on (298 distinct states, depth 8, under a second): the leader fences jointly while a set change is pending, and a replica on the set being left stood at that generation and won another's promise, so a majority of the old set is out of reach |
 | `FelixShardElectRename{Keep,Drop}{0,1}{,Stood{One,Several}{Dest,Other}}.cfg` | `FelixShardElectRename.cfg` split at its cut-over as `FelixShardElectSwap.cfg` is (`SplitAtCutOver`, `CutOverPiece`). Each piece also checks everything before its cut-over, so together they reach every state the whole does. The `StoodOneDest` pieces run nightly: the cut-over overwrites everything the destination's stand wrote, so they should reach the same states as the pieces where nobody stood (argued, not measured) | pass, the same invariants. `{Keep,Drop}{0,1}StoodSeveralOther` 37,646 distinct, 2 s on a laptop. On a four-core CI runner the others take 2 to 36 min (1.1M to 25.1M distinct, depth 37 to 40), except `Keep0StoodSeveralDest` (38 min to 1 h 16 min), `Keep1StoodSeveralDest` (51 min) and `Drop0StoodSeveralDest` (1 h 21 min), which run nightly with `Drop0StoodOneOther` and the `StoodOneDest` pieces. The four `StoodSeveralOther` pieces hold no cut-over, as in `FelixShardElectSwap.cfg`, and check that they stay empty (`NoCutOverInPiece`) |
+| `FelixShardElectRename{Keep,Drop}1StoodOneOtherReportStore.cfg` | `FelixShardElectRename{Keep,Drop}1StoodOneOther.cfg` with the rename read from the report the control plane stored (`ReportStore`, below), which can outlast the state that caused the refusal | pass, the same invariants (`Keep` 965K distinct states, `Drop` 846K, depth 38, under a minute on a laptop) |
 | `FelixShardElectSwapNoJoint.cfg` | the same without the joint configuration: the cut-over fences, ships and acknowledges on the new set alone | violate `AckedHeldByLeader`: a replica left on the old set stands at the new leader's generation, opens on a majority of the old set the new leader never fenced, and acknowledges a record the new leader does not hold |
 | `FelixShardElectSwapFlip.cfg` | `FelixShardElectSwap.cfg` with one write and the flip as the code writes it (`FlipNewGeneration`): the control plane takes the pending set at the next generation, naming the cut-over's leader again, which fences the new set alone. A candidate may already hold that generation, and the flip may follow a stale report: if the leader promised that generation to a candidate since, the leader refuses the generation | pass, the same invariants, checked in the twenty pieces below: one run did not finish in six hours |
 | `FelixShardElectSwapFlip{Keep,Drop}{0,1}{,Stood{One,Several}{Dest,Other}}.cfg` | `FelixShardElectSwapFlip.cfg` split at its cut-over as `FelixShardElectSwap.cfg` is: the new set keeps or drops the old leader, 0 or 1 writes were admitted before it, and no replica, one or several had promised past the control plane's generation, the destination among them or not. Each piece also checks everything before its cut-over, so together they reach every state the whole does | pass, the same invariants. On a four-core CI runner: `Keep1` 10.2M distinct, 14 min; `Drop1` 6.70M, 20 min; `Keep1StoodOneOther` 5.81M, 11 min; `Drop1StoodOneOther` 3.53M, 7 min; `Drop0StoodOneOther` 17.7M, 41 min; `Keep0StoodOneOther` 20.2M, 54 min; `Keep0` 35.4M, 1 h 9 min; `Drop0` 32.4M, 1 h 19 min; `Drop1StoodSeveralDest` 43.5M, 2 h 10 min; `Keep0StoodSeveralDest` 97.4M, 2 h 18 min; `Drop0StoodSeveralDest` and `Keep1StoodSeveralDest` over 2 h; the four `StoodSeveralOther` 694, under a second. Each `StoodOneDest` reaches the same states as its unstood twin, as the cut-over overwrites everything the destination's stand wrote. Those over 45 minutes and the four `StoodOneDest` run nightly. The four `StoodSeveralOther` pieces hold no cut-over, as in `FelixShardElectSwap.cfg`, and check that they stay empty (`NoCutOverInPiece`) |
@@ -244,10 +263,54 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectSwapFlipJoinLagsFirstStart.cfg` | the same with the flip taking the generation's first start record instead of the named stint's (#1787) | violate `AckedOnMajority`: a destination elected past the old leader acknowledges a write on the old set, the cut-over names it again at that generation, the joining copy holds that stint's start but not the write, and the flip follows the start once a majority of both sets holds it, leaving the write on one copy of the new set |
 | `FelixShardElectPreVote.cfg` | `FelixShardElect.cfg` with pre-vote and stickiness (`PreVote`), time to 2 so leases lapse and elections follow, two writes, the set check | pass, the same invariants (not yet measured) |
 | `FelixShardElectLive.cfg` | three brokers with the control plane down (`CpDown`), no writes, no symmetry, up to four generations of elections, one broker (the leader or not) allowed to stop for good (`FailStops = 1`), a candidate whose own detector may be wrong (`DetectorMisfires`), a pre-vote the open leader refuses (`PreVoteAsked`), and backoff with at most two split rounds (`Backoff`, `Splits = 2`), under fairness (`LiveSpec`) | pass `ElectionSettles` and `NoStandAgainstHeardLeader` (3,000 distinct states, 1 s locally) |
-| `FelixShardElectLiveLoosePreVote.cfg` | the same with the pre-vote the code asks today: any live member that hears no leader says yes, the open leader included | violate `NoStandAgainstHeardLeader`: a follower whose detector misfires gets the leader's yes and its own and deposes a leader the rest of the set hears (#1815) |
+| `FelixShardElectLiveLoosePreVote.cfg` | the same with a looser pre-vote: any live member that hears no leader says yes, the open leader included | violate `NoStandAgainstHeardLeader`: a follower whose detector misfires gets the leader's yes and its own and deposes a leader the rest of the set hears (#1815) |
 | `FelixShardElectLiveNoBackoff.cfg` | the same without backoff | violate `ElectionSettles`: candidates split, stand again at once and split again until every generation the model allows is used, and nobody leads |
+| `FelixShardElectLiveReissue.cfg` | `FelixShardElectLive.cfg` with the control plane up: promotion on the followers' word up to generation 1 (`Suspicions = 1`), adoption up to generation 3, two generations of elections, no broker stopping, and the control plane moving past a generation claimed twice (`Reissues`, CpReissue), with adoption and the reissue taken once they stay possible (`ReissueSpec`) | pass `CollisionSuperseded` (503K distinct states, 4 min locally) |
+| `FelixShardElectLiveNoReissue.cfg` | the same without the reissue | violate `CollisionSuperseded`: placement names one broker at the generation another is elected at and opens, and the control plane keeps naming the one that cannot open |
+| `FelixShardElectLiveUnclean.cfg` | `FelixShardElectLive.cfg` with storage identities and one broker that restarts uncleanly while following, under a new identity it votes with again, its process remembering the unclean start (`UncleanCrashes`): it answers no fence, stands for no copy and opens none that it may have led or gave up, and a ballot it wrote standing since is not that evidence (#2025) | pass `ElectionSettles` (29,000 distinct states, 3 s locally) |
+| `FelixShardElectLiveUncleanOwnBallot.cfg` | the same with the rule before #2025: its own candidacy's ballot counts as having led (`OwnBallotLedBefore`) | violate `ElectionSettles`: the restarted broker stands and wins, its open is refused and the copy given up, and it then refuses the third broker's fence, so with the leader's broker stopped nobody is elected |
+| `FelixShardElectLiveUncleanLed.cfg` | `FelixShardElectLiveUnclean.cfg` where the restart may hit a broker whose ballot names itself: the leader, a candidate still fencing, or one that stood (`UncleanLeads`), losing any suffix of its log; no broker stops for good, and detectors do not misfire | pass `ElectionSettles` (504,000 distinct states, 71 s locally; with misfires it passed 5.6 million states in 12 minutes unfinished) |
+| `FelixShardElectUnclean.cfg` | safety of `FelixShardElect.cfg` with that restart, two writes, and a batch vouching for the copy only once it holds a record of its leader's generation (`VouchOnGeneration`, as the code does since #2029) | pass (11.1 million distinct states, 10 minutes locally) |
+| `FelixShardElectUncleanVouchOnShip.cfg` | the same with the rule before #2029: any batch vouches | violate `AckedHeldByLeader`: the crashed leader gets back only its first lost record, stands, and opens with the empty third copy's vote without the second |
+| `FelixShardElectUncleanForgetsLed.cfg` | the same with the restarted process not reading its own ballot as the copy it led (`UncleanForgetsLed`) | violate `AckedHeldByLeader` |
+| `FelixShardCpLive.cfg` | three brokers with the control plane up, no writes, no symmetry, up to four generations, one broker allowed to stop and come back (`Restarts`), standings that may be withdrawn and keep their ballot (`Withdraws`), renames on a refusal (`Renames`), four fixes from the list of dead ends in #1914 on (`OverlayRefused`, `HaltReported`, `DeposeOnAssigned`, `StandBehindBallot`), a fence's step on the leader's own log reporting its refusal (`OwnBallotRefused`, #1919), and a leader that lost its generation to a newer one in its own log reporting it (`AboveReported`, #1951) with placement renaming it above the ballot it lost to (`RenamePastBallot`), under `CpLiveSpec` | pass (#1989, #2024); not registered: it runs for hours. A 5 h CI run timed out at 40M distinct states with no violation. The #2024 part is checked in `FelixShardCpLiveSkippedGeneration.cfg` |
+| `FelixShardCpLiveSkippedGeneration.cfg` | `FelixShardCpLive.cfg` cut to the #2024 scenario: adoption stops at generation 3 (`Adopt`), where it goes to 4, and at most two brokers stop (`Stops`). A leader adopted at generation 3 whose log keeps its set from generation 1 restarts, and its fence learns the set before from the snapshot's `previous`. At generation 2 the case is out of reach | pass: the leader the control plane names ends up serving (`CpLeaderServes`); not registered: it runs past a pull request's hour, so the nightly exhaustive job checks it |
+| `FelixShardCpLiveSkippedGenerationUnknownPrior.cfg` | the same with the snapshot allowed to lack the set before (`PriorMayBeUnknown`), as before #2024 | violate `CpLeaderServes`: the restarted leader whose log keeps its set two generations back never fences or reports (about 9 min on a laptop) |
+| `FelixShardCpLiveMain.cfg` | the same with those fixes off, as main's code is | violate `CpLeaderServes`: a leader fencing at its assignment while its own ballot is above it never reports the refusal (`keep_own_set`, #1919) |
+| `FelixShardCpLiveNoOwnBallotRefused.cfg` | `FelixShardCpLive.cfg` without `OwnBallotRefused` | violate `CpLeaderServes`: a leader fencing at its assignment with its own withdrawn standing above it never reports. **Not model-checked in CI**: it ran 2 h 53 min at 42.4M distinct states, then outgrew the six-hour limit on a CI runner; `FelixShardCpLiveMain.cfg` still shows the violation |
+| `FelixShardCpLiveNoOverlayRefused.cfg` | without `OverlayRefused` | violate `CpLeaderServes`: the control plane's leader steps down when it answers a higher fence, every member ends promised to a candidate that withdrew, and nothing reports a refusal (1.59M distinct states, 2 min locally) |
+| `FelixShardCpLiveNoHaltReported.cfg` | without `HaltReported` | violate `CpLeaderServes`: an open leader whose followers took a withdrawn candidate's higher fence halts on their refusals, and the halt is never reported (1.54M distinct states, 2 min locally) |
+| `FelixShardCpLiveNoStandBehindBallot.cfg` | without `StandBehindBallot` | violate `CpLeaderServes`; not registered: no violation yet in 3.9M distinct states and 26 minutes in a pull request's CI |
+| `FelixShardCpLiveNoAboveReported.cfg` | without `AboveReported`, as the code is | violate `CpLeaderServes` (#1951): the open leader answers a candidate's higher fence and stops serving, the candidate withdraws, and the leader reports nothing (895K distinct states, 3 min locally) |
+| `FelixShardCpLiveReleased.cfg` | `FelixShardCpLive.cfg` cut down to the released leader: two stands, adoption up to 3, one stop, the first leader a fixed broker (`FirstLeaderFixed`), `SetCheck` on so the leader that answers a candidate's fence releases its generation (`bgen` 0) | pass `CpLeaderServes`: the released leader reports the generation it promised to a candidate that withdrew, and the rename past that ballot serves (`note_released` in driver/shards.rs). 5.7M distinct states, 15 min on a laptop |
+| `FelixShardCpLiveReleasedNoAboveReported.cfg` | `FelixShardCpLiveReleased.cfg` with `AboveReported` off | violates `CpLeaderServes` in about a minute: the first leader comes back, stands, the named leader answers its fence and the candidate withdraws, and nothing reports. Shows the cut-down bound reaches the release |
+| `FelixShardCpLiveReleasedFull.cfg` | the larger bound: every first leader, any number of stops, adoption up to 2 | expected to pass; runs past six hours on a CI runner, so the nightly job runs it |
+| `FelixShardCpLiveRefusals.cfg` | the rules adopted for #2046 under `CpLiveSpec`: no restarts, generation 3, the leader starting on a failover's pins (`FailoverStart`), two copies changing one after the other and admitted again by a joint fence (`CopyPins`), a set lost after an open (`SetLossAfterOpen`), candidates standing above the control plane's generation from a route up to one generation old with at most two standings (`StandsAboveCp`, `StaleStandRoute`, `MaxStandings`); pins kept on a rename until the leader's first fenced open and dropped on admission, a promise away beside another copy refused, and lost-set and ahead refusals carrying their ballot | pass `CpLeaderServes`; not registered: no violation in 5.28M distinct states (15 min locally), unfinished |
+| `FelixShardCpLiveRefusalsCopyExcluded.cfg` | the same keeping the other-copies exclusion (`OtherCopiesExcluded`) | violate `CpLeaderServes`: the #2046 stall, a renamed leader still on its failover's pins with one member promised to a withdrawn candidate and one answering from another copy (498K distinct states, 1 min locally) |
+| `FelixShardCpLiveRefusalsPinsForever.cfg` | the same keeping the pins for good | violate `CpLeaderServes`: a copy changed while the leader fenced is re-admitted at a generation another member promised away, and its pin keeps it from counting (504K distinct states, 1 min locally) |
+| `FelixShardCpLiveRefusalsUnknownNoBallot.cfg` | the same with a lost set's refusal carrying no ballot | not registered: no violation in 3.56M distinct states (10 min locally). The set is lost only after an open, which drops the pins, so the third member counts |
+| `FelixShardElectRefusals.cfg` | the same rules for safety: one write, elections to generation 2 with no pre-vote, one failover on the followers' word (`Suspicions = 1`, `Promotion = "any"`), one copy changing and losing what it had not synced | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened`, `SetChangesJoint` (2.37M distinct states, depth 29, 2 min on four workers) |
+| `FelixShardElectRefusalsPinsCleared.cfg` | the same with a rename dropping the pins, as the code did | violate `AckedHeldByLeader`: b stands and withdraws, its copy changes and loses the write, the failover to c is refused on b's promise and a's silence, and c opens at 3 on b's empty copy. Keeping the other-copies exclusion fails the same way (143K distinct states, depth 13) |
+| `FelixShardElectRenameMinorityDrop.cfg` | `FelixShardElectRename.cfg` with a joint fence refused on one promise away (`JointMinorityRefused`) and a rename naming the pending set alone (`RenameDropsChange`) | violate `OneLeaderPerGeneration`: c's joint fence is refused on a's promise to b and renamed on the new set alone, and the old set elects a at the same generation (41K distinct states, depth 12). `RenameDropsChange` alone fails the same way; `JointMinorityRefused` alone found nothing in 3.3M distinct states (4 min, unfinished) |
+| `FelixShardCpDown.cfg` | `FelixShardCpLive.cfg` with the control plane stopping for good (`CpStops`), suspicion per broker and per shard (a broker named the leader included, `SelfSuspicion`), a pre-vote refusal bounded by the fence it waits on (`PreVoteBounded`), a promise freed once its candidate no longer stands and held at most a bound (`StandBehindBounded`), and a candidate withdrawing only once its fence cannot complete (`WithdrawsStuck`), under `CpDownSpec` | not registered: no violation of `CpDownServesInBound` in 56.8M distinct states and five hours in CI, with the queue still growing |
+| `FelixShardCpDownNoSelfSuspicion.cfg` | the same without `SelfSuspicion`: a broker named the leader never stands for its shard, as in the code | violate `CpDownServesInBound`: a leader elected above its assignment restarts with the control plane down, its open is refused for its own ballot, and only it could win a pre-vote (2.5M distinct states, 12 min in CI) |
+| `FelixShardCpDownBrokerSuspicion.cfg` | the same with suspicion per broker only, as the code has it | violate `CpDownServesInBound`: a restarted leader fences at a generation its followers promised past, and nobody suspects a live broker |
+| `FelixShardCpDownPreVoteUnbounded.cfg` | the same with the pre-vote refused for as long as the asked broker fences | not registered: no violation in 49.6M distinct states and five hours in CI, with the queue still growing |
+| `FelixShardCpDownStandBehindDeadOnly.cfg` | the same with a promise freed only once its candidate is down | not registered: no violation in 88.6M distinct states and five hours in CI. Before `SelfSuspicion` it violated `CpDownServesInBound` (the candidate restarts without its standing, and the replica that answered it never stands); with it, that broker stands for its own shard, and no counterexample has turned up |
+| `FelixShardCpDownDegraded.cfg` | `FelixShardCpDown.cfg` held to `CpDownFullyBacked` | violate it: placement names one broker at the generation another was elected and opened at, then stops; the named one fences there for good (357K distinct states locally at three generations) |
+| `FelixShardElectRouteLag.cfg` | three brokers with the control plane up, no writes, no symmetry, promotion on the followers' word up to generation 1, adoption up to generation 3, one generation of elections, one broker allowed to stop for good, renames on a refusal (`Renames`), and a promoted broker whose routes lag the ballot its promotion took (`RouteLags`), with both of #1936's rules, under fairness that includes the rename (`RenameSpec`) | pass `OwnBallotCaughtUp` (2.27M distinct states, 12 min in CI); with `NamedHereWaits` the stale round never stands, so this shows nothing else reaches the state |
+| `FelixShardElectRouteLagNoFix.cfg` | the same without either rule (`NamedHereWaits`, `OwnBallotReported` off) | violate `OwnBallotCaughtUp` (about a minute with one worker; the trace varies with timing): the old leader stops, the control plane names another broker at 2, that broker's round on the old route stands at 3 and withdraws, and it opens at 2 below its own ballot, for good (#1933) |
+| `FelixShardElectRouteLagReportOnly.cfg` | the same with the round still standing but the leader reporting its generation refused (`OwnBallotReported`) | pass `OwnBallotCaughtUp` (3.22M distinct states, 18 min in CI): the control plane names it again one generation up |
+| `FelixShardElectRouteLagFenceNoFix.cfg` | `FelixShardElectRouteLagReportOnly.cfg` with a member allowed to answer the stale round's fence (`StaleFenceAnswered`) and the open checking the leader's own ballot (`OpenChecksOwnBallot`), with no report from a fencing leader | violate `OwnBallotFenceCaughtUp` (seconds): the old leader stops, the control plane names another broker at 2, its round on the old route stands at 3 while it fences, a follower answers its fence at 2, and the open never happens (#1940). The trace needs no answer to the stale round; with `OpenChecksOwnBallot` off and `StaleFenceAnswered` on the model also violates, through a member that answered it (the code reports that member's refusal, #1914) |
+| `FelixShardElectRouteLagFence.cfg` | the same with a fencing leader below its own copy's promise reporting its generation refused (`OwnBallotFenceRefused`) | pass `OwnBallotCaughtUp` and `OwnBallotFenceCaughtUp` (2.36M distinct states, 19 min in CI): the control plane names it again one generation up |
+| `FelixShardElectRouteLagReportStore.cfg` | `FelixShardElectRouteLagReportOnly.cfg` with the refusal carried in a report the control plane stores, the last one winning, and the open leader's pass reports landing over it, each repeating the refusal (`ReportStore`, `RefusalRepeats`) | pass `OwnBallotCaughtUp` (10.1M distinct states, depth 31, 16 min on a laptop) |
+| `FelixShardElectRouteLagReportStoreNoRepeat.cfg` | the same with pass reports that do not repeat the refusal (`RefusalRepeats` off), as before #1971 | violate `OwnBallotCaughtUp` (1.0M distinct states, 1 min on a laptop): each refusal is replaced by the next pass report before the control plane renames, so the leader stays open below its own ballot (#1969) |
+| `FelixShardElectRouteLagFenceReportStore.cfg` | `FelixShardElectRouteLagFence.cfg` with `ReportStore` | pass `OwnBallotCaughtUp` and `OwnBallotFenceCaughtUp` (8.51M distinct states, depth 31, 27 min on a laptop, the one ReportStore config over twenty minutes): a fencing leader runs no passes, so nothing replaces its refusal |
 | `FelixShardElectNoBallotAcks.cfg` | `FelixShardElect.cfg` without ballots, two generations of elections and two writes, the set check on so the first leader can follow a candidate | violate `AckedHeldByLeader`, checked per generation |
 | `FelixShardElectAdoptPromote.cfg` | `FelixShardElect.cfg` with one write, the set check, adoption up to generation 2 and promotion on suspicion up to generation 2 | pass, the same invariants (186K distinct states without the write; not yet measured with it) |
+| `FelixShardElectReissue.cfg` | `FelixShardElectAdoptPromote.cfg` with promotion on suspicion up to generation 1 and the control plane moving past a generation it named one leader at while another was elected and opened there: the next generation, under the elected leader, on the control plane's set (`Reissues`, CpReissue) | pass, the same invariants (130,796 distinct states, 6 s locally) |
+| `FelixShardElectReissueReplace.cfg` | `FelixShardElectReissue.cfg` with four brokers, a spare that promotion puts in place of the old leader (`ReplaceOnPromote`), no write, and adoption up to generation 2: the elected leader's set differs from the control plane's when they collide, so the reissue is a pending change from the elected set to the control plane's, and the reissued leader fences both (`ReissuePending`) | pass, the same invariants (66,576 distinct states, 4 s locally) |
+| `FelixShardElectReissueReplaceBatchSet.cfg` | `FelixShardElectReissueReplace.cfg` with one write, adoption up to generation 4, candidates standing no lower than the kept set's generation (`StandsAboveKeptSet`), refusals that teach no set, and a follower keeping its own old set as the one being left when it learns a set from a batch (`LearnsLeavingSet` off) | violate `AdoptedMatchesOpened` first (#1929, as `FelixShardElectAdoptAboveKeptSet.cfg`); with that fixed, `AckedHeldByLeader`: a candidate fences no majority of the elected set and opens without the acknowledged write, so a broker takes the set being left only from the leader's fence or the control plane |
 | `FelixShardSwapCounters.cfg` | `FelixShardElectSwapFlip.cfg` on a cache shard (`Counters`), one write, no elections: the cut-over waits for the destination's counter log, the counter mark needs both majorities while the change is pending (`CountersJoint`), and the flip waits for the counter log's start record (`FlipChecksCounters`) | pass the same invariants and `CountersOnSetMajority` (not yet measured; over 4M distinct states) |
 | `FelixShardSwapCountersFlipUnchecked.cfg` | the same with the flip on the cache log's start alone | violate `CountersOnSetMajority`: an update acknowledged on {a, b}, the cut-over to b on {b, c, d}, and after the flip only b holds it (#1830) |
 | `FelixShardSwapCountersNewSetOnly.cfg` | the same with the counter mark on the new set alone while the change is pending | violate `CountersOnSetMajority`: the update is acknowledged on a majority of the new set, and the old set the control plane still records holds it on one replica (#1830) |
@@ -290,6 +353,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterGroupsKeepDropsMark.cfg` | the same, the promoted leader's set write dropping its own mark (`KeepSetDropsMark`), as `keep_own_set` did | violate `CountersHeldByLeader`: a group record acknowledged on {a, c}; c wiped and re-admitted with its group log behind, promoted, drops its mark keeping its set, and opens on its own group log and b's, which lags |
 | `FelixShardElectWipeNonVoterIdlessCreation.cfg` | the same rule on a stream shard without counters, its creation set naming no storage ids (`IdlessCreation`), as a shard created before sets named member ids keeps | pass, the same invariants (4.68M distinct states, depth 35, 2 min on six workers) |
 | `FelixShardElectWipeNonVoterIdlessCreationExempt.cfg` | the same, a copy that holds no set taking any generation-1 set as a voter (`GenOneExempt`), as `replaced_copy_of` did | violate `AckedHeldByLeader`: c is wiped at generation 1, learns the id-less creation set as a voter, and a failover's lagging leader opens on {b, c} |
+| `FelixShardElectUncleanContinuing.cfg` | the wiped-replica rule at generation 2 with two wipes and `WipeLeads`, a continuing open (the leader that served the generation before, same process, not draining) taking no catch-up and counting an answer from the copy it expects or one attesting a kept ballot that names it there, trusting a doubted copy with that ballot (`ContinuingTrustsBallot`) that never lost its promises (`ContinuingKeptBallot`), and a copy that lost them answering anyway (`ContinuingForgottenAnswers`), as a restored directory does; the copy promises and stays doubted, and the one that lost its promises is not counted (#2047). No configuration shows a doubted copy served by the rule: every non-voter here was wiped, and a short copy stops being one once it promises a newer leader | pass |
+| `FelixShardElectUncleanContinuingBatchBallot.cfg` | the same without `ContinuingKeptBallot`: a wiped copy's ballot can come from a batch it took after the wipe | violate `OneLeaderPerGeneration`: b opens at 2 and is wiped; it takes a's batch at 1; a's re-admission of c at 2 counts b |
+| `FelixShardElectUncleanContinuingAnyCopy.cfg` | the same trusting any doubted copy, ballot or not (`ContinuingTrustsAnyCopy`) | violate `OneLeaderPerGeneration`: c promised b at 2 and was wiped; a's re-admission of b at 2 counts c |
+| `FelixShardElectUncleanContinuingCountsForgotten.cfg` | the same counting the answer of a copy that lost its promises as one from the copy it expects (`ContinuingCountsForgotten`), as the code did before the kept-ballot attestation | violate `OneLeaderPerGeneration`: b stands at 2, c promises it, b opens at 2; b is wiped; a, still the control plane's leader at 1, re-admits b at 2; c is wiped, losing its promise to b, answers a's fence, and a counts it as the copy it expects and opens at 2 beside b |
+| `FelixShardElectUncleanContinuingRetry.cfg` | `FelixShardElectUncleanContinuing.cfg` with the continuing fence retried once after its first answers came in, as a lost answer or a Pending round restarts it (`ContinuingRetries`), and every follower answering from a new copy so only attested answers count (`ContinuingCopiesNew`); the retry finds the ballot at the fence's own generation, which the attestation takes | violate `RetriedContinuingNeverOpens`, a canary: c answers a's fence at 2, a retries, c answers again from a ballot at 2 and a opens |
+| `FelixShardElectUncleanContinuingRetryBelowOnly.cfg` | the same attesting only a ballot at the generation before (`ContinuingAttestsBelowOnly`) | pass: the retry's answers are never counted, so a retried fence never opens |
+| `FelixShardElectUncleanContinuingRetrySafe.cfg` | the retried continuing fence without its canary, every safety invariant on | pass: no two leaders at one generation, and the leader keeps every acknowledged record |
+| `FelixShardElectUncleanContinuingDoubted.cfg` | `FelixShardElectUncleanContinuingRetrySafe.cfg` with a broker that restarts uncleanly, adoption to generation 3, one wipe and no client write, so a doubted copy answers a continuing open's fence (`ContinuingTrusts`), every safety invariant on | pass: no two leaders at one generation (19.6M distinct states, 47 min in CI); runs exhaustively in every `formal` job. With no write the record invariants hold only trivially; `FelixShardElectUncleanContinuingDoubtedFull.cfg` covers them |
+| `FelixShardElectUncleanContinuingDoubtedFull.cfg` | the same with one client write | pass: the leader keeps every acknowledged record. **Not exhaustive**: it did not finish in six hours (178M distinct states and still growing), so the nightly random walk (`tla-walk.yml`, family `unclean-continuing`) samples it; a pass means nothing was found |
 | `FelixShardElectWipeNonVoterNoCatchUpFailover.cfg` | `FelixShardElectWipeNonVoterNoCatchUp.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: re-admitted with an empty log, the copy answers the next failover's fence |
 | `FelixShardElectWipeNonVoterEvidenceOnlyFailover.cfg` | `FelixShardElectWipeNonVoterEvidenceOnly.cfg`'s fault with `Elections = 0`, no counters and no fence without a set | violate `AckedHeldByLeader`: wiped before it heard any set, the copy answers a failover's fence that names its new id |
 | `FelixShardElectWipeNonVoterCreatesReadmits.cfg` | `FelixShardElectWipeNonVoterCreates.cfg` at the same bound, checking a witness | violate `NoFailoverAfterReadmit`: the wiped copy is re-admitted, the write is acknowledged at the re-admission's generation, and a leader opens above it |
@@ -298,6 +370,23 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardElectWipeNonVoterFailsOver.cfg` | `FelixShardElectWipeNonVoterFailover.cfg`, checking a witness | violate `NoFailoverBesideNonVoter`: the control plane fails over while a wiped replica is a non-voter |
 | `FelixShardFencedAckAnyKept.cfg` | `FelixShardFencedAck.cfg` with a spare fourth broker outside the replica set (`Spares`), promotion of any replica however far behind (`Promotion = "any"`), and the promotion keeping the replica set, the old leader in it; no drift | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (0.48M distinct states, depth 31, 27 s on four workers; with `Drift = 1`, 39.0M distinct states in 35 min on four workers, by hand) |
 | `FelixShardFencedAckAnyReplaced.cfg` | the same with the promotion swapping the old leader for the spare (`ReplaceOnPromote`), as failover's `choose_replicas` would | violate `AckedHeldByLeader`: the new leader and the spare are a majority of the new set and open without the record the old leader and the third replica acknowledged |
+| `FelixShardReplacedPendingLeft.cfg` | `FelixShardFencedAckAnyReplaced.cfg` with the joint fence (`SetCheck`, `JointFence`) and promotion on suspicion up to generation 2 (`Suspicions = 2`) | violate `AckedHeldByLeader` (#1878): b is promoted at 2 on {b, c, d}, and its joint fence, which also covers {a, b, c}, never opens; c is promoted at 3 on {a, c, d} and fences that set and {b, c, d} but not {a, b, c}, so c and d open without the write a and b acknowledged at 1. A failover drops the set an unopened failover was still leaving, in the model's `Promote` and in `set_before` alike |
+| `FelixShardReplacedPendingLeftKeptLog.cfg` | `FelixShardReplacedPendingLeftKept.cfg` with each member keeping the sets it leaves as the broker's set file does (`LogDropsSets`, #1881): a fence or a batch that raises the set carries the sets it was sent (a batch, the control plane's set before its generation, as `check_batch_set` takes it) plus, unless the log holds a record of its own set's generation, that set and the ones it kept. Earlier sets are kept only under `JointFence`; the file's cap of 16 earlier sets (`KeptSetsCap`) cannot be reached with four brokers | pass `AckedHeldByLeader`, `LeftRecorded`, `AckedAgree`, `NoTruncationBelowHwm` (not finished: no violation in 6 h, 129M distinct states at depth 31) |
+| `FelixShardReplacedPendingLeftTwiceAllLog.cfg` | `FelixShardReplacedPendingLeftTwiceAll.cfg` with the same rule (`LogDropsSets`) | violate `AckedHeldByLeader` (15 states deep, 10.9M distinct states): b opens at 2 on {b, c, d} and write 1 is acknowledged on b and d; d is promoted at 3 on {a, c, d} and never opens; a, never asked by d, is promoted at 4 on {a, b, c} and fences that set and {a, c, d} but not {b, c, d}. Not registered until the Report variant says whether placement can promote a |
+| `FelixShardReplacedPendingLeftKept.cfg` | `FelixShardReplacedPendingLeft.cfg` keeping the set an unopened failover leaves (`KeepsUnopened`, #1880) and fencing the recorded set (`FenceRecordedSet`), time standing still | violate `AckedHeldByLeader` (17 deep, 2 min): a member taking a batch at the generation it knows drops the sets it keeps, which the broker never does (`check_set`); the Log variant is the faithful check |
+| `FelixShardReplacedPendingLeftTwice.cfg` | `FelixShardReplacedPendingLeftKept.cfg` up to generation 3 with one kept set (`OneLeavingSet`) | violate `AckedHeldByLeader` (#1881, 20 min) |
+| `FelixShardReplacedPendingLeftTwiceAll.cfg` | `FelixShardReplacedPendingLeftTwice.cfg` keeping every set (#1881's fix) | violate `AckedHeldByLeader` (16 deep, 11 min), with the coarse batch rule of the Kept row |
+| `FelixShardReplacedPendingLeftTwiceAllLogReport.cfg` | `FelixShardReplacedPendingLeftTwiceAllLog.cfg` with leader-report placement and no follower named short of the log the leader inherited (`ReportFloor`, as the broker does since #1924; without it an acknowledged write is lost at depth 22, #1922) | did not finish in 6 h: 167 million distinct states, 75 million still queued, no violation (run 42054530207) |
+| `FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor.cfg` | `FelixShardReplacedPendingLeftTwiceAllLogReport.cfg` without `ReportFloor`, as `driver/shard.rs` was before #1924 | violates `AckedHeldByLeader` (22 deep, 42 min, #1922) |
+| `FelixShardReplacedPendingLeftKeptLogBatchDrops.cfg` | `FelixShardReplacedPendingLeftKeptLog.cfg` with a batch that raises the set keeping none (`BatchDropsSets`), the rule before review | violate `AckedHeldByLeader` (17 deep, 5 min) |
+| `FelixShardReplacedPendingLeftTwiceAllLogBatchDrops.cfg` | `FelixShardReplacedPendingLeftTwiceAllLog.cfg` with `BatchDropsSets` | violate `AckedHeldByLeader` (16 deep, 19 min) |
+| `FelixShardReplacedSetUnknown.cfg` | `FelixShardReplacedPendingLeft.cfg` with leader-report placement, and a leader that may lose the set its generation leaves (`SetLossUpTo`, #1872): it learned the shard from a snapshot, or restarted after it opened. It is named again one up (`CpRename`) only once it opened that generation, and a failover keeps an unopened set (`KeepsUnopened`, #1880) and fences the control plane's set from the generation before beside its own (`FenceRecordedSet`, as `set_before` does). Without `KeepsUnopened`, b opens at 2 on c's answer alone, its report names c caught up at 0 as the broker's does, and c, promoted at 3, never fences {a, b, c} (#1878) | pass `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` (not finished: no violation in 6 h, 142M distinct states at depth 21) |
+| `FelixShardReplacedSetUnknownAny.cfg` | the same renaming whenever the set is unknown (`UnknownRenamesAny`), the rule the fix replaced | violate `AckedHeldByLeader` (13 states deep): c is promoted at 2 on {b, c, d} and loses the set it leaves; it is named again at 3, where the fence leaves {b, c, d} alone, and opens with d without the write a and b acknowledged at 1 |
+| `FelixShardReplacedSetUnknownRenames.cfg` | a witness: `FelixShardReplacedSetUnknown.cfg` checking that no leader past generation 1 is due a rename after losing its set in a generation it opened (`NeverRenameUnknownSet`) | violate `NeverRenameUnknownSet` at depth 8, so the passing configuration reaches the rename the fix allows |
+| `FelixShardReplacedSetUnknownFirstRenames.cfg` | a witness: the same checking that no leader is due a rename after losing its set at the first generation, which it opened (`NeverRenameFirstUnknownSet`). The broker renames there on its own ballot with no kept set (`NoSetBefore::Unknown(0)`) | violate `NeverRenameFirstUnknownSet` at depth 4, so the passing configuration reaches that rename |
+| `FelixShardReplacedSetUnknownMark.cfg` | `FelixShardReplacedSetUnknown.cfg` with the first-assignment mark (`FirstAssignMark`): a leader that loses its set at the first generation reads the set before as empty, which the control plane marks only when its change log holds the shard's `assigned` change at that generation | pass, the same invariants (not finished: no violation in 6 h, 139M distinct states at depth 20) |
+| `FelixShardReplacedSetUnknownMarkAny.cfg` | the same trusting the mark at any generation (`MarkAnyGeneration`) | violate `AckedHeldByLeader` (12 states deep): c is promoted at 2 on {b, c, d}, learns the shard from a snapshot while fencing, reads the set before as empty and opens with d without the write a and b acknowledged at 1 |
+| `FelixShardReplacedSetUnknownMarkRenames.cfg` | a witness for `FelixShardReplacedSetUnknownMark.cfg`, as `FelixShardReplacedSetUnknownRenames.cfg` is without the mark | violate `NeverRenameUnknownSet` at depth 9: the rename stays reachable with the mark |
 | `FelixShardFencedAckSeat.cfg` | `FelixShardFencedAckAnyKept.cfg` with one follower replacement (`MaxMoves = 1`): a spare joins beside a leaving follower at one generation, counting toward the quorum, and the leaving one goes at the next, once the newcomer holds what a majority of the set held when it joined (`SeatHoldsCopy`); one write, `L = 2`, time to 3, no start records | pass `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` (6.93M distinct states, depth 35, 15 min on a four-core CI runner; a failover that names the joining copy leaves four in the set, which `TrimFence` and `TrimSet` then trim) |
 | `FelixShardFencedAckSeatLonger.cfg` | the same with start records, `L = 4` and time to 4 | pass, the same invariants (34.9M distinct states, depth 37, 36 min on a four-core CI runner; nightly) |
 | `FelixShardFencedAckSeatEarly.cfg` | the same with the seat not waiting, as placement did when a report named the newcomer caught up before anything was counted at the joining generation | violate `AckedHeldByLeader`: a record acknowledged on the leader and the leaving follower, the newcomer seated without it, and the next leader fencing the newcomer and the lagging follower |
@@ -322,6 +411,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardSessionsGroupLease.cfg` | the same with the lease in place of the round | violate `NoStaleGroupCommit` (6.4K distinct states, depth 8) |
 | `FelixShardFigure8FollowerAcks.cfg` | `FelixShardFencedAck.cfg`'s acknowledgement from the seeded Figure 8 history, promotion still reading the report | pass every invariant it checks (7.67M distinct states, depth 36, 58 s on sixteen cores) |
 | `FelixShardFigure8FollowerAcksNoStartRecord.cfg` | the same without the start record: follower acks count a record the leader inherited | violate `AckedOnMajority` |
+| `FelixShardFigure8AckWait.cfg` | `FelixShardFigure8FollowerAcks.cfg` with the clients of x and y still waiting on the brokers that wrote them (`AckWaits`). A wait follows its broker into any later generation it leads, and is answered only if the log still holds a record of the write's generation at the write's offset (`still_holds`, quorum.rs) | pass every invariant it checks (6.68M distinct states, depth 36, 3 min on six workers) |
+| `FelixShardFigure8AckWaitByOffset.cfg` | the same with a wait answered by its offset alone (`AckByOffset`), as before #2048 | violate `AckedHeldByLeader` (depth 9, under a second): a is promoted at 3, its fence takes b's log, whose y sits at x's offset, and a's mark at 3 acknowledges x |
 | `FelixShardFigure8.cfg` | the broker as built (`FelixShardFencedPromotion.cfg`) with the generation start record (`StartRecord`), started from a history two leaderships in (`FelixShardFigure8.tla`) | pass every invariant it checks (5.99M distinct states, depth 39, 35 s on sixteen cores) |
 | `FelixShardFigure8NoStartRecord.cfg` | the same without the start record: the mark counts records the leader inherited | violate `AckedOnMajority`: Raft's Figure 8, see below |
 | `FelixShardFigure8CutOver.cfg` | the start record, from a history one leadership further (`SeededCutOverInit`): the next leader comes from a move's cut-over or a cancelled move's hand-back | pass every invariant it checks (12.9M distinct states, depth 39, 90 s) |
@@ -416,6 +507,215 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixGroupsSplitSources.cfg` | the same with a promotion taking dead letters and cursors from different replicas, cursors replacing its own | pass `NoSkip` (60.5M distinct states, 17 min on a CI runner) |
 | `FelixGroupsSplitSourcesLengthOnly.cfg` | the same with the check comparing lengths only | violate `NoSkip` |
 | `FelixGroupsShipUnsynced.cfg` | `FelixGroups.cfg` with dead letters shipped before they are synced | violate `NoSkip` |
+| `FelixShardUnified.cfg` | `FelixShardUnified.tla`: the one fence rule (promises from kept ballots, coverage from trusted logs), one write, an unclean crash, a wipe, two starts | pass `OneLeaderPerGeneration` and `AckedHeldByLeader` (20.5M distinct states, 6 min with four workers) |
+| `FelixShardUnifiedSets.cfg` | set changes to any set holding the leader, with an unclean crash: joint fences, shrinks to one and two voters, readmissions | pass (3.7M distinct states, 1 min with four workers) |
+| `FelixShardUnifiedMixed.cfg` | one node predates the attestation and is counted under today's rules | pass (13.7M distinct states, 4 min with four workers) |
+| `FelixShardUnifiedRestore.cfg` | a restored directory and a fence round that starts over | pass (35.8M distinct states, 9 min with four workers) |
+| `FelixShardUnifiedReadmit.cfg` | a wiped copy readmitted by a set change, three starts, no writes | pass (25.1M distinct states, 8 min with four workers) |
+| `FelixShardUnifiedReadmitFull.cfg` | the same with one write | pass, nightly |
+| `FelixShardUnifiedDropEvidenced.cfg` | a set between the anchor and the fence left out when its own leader's trusted answer shows it never opened, no writes | pass (50.6M distinct states, 14 min with four workers) |
+| `FelixShardUnifiedDropEvidencedFull.cfg` | the same with one write | pass, nightly |
+| `FelixShardUnifiedVouch.cfg` | two writes, two unclean crashes: a copy is trusted again only when a batch leaves it level through max(start record, quorum mark) | pass |
+| `FelixShardUnifiedVouchMark.cfg` | the vouch at the code's quorum mark, held to the start record too | pass |
+| `FelixShardUnifiedVouchBelowStart.cfg` | the same vouch without the start record: the mark can sit below it right after an open | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedStandInNoCatchUp.cfg` | a copy trusted once a batch reaches the start record, short of the mark | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedCoverFromDoubted.cfg` | coverage counts a copy an unclean crash may have shortened | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedTrustsRegistered.cfg` | a wiped copy's empty log counts as the copy its set named (#1335) | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedSkipCoverage.cfg` | a leader that is not continuing opens on its own log | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedDropUnopenedLeaving.cfg` | a set being left is dropped on silence | violate `AckedHeldByLeader` |
+| `FelixShardUnifiedCountNonKept.cfg` | a promise counts from a copy that lost its ballots | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedCountsWiped.cfg` | a fence counts a wiped seat's fresh promise in its own new set (#1331) | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedAnyCopy.cfg` | a continuing fence counts every answer, a lost copy's included | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedBatchBallot.cfg` | a lost copy's ballot taken from a batch since the wipe counts as kept | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedCountsForgotten.cfg` | a restore goes unnoticed and the copy claims kept ballots | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedNamesByRegistration.cfg` | a wiped copy counted as the copy it replaced, by registered storage id (#1335) | violate `OneLeaderPerGeneration` |
+| `FelixShardUnifiedContinuingDoubted.cfg` | a continuing fence counts a crashed copy whose ballot names another leader | violate `NoContinuingOnForeignBallot`: the shape is reachable under the rule, and it is safe |
+| `FelixShardUnifiedContinuingDoubtedLegacy.cfg` | the same under today's rules | pass `NoContinuingOnForeignBallot`: today's window never counts that copy |
+| `FelixShardUnifiedCpLiveElectedFailover.cfg` | an election past the old leader, then a voter crashes uncleanly | pass `EventuallyServes` |
+| `FelixShardUnifiedCpLiveElectedFailoverLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
+| `FelixShardUnifiedCpLiveReadmitUnopened.cfg` | a readmission whose leader crashes uncleanly before it opens | pass `EventuallyServes` |
+| `FelixShardUnifiedCpLiveReadmitUnopenedLegacy.cfg` | the same under today's rules | violate `EventuallyServes` |
+| `FelixShardUnifiedCpLiveMoveDoubted.cfg` | a move to two voters, one back from an unclean crash | pass `EventuallyServes` |
+| `FelixShardUnifiedLearnerBlocking.cfg` | four seats, a set change staging one learner, an unclean crash; a fence needs a majority of the voters and half of the set with its learner | pass (6.4M distinct states, 4 min with four workers) |
+| `FelixShardUnifiedLearnerBlockingTwo.cfg` | five seats and two learners, where a majority of the voters is short of half the whole set | pass (41.3M distinct states, 41 min with four workers) |
+| `FelixShardUnifiedLearnerVariantDropped.cfg` | the same with only the voters fenced: an acknowledgement on one voter and both learners slips past | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUp.cfg` | `FelixShardMoveGiveUp.tla`: a fenced move whose leader crashes uncleanly before it reports drained; the give-up at the move's generation ends the move, and the leader leads again only if its probe found no follower ahead | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` and `EventuallyServes` (97k distinct states, seconds) |
+| `FelixShardMoveGiveUpStall.cfg` | the same with the move waiting for a drained report or the fence timeout, whose clock restarts with the control plane | violate `EventuallyServes` |
+| `FelixShardMoveGiveUpLeads.cfg` | the same with a broker that leads its given-up copy without the probe | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpKeep.cfg` | replication factor 2 with the destination staged as a third copy, two writes; every move given up keeps the destination, and a trim fence drops a copy later | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AtMostOneServing` (29.5M distinct states, 7 min locally) |
+| `FelixShardMoveGiveUpKeepLive.cfg` | the same with one write and the crash during the move, for liveness | pass the invariants, `EventuallyServes` and `EventuallyAtFactor` |
+| `FelixShardMoveGiveUpDrop.cfg` | the same with the fence timeout's retake dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpUnstage.cfg` | the same with a staged move given up before its fence dropping the destination | violate `AckedHeldByLeader` |
+| `FelixShardMoveGiveUpTwoDrop.cfg`, `FelixShardMoveGiveUpTwoKeep.cfg` | replication factor 1 with the destination staged as a second copy, dropped or kept | both violate `AckedHeldByLeader`: one copy is lost to an unclean crash either way, so a set of two drops the destination |
+| `FelixShardMoveGiveUpFourDrop.cfg` | replication factor 3 with the destination staged as a fourth copy, every exit dropping it | pass the invariants: a follower that stays holds every acknowledged record (20.6M distinct states with symmetry, 10 min) |
+| `FelixShardMoveGiveUpFailoverDrop.cfg` | a set of three whose leader is taken for dead, the failover dropping a follower | pass the invariants: the drop loses no record, it stalls |
+| `FelixShardMoveGiveUpFailoverStall.cfg` | the same for liveness | violate `EventuallyServes`: the promoted follower's fence needs the dead leader's given-up copy |
+| `FelixShardMoveGiveUpFailoverLive.cfg` | the failover keeping the destination in a set of three | pass the invariants and `EventuallyServes` (2.9M distinct states, 4 min) |
+| `FelixRaft.cfg` | `FelixRaft.tla`: one Raft group on the segment log with the `raft_log` adapter's rules, three brokers, two terms, one write, one crash, the subscriber reading | pass every check in [One engine: Raft on the segment log](#one-engine-raft-on-the-segment-log) (1.2M distinct states) |
+| `FelixRaftCrashes.cfg` | the same with two crashes and no subscriber | pass the same (1.6M distinct states) |
+| `FelixRaftTerms.cfg` | three terms, no write, no crash, no subscriber | pass the same (1.1M distinct states) |
+| `FelixRaftFourTerms.cfg` | four terms, no write, no crash, no subscriber | pass the same (40.9M distinct states) |
+| `FelixRaftTermsFull.cfg` | three terms with one write | pass the same (26.0M distinct states, 59 min) |
+| `FelixRaftSnapshot.cfg` | one snapshot, a purge up to it and a follower brought up by snapshot in three writes, one crash | pass the same (5.5M distinct states) |
+| `FelixRaftSnapshotReplace.cfg` | two snapshots, no crash: a broker replaces a snapshot it stored | pass the same (5.8M distinct states) |
+| `FelixRaftSnapshotCrashes.cfg` | `FelixRaftSnapshot.cfg` with two crashes | pass the same (9.4M distinct states, 21 min) |
+| `FelixRaftOffsets.cfg` | one term, two writes and a membership entry, the subscriber reading, no crash | pass the same (0.4M distinct states) |
+| `FelixRaftOffsetsFailover.cfg` | two terms, two writes, the subscriber reading across a change of leader, no crash | pass the same (5.7M distinct states) |
+| `FelixRaftOffsetsFailoverCrash.cfg` | the same with one crash | pass the same (16.1M distinct states, 41 min) |
+| `FelixRaftOffsetsFull.cfg` | two terms, one write and a membership entry, the subscriber reading | pass the same (8.9M distinct states, 20 min) |
+| `FelixRaftAckBeforeFlush.cfg` | the flush callback fires before the fsync | violate `AckedSurvive` |
+| `FelixRaftRecoveredTailUnsynced.cfg` | entries found at the open are reported flushed without an fsync | violate `AckedSurvive` |
+| `FelixRaftVoteNotDurable.cfg` | `save_vote` returns before the vote is on disk | violate `OneLeaderPerTerm` |
+| `FelixRaftLeaderResumes.cfg` | a restarted leader leads again in its stored term | violate `LogMatching` |
+| `FelixRaftTornTailKept.cfg` | recovery reads a torn record as an entry | violate `LogMatching` |
+| `FelixRaftTruncateNotDurable.cfg` | `truncate_after` returns before the cut is on disk; the next flush makes it durable | violate `StateMachineSafety` |
+| `FelixRaftSaveCommittedUnflushed.cfg` | the committed or applied index read back is past the recovered log, the subscriber reading | violate `AckedDelivered` |
+| `FelixRaftPurgeBeforeSnapshot.cfg` | purge runs before the snapshot covering it is stored | violate `AckedSurvive` |
+| `FelixRaftSnapshotTwoRenames.cfg` | the snapshot's data and id are replaced by two renames | violate `StateMachineSafety` |
+| `FelixRaftCommitPriorTerm.cfg` | a leader commits an earlier term's entry by counting copies, four terms | violate `LeaderCompleteness` |
+| `FelixRaftDeliverUncommitted.cfg` | a subscriber is given entries above the commit index | violate `OffsetNeverReused` |
+| `FelixRaftDeliverUncommittedDense.cfg` | the same with two writes: the next leader's skipped count covers an offset the subscriber already holds a record at | violate `OffsetsDense` |
+| `FelixRaftSkipsNotCounted.cfg` | a batch does not report the offsets blank and membership entries hold | violate `OffsetsDense` |
+| `FelixRaftReachFailover.cfg` | witness: an acknowledged record held by a later leader after a crash | violate `NeverFailover` |
+| `FelixRaftReachTruncate.cfg` | witness: a follower cuts off a conflicting tail | violate `NeverTruncates` |
+| `FelixRaftReachLostTail.cfg` | witness: a crash loses an unflushed tail | violate `NeverLosesTail` |
+| `FelixRaftReachSkips.cfg` | witness: a blank entry between two delivered records | violate `NeverSkipsBetweenRecords` |
+| `FelixRaftReachInstall.cfg` | witness: a follower brought up by snapshot | violate `NeverInstallsSnapshot` |
+| `FelixRaftReachInstallCrash.cfg` | witness: a crash between an install's second and third write | violate `NeverCrashesMidInstall` |
+| `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
+| `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
+| `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
+| `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
+| `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change | pass the same (91.4M distinct states, 109 min in CI) |
+| `FelixRaftMembershipSkipJoint.cfg` | a move swaps one voter for the learner in one entry | violate `OneLeaderPerTerm` |
+| `FelixRaftMembershipChangeBeforeCommit.cfg` | the leader leaves the joint configuration before the joint entry is committed | violate `StateMachineSafety` |
+| `FelixRaftMembershipLearnerCounts.cfg` | a learner counts toward a majority | violate `AckedSurvive` |
+| `FelixRaftMembershipClaimRaces.cfg` | the membership call is made with the fence open and a claim outstanding | violate `NeverStops` |
+| `FelixRaftMembershipReopenOnReturn.cfg` | the fence reopens with the call's entry still queued | violate `NeverStops` |
+| `FelixRaftMembershipReachMove.cfg` | witness: a whole move commits and an old voter is out | violate `NeverMoves` |
+| `FelixRaftMembershipReachStepDown.cfg` | witness: a leader moved out of the voter set steps down | violate `NeverRemovedLeaderStepsDown` |
+| `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
+| `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
+| `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
+| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue #2303). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
+| `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
+| `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
+| `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
+| `FelixRaftIdentityWipeThenRestore.cfg` | two faults on one broker: the directory is emptied, then an older directory with the old copy id is put back | pass the same (3.0M distinct states) |
+| `FelixRaftIdentityWipeKeepsId.cfg` | a member made in an empty directory takes the old id | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoRestoreCheck.cfg` | a restored root keeps its storage id, so the copy keeps its id with an older log and vote | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoStorageIdCheck.cfg` | a copy cut short by a relaxed-fsync crash keeps its id | violate `LeaderCompleteness` |
+| `FelixRaftIdentityNoVoteMark.cfg` | a directory restored to an older vote with the same log votes twice in a term | violate `OneLeaderPerTerm` |
+| `FelixRaftIdentityVoteBeforeMark.cfg` | the vote is answered before its mark is synced, and the directory goes back in between | violate `OneLeaderPerTerm` |
+| `FelixRaftIdentityMarkForgetsCopy.cfg` | the marks are reset at a rotation and the old directory, put back, passes them | violate `LeaderCompleteness` (issue #2303) |
+| `FelixRaftIdentityRejoins.cfg` | witness: a rotated copy is swapped in by a committed membership change | violate `NeverRejoins` |
+| `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
+| `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
+| `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
+| `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
+| `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (9.2M distinct states) |
+| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same, on two rules the design does not have yet (issue #2304) (107M distinct states, 112 min in CI) |
+| `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
+| `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned (issue #2305) |
+| `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg`, on two rules the design does not have yet (issue #2304) (0.73M distinct states) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass the same, on two rules the design does not have yet (issue #2304) (33.9M distinct states, 34 min in CI) |
+| `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
+| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, the control plane's record possibly stale, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.7M distinct states) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one directory lost or restored to any prefix, which covers a relaxed fsync crash | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304) (23.2M distinct states, 40 min in CI) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the design as written: the same with two directories lost or restored to before the change, so both copies rotate with empty logs, no report names d and d's disk holds the entry | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write; not registered | violate `AckedSurvive` in a dispatch run, as the row above |
+| `FelixRaftReformStaleMembershipRelaxed.cfg` | two copies rotate on relaxed fsync, which keeps the synced membership entries, so their reports name d; no client write; not registered, run by dispatch | expected to pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304). Not shown yet: no violation in the first 20M distinct states of a ten minute local run |
+| `FelixRaftReformStaleMembershipPlaced.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with the rule issue #2311 proposes: the control plane waits for every broker placed in the epoch; not registered, run by dispatch | expected to pass the same on that rule and the two of issue #2304, none of them in the design yet. Not shown yet |
+| `FelixRaftReformLearnerHolds.cfg` | the design as written: three voters and a learner d that no membership names; d holds a record that a and b lose on relaxed fsync, and d is not waited for | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformLearnerWaited.cfg` | the same with the rule issue #2311 proposes | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on that rule and the two of issue #2304, none of them in the design yet (6.2M distinct states) |
+| `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
+| `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (7.5M distinct states) |
+| `FelixRaftReformOneReplicaCommits.cfg` | a witness: the re-formed single voter commits | violate `NeverCommitsAfterReform` |
+| `FelixRaftReformBeforeAll.cfg` | the control plane re-forms before every voter has reported | violate `AckedSurvive` |
+| `FelixRaftReformEpochNotChecked.cfg` | a late append from the old epoch is taken by a new-epoch voter and cuts the base out of its log | violate `AckedSurvive` |
+| `FelixRaftReformReportNotPromise.cfg` | three intact voters report without retiring, and the old epoch acknowledges a record the base lacks | violate `AckedSurvive` |
+| `FelixRaftReformOwnMembershipOnly.cfg` | the control plane waits only for its own stale {a, b, c} while d holds the committed entry | violate `AckedSurvive` |
+| `FelixRaftReformRetireNotDurable.cfg` | two retired voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
+| `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter report | violate `AckedSurvive` |
+| `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
+| `FelixRaftReformRotatedNotWaited.cfg` | the design as written: a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
+| `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
+| `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |
+| `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (56 distinct states) |
+| `FelixRaftSwitchGenZero.cfg` | any copy may carry generation 0 on a prefix of its records | pass the same (10.6M distinct states, 4 min) |
+| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 37 min in CI) |
+| `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 11 min in CI) |
+| `FelixRaftSwitchDiffers.cfg` | a follower may hold a different record below `N`; it fails its digest and starts as a learner | pass the same (1.4M distinct states) |
+| `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.1M distinct states, 2.5 min) |
+| `FelixRaftSwitchAllVoters.cfg` | the whole set recorded as voters, b lagging and c wiped | violate `LeaderCompleteness`: b and the new c elect b without a record a and the old c acknowledged |
+| `FelixRaftSwitchTermsBelowBase.cfg` | the hybrid log kept as the Raft log; b differs below `N` under the same generation | violate `LeaderCompleteness`: log matching takes b as level, it is promoted and leads |
+| `FelixRaftSwitchTermsBelowBaseCuts.cfg` | a witness for the same rule in the generation 0 case | violate `NeverCutsHeldRecord`: a generation 0 learner cuts records it holds and takes the same content back |
+| `FelixRaftSwitchNoDigest.cfg` | a follower acknowledges without the digest | violate `LeaderCompleteness`: a copy that differs below `N` votes and leads |
+| `FelixRaftSwitchDigestFromOwnStart.cfg` | the digest runs from each copy's own first record | violate `LeaderCompleteness`: a copy that starts above `S` leads without the record at `S` |
+| `FelixRaftSwitchDigestCoversGeneration.cfg` | the digest covers the generation field, b and c at generation 0 | pass the same and `NeverSwitches`: no majority ever acknowledges. Availability, not safety |
+| `FelixRaftSwitchBlindWrite.cfg` | the control plane's write without the compare | violate `LeaderCompleteness`: the first seal's voters cut a write the reopened hybrid acknowledged |
+| `FelixRaftSwitchBlindWriteTwoBases.cfg` | the same | violate `OneBase` |
+| `FelixRaftSwitchStaleIdVotes.cfg` | a wiped copy still votes under its old id; b and c wiped after acknowledging | violate `LeaderCompleteness` |
+| `FelixRaftSwitchReachCommit.cfg` | a witness for `FelixRaftSwitch.cfg` | violate `NeverCommitsAboveBase`: the switch completes and Raft acknowledges a record above `N` |
+| `FelixRaftSwitchReachPromote.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverPromotes`: a learner's promotion commits |
+| `FelixRaftSwitchReachPromotedLeads.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverPromotedLeads`: a promoted learner is elected |
+| `FelixRaftSwitchReachInstall.cfg` | a witness for `FelixRaftSwitchLag.cfg` | violate `NeverInstalls`: a learner takes the records below the base from the leader |
+| `FelixRaftSwitchReachGenZero.cfg` | `FelixRaftSwitchDigestCoversGeneration.cfg`'s copies with the rule on | violate `NeverElects`: the switch completes and a leader is elected |
+| `FelixRaftSwitchReachWipedSwitch.cfg` | a witness for `FelixRaftSwitchWiped.cfg` | violate `NeverSwitches`: the control plane records the switch with c wiped |
+| `FelixRaftSwitchReachReseal.cfg` | a witness for `FelixRaftSwitchReseal.cfg` | violate `NeverSwitchesAfterReseal`: the switch completes from the second seal |
+| `FelixRaftLease.cfg` | `FelixRaftLease.tla`: the first version's lease, three brokers, two terms, clocks gaining 1 or 2 units a tick, lease 2 against an election timeout of 4, no write, no restart, no bound on time | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.57M distinct states). With no restart it does not yet gate the lease pull request (issue #2307) |
+| `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
+| `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
+| `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule that is not built and openraft 0.10.0 lacks (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestartForgets.cfg` | the design as written and the engine as it is: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
+| `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
+| `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
+| `FelixRaftLeaseVoteInWindow.cfg` | a follower grants a vote inside its refusal window | violate `LeaseExclusive` |
+| `FelixRaftLeaseAckLong.cfg` | `FelixRaftLeaseAck.cfg` with a lease of 2 against an election timeout of 2 | violate `NoAckBehindNewLeader` |
+| `FelixRaftLeaseDeliverUncommitted.cfg` | the subscriber reads the leader's whole log | violate `DeliveredNeverReplaced` |
+| `FelixRaftLeaseReachLocalAck.cfg` | witness: a write acknowledged on local durability under the lease | violate `NeverLocalAck` |
+| `FelixRaftLeaseReachRenewed.cfg` | witness: a lapsed lease makes a write wait for commit and that commit renews it | violate `NeverLapsedThenRenewed` |
+| `FelixRaftLeaseReachFailover.cfg` | witness: a failover after the old lease ran out, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftLeaseStore.cfg` | later design: store-liveness leases with the group asleep, three liveness heartbeats, one restart, epochs to 3, lease 1 against support of 2 | pass `LeaseExclusive`, `NoAckBehindNewLeader`, `OneLeaderPerTerm` (1.6M distinct states) on rules the design page does not state (issue #2307) |
+| `FelixRaftLeaseStoreWide.cfg` | four liveness heartbeats | pass the same on the same rules (16.3M distinct states, 36 min in CI) |
+| `FelixRaftLeaseStoreStall.cfg` | one broker's disk stalls, no restart | pass the same and `StalledLeaseLapses` on the same rules (1.2M distinct states) |
+| `FelixRaftLeaseStoreNotDurable.cfg` | support is lost at a restart | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreVote.cfg` | a vote is granted while support for the leader's store stands | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreKept.cfg` | a restarted leader leads on and its lease check does not compare epochs | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreResupport.cfg` | a withdrawal does not raise the epoch | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreWithdrawEarly.cfg` | support is withdrawn before its expiry | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreLong.cfg` | a lease of 2 against support of 2 | violate `LeaseExclusive` |
+| `FelixRaftLeaseStoreStalledAsks.cfg` | a broker with a stalled disk keeps sending liveness heartbeats | violate `StalledLeaseLapses` |
+| `FelixRaftLeaseStoreReachLocalAck.cfg` | witness: the first write after sleep acknowledged locally with no group message | violate `NeverLocalAck` |
+| `FelixRaftLeaseStoreReachFailover.cfg` | witness: a failover after support was withdrawn, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleepAnyState.cfg` | Members fall asleep in any state with no handshake; safety only | pass |
+| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepNoWake.cfg` | Neither wake path: the group never elects | violate `QuiescentLed` |
+| `FelixRaftSleepCampaignOnWake.cfg` | A woken follower campaigns without asking | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepRestartNoHold.cfg` | A restarted member ticks at once | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepLeaderSleepsFirst.cfg` | The leader sleeps before the followers answer | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepAcceptUnchecked.cfg` | A sleep request accepted without comparing the log position | violate `AsleepIsLevel` |
+| `FelixRaftSleepHeartbeatKeepsProposal.cfg` | A heartbeat during the handshake leaves the proposal open | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepHoldTooShort.cfg` | A hold shorter than the ask's round trip | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepSleepUnsupported.cfg` | A follower sleeps for a leader it no longer supports | violate `QuiescentLed` |
+| `FelixRaftSleepFalseAlarmFollower.cfg` | Design as written: a false alarm about a follower lets the leader sleep without it | violate `NoNeedlessDeposal` (issue #2310) |
+| `FelixRaftSleepFalseAlarmFollowerBehind.cfg` | Design as written: the same alarm leaves the whole group asleep with a member behind | violate `AsleepIsLevel` (issue #2310) |
+| `FelixRaftSleepAskLost.cfg` | Design as written: the ask after a false alarm is lost, the hold runs out and the follower deposes a healthy leader | violate `NoNeedlessDeposal` (issue #2320) |
+| `FelixRaftSleepReachWakeOnWrite.cfg` | Witness: a group sleeps, wakes on a write and sleeps again | violate `NeverWakesOnWrite` |
+| `FelixRaftSleepReachAuditElection.cfg` | Witness: an election through the audit alone | violate `NeverElectsAfterDyingAsleep` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -747,8 +1047,8 @@ mid-fence, a replica that had learned the new set from it stood and opened on
 a majority of the new set alone, and a replica of the old set opened beside
 it at the same generation (OneLeaderPerGeneration).
 
-The control plane flips only after the joint fence. `Swap` records the new
-set as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
+The control plane flips only after the joint fence. `Swap` records the new set
+as pending (`cpNext`, written at `cpNextGen`) and the old set stays the
 control plane's (`CpSet`), so `AckedOnMajority` keeps measuring records
 against it. While its change is pending a leader acknowledges on a majority
 of both sets (`HeldAtGen`) and ships to both. `CpFlip` takes the new set once
@@ -778,20 +1078,40 @@ again, past the generation it was named at, never opened the named stint
 and so never reported it.
 
 A failover (`Promote`) abandons the pending change; it writes the set at a
-generation above the pending one. While a change is pending, `CpAdopt`
-adopts only a leader on the pending set and takes just the generation of one
-on the old set, which the new set's higher set generation deposes; the walk
-found an adopted old-set leader fenced that way. No placement change other
-than a failover starts while one is pending. Only the control plane ends a
-pending change, so while it is down a lost majority of the old set stops
-writes, and a destination lost before the rest of the new set learns it
-leaves the change pending until a failover clears it; nothing here checks
-liveness. `AdoptedMatchesOpened` compares the control plane's leader, while
-it still holds the control plane's generation, with the pending set while
-there is one, since that is the set the control plane named it for. The swap
-walk found the window this closes: a replica removed by a cut-over that
-never heard of it stood, fenced the stopped old leader, and acknowledged on
-a majority of the old set, which the control plane had already dropped
+generation above the pending one. While a change is pending, `CpAdopt` adopts
+only a leader on the pending set that is in the old set, and not a joining
+copy, and takes just the generation of one on the old set, which the new set's
+higher set generation deposes; the walk found an adopted old-set leader fenced
+that way. The one exception is the control plane's own leader on the old set:
+it opened past the change, and only it could have taken it, so the change is
+dropped. With no change pending, a leader elected on a set other than the
+recorded one is not adopted on its generation alone. A majority of the elected
+set may hold records no majority of the recorded one does, and a later
+failover would promote from the recorded set. If the leader is in the recorded
+set, the control plane writes the next generation under it with the elected
+set as the set being left and the recorded one pending, as a cut-over does
+(see the reissue below). If it is not, the elected set becomes the recorded
+set at its generation. `FelixShardElectAdoptAboveKeptSet.cfg` found the
+generation-only form leaving a pending change below the adopted generation
+that no leader could complete. It still finds one case the code gets wrong
+(#1929): when the elected leader is the recorded
+leader but was elected on another set, adoption takes the generation alone.
+That case is reachable since placement may name a leader that then refuses
+the generation (#1916). `ReissueOwnOnOtherSet` models the fix (#1930): the
+control plane's own leader elected on another set is reissued like any other
+member, and `FelixShardElectAdoptAboveKeptSetReissued.cfg` finds no violation with it.
+The election walks turn it on, since the swap walk reaches the same case.
+No placement change other than a failover
+starts while one is pending. Only the control plane ends a pending change, so
+while it is down a lost majority of the old set stops writes, and a
+destination lost before the rest of the new set learns it leaves the change
+pending until a failover clears it; nothing here checks liveness.
+`AdoptedMatchesOpened` compares the control plane's leader, while it still
+holds the control plane's generation, with the pending set while there is one,
+since that is the set the control plane named it for. The swap walk found the
+window this closes: a replica removed by a cut-over that never heard of it
+stood, fenced the stopped old leader, and acknowledged on a majority of the
+old set, which the control plane had already dropped
 (`AckedOnMajority`).
 
 Three rules come from TLC. The first version let a refused candidate fence on
@@ -884,6 +1204,199 @@ generation is left and nobody leads, which is how the model shows splitting
 forever. `NoStandAgainstHeardLeader` rules churn out directly, since it holds
 at every step. Not covered: liveness with writes in flight, or with a wiped
 voter.
+
+With the control plane up, placement can name a leader at the generation a
+candidate is elected at. Ballots let only one of the two open there. When the
+elected one opens, the control plane's leader never will. Short of another
+promotion or election, the generation stays there. On the elected leader's
+report the control plane writes the next generation with it as leader
+(CpReissue, `reissue_past_collision`). When the set it was elected on is not
+the control plane's, the write is a set change from the elected set to the
+control plane's, shaped as a cut-over: the elected set becomes the recorded
+one, a candidate refuses to stand while the change is pending, a failover
+promotes from the elected set, and the leader fences both sets jointly. The
+change completes only once it opened on both. The leader ships to the
+pending set alone, so when the control plane's set and the leader do not
+hold a majority of the elected set the change could never complete; the
+elected set is then named alone, with nothing pending (`ReissueAt`, shared
+with `CpAdopt`). No configuration reaches that case: with sets of three out of
+four brokers, any two sets share two members. The model also leaves out the
+code's window of 16 generations past the control plane's, beyond which
+adoption takes the generation alone.
+The report may be old, so the leader takes the generation only if it has not
+promised it to another; otherwise it never opens there. `FelixShardElectReissue.cfg` checks that this
+keeps one leader per generation and every acknowledged record.
+`FelixShardElectLiveReissue.cfg` checks that the control plane then moves on
+(`CollisionSuperseded`); without the reissue it does not
+(`FelixShardElectLiveNoReissue.cfg`). The property is stated while the
+elected leader still leads: once it is deposed, a later election moves the
+generation on, and the model bounds elections. It is close to the reissue's
+own enabling condition, since the liveness configurations have no set
+changes or joining copies to hold it back; what it adds is that adoption and
+the reissue are taken at all.
+
+`FelixShardCpLive.cfg` asks the same of the control plane's own leader
+while the control plane runs (#1917): the leader it names ends up serving
+and stays (`CpLeaderServes`). The run allows what the safety checks allow
+and the earlier liveness checks left out. A candidate may give its standing
+up and keep the ballot it persisted (`Withdraws`, the stand timeout). A
+stopped broker may come back with what it persisted (`Restarts`). Placement
+may name a leader below a ballot and renames it on the refusal (`Renames`).
+`FelixShardCpLiveMain.cfg` is main's code, and TLC finds a shard that never
+serves: a leader whose own ballot is above its assignment never reports the
+refusal (`keep_own_set` in `promotion.rs`, #1919). That fix and three from
+the list of dead ends in #1914 each have a twin with that one fix off
+(`FelixShardCpLiveNo<Fix>.cfg`), and TLC finds a shard that never serves in
+each but `StandBehindBallot`'s, which has not finished. `DeposeOnAssigned` has no twin: with the control plane up, a leader
+that stops serving because one follower is ahead is exactly the open leader
+`HaltReported` renames, so that fix matters only with the control plane
+down, where `FelixShardCpDown.cfg` has it on. The fifth
+from that list, `CatchAllRename`, is modelled but no configuration turns it
+on yet.
+
+Those fixes are not enough on their own. With all of them on, TLC finds the
+open leader answering a candidate's higher fence: its own log takes the
+candidate's generation, so it stops serving, and the candidate then
+withdraws. The leader reports nothing, since it opened at its generation
+and its refusals are only checked when an open fails, and nobody suspects
+it while it is alive (#1951). `AboveReported` has it report the generation
+refused, and `FelixShardCpLiveNoAboveReported.cfg` is that fix's twin.
+Both reports carry the ballot the generation was lost to, and placement
+renames the leader one generation above it (`RenamePastBallot`) rather than
+one above its own, which would take a report per generation in between.
+
+#2046 is a shard that stayed stuck with the control plane up. A candidate
+stood one generation up and withdrew. Placement then renamed the leader one
+up, onto the candidate's withdrawn ballot. The leader's fence there had one
+member promised to that candidate and one answering from a copy its
+failover's pins (`fence_storage_ids`) did not name, so it neither opened nor
+reported a refusal. `FelixShardCpLiveRefusals.cfg` models the rules adopted
+for it. Copies may change and be admitted again (`CopyPins`). Pins survive a
+rename until the leader's first fenced open and drop for a copy once it is
+admitted. A fence with one promise away and the rest silent is refused even
+when another copy answered. A refusal for a lost set (`UnknownCarriesBallot`)
+or for a member that took a newer generation (`AheadRefused`) carries the
+ballot, and placement renames above it. Candidates stand above the control
+plane's generation as well as their own promise (`StandsAboveCp`), and the
+backoff is a bound on standings (`MaxStandings`). Each rule has a twin
+with it off. With the exclusion kept, TLC finds the #2046 stall. With the
+pins kept for good, a re-admitted copy never counts again. Without the
+carried ballot no stall has turned up: the leader loses its set only after
+it opened, by which time its pins are gone. `FelixShardElectRefusals.cfg`
+checks the same rules for safety. Its twin, `FelixShardElectRefusalsPinsCleared.cfg`,
+drops the pins at a rename, as the code did. TLC then finds a record lost
+whether or not the exclusion is kept: the refusal comes from a promise away
+and a silent member before any other copy answers.
+`FelixShardElectRenameMinorityDrop.cfg` refuses a joint fence on one
+promise away and has the rename drop the set being left, and TLC finds two
+leaders at one generation.
+
+`FelixShardCpDown.cfg` checks what happens when the control plane stops for
+good partway through (`CpStops`). Elections alone must then get a leader
+serving on a majority (`CpDownServes`). Three things decide it:
+
+- Suspicion. The broker stands only against a leader whose broker it
+  suspects (`BrokerSuspicion`, `suspicion.rs`). That never fires against a
+  live broker whose shard is stuck, and
+  `FelixShardCpDownBrokerSuspicion.cfg` finds such a shard with no leader
+  for good. Per-shard suspicion (`ShardSuspicion`) also stands when the
+  shard's leader is not serving. That is not enough on its own: a broker
+  never stands for a shard whose route names itself (`follows` in
+  `candidate.rs`). `FelixShardCpDownNoSelfSuspicion.cfg` finds the leader
+  elected one generation above its assignment and open there, then stopped
+  and restarted with the control plane down. Its open at the assignment is
+  refused for its own newer ballot, it does not stand, and nobody else can
+  win a pre-vote because its log is ahead. `SelfSuspicion` has that broker
+  stand too.
+- The pre-vote. A broker still fencing refuses it, but only while its fence
+  can still complete (`PreVoteBounded`). With no bound on that refusal
+  (`FelixShardCpDownPreVoteUnbounded.cfg`), TLC has found no stuck shard
+  yet, though the run did not finish.
+- A promise to a candidate. A replica does not stand above a candidate it
+  promised while that candidate still stands. Once the candidate withdraws,
+  stops, or comes back without its standing, the promise no longer holds
+  the replica back. Freeing it only when the candidate is down
+  (`FelixShardCpDownStandBehindDeadOnly.cfg`) left a shard with no leader
+  before `SelfSuspicion`: the candidate restarts, drops its candidacy, and
+  every replica that answered it waits on it. With `SelfSuspicion` that
+  run has not found one.
+
+The model bounds generations, so a run can stop electing only because the
+bound is used up. `CpDownServesInBound` accepts that ending only when some
+live broker would still stand but for the bound (`Exhausted`); a real dead
+end, where nobody would stand, still fails. Candidates that keep splitting
+the vote until the bound also count as in bound: `Exhausted` asks only that
+a broker would start a round, not that it could win one. The code relies on
+randomised timing to end such splits, which the model does not have.
+
+One case leaves the shard served, but not fully. Placement names a broker at
+the generation another was just elected and opened at, then the control
+plane stops. The elected leader serves on a majority, and the named one
+keeps fencing at that generation for good, so the shard runs one copy short
+(`FullyBacked`, `FelixShardCpDownDegraded.cfg`). Neither per-shard suspicion
+nor the freed promise reaches it: the named broker never stands, with its
+own round in flight, and if it did, the others hear the leader and refuse
+its pre-vote. The control plane's last placement also still names the
+stuck broker, so only clients that follow the elected leader reach it.
+Closing it would take the leader fencing again above that copy.
+
+A promotion takes its ballot before its routes land: the broker's
+lifecycle persists the new generation's ballot, and the routes that name it
+leader follow a reconcile later. A candidate round that read the old route
+in that gap still sees the old leader, and before #1936 it could stand at
+the generation above its own broker's new leadership, then withdraw. The
+leader then opens at the control plane's generation below its own ballot and
+never counts its own copy there (#1933). `RouteLags` lets that round stand
+(StandOnStaleRoute), as one step that promises itself the next generation
+and fences nobody. #1936 adds two rules. The round does not stand while its
+copy's ballot is past its route and names its own broker (`NamedHereWaits`,
+`named_here` in election/candidate.rs, held for 30 s on the assumption that
+routes land within that), and a leader left below its own ballot reports its
+generation refused, so the control plane names it again one up
+(`OwnBallotReported`, OwnBallotAbove in RenameDue; `ballot_above` in
+driver/shard.rs, reported from driver/shards.rs once it lasts 3 s). `FelixShardElectRouteLagNoFix.cfg` finds #1933 without
+them; `FelixShardElectRouteLag.cfg` passes with both, and
+`FelixShardElectRouteLagReportOnly.cfg` shows the report alone is enough.
+The stale round fences nobody unless `StaleFenceAnswered` lets one member
+answer it, its reply arriving after the round gave up (#1940). That member
+then refuses the leader's own fence. By default the model's open ignores the
+leader's own promise; the code's open takes the generation's ballot on its
+own copy first (`keep_own_set` in promotion.rs), which a newer promise
+refuses, and `OpenChecksOwnBallot` models that. With either, the leader can
+stay fencing below its own ballot, and neither of #1936's rules reports it:
+`FelixShardElectRouteLagFenceNoFix.cfg` finds that. With the open check alone
+no member has to answer: the leader stands on the stale route while
+fencing, a follower answers its fence, and the open never happens. The fix
+(`OwnBallotFenceRefused`, OwnBallotFenceAbove in RenameDue; the own-copy
+check at the start of `fence_shard_as`) has a fencing leader whose own copy
+promised a newer generation report its generation refused at once, and
+`FelixShardElectRouteLagFence.cfg` passes with it. In the code a member's
+newer promise is reported too (#1914), which the model leaves out. The model allows the stale
+round after a rename too, where the code's old
+route names the broker itself and nothing stands; that only adds behaviours.
+
+A refusal reaches the control plane in a replica report, and the control
+plane keeps one report per shard, the last. At the same generation any later
+report replaces it (`ReplicaReport::supersedes` in
+services/felix-controlplane-service/src/model/shard.rs), and placement renames
+only on the refusal the stored report carries (`refused` in
+cluster/placement/replica_positions.rs). An open leader keeps sending pass
+reports after its refusal, so before #1971 the next one hid the refusal and
+the shard was never renamed (#1969). Under `ReportStore` the model keeps that
+stored refusal (`cpRefused`): the leader sends a refusal while it has one
+(SendRefusal, which liveness takes once it stays possible, as
+`report_refusal` in driver/shards.rs re-sends it), its pass reports land over
+it (PassReport), and RenameDue reads the store instead of the leader's state.
+`RefusalRepeats` is #1971's rule: the reporter repeats the refusal on every
+later report at its generation (`Refusals` in
+crates/server/felix-replication/src/reporter.rs).
+`FelixShardElectRouteLagReportStoreNoRepeat.cfg` finds #1969 without it, and
+`FelixShardElectRouteLagReportStore.cfg` and
+`FelixShardElectRouteLagFenceReportStore.cfg` pass with it. The store keeps
+a refusal after the state behind it changed, and the
+`FelixShardElectRename*ReportStore.cfg` pieces check the safety invariants
+with renames on that. The model never expires a report; the code drops one
+past its TTL, which only takes renames away.
 
 These check the design in `docs/replication-design.md`, "Electing without
 the control plane", which the broker now follows once `replica_election` is
@@ -1557,6 +2070,18 @@ model shows the guarantee fails without it.
 > Checked by hand with a temporary `acked = {}` invariant, which TLC violates
 > in 2,307 states: acknowledgements are released, and the pass is about them.
 
+Since #1924 the broker never names a follower short of the log its leader
+inherited (`acknowledged` in crates/server/felix-replication/src/driver/shard.rs),
+which the model calls `ReportFloor`. The floor is not a pure guard, so a pass
+without it does not carry over. It shrinks the report's `holders`, and
+`QuorumReportNamesASuccessor` needs them non-empty. It raises the report's
+`len`, and under `ReportBeforeAck` that is what an acknowledgement may reach.
+So every configuration whose report reads that way (`Quorum`, a `ReportBound`
+other than `"tail"`, and `ReportBeforeAck` or `QuorumReportNamesASuccessor`)
+sets `ReportFloor = TRUE`, the witnesses included, and each still does what
+the table says. `FelixShardReportFromAnswers.cfg` keeps it off: it is the
+witness that the floor is needed.
+
 Promotion by log order finds no trace, in the same bounds. A replica holding an
 acknowledged `Quorum` record is in every majority that could acknowledge one
 after it, so the replica with the greatest (last generation, length) among the
@@ -1689,6 +2214,656 @@ The fence itself, the lease and the records' log are `FelixShard.tla`'s; this
 model takes from it only that a promotion fences a majority and a replica
 refuses a leader older than one it accepted.
 
+### One fence rule: exclusion from kept ballots, coverage from trusted logs
+
+`FelixShardUnified.tla` is a separate, smaller model of the fence rule every change of leader uses: failover,
+election, rename, skip, set change, readmission and a continuing leader. It splits what a fence must prove in two.
+
+- **Exclusion**: a majority of every set the fence leaves, and of its own, promised with ballots the copy kept.
+  An unclean crash keeps ballots. A wipe or a restore loses them until a set introduced after the loss readmits
+  the copy.
+- **Coverage**: a continuing leader has it already. Any other leader needs trusted answers (a clean start, or
+  vouched by a batch that left the copy level through max(the leader's start record, the quorum mark it carries))
+  that meet every majority of each such set, and takes the log furthest ahead.
+
+`docs/replication-design.md`, "One fence rule for every change of leader", states the rule in full.
+
+`UnifiedFence = No` gives today's rules in outline. `CpLiveElectedFailoverLegacy` and `CpLiveReadmitUnopenedLegacy`
+show two stalls the simulator sweep found: an election past the old leader followed by an unclean crash, and a
+readmission whose leader crashed before it opened. `ContinuingDoubtedLegacy` is not a stall. It passes, showing that
+today's window never lets a continuing fence count a doubted copy whose ballot names another leader, which
+`ContinuingDoubted` shows the rule does, safely. Each shortcut configuration breaks one part of the rule and must
+fail: `CountNonKept`, `CountsWiped` (#1331), `AnyCopy`, `BatchBallot`, `CountsForgotten` and `NamesByRegistration`
+let a lost promise make a second leader. `CoverFromDoubted`, `TrustsRegistered` (#1335), `StandInNoCatchUp`,
+`VouchBelowStart`, `SkipCoverage` and `DropUnopenedLeaving` let a leader open without an acknowledged record.
+
+`CountsForgotten` and `TrustsRegistered` are why a broker started without the control plane attests nothing. Until
+the restore check against the control plane has run, a restored directory looks like one that kept its ballots
+and its log. Counted as kept, its forgotten promise makes a second leader (`CountsForgotten`). Counted as trusted,
+its short log loses an acknowledged write (`TrustsRegistered`). Once the check has passed, the broker attests as a
+start that asked the control plane first would.
+
+A batch vouches for a copy only when it leaves it level through both the leader's start record and the mark it
+carries. The mark is the code's quorum offset, which right after an open can sit below the start record:
+`VouchBelowStart` drops the start record and loses an acknowledged write, and `VouchMark` passes at the same bounds.
+`FelixShardUnifiedReadmit` and `FelixShardUnifiedDropEvidenced` run without client writes, so coverage is checked
+on start records. Their `Full` twins have one write and run nightly.
+
+### One engine: Raft on the segment log
+
+`FelixRaft.tla` is the first part of the model for the 0.8 engine: one Raft
+group whose log is Felix's segment log, as
+[The replication engine interface](../replication-engine.md) decides it. The
+`raft_log` adapter that puts openraft's log on `DiskLog` is in
+`crates/server/felix-storage/src/raft_log.rs` (#2217, #2222; purge and the
+snapshot file are #2255). The configurations' evidence lines do not cite its
+tests yet (#2297 tracks that). The model states what the adapter has to
+guarantee, and reviews of the adapter are checked against it.
+
+Three brokers run elections and replicate a log of three kinds of entry: a
+leader's blank entry, a membership entry and a client record. The offset is
+the Raft index and the record's generation is its term. Votes are openraft's
+with one leader per term (`leader_id_std`): a term, a broker and a committed
+flag, where a committed vote is above every
+uncommitted vote of its term. A restarted broker is a follower even when its
+stored vote says it led.
+
+Storage is modelled at the level of the adapter's contract. `append` returns
+with the entries readable and not yet on disk, and a flush later moves the
+durable mark and fires the callback. A crash keeps the log up to some point at or
+past the durable mark, and a record cut short there is dropped at the open.
+`truncate_after`, the vote file and the snapshot file each take effect in one
+step: the model treats each as on disk when the call returns, and the files
+are replaced by rename. A purge is one step too. The model does not ask
+whether it survives a crash, since a purge that is lost only leaves more log.
+The state machine is rebuilt at a restart from the snapshot and the log up to
+the committed index read back.
+
+A follower takes a leader's snapshot the way openraft does, as three writes:
+it cuts its log back to the commit index if the log holds another entry at
+the snapshot's index, replaces the snapshot and the state machine, and purges
+the log up to the snapshot's id. A crash can fall between any two. After the
+second write the log is still the old one: it ends below what the broker
+applied and can hold entries the snapshot replaced. The open
+restarts the log at the snapshot, which is the purge past the log's end that
+openraft issues at startup.
+
+One subscriber reads from brokers that believe they lead, up to the commit
+index. Each delivered record reports the blank and membership entries
+directly below it, and the serving broker counts them from its own log. It
+does not know what an earlier leader delivered.
+
+Each check has a configuration that drops one rule and must violate it, and
+the model has witnesses that the behaviour the checks are about is reached.
+
+| Check | What it says | Dropped rule that breaks it |
+| --- | --- | --- |
+| `OneLeaderPerTerm` | No term elects two brokers. | `VoteNotDurable`: `save_vote` returns before the vote is on disk. |
+| `LogMatching` | Two logs that agree on an entry's term agree on everything up to it. | `LeaderResumes`: a restarted leader leads again in its stored term. `TornTailKept`: recovery reads a torn record as an entry. |
+| `TermsMonotone` | Terms never go down along a log. The open-time scan refuses a log that breaks this. | None. It holds whenever the others do. |
+| `LeaderCompleteness` | A leader holds every entry committed in an earlier term. | `CommitPriorTerm`: a leader commits an earlier term's entry by counting copies. |
+| `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. `TruncateNotDurable`: `truncate_after` returns before the cut is on disk. |
+| `AppliedInLog` | No cut reaches below what a broker applied, and the log holds everything applied except between a snapshot's install and its purge. `DiskLog`'s own commit offset is not modelled; kept at or below the applied index, its `BelowCommit` refusal never meets a correct cut. | None. It holds whenever the others do. |
+| `AckedSurvive` | An acknowledged record is on the disks of a majority. | `AckBeforeFlush`: the callback fires before the fsync. `RecoveredTailUnsynced`: entries found at the open are reported flushed without an fsync. `PurgeBeforeSnapshot`: purge runs before the snapshot covering it is stored. |
+| `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | None of its own. `PurgeBeforeSnapshot` and `SaveCommittedUnflushed` break it first, and their configurations are held to the harm that follows. |
+| `OffsetsDense` | Delivered offsets, less the skipped ones each serving broker reports from its own log, have no gap. | `SkipsNotCounted`: a batch does not report them. `DeliverUncommitted`: a subscriber is given entries above the commit index. |
+| `OffsetNeverReused`, `DeliveredInOrder` | A delivered offset holds that record in the committed sequence, and the k-th delivery is the k-th committed record. | `DeliverUncommitted`: a subscriber is given entries above the commit index. |
+| `VoteNeverLowers` | The stored vote only rises. | None. |
+| `AckedDelivered` | When nothing more can happen under a leader no broker has outvoted, the subscriber holds every acknowledged record. Checked where there is a subscriber and no snapshot (`FelixRaft.cfg`, `FelixRaftOffsets.cfg`, `FelixRaftOffsetsFailover.cfg`). | `SaveCommittedUnflushed`: the committed or applied index read back is past the recovered log. |
+| `QuiescentServed` | When nothing more can happen and a leader no broker has outvoted stands, it has committed its whole log, acknowledged every record in it, brought every broker level and fed the subscriber. | None. This is the liveness check. |
+
+`OffsetsDense` is the client's own drop check. The subscriber resumes after
+the last offset it received, and whichever broker serves it next counts the
+entries directly below the next record that hold no event, from its own log.
+The check holds because that broker's committed log is the one the earlier
+deliveries came from, also across a change of leader
+(`FelixRaftOffsetsFailover.cfg`). Without `skipped_before` it fires at every
+blank or membership entry. `DeliveredInOrder` is the stronger statement.
+Numbering only the records gives a count with no gaps, and the subscriber
+receives exactly that sequence.
+
+Three dropped rules are held to the harm they cause, not to the check that
+restates them. `TruncateNotDurable` lets a follower learn the commit of the
+entry that replaced a cut tail before the cut is on disk. A crash brings the
+old tail back under the stored commit index and the restart applies an entry
+that was never committed. `SaveCommittedUnflushed` leaves a broker whose log
+starts past entries it lost. The model marks them lost in its state machine,
+so `StateMachineSafety` would fail by construction and is not the check used.
+The harm shown is that the broker is elected and a subscriber resuming below
+the start of its log is never given an acknowledged record
+(`AckedDelivered`). `PurgeBeforeSnapshot` leaves an acknowledged record on
+one disk.
+
+The passing run is split by what it varies, each with three brokers:
+
+- `FelixRaft.cfg`: two terms, one write, one crash and the subscriber.
+- `FelixRaftCrashes.cfg`: two crashes.
+- `FelixRaftTerms.cfg`: three terms, no write and no crash.
+- `FelixRaftFourTerms.cfg`: four terms, no write and no crash. Three terms
+  pass with or without the rule against committing an earlier term's entry by
+  counting copies. Four are the fewest where the rule matters:
+  `FelixRaftCommitPriorTerm.cfg` has the same bounds without it and fails.
+- `FelixRaftSnapshot.cfg`: a snapshot, a purge and a follower brought up by
+  snapshot in three writes, with one crash.
+- `FelixRaftSnapshotReplace.cfg`: two snapshots and no crash, so a broker
+  replaces a snapshot it already stored.
+- `FelixRaftOffsets.cfg`: two writes and a membership entry under one leader,
+  with the subscriber.
+- `FelixRaftOffsetsFailover.cfg`: two writes over two terms with the
+  subscriber, so two deliveries can come from different leaders.
+
+Five take more than ten minutes on a CI runner, so a pull request checks them
+only when it changes `FelixRaft.tla` or the configuration, and main checks
+them on every spec change: `FelixRaftFourTerms.cfg`, `FelixRaftTermsFull.cfg`
+(three terms with a write), `FelixRaftOffsetsFull.cfg` (one write and a
+membership entry across a change of leader),
+`FelixRaftOffsetsFailoverCrash.cfg` (`FelixRaftOffsetsFailover.cfg` with one
+crash) and `FelixRaftSnapshotCrashes.cfg` (`FelixRaftSnapshot.cfg` with two
+crashes).
+
+The eight `FelixRaftReach*.cfg` witnesses each claim something never happens
+and must be violated: a record acknowledged under one leader held by a later
+one after a crash, a follower cutting off a conflicting tail, a crash losing
+an unflushed tail, a blank entry between two delivered records, two
+deliveries in a row from leaders of different terms, a follower brought up by
+snapshot, a crash between an install's second and third write, and a broker
+replacing a snapshot it stored.
+
+#### What the adapter must guarantee
+
+The model passes only with these rules, and each maps to a call the adapter
+implements.
+
+| Model step | openraft call | Rule |
+| --- | --- | --- |
+| `LeaderAppend`, `Replicate`, `Flush` | `append` and its `IOFlushed` callback | Entries are readable when `append` returns. The callback fires only after the fsync that covers them. |
+| `Replicate` with a cut, `InstallCut` | `truncate_after` | The cut is on disk before the call returns. Durable by the next flush is not enough: a follower applies and saves a commit index past the cut before it flushes, and a crash then brings the old tail back under that index. |
+| `Restart` | the open, then `get_log_state` | A torn record is cut off, never read as an entry. Everything reported at the open is on disk, because openraft takes it as flushed. `DiskLog`'s open already syncs the active segment before it returns. |
+| `Restart` | `read_committed`, `applied_state` | Neither index read back is past the recovered log. openraft commits an entry before the local copy is flushed, so the stored index has to be held back or clamped at the open. With `read_committed` past the log, openraft fails to re-apply and the broker does not start. With `applied_state` past it, openraft restarts the log at that index and trusts the state machine to hold what is missing; a shard's state machine is the log, so those records are gone from the replica. That second case is the one the model's knob takes. `DiskLog` loads its stored commit offset as it is, so the adapter has to clamp, and has to lower `DiskLog`'s own offset with it or a later correct cut is refused with `BelowCommit`. |
+| `SaveVote` | `save_vote`, `read_vote` | The vote, with its committed flag, is on disk before the call returns, and the stored vote never goes down. |
+| `BuildSnapshot`, `InstallState` | `build_snapshot`, `install_snapshot` | The snapshot's data and id change together. A crash leaves the old pair or the new pair. |
+| `InstallCut`, `InstallState`, `InstallPurge`, `Restart` | `truncate_after`, `install_snapshot`, `purge`, then the open | A snapshot install is three writes, and the broker opens after a crash between any two. After the second, the log ends below the snapshot, and openraft purges up to the applied index at startup. |
+| `Purge`, `InstallPurge`, `Restart` | `purge` | Only up to the stored snapshot. A purge to an id past the log's end works: it leaves an empty log that starts at that id. |
+| `Deliver` | the broker's read bound | Subscribers read up to the commit index. A batch reports the offsets directly below its first record that hold no event, counted from the serving broker's log. |
+
+A restarted leader must not lead again in its stored term. openraft 0.10
+handles that itself: it lowers the committed flag in memory at startup. It
+then campaigns for a new term when `enable_leader_restore` is on (the
+default) and the broker is a voter, and stays a follower otherwise.
+
+#### What it does not cover yet
+
+Issue #2198 lists the rest, and none of it is in this module (a membership
+entry here only holds an index). Membership changes, copy identity,
+re-forming a group, the switch from the hybrid protocol, the leader lease and
+sleep each have a module of their own, in the sections below. They leave storage abstract, because
+this module covers the adapter's crash rules. A message is one step that reads
+both brokers, so the model has no lost, repeated or reordered messages beyond
+a leader acting on an old answer. A broker in the middle of a snapshot
+install takes no other step until the three writes land or it crashes. The
+`SnapshotTwoRenames` rule is dropped for a snapshot the broker builds, not
+for one it installs. The order of writes inside one adapter call is left to
+the simulator's power-loss crash points.
+
+### Raft membership change and the fence around it
+
+`FelixRaftMembership.tla` models one Raft group changing its voter set, as
+[per-shard Raft](../per-shard-raft.md) decides it ("Membership" and "Entries
+openraft writes itself"). It has four brokers: three voters and a newcomer.
+
+What is modelled:
+
+- Membership is carried by membership entries. A broker uses the latest one in
+  its own log, committed or not. A configuration is an old set, a new set and
+  learners. While old and new differ it is joint, and an election or a commit
+  needs a majority of both.
+- A move is three entries: the newcomer added as a learner, the joint
+  configuration once the learner is level, and the entry that leaves it.
+  openraft writes the last one itself when the joint entry is committed. A new
+  leader that finds a joint configuration repeats the call.
+- A change starts only after the previous membership entry is committed. A
+  leader outside the new set steps down once that set is committed. The design
+  transfers leadership first; the model has only the step-down.
+- A publish claims the next offset on the leader and later hands the record to
+  Raft, which gives it the next index. Before a membership call the engine
+  holds the fence and waits until no claim is left. The fence reopens when
+  every entry the call proposed is committed, or the call was refused before
+  appending. If Raft assigns an index a claimed record is not at, the group
+  stops.
+
+What is checked: `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`,
+`StateMachineSafety`, `AckedSurvive` and `NeverStops`. `AckedSurvive` here says
+that no broker that could still win an election lacks an acknowledged record:
+it is a voter of the configuration it holds, and the brokers whose logs are not
+ahead of its own make a majority of each voter set. "On a majority of each
+voter set" is not an invariant across a change. A record committed under the
+leader's latest configuration need not be on a majority of an older one, and
+the log comparison in the vote is what keeps it.
+
+Each knob drops one rule:
+
+- `SkipJoint`: a move swaps one voter for the learner in a single entry.
+- `ChangeBeforeCommit`: a change is proposed while the previous membership
+  entry is uncommitted.
+- `LearnerCounts`: a learner's vote and its copy count toward a majority.
+- `ClaimRacesMembership`: the membership call is made with the fence open.
+- `ReopenOnReturn`: the fence reopens when the call returned or timed out,
+  with an entry still queued or uncommitted.
+
+A removed leader that never steps down has no twin. It commits with the new
+set's majority and does not count itself, so it costs liveness, not safety.
+
+Abstracted: storage (an entry in a log is durable; `FelixRaft.tla` covers the
+adapter's fsync rules), crashes, snapshots, the subscriber and the lease. A
+message is one atomic step between two brokers. A deposed leader's claims are
+dropped, which stands for the adapter's term gate.
+
+### Copy identity under Raft
+
+`FelixRaftIdentity.tla` models the member ids of one Raft group as
+[Per-shard Raft](../per-shard-raft.md) decides them under "Group and member
+identity". It is the model's side of #1331. A member id is a broker and a
+copy id. The copy id lives in the shard directory with the storage id it was
+minted under. The data root holds the storage id and, per shard, a mark of
+the highest vote and last log id, with the copy id the marks belong to. The
+vote is always synced.
+
+A member that opens its directory rotates its copy (new id, never voted, an
+empty Raft log, a learner) when the directory is empty, was minted under
+another storage id, holds another copy id than the marks name, or has a vote
+or last log id below its mark. A rotated copy becomes a voter again only
+through a membership change: a joint entry once it has the leader's log,
+then the final entry, each committed under the quorum in force.
+
+The faults all hit one broker: an emptied shard directory, a lost data root,
+a crash under relaxed fsync that shortens the log, a whole root restored
+from a backup, and one shard directory restored under a running root. The
+log mark is exact (written with every append) or batched (a separate step,
+so it trails).
+
+Checked: `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety` (no
+two leaders commit different entries at one index), `AckedSurvive` (no set
+of copies that could elect a leader lacks an acknowledged record, which
+without faults is "on a majority of disks") and `AckedHeldByLeader` (no
+leader is elected without a record acknowledged in an earlier term).
+
+Each knob drops one rule: `WipeKeepsId`, `NoRestoreCheck` (no gate in front
+of Raft), `NoStorageIdCheck` (a directory is not compared with the root's
+storage id), `NoVoteMark`, `VoteBeforeMark` (the vote is answered before its
+mark is synced) and `MarkForgetsCopy` (the marks do not name a copy id).
+`ExactMark = FALSE` with `RestoreYoung` is the fallback of Questions, 11.
+
+Abstracted: the log is durable when appended (`FelixRaft.tla` has the fsync
+rules), messages are atomic steps, a learner needs no membership entry,
+nothing is purged, a rotated copy starts from an empty log, and the leader
+that stops on a follower going backwards is left out. A follower cuts and
+appends in one step, so its last log id never goes down; an implementation
+that syncs the mark between the two must not read a cut as a restore.
+
+### Re-forming a group
+
+`FelixRaftReform.tla` models the path in
+[per-shard-raft.md](../per-shard-raft.md#re-forming-a-group) that gives a
+Raft group a new epoch when it can no longer elect.
+
+In 0.8 a re-form starts only from an operator's command, one bulk command
+with a dry run, and nothing starts one automatically (decided in issue
+#2167). The model's first two steps are the automatic trigger, so they
+describe a design that is not shipping. So do `SlowGroupLeftAlone` and
+`FelixRaftReformSlow.cfg`, which are about when step 2 fires. Steps 3 to 5
+are what the command still has to do. It stands where `AskRetire` does, and
+it must list every placed broker, a move's target included, which is
+`WaitPlaced` below (issue #2311).
+
+The design page now has a rule for each hole this model found, in its table
+"Rules the model found" (issues #2304, #2305 and #2311). They are rules for
+the operator's command, and they are not the two rules of issue #2304 that
+the passing configurations here run with: the command stores no report, so
+nothing is left to drop. The model has not been moved to them yet. Where a
+row, a header or the text below says the design lacks a rule, or calls
+something the design as written, it means the automatic design this module
+models. Nothing is built either way.
+
+A group id carries an
+epoch that starts at 0. A member id is a broker and a copy id. A copy that
+rotates has a new id that never voted and keeps what is left of its log as
+plain records. Membership changes inside an epoch go through a joint
+configuration, and a member uses the newest membership in its log,
+committed or not.
+
+The five steps are five actions. `FirstReport` promises nothing.
+`AskRetire` fires only when every voter's broker reported the group
+leaderless or a majority of some voter set has rotated. `Retire` sets a
+durable marker and then reports the log and the membership. `Reform` waits
+for every voter of every membership any report names, takes the highest
+reported last log id as the base and the copies whose reports hold it as
+the voters, and writes the next epoch by compare-and-swap. `StartEpoch`
+starts a member at the new epoch from the base. A group with one replica
+is the same model with one voter.
+
+What is checked:
+
+- `AckedSurvive`: an acknowledged record is in the base of every later
+  epoch and in the log of every later leader. One loss is allowed, the one
+  the design documents: at the re-form no disk held the record, a voter's
+  or not. The model records those in `lost` and excuses nothing else.
+- `StateMachineSafety`: no index is committed with two different entries,
+  in one epoch or across epochs, except over a documented loss.
+- `OneLeaderPerTerm`, per epoch.
+- `NothingLost` and `OffsetNeverReused`, in the configs where no copy
+  rotates. That is fsync on commit, and a re-form then loses nothing and
+  reuses no offset.
+- `SlowGroupLeftAlone`: with no copy rotated and a voter that has not
+  reported, nothing is retired.
+
+Each knob drops one rule: `ReformBeforeAll` (re-form from the reports at
+hand), `EpochNotChecked` (a member takes an append from another epoch),
+`ReportNotPromise` (report without retiring), `OwnMembershipOnly` (wait
+only for the control plane's own record of the membership),
+`RetireNotDurable` (a restart forgets the marker), `BaseNotHighest`,
+`NoCas`, `RotatedNotWaited` (a voter known to have rotated counts as done
+before it has reported its records) and `JoinKeepsReport` (a copy that
+rotates after it reported joins as a learner while the control plane still
+holds its old report).
+
+The last two are rules the design page does not state. Step 4 says a voter
+is done when it "has retired and reported, or is known to have rotated".
+Read as two separate ways to be done, a rotated copy's records are never
+collected, and `FelixRaftReformRotatedNotWaited.cfg` loses a record its
+disk holds. The page also lets a retired copy rotate and rejoin as a
+learner. Its old report stays with the control plane, the learner takes
+newer records, and `FelixRaftReformJoinKeepsReport.cfg` loses one of them.
+The passing configs run with both knobs off, which is two rules the design
+does not have yet: a rotated voter still sends a retire report, and a new
+copy tells the control plane its id before it joins, so that the control
+plane drops the report of the copy it replaces. Every configuration that
+passes with a rotation or a rejoin passes on those rules, and its row and
+header say so. They show the rules are enough, not that the design as
+written is safe (issue #2304).
+
+Two constants are not knobs. `DirLost` says what a rotation leaves. Off, it
+is a relaxed fsync run that lost power: the tail may be gone, but membership
+entries are synced in every fsync mode, so the log keeps everything up to
+its newest membership entry. On, it is a directory that was lost or restored
+from an older copy, and any prefix is left. `WaitPlaced` is the rule issue
+#2311 proposes: the control plane records the target of a membership change
+before the leader proposes it, and step 4 waits for a retire report from
+every broker placed in the epoch, voter or not. Every broker of the model
+counts as placed. Off is the design as written.
+
+The stale-membership case of the design page, {a, b, c} changing to
+{a, b, d}, splits on those two constants. With a and b rotating on relaxed
+fsync and no client write, their reports still name d;
+`FelixRaftReformStaleMembershipRelaxed.cfg` checks that and is run by
+dispatch. With the two directories lost, no report names d and
+`FelixRaftReformStaleMembershipTwoRotated.cfg` loses an entry d's disk
+holds. The same gap needs no change and no lost directory:
+`FelixRaftReformLearnerHolds.cfg` has three voters and a learner d, and
+loses a record that a and b lose on relaxed fsync and only d still holds,
+because no membership names d. A voter that a change removed is in the same
+position. Both are the design as written and are pinned as expected
+violations (issue #2311). `FelixRaftReformLearnerWaited.cfg` passes with
+`WaitPlaced` on.
+
+After a relaxed fsync loss the offsets of the lost records are above the
+base and the new epoch gives them out again.
+`FelixRaftReformTwoRotatedOffsets.cfg` pins that.
+
+Abstracted: storage is a log and a rotation that cuts it to a prefix
+(`FelixRaft.tla` has the fsync rules). A membership entry is synced when
+it is appended. An election is one step over a
+quorum. An append is one step between two brokers, plus a bounded set of
+in-flight appends that can arrive late and more than once. A report
+carries the whole log where the design sends its last log id. A leader
+does not propose its own removal. A leader replicates to any broker of the
+model: one that no membership names is a learner.
+
+Not modelled: the operator's command itself. Step 2 fires only under the
+automatic conditions, so a command given to a group that can still elect is
+not covered. Neither is its refusal while a placed broker is unreachable
+and not declared dead, nor a re-form that goes on without a dead broker.
+
+### The switch from the hybrid to Raft
+
+`FelixRaftSwitch.tla` models moving one shard from the hybrid protocol to
+Raft, as [Per-shard Raft](../per-shard-raft.md) decides it ("Moving a shard
+from the hybrid to Raft"). These configs gate the pull request that builds
+the switch.
+
+The model starts at the seal. The hybrid leader has fenced at generation `G`
+and appended the generation-start record at offset `N`, which names a start
+offset `S` and a digest of the records from `S` up to `N`. What each copy
+holds at that moment is an arbitrary choice, bounded only by what the
+hybrid's fence guarantees: the leader holds every acknowledged record below
+`N`, and a record counts as acknowledged only when a majority holds it. A
+copy can lag, start later than the leader, carry generation 0 where another
+copy carries the real generation, or hold a different record below `N`. A
+copy can be wiped at any step, which gives it a new copy id.
+
+A follower acknowledges `N` with its copy id if its log starts at or below
+`S` and its digest matches. The leader reports the base and the copy ids of
+a majority, once. The control plane writes engine, base and voters in one
+compare-and-swap on generation and set version. A broker whose copy id is
+recorded cuts above `N` and starts with its log purged up to `(G, N)`;
+every other copy starts empty as a learner, takes the records below the
+base from the Raft leader and is promoted by a membership entry. Raft then
+elects at a term above `G`, commits a blank entry and takes writes. The
+hybrid can also open again after a seal, acknowledge a write and be sealed
+at a later generation while the first seal's report is still in flight.
+
+Checked:
+
+- `LeaderCompleteness`: a Raft leader holds, by content, every record the
+  hybrid acknowledged from `S` up and every record Raft acknowledged before
+  its term. This is "no acknowledged record is lost".
+- `StateMachineSafety`: above the base, every member applies the one
+  committed record at each offset.
+- `BaseAgree`: members that vote hold the same content from `S` to `N`,
+  whatever generation each copy wrote on a record.
+- `OneBase`: no two brokers start from different bases.
+- `OneLeaderPerTerm`.
+
+Each knob drops one rule:
+
+- `AllVoters`: the control plane records the whole set as voters.
+- `TermsBelowBase`: no copy purges or starts empty, so the hybrid log is
+  the Raft log and the generation field is the term.
+- `NoDigest`: a follower acknowledges `N` on reaching it.
+- `DigestCoversGeneration`: the digest includes the generation field.
+- `DigestFromOwnStart`: a follower's digest runs from its own first record,
+  so a copy that starts above `S` acknowledges.
+- `CpBlindWrite`: the control plane writes any report it receives.
+- `StaleIdVotes`: a broker is matched to the recorded voters by name, so a
+  wiped copy still votes.
+
+Two results are about availability, not safety. With a and c's old copy id
+recorded and c wiped, a alone cannot elect: the safety checks pass and no
+leader is ever elected (`FelixRaftSwitchWiped.cfg`). With the digest
+covering the generation field and generation 0 on the followers, no
+majority ever acknowledges and the switch never happens
+(`FelixRaftSwitchDigestCoversGeneration.cfg`).
+
+Abstracted: storage is durable at once (`FelixRaft.tla` covers the
+adapter's fsync rules), a message is one atomic step, and the hybrid before
+the seal is the initial choice. The hybrid's rebuild and catch-up during
+the seal are left out, so a copy that lags or was wiped stays so until Raft
+brings it up. The promotion adds one voter in one step. Records below `S`
+are outside the check, as the design says. Cache shards, whose digest is
+over live state, are not modelled.
+
+### Raft leader leases
+
+`FelixRaftLease.tla` models the lease that lets a `Leader` write be
+acknowledged on local durability, as
+[Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
+[The replication engine interface](../replication-engine.md) (Decisions, 5)
+decide it. Its configurations gate the pull request that turns on
+`admit_local_ack`, but their passing does not open the gate yet: the passing
+ones either have no restart or pass on a rule that is not built and that
+openraft 0.10.0 lacks (issue #2307, under "A restarted follower" below). The
+module has two parts. The first is the lease the first
+version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
+later design in "Leases that survive sleep" and is not in the first version.
+
+**Time.** Real time moves in ticks, and in each tick every broker's clock
+gains between `RateLo` and `RateHi` units, chosen again at every tick. A
+broker only reads its own clock, and only to ask how long ago something
+happened, so the model keeps ages instead of clock readings. An age stops
+growing once no rule can tell it from an older one, which makes the state
+space finite without a bound on how long a run lasts. The inequality the
+config must satisfy is `Lease * DriftHi <= ElectionTimeout * DriftLo`, the
+integer form of `lease * (1 + p) / (1 - p) <= election_timeout_max`.
+
+**The first version's lease.** A leader's append or heartbeat is in flight,
+so its hand-off time, the time the follower takes it and the time the answer
+returns all differ. The lease runs from the hand-off time of the newest
+message a majority has answered (openraft's `last_quorum_acked`). A follower
+refuses to vote, and does not campaign, for the election timeout from the
+moment it took a leader's message. A write is acknowledged on local
+durability while the lease check passes and otherwise waits for commit, which
+is what a `Quorum` write does. A failed check changes no role. The subscriber
+is given records up to the commit index.
+
+Checked:
+
+- `LeaseExclusive`: no two brokers pass the lease check at one real time.
+- `NoAckBehindNewLeader`: no write is acknowledged on local durability once a
+  leader of a higher term has been elected. This is the edge of the `Leader`
+  loss window: a record acknowledged this way can be lost only to a failover
+  that starts after the acknowledgement.
+- `AckedSurvive`, `StateMachineSafety`, `OneLeaderPerTerm`, and
+  `DeliveredNeverReplaced`: what the subscriber was given is what every
+  broker has committed at that offset.
+
+**A restarted follower.** The refusal window lives in memory. openraft 0.10.0
+builds the stored vote with a zero lease at startup, so a follower that
+answers the leader, restarts and is then asked for a vote grants it at once.
+`FelixRaftLeaseRestartForgets.cfg` shows the old leader still passing the
+lease check when the new one is elected. The design's hold on a restarted
+member stops it campaigning, and the model keeps that hold; it does not stop
+it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
+rule that closes it: a restarted broker refuses votes for one election
+timeout from its start. The design page now has this rule, as the vote hold
+(issue #2307). openraft 0.10.0 does not, and it is not built. Until it is
+built, `FelixRaftLeaseRestart.cfg`
+passing says only that the rule would be enough, and
+`FelixRaftLeaseRestartForgets.cfg` is what the engine does.
+
+**Store-liveness leases (later design).** The group sends nothing of its own.
+Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's
+store support for an epoch until an expiry on its own clock, keeps that on
+disk, and withdraws only after the expiry. Withdrawing raises the epoch it
+will accept, so withdrawn support never returns at the same epoch. A store's
+epoch rises at every start, and when a peer reports it withdrew. A voter that
+elects a leader whose store it supports records that epoch on disk and
+refuses to vote for anyone else until it has withdrawn. The leader's lease
+holds while a majority has recorded its current epoch and has answered a
+liveness heartbeat handed off less than a lease ago. A broker whose disk has
+stalled sends no liveness heartbeats and grants none. The same
+`LeaseExclusive` is checked, and `StalledLeaseLapses`: a broker whose disk
+has been stalled for a lease does not pass the check. A stalled broker that
+kept asking would lose no record, since it cannot write, but it would keep
+the lease and block the failover.
+
+Two rules here are not in the design page's one-paragraph description. A
+vote for another broker waits for the withdrawal, not just the expiry, and a
+withdrawal raises the epoch. Without the second
+(`FelixRaftLeaseStoreResupport.cfg`) a follower withdraws, votes, then
+supports the old leader at the same epoch again and its lease comes back. The expiry is kept on
+disk, so the implementation has to read it on a clock that keeps running
+across a restart, or wait out a full support period after one.
+
+**Abstracted.** Storage (log, term and vote survive a restart whole;
+`FelixRaft.tla` has the fsync rules). Elections are one atomic step over a
+majority, since vote messages in flight could only make an election later. An
+append carries the leader's whole log. In the later design a liveness
+heartbeat is taken the moment it is handed off, the earliest its support can
+start, and only its answer is in flight. The heartbeat batch window and the
+tick interval are not separate steps: the window sits between the hand-off,
+where the stamp is taken, and the send, so it is part of a message delay that
+has no upper bound in the model, and a timeout noticed at the next tick is a
+vote or campaign taken later than allowed. Neither can break a check. The
+lease check must read the clock when it runs; a check that used a value
+cached at the last tick would add the tick to the lease. No blank entries,
+membership changes, snapshots, pre-vote or leadership transfer.
+
+### Raft sleep and wake
+
+Sleep and wake are deferred to v0.9.0, with the store liveness they rest on
+(decided in issue #2167). Nothing in this section gates 0.8. The configurations stay
+registered so the design keeps its checks until it is built. The design page
+keeps sleep under "Deferred: sleep and wake", and its table "Rules the model found" now
+states the two rules of issue #2310 that this section says the design lacks, with three
+more the model does not have yet.
+
+`FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
+[Per-shard Raft](../per-shard-raft.md) describes ("Store liveness", "Sleep and wake"). A member that is asleep gets no ticks: it starts no
+election, and a sleeping leader sends no heartbeat. Votes, appends and commits still work
+on any message, and a Raft message wakes the member it reaches.
+
+The model has the sleep handshake (the request names vote, last log id and commit index,
+followers sleep first, the leader last), every wake path (a write, a Raft message, a
+liveness change, the audit timer), the ask a follower sends before it campaigns, the hold
+on a restarted member, and store liveness with false alarms and missed failures.
+
+Time is abstract. A timeout is a step that is enabled only when the event that would have
+beaten it cannot happen. For example, a hold ends only while no live leader exists that
+would have answered. That is an assumption about timing, not a result, and it decides what
+`NoNeedlessDeposal` can show (below).
+
+Liveness is checked on states where nothing more can happen (`QuiescentLed`,
+`QuiescentLevel`), as `FelixRaft.tla` does. Every budget is bounded, so every behaviour
+ends, and `FelixRaftSleepEnds` checks that as a temporal property. This keeps the main
+checks invariants, which run with the symmetry set.
+
+What is checked:
+
+- The safety checks of `FelixRaft.tla`, with members falling asleep at any moment with no
+  handshake (`MaxDozes`). Safety does not rest on the handshake.
+- `QuiescentLed`: with a majority alive the group ends with a live leader.
+- `QuiescentLevel`: under that leader every write is committed and every live member has it.
+- `AsleepIsLevel`: if every live member is asleep, they share last log id and commit index.
+- `NoNeedlessDeposal`: unless a leader's broker died or restarted, no election is won and
+  the first leader never stops leading. A leader that steps down for a campaign that never
+  wins counts as deposed. A violation costs availability, not safety.
+
+What `NoNeedlessDeposal` does not test. Under the timing assumption a held or awake
+follower cannot campaign while a live leader it accepts can still answer. So
+`FelixRaftSleepFalseAlarm.cfg` and `FelixRaftSleepRestart.cfg` show that the rules leave
+no other path to a deposal. They do not show that the hold is long enough, or that one
+election timeout covers the ask and the heartbeat that answers it. Two faults on the wake
+path are modelled and each deposes a healthy leader: a lost ask
+(`FelixRaftSleepAskLost.cfg`, the design as written, issue #2320) and a hold shorter than
+the ask's round trip (`FelixRaftSleepHoldTooShort.cfg`). A lost wake heartbeat is not
+modelled: with no clock it cannot be told from a late one, and the woken leader's next
+heartbeat follows it.
+
+Knobs, each dropping one rule: `NoLivenessWake`, `NoAudit`, `AcceptUnchecked`,
+`CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`, `HoldTooShort`. Two more drop rules
+the design page does not state yet and the model needs: `HeartbeatKeepsProposal` (a
+heartbeat during the handshake does not close the proposal) and `SleepUnsupported` (a
+follower accepts a sleep request from a leader whose broker it does not support). Issue
+#2310 has both. Every passing configuration with a handshake runs with both rules on, and
+its row and header say so.
+
+A third gap has no rule yet. The design leaves out of the handshake a member whose broker
+store liveness says is down. When that alarm is false the member is healthy and awake: it
+hears nothing from the sleeping leader and deposes it
+(`FelixRaftSleepFalseAlarmFollower.cfg`), or it accepts an older sleep request and the
+whole group sleeps with it behind (`FelixRaftSleepFalseAlarmFollowerBehind.cfg`). Both are
+the design as written and are pinned as expected violations (issue #2310). The passing
+configurations only raise false alarms about a leader's broker.
+
+Two twins show less than the others. `FelixRaftSleepAcceptUnchecked.cfg` violates
+`AsleepIsLevel`, which restates the rule it drops: the model has no lasting harm for it
+that does not also need the third gap. `FelixRaftSleepLeaderSleepsFirst.cfg` reaches a
+needless deposal, not a member left behind for good. All the harms in this module are
+availability: the safety checks pass with members asleep in any state.
+
+Not modelled: storage (an append is durable), snapshots, membership changes, read rounds,
+leases, pre-vote, ranked starts and the per-tick election cap. Messages are atomic steps
+except the sleep request. Only a leader's broker dies, and a disk stall counts as a death.
+
 ## Which configurations run where
 
 TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
@@ -1696,11 +2871,13 @@ runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
 changes. A pull request checks the registered configurations that take ten
 minutes or less (`TLA_QUICK=1`), plus `FelixShard.cfg`, the base
 configuration, whatever its time, and any whose own `.cfg` it changes. A
-changed configuration of 30 minutes or less runs in the seven shards with the
+changed configuration of 30 minutes or less runs in the twenty shards with the
 quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
 `formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
-to main checks every registered configuration. The shards are seven jobs,
-filled by each configuration's measured time. A slow configuration that a
+to main checks every registered configuration. The shards are twenty jobs, on a pull request and on main,
+filled by each configuration's measured time. Main's shards share a
+concurrency group per shard: one run proceeds and only the newest later push
+waits, so a burst of merges does not queue hours of runner time. A slow configuration that a
 change to the `.tla` alone breaks therefore shows up on main, not on the pull
 request; run it on the branch through the workflow's dispatch (`tla_configs`)
 when the change is risky.
@@ -1719,8 +2896,9 @@ four `StoodOneDest` and the four `StoodSeveralDest`),
 `FelixShardElectHandoff.cfg`,
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
-`FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg` and
-`FelixShardFencedAckMoveCancel.cfg`. Each must pass. A smaller sibling of each
+`FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`,
+`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg` and
+`FelixShardUnifiedDropEvidencedFull.cfg`. Each must pass. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
@@ -1746,8 +2924,9 @@ job runs: it was an exhaustive check per push until it stopped finishing
 A walk shows less than a check. It is sampling: a pass means the walks found
 nothing in their budget, not that nothing is there, and uniform random choice
 under-samples rare interleavings. What it adds is depth: invariants checked on
-behaviours far longer than any exhaustive configuration reaches. Each family's
-negative twin must find its violation within the same budget, which shows the
+behaviours far longer than any exhaustive configuration reaches. Each walked
+negative twin must find its violation within the same budget (the election and
+spares twins are replayed as fixed traces instead, see below), which shows the
 walks are long and varied enough to lose a record at all. A twin checks only
 the invariant it expects, so the first violation it finds is that one.
 
@@ -1757,16 +2936,16 @@ per family:
 | Configuration | Knobs | Must |
 | --- | --- | --- |
 | `FelixShardWalkSpares.cfg` | `FelixShardFencedAckGrow.cfg` and `FelixShardFencedAckSeat.cfg` together: two replicas and two spares, the set grown to three, then followers replaced and seated; promotion of any replica, on suspicion up to generation 10, start records, `L = 2`, drifting clocks | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` |
-| `FelixShardWalkSparesSeatEarly.cfg` | the same with the seat not waiting (`SeatHoldsCopy = FALSE`) | violate `AckedHeldByLeader` |
+| `FelixShardWalkSparesSeatEarly.cfg` | the same with the seat not waiting (`SeatHoldsCopy = FALSE`) | violate `AckedHeldByLeader`; not walked: the walks found it only by chance, so `FelixShardWalkSparesSeatEarlyReplay.cfg` replays one counterexample step by step (`FelixShardWalkSparesSeatEarlyReplay.tla`) and must still violate it, in seconds, with the exhaustive checks |
 | `FelixShardWalkMoves.cfg` | follower acks with planned moves: the first from a staged destination, any fenced move open to the operator's cancel, failovers that never name the destination, promotion on suspicion up to generation 10; start records, `L = 2`, drifting clocks | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm` |
 | `FelixShardWalkMovesDestination.cfg` | the same with a failover free to name the destination | violate `AckedHeldByLeader` |
 | `FelixShardWalkHandoff.cfg` | the broker as built under the lease (`FelixShardFencedPromotion.cfg` with start records) with `FelixShardHandoff.cfg`'s move; `FelixShardRealMargins.cfg`'s margins and drift, writes acknowledged on commit | pass every invariant and `AckedHeldByLeader` |
 | `FelixShardWalkHandoffNoWait.cfg` | the same cutting over without waiting for the drained report | violate `AtMostOneServing` |
-| `FelixShardWalkElect.cfg` | `FelixShardWalkSpares.cfg` with replicas electing themselves up to two generations past the control plane's, the set check with the joint fence, the control plane adopting elected leaders up to generation 10, and a planner acting on a held read | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` |
-| `FelixShardWalkElectStaleSet.cfg` | the same without the set check | violate `AckedHeldByLeader` |
-| `FelixShardWalkElectSwap.cfg` | `FelixShardElectSwap.cfg` lifted: up to six cut-overs that change the set by more than one member, promotion on suspicion up to generation 10, elections two generations past the control plane's, adoption to generation 10 and a planner acting on a held read, six writes, time to 40, drifting clocks | pass the same invariants and `SetChangesJoint` |
+| `FelixShardWalkElect.cfg` | `FelixShardWalkSpares.cfg` with replicas electing themselves up to two generations past the control plane's, the set check with the joint fence, the control plane adopting elected leaders up to generation 10, and a planner acting on a held read, the control plane's own leader elected on another set reissued on it (`ReissueOwnOnOtherSet`) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `AckedOnMajority`, `NoTruncationBelowHwm`, `AdoptedMatchesOpened` |
+| `FelixShardWalkElectStaleSet.cfg` | the same without the set check | violate `AckedHeldByLeader`; not walked: the walks found it only by chance, so `FelixShardWalkElectStaleSetReplay.cfg` replays one counterexample step by step (`FelixShardWalkElectStaleSetReplay.tla`) and must still violate it, in seconds, with the exhaustive checks |
+| `FelixShardWalkElectSwap.cfg` | `FelixShardElectSwap.cfg` lifted: up to six cut-overs that change the set by more than one member, promotion on suspicion up to generation 10, elections two generations past the control plane's, adoption to generation 10 and a planner acting on a held read, six writes, time to 40, drifting clocks, the control plane's own leader elected on another set reissued on it (`ReissueOwnOnOtherSet`) | pass the same invariants and `SetChangesJoint` |
 | `FelixShardWalkElectSwapNoJoint.cfg` | the same without the joint configuration, and without promotion on suspicion or adoption so the walks reach the trace within their budget | violate `AckedHeldByLeader` |
-| `FelixShardWalkElectRename.cfg` | `FelixShardWalkElectSwap.cfg` with the control plane naming its leader again after an election it recorded and did not adopt (`Renames`) | pass the same invariants |
+| `FelixShardWalkElectRename.cfg` | `FelixShardWalkElectSwap.cfg` with the control plane naming its leader again after an election it recorded and did not adopt (`Renames`), the control plane's own leader elected on another set reissued on it (`ReissueOwnOnOtherSet`) | pass the same invariants |
 | `FelixShardWalkElectRenameUnfenced.cfg` | the same with the renamed leader opening without its fence (`RenameUnfenced`) | violate `AckedHeldByLeader` |
 | `FelixShardFencedCrashNamesByInheritance.cfg` | inherited names under two promotions on suspicion with process and machine crashes (the table above) | pass `OneLeaderPerGeneration`, `AckedHeldByLeader`, `AckedAgree`, `NoTruncationBelowHwm` |
 | `FelixShardFencedCrashInheritedCounts.cfg` | its witness | violate `NoInheritedCount` |

@@ -12,6 +12,7 @@ mod quorum;
 mod rebuild;
 mod shipping;
 pub(crate) mod trimmed_history;
+mod writers;
 
 use std::net::SocketAddr;
 use std::sync::Mutex;
@@ -183,6 +184,7 @@ fn refused(code: ErrorCode, expected_offset: u64) -> InternalMessage {
         code,
         expected_offset,
         detail: "no".to_string(),
+        reason: None,
     })
 }
 

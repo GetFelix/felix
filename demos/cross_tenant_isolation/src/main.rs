@@ -7,7 +7,7 @@
 //!
 //! # Flow summary
 //! 1. Start a fake ES256 OIDC IdP (discovery + JWKS).
-//! 2. Start the control plane (Postgres-backed) on a random local port.
+//! 2. Start the control plane (in-memory store) on a random local port.
 //! 3. Start the broker with control-plane sync.
 //! 4. Bootstrap tenants `t1` and `t2` via the bootstrap API.
 //! 5. Create namespace/stream/cache in both tenants.
@@ -34,13 +34,11 @@ use felix_controlplane_service::api::{build_bootstrap_router, build_router, AppS
 use felix_controlplane_service::auth::idp_registry::{ClaimMappings, IdpIssuerConfig};
 use felix_controlplane_service::auth::principal::principal_id;
 use felix_controlplane_service::auth::rbac::policy_store::{GroupingRule, PolicyRule};
-use felix_controlplane_service::config::{
-    PostgresConfig, DEFAULT_CHANGES_LIMIT, DEFAULT_CHANGE_RETENTION_MAX_ROWS,
-};
+use felix_controlplane_service::config::{DEFAULT_CHANGES_LIMIT, DEFAULT_CHANGE_RETENTION_MAX_ROWS};
 use felix_controlplane_service::model::{
     ConsistencyLevel, DeliveryGuarantee, RetentionPolicy, StreamKind,
 };
-use felix_controlplane_service::store::{postgres::PostgresStore, ControlPlaneStore, StoreConfig};
+use felix_controlplane_service::store::{memory::InMemoryStore, ControlPlaneStore, StoreConfig};
 use felix_storage::EphemeralCache;
 use felix_transport::{QuicServer, TransportConfig};
 use felix_wire::AckMode;
@@ -82,27 +80,8 @@ mod tests {
     use anyhow::Context;
     use std::time::Duration;
 
-    async fn has_postgres() -> bool {
-        if std::env::var("FELIX_TEST_DATABASE_URL").is_ok()
-            || std::env::var("FELIX_CONTROLPLANE_POSTGRES_URL").is_ok()
-            || std::env::var("DATABASE_URL").is_ok()
-        {
-            return true;
-        }
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            tokio::net::TcpStream::connect("127.0.0.1:55432"),
-        )
-        .await
-        .is_ok()
-    }
-
     #[tokio::test]
     async fn cross_tenant_demo_end_to_end() -> Result<()> {
-        if !has_postgres().await {
-            eprintln!("skipping cross-tenant demo: postgres not available");
-            return Ok(());
-        }
         let mut report = DemoReport::new();
         tokio::time::timeout(Duration::from_secs(30), run_demo(&mut report))
             .await
@@ -131,8 +110,8 @@ async fn run_demo(report: &mut DemoReport) -> Result<()> {
     wait_for_idp(&http, &idp_base).await?;
     report.pass("STEP 0 fake IdP up", format!("addr={idp_addr}"));
 
-    report.pass("STEP 1 connect postgres", "starting");
-    let store = connect_store().await?;
+    report.pass("STEP 1 open store", "in-memory");
+    let store = open_store();
     let (cp_addr, cp_handle) = spawn_controlplane(store).await?;
     let cp_base = format!("http://{cp_addr}");
     wait_for_controlplane(&http, &cp_base).await?;
@@ -359,90 +338,15 @@ struct IdpState {
     issuer: String,
 }
 
-async fn connect_store() -> Result<Arc<PostgresStore>> {
-    let urls = resolve_db_urls();
-    let store_config = StoreConfig {
+fn open_store() -> Arc<InMemoryStore> {
+    Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: DEFAULT_CHANGES_LIMIT,
         change_retention_max_rows: Some(DEFAULT_CHANGE_RETENTION_MAX_ROWS),
-    };
-
-    let mut last_err = None;
-    for url in urls {
-        if let Err(err) = wait_for_postgres(&url, Duration::from_secs(8)).await {
-            last_err = Some(anyhow::anyhow!(err.to_string()));
-            continue;
-        }
-        let pg = PostgresConfig {
-            url,
-            max_connections: 5,
-            connect_timeout_ms: 4_000,
-            acquire_timeout_ms: 4_000,
-        };
-        let deadline = Instant::now() + Duration::from_secs(12);
-        while Instant::now() < deadline {
-            let attempt = tokio::time::timeout(
-                Duration::from_secs(2),
-                PostgresStore::connect(&pg, store_config.clone()),
-            )
-            .await;
-            match attempt {
-                Ok(Ok(store)) => return Ok(Arc::new(store)),
-                Ok(Err(err)) => last_err = Some(err.into()),
-                Err(_) => last_err = Some(anyhow::anyhow!("connect timeout")),
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-
-    if let Some(err) = last_err {
-        eprintln!("postgres connection error: {err}");
-    }
-    bail!(
-        "failed to connect to postgres; ensure pg:up is running and FELIX_TEST_DATABASE_URL is set"
-    )
-}
-
-async fn wait_for_postgres(url: &str, timeout: Duration) -> Result<()> {
-    let Some((host, port)) = parse_pg_host_port(url) else {
-        return Ok(());
-    };
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        let addr = format!("{host}:{port}");
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    bail!("postgres not reachable at {host}:{port}");
-}
-
-fn parse_pg_host_port(url: &str) -> Option<(String, u16)> {
-    let after_at = url.rsplit_once('@')?.1;
-    let host_port = after_at.split('/').next()?;
-    let (host, port) = match host_port.rsplit_once(':') {
-        Some((host, port)) => (host.to_string(), port.parse().ok()?),
-        None => (host_port.to_string(), 5432),
-    };
-    Some((host, port))
-}
-
-fn resolve_db_urls() -> Vec<String> {
-    if let Ok(url) = std::env::var("FELIX_TEST_DATABASE_URL")
-        .or_else(|_| std::env::var("FELIX_CONTROLPLANE_POSTGRES_URL"))
-        .or_else(|_| std::env::var("DATABASE_URL"))
-    {
-        return vec![url];
-    }
-    vec![
-        "postgres://postgres:postgres@127.0.0.1:55432/postgres".to_string(),
-        "postgres://postgres:postgres@host.docker.internal:55432/postgres".to_string(),
-        "postgres://postgres:postgres@host.containers.internal:55432/postgres".to_string(),
-    ]
+    }))
 }
 
 /// Starts the control plane HTTP server on a random local port.
-async fn spawn_controlplane(store: Arc<PostgresStore>) -> Result<(SocketAddr, JoinHandle<()>)> {
+async fn spawn_controlplane(store: Arc<InMemoryStore>) -> Result<(SocketAddr, JoinHandle<()>)> {
     let state = AppState {
         region: felix_controlplane_service::api::types::Region {
             region_id: "local".to_string(),

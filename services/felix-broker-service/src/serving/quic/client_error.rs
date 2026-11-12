@@ -270,12 +270,16 @@ impl ClientError {
             }
             E::MalformedCommit(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
+            // Only from leading a shard again, never a client request.
+            E::ReleaseInFlight => Self::internal(message),
             // A broker configured without the storage the stream needs will
             // answer the same way until someone changes its configuration.
             E::DurableStorageNotConfigured { .. } => {
                 Self::internal(message).with_retry(RetryClass::Fatal)
             }
-            E::Storage(_) => Self::new(ErrorCode::Storage, message),
+            E::Storage(_) | E::GenerationBelowFloor { .. } | E::WriterUnknown(_) => {
+                Self::new(ErrorCode::Storage, message)
+            }
             // Nothing was written, so the request can go again once space is freed.
             E::StorageFull(_) => Self::overloaded(message),
             // Written to a log that was then reset: it may or may not survive.

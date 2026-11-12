@@ -58,6 +58,14 @@ pub const JUMP_HASH_ROUTING: FleetFeature = FleetFeature::new("jump_hash_routing
 ///
 /// Add a feature here in the same change that makes the broker honour it,
 /// never before: the report is a promise that this build behaves that way.
+///
+/// A gate that was [seeded](FleetGate::seeded) but not yet adopted reads a
+/// feature it was not seeded with as off, though the fleet may have finalized
+/// it since. That is safe only while every feature is one of: a prerequisite
+/// of [`REPLICA_ELECTION`] (seeded along with it), one whose "off" fails
+/// closed (refuses, or keeps a format every broker reads), one checked per
+/// shard, or one no broker reads. `every_feature_is_safe_to_read_as_off_before_registration` holds
+/// the list, so a new feature has to be placed in it.
 pub const IMPLEMENTED: &[FleetFeature] = &[
     GENERATION_START,
     MAJORITY_ACK,
@@ -71,6 +79,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     CACHE_INCARNATIONS,
     HEAD_TRIM,
     RECORD_HEADERS,
+    RECORD_GENERATIONS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -157,6 +166,22 @@ pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 /// headers").
 pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 
+/// A stream log starts its next segment in storage format v9, whose record
+/// headers carry a generation, and stamps each record with the generation it
+/// accepted. A committed vote may then be saved too, in ballot format v2. An
+/// older build refuses both, so a broker moves onto them only once the whole
+/// fleet has finalized this, and an existing segment is never rewritten. A
+/// lone broker has no fleet and stays on the older formats. See
+/// `docs/storage-format.md` ("Generations").
+///
+/// Reported only by a build whose peers offer `WRITER_GENERATIONS`, which
+/// every build that reports it does, so once it is finalized every replica of
+/// every log negotiates the generation that wrote each record: admission
+/// refuses a broker that does not report an enabled feature. Needs
+/// [`GENERATION_START`]: a leader stamps its appends only once it has
+/// recorded where its generation starts, which is required only under it.
+pub const RECORD_GENERATIONS: FleetFeature = FleetFeature::new("record_generations");
+
 /// Every change of a shard's replica set, and the next generation a leader
 /// opens for a replacement, is fenced jointly: a majority of the set being
 /// left and of the one replacing it must take the fence before the new set
@@ -192,6 +217,20 @@ pub const PEER_ELECTION: FleetFeature = FleetFeature::new("peer_election");
 /// adds it to its report.
 pub const START_HOLDERS: FleetFeature = FleetFeature::new("start_holders");
 
+/// Not a feature: how a broker reports that it fences every change of leader
+/// it is named to, a move's cut-over and a failover to the move's destination
+/// included, not only a promotion. Placement promotes a fenced move's
+/// destination only on this word: a broker without it would take that
+/// promotion as the cut-over it expected and serve without the fence. Kept
+/// out of [`IMPLEMENTED`], like [`PEER_ELECTION`], and reported only with the
+/// fence on.
+pub const FENCES_EVERY_CHANGE: FleetFeature = FleetFeature::new("fences_every_change");
+
+/// What a broker offering the `ELECTION` peer capability adds to its report:
+/// that it offers it, that it fences set changes jointly once [`JOINT_FENCE`]
+/// is finalized, and that it stands for election once [`REPLICA_ELECTION`]
+/// is.
+pub const ELECTION_REPORTED: &[FleetFeature] = &[PEER_ELECTION, JOINT_FENCE, REPLICA_ELECTION];
 /// Not a feature: how a broker reports that, under [`JOINT_FENCE`], it marks
 /// a wiped copy of its own a learner and its leaders leave a learner's
 /// answers out of their marks. A build that does not would let a wiped copy
@@ -258,7 +297,7 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         FOR_ELECTION
     } else if feature == JOINT_FENCE.name() {
         FOR_JOINT_FENCE
-    } else if feature == MAJORITY_ACK.name() {
+    } else if feature == MAJORITY_ACK.name() || feature == RECORD_GENERATIONS.name() {
         &[GENERATION_START]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS
@@ -316,6 +355,21 @@ impl FleetView<'_> {
     pub fn adopted(&self) -> bool {
         self.adopted
     }
+
+    /// Whether `feature` is enabled, or `None` when this view cannot say: it
+    /// is off here but no registration has answered, so the fleet may have
+    /// finalized it since. An enabled feature is always known, as finalizing
+    /// is one-way, and so is one this broker does not report, which the
+    /// fleet never enables here.
+    pub fn decides(&self, feature: FleetFeature) -> Option<bool> {
+        if self.supports(feature) {
+            Some(true)
+        } else if !self.reports(feature) {
+            Some(false)
+        } else {
+            self.adopted.then_some(false)
+        }
+    }
 }
 
 impl FleetGate {
@@ -331,6 +385,28 @@ impl FleetGate {
             enabled: AtomicU64::new(0),
             adopted: AtomicBool::new(false),
         }
+    }
+
+    /// A gate for a broker reporting `reported` that starts with `persisted`
+    /// enabled: features an earlier registration of this broker answered
+    /// with. It is not adopted, so a feature missing from `persisted` stays
+    /// undecided ([`FleetView::decides`]) until a registration answers and
+    /// [`Self::restart`] replaces the set. A persisted name this broker does
+    /// not report is left off.
+    pub fn seeded<I, S, P>(reported: I, persisted: P) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+        P: IntoIterator,
+        P::Item: AsRef<str>,
+    {
+        let gate = Self::new(reported);
+        let bits = persisted
+            .into_iter()
+            .filter_map(|name| gate.bit(name.as_ref()))
+            .fold(0, |bits, bit| bits | (1 << bit));
+        gate.enabled.store(bits, Ordering::Release);
+        gate
     }
 
     /// A gate for exactly what this build implements.
@@ -405,8 +481,12 @@ impl FleetGate {
     {
         fleet
             .into_iter()
-            .filter_map(|name| self.reported.iter().position(|reported| reported == name))
+            .filter_map(|name| self.bit(name))
             .fold(0, |bits, bit| bits | (1 << bit))
+    }
+
+    fn bit(&self, name: &str) -> Option<usize> {
+        self.reported.iter().position(|reported| reported == name)
     }
 
     fn names(&self, bits: u64) -> Vec<&str> {

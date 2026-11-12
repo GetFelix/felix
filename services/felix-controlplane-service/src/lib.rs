@@ -4,10 +4,9 @@
 //! streams, caches, the node catalog, and which broker leads each shard.
 //! Brokers read it and act; it never reaches into a broker.
 //!
-//! There are three entry points, all reached from the `felix-controlplane`
-//! binary: [`server::run`] serves the API and runs the background loops,
-//! [`migrate::run`] moves metadata between backends, and [`admin::run`] is
-//! the operator's shard move controls, a client of the API.
+//! The entry point, reached from the `felix-controlplane` binary, is
+//! [`server::run`]: it serves the API and runs the background loops. The
+//! operator's commands over the API are in `felixctl`.
 //!
 //! # Vocabulary
 //!
@@ -24,9 +23,9 @@
 //!
 //! # Keeping
 //!
-//! [`store::ControlPlaneStore`] has three implementations: in memory, over
-//! Postgres, and over an embedded Raft group ([`store::raft`], built on the
-//! consensus seam in [`raft`]). All three are held to one shared contract
+//! [`store::ControlPlaneStore`] has two implementations: in memory (for tests
+//! and development), and over an embedded Raft group ([`store::raft`], built on
+//! the consensus seam in [`raft`]). Both are held to one shared contract
 //! test, because a rule that holds only in memory is a rule the deployed
 //! system does not have.
 //!
@@ -41,9 +40,7 @@
 //! # Running
 //!
 //! [`config`] reads the environment and YAML, [`server`] wires everything
-//! together and drains it in order, [`migrate`] is the backend migration tool,
-//! [`admin`] the operator's command line, and [`clock`] is the wall clock the
-//! stored timestamps use.
+//! together and drains it in order, and [`clock`] is the wall clock the stored timestamps use.
 //!
 //! Each module keeps its unit tests at `<module>/tests.rs`.
 
@@ -57,10 +54,8 @@ pub mod store;
 
 pub mod cluster;
 
-pub mod admin;
 pub mod clock;
 pub mod config;
-pub mod migrate;
 pub mod server;
 
 #[cfg(test)]

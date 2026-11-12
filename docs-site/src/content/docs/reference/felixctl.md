@@ -5,7 +5,7 @@ description: "Every felixctl command, subcommand and flag, with defaults and exa
 
 Every felixctl command and flag. This page is generated from the command definitions, and `felixctl help <command>` prints the same text. For installing felixctl, setting up a context and a first session, see [felixctl](/getting-started/felixctl/).
 
-Publish and subscribe to streams, read and watch caches, see where shards live, list what the control plane knows, and run benchmarks.
+Publish and subscribe to streams, read and watch caches, see where shards live, list what the control plane knows, steer placement and run benchmarks. It is the one operator command line: `data` runs the broker's own tools on the host that holds its data.
 
 Connection settings come from a named context (see `felixctl context`), overridden by FELIX_\* environment variables, overridden by flags.
 
@@ -34,9 +34,12 @@ felixctl stream ls --json
 | [`felixctl stream`](#felixctl-stream) | Create, change, list, inspect and delete streams (control plane) |
 | [`felixctl node`](#felixctl-node) | List, inspect, drain and deregister brokers (control plane) |
 | [`felixctl shard`](#felixctl-shard) | List shard assignments and move shards (control plane) |
-| [`felixctl placement`](#felixctl-placement) | Pause or resume placement's own moves (control plane) |
+| [`felixctl placement`](#felixctl-placement) | See what placement will do, and pause or resume its moves (control plane) |
+| [`felixctl features`](#felixctl-features) | List fleet features and finalize them (control plane) |
+| [`felixctl backup-point`](#felixctl-backup-point) | Record every shard's committed offsets as a backup point (control plane) |
 | [`felixctl rbac`](#felixctl-rbac) | List, grant and revoke RBAC policies and role assignments (control plane) |
 | [`felixctl inspect`](#felixctl-inspect) | Look at a cluster's live state, read-only (operators) |
+| [`felixctl data`](#felixctl-data) | Inspect and restore a broker's data directory (runs felix-broker) |
 | [`felixctl bench`](#felixctl-bench) | Run a load test against the cluster |
 | [`felixctl completions`](#felixctl-completions) | Print a shell completion script |
 
@@ -1322,7 +1325,7 @@ felixctl node deregister broker-2 --yes
 
 ## `felixctl shard`
 
-List which broker leads each shard of every stream and cache, as the control plane assigned them, and move a shard's leadership or cancel a move.
+List which broker leads each shard of every stream and cache, as the control plane assigned them, list the moves in progress, and move a shard's leadership or cancel a move.
 
 ```text
 felixctl shard [OPTIONS] <COMMAND>
@@ -1333,6 +1336,7 @@ Examples:
 ```bash
 felixctl shard ls
 felixctl shard ls --leader broker-2
+felixctl shard moves
 felixctl shard move orders 2 --to broker-3
 felixctl shard move cancel orders 2
 ```
@@ -1413,9 +1417,24 @@ felixctl shard move cancel orders 2
 felixctl shard move cancel sessions 0 --cache
 ```
 
+### `felixctl shard moves`
+
+List the shard moves in progress: the step each is at, why it started, the old and new leader and how far the destination's copy lags. Says so when placement is paused.
+
+```text
+felixctl shard moves [OPTIONS]
+```
+
+Examples:
+
+```bash
+felixctl shard moves
+felixctl shard moves --json
+```
+
 ## `felixctl placement`
 
-Pause or resume the moves placement starts by itself, and give up a stranded shard's log. Needs a control-plane token allowed node.manage on the cluster.
+See what placement would do next and which shards are short of their replication factor, pause or resume the moves placement starts by itself, and give up a stranded shard's log. Reading needs a control-plane token allowed node.view on the cluster; pausing, resuming and abandoning need node.manage.
 
 ```text
 felixctl placement [OPTIONS] <COMMAND>
@@ -1424,9 +1443,39 @@ felixctl placement [OPTIONS] <COMMAND>
 Examples:
 
 ```bash
+felixctl placement plan
+felixctl placement replication
 felixctl placement pause
 felixctl placement resume
 felixctl placement abandon orders 2 --yes
+```
+
+### `felixctl placement plan`
+
+Show what placement would do next for each shard it has work for: stage a move, wait for a slot, or leave it. Starts nothing.
+
+```text
+felixctl placement plan [OPTIONS]
+```
+
+Examples:
+
+```bash
+felixctl placement plan
+```
+
+### `felixctl placement replication`
+
+Show the shards with fewer copies than their replication factor: how many they have, which copies are on brokers that are unavailable, which are halted and why, and the broker a copy is being added on.
+
+```text
+felixctl placement replication [OPTIONS]
+```
+
+Examples:
+
+```bash
+felixctl placement replication
 ```
 
 ### `felixctl placement pause`
@@ -1480,6 +1529,89 @@ Examples:
 ```bash
 felixctl placement abandon orders 2 --yes
 felixctl placement abandon sessions 0 --cache --yes
+```
+
+## `felixctl features`
+
+A fleet feature is a behaviour every serving broker must support before it is switched on. `features ls` shows which each broker version offers and which are on; `features finalize` switches one on fleet-wide. Finalizing is one-way: brokers without the feature are refused afterwards. Reading needs a control-plane token allowed node.view on the cluster; finalizing needs node.manage.
+
+```text
+felixctl features [OPTIONS] <COMMAND>
+```
+
+Examples:
+
+```bash
+felixctl features ls
+felixctl features finalize jump_hash_routing --dry-run
+felixctl features finalize jump_hash_routing --yes
+```
+
+### `felixctl features ls`
+
+Show how many brokers are serving, the features every one of them supports, and the features finalized fleet-wide.
+
+```text
+felixctl features ls [OPTIONS]
+```
+
+Examples:
+
+```bash
+felixctl features ls
+felixctl features ls --json
+```
+
+### `felixctl features finalize`
+
+Switch a feature on for the whole fleet. ONE-WAY: it cannot be turned off, and brokers without the feature are refused from then on. The control plane refuses it unless every serving broker supports the feature and the features it needs are on. --dry-run says whether it would be accepted and changes nothing.
+
+```text
+felixctl features finalize [OPTIONS] <FEATURE>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `FEATURE` | yes | Feature name, as `features ls` lists it |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--dry-run` | - | - | Say whether it could be finalized, without finalizing it |
+| `-y, --yes` | - | - | Do not ask for confirmation. Needed when stdin is not a terminal |
+
+Examples:
+
+```bash
+felixctl features finalize jump_hash_routing --dry-run
+felixctl features finalize jump_hash_routing --yes
+```
+
+## `felixctl backup-point`
+
+Record one committed offset per shard log, across every broker, and write them to a manifest a restore cuts back to. The offsets are read from each shard leader's metrics listener, so run it from somewhere that can reach those listeners. Reading needs a control-plane token allowed node.view on the cluster.
+
+The brokers do not agree on an instant, so a record written while the point is collected can be in it on one shard and not on another.
+
+```text
+felixctl backup-point [OPTIONS] <NAME>
+```
+
+| Argument | Required | Description |
+| --- | --- | --- |
+| `NAME` | yes | Name recorded in the manifest |
+
+| Option | Value | Default | Description |
+| --- | --- | --- | --- |
+| `--out` | `<FILE>` | - | Where to write the manifest [default: NAME.backup-point.json] |
+| `--broker` | `<NODE=URL>` | - | Metrics URL of a broker, where the address the control plane has for it is not the one to use. Repeat for more brokers |
+| `--metrics-port` | `<PORT>` | `8080` | Port of the brokers' metrics listeners |
+
+Examples:
+
+```bash
+felixctl backup-point nightly-2026-11-05
+felixctl backup-point nightly --out /backups/nightly.json
+felixctl backup-point nightly --broker broker-1=http://10.0.0.5:9090 --metrics-port 9090
 ```
 
 ## `felixctl rbac`
@@ -1742,6 +1874,24 @@ felixctl inspect subs orders --shard 0
 felixctl inspect subs --dropping --json
 felixctl inspect subs --principal p:billing
 felixctl inspect subs --node broker-a --cursor eyJ0ZW5hbnRfaWQiOi4uLn0
+```
+
+## `felixctl data`
+
+Work on a broker's data directory with the tools in the felix-broker binary. These run on the host that holds the directory, with felix-broker installed there: felixctl finds it with --broker-bin (before `data`), then $FELIX_BROKER_BIN, then PATH, passes every argument after the subcommand through unchanged, --help included, and ends with its exit status.
+
+`data inspect segments\|records` reads a data directory, read-only: what startup would decide about every shard's segments, and the records around an offset. `data restore-point` cuts a stopped broker's logs back to a backup point written by `felixctl backup-point`. For their own usage run `felixctl data inspect --help` or `felixctl data restore-point --help`.
+
+```text
+felixctl data [OPTIONS] <COMMAND>
+```
+
+Examples:
+
+```bash
+felixctl data inspect segments /var/lib/felix/data
+felixctl data inspect records /var/lib/felix/data acme/default/orders/3 --offset 1500
+felixctl data restore-point --point nightly.backup-point.json --node broker-1
 ```
 
 ## `felixctl bench`

@@ -10,7 +10,7 @@
 //! only ever used as a *starting position* for a scan that re-validates real
 //! records, and any index that fails to load is rebuilt from its segment.
 
-use std::fs::{File, OpenOptions};
+use crate::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
 use std::sync::Arc;

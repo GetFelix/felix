@@ -52,3 +52,17 @@ async fn a_held_compactor_parks_spends_until_released() {
     compactor.release();
     assert!(waiting.await.expect("spend"));
 }
+
+#[test]
+fn payload_bytes_uses_the_segment_header_size() {
+    use crate::segment::format::{GENERATION_VERSION, HEADERS_VERSION};
+    let at = |version| SegmentDescriptor {
+        id: 0,
+        base_offset: 0,
+        last_offset: 9,
+        size_bytes: SEGMENT_HEADER_LEN + 10 * (record_header_len(version) + 5),
+        version,
+    };
+    assert_eq!(payload_bytes(&at(HEADERS_VERSION)), 50);
+    assert_eq!(payload_bytes(&at(GENERATION_VERSION)), 50);
+}

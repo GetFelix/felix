@@ -3,7 +3,8 @@
 //! Each step is one assignment write, decided from the store and fresh
 //! reports alone, so any instance resumes a half-done move where the last
 //! pass left it.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use felix_router::RegionRouter;
@@ -12,7 +13,9 @@ use super::leadership::{Leadership, Owner, Shares};
 use super::rendezvous::{choose_replicas, promote, score};
 use super::restore::{newcomer, replacing, restore, restore_step, short};
 use super::zones::{Domain, domain, domain_of, keep_spread};
-use super::{Blocked, CaughtUp, Decision, MoveStep};
+use super::{Blocked, CaughtUp, Decision, MoveStep, StuckReason};
+use felix_common::membership::RefusedGeneration;
+
 use crate::model::{
     HaltedCopy, MoveReason, Node, PendingSet, ShardAssignment, ShardKey, ShardState,
 };
@@ -66,6 +69,37 @@ pub const DEFAULT_RESTORE_AFTER_MILLIS: u64 = 5 * 60 * 1_000;
 /// every other short shard is waiting for.
 pub const DEFAULT_RESTORE_STALL_MILLIS: u64 = 2 * 60 * 1_000;
 
+/// How long a leader on a live broker may show no progress at its generation
+/// before it is named again one generation up: twice the default report TTL
+/// (`report_ttl_millis`, 35 s). A leader that has opened reports every
+/// replication tick, so this is many missed reports, not one slow one. Never
+/// shorter than twice the TTL in effect; see `plan_pass`.
+pub(super) const DEFAULT_STUCK_LEADER_MILLIS: u64 = 70_000;
+
+/// The window [`MAX_STUCK_RENAMES`] counts over.
+pub(super) const STUCK_RENAME_WINDOW_MILLIS: u64 = 60 * 60 * 1_000;
+
+/// The most times one shard is named again for being stuck within
+/// [`STUCK_RENAME_WINDOW_MILLIS`]. Each waits twice as long as the last, so
+/// a leader that keeps failing at every generation churns a handful of
+/// generations an hour, not one a minute.
+pub(super) const MAX_STUCK_RENAMES: u32 = 4;
+
+/// The most shards one pass names again for being stuck, so a burst of them
+/// does not land as a burst of fences on one broker.
+pub(super) const STUCK_RENAMES_PER_PASS: usize = 16;
+
+/// The most shards one pass re-admits a replaced copy into. Each is a new
+/// fenced term on its leader, so a broker that comes back wiped under many
+/// shards gets its fences over several passes, not in one burst.
+pub(super) const READMITS_PER_PASS: usize = 16;
+
+/// Past this many leaders overdue at once (or an eighth of those watched, if
+/// more), a pass renames one of them at most: that may be a fleet-wide
+/// stall, which the same leaders one generation up would share, or one
+/// restarted broker leading many shards, which renames heal.
+pub(super) const MAX_STUCK_PER_FLEET: usize = 64;
+
 /// How long after a cluster's first broker registered a new shard waits for
 /// enough brokers to hold all its copies before it is placed on fewer.
 /// Brokers started together register within a second or two of each other.
@@ -112,6 +146,12 @@ pub struct MovePolicy {
     /// moving, as this instance watched it, before the restore is given up and
     /// its slot goes to the next shard. `None` waits for `timeout_millis`.
     pub restore_stall_millis: Option<u64>,
+    /// How long a fenced shard's leader, on a live broker, may show no
+    /// progress at its generation, as this instance watched it, before it is
+    /// named again one generation up (`MoveStep::Stuck`). Progress is a report
+    /// at the generation that shows nothing pending, or a majority's position
+    /// moving. `None` never renames.
+    pub stuck_leader_millis: Option<u64>,
     /// How long after the cluster's first broker registered a new shard
     /// waits for as many live brokers as its replication factor before it
     /// is placed on fewer. Only a young cluster waits: one whose oldest
@@ -133,6 +173,11 @@ pub struct MovePolicy {
     /// held as a learner and re-admitted (#1737). Read from the store, as
     /// `replica_election` is.
     pub joint_fence: bool,
+    /// Brokers that deregistered while their last lease may still run.
+    /// Placement sees them as draining so what they lead stays put, but none
+    /// is handed leadership: a broker deregisters as it stops. Not
+    /// configuration: each pass reads it from the store.
+    pub departed: BTreeSet<String>,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -151,11 +196,13 @@ impl Default for MovePolicy {
             election_hold_millis: Some(DEFAULT_ELECTION_HOLD_MILLIS),
             restore_after_millis: Some(DEFAULT_RESTORE_AFTER_MILLIS),
             restore_stall_millis: Some(DEFAULT_RESTORE_STALL_MILLIS),
+            stuck_leader_millis: Some(DEFAULT_STUCK_LEADER_MILLIS),
             settle_millis: Some(DEFAULT_PLACEMENT_SETTLE_MILLIS),
             paused: false,
             replica_election: false,
             fenced_caches: false,
             joint_fence: false,
+            departed: BTreeSet::new(),
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -175,6 +222,10 @@ pub(super) struct Moves {
     pub(super) recovering: bool,
     /// Whether some shard wanted a move for its stream's spread.
     pub(super) stream_wanted: bool,
+    /// Shards this pass named again for being stuck.
+    stuck_renames: usize,
+    /// Shards this pass re-admitted a replaced copy into.
+    readmits: usize,
 }
 
 impl Moves {
@@ -187,11 +238,13 @@ impl Moves {
     ) -> Self {
         let mut moves = Self {
             in_flight: 0,
-            per_node: HashMap::new(),
+            per_node: HashMap::default(),
             policy,
             cluster_moves: true,
             stream_wanted: false,
             recovering: false,
+            stuck_renames: 0,
+            readmits: 0,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
@@ -236,6 +289,16 @@ impl Moves {
     /// not stop these; the limits do.
     pub(super) fn begin_requested(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
         self.reserve(from, Some(to))
+    }
+
+    /// Take one of the pass's re-admissions, unless placement is paused. A
+    /// re-admission copies nothing, so it takes no move slot.
+    pub(super) fn begin_readmit(&mut self) -> Option<()> {
+        if self.policy.paused || self.readmits >= READMITS_PER_PASS {
+            return None;
+        }
+        self.readmits += 1;
+        Some(())
     }
 
     /// Take a slot for a trim's fence, which stops `leader` as a move's does.
@@ -347,6 +410,41 @@ impl Moves {
         })
     }
 
+    /// Why `key`'s leader is due to be named again at a new generation, if
+    /// it has gone `stuck_leader_millis` without progress at `generation`,
+    /// doubled for each time that was done in the last window, and this
+    /// pass has a rename left. Takes the pass's rename when it answers.
+    pub(super) fn stuck_due(
+        &mut self,
+        caught_up: &dyn CaughtUp,
+        key: &ShardKey,
+        generation: u64,
+    ) -> Option<StuckReason> {
+        let bound = self.policy.stuck_leader_millis?;
+        let stuck = caught_up.stuck_leader(key, generation)?;
+        let now = caught_up.as_of_millis()?;
+        let per_pass = if stuck.fleet_stalled {
+            1
+        } else {
+            STUCK_RENAMES_PER_PASS
+        };
+        if stuck.recent_renames >= MAX_STUCK_RENAMES || self.stuck_renames >= per_pass {
+            return None;
+        }
+        // A leader that never opened may still be in its broker's queue of
+        // fences after a restart, so it gets twice as long.
+        let base = match stuck.reason {
+            StuckReason::NeverOpened => bound.saturating_mul(2),
+            _ => bound,
+        };
+        let wait = base.saturating_mul(1u64 << stuck.recent_renames.min(20));
+        if now.saturating_sub(stuck.since_millis) <= wait {
+            return None;
+        }
+        self.stuck_renames += 1;
+        Some(stuck.reason)
+    }
+
     /// Whether a restore's copy into `joining` has gone the stall window
     /// without its position moving, as this instance watched it.
     pub(super) fn stalled(&self, caught_up: &dyn CaughtUp, key: &ShardKey, joining: &str) -> bool {
@@ -410,6 +508,13 @@ pub(super) fn move_step<'a>(
     // Kept off as a destination, as of any report still believed.
     let is_halted = |node: &str| caught_up.halted(key, node).is_some();
 
+    // A leader that deregistered is stopping, so it is never named at a new
+    // generation it may not live to serve: not to answer a refusal, and not
+    // to take back a fenced shard. The shard cuts over to a copy that holds
+    // the log, or waits for the leader's lease to run out and then fails
+    // over (#1982).
+    let departed = moves.policy.departed.contains(leader);
+
     // The leader cannot serve this generation: it, or a majority of its set,
     // promised it to another node. That is usually an election recorded
     // without being adopted, but any fresh refusal at this generation is
@@ -417,22 +522,53 @@ pub(super) fn move_step<'a>(
     // new fenced term, safe either way. The next generation is above the
     // promise, so the leader opens, and its fence deposes the elected node
     // through the ballot. The set, a pending change and a copy being added
-    // are untouched. Not during a move that ends through its own steps, which
-    // would lose its successor or its fence to the new generation.
-    if existing.successor.is_none()
-        && existing.state != ShardState::Draining
-        && caught_up.leader_refused(key, existing.generation, leader)
+    // are untouched. A staged move is dropped with it: its destination copies
+    // from a leader that cannot open, so it would only wait out the move
+    // timeout (#1965). Not during a fence, which ends through its own steps
+    // and would lose its drained report to the new generation.
+    if existing.state != ShardState::Draining
+        && let Some(refused) = caught_up.leader_refusal(key, existing.generation, leader)
     {
+        if departed {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
+        let renamed = match existing.successor.as_deref() {
+            Some(successor) => undo_staged(existing, successor, replication_factor),
+            None => existing.renamed(),
+        };
         return Decision::Move(
-            MoveStep::ElectionRefused,
-            ShardAssignment {
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+            if refused.is_promise() {
+                MoveStep::ElectionRefused
+            } else {
+                MoveStep::SetUnknown {
+                    at_least: above_ballot(existing.generation, refused.ballot),
+                }
             },
+            renamed,
         );
+    }
+
+    // The leader's broker is live but the leader has shown no progress at
+    // this generation for the stuck bound: a dead end the broker has not
+    // reported, such as a fence that never settles or a halt that lasts until
+    // the assignment changes. Naming it one generation up is a new fenced
+    // term, as for a refusal: the leader fences a majority before it serves,
+    // so nothing acknowledged is lost and the old term cannot serve beside
+    // it. Only where a majority of the set is live and not halted, or the new
+    // term would stall the same way, and never during a move, a fence or a
+    // set change, which end through their own steps.
+    if fenced
+        && leader_live
+        && !is_draining(leader)
+        && existing.successor.is_none()
+        && existing.state != ShardState::Draining
+        && existing.joining.is_none()
+        && existing.pending_set.is_none()
+        && !existing.replicas.is_empty()
+        && majority_can_serve(key, existing, is_live, caught_up)
+        && let Some(reason) = moves.stuck_due(caught_up, key, existing.generation)
+    {
+        return Decision::Move(MoveStep::Stuck { reason }, existing.renamed());
     }
 
     // A pending set change ends on the leader's word, a failover that
@@ -446,11 +582,7 @@ pub(super) fn move_step<'a>(
                 step,
                 ShardAssignment {
                     pending_set: None,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..existing.renamed()
                 },
             )
         };
@@ -461,6 +593,19 @@ pub(super) fn move_step<'a>(
         }
         if caught_up.joint_start_acked(key, existing.generation, leader) != Some(pending.generation)
         {
+            // A member whose storage was replaced counts toward neither set
+            // until it is re-admitted, and no re-admission is written while a
+            // change is pending. After a move the new set is the old one less
+            // a copy, so the old set's majority needs every member of the new
+            // one: the change could only wait out its timeout, with the shard
+            // taking no acknowledged writes meanwhile. The drop's write names
+            // the new storage and holds the member as a learner, as `readmit`
+            // does, so it takes one of the pass's re-admissions.
+            if let Some(node) = caught_up.readmittable(key, existing.generation, leader)
+                && moves.begin_readmit().is_some()
+            {
+                return dropped(MoveStep::PendingSetMemberReplaced { node });
+            }
             if moves.pending_timed_out(caught_up, key, pending.generation) {
                 return dropped(MoveStep::PendingSetTimedOut);
             }
@@ -471,11 +616,7 @@ pub(super) fn move_step<'a>(
             ShardAssignment {
                 replicas: pending.replicas.clone(),
                 pending_set: None,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+                ..existing.renamed()
             },
         );
     }
@@ -484,6 +625,9 @@ pub(super) fn move_step<'a>(
         if existing.successor.is_none()
             && let Some(joining) = existing.joining.as_deref()
         {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             let restoring = existing.move_reason == Some(MoveReason::Restore);
             let from = if restoring {
                 replacing(existing, replication_factor, is_lost)
@@ -506,6 +650,9 @@ pub(super) fn move_step<'a>(
         // shard twice; going on waits for at most the lag bound's worth of
         // copy. Only a leader that never says drained is given the shard back.
         if !caught_up.is_drained(key, existing.generation) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             // The fence may land while the destination is still copying, and
             // the leader will not report drained until it is level. One that
             // died first never will be, and its leader is likely busy taking
@@ -527,26 +674,45 @@ pub(super) fn move_step<'a>(
                 );
             }
             // A halted one never will either, but its leader is reporting:
-            // drop it, still fenced, and the leader reports drained against
-            // the followers it has. The cut-over then picks one of them, or
-            // hands the shard back to the leader.
+            // drop it as the successor, still fenced, and the leader reports
+            // drained against the followers it has. The cut-over then picks
+            // one of them, or hands the shard back to the leader. It leaves
+            // the set unless `keeps_destination`; then the trim drops it.
             if let Some(successor) = existing
                 .successor
                 .as_deref()
                 .filter(|s| halted_now(s).is_some())
             {
                 let mut replicas = existing.replicas.clone();
-                replicas.retain(|replica| replica != successor);
+                if !keeps_destination(existing) {
+                    replicas.retain(|replica| replica != successor);
+                }
                 return Decision::Move(
                     given_up(successor, halted_now(successor)),
                     ShardAssignment {
                         successor: None,
                         replicas,
-                        generation: 0,
-                        fence_storage_ids: Default::default(),
-                        member_storage_ids: Default::default(),
-                        learners: Default::default(),
-                        ..existing.clone()
+                        ..existing.renamed()
+                    },
+                );
+            }
+            // A leader back from an unclean crash that gave its copy up at
+            // the fence's generation never reports drained, and failover
+            // waits for the move to end. So it ends now. The broker leads that
+            // copy again only if its probe found no follower ahead of it
+            // (`may_lead`); otherwise it gives the new generation up too, and
+            // with no move left a follower is promoted. The destination stays
+            // in the set even above the replication factor: it may be the only
+            // copy holding what the leader lost, and the next probe measures
+            // only the set it is given. `FelixShardMoveGiveUp` in docs/formal.
+            if caught_up.leader_gave_up(key, existing.generation, leader) {
+                return Decision::Move(
+                    MoveStep::LeaderGaveUp {
+                        successor: existing.successor.clone(),
+                    },
+                    ShardAssignment {
+                        replicas: existing.replicas.clone(),
+                        ..retake(existing, replication_factor)
                     },
                 );
             }
@@ -564,7 +730,9 @@ pub(super) fn move_step<'a>(
             }
             return Decision::Waiting(Blocked::LeaderStopping);
         }
-        if existing.successor.is_none()
+        // A trim hands the shard back to its leader.
+        if !departed
+            && existing.successor.is_none()
             && existing.nodes().count() > replication_factor.max(1) as usize
         {
             return trim(
@@ -581,10 +749,14 @@ pub(super) fn move_step<'a>(
             .successor
             .as_deref()
             .filter(|successor| is_live(successor) && caught_up.is_caught_up(key, successor))
-            .or_else(|| promote(key, existing, eligible, caught_up))
-            // Nothing else holds the log; the leader takes it back at a new
-            // generation and the move is chosen again.
-            .unwrap_or(leader);
+            .or_else(|| promote(key, existing, eligible, caught_up));
+        // Nothing else holds the log; the leader takes it back at a new
+        // generation and the move is chosen again.
+        let target = match target {
+            Some(target) => target,
+            None if departed => return Decision::Waiting(Blocked::LeaderDeparted),
+            None => leader,
+        };
         let replicas = replicas_after_cut_over(
             key,
             existing,
@@ -624,6 +796,8 @@ pub(super) fn move_step<'a>(
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -640,23 +814,24 @@ pub(super) fn move_step<'a>(
 
     if let Some(successor) = existing.successor.as_deref() {
         let halted = halted_now(successor);
-        if !is_live(successor) || halted.is_some() {
+        // Each way out of a staged move renames the leader at a new
+        // generation, so a departed leader's move waits for the lease.
+        let gives_up = !is_live(successor) || halted.is_some();
+        let abandons =
+            moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance);
+        if departed && (gives_up || abandons) {
+            return Decision::Waiting(Blocked::LeaderDeparted);
+        }
+        if gives_up {
             // Gone or halted before it led. Undone rather than waited out, or
-            // the move holds its slot until it times out.
-            let mut replicas = existing.replicas.clone();
-            replicas.retain(|replica| replica != successor);
+            // the move holds its slot until it times out. A successor that
+            // was a member before the stage stays one: it may hold the only
+            // copy of the log (#2088).
             return Decision::Move(
                 given_up(successor, halted),
                 ShardAssignment {
-                    successor: None,
                     move_started_at_millis: None,
-                    move_reason: None,
-                    replicas,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..undo_staged(existing, successor, replication_factor)
                 },
             );
         }
@@ -664,7 +839,7 @@ pub(super) fn move_step<'a>(
         // would stop the shard's writes behind brokers that may take minutes
         // to report drained, and held, it would keep the move slot a drain or
         // a restore needs. Not the shard's fault, so its start is cleared.
-        if moves.recovering && leader_live && existing.move_reason == Some(MoveReason::Balance) {
+        if abandons {
             return Decision::Move(
                 MoveStep::Abandon {
                     successor: successor.to_string(),
@@ -676,19 +851,22 @@ pub(super) fn move_step<'a>(
             );
         }
         if moves.ready_to_fence(caught_up, key, successor) {
+            // The fence is a new generation under the leader.
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             return Decision::Move(
                 MoveStep::Fence,
                 ShardAssignment {
                     state: ShardState::Draining,
-                    generation: 0,
-                    fence_storage_ids: Default::default(),
-                    member_storage_ids: Default::default(),
-                    learners: Default::default(),
-                    ..existing.clone()
+                    ..existing.renamed()
                 },
             );
         }
         if moves.timed_out(caught_up, existing.move_started_at_millis) {
+            if departed {
+                return Decision::Waiting(Blocked::LeaderDeparted);
+            }
             return Decision::Move(
                 MoveStep::TimedOut {
                     successor: successor.to_string(),
@@ -770,6 +948,14 @@ pub(super) fn move_step<'a>(
         )
     {
         return decision;
+    }
+
+    // A move's first step fences or stages under the leader at a new
+    // generation, which a departed leader never serves. Its shard fails over
+    // at the lease instead, where a fenced move would have kept its caught-up
+    // destination from being promoted.
+    if departed {
+        return Decision::Waiting(Blocked::LeaderDeparted);
     }
 
     // Should a move start?
@@ -870,6 +1056,57 @@ pub(super) fn move_step<'a>(
     }
 }
 
+/// The generation a leader refused for another node's newer `ballot` in its
+/// own copy is named at, at least: one past the ballot, since its fence finds
+/// the ballot's generation promised away and waits there. 0, the next
+/// generation as usual, when the ballot is not above `generation` or is past
+/// the window a candidate may stand in, which only a corrupt report shows.
+fn above_ballot(generation: u64, ballot: u64) -> u64 {
+    if ballot > generation && crate::model::check_elected_generation(generation, ballot).is_ok() {
+        ballot + 1
+    } else {
+        0
+    }
+}
+
+/// Carry the copy pins a failover wrote (`fence_storage_ids`) from
+/// `existing` into `next`, a rename that keeps its leader.
+///
+/// The promoted leader's fence counts a copy only from the one the failover's
+/// report named. A rename before that fence settles must keep the pins, or
+/// the next fence counts any copy's answer, a wiped one's included, and the
+/// broker cannot report a promise-short fence (#2046). They go once the
+/// leader has reported serving at `existing`'s generation: from then on it
+/// holds what any copy could. A member's pin goes once it is admitted under
+/// its new storage, `readmitted` or a learner shown holding the start record,
+/// since the pin names the copy it replaced. A new leader gets none.
+pub(super) fn keep_copy_pins(
+    existing: &ShardAssignment,
+    next: &mut ShardAssignment,
+    caught_up: &dyn CaughtUp,
+    readmitted: Option<&str>,
+) {
+    let key = &existing.key;
+    let leader = existing.leader.as_str();
+    if existing.fence_storage_ids.is_empty()
+        || next.leader != existing.leader
+        || caught_up.leader_opened(key, existing.generation, leader)
+    {
+        return;
+    }
+    let admitted = |node: &str| {
+        readmitted == Some(node)
+            || (existing.learners.contains(node)
+                && caught_up.holds_start(key, existing.generation, leader, node))
+    };
+    next.fence_storage_ids = existing
+        .fence_storage_ids
+        .iter()
+        .filter(|(node, _)| !admitted(node))
+        .map(|(node, id)| (node.clone(), id.clone()))
+        .collect();
+}
+
 /// The step that drops a destination that stopped being live, or halted.
 fn given_up(successor: &str, halted: Option<String>) -> MoveStep {
     match halted {
@@ -935,6 +1172,8 @@ pub(super) fn start(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.
@@ -953,8 +1192,8 @@ pub(super) fn start(
 }
 
 /// A fenced move given up: the leader that stopped serves again at a new
-/// generation, and the destination is dropped unless the shard had it anyway.
-/// The start stays, as for [`undo_staged`].
+/// generation, and the destination is dropped as by [`undo_staged`]. The
+/// start stays, as for [`undo_staged`].
 pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> ShardAssignment {
     let replicas = match existing.successor.as_deref() {
         Some(successor) => undo_staged(existing, successor, replication_factor).replicas,
@@ -962,40 +1201,46 @@ pub(super) fn retake(existing: &ShardAssignment, replication_factor: u32) -> Sha
     };
     ShardAssignment {
         replicas,
-        generation: 0,
         state: ShardState::Assigning,
         successor: None,
         joining: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
 /// A staged move without its destination: the copy is dropped unless the
-/// stream had it anyway. The start stays, so this shard waits behind the
-/// others for its next slot rather than being chosen again at once.
+/// stream had it anyway or [`keeps_destination`]. The start stays,
+/// so this shard waits behind the others for its next slot rather than being
+/// chosen again at once.
 pub(super) fn undo_staged(
     existing: &ShardAssignment,
     successor: &str,
     replication_factor: u32,
 ) -> ShardAssignment {
     let mut replicas = existing.replicas.clone();
-    if replicas.len() >= replication_factor.max(1) as usize {
+    if replicas.len() >= replication_factor.max(1) as usize && !keeps_destination(existing) {
         replicas.retain(|replica| replica != successor);
     }
     ShardAssignment {
         successor: None,
         move_reason: None,
         replicas,
-        generation: 0,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
+}
+
+/// Whether a move given up keeps its destination in the set: a set of three.
+/// There a record can be acknowledged on the leader and the destination
+/// alone. Dropped, it is on the leader only, and an unclean crash of the
+/// leader then loses it (`FelixShardMoveGiveUpDrop.cfg` in docs/formal). When
+/// a move ends, a set of four keeps a follower holding it (`FourDrop.cfg`), and
+/// a set of two
+/// is a one-copy shard, which such a crash loses from anyway, kept or not
+/// (`TwoKeep.cfg`). A set kept above its factor is trimmed later behind a
+/// fence ([`trim`]).
+pub(super) fn keeps_destination(existing: &ShardAssignment) -> bool {
+    existing.nodes().count() == 3
 }
 
 /// Undo a replacement, or, on a fenced stream where dropping `joining`
@@ -1048,11 +1293,7 @@ pub(super) fn undo_needs_fence(existing: &ShardAssignment, fenced: bool) -> bool
 pub(super) fn undo_fenced(existing: &ShardAssignment) -> ShardAssignment {
     ShardAssignment {
         state: ShardState::Draining,
-        generation: 0,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1063,13 +1304,9 @@ pub(super) fn undo_replacement(existing: &ShardAssignment, joining: &str) -> Sha
     replicas.retain(|replica| replica != joining);
     ShardAssignment {
         replicas,
-        generation: 0,
         joining: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1135,14 +1372,10 @@ fn reseat<'a>(
         },
         ShardAssignment {
             replicas,
-            generation: 0,
             joining: Some(replacement.node_id.clone()),
             move_started_at_millis: caught_up.as_of_millis(),
             move_reason: Some(MoveReason::Replace),
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            ..existing.clone()
+            ..existing.renamed()
         },
     )
 }
@@ -1253,11 +1486,7 @@ pub(super) fn seat_or_fence(
             },
             ShardAssignment {
                 state: ShardState::Draining,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
+                ..existing.renamed()
             },
         );
     }
@@ -1276,14 +1505,10 @@ fn seated(existing: &ShardAssignment, from: Option<&str>) -> ShardAssignment {
     replicas.retain(|replica| Some(replica.as_str()) != from);
     ShardAssignment {
         replicas,
-        generation: 0,
         joining: None,
         move_started_at_millis: None,
         move_reason: None,
-        fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
-        learners: Default::default(),
-        ..existing.clone()
+        ..existing.renamed()
     }
 }
 
@@ -1397,13 +1622,7 @@ fn seat_after_fence(
     if moves.fence_timed_out(caught_up, key, existing.generation) {
         return Decision::Move(
             MoveStep::FenceTimedOut { successor: None },
-            serving(ShardAssignment {
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
-            }),
+            serving(existing.renamed()),
         );
     }
     Decision::Waiting(Blocked::LeaderStopping)
@@ -1492,11 +1711,7 @@ fn trim_fence(
         ShardAssignment {
             state: ShardState::Draining,
             successor: None,
-            generation: 0,
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            ..existing.clone()
+            ..existing.renamed()
         },
     )
 }
@@ -1809,6 +2024,34 @@ fn crowded<'a>(
         })
 }
 
+/// Whether a majority of `existing`'s voters (its leader and the followers
+/// that are not learners) is live and not reported halted. A follower whose
+/// storage was replaced since the set named it is a learner too, though the
+/// assignment does not list it yet: it acks nothing at the next generation.
+fn majority_can_serve(
+    key: &ShardKey,
+    existing: &ShardAssignment,
+    is_live: &dyn Fn(&str) -> bool,
+    caught_up: &dyn CaughtUp,
+) -> bool {
+    let voters: Vec<&str> =
+        std::iter::once(existing.leader.as_str())
+            .chain(existing.replicas.iter().map(String::as_str).filter(|node| {
+                !existing.learners.contains(*node) && !caught_up.is_learner(key, node)
+            }))
+            .collect();
+    let able = voters
+        .iter()
+        .filter(|node| {
+            is_live(node)
+                && caught_up
+                    .halted_member(key, node, existing.generation)
+                    .is_none()
+        })
+        .count();
+    able > voters.len() / 2
+}
+
 /// `inner`, believed only where its report is from `generation`.
 ///
 /// A move is decided on the assignment's own generation. The report the store
@@ -1857,8 +2100,22 @@ impl CaughtUp for AtGeneration<'_> {
         self.inner.joint_start_acked(key, generation, leader)
     }
 
-    fn leader_refused(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
-        self.inner.leader_refused(key, generation, leader)
+    fn leader_refusal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        leader: &str,
+    ) -> Option<RefusedGeneration> {
+        self.inner.leader_refusal(key, generation, leader)
+    }
+
+    fn leader_opened(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.inner.leader_opened(key, generation, leader)
+    }
+
+    // Keyed by its own generation already.
+    fn leader_gave_up(&self, key: &ShardKey, generation: u64, leader: &str) -> bool {
+        self.inner.leader_gave_up(key, generation, leader)
     }
 
     fn lag_records(&self, key: &ShardKey, node_id: &str) -> Option<u64> {
@@ -1901,5 +2158,19 @@ impl CaughtUp for AtGeneration<'_> {
     // is no better a destination for this one.
     fn halted(&self, key: &ShardKey, node_id: &str) -> Option<&HaltedCopy> {
         self.inner.halted(key, node_id)
+    }
+
+    fn stuck_leader(&self, key: &ShardKey, generation: u64) -> Option<super::StuckLeader> {
+        self.inner.stuck_leader(key, generation)
+    }
+
+    // Not held to the generation: a replaced copy is judged against the
+    // identity the assignment named, not against a report.
+    fn is_learner(&self, key: &ShardKey, node_id: &str) -> bool {
+        self.inner.is_learner(key, node_id)
+    }
+
+    fn readmittable(&self, key: &ShardKey, generation: u64, leader: &str) -> Option<String> {
+        self.inner.readmittable(key, generation, leader)
     }
 }

@@ -53,7 +53,7 @@ pub(crate) async fn system_health(
 ///
 /// Deliberately answers without touching the database or anything else outside
 /// the process. A liveness probe drives *restarts*, and restarting every
-/// instance because Postgres is down turns one external outage into a
+/// instance because the store is down turns one external outage into a
 /// cluster-wide restart loop that cannot fix it.
 ///
 /// It fails when the process cannot answer at all — wedged, out of file

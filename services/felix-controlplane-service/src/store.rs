@@ -1,13 +1,12 @@
 //! The metadata store: the traits every backend implements, and the types
 //! they share.
 //!
-//! Three backends implement them (`memory`, `postgres` and `raft`) and all
-//! three run the same contract tests. Callers cannot tell which backend they
+//! Two backends implement them (`memory` and `raft`) and both
+//! run the same contract tests. Callers cannot tell which backend they
 //! are talking to, so change ordering, conflicts and not-found must behave
 //! the same on each.
 pub mod export;
 pub mod memory;
-pub mod postgres;
 pub mod raft;
 
 #[cfg(test)]
@@ -67,8 +66,8 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn stream_routings(
         &self,
         keys: &[StreamKey],
-    ) -> StoreResult<std::collections::HashMap<StreamKey, crate::model::StreamRouting>> {
-        let mut routings = std::collections::HashMap::new();
+    ) -> StoreResult<felix_common::random::HashMap<StreamKey, crate::model::StreamRouting>> {
+        let mut routings = felix_common::random::HashMap::default();
         for key in keys {
             match self.get_stream(key).await {
                 Ok(stream) if !stream.routing.is_modulo() => {
@@ -248,14 +247,12 @@ pub trait ControlPlaneStore: Send + Sync {
     /// the bound on drift *rate* the design assumes, and one NTP steps break
     /// outright.
     ///
-    /// Backends with a shared clock return it — Postgres answers with
-    /// `clock_timestamp()`. The default is the process clock, which is
+    /// The default is the process clock, which is
     /// correct for a single-process store and for the Raft backend, where
     /// the leader overwrites a proposer's reading before the command enters
     /// the log (`store::raft::command::restamp`) and the sweep that reads it back
     /// runs only on that same leader. Both sides of the comparison are one
-    /// process's clock either way; the two backends just reach that
-    /// differently.
+    /// process's clock.
     async fn now_millis(&self) -> StoreResult<u64> {
         Ok(crate::clock::now_millis())
     }
@@ -330,6 +327,25 @@ pub trait ControlPlaneStore: Send + Sync {
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.put_shard_assignment_at_least(assignment, expected_generation, fence, 0)
+            .await
+    }
+    /// [`ControlPlaneStore::put_shard_assignment_if`], written at `at_least`
+    /// when that is above the next generation. 0 is the next generation.
+    ///
+    /// Placement names a leader past a newer ballot its own copy holds this
+    /// way (`MoveStep::SetUnknown`). [`StoreError::Conflict`] when `at_least`
+    /// is more than the election window past the
+    /// shard's generation, as for an adoption. Under Raft it needs metadata
+    /// level 28 on every member, and below it the write takes the next
+    /// generation instead.
+    async fn put_shard_assignment_at_least(
+        &self,
+        assignment: ShardAssignment,
+        expected_generation: Option<u64>,
+        fence: u64,
+        at_least: u64,
     ) -> StoreResult<AssignmentWrite>;
     /// Adopt a leader that elected itself, if the shard is still at
     /// `expected_generation`: [`ShardAssignment::adopting_elected_set`],
@@ -358,6 +374,22 @@ pub trait ControlPlaneStore: Send + Sync {
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
     /// Raft member answers from what that member has applied, which can lag.
     async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
+    /// [`Self::confirmed_shard_assignment`] for every key, in order, all
+    /// read no earlier than every write acknowledged before the call.
+    async fn confirmed_shard_assignments(
+        &self,
+        keys: &[ShardKey],
+    ) -> StoreResult<Vec<ConfirmedAssignment>> {
+        let mut confirmed = Vec::with_capacity(keys.len());
+        for key in keys {
+            confirmed.push(self.confirmed_shard_assignment(key).await?);
+        }
+        Ok(confirmed)
+    }
+    /// The shard-assignment feed's `next_seq`, read no earlier than every
+    /// write acknowledged before the call, so every change committed by then
+    /// has a lower seq. `None` from a Raft leader that predates the read.
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>>;
     /// Every assignment, ordered by stream then shard.
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     /// Assignments ordered by tenant, namespace, kind, name, then shard, one
@@ -376,6 +408,21 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Remove one assignment, leaving the shard unowned.
     async fn delete_shard_assignment(&self, key: &ShardKey) -> StoreResult<()>;
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>>;
+    /// Each shard's first assignment still in the retained change log, as
+    /// `(key, incarnation, generation)`: the assignment written when the
+    /// store had none for the shard, at an incarnation above 0. A snapshot
+    /// marks an item found here so a broker learning it there knows nothing
+    /// came before it, as the `assigned` change tells a watching one. One
+    /// evicted from the log is not listed, and its item is not marked.
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>>;
+    /// For each shard, the assignment the retained change log shows right
+    /// before its current one: the payload of the change before the one that
+    /// wrote it, when both are assignments. A snapshot carries it so a broker
+    /// that learns the shard there can tell the set its generation leaves,
+    /// as a watching broker tells it from the change it saw before (#2024).
+    /// None for a shard whose earlier change was evicted, or was an
+    /// unassignment.
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>>;
     async fn shard_assignment_changes(
         &self,
         since: u64,
@@ -406,9 +453,31 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         report: ReplicaReport,
         leader: &str,
+    ) -> StoreResult<ReportWrite> {
+        self.record_replica_report_with(report, leader, true).await
+    }
+    /// [`Self::record_replica_report`], recording no
+    /// [`ShardAssignment::readmitted`](crate::model::ShardAssignment::readmitted)
+    /// entry unless `readmits`. A leader that elected itself may have opened
+    /// before a copy was replaced, at a generation the control plane later
+    /// adopted for a set naming the new copy, so its report is no evidence
+    /// the copy holds what the old one acknowledged.
+    async fn record_replica_report_with(
+        &self,
+        report: ReplicaReport,
+        leader: &str,
+        readmits: bool,
     ) -> StoreResult<ReportWrite>;
     /// Every report held, fresh or not; the reader judges freshness.
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>>;
+    /// The report held for `key`, if any.
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self
+            .list_replica_reports()
+            .await?
+            .into_iter()
+            .find(|report| report.key == *key))
+    }
 
     /// Keep what a broker's heartbeat said about the leaders it cannot reach,
     /// replacing what it said before. Stamp it with
@@ -852,18 +921,6 @@ pub(crate) fn upgrade_refusal(err: &StoreError) -> Option<&str> {
     match err {
         StoreError::Conflict(message) if message.ends_with(UPGRADE_HINT) => Some(message),
         _ => None,
-    }
-}
-
-impl From<sqlx::Error> for StoreError {
-    fn from(err: sqlx::Error) -> Self {
-        StoreError::Unexpected(err.into())
-    }
-}
-
-impl From<sqlx::migrate::MigrateError> for StoreError {
-    fn from(err: sqlx::migrate::MigrateError) -> Self {
-        StoreError::Unexpected(err.into())
     }
 }
 

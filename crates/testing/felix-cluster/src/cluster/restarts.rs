@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use super::kept_logs::set_aside_log;
 use super::startup::MAX_SPAWN_ATTEMPTS;
 use super::{Cluster, READY_TIMEOUT};
 use crate::node::spawn_broker;
@@ -107,8 +108,7 @@ impl Cluster {
             None => None,
         };
         // Kept beside the new one: the old run is usually what a failure is about.
-        let log = self.nodes[index].data_dir.join("broker.log");
-        let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+        set_aside_log(&self.nodes[index].data_dir);
         // New ports can lose the same race start-up retries. Only that exit is
         // retried: a broker that cannot recover its storage must fail the test.
         let mut attempts = 1;
@@ -119,12 +119,13 @@ impl Cluster {
                 .ok_or_else(|| anyhow!("control plane is gone"))?;
             let node = spawn_broker(
                 &self.binary,
-                control_plane,
+                &control_plane.base_url,
                 &self.credentials,
                 &self.config,
                 self._root.path(),
                 index,
                 self.links.as_ref(),
+                None,
             )
             .with_context(|| format!("restart {node_id}"))?;
             self.nodes[index] = node;
@@ -156,6 +157,63 @@ impl Cluster {
             },
         )
         .await
+    }
+
+    /// Start a stopped broker again and return at once, without waiting for it
+    /// to be ready. Works while the control plane is crashed, which is the
+    /// point: a broker started then waits for the control plane before it
+    /// opens its storage. Pair it with [`Self::await_node_ready`].
+    pub fn start_node_unready(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if self.nodes[index].is_running() {
+            bail!("{node_id} is still running");
+        }
+        set_aside_log(&self.nodes[index].data_dir);
+        self.respawn(index)
+    }
+
+    /// [`Self::start_node_unready`] on the ports it had, as a broker with a
+    /// fixed address restarts. Peers whose view of the cluster the control
+    /// plane has not refreshed reach it at its old address only.
+    pub fn start_node_unready_in_place(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        if self.nodes[index].is_running() {
+            bail!("{node_id} is still running");
+        }
+        let ports = (
+            self.nodes[index].client_addr,
+            self.nodes[index].internal_addr,
+        );
+        set_aside_log(&self.nodes[index].data_dir);
+        self.respawn_on(index, Some(ports))
+    }
+
+    /// Wait for a broker started with [`Self::start_node_unready`] to report
+    /// ready and the control plane to count it placeable.
+    pub async fn await_node_ready(&mut self, node_id: &str) -> Result<()> {
+        let index = self
+            .nodes
+            .iter()
+            .position(|node| node.node_id == node_id)
+            .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+        self.await_placeable(index).await
+    }
+
+    /// The control plane's address, whether it is running or crashed.
+    pub(super) fn control_plane_base_url(&self) -> Result<String> {
+        match (&self.control_plane, &self.crashed_control_plane) {
+            (Some(control_plane), _) => Ok(control_plane.base_url.clone()),
+            (None, Some(stopped)) => Ok(stopped.base_url()),
+            (None, None) => bail!("control plane is gone"),
+        }
     }
 
     /// Wait for the broker at `index` to report ready and the control plane

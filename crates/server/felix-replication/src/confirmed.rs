@@ -9,6 +9,12 @@
 //! The read never runs on the peer lane ([`ConfirmedReads`]): a fence
 //! waiting on a control-plane round trip would outlast the leader's request
 //! timeout and hold one of its stream's control slots meanwhile (#1791).
+//!
+//! Reads that wait for a free request go out together, up to [`MAX_BATCH`]
+//! in one control-plane request, so the shards kept fresh scale with the
+//! batch and not with the round trip alone. Each answer in a batch is still a
+//! read the control plane's leader confirmed after the request arrived, which
+//! is after the shard's own read began, so it is as fresh as a single read.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -42,6 +48,14 @@ pub enum Confirmed {
 #[async_trait::async_trait]
 pub trait ConfirmedRoutes: Send + Sync {
     async fn confirmed(&self, key: &ShardKey) -> Confirmed;
+
+    /// [`Self::confirmed`] for every shard in `keys` in one request, the
+    /// answers in `keys`' order. `None` when the control plane has no such
+    /// request; each shard is then read alone.
+    async fn confirmed_many(&self, keys: &[ShardKey]) -> Option<Vec<Confirmed>> {
+        let _ = keys;
+        None
+    }
 }
 
 /// How long an answer is used under elections. A learner checks every batch
@@ -61,10 +75,10 @@ pub(crate) const FRESH_UNDER_ELECTIONS: Duration = Duration::from_millis(500);
 /// control plane is upgraded.
 pub(crate) const FRESH: Duration = Duration::from_secs(10);
 
-/// How long after a refused request its shard's answer is kept fresh for
-/// the retry, at least. Longer than a leader's longest wait between fence
-/// attempts (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff finds
-/// a fresh answer instead of being refused again. A leader that retries on
+/// How long after a request its shard's answer is kept fresh for the
+/// leader's retry, at least. Longer than a leader's longest wait between
+/// fence attempts (`FENCE_RETRY_MAX`, 2 s), so a retry spaced out by backoff
+/// finds a fresh answer instead of being refused again. A leader that retries on
 /// its driver tick waits longer; see [`ConfirmedReads::new`].
 const WANTED_FOR: Duration = Duration::from_secs(5);
 
@@ -79,9 +93,13 @@ const MAX_OWED_FOR: Duration = Duration::from_secs(60);
 /// does not start hundreds. Past it, a shard is read on its first request.
 const PREFETCH_PER_CHANGE: usize = 64;
 
-/// Reads in flight at once across all shards, so a bulk create does not
-/// send the control plane hundreds at the same moment.
+/// Control-plane requests in flight at once across all shards, so a bulk
+/// create does not send the control plane hundreds at the same moment.
 const MAX_CONCURRENT_READS: usize = 16;
+
+/// Most shards one control-plane request reads. Reads queue while every
+/// request is in flight, and the next request takes up to this many of them.
+const MAX_BATCH: usize = 64;
 
 /// Past this many shards, ones nobody asked about for [`FRESH`] are dropped
 /// when the next shard is added.
@@ -98,9 +116,14 @@ pub(crate) struct ConfirmedReads {
     /// ahash: the key is three strings, hashed on every request.
     slots: ArcSwap<HashMap<Arc<ShardKey>, Arc<Slot>, ahash::RandomState>>,
     permits: Arc<tokio::sync::Semaphore>,
+    /// Reads waiting for a request, sent by a task started on the first.
+    queue: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Pending>>,
+    /// Nanoseconds since `epoch` when the control plane last had no batched
+    /// read, or `u64::MAX` if it never lacked one.
+    unbatched_at: Arc<AtomicU64>,
     /// What the slots' timestamps count from.
     epoch: Instant,
-    /// How long a refused request's retry is waited for, in nanoseconds.
+    /// How long a request's retry is waited for, in nanoseconds.
     owed_for: u64,
 }
 
@@ -129,13 +152,11 @@ struct Slot {
     wanted: AtomicU64,
     /// The freshness the last request needed, in nanoseconds.
     fresh: AtomicU64,
-    /// Whether the last request found no fresh answer, so its retry is
-    /// owed one.
+    /// Whether the last request found no fresh answer.
     owed: AtomicBool,
     /// The longest gap seen between a request found owed and the request
     /// before it, in nanoseconds, so a retry that came late once is waited
-    /// for longer next time. Kept across answers: it only lengthens the wait
-    /// while a retry is owed.
+    /// for longer next time. Kept across answers.
     late: AtomicU64,
     /// Whether a routing change asked for the read and no request has come
     /// yet. Such a slot is kept fresh only for [`WANTED_FOR`], so reads for
@@ -155,13 +176,15 @@ struct Answer {
 impl ConfirmedReads {
     /// Reads for a broker whose leaders retry a refused copy up to `retry`
     /// apart: the driver's tick, which is the control-plane sync interval.
-    /// A refused shard's answer is kept fresh for two of those, so the retry
-    /// finds it instead of being refused and starting another read, every
-    /// time (#1791).
+    /// A shard's answer is kept fresh for two of those after each request,
+    /// so the retry finds it instead of being refused and starting another
+    /// read, every time (#1791).
     pub(crate) fn new(retry: Duration) -> Self {
         Self {
-            slots: ArcSwap::from_pointee(HashMap::default()),
+            slots: ArcSwap::from_pointee(HashMap::with_hasher(felix_common::random::hash_state())),
             permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_READS)),
+            queue: std::sync::OnceLock::new(),
+            unbatched_at: Arc::new(AtomicU64::new(u64::MAX)),
             epoch: Instant::now(),
             owed_for: nanos(WANTED_FOR.max(retry.saturating_mul(2))),
         }
@@ -243,11 +266,10 @@ impl ConfirmedReads {
             .filter(|slot| slot.incarnation == incarnation)
         {
             Some(slot) => {
-                // A reader waiting out a refused request's retry keeps its
-                // longer window. An owed slot with no reader either outwaited
-                // its retry or got no answer; the early window is no worse
-                // for either.
-                if !(slot.owed.load(Ordering::Relaxed) && slot.reading.load(Ordering::Acquire)) {
+                // A reader waiting for a leader's retry keeps its longer
+                // window. A slot with no reader either outwaited its retry or
+                // got no answer; the early window is no worse for either.
+                if !slot.reading.load(Ordering::Acquire) {
                     slot.early.store(true, Ordering::Relaxed);
                 }
                 slot.owed.store(true, Ordering::Relaxed);
@@ -357,6 +379,32 @@ impl ConfirmedReads {
         u64::try_from(self.epoch.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 
+    /// One confirmed read of `key`, sent with whatever other reads are
+    /// waiting for a request. Every caller passes the same `routes`: the
+    /// first one starts the task that sends them.
+    async fn confirmed(&self, routes: &Arc<dyn ConfirmedRoutes>, key: &ShardKey) -> Confirmed {
+        let queue = self.queue.get_or_init(|| {
+            let (queue, waiting) = tokio::sync::mpsc::unbounded_channel();
+            tokio::spawn(send_reads(
+                waiting,
+                Arc::clone(routes),
+                Arc::clone(&self.permits),
+                Arc::clone(&self.unbatched_at),
+                self.epoch,
+            ));
+            queue
+        });
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let pending = Pending {
+            key: key.clone(),
+            answer,
+        };
+        if queue.send(pending).is_err() {
+            return Confirmed::Unavailable;
+        }
+        answered.await.unwrap_or(Confirmed::Unavailable)
+    }
+
     /// Read, and again before the answer goes stale while the shard is still
     /// being asked about.
     async fn read(
@@ -371,12 +419,7 @@ impl ConfirmedReads {
         };
         loop {
             let started = self.now();
-            let answer = {
-                let Ok(_permit) = self.permits.acquire().await else {
-                    return;
-                };
-                routes.confirmed(&key).await
-            };
+            let answer = self.confirmed(&routes, &key).await;
             // Requests after this point have not been answered by this read.
             let mut since = started;
             match answer {
@@ -392,9 +435,12 @@ impl ConfirmedReads {
                     // what this read took, permit wait included, so a queue
                     // of reads widens the margin instead of letting answers
                     // lapse. Only while the shard is still asked about: a
-                    // request since the last half of the answer's life, or a
-                    // refused one whose retry has not come yet, waited for
-                    // up to `owed_for`, or longer once a retry came late.
+                    // request within `owed_for`, or longer while a retry that
+                    // came late once is owed an answer. Answered requests
+                    // count too: a leader whose round failed on another
+                    // copy, or a learner's next batch, comes back like a
+                    // refused one, and under elections a 2 s retry would
+                    // find every other answer stale.
                     // A request needing a shorter freshness (elections
                     // turned on) wakes the wait to recompute it.
                     loop {
@@ -422,7 +468,9 @@ impl ConfirmedReads {
                             .max(late.min(nanos(MAX_OWED_FOR)))
                             .max(fresh / 2)
                     } else {
-                        fresh / 2
+                        // Not the grown wait: that is for retries that came
+                        // late, and would keep every answered shard reading.
+                        self.owed_for.max(fresh / 2)
                     };
                     let now = self.now();
                     if now.saturating_sub(slot.wanted.load(Ordering::Relaxed)) < asked_within {
@@ -441,6 +489,66 @@ impl ConfirmedReads {
                 return;
             }
         }
+    }
+}
+
+/// A read waiting for a control-plane request.
+struct Pending {
+    key: ShardKey,
+    answer: tokio::sync::oneshot::Sender<Confirmed>,
+}
+
+/// Send waiting reads, each request once a permit frees, taking every read
+/// queued by then up to [`MAX_BATCH`]. A control plane without the batched
+/// read gets one shard per request, as before it existed, and is asked again
+/// for a batch after [`FRESH`] in case it was upgraded.
+async fn send_reads(
+    mut waiting: tokio::sync::mpsc::UnboundedReceiver<Pending>,
+    routes: Arc<dyn ConfirmedRoutes>,
+    permits: Arc<tokio::sync::Semaphore>,
+    unbatched_at: Arc<AtomicU64>,
+    epoch: Instant,
+) {
+    while let Some(first) = waiting.recv().await {
+        // The permit first, so reads queued while it is awaited join this one.
+        let Ok(permit) = Arc::clone(&permits).acquire_owned().await else {
+            return;
+        };
+        let now = nanos(epoch.elapsed());
+        let unbatched = unbatched_at.load(Ordering::Relaxed);
+        let limit = if unbatched == u64::MAX || now.saturating_sub(unbatched) >= nanos(FRESH) {
+            MAX_BATCH
+        } else {
+            1
+        };
+        let mut batch = vec![first];
+        while batch.len() < limit {
+            match waiting.try_recv() {
+                Ok(pending) => batch.push(pending),
+                Err(_) => break,
+            }
+        }
+        let routes = Arc::clone(&routes);
+        let unbatched_at = Arc::clone(&unbatched_at);
+        tokio::spawn(async move {
+            let _permit = permit;
+            if batch.len() > 1 {
+                let keys: Vec<ShardKey> = batch.iter().map(|pending| pending.key.clone()).collect();
+                match routes.confirmed_many(&keys).await {
+                    Some(answers) if answers.len() == keys.len() => {
+                        for (pending, answer) in batch.into_iter().zip(answers) {
+                            let _ = pending.answer.send(answer);
+                        }
+                        return;
+                    }
+                    _ => unbatched_at.store(nanos(epoch.elapsed()), Ordering::Relaxed),
+                }
+            }
+            for pending in batch {
+                let answer = routes.confirmed(&pending.key).await;
+                let _ = pending.answer.send(answer);
+            }
+        });
     }
 }
 
@@ -470,8 +578,8 @@ impl Drop for Reading<'_> {
 /// while the read runs, and the leader comes back on its next tick.
 ///
 /// Costs nothing per request: the routing feed calls it as it applies a
-/// change. Reads are deduplicated per shard like a request's, and bounded
-/// by [`MAX_CONCURRENT_READS`].
+/// change. Reads are deduplicated per shard like a request's, and sent with
+/// them, at most [`MAX_CONCURRENT_READS`] requests at once.
 #[derive(Clone)]
 pub struct Prefetch {
     reads: Arc<ConfirmedReads>,

@@ -1,5 +1,6 @@
 //! Starting a broker process.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -9,35 +10,46 @@ use super::{
     BrokerNode, boot_id_file, clock_fault_file, partition_file, storage_dir, storage_fault_file,
 };
 use crate::proxy::Links;
-use crate::{ClusterConfig, ControlPlane, Credentials, pki, ports};
+use crate::{ClusterConfig, Credentials, pki, ports};
 
-/// Start one broker process, behind `links` when the cluster proxies them.
+/// Start one broker process, behind `links` when the cluster proxies them, on
+/// `same_ports` (client, internal) when given.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_broker(
     binary: &PathBuf,
-    control_plane: &ControlPlane,
+    control_plane_url: &str,
     credentials: &Credentials,
     config: &ClusterConfig,
     root: &Path,
     index: usize,
     links: Option<&Links>,
+    same_ports: Option<(SocketAddr, SocketAddr)>,
 ) -> Result<BrokerNode> {
     let node_id = format!("broker-{index}");
-    // A run, not a single port: with several listeners the broker binds
-    // `client_addr.port() + n`, and those have to be free too.
-    let client_addr = if config.quic_listeners > 1 {
-        ports::free_udp_run(config.quic_listeners)?
-    } else {
-        ports::free_udp()?
+    let (client_addr, internal_addr) = match same_ports {
+        Some(ports) => ports,
+        None => {
+            // A run, not a single port: with several listeners the broker
+            // binds `client_addr.port() + n`, and those have to be free too.
+            let client_addr = if config.quic_listeners > 1 {
+                ports::free_udp_run(config.quic_listeners)?
+            } else {
+                ports::free_udp()?
+            };
+            // Each pick closes its socket, so the OS can hand the same port
+            // out again.
+            let client_ports =
+                client_addr.port()..client_addr.port() + config.quic_listeners as u16;
+            let internal_addr = ports::free_udp_except(|port| client_ports.contains(&port))?;
+            (client_addr, internal_addr)
+        }
     };
-    // Each pick closes its socket, so the OS can hand the same port out again.
-    let client_ports = client_addr.port()..client_addr.port() + config.quic_listeners as u16;
-    let internal_addr = ports::free_udp_except(|port| client_ports.contains(&port))?;
     let (advertise_addr, control_plane_url) = match links {
         Some(links) => {
             let route = links.route(&node_id, internal_addr)?;
             (route.advertise, route.control_plane_url)
         }
-        None => (internal_addr, control_plane.base_url.clone()),
+        None => (internal_addr, control_plane_url.to_string()),
     };
     let metrics_addr = ports::free_tcp()?;
     let data_dir = root.join(&node_id);
@@ -96,6 +108,12 @@ pub(crate) fn spawn_broker(
             "RUST_LOG",
             std::env::var("RUST_LOG").as_deref().unwrap_or("info"),
         );
+    let mut tcp_ports = Vec::new();
+    for (env_var, template) in &config.tcp_listeners {
+        let port = ports::free_tcp()?.port();
+        command.env(env_var, template.replace("{port}", &port.to_string()));
+        tcp_ports.push((env_var.clone(), port));
+    }
     let kafka_addr = if config.kafka {
         let port = ports::free_tcp_except(|port| port == metrics_addr.port())?.port();
         let advertise = format!("{}:{port}", crate::container::host());
@@ -114,9 +132,7 @@ pub(crate) fn spawn_broker(
         command.env("FELIX_STORAGE_POWER_LOSS_ROOT", &storage);
     }
     if config.joint_fence {
-        command
-            .env("FELIX_INTERNAL_ELECTION", "true")
-            .env("FELIX_TEST_FLEET_FEATURES", joint_fence_features());
+        command.envs(joint_fence_broker_env());
     }
     command.envs(config.broker_env.iter().map(|(key, value)| (key, value)));
     if let Some(env) = config.node_env.get(index) {
@@ -149,6 +165,7 @@ pub(crate) fn spawn_broker(
         metrics_addr,
         kafka_addr,
         data_dir,
+        tcp_ports,
         process: Some(process),
     })
 }
@@ -193,6 +210,21 @@ pub fn broker_binary() -> Result<PathBuf> {
 
 /// What a broker of this build reports, plus `joint_fence` and the
 /// `ELECTION` capability it offers under `FELIX_INTERNAL_ELECTION`.
+/// The broker environment [`ClusterConfig::joint_fence`] sets: every broker
+/// offers `ELECTION` and reports `joint_fence`. Alone, in
+/// `ClusterConfig::broker_env`, nothing finalizes the feature, so a test can
+/// run without it and finalize it later with
+/// [`Cluster::finalize_fleet_features`](crate::Cluster::finalize_fleet_features).
+pub fn joint_fence_broker_env() -> Vec<(String, String)> {
+    vec![
+        ("FELIX_INTERNAL_ELECTION".to_string(), "true".to_string()),
+        (
+            "FELIX_TEST_FLEET_FEATURES".to_string(),
+            joint_fence_features(),
+        ),
+    ]
+}
+
 fn joint_fence_features() -> String {
     use felix_common::fleet::{IMPLEMENTED, JOINT_FENCE, NON_VOTING, PEER_ELECTION, START_HOLDERS};
     IMPLEMENTED

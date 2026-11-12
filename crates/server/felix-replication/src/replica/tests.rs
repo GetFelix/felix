@@ -14,6 +14,7 @@ use tempfile::TempDir;
 
 use super::*;
 
+mod copy_trust;
 mod election;
 mod fence;
 mod groups;
@@ -21,6 +22,7 @@ mod headers;
 mod incarnation;
 mod non_voting;
 mod trim;
+mod writers;
 
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
@@ -107,6 +109,7 @@ fn batch(generation: u64, first_offset: u64, values: &[&str]) -> ReplicateRecord
         .map(|v| Bytes::copy_from_slice(v.as_bytes()))
         .collect();
     ReplicateRecords {
+        writers: None,
         times: None,
         correlation_id: 1,
         shard: ShardRef {
@@ -1432,6 +1435,108 @@ async fn comparing_an_older_generation_over_several_batches_still_repairs() {
     )
     .await;
     assert_eq!(held(&broker).await, ["a", "b", "c", "d", "e"]);
+}
+
+/// A stale record larger than the leader's at the same offset is still
+/// compared, and dropped. The overlap read is budgeted from the leader's
+/// records, so it used to stop before the stale one and append past it.
+#[tokio::test]
+async fn a_stale_record_larger_than_the_leaders_is_compared_and_dropped() {
+    let (broker, _dir) = broker_with_storage().await;
+    let stale = "s".repeat(2048);
+    let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    old.apply(
+        SENDER,
+        batch(4, 0, &["a", "b", &stale]),
+        felix_broker::LogKind::Stream,
+    )
+    .await;
+
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    let answer = new
+        .apply(SENDER, batch(6, 3, &["d"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).expected_offset, 0);
+    let answer = new
+        .apply(
+            SENDER,
+            batch(6, 0, &["a", "b", "c", "d"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+    assert_eq!(held(&broker).await, ["a", "b", "c", "d"]);
+}
+
+/// Retention removed the start of the overlap. What survives past the oldest
+/// retained offset is still compared, so a stale record there is found and
+/// dropped rather than kept under the new leader's suffix.
+#[tokio::test]
+async fn an_overlap_retention_cut_into_is_compared_from_the_oldest_record() {
+    let (broker, _dir) = broker_with_storage().await;
+    let storage = broker.durable_storage().expect("storage");
+    storage
+        .set_stream_retention(
+            TENANT,
+            NAMESPACE,
+            STREAM,
+            felix_storage::log::Retention {
+                bytes: Some(4 * 1024),
+                age: None,
+            },
+        )
+        .expect("retention");
+    let filler: Vec<String> = (0..4).map(|n| n.to_string().repeat(1500)).collect();
+    let mut old_records: Vec<&str> = filler.iter().map(String::as_str).collect();
+    old_records.extend(["b", "stale"]);
+    let old = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    for (offset, record) in old_records.iter().enumerate() {
+        old.apply(
+            SENDER,
+            batch(4, offset as u64, &[record]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    }
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    log.enforce_retention_now().await.expect("retention");
+    let base = log.physical_base();
+    assert!(
+        base > 0 && base <= 4,
+        "retention left the log starting at {base}"
+    );
+
+    let new = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6));
+    let answer = new
+        .apply(SENDER, batch(6, 6, &["d"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(refusal(&answer).expected_offset, 0);
+    let mut leader: Vec<&str> = filler.iter().map(String::as_str).collect();
+    leader.extend(["b", "c", "d"]);
+    let answer = new
+        .apply(SENDER, batch(6, 0, &leader), felix_broker::LogKind::Stream)
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{:?}",
+        answer.kind()
+    );
+
+    let held: Vec<String> = log
+        .read_from(4, 1 << 20)
+        .await
+        .expect("read")
+        .iter()
+        .map(|record| String::from_utf8(record.payload.to_vec()).expect("utf8"))
+        .collect();
+    assert_eq!(held, ["b", "c", "d"]);
 }
 
 mod labels {

@@ -50,7 +50,7 @@ mod restore;
 mod wakes;
 mod zones;
 
-pub use caught_up::{CaughtUp, NothingCaughtUp};
+pub use caught_up::{CaughtUp, NothingCaughtUp, StuckLeader, StuckReason};
 pub use decision::{Blocked, Decision, MoveStep, Unplaceable};
 pub(crate) use metrics::{MOVE_DURATION_BUCKETS, MOVE_FENCE_BUCKETS};
 pub use metrics::{SHARD_MOVE_DURATION_SECONDS, SHARD_MOVE_FENCE_SECONDS};
@@ -66,11 +66,12 @@ pub use operator::{
 pub use plan::{Plan, ShardPlan, assignment_for, plan, plan_with};
 pub use reconciler::{
     FAILOVERS_PER_PASS, PLACEMENT_LEASE_HELD, PLACEMENT_LEASE_INTERVALS,
-    PLACEMENT_LEASE_TAKEOVERS_TOTAL, PLACEMENT_WRITES_FENCED_TOTAL, PlacementRead,
+    PLACEMENT_LEASE_TAKEOVERS_TOTAL, PLACEMENT_WRITES_FENCED_TOTAL, PlacementMemory, PlacementRead,
     RECONCILE_FAILURES_TOTAL, ReconcileOutcome, SHARD_ASSIGNMENT_WRITE_CONFLICTS_TOTAL,
     SHARD_MOVE_STEPS_TOTAL, SHARD_MOVES_TIMED_OUT_TOTAL, SHARD_MOVES_WAITING,
     SHARD_REPLICAS_HALTED, SHARD_REPLICAS_MISSING, SHARDS_PLACED_TOTAL, SHARDS_UNDER_REPLICATED,
-    SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once, spawn_reconciler,
+    SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once, reconcile_once_waking,
+    reconcile_remembering, spawn_reconciler,
 };
 pub use replica_positions::ReplicaPositions;
 pub use restore::{Replication, replication};

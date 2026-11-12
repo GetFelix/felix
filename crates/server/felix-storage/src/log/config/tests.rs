@@ -12,3 +12,23 @@ fn default_log_config_values() {
         }
     );
 }
+
+#[test]
+fn a_segment_must_fit_one_v9_record() {
+    use crate::segment::SEGMENT_HEADER_LEN;
+    use crate::segment::format::GENERATION_HEADER_LEN;
+    let sized = |segment_size_bytes| LogConfig {
+        segment_size_bytes,
+        ..LogConfig::default()
+    };
+    assert!(
+        sized(SEGMENT_HEADER_LEN + GENERATION_HEADER_LEN)
+            .validate()
+            .is_err()
+    );
+    assert!(
+        sized(SEGMENT_HEADER_LEN + GENERATION_HEADER_LEN + 1)
+            .validate()
+            .is_ok()
+    );
+}

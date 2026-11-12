@@ -139,8 +139,8 @@ the test behind every claim, [`docs/projections.md`](docs/projections.md).
 
 ## Current Focus
 
-- Finishing 0.6.0: moving shards between brokers without downtime, backed by
-  cluster-scale numbers for replicated `Quorum` streams and durable storage
+- Finishing 0.7.0: replica-set changes and leader election that keeps working
+  with the control plane down, and an MQTT listener for devices
 - Bounded memory: subscriber queues, QUIC receive windows and the cache key
   index held to a byte budget instead of growing with load
 - Many users over shared connections: gateways that act for their users, with
@@ -187,8 +187,8 @@ early to keep p99/p999 predictable.
 - Consumer groups: poll, acknowledge, redeliver, bound the redelivery,
   dead-letter and redrive
 - A control plane over REST, tenant-scoped tokens with RBAC, and capability
-  negotiation on the wire. Its metadata store is Postgres or an embedded Raft
-  group (`FELIX_CONTROLPLANE_STORAGE_BACKEND=raft`), so availability need not
+  negotiation on the wire. Its metadata lives in an embedded Raft
+  group (`FELIX_CONTROLPLANE_STORAGE_BACKEND=raft`), so availability does not
   rest on an external database
 - Online rebalancing: a shard with a live leader is moved by staging the
   destination as a replica, fencing the leader and cutting over once the copy
@@ -213,10 +213,6 @@ early to keep p99/p999 predictable.
 
 ## What does not exist yet
 
-- Per-stream retention: a policy is recorded on the stream and nothing reads it.
-  Retention itself works, but it is configured per broker
-  (`FELIX_DURABLE_RETENTION_BYTES` / `_SECONDS`) and is off unless set, so by
-  default a log grows until the disk does
 - Tiered storage, cross-region bridges, encryption at rest, and audit logging
 - Go and mobile clients. Python, TypeScript and the C ABI wrap the Rust
   client, and the C# SDK binds the C ABI, so none reimplements it. The next
@@ -230,7 +226,7 @@ is kept current per capability. Trust it when another page disagrees.
 ## Getting Started
 
 You need Rust 1.99.1 and [Task](https://taskfile.dev). Docker or Podman is
-optional: `task test` uses one to run the Postgres tests (see
+optional: the compose stack and the TLA+ checker use one (see
 [Docker or Podman](https://docs.getfelix.dev/getting-started/containers/)).
 
 Build the workspace:
@@ -275,7 +271,7 @@ incomplete.
 Done: QUIC transport with backpressure, the durable log, the control plane and
 placement, intra-region clustering with replication and failover, the log-backed
 cache, consumer groups, tenant-scoped RBAC, control-plane high availability
-over either Postgres or an embedded Raft group, broker-to-broker mTLS, moving a
+over an embedded Raft group, broker-to-broker mTLS, moving a
 shard without pausing its publishes or ending its subscriptions, a Helm chart,
 per-stream retention, offload of sealed segments to a directory, and Python
 and TypeScript clients over the Rust one.

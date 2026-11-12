@@ -437,13 +437,18 @@ Bounds that hold regardless of log size:
   page can also be empty below the tail when only trim records remain; its
   `next` says where to carry on (see [Conditional head trim](#conditional-head-trim)).
 
-`read_range` returns every record, including a leader's generation-start
-records (`docs/storage-format.md`). Only replication reads that way
-(`StreamLog::read_log_from`), since it ships and compares the log exactly as
-stored. Every other reader goes through `StreamLog::read_from`, which leaves
-them out and reads on past them, so a page is empty only at the tail. Their
-offsets stay taken: a reader sees the offset after one follow the offset before
-it.
+`read_range` returns every record but trims, including a leader's
+generation-start records (`docs/storage-format.md`). Only replication and the
+paths that must see every offset read that way: replication through
+`StreamLog::read_replicated_from`, which ships and compares the log as stored. Every other
+reader goes through `StreamLog::read_from`, which keeps only data records
+(`RecordMark::is_data`) and reads on past the rest, so a page is empty only at
+the tail. The paths that read the raw log for a client (the replay ring,
+consumer groups, Kafka, cache watches) apply the same predicate. Skipped
+offsets stay taken: a reader sees the offset after one follow the offset
+before it, and a subscriber with skip counts is told the gap held no event.
+The membership and counter records of format v9 are skipped the same way;
+nothing writes them yet (`docs/storage-format.md`, "Record kinds").
 
 Clients reach this read directly through `stream_read`
 ([protocol](protocol.md#streamread)), which `Broker::read_range` serves with
@@ -570,14 +575,91 @@ Four properties:
    its placed base). A zeroed header on a longer first segment stays fatal,
    even if the bytes after it are zeros too. See
    `docs/storage-format.md`, "What recovery may repair".
-   A **failed fsync poisons the log**, whichever path issued it (the group
-   commit flush, the io_uring flusher, a seal, a truncation): the durable bound
-   never moves again, and every later append, commit, flush and shutdown on that
-   log returns the error until the process restarts and recovery re-reads what
-   actually reached the disk. Linux may drop the dirty pages a failed writeback
+   A **failed fsync poisons the log**, whichever path issued it. That covers
+   the group commit flush, the io_uring flusher, a seal and its index, a new
+   segment's directory entry, a truncation, a retention removal, and the small
+   state files beside the segments (the ballot, the replica set, the replica
+   state with the commit offset, the generation history). A directory sync
+   counts as a flush. The durable bound never moves again. The operation
+   that hit the failure returns `StorageError::SyncFailed`, and so does every
+   append waiting on that flush. Every later append, commit, flush, state
+   write and shutdown on that log returns `StorageError::Poisoned`, which
+   names the shard and the first failure. Nothing is retried.
+
+   The log stays poisoned until it is reopened, which in a broker means a
+   restart. After a reboot or a power loss that is safe: recovery reads only
+   what reached the disk, as it does after any crash. After a restart on the
+   same boot the bytes of the failed flush can still be in the page cache,
+   where recovery would read them as valid and its own fsync of them would
+   succeed without writing anything. So a poisoned log leaves a `poisoned`
+   marker beside its durable mark, holding the last point a sync reached and
+   the fsync mode of the run that failed. It is written without a sync,
+   because the page cache is enough for a process restart and the disk just
+   failed. The marked point is the one held in memory, so a sync that
+   succeeded counts even when writing the durable mark after it failed. The
+   next open of that log goes by the mode in the marker, not its own:
+
+   - if the failed run used `OnCommit`, it cuts the log back to the marked
+     point, as a power loss would have left it: the segments after the marked
+     one go, and the marked one is cut to its synced length. Nothing past that
+     point was acknowledged, so nothing acknowledged is lost. The durable mark
+     is then set to the cut point;
+   - if it used a relaxed mode, those records were acknowledged, so they
+     stay. The open reads every byte past the marked point back and writes it
+     again before syncing, so the sync really reaches the disk;
+   - writes the ballot, the replica set, the replica state and the generation
+     history again, from the values read. That is a real write, unlike an
+     fsync of pages the kernel already calls clean;
+   - removes the marker last, so a crash part way repeats all of it.
+
+   A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
+   writes the state files again.
+
+   If the marker itself did not survive, the restart is a reboot or a power
+   loss and the rules above apply. The run record also stops vouching for the
+   boot: under every fsync mode the next start takes a new storage id, so a
+   replicated shard does not trust the copy on its own word. Still, find out
+   what is wrong with the disk first, and reboot the host before the broker
+   starts again.
+
+   The reason is that Linux may drop the dirty pages a failed writeback
    could not write, so the *next* fsync returns success having flushed nothing
    ("fsyncgate"). Believing it would acknowledge records that are gone, which is
-   the same silent loss the checksum rule above refuses to risk.
+   the same silent loss the checksum rule above refuses to risk. For a state
+   file the failure also leaves memory and disk apart: the file on disk may be
+   the old one or the new one, and memory keeps the old value. Stopping the
+   log keeps anything from being decided on that difference.
+
+   A broker with a poisoned log answers `/ready` with 503, so a load
+   balancer or an orchestrator takes it out of rotation. The body has one
+   line per poisoned log, naming its tenant and what stopped it, for example
+   `a log of tenant acme is poisoned: a flush of the replica state failed
+   (...)`, then a line telling the operator to reboot the host before
+   restarting the broker. The listener has no authentication and `/metrics`
+   on it carries tenant labels only, so the namespace and stream stay in the
+   broker's log. The process does not exit and `/live` stays ok. The broker also attests no trusted copy to a fence from then on.
+   See "A failed flush" in [replication-engine.md](replication-engine.md) for
+   what a replicated shard does.
+
+   One poisoned log failing the whole broker's `/ready` is an interim rule.
+   The decided behaviour is per shard
+   ([#2300](https://github.com/GetFelix/felix/issues/2300)): only the
+   poisoned log's shard stops taking writes, its leader steps down so another
+   copy takes over, `/ready` stays 200 for the broker's healthy shards, and
+   the poisoned log is reported in metrics and in the broker's status. Until
+   that lands a broker cannot hand off one shard by itself, so taking the
+   whole broker out of rotation is the only way to move its traffic.
+
+   > `disk_log/tests/flush_failures.rs` fails each flush of an append, a
+   > rollover, a seal, a truncation, a retention removal and each state-file
+   > write in turn on the simulator's filesystem, then cuts the power and
+   > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
+   > reports. The `a_restart_after_a_*` tests in
+   > `disk_log/tests/durability.rs` cover the same-boot restart on the
+   > real filesystem, where the failed flush's bytes stay readable: the cut,
+   > the rewrite under a relaxed mode, a mode change across the restart, a
+   > crash part way through the cut, and an unreadable marker.
+
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
    resumed subscription, a Kafka Fetch (and its high watermark) and a group
@@ -626,11 +708,17 @@ created with every new path component synced into its parent. Without that, a
 power loss on a fresh node could drop a whole root, and the acknowledged records
 in it, before anything else happened to sync the storage directory. Opening an
 existing root syncs its parent again, so a root that an earlier run created but
-never synced becomes durable then.
+never synced becomes durable then. Opening a log syncs the shard directory
+itself once, after its first segment, index and durable mark exist and before
+the open returns, so all three entries are durable before anything can append.
+If a new log's open crashes before that sync, nothing was acknowledged in it:
+the next open finds it fresh, or finds it already placed when it is placed at
+the same base again.
 
 > `a_fresh_root_keeps_its_acknowledged_record_through_a_power_loss`,
 > `a_created_directory_survives_a_power_loss` and
-> `an_unflushed_directory_is_made_durable_when_opened` (Linux only).
+> `an_unflushed_directory_is_made_durable_when_opened` (Linux only);
+> `opening_a_log_flushes_its_directory_once`.
 
 **The power-loss suite checks all of this against simulated reboots.** A
 workload runs against a real log while a test layer records what each flush made
@@ -651,6 +739,15 @@ with `FELIX_POWER_LOSS_SEED=<seed> FELIX_POWER_LOSS_SEEDS=1`.
 > `no_fsync_keeps_what_explicit_syncs_covered` in
 > `crates/server/felix-storage/src/disk_log/tests/power_loss.rs` (Linux only).
 
+The simulator's in-memory filesystem models the same crash, so the contract is
+also checked on any platform and without touching the disk. See
+[the simulated filesystem](simulation.md#the-filesystem).
+
+> `on_commit_acknowledged_records_survive_every_crash` and
+> `an_unsynced_tail_is_repaired_and_the_synced_prefix_survives` in
+> `crates/server/felix-storage/src/disk_log/tests/simulated_fs.rs` (`sim`
+> feature).
+
 Idempotent producers' state is derived the same way, before the log takes its
 first append: each producer's place comes from the marks its records carry,
 replayed from the `producers` snapshot saved at the last rollover. The marks
@@ -659,6 +756,14 @@ already read, so a current snapshot adds nothing to startup. A missing or
 stale one is replaced by reading the sealed segments' marks, which
 `felix_storage_producer_state_rebuilt_total` counts. See
 the producer snapshot section of `docs/storage-format.md`.
+
+From segment format v9 each record also carries a generation, and the open
+refuses a log whose generations fall, inside a segment or from one segment to
+the next. A crash that cuts the longer v9 header, generation included, is a
+torn tail like any other. A stream log moves onto v9 at its next segment once
+the fleet has finalized `record_generations`, and the floor that keeps its
+generations from falling survives a roll, a reopen and a truncation. See
+`docs/storage-format.md`, "Generations".
 
 ### What is validated at startup
 
@@ -689,7 +794,7 @@ Startup then makes the writes in order and opens the log. A refusal still
 makes the writes planned before the damage was found, as recovery always has.
 
 `felix_storage::inspect` runs only the plan, which is what lets
-`felix-broker inspect segments` report startup's verdict on a data directory
+`felixctl data inspect segments` report startup's verdict on a data directory
 without changing it. The plan never writes, and the `segment_recovery` fuzz
 target checks that the plan and the recovery that follows agree.
 
@@ -1028,7 +1133,7 @@ Once registration is required:
   so a fleet waiting on a slow or absent control plane does not hammer it; one
   that brings something resets the gap.
 
-**Restoring to a backup point.** `felix-broker restore-point` rewrites each
+**Restoring to a backup point.** `felixctl data restore-point` rewrites each
 stream's marker to the incarnation the point names, with no deletion floor,
 because the operator's restore is the evidence. The broker then takes the
 point's incarnation even if it registered, or saw deleted, a later one after
@@ -1165,7 +1270,7 @@ that loss is not detected; to give a broker an empty shard, empty its whole
 data directory. An upgrade from a build
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
-decode is replaced with a new id. `felix-broker restore-point` also writes a
+decode is replaced with a new id. `felixctl data restore-point` also writes a
 new one, because restored logs are an older copy of what peers last saw here.
 
 A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
@@ -1206,7 +1311,7 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   running may write after the flush; deregistering and heartbeats do not
   count), and no log was poisoned during the run: a failed fsync may already
   have dropped pages that run acknowledged. A
-  `felix-broker restore-point` that finishes records a clean stop under the
+  `felixctl data restore-point` that finishes records a clean stop under the
   id it wrote.
 - **Anything else is a crash**: `SIGKILL`, an OOM kill, a power loss, a panic
   that ends the process, or a drain that ran out of time. A panic inside a
@@ -1217,9 +1322,17 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   not write, so from then on the page cache no longer vouches for what the run
   acknowledged. The first failed sync of a segment, and the first log
   poisoned in the process, rewrite the record without its boot, and so does
-  a stop whose flush failed. A crash after that
+  a stop whose flush failed. The record of an `OnCommit` run, which names no
+  boot, is rewritten as a relaxed run without one. A crash after that
   rotates the id in any boot. That rewrite is not synced: only a process crash
   has to find it, and a machine crash rotates anyway.
+
+A rotation also tells the broker's own fence answers that a copy may be
+short. Before the new id is written, the start records in `<root>/copy-trust`
+that no copy on the directory is trusted. A copy becomes trusted again only
+when a leader ships it level with what that leader acknowledged, and the file
+keeps that across clean restarts until the next rotation. See
+`docs/replication-design.md`, "One fence rule for every change of leader".
 
 The boot is the kernel's boot id, `/proc/sys/kernel/random/boot_id`, read
 once at startup (macOS records `kern.bootsessionuuid`, but never keeps an id
@@ -1305,7 +1418,9 @@ gone or set aside, and the broker treats its copies of older shards as
 learners (`docs/replication-design.md`, "A copy that lost its storage does not
 vote"). It records that in a `replaced-storage` file under the data root
 before it registers the new id, and never removes it, so later starts know
-too once the control plane holds the new id.
+too once the control plane holds the new id. The file also names the new id
+and the incarnation the control plane held, so a start from the
+control-plane view can tell a view registered since from an older one.
 
 - **Unreachable control plane:** the broker opens nothing and announces no id
   until it answers, asking again with backoff up to 5 seconds. A stop while
@@ -1314,7 +1429,13 @@ too once the control plane holds the new id.
   listener is bound before the wait: `/live` answers `200` and `/ready`
   answers `503` with the reason, so a liveness probe does not restart a
   broker that is waiting. The full server takes over the same socket once
-  the broker is built.
+  the broker is built. With `FELIX_START_WITHOUT_CONTROLPLANE` on, a
+  directory that qualifies starts from its control-plane view instead. It
+  qualifies only with a run witness (see "The run witness" below), which a
+  restored directory does not have. This check still runs once the control
+  plane answers, before the broker registers: a directory found behind is
+  marked replaced, gets a new id and the broker stops
+  (`docs/control-plane.md`, "Starting while the control plane is down").
 - **No evidence keeps the id:** no record (a new directory, or the first start
   on a release that writes one), a node the control plane has never
   registered, or a control plane behind the record, which was itself restored
@@ -1353,7 +1474,10 @@ leader's own crash", for the whole of it and what it costs.
 Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
 them. Giving a copy up only narrows them: the ballot it writes accepts no
-leader at the generation it had already accepted.
+leader at the generation it had already accepted. The start records the id it
+rotated away in `rotated-ids` (`docs/storage-format.md`), so a set that still
+names the copy under that id is read as naming this directory's own copy, with
+its promises, and not a lost one.
 
 Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route
@@ -1378,6 +1502,15 @@ ahead of the other. The code that starts reading them must fix the order it
 writes them in and compare their generations when it loads, as the open does
 for `ballot` and `replica`.
 
+A ballot can also mark its vote committed, meaning a majority granted it.
+That bit is format v2 of the file, written only for a committed vote, and
+`DiskLog::commit_vote` refuses one until the log's gate allows segment format
+v9 (in a cluster, `record_generations` finalized). Nothing in a broker commits
+a vote yet. A save writes the
+ballot before `replica`, so a crash at any step of it opens with the vote
+from before the save or the vote it saved, never a mark on a vote that did
+not reach the disk. See `docs/storage-format.md`, "`ballot`".
+
 Leaders learn each follower's id in the peer handshake and start its copy
 over when it changes, and a follower counts toward the mark only once it has
 answered that pass under the id its position was learned under. Placement
@@ -1390,13 +1523,101 @@ the same report named for it, so a follower back under a new id after a crash
 or a wipe does not vote with the copy it has now (#1335; see
 `docs/replication-design.md`, "Fencing a promotion").
 
+### The control-plane view
+
+A cluster member also keeps `<root>/controlplane.view`: a copy of what the
+control plane last told it about its own shards. That is the fleet's
+finalized features, the assignment of every shard the node is in, the
+addresses of the nodes those assignments name, and the catalog entries those
+shards open at. It is there so that a broker restarted while the control
+plane is down can start from it
+([#1196](https://github.com/GetFelix/felix/issues/1196)).
+
+It is read at startup only with `FELIX_START_WITHOUT_CONTROLPLANE` on, and
+only when the startup lookup found the control plane down. A broker uses it
+only if it names this node, the storage id on disk is the one it was
+registered under, it was registered after any `replaced-storage` marker on
+the directory, the run witness names the directory (see "The run witness"),
+its fleet finalized `replica_election`, and this build reports every feature
+it lists; otherwise the broker waits for the control plane. See `docs/control-plane.md`, "Starting while the control plane is
+down".
+
+A background task builds the view from what the broker holds in memory and
+rewrites the file when the view changed, at most once a second and once more
+at a clean stop. A second in which no route, node address, catalog entry,
+fleet feature or registration changed builds nothing. It writes nothing until the broker has registered in this
+process and taken a routes snapshot and a catalog snapshot from the control
+plane, so every part of a view on disk is an answer the control plane gave
+this broker. Routes a start seeded from the view do not count as that
+snapshot. The parts
+are read one after another, so they can differ by as much as the routes and
+catalog feeds differ at any moment on a running broker. The file is replaced
+whole by a synced rename, so a crash leaves the older view or the newer one.
+Losing the last second of changes leaves an older view.
+
+A broker that deregisters removes the view durably before the request goes
+out, and puts it back only when the request never connected. A node that has
+left may already have had its shards moved to sets without it, so a later
+start must not stand or vote from the old ones: with no view it waits for the
+control plane. A crash between the two steps leaves no view, which is the
+same wait.
+A broker that stops because the control plane refused it, or found its
+directory restored or registered under another storage id, removes the view
+too. A node an operator deregistered, or one expired while it was down, keeps
+its view; elections stay safe on any past view (`docs/replication-design.md`,
+"Rejoining without the control plane").
+
+A file that is damaged, cut short, from another format version, or another
+node's reads as absent, and the broker then waits for the control plane as
+before. The format is in `docs/storage-format.md`, "`controlplane.view`".
+
+### The run witness
+
+A start from the control-plane view needs to know the directory was not put
+back from an older copy, and nothing in the directory can show that: a
+restore brings back every file, the view and the storage id included. With
+the control plane up, the node's registrations show it. Without it, the
+broker looks outside the directory
+([#2071](https://github.com/GetFelix/felix/issues/2071)).
+
+Every start, with the control plane or without it, writes a new random token
+to `<root>/run-token` and the same token to a **run witness** in `/dev/shm`,
+with the machine's boot id and the directory's path. `/dev/shm` is memory: a
+restore of the directory or a rollback of the disk does not bring an old
+witness back, and a reboot clears it. The start removes the old witness first
+and fails if it cannot, so no witness ever names a token older than the
+directory's last start.
+
+A start from the view goes ahead only when the witness names this directory,
+this boot and the token on disk. So:
+
+- **A process restart on the same Linux machine, in the same boot,** finds
+  the witness its last run wrote and starts from the view. So does a
+  container restart inside a live Kubernetes pod, since the pod owns
+  `/dev/shm`.
+- **A fresh container** (`docker restart`, a Compose restart, a new pod) gets
+  a new `/dev/shm` with no witness, and the broker waits.
+- **A copy put back from before the last start** holds an older token, and the
+  broker waits for the control plane.
+- **After a reboot, on a new machine or pod, or at another path,** there is no
+  witness, and the broker waits. Nothing local can tell a restore apart then.
+- **Platforms without `/dev/shm`**, macOS included, never start from the view.
+- **Brokers under different users** keep separate witnesses: the file name
+  carries the user id, since `/dev/shm` is sticky and a start could not
+  remove another user's file.
+
+A copy taken during the last run and put back before the next start holds
+the current token. The control plane's check cannot see that case either,
+since the copy recorded the incarnation the control plane still holds; such a
+restore needs `storage-id` deleted, or `felix-broker restore-point`.
+
 ## Restoring to a backup point
 
 A backup point (see
 `docs-site/src/content/docs/deployment/backup-and-restore.md`) records one
 committed offset per shard log. The shard's directories are copied while its
 broker keeps writing, so the copy usually holds more than the point, and
-`felix-broker restore-point` cuts it back with `DiskLog::restore_to`.
+`felixctl data restore-point` cuts it back with `DiskLog::restore_to`.
 
 Copying a live shard is safe because **records are never rewritten**. Once a
 record below the point is in a segment, those bytes are final: later appends
@@ -1429,9 +1650,9 @@ one. A broker the restore skipped starts with an empty data directory.
 
 ## Tools
 
-`felix-broker inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
+`felixctl data inspect segments <data-dir>` reports, read-only, without starting a broker, every shard's
 segments, whether their records and indexes verify, and what startup would do
-with each one. `felix-broker inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
+with each one. `felixctl data inspect records <data-dir> <tenant/namespace/name/shard> --offset N`
 decodes the records around one offset: read-only, seeking with the sparse index (checked, not
 trusted), and stopping at the first record that does not verify. It runs the same recovery plan
 to tell a torn tail from damage and to leave out a rollover's leftover segments. See "A broker
@@ -1906,7 +2127,9 @@ Current builds never create either directory.
 ## Tiered storage: offload
 
 Offload is the first part of tiered storage
-([#172](https://github.com/GetFelix/felix/issues/172)). It copies sealed
+([#172](https://github.com/GetFelix/felix/issues/172)). The design for the rest
+(a shared tier recorded through Raft, and cold reads) is in
+[`tiered-storage-design.md`](tiered-storage-design.md). Offload copies sealed
 segments to an object store, and it makes retention wait for a copy before it
 deletes a segment. It is off by default. `FELIX_DURABLE_OFFLOAD_DIR` turns it
 on for stream logs (`LogConfig::offload` in the library). Cache, counter and

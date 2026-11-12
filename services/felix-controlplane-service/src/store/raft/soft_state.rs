@@ -19,7 +19,7 @@
 //!
 //! The design is in `docs/metadata-raft-design.md` ("Liveness is leader
 //! soft state").
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
@@ -88,6 +88,15 @@ pub(crate) enum LeaderRequest {
     ShardAssignment {
         key: crate::model::ShardKey,
     },
+    /// Several shards' assignments after one read-index. A leader that
+    /// predates it fails to read it, and the asker reads each shard alone.
+    ShardAssignments {
+        keys: Vec<crate::model::ShardKey>,
+    },
+    /// The shard-assignment feed's `next_seq` as the leader holds it, for a
+    /// broker that must not take a lagging member's feed as current. A leader
+    /// that predates it fails to read it, and the asker answers without one.
+    ShardAssignmentHead,
 }
 
 /// The leader's soft state and the rules for judging by it.
@@ -286,6 +295,31 @@ impl SoftState {
                     .get_shard_assignment(&key)
                     .await
                     .map(|assignment| MetaResponse::Assignment { assignment })
+                    .map_err(Into::into))
+            }
+            LeaderRequest::ShardAssignments { keys } => {
+                self.confirm_read().await?;
+                let store = self.machine.store();
+                let mut assignments = Vec::with_capacity(keys.len());
+                for key in &keys {
+                    match store.get_shard_assignment(key).await {
+                        Ok(assignment) => assignments.push(Some(assignment)),
+                        Err(crate::store::StoreError::NotFound(_)) => assignments.push(None),
+                        Err(err) => return Ok(Err(err.into())),
+                    }
+                }
+                Ok(Ok(MetaResponse::Assignments { assignments }))
+            }
+            LeaderRequest::ShardAssignmentHead => {
+                self.confirm_read().await?;
+                Ok(self
+                    .machine
+                    .store()
+                    .confirmed_shard_assignment_head()
+                    .await
+                    .map(|head| MetaResponse::AssignmentHead {
+                        next_seq: head.unwrap_or_default(),
+                    })
                     .map_err(Into::into))
             }
         }
@@ -605,9 +639,9 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
             term,
             since: now,
             since_millis: crate::clock::now_millis(),
-            beats: HashMap::new(),
-            suspicions: HashMap::new(),
-            registered: HashMap::new(),
+            beats: HashMap::default(),
+            suspicions: HashMap::default(),
+            registered: HashMap::default(),
             lease: None,
             last_checkpoint: now,
         });

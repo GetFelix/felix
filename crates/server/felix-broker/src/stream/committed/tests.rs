@@ -38,6 +38,15 @@ impl ReadBounds for Bounds {
 }
 
 async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bounds>) {
+    let bounds = Arc::new(Bounds {
+        bound: Mutex::new(bound),
+        asked: AtomicUsize::new(0),
+    });
+    let broker = broker_bounded_by(dir, Arc::clone(&bounds) as Arc<dyn ReadBounds>).await;
+    (broker, bounds)
+}
+
+async fn broker_bounded_by(dir: &std::path::Path, bounds: Arc<dyn ReadBounds>) -> Broker {
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
@@ -45,11 +54,7 @@ async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bo
     };
     let broker = Broker::new(EphemeralCache::new().into())
         .with_durable_storage(DurableStorage::open(dir, config).expect("storage"));
-    let bounds = Arc::new(Bounds {
-        bound: Mutex::new(bound),
-        asked: AtomicUsize::new(0),
-    });
-    broker.set_read_bounds(Arc::clone(&bounds) as Arc<dyn ReadBounds>);
+    broker.set_read_bounds(bounds);
     broker.register_tenant("t1").await.expect("tenant");
     broker
         .register_namespace("t1", "ns")
@@ -73,7 +78,7 @@ async fn broker_with(dir: &std::path::Path, bound: ReadBound) -> (Broker, Arc<Bo
             .await
             .expect("stream");
     }
-    (broker, bounds)
+    broker
 }
 
 async fn publish(broker: &Broker, stream: &str, payload: &'static [u8]) -> crate::PublishOutcome {
@@ -618,4 +623,256 @@ async fn a_batch_shipped_again_does_not_end_readers() {
         .expect("adopt");
     publish(&broker, "quorum", b"second").await;
     assert_eq!(&next(&mut live).await[..], b"second");
+}
+
+async fn commit(broker: &Broker, key: &str, value: &'static [u8]) -> crate::PublishOutcome {
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    let ops = vec![crate::StateOp::Put {
+        key: key.to_string(),
+        value: Bytes::from_static(value),
+    }];
+    broker
+        .commit_to_handle(&handle, Bytes::from_static(value), ops, None)
+        .await
+        .expect("commit")
+}
+
+async fn state(broker: &Broker, key: &str) -> crate::StateRead {
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    broker.state_get(&handle, key).await.expect("state read")
+}
+
+/// The offsets a range read from the start returns.
+async fn readable(broker: &Broker) -> Vec<u64> {
+    let page = broker
+        .read_range("t1", "ns", "quorum", 0, 0, None, 100, 1 << 20)
+        .await
+        .expect("read");
+    page.records.iter().map(|r| r.offset).collect()
+}
+
+/// **A commit held when the shard was given up is in the state once the
+/// broker leads again and the mark covers it.** The dropped batch stays on
+/// disk and the next generation commits it, so readers see its event. The
+/// state view built before it never had its update, and kept past the
+/// generation start, a state read answers without the commit its event
+/// already showed.
+#[tokio::test]
+async fn a_commit_dropped_from_the_hold_is_in_the_state_once_led_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "state", b"first").await;
+    assert_eq!(state(&broker, "state").await.version, Some(0));
+
+    bounds.set(ReadBound::Committed(1));
+    assert_eq!(
+        commit(&broker, "state", b"held").await.offsets,
+        Some((1, 1))
+    );
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+
+    let start = broker
+        .append_generation_start("t1", "ns", "quorum", 0, 2)
+        .await
+        .expect("generation start");
+    assert_eq!(start, 2);
+    bounds.set(ReadBound::Unbounded);
+    assert_eq!(readable(&broker).await, vec![0, 1]);
+
+    let read = state(&broker, "state").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+}
+
+/// **A publish that lands past records that never reached the ring leaves
+/// the state to be rebuilt with them.** Here the dropped batch is a commit to
+/// one key and the next is a commit to another; applying only the second to
+/// the old view loses the first.
+#[tokio::test]
+async fn a_commit_past_a_dropped_hold_keeps_the_dropped_commit_in_the_state() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "a", b"first").await;
+    assert_eq!(state(&broker, "a").await.version, Some(0));
+
+    bounds.set(ReadBound::Committed(1));
+    commit(&broker, "b", b"held").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+
+    bounds.set(ReadBound::Unbounded);
+    assert_eq!(commit(&broker, "a", b"after").await.offsets, Some((2, 2)));
+    assert_eq!(readable(&broker).await, vec![0, 1, 2]);
+
+    let read = state(&broker, "b").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+    assert_eq!(state(&broker, "a").await.version, Some(2));
+}
+
+/// **A broker that leads again without a generation-start record still
+/// rebuilds its state with the commit it dropped.** Before the fleet writes
+/// start records, nothing moves `next_seq` past the dropped batch, so without
+/// `lead_from_tail` the old view answers, and a rebuild would stop below it.
+/// The rebuild waits for the mark to cover the tail.
+#[tokio::test]
+async fn a_dropped_commit_is_in_the_state_when_led_again_without_a_start_record() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "state", b"first").await;
+    assert_eq!(state(&broker, "state").await.version, Some(0));
+
+    bounds.set(ReadBound::Committed(1));
+    commit(&broker, "state", b"held").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+
+    broker
+        .lead_from_tail("t1", "ns", "quorum", 0)
+        .await
+        .expect("lead from tail");
+    // A reader at the old sequence was never offered the dropped commit.
+    assert_eq!(resumes_at(&mut live).await, Some(1));
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    assert!(matches!(
+        broker.state_get(&handle, "state").await,
+        Err(BrokerError::StateNotReadable(NotReadable::Settling))
+    ));
+
+    bounds.set(ReadBound::Committed(2));
+    assert_eq!(readable(&broker).await, vec![0, 1]);
+    let read = state(&broker, "state").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+}
+
+/// [`Bounds`] that, once armed, stall the next read from any thread but the
+/// test's own until opened: a release task that has not run yet.
+#[derive(Debug)]
+struct StalledRelease {
+    bounds: Bounds,
+    test_thread: std::thread::ThreadId,
+    armed: std::sync::atomic::AtomicBool,
+    open: (std::sync::Mutex<bool>, std::sync::Condvar),
+}
+
+impl StalledRelease {
+    fn open(&self) {
+        *self.open.0.lock().unwrap() = true;
+        self.open.1.notify_all();
+    }
+}
+
+impl ReadBounds for StalledRelease {
+    fn stream_bound(&self, tenant: &str, ns: &str, stream: &str, shard: u32) -> ReadBound {
+        if std::thread::current().id() != self.test_thread
+            && self.armed.swap(false, Ordering::SeqCst)
+        {
+            let open = self.open.0.lock().unwrap();
+            let _open = self.open.1.wait_while(open, |open| !*open).unwrap();
+        }
+        self.bounds.stream_bound(tenant, ns, stream, shard)
+    }
+}
+
+/// **Leading again right after a discard ends the old readers, even before
+/// the release task has seen the discard.** The hold reads as busy until that
+/// task runs, and `lead_from` skips a busy hold. Skipped, a reader of the
+/// shard stayed open on the old log and the state view missed the dropped
+/// commit. Under load this is a scheduling delay, not a rare interleaving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn leading_again_waits_for_a_discarded_hold_to_go_idle() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bounds = Arc::new(StalledRelease {
+        bounds: Bounds {
+            bound: Mutex::new(ReadBound::Unbounded),
+            asked: AtomicUsize::new(0),
+        },
+        test_thread: std::thread::current().id(),
+        armed: std::sync::atomic::AtomicBool::new(false),
+        open: Default::default(),
+    });
+    let broker = broker_bounded_by(dir.path(), Arc::clone(&bounds) as Arc<dyn ReadBounds>).await;
+    commit(&broker, "state", b"first").await;
+
+    bounds.bounds.set(ReadBound::Committed(1));
+    bounds.armed.store(true, Ordering::SeqCst);
+    commit(&broker, "state", b"held").await;
+    assert_eq!(broker.discard_uncommitted("t1", "ns", "quorum", 0).await, 1);
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+
+    let lead = broker.lead_from_tail("t1", "ns", "quorum", 0);
+    tokio::pin!(lead);
+    let early = tokio::time::timeout(Duration::from_millis(200), &mut lead).await;
+    bounds.open();
+    match early {
+        Ok(led) => led.expect("lead from tail"),
+        Err(_) => lead.await.expect("lead from tail"),
+    }
+    assert_eq!(resumes_at(&mut live).await, Some(1));
+}
+
+/// **A hold carried across a generation start keeps the state view.** The
+/// held commit is released in order and applied to the view, and the publish
+/// after the start record counts it as skipped, so nothing forces a rebuild.
+#[tokio::test]
+async fn a_hold_carried_across_a_generation_start_keeps_the_state_view() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bounds) = broker_with(dir.path(), ReadBound::Unbounded).await;
+    commit(&broker, "state", b"first").await;
+    assert_eq!(state(&broker, "state").await.version, Some(0));
+    let mut live = broker
+        .subscribe("t1", "ns", "quorum", 0)
+        .await
+        .expect("subscribe");
+
+    bounds.set(ReadBound::Committed(1));
+    commit(&broker, "state", b"held").await;
+    assert_eq!(
+        broker
+            .append_generation_start("t1", "ns", "quorum", 0, 2)
+            .await
+            .expect("generation start"),
+        2
+    );
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "quorum", 0)
+        .await
+        .expect("handle");
+    let below_hold = handle.tail_seq();
+    broker
+        .lead_from_tail("t1", "ns", "quorum", 0)
+        .await
+        .expect("lead from tail");
+    // A busy hold keeps the sequence where readers resume and its readers.
+    assert_eq!(handle.tail_seq(), below_hold);
+    bounds.set(ReadBound::Unbounded);
+    commit(&broker, "other", b"after").await;
+    assert_eq!(&next(&mut live).await[..], b"held");
+    assert_eq!(&next(&mut live).await[..], b"after");
+
+    // A rebuild asks for the read bound; a kept view answers without it.
+    let asked = bounds.asked.load(Ordering::SeqCst);
+    let read = state(&broker, "state").await;
+    assert_eq!(read.value, Some(Bytes::from_static(b"held")));
+    assert_eq!(read.version, Some(1));
+    assert_eq!(
+        bounds.asked.load(Ordering::SeqCst),
+        asked,
+        "the view was rebuilt"
+    );
 }

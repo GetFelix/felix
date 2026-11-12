@@ -92,6 +92,12 @@ pub enum MoveStep {
     /// without reporting drained: it serves again at a new generation, as for
     /// `Retake`, and `successor` is dropped.
     FenceTimedOut { successor: Option<String> },
+    /// The fenced leader reported, at the fence's generation, that it gave
+    /// its copy up in a crash, so it will never report drained: it is named
+    /// again at a new generation, as for `FenceTimedOut`, but `successor`
+    /// stays in the set as a follower. Its broker leads only if no follower is
+    /// ahead of its copy.
+    LeaderGaveUp { successor: Option<String> },
     /// An operator gave up the log of a shard whose only copies are out of
     /// reach: `to` leads it afresh, and whatever `from` held is lost.
     Discard { from: String, to: String },
@@ -103,11 +109,30 @@ pub enum MoveStep {
     /// `MovePolicy::pending_set_timeout_millis`: the change is dropped and
     /// the control plane's own set stays, at a new generation.
     PendingSetTimedOut,
+    /// The leader reported `node`, a member of the set being left, caught up
+    /// under a new storage identity before the joint start: the change is
+    /// dropped and the control plane's own set stays, at a new generation,
+    /// which names `node` by its new storage and holds it as a learner.
+    PendingSetMemberReplaced { node: String },
     /// The leader reported that it refused to open its generation, having
     /// promised it to a node whose election the control plane recorded
     /// without adopting. It is named again at a new generation, above the
     /// one it promised away, on the same set.
     ElectionRefused,
+    /// The leader reported that it refused its generation without naming a
+    /// node: its joint fence cannot learn the set that generation leaves, as
+    /// for a shard it learned from a snapshot, or it or a replica of its set
+    /// already accepted a newer generation no assignment named. It is named
+    /// again one generation up, on the same set, whose set before is the one
+    /// it is named on now, or at `at_least` when that is higher: past a newer
+    /// ballot its own copy holds for another node, which a fence one up would
+    /// find promised away and wait on. 0 when there is none.
+    SetUnknown { at_least: u64 },
+    /// The leader's broker is live, but the leader has shown no progress at
+    /// its generation for `MovePolicy::stuck_leader_millis`: it is named
+    /// again one generation up, on the same set, as for `SetUnknown`. A new
+    /// fenced term ends whatever held the old one, and never loses a record.
+    Stuck { reason: super::StuckReason },
     /// The shard no longer elects (its consistency changed), so a pending
     /// set can never be reported: the change is dropped.
     PendingSetDropped,
@@ -121,6 +146,15 @@ pub enum MoveStep {
 }
 
 impl MoveStep {
+    /// The generation the step's write takes at least, above the next one.
+    /// 0 for the next.
+    pub fn at_least(&self) -> u64 {
+        match self {
+            Self::SetUnknown { at_least } => *at_least,
+            _ => 0,
+        }
+    }
+
     pub fn label(&self) -> &'static str {
         match self {
             Self::Stage { .. } => "stage",
@@ -140,10 +174,14 @@ impl MoveStep {
             Self::Cancel { .. } => "cancel",
             Self::Retake { .. } => "retake",
             Self::FenceTimedOut { .. } => "fence_timed_out",
+            Self::LeaderGaveUp { .. } => "leader_gave_up",
             Self::Discard { .. } => "discard",
             Self::TakePendingSet => "take_pending_set",
             Self::PendingSetTimedOut => "pending_set_timed_out",
+            Self::PendingSetMemberReplaced { .. } => "pending_set_member_replaced",
             Self::ElectionRefused => "election_refused",
+            Self::SetUnknown { .. } => "set_unknown",
+            Self::Stuck { .. } => "stuck",
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
@@ -161,6 +199,11 @@ pub enum Blocked {
     /// writes are still in flight there, or its group state or counters are
     /// not yet on every replica that could take over.
     LeaderStopping,
+    /// The leader has deregistered, and the next step would name it again at
+    /// a new generation (a fenced move giving up, or a refused generation).
+    /// The shard waits for another copy to take it, or fails over once the
+    /// leader's lease has run out.
+    LeaderDeparted,
     /// A move is wanted, and `MovePolicy::max_concurrent` is reached.
     MoveLimit,
     /// A move is wanted, and `node` already has `MovePolicy::max_per_node`
@@ -199,6 +242,10 @@ impl std::fmt::Display for Blocked {
             Self::LeaderStopping => write!(
                 f,
                 "waiting for the leader to stop serving and hand over its logs"
+            ),
+            Self::LeaderDeparted => write!(
+                f,
+                "the leader has deregistered; waiting for a caught-up copy to take over, or for its lease to run out"
             ),
             Self::MoveLimit => write!(f, "waiting for a move slot"),
             Self::NodeMoveLimit { node } => write!(f, "waiting for a move slot on {node}"),

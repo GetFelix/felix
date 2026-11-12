@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use felix_controlplane_service::model::StreamKey;
-use felix_controlplane_service::store::ControlPlaneStore;
 use felix_replication::peer::config::PeerTlsConfig;
 use felix_replication::peer::tls::PeerTls;
 use felix_replication::peer::{PeerPool, PeerTransportConfig};
@@ -210,6 +209,7 @@ async fn a_replica_that_left_the_set_cannot_win_a_fence() {
                 candidate: true,
                 set: old_set.clone(),
                 leaving: None,
+                earlier: Vec::new(),
             }),
         });
         let addr = cluster.node(target).expect("node").internal_addr;

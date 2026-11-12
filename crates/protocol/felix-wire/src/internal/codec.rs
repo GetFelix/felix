@@ -4,16 +4,19 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use super::replicate::GenerationStart;
-use super::replicate::{ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks};
+use super::replicate::{
+    ProducerMark, any_block, put_blocks, put_marks, take_blocks, take_marks, writers_well_formed,
+};
 use super::{
-    AckMode, CacheOpKind, ErrorCode, Fence, FenceElection, FenceOk, ForwardCacheCondition,
-    ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease,
-    ForwardProducer, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello, HelloOk,
-    InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS, MAX_BODY_BYTES,
-    MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES, MAX_INNER_BODY_BYTES,
-    MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping, Pong, PreVote,
-    PreVoteAnswer, PreVoteRefusal, ReplicaLog, ReplicaSetView, ReplicateBootstrap, ReplicateError,
-    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
+    AckMode, CacheOpKind, ErrorCode, Fence, FenceAttestation, FenceElection, FenceOk,
+    ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome,
+    ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError, ForwardPublishOk, Hello,
+    HelloOk, InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS,
+    MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
+    MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
+    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView,
+    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords, SetMember, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -166,6 +169,12 @@ impl InternalMessage {
                         }
                         None => body.put_u8(0),
                     }
+                    if !election.earlier.is_empty() {
+                        body.put_u16(election.earlier.len() as u16);
+                        for earlier in &election.earlier {
+                            put_set(&mut body, earlier);
+                        }
+                    }
                 }
             }
             Self::PreVote(m) => {
@@ -188,6 +197,13 @@ impl InternalMessage {
                 }
             }
             Self::ReplicateFetch(m) => {
+                // The stamped kind reads back as headered, so any other
+                // combination would decode as a different fetch.
+                if m.writers && !(m.labelled && m.timed && m.headers) {
+                    return Err(Error::InvalidRecordHeaders(
+                        "a fetch asking for writers must ask for headers",
+                    ));
+                }
                 body.put_u64(m.correlation_id);
                 put_str(&mut body, &m.shard.tenant_id)?;
                 put_str(&mut body, &m.shard.namespace)?;
@@ -207,6 +223,15 @@ impl InternalMessage {
                 body.put_u64(m.log_end);
                 body.put_u64(m.commit_offset);
                 body.put_u64(m.last_generation);
+                // Without an attestation, `kept_ballot` is the kind, not the body.
+                if let Some(attestation) = m.attestation {
+                    body.put_u64(attestation.kept_from);
+                    body.put_u8(
+                        u8::from(attestation.trusted)
+                            | (u8::from(m.kept_ballot) << 1)
+                            | (u8::from(attestation.by_record) << 2),
+                    );
+                }
             }
             Self::ReplicateRecords(m)
             | Self::ReplicateCacheRecords(m)
@@ -218,7 +243,10 @@ impl InternalMessage {
                 // Blocks ride only the headered kind. Sending the batch as
                 // another would store its records without them.
                 if m.headers.as_deref().is_some_and(any_block)
-                    && self.kind() != Kind::ReplicateHeaderedRecords
+                    && !matches!(
+                        self.kind(),
+                        Kind::ReplicateHeaderedRecords | Kind::ReplicateStampedRecords
+                    )
                 {
                     return Err(Error::InvalidRecordHeaders(
                         "headers need generations and times",
@@ -284,7 +312,13 @@ impl InternalMessage {
                         None => body.put_u64(m.commit_offset.unwrap_or(0)),
                     }
                 }
-                let headered = self.kind() == Kind::ReplicateHeaderedRecords;
+                let stamped = self.kind() == Kind::ReplicateStampedRecords;
+                if stamped && (m.generations.is_none() || m.times.is_none()) {
+                    return Err(Error::InvalidRecordHeaders(
+                        "writers need generations and times",
+                    ));
+                }
+                let headered = stamped || self.kind() == Kind::ReplicateHeaderedRecords;
                 if headered || self.kind() == Kind::ReplicateTimedRecords {
                     let times = m.times.as_deref().unwrap_or_default();
                     debug_assert_eq!(times.len(), m.payloads.len(), "one time per record");
@@ -293,13 +327,34 @@ impl InternalMessage {
                     }
                 }
                 if headered {
-                    let headers = m.headers.as_deref().unwrap_or_default();
+                    let none;
+                    let headers = match m.headers.as_deref() {
+                        Some(headers) => headers,
+                        None if stamped => {
+                            none = vec![None; m.payloads.len()];
+                            &none
+                        }
+                        None => &[],
+                    };
                     if headers.len() != m.payloads.len() {
                         return Err(Error::InvalidRecordHeaders(
                             "headers count differs from payloads",
                         ));
                     }
                     put_blocks(&mut body, headers);
+                }
+                if stamped {
+                    let writers = m.writers.as_deref().unwrap_or_default();
+                    if writers.len() > MAX_GENERATIONS
+                        || !writers_well_formed(m.first_offset, m.payloads.len(), writers)
+                    {
+                        return Err(Error::InvalidRecordHeaders("writers are malformed"));
+                    }
+                    body.put_u32(writers.len() as u32);
+                    for run in writers {
+                        body.put_u64(run.generation);
+                        body.put_u64(run.start_offset);
+                    }
                 }
             }
             Self::ReplicateOk(m) => {
@@ -311,6 +366,9 @@ impl InternalMessage {
                 body.put_u16(m.code as u16);
                 body.put_u64(m.expected_offset);
                 put_str(&mut body, &m.detail)?;
+                if let Some(reason) = &m.reason {
+                    put_refusal_reason(&mut body, reason)?;
+                }
             }
             Self::ReplicateBootstrap(m)
             | Self::ReplicateCacheBootstrap(m)
@@ -549,7 +607,7 @@ impl InternalMessage {
                 };
                 let sequenced = kind == Kind::SequencedForwardPublish;
                 let headers = if kind == Kind::HeaderedForwardPublish || sequenced {
-                    Some(take_blocks(&mut body, payloads.len())?)
+                    Some(take_blocks(&mut body, payloads.len(), true)?)
                 } else {
                     None
                 };
@@ -660,7 +718,7 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))
             }
-            Kind::Fence | Kind::ElectionFence => {
+            Kind::Fence | Kind::ElectionFence | Kind::ElectionKeptFence => {
                 let mut message = Fence {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -674,7 +732,7 @@ impl InternalMessage {
                     log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
                     election: None,
                 };
-                if kind == Kind::ElectionFence {
+                if kind != Kind::Fence {
                     let candidate = take_flag(&mut body)?;
                     let set = take_set(&mut body)?;
                     let leaving = if take_flag(&mut body)? {
@@ -682,10 +740,22 @@ impl InternalMessage {
                     } else {
                         None
                     };
+                    let mut earlier = Vec::new();
+                    if kind == Kind::ElectionKeptFence {
+                        // Zero would be a second encoding of kind 41.
+                        let count = take_u16(&mut body)? as usize;
+                        if count == 0 || count > super::election::MAX_EARLIER_SETS {
+                            return Err(Error::Incomplete);
+                        }
+                        for _ in 0..count {
+                            earlier.push(take_set(&mut body)?);
+                        }
+                    }
                     let election = FenceElection {
                         candidate,
                         set,
                         leaving,
+                        earlier,
                     };
                     election.check()?;
                     message.election = Some(election);
@@ -732,7 +802,8 @@ impl InternalMessage {
             Kind::ReplicateFetch
             | Kind::ReplicateLabelledFetch
             | Kind::ReplicateTimedFetch
-            | Kind::ReplicateHeaderedFetch => {
+            | Kind::ReplicateHeaderedFetch
+            | Kind::ReplicateStampedFetch => {
                 let message = ReplicateFetch {
                     correlation_id: take_u64(&mut body)?,
                     shard: ShardRef {
@@ -749,9 +820,15 @@ impl InternalMessage {
                     labelled: kind != Kind::ReplicateFetch,
                     timed: matches!(
                         kind,
-                        Kind::ReplicateTimedFetch | Kind::ReplicateHeaderedFetch
+                        Kind::ReplicateTimedFetch
+                            | Kind::ReplicateHeaderedFetch
+                            | Kind::ReplicateStampedFetch
                     ),
-                    headers: kind == Kind::ReplicateHeaderedFetch,
+                    headers: matches!(
+                        kind,
+                        Kind::ReplicateHeaderedFetch | Kind::ReplicateStampedFetch
+                    ),
+                    writers: kind == Kind::ReplicateStampedFetch,
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
@@ -765,13 +842,30 @@ impl InternalMessage {
                     Self::Pong(Pong { correlation_id })
                 })
             }
-            Kind::FenceOk => {
-                let message = FenceOk {
+            Kind::FenceOk | Kind::FenceKeptOk | Kind::FenceAttestedOk => {
+                let mut message = FenceOk {
                     correlation_id: take_u64(&mut body)?,
                     log_end: take_u64(&mut body)?,
                     commit_offset: take_u64(&mut body)?,
                     last_generation: take_u64(&mut body)?,
+                    kept_ballot: kind == Kind::FenceKeptOk,
+                    attestation: None,
                 };
+                if kind == Kind::FenceAttestedOk {
+                    let kept_from = take_u64(&mut body)?;
+                    let flags = take_u8(&mut body)?;
+                    // A bit this build does not know may change what the
+                    // answer means, so it is refused rather than dropped.
+                    if flags & !7 != 0 {
+                        return Err(Error::Incomplete);
+                    }
+                    message.kept_ballot = flags & 2 != 0;
+                    message.attestation = Some(FenceAttestation {
+                        kept_from,
+                        trusted: flags & 1 != 0,
+                        by_record: flags & 4 != 0,
+                    });
+                }
                 expect_empty(&body)?;
                 Ok(Self::FenceOk(message))
             }
@@ -784,7 +878,8 @@ impl InternalMessage {
             | Kind::ReplicateCommittedRecords
             | Kind::ReplicateLabelledRecords
             | Kind::ReplicateTimedRecords
-            | Kind::ReplicateHeaderedRecords => {
+            | Kind::ReplicateHeaderedRecords
+            | Kind::ReplicateStampedRecords => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -808,7 +903,8 @@ impl InternalMessage {
                     }
                     payloads.push(body.split_to(len));
                 }
-                let headered = kind == Kind::ReplicateHeaderedRecords;
+                let stamped = kind == Kind::ReplicateStampedRecords;
+                let headered = kind == Kind::ReplicateHeaderedRecords || stamped;
                 let timed = kind == Kind::ReplicateTimedRecords || headered;
                 let labelled = kind == Kind::ReplicateLabelledRecords || timed;
                 let committed = kind == Kind::ReplicateCommittedRecords || labelled;
@@ -861,7 +957,28 @@ impl InternalMessage {
                     None
                 };
                 let headers = if headered {
-                    Some(take_blocks(&mut body, payloads.len())?)
+                    // A stamped batch may hold no block; that reads as none.
+                    let blocks = take_blocks(&mut body, payloads.len(), !stamped)?;
+                    any_block(&blocks).then_some(blocks)
+                } else {
+                    None
+                };
+                let writers = if stamped {
+                    let declared = take_u32(&mut body)? as usize;
+                    if declared > MAX_GENERATIONS || declared > body.remaining() / 16 {
+                        return Err(Error::Incomplete);
+                    }
+                    let mut runs = Vec::with_capacity(declared);
+                    for _ in 0..declared {
+                        runs.push(GenerationStart {
+                            generation: take_u64(&mut body)?,
+                            start_offset: take_u64(&mut body)?,
+                        });
+                    }
+                    if !writers_well_formed(first_offset, payloads.len(), &runs) {
+                        return Err(Error::Incomplete);
+                    }
+                    Some(runs)
                 } else {
                     None
                 };
@@ -893,6 +1010,7 @@ impl InternalMessage {
                     generations,
                     times,
                     headers,
+                    writers,
                     set_generation: None,
                 };
                 if let Some(log) = log {
@@ -937,6 +1055,11 @@ impl InternalMessage {
                     code: ErrorCode::from_u16(take_u16(&mut body)?)?,
                     expected_offset: take_u64(&mut body)?,
                     detail: take_str(&mut body)?,
+                    reason: if body.has_remaining() {
+                        Some(take_refusal_reason(&mut body)?)
+                    } else {
+                        None
+                    },
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateError(message))
@@ -1109,6 +1232,60 @@ impl InternalMessage {
             }
         }
     }
+}
+
+fn put_refusal_reason(buf: &mut BytesMut, reason: &RefusalReason) -> Result<()> {
+    match reason {
+        RefusalReason::PromisedTo { generation, leader } => {
+            buf.put_u8(1);
+            buf.put_u64(*generation);
+            put_str(buf, leader)?;
+        }
+        RefusalReason::Accepted { accepted, sender } => {
+            buf.put_u8(2);
+            buf.put_u64(*accepted);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::View { have, sender } => {
+            buf.put_u8(3);
+            buf.put_u64(*have);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::Assigned { assigned, sender } => {
+            buf.put_u8(4);
+            buf.put_u64(*assigned);
+            buf.put_u64(*sender);
+        }
+        RefusalReason::NotAReplica => buf.put_u8(5),
+        RefusalReason::NotVoter => buf.put_u8(6),
+    }
+    Ok(())
+}
+
+/// A reason this build does not know is refused, not skipped: it would be
+/// read as no reason, and the detail may not say the same.
+fn take_refusal_reason(buf: &mut Bytes) -> Result<RefusalReason> {
+    Ok(match take_u8(buf)? {
+        1 => RefusalReason::PromisedTo {
+            generation: take_u64(buf)?,
+            leader: take_str(buf)?,
+        },
+        2 => RefusalReason::Accepted {
+            accepted: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        3 => RefusalReason::View {
+            have: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        4 => RefusalReason::Assigned {
+            assigned: take_u64(buf)?,
+            sender: take_u64(buf)?,
+        },
+        5 => RefusalReason::NotAReplica,
+        6 => RefusalReason::NotVoter,
+        _ => return Err(Error::Incomplete),
+    })
 }
 
 fn put_str(buf: &mut BytesMut, value: &str) -> Result<()> {

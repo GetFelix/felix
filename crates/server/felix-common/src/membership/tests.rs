@@ -225,6 +225,7 @@ fn a_refusal_is_appended_and_absent_reads_as_none() {
         refused: Some(RefusedGeneration {
             generation: 4,
             promised_to: "broker-b".into(),
+            ballot: 0,
         }),
         ..status
     };
@@ -237,4 +238,23 @@ fn a_refusal_is_appended_and_absent_reads_as_none() {
         serde_json::from_str::<ShardReplicaStatus>(&json).expect("read"),
         refused,
     );
+}
+
+/// **A refusal for want of the set before names no node**, in the same
+/// shape a control plane already stores, and is told apart from a promise.
+#[test]
+fn a_set_unknown_refusal_names_no_node() {
+    let unknown = RefusedGeneration::set_unknown(7);
+    assert_eq!(unknown.generation, 7);
+    assert!(!unknown.is_promise());
+    assert_eq!(
+        serde_json::to_string(&unknown).expect("write"),
+        r#"{"generation":7,"promised_to":""}"#,
+    );
+    let promised = RefusedGeneration {
+        generation: 7,
+        promised_to: "broker-b".into(),
+        ballot: 0,
+    };
+    assert!(promised.is_promise());
 }

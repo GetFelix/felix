@@ -1,5 +1,6 @@
 //! Applying a plan to the store, on a timer or when woken.
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use super::metrics::MoveClock;
@@ -184,19 +185,53 @@ pub async fn reconcile_once(
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
 ) -> ReconcileOutcome {
+    reconcile_once_waking(store, liveness, policy, &PlacementWakes::default()).await
+}
+
+/// [`reconcile_once`] that wakes `wakes`' assignment long-polls for each
+/// write, as the running loop does.
+pub async fn reconcile_once_waking(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+) -> ReconcileOutcome {
     // One pass watches nothing move, so it gives no restore up as stalled.
     match plan_pass(store, liveness, policy, &mut CopyProgress::default()).await {
-        Some(pass) => {
-            apply_pass(
-                store,
-                &pass,
-                &mut MoveClock::default(),
-                &PlacementWakes::default(),
-            )
-            .await
-        }
+        Some(pass) => apply_pass(store, &pass, &mut MoveClock::default(), wakes).await,
         None => ReconcileOutcome::default(),
     }
+}
+
+/// What placement remembers between passes: when it saw each move start,
+/// each fence and each suspicion. A process keeps it in memory, so a new
+/// process starts with none.
+#[derive(Default)]
+pub struct PlacementMemory {
+    clock: MoveClock,
+    progress: CopyProgress,
+    /// Shards short of their replication factor at the last pass, so the
+    /// change is logged once.
+    under_replicated: usize,
+}
+
+/// One pass of the running loop ([`spawn_reconciler`]): [`reconcile_once_waking`]
+/// that keeps what it saw in `memory`, so time based decisions (fence
+/// timeouts, ageing suspicions and pending sets, stalled restores) fire
+/// across passes.
+pub async fn reconcile_remembering(
+    store: &dyn crate::store::ControlPlaneStore,
+    liveness: &crate::config::NodeLivenessConfig,
+    policy: MovePolicy,
+    wakes: &PlacementWakes,
+    memory: &mut PlacementMemory,
+) -> ReconcileOutcome {
+    let Some(pass) = plan_pass(store, liveness, policy, &mut memory.progress).await else {
+        return ReconcileOutcome::default();
+    };
+    let outcome = apply_pass(store, &pass, &mut memory.clock, wakes).await;
+    memory.under_replicated = log_replication(memory.under_replicated, &pass.plan);
+    outcome
 }
 
 /// Everything placement decides from, read once.
@@ -210,6 +245,9 @@ pub struct PlacementRead {
     pub paused: bool,
     /// The fleet features finalized when this was read.
     pub enabled: std::collections::BTreeSet<String>,
+    /// Nodes that left while their lease may still run, seen as draining in
+    /// [`Self::nodes`].
+    pub departed: std::collections::BTreeSet<String>,
 }
 
 impl PlacementRead {
@@ -246,7 +284,7 @@ impl PlacementRead {
             .with_suspicions(suspicions, incarnations, liveness, &enabled)
             .with_nodes(&nodes, &existing)
             .with_joint_fence(enabled.contains(felix_common::fleet::JOINT_FENCE.name()));
-        let nodes = fence_departed(nodes, liveness, now_millis);
+        let (nodes, departed) = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
         Ok(Self {
             streams,
@@ -256,6 +294,7 @@ impl PlacementRead {
             positions,
             paused,
             enabled,
+            departed,
         })
     }
 
@@ -272,6 +311,7 @@ impl PlacementRead {
             joint_fence: self
                 .enabled
                 .contains(felix_common::fleet::JOINT_FENCE.name()),
+            departed: self.departed.clone(),
             ..policy
         }
     }
@@ -329,14 +369,25 @@ pub(super) async fn plan_pass(
     read.positions.set_progress(progressed);
     let fenced = progress.observe_fences(&read.existing, &read.positions);
     read.positions.set_fences(fenced);
+    let opened = progress.observe_opened(&read.existing, &read.positions);
+    read.positions.set_opened(opened);
     let pending = progress.observe_pending(&read.existing, &read.positions);
     read.positions.set_pending(pending);
     let suspected = progress.observe_suspicions(&read.positions);
     read.positions.set_suspected_since(suspected);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
+    // Below two report TTLs a leader that reports late but on time by the
+    // TTL would be taken for stuck.
+    let mut policy = policy;
+    policy.stuck_leader_millis = policy
+        .stuck_leader_millis
+        .map(|bound| bound.max(2 * super::replica_positions::report_ttl_millis(liveness)));
+    let stuck = progress.observe_stuck(&read.existing, &read.positions, policy.stuck_leader_millis);
+    read.positions.set_stuck(stuck);
     let plan = read.plan(policy);
     progress.note_give_ups(&plan, read.positions.as_of_millis());
+    progress.note_stuck_renames(&plan, read.positions.as_of_millis());
     let no_nodes = read.nodes.is_empty();
     let registered = registered_storage(&read.nodes);
     let joint_fence = read
@@ -450,7 +501,12 @@ pub(super) async fn apply_pass(
         let mut assignment = assignment.clone();
         pass.name_members(&mut assignment);
         match store
-            .put_shard_assignment_if(assignment, pass.read.get(key).copied(), fence)
+            .put_shard_assignment_at_least(
+                assignment,
+                pass.read.get(key).copied(),
+                fence,
+                step.at_least(),
+            )
             .await
         {
             Ok(AssignmentWrite::Fenced { token }) => {
@@ -516,6 +572,16 @@ pub(super) async fn apply_pass(
                         destination = ?successor,
                         leader = %written.leader,
                         "a fenced leader never reported drained; it serves the shard again",
+                    );
+                }
+                if let super::MoveStep::LeaderGaveUp { successor } = step {
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = ?successor,
+                        leader = %written.leader,
+                        "a fenced leader gave its copy up in a crash; the move ends and it is named again",
                     );
                 }
                 if matches!(step, super::MoveStep::PendingSetTimedOut) {
@@ -736,10 +802,8 @@ pub fn spawn_reconciler(
         let mut ticker = tokio::time::interval(interval);
         // A pass that overruns must not then run back-to-back catching up.
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut clock = MoveClock::default();
-        let mut progress = CopyProgress::default();
+        let mut memory = PlacementMemory::default();
         let mut held = false;
-        let mut under_replicated = 0;
         loop {
             let woken = tokio::select! {
                 _ = shutdown.cancelled() => break,
@@ -770,12 +834,14 @@ pub fn spawn_reconciler(
             if !held && !woken {
                 continue;
             }
-            if let Some(pass) =
-                plan_pass(store.as_ref(), &liveness, policy.clone(), &mut progress).await
-            {
-                apply_pass(store.as_ref(), &pass, &mut clock, &wakes).await;
-                under_replicated = log_replication(under_replicated, &pass.plan);
-            }
+            reconcile_remembering(
+                store.as_ref(),
+                &liveness,
+                pass_policy(&policy, held),
+                &wakes,
+                &mut memory,
+            )
+            .await;
         }
         if held {
             // Hand over now rather than when the lease runs out.
@@ -785,6 +851,18 @@ pub fn spawn_reconciler(
             metrics::gauge!(PLACEMENT_LEASE_HELD).set(0.0);
         }
     })
+}
+
+/// The policy one pass of the running loop plans under. Only the lease
+/// holder renames stuck leaders: the rename cap and its backoff live in the
+/// memory of the instance that renamed, so a pass a wake runs on another
+/// instance would rename with a cap of its own. A new holder starts its own
+/// watch, which waits the stuck bound out again first.
+pub(super) fn pass_policy(policy: &MovePolicy, held: bool) -> MovePolicy {
+    MovePolicy {
+        stuck_leader_millis: policy.stuck_leader_millis.filter(|_| held),
+        ..policy.clone()
+    }
 }
 
 /// Log when shards start or stop being short of their replication factor,
@@ -839,18 +917,22 @@ async fn load(
 ///
 /// Draining, not gone: its shards stay where they are, or move only through a
 /// handoff it takes part in. Promoting a follower sooner is two leaders, and a
-/// deregistration involves no clock at all to stop that on its own.
+/// deregistration involves no clock at all to stop that on its own. The ids
+/// come back too: a broker that left has stopped, so it is never handed a
+/// shard to lead.
 fn fence_departed(
     mut nodes: Vec<Node>,
     liveness: &crate::config::NodeLivenessConfig,
     now_millis: u64,
-) -> Vec<Node> {
+) -> (Vec<Node>, std::collections::BTreeSet<String>) {
+    let mut departed = std::collections::BTreeSet::new();
     for node in &mut nodes {
         if crate::cluster::membership::left_within_lease(node, liveness, now_millis) {
             node.status.lifecycle = crate::model::NodeLifecycle::Draining;
+            departed.insert(node.node_id.clone());
         }
     }
-    nodes
+    (nodes, departed)
 }
 
 fn fenced(key: &ShardKey, step: &str, fence: u64, token: u64) {

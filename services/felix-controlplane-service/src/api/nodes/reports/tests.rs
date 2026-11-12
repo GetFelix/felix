@@ -27,6 +27,8 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -156,6 +158,8 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("fenced move");
@@ -228,9 +232,19 @@ async fn post_report(
     keys: &crate::auth::felix_token::TenantSigningKeys,
     shards: serde_json::Value,
 ) -> (StatusCode, felix_common::membership::ReplicaStatusResponse) {
+    post_report_as(state, keys, "broker-x", shards).await
+}
+
+/// [`post_report`] from `node`.
+async fn post_report_as(
+    state: crate::api::AppState,
+    keys: &crate::auth::felix_token::TenantSigningKeys,
+    node: &str,
+    shards: serde_json::Value,
+) -> (StatusCode, felix_common::membership::ReplicaStatusResponse) {
     let request = Request::builder()
         .method("POST")
-        .uri("/v1/nodes/broker-x/replica-status")
+        .uri(format!("/v1/nodes/{node}/replica-status"))
         .header(
             "authorization",
             format!("Bearer {}", token(keys, &["node.manage:cluster:*"])),
@@ -288,6 +302,8 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -622,6 +638,7 @@ async fn a_refusal_is_stored_and_read_by_placement() {
         Some(felix_common::membership::RefusedGeneration {
             generation,
             promised_to: "broker-d".to_string(),
+            ballot: 0,
         })
     );
     use crate::cluster::placement::CaughtUp;
@@ -631,8 +648,16 @@ async fn a_refusal_is_stored_and_read_by_placement() {
     )
     .await
     .expect("positions");
-    assert!(positions.leader_refused(&shard_zero(), generation, "broker-x"));
-    assert!(!positions.leader_refused(&shard_zero(), generation + 1, "broker-x"));
+    assert!(
+        positions
+            .leader_refusal(&shard_zero(), generation, "broker-x")
+            .is_some()
+    );
+    assert!(
+        positions
+            .leader_refusal(&shard_zero(), generation + 1, "broker-x")
+            .is_none()
+    );
 }
 
 /// Post a report naming broker-y caught up, measured at `measured`, and say
@@ -733,6 +758,8 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -817,6 +844,8 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -881,6 +910,8 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -941,6 +972,8 @@ async fn named_y_beside_z() -> (
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("assign");
@@ -1033,4 +1066,184 @@ async fn an_election_on_another_set_is_adopted_on_it() {
         .await
         .expect("get");
     assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// The shard named to broker-x on {x, y}, one generation past `named_y`.
+async fn named_x_beside_z() -> (
+    Arc<crate::store::memory::InMemoryStore>,
+    crate::auth::felix_token::TenantSigningKeys,
+    ShardAssignment,
+) {
+    let (store, keys, named_y) = named_y_beside_z().await;
+    let named_x = store
+        .put_shard_assignment(ShardAssignment {
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string()],
+            ..named_y
+        })
+        .await
+        .expect("assign");
+    (store, keys, named_x)
+}
+
+/// **The control plane's own leader elected on another set is named on it.**
+/// broker-x, named on {x, y}, stood on a stale route and opened on {x, z}.
+/// Taking only the generation would keep x on {x, y}, and a failover could
+/// then promote y without what x acknowledged on {x, z} (#1929).
+#[tokio::test]
+async fn its_own_leader_elected_on_another_set_is_named_on_it() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_x.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// **Below the own-leader-set level one report still moves the shard past
+/// the election.** Those members take only the generation of the control
+/// plane's own leader elected on another set, so the leader is named at the
+/// elected generation on the wrong set. The same report reissues it on the
+/// elected set (#1929), instead of leaving that to the next one.
+#[tokio::test]
+async fn below_the_own_leader_set_level_one_report_moves_on() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    store
+        .faults
+        .keep_own_leader
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let at = named_x.generation + 2;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(
+        state,
+        &keys,
+        serde_json::json!([elected_on_x_z(at, named_x.generation)]),
+    )
+    .await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+}
+
+/// **The same leader on another set at the same generation is a collision.**
+/// The control plane named broker-x on {x, y} at the generation x was elected
+/// at on {x, z}. The record is not the set x opened on, so the shard moves on
+/// with the elected set, and the same report again moves nothing.
+#[tokio::test]
+async fn its_own_leader_elected_on_another_set_at_its_generation_moves_on() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let report = serde_json::json!([elected_on_x_z(at, at)]);
+    let _ = post_report(state.clone(), &keys, report.clone()).await;
+    let assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_named_on_x_z(&assignment, at + 1);
+
+    let _ = post_report(state, &keys, report).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        assignment
+    );
+}
+
+/// **The same leader on its recorded set is no collision.** A report at the
+/// generation that named it is judged as is.
+#[tokio::test]
+async fn its_own_leader_elected_on_its_set_is_left_alone() {
+    let (store, keys, named_x) = named_x_beside_z().await;
+    let at = named_x.generation;
+    let mut shard = shard_json(0, at, 10, &["broker-y"]);
+    shard["elected"] = serde_json::json!({
+        "leader": "broker-x",
+        "generation": at,
+        "replicas": ["broker-y"],
+        "set_generation": at,
+    });
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let _ = post_report(state, &keys, serde_json::json!([shard])).await;
+    assert_eq!(
+        store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("get"),
+        named_x
+    );
+}
+
+/// **A member a leader has not reached keeps the identity the previous report
+/// named it by.** broker-x leads next, as an election's adoption writes it,
+/// and has reached broker-z but not broker-y. Its route named no identities,
+/// so it inherits none for broker-y, and the next failover would name
+/// broker-y by none: no answer from it would count, and with broker-x gone
+/// the shard waits for good. broker-y acknowledged nothing at broker-x's
+/// generation, so the identity broker-y's own report named it by still covers
+/// everything it acknowledged. A member the new report names keeps that name.
+#[tokio::test]
+async fn a_member_the_new_leader_has_not_reached_keeps_the_previous_reports_identity() {
+    const Y: &str = "11111111111111111111111111111111";
+    const X: &str = "22222222222222222222222222222222";
+    const Z: &str = "33333333333333333333333333333333";
+    const Z_AGAIN: &str = "44444444444444444444444444444444";
+    let (store, keys) = one_shard_cluster().await;
+    let mut z = store.get_node("broker-x").await.expect("node");
+    z.node_id = "broker-z".to_string();
+    z.spec.advertise_addr = "10.0.0.4:7102".to_string();
+    store.register_node(z).await.expect("register broker-z");
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let mut led = ShardAssignment {
+        key: shard_zero(),
+        leader: "broker-y".to_string(),
+        replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
+        ..assignment(ShardState::Active, None)
+    };
+    led.generation = 0;
+    let led_by_y = store.put_shard_assignment(led).await.expect("assign");
+    let mut by_y = shard_json(0, led_by_y.generation, 10, &["broker-x"]);
+    by_y["replica_storage_ids"] =
+        serde_json::json!({ "broker-y": Y, "broker-x": X, "broker-z": Z });
+    let (status, answer) =
+        post_report_as(state.clone(), &keys, "broker-y", serde_json::json!([by_y])).await;
+    assert_eq!(status, StatusCode::OK, "{answer:?}");
+
+    let led_by_x = store
+        .put_shard_assignment(ShardAssignment {
+            leader: "broker-x".to_string(),
+            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
+            ..led_by_y.clone()
+        })
+        .await
+        .expect("assign");
+    assert!(led_by_x.generation > led_by_y.generation);
+    let mut by_x = shard_json(0, led_by_x.generation, 10, &["broker-z"]);
+    by_x["replica_storage_ids"] = serde_json::json!({ "broker-x": X, "broker-z": Z_AGAIN });
+    let (status, answer) = post_report(state, &keys, serde_json::json!([by_x])).await;
+    assert_eq!(status, StatusCode::OK, "{answer:?}");
+
+    let report = store
+        .get_replica_report(&shard_zero())
+        .await
+        .expect("get")
+        .expect("a report");
+    assert_eq!(report.generation, led_by_x.generation);
+    assert_eq!(
+        report.inherited_storage,
+        [("broker-y".to_string(), Y.to_string())].into(),
+        "broker-y is named by none, and broker-z by an identity it no longer has"
+    );
 }

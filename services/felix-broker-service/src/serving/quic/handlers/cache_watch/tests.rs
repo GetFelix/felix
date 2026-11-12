@@ -64,7 +64,10 @@ async fn watch_after_admission(fixture: &Leader) -> Result<Message> {
         Arc::clone(&fixture.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&fixture.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&fixture.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -178,7 +181,10 @@ async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
         Arc::clone(&fixture.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&fixture.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&fixture.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -269,4 +275,85 @@ async fn a_watch_ends_when_its_credential_is_revoked() -> Result<()> {
     };
     assert_eq!(code, Some(felix_wire::ErrorCode::Revoked));
     Ok(())
+}
+
+/// A watch's replay delivers cache changes only: generation-start,
+/// membership and counter records are never decoded as changes, and the
+/// change after them keeps its own offset.
+#[test]
+fn a_replay_delivers_no_change_for_records_that_are_not_data() {
+    use bytes::Bytes;
+    use felix_storage::log::{LogRecord, RecordMark};
+    let filter = CacheWatchFilter::Prefix(String::new());
+    let record = |offset, mark, payload: Bytes| LogRecord {
+        generation: None,
+        offset,
+        timestamp_micros: 1,
+        checksum: 0,
+        payload,
+        mark,
+        publisher: None,
+        headers: None,
+    };
+    for (offset, mark) in [
+        (1, RecordMark::GenerationStart),
+        (2, RecordMark::Membership),
+        (3, RecordMark::CounterDelta),
+        (4, RecordMark::CounterCheckpoint),
+    ] {
+        let change = replayed_change(
+            record(offset, mark, Bytes::from_static(b"\xffnot a cache op")),
+            &filter,
+        )
+        .expect("skipped, not decoded");
+        assert!(change.is_none(), "{mark:?}");
+    }
+    let put = felix_storage::cache::CacheOp::Put {
+        key: "k".to_string(),
+        value: Bytes::from_static(b"v"),
+        expires_at_millis: 0,
+        version: None,
+    }
+    .encode();
+    assert!(matches!(
+        replayed_change(record(5, RecordMark::None, put), &filter).expect("change"),
+        Some(Message::CacheEvent { offset: 5, .. })
+    ));
+}
+
+/// A watch of a `Quorum` cache is held to the mark and the timeout of the
+/// engine it was built with. An engine without marks would release it at once.
+#[tokio::test]
+async fn a_quorum_cache_watch_waits_its_timeout_for_the_mark() {
+    use crate::test_support::leader::{self, GENERATION, Leader};
+    use felix_replication::engine::Hybrid;
+    use felix_replication::quorum::{QuorumError, QuorumMarks};
+
+    let leader = Leader::start().await;
+    let marks = Arc::new(QuorumMarks::new());
+    let timeout = std::time::Duration::from_millis(300);
+    let gate = CommitGate {
+        broker: Arc::clone(&leader.broker),
+        key: leader::quorum_cache_key(),
+        engine: Arc::new(Hybrid::new(
+            Some(Arc::clone(&marks)),
+            Some(Arc::clone(&leader.ingress)),
+        )),
+        timeout,
+    };
+
+    marks.publish(&leader::quorum_cache_key(), GENERATION, 4);
+    gate.wait(4).await.expect("the mark covers it");
+    let started = std::time::Instant::now();
+    let err = gate.wait(9).await.expect_err("the mark is short of it");
+    let waited = started.elapsed();
+    assert_eq!(
+        err,
+        QuorumError::TimedOut {
+            what: "read",
+            timeout
+        }
+    );
+    assert!(waited >= timeout, "ended early after {waited:?}");
+    assert!(waited < timeout * 6, "ended late after {waited:?}");
 }

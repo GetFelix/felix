@@ -9,8 +9,10 @@
 //! followers take its batches and send clients to it, until the control plane
 //! names that generation or a newer one.
 
-use std::collections::{BTreeMap, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use felix_common::membership::ElectedLeadership;
 use felix_router::ShardKey;
@@ -18,10 +20,11 @@ use felix_storage::disk_log::Membership;
 use felix_wire::internal::ReplicaSetView;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
+use tokio::time::Instant;
 
 mod candidate;
 
-pub use candidate::spawn;
+pub(crate) use candidate::spawn;
 
 /// Elected leaderships this broker knows of, by shard.
 #[derive(Debug)]
@@ -38,6 +41,22 @@ pub struct Elections {
     /// this broker's standing fenced it. Outlives the entry, which the
     /// overlay drops when the control plane adopts the leadership.
     opened: Mutex<HashMap<ShardKey, (u64, u64)>>,
+    /// When each of this broker's standings was recorded or first fenced, by
+    /// generation. Outlives the fence guard, so a fence retried pass after
+    /// pass keeps its first time.
+    fenced_since: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// When this copy last stored a batch or took a fence from each shard's
+    /// leader, for per-shard suspicion. A candidate's fence does not count.
+    heard: Mutex<HashMap<ShardKey, Instant>>,
+    /// Since when the control plane's route names another leader at the
+    /// generation of this broker's own standing, by shard.
+    collided: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// When the driver last saw a copy refuse this broker's elected
+    /// leadership at a generation while the rest of the set answered.
+    refused_copy: Mutex<HashMap<ShardKey, (u64, Instant)>>,
+    /// How long a copy defers to an elected leader that has not started its
+    /// generation. See [`Self::with_defer_for`].
+    defer_for: Duration,
     /// Woken on every change, for the routing feed to lay the new view over
     /// the control plane's.
     changed: Arc<Notify>,
@@ -66,6 +85,8 @@ pub struct Elected {
 pub struct Recorded {
     /// The generation the control plane named.
     pub generation: u64,
+    /// The leader the control plane named at it.
+    pub leader: String,
     /// Each member, with the storage id the route names for it, in hex.
     pub members: BTreeMap<String, Option<String>>,
     /// A set change is pending.
@@ -76,6 +97,7 @@ impl Recorded {
     pub(crate) fn of_route(route: &felix_router::Route) -> Self {
         Self {
             generation: route.generation,
+            leader: route.leader.node_id.to_string(),
             members: crate::replica_set::view(route, None)
                 .members
                 .into_iter()
@@ -126,12 +148,31 @@ impl Elections {
     pub fn new(local_node_id: impl Into<String>, changed: Arc<Notify>) -> Self {
         Self {
             local_node_id: local_node_id.into(),
-            entries: Mutex::new(HashMap::new()),
-            recorded: Mutex::new(HashMap::new()),
-            fencing: Mutex::new(HashMap::new()),
-            opened: Mutex::new(HashMap::new()),
+            entries: Mutex::new(HashMap::default()),
+            recorded: Mutex::new(HashMap::default()),
+            fencing: Mutex::new(HashMap::default()),
+            opened: Mutex::new(HashMap::default()),
+            fenced_since: Mutex::new(HashMap::default()),
+            heard: Mutex::new(HashMap::default()),
+            collided: Mutex::new(HashMap::default()),
+            refused_copy: Mutex::new(HashMap::default()),
+            defer_for: crate::suspicion::DEFAULT_DEFER_FOR,
             changed,
         }
+    }
+
+    /// Bound how long an elected leader that never starts its generation
+    /// holds the shard: a fencing leader refuses pre-votes, and a follower
+    /// that took its fence does not stand, only this long. Without a bound a
+    /// leader stuck fencing, or one that dropped the shard, holds the shard
+    /// until the control plane names a new generation.
+    pub(crate) fn with_defer_for(mut self, defer_for: Duration) -> Self {
+        self.defer_for = defer_for;
+        self
+    }
+
+    pub(crate) fn defer_for(&self) -> Duration {
+        self.defer_for
     }
 
     /// Record `elected` for `key`, replacing one at an older generation. An
@@ -142,6 +183,9 @@ impl Elections {
             match entries.get(&key) {
                 Some(known) if known.generation >= elected.generation => false,
                 _ => {
+                    if elected.leader == self.local_node_id {
+                        self.note_standing(&key, elected.generation);
+                    }
                     entries.insert(key, elected);
                     true
                 }
@@ -155,7 +199,7 @@ impl Elections {
 
     /// Forget `key`'s leadership at `generation`, if it is still the one
     /// recorded.
-    pub fn withdraw(&self, key: &ShardKey, generation: u64) {
+    pub(crate) fn withdraw(&self, key: &ShardKey, generation: u64) {
         let removed = {
             let mut entries = self.entries.lock();
             let current = entries
@@ -189,18 +233,38 @@ impl Elections {
     /// a newer generation. If it did not, the candidate withdraws it.
     pub fn overlay(&self, named: impl Fn(&ShardKey) -> Option<Named>) -> Vec<(ShardKey, Elected)> {
         let mut entries = self.entries.lock();
+        let mut collisions = Vec::new();
         entries.retain(|key, elected| {
             named(key).is_some_and(|named| {
                 let collided = named.generation == elected.generation
                     && named.leader != elected.leader
                     && elected.leader == self.local_node_id;
-                (named.generation < elected.generation || collided)
-                    && named.incarnation == elected.incarnation
+                let keep = (named.generation < elected.generation || collided)
+                    && named.incarnation == elected.incarnation;
+                if keep && collided {
+                    collisions.push((key.clone(), elected.generation));
+                }
+                keep
             })
         });
         self.recorded
             .lock()
             .retain(|key, _| entries.contains_key(key));
+        {
+            let mut since = self.collided.lock();
+            since.retain(|key, (generation, _)| {
+                collisions.iter().any(|(k, g)| k == key && g == generation)
+            });
+            let now = Instant::now();
+            for (key, generation) in collisions {
+                since.entry(key).or_insert((generation, now));
+            }
+        }
+        self.refused_copy.lock().retain(|key, (generation, _)| {
+            entries
+                .get(key)
+                .is_some_and(|elected| elected.generation == *generation)
+        });
         entries
             .iter()
             .map(|(key, elected)| (key.clone(), elected.clone()))
@@ -220,12 +284,17 @@ impl Elections {
     /// The shards this broker stands for or leads by election, with the
     /// generation of each.
     pub(crate) fn standing(&self) -> Vec<(ShardKey, u64)> {
-        self.entries
+        let mut standing: Vec<_> = self
+            .entries
             .lock()
             .iter()
             .filter(|(_, elected)| elected.leader == self.local_node_id)
             .map(|(key, elected)| (key.clone(), elected.generation))
-            .collect()
+            .collect();
+        // Callers act on these one after another; hash order would make a
+        // simulated run differ from its replay.
+        standing.sort();
+        standing
     }
 
     /// This broker's own standing for `key` at `generation`, if that is what
@@ -264,15 +333,120 @@ impl Elections {
         self.opened.lock().get(key) == Some(&(generation, incarnation))
     }
 
+    /// Whether `key` opened here at `generation` on this broker's standing,
+    /// in any incarnation.
+    pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.opened
+            .lock()
+            .get(key)
+            .is_some_and(|(opened, _)| *opened == generation)
+    }
+
     /// Mark `key`'s standing at `generation` as being fenced until the
     /// returned guard drops, so the candidate does not give it up meanwhile.
     pub(crate) fn fencing(&self, key: &ShardKey, generation: u64) -> Fencing<'_> {
         self.fencing.lock().insert(key.clone(), generation);
+        self.note_standing(key, generation);
         Fencing {
             elections: self,
             key: key.clone(),
             generation,
         }
+    }
+
+    fn note_standing(&self, key: &ShardKey, generation: u64) {
+        let mut since = self.fenced_since.lock();
+        if since.get(key).is_none_or(|(at, _)| *at != generation) {
+            since.insert(key.clone(), (generation, Instant::now()));
+        }
+    }
+
+    /// Whether this broker stands for `key` at `generation`, recorded and
+    /// not yet withdrawn, whether or not the driver has reached its fence.
+    pub(crate) fn stands_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.entries.lock().get(key).is_some_and(|elected| {
+            elected.leader == self.local_node_id && elected.generation == generation
+        })
+    }
+
+    /// Whether this broker recorded or first fenced its standing for `key` at
+    /// `generation` within [`Self::defer_for`].
+    pub(crate) fn fenced_within_defer(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fenced_since
+            .lock()
+            .get(key)
+            .is_some_and(|(at, since)| *at == generation && since.elapsed() < self.defer_for)
+    }
+
+    /// Note that this copy heard `key`'s leader: a batch stored or a
+    /// leader's fence taken.
+    pub(crate) fn heard_leader(&self, key: &ShardKey) {
+        let now = Instant::now();
+        let mut heard = self.heard.lock();
+        // On every stamped batch: no key clone once the shard is known.
+        match heard.get_mut(key) {
+            Some(at) => *at = now,
+            None => {
+                heard.insert(key.clone(), now);
+            }
+        }
+    }
+
+    /// Drop what was heard for shards this copy no longer follows.
+    pub(crate) fn forget_heard_except(&self, followed: &felix_common::random::HashSet<ShardKey>) {
+        self.heard.lock().retain(|key, _| followed.contains(key));
+    }
+
+    /// Note that a copy of `key`'s set refuses this broker's elected
+    /// leadership at `generation` while the rest of the set answers it.
+    pub(crate) fn note_refused_copy(&self, key: &ShardKey, generation: u64) {
+        let now = Instant::now();
+        let mut refused = self.refused_copy.lock();
+        match refused.get_mut(key) {
+            Some(seen) => *seen = (generation, now),
+            None => {
+                refused.insert(key.clone(), (generation, now));
+            }
+        }
+    }
+
+    /// This broker's open standings a copy has refused within `bound`, while
+    /// the control plane's route has named another leader at the same
+    /// generation for at least `bound`: that copy can follow neither, and
+    /// nothing renames the shard. Each with its generation.
+    pub(crate) fn collided_and_refused(&self, bound: Duration) -> Vec<(ShardKey, u64)> {
+        // Collected before `entries` is locked: the overlay takes that first.
+        let due: Vec<(ShardKey, u64)> = {
+            let collided = self.collided.lock();
+            let refused = self.refused_copy.lock();
+            collided
+                .iter()
+                .filter(|(key, (generation, since))| {
+                    since.elapsed() >= bound
+                        && refused
+                            .get(*key)
+                            .is_some_and(|(at, seen)| at == generation && seen.elapsed() < bound)
+                })
+                .map(|(key, (generation, _))| (key.clone(), *generation))
+                .collect()
+        };
+        due.into_iter()
+            .filter(|(key, generation)| {
+                self.opened_at(key, *generation) && self.stands_at(key, *generation)
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn refused_copy_at(&self, key: &ShardKey) -> Option<u64> {
+        self.refused_copy
+            .lock()
+            .get(key)
+            .map(|(generation, _)| *generation)
+    }
+
+    pub(crate) fn last_heard(&self, key: &ShardKey) -> Option<Instant> {
+        self.heard.lock().get(key).copied()
     }
 
     /// Whether the driver is fencing or catching up `key` at `generation`.
@@ -299,10 +473,6 @@ impl Elections {
                 set_generation: elected.set.generation,
             }
         })
-    }
-
-    pub fn local_node_id(&self) -> &str {
-        &self.local_node_id
     }
 }
 

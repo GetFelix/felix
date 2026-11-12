@@ -385,6 +385,21 @@ pub(super) async fn inherited_storage_is_kept(store: &dyn ControlPlaneStore) {
         stored(store, shard).await.inherited_storage,
         sent.inherited_storage
     );
+    assert_eq!(
+        store
+            .get_replica_report(&key(shard))
+            .await
+            .expect("get report"),
+        Some(stored(store, shard).await),
+        "the keyed read and the listing disagree"
+    );
+    assert_eq!(
+        store
+            .get_replica_report(&key(shard + 1000))
+            .await
+            .expect("get report"),
+        None
+    );
 
     let without = report(shard, at, &["broker-y"], 20_500);
     assert_eq!(
@@ -434,6 +449,7 @@ pub(super) async fn a_refusal_is_kept(store: &dyn ControlPlaneStore) {
     let refused = felix_common::membership::RefusedGeneration {
         generation: at,
         promised_to: "broker-z".to_string(),
+        ballot: at + 2,
     };
     let mut sent = report(shard, at, &[], 21_000);
     sent.refused = Some(refused.clone());
@@ -583,4 +599,117 @@ fn unstamped(report: ReplicaReport) -> ReplicaReport {
         reported_at_millis: 0,
         ..report
     }
+}
+
+/// A follower whose storage was replaced is recorded as readmitted from a
+/// report of a set that names it by its new storage identity, once, and the
+/// entry rides later writes until the set names the copy by another identity.
+/// A report from the set that still named the lost copy records nothing.
+pub(super) async fn readmitted_copies_are_recorded_from_a_set_naming_them(
+    store: &dyn ControlPlaneStore,
+) {
+    super::shards::clear(store).await;
+    let shard = 2;
+    let follower = "broker-r";
+    let lost = "a".repeat(32);
+    let replaced = "b".repeat(32);
+    let mut registering = super::nodes::node(follower, 7590);
+    registering.status.storage_id = Some(replaced.clone());
+    let registered = store.register_node(registering).await.expect("register");
+    let incarnation = registered.status.incarnation;
+    let place = |named: &str| {
+        let mut placed = assignment(shard, LEADER);
+        placed.replicas = vec![follower.to_string()];
+        placed.member_storage_ids = [(follower.to_string(), named.to_string())].into();
+        placed.learners = [follower.to_string()].into();
+        placed
+    };
+    let caught_up = |generation: u64, offset: u64, storage: &str| ReplicaReport {
+        leader: Some(LEADER.to_string()),
+        node_incarnations: [(follower.to_string(), incarnation)].into(),
+        follower_storage: [(follower.to_string(), storage.to_string())].into(),
+        offsets: [(follower.to_string(), offset)].into(),
+        ..report(shard, generation, &[follower], 30_000 + offset)
+    };
+    let record = |report: ReplicaReport| async move {
+        assert_eq!(
+            store
+                .record_replica_report(report, LEADER)
+                .await
+                .expect("record"),
+            ReportWrite::Stored
+        );
+    };
+    let readmitted = || async {
+        store
+            .get_shard_assignment(&key(shard))
+            .await
+            .expect("assignment")
+            .readmitted
+    };
+
+    // The set from before the loss names the lost copy: its leader catching
+    // the new one up is not a readmission.
+    let before = store
+        .put_shard_assignment(place(&lost))
+        .await
+        .expect("place");
+    record(caught_up(before.generation, 10, &replaced)).await;
+    assert!(readmitted().await.is_empty(), "the set named the lost copy");
+
+    let readmitting = store
+        .put_shard_assignment(place(&replaced))
+        .await
+        .expect("readmit");
+    // Another copy than the one the set names says nothing about it.
+    record(caught_up(readmitting.generation, 11, &"c".repeat(32))).await;
+    assert!(readmitted().await.is_empty(), "another copy caught up");
+    // A leader that elected itself may have opened before the loss, at a
+    // generation adopted later for this set: its report readmits nothing.
+    assert_eq!(
+        store
+            .record_replica_report_with(
+                caught_up(readmitting.generation, 15, &replaced),
+                LEADER,
+                false
+            )
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    assert!(readmitted().await.is_empty(), "an elected leader's report");
+
+    record(caught_up(readmitting.generation, 20, &replaced)).await;
+    let entry = crate::model::Readmitted {
+        node: follower.to_string(),
+        storage_id: replaced.clone(),
+        generation: readmitting.generation,
+        offset: 20,
+    };
+    assert_eq!(readmitted().await, vec![entry.clone()]);
+    // The first report is kept: a later one claims no less.
+    record(caught_up(readmitting.generation, 30, &replaced)).await;
+    assert_eq!(readmitted().await, vec![entry.clone()]);
+
+    // A caller cannot set it, and the next write carries it.
+    let mut renamed = place(&replaced);
+    renamed.readmitted = vec![crate::model::Readmitted {
+        offset: 0,
+        ..entry.clone()
+    }];
+    let renamed = store.put_shard_assignment(renamed).await.expect("rename");
+    assert_eq!(renamed.readmitted, vec![entry.clone()]);
+    assert_eq!(readmitted().await, vec![entry.clone()]);
+    let listed = store.list_shard_assignments().await.expect("list");
+    assert_eq!(listed[0].readmitted, vec![entry]);
+
+    // Named by another identity, the entry speaks for no copy of the set.
+    let moved_on = store
+        .put_shard_assignment(place(&"d".repeat(32)))
+        .await
+        .expect("another copy");
+    assert!(moved_on.readmitted.is_empty());
+    assert!(readmitted().await.is_empty());
+    super::shards::clear(store).await;
+    let _ = store.delete_node(follower).await;
 }

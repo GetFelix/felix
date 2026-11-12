@@ -320,3 +320,74 @@ fn the_new_compound_faults_say_what_they_do() {
     assert_eq!(crash.kind(), FaultKind::ControlPlaneCrash);
     assert_eq!(crash.family(), FaultFamily::Compound);
 }
+
+#[test]
+fn an_election_kills_a_leader_and_needs_elections() {
+    let mut nemesis = RandomNemesis::election();
+    assert!(nemesis.needs_election());
+    assert!(!nemesis.needs_proxy_links());
+    assert!(!RandomNemesis::adversarial().needs_election());
+    let view = view();
+    let mut rng = Rng::new(7);
+    let mut restarted = (false, false);
+    for _ in 0..50 {
+        let fault = nemesis.next_fault(&mut rng, &view).expect("a fault");
+        let Fault::ElectWithoutControlPlane {
+            node,
+            restart_while_down,
+        } = &fault
+        else {
+            panic!("not an election: {fault}");
+        };
+        assert!(view.leaders.contains(node), "{fault}");
+        assert_eq!(fault.family(), FaultFamily::Compound);
+        if *restart_while_down {
+            restarted.0 = true;
+        } else {
+            restarted.1 = true;
+        }
+    }
+    assert_eq!(restarted, (true, true), "both heals should be drawn");
+}
+
+/// The metadata nemesis acts on the group's members, not on a broker, and
+/// asks for the group; no other nemesis does.
+#[test]
+fn the_metadata_nemesis_picks_member_faults_and_asks_for_the_group() {
+    let metadata = RandomNemesis::metadata();
+    assert!(metadata.needs_metadata_group());
+    for other in [
+        RandomNemesis::process_faults(),
+        RandomNemesis::all_faults(),
+        RandomNemesis::adversarial(),
+        RandomNemesis::election(),
+    ] {
+        assert!(!other.needs_metadata_group());
+    }
+    let mut nemesis = RandomNemesis::metadata();
+    let view = view();
+    let mut seen = std::collections::BTreeSet::new();
+    for seed in 0..50 {
+        let mut rng = Rng::new(seed);
+        for _ in 0..20 {
+            let Some(fault) = nemesis.next_fault(&mut rng, &view) else {
+                continue;
+            };
+            if fault.kind().needs_metadata_group() {
+                assert!(fault.targets().is_empty(), "{fault} names a broker");
+            }
+            if let Fault::MetadataKill { member } = fault {
+                assert!(member < crate::controlplane::group::MEMBERS);
+            }
+            seen.insert(format!("{:?}", fault.kind()));
+        }
+    }
+    for kind in [
+        FaultKind::MetadataKill,
+        FaultKind::MetadataKillLeader,
+        FaultKind::MetadataPartitionLeader,
+        FaultKind::Kill,
+    ] {
+        assert!(seen.contains(&format!("{kind:?}")), "never picked {kind:?}");
+    }
+}

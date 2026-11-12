@@ -71,6 +71,8 @@ impl Fixture {
                 member_storage_ids: Default::default(),
                 learners: Default::default(),
                 pending_set: None,
+                previous_generation: None,
+                readmitted: Default::default(),
             })
             .await
             .expect("assign");
@@ -236,4 +238,117 @@ async fn the_confirmed_read_answers_one_shard() {
     let assigned = read(0).await;
     assert_eq!(assigned["assignment"]["leader"], "broker-x");
     assert_eq!(read(7).await["assignment"], serde_json::Value::Null);
+}
+
+/// The batched confirmed read answers each shard in the request's order,
+/// and refuses more shards than one request may read.
+#[tokio::test]
+async fn the_confirmed_read_answers_several_shards_in_order() {
+    let fixture = fixture().await;
+    fixture.assign("broker-x").await;
+    let read = |shards: Vec<u32>| {
+        let app = fixture.app.clone();
+        let bearer = fixture.bearer.clone();
+        async move {
+            let keys: Vec<serde_json::Value> = shards
+                .iter()
+                .map(|shard| {
+                    serde_json::json!({
+                        "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": shard
+                    })
+                })
+                .collect();
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/shard-assignments/confirmed")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "keys": keys })).expect("body"),
+                ))
+                .expect("request");
+            let response = app.oneshot(request).await.expect("response");
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).ok(),
+            )
+        }
+    };
+    let (status, body) = read(vec![7, 0]).await;
+    assert_eq!(status, StatusCode::OK);
+    let items = &body.expect("json")["items"];
+    assert_eq!(items[0]["assignment"], serde_json::Value::Null);
+    assert_eq!(items[1]["assignment"]["leader"], "broker-x");
+    let (status, _) = read((0..257).collect()).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// **The snapshot marks a shard's first assignment, and only that one**
+/// (#1872). A broker that learns the shard from the snapshot records nothing
+/// before it, as the `assigned` change tells a watching broker. A later
+/// write is not first, so its item carries no mark.
+#[tokio::test]
+async fn the_snapshot_marks_only_a_first_assignment() {
+    let fixture = fixture().await;
+    let snapshot = || async {
+        let request = Request::builder()
+            .uri("/v1/shard-assignments/snapshot")
+            .header("authorization", format!("Bearer {}", fixture.bearer))
+            .body(Body::empty())
+            .expect("request");
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        body["items"][0].clone()
+    };
+
+    // Only a shard with an incarnation is marked: recreate the stream once
+    // the fleet finalized incarnations.
+    let feature = felix_common::fleet::STREAM_INCARNATIONS.name();
+    for (i, id) in ["broker-x", "broker-y"].iter().enumerate() {
+        fixture
+            .store
+            .register_node(crate::store::contract::nodes::with_features(
+                crate::store::contract::nodes::node(id, 7100 + i as u16),
+                &[feature],
+            ))
+            .await
+            .expect("report the feature");
+    }
+    fixture
+        .store
+        .finalize_fleet_feature(feature)
+        .await
+        .expect("finalize");
+    let key = crate::model::StreamKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+    };
+    let mut orders = fixture.store.get_stream(&key).await.expect("stream");
+    fixture.store.delete_stream(&key).await.expect("delete");
+    orders.incarnation = 0;
+    fixture.store.create_stream(orders).await.expect("recreate");
+
+    fixture.assign("broker-x").await;
+    let first = snapshot().await;
+    assert_eq!(first["leader"], "broker-x");
+    assert_eq!(first["first_assignment"], true, "{first}");
+
+    fixture.assign("broker-y").await;
+    let later = snapshot().await;
+    assert_eq!(later["leader"], "broker-y");
+    assert_eq!(later.get("first_assignment"), None, "{later}");
 }

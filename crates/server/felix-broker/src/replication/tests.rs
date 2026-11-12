@@ -9,6 +9,8 @@ use tempfile::TempDir;
 use super::*;
 use crate::durable::DurableStorage;
 
+mod writers;
+
 const TENANT: &str = "t1";
 const NAMESPACE: &str = "ns";
 const STREAM: &str = "orders";
@@ -50,9 +52,19 @@ async fn ship(
 ) -> std::result::Result<Applied, Divergence> {
     let payloads = batch(values);
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
-    apply(log, first_offset, checksum, &payloads, &[], &[], &[], None)
-        .await
-        .expect("apply")
+    apply(
+        log,
+        first_offset,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[],
+        None,
+        None,
+    )
+    .await
+    .expect("apply")
 }
 
 /// Everything the follower holds, in offset order.
@@ -173,7 +185,7 @@ async fn a_batch_that_did_not_survive_the_trip_is_refused() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
 
-    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[], &[], &[], None)
+    let divergence = apply(&log, 0, 0xdead_beef, &payloads, &[], &[], &[], None, None)
         .await
         .expect("apply")
         .expect_err("should be corrupt");
@@ -306,6 +318,80 @@ async fn an_orphan_at_a_reused_offset_is_reported_as_a_conflict() {
     );
 }
 
+/// The overlap read is budgeted from the leader's records. A stored record
+/// larger than the leader's at the same offset must still be compared rather
+/// than read past as a short read.
+#[tokio::test]
+async fn a_stored_record_larger_than_the_leaders_is_still_compared() {
+    let (log, _dir) = follower().await;
+    let stale = "s".repeat(2048);
+    ship(&log, 0, &["a", &stale]).await.expect("applied");
+
+    let divergence = ship(&log, 0, &["a", "b", "c"])
+        .await
+        .expect_err("the follower holds a different record at offset 1");
+
+    assert_eq!(
+        divergence,
+        Divergence::Conflict {
+            offset: 1,
+            expected: 2
+        }
+    );
+    assert_eq!(stored(&log).await, vec!["a".to_string(), stale]);
+}
+
+/// An overlap that cannot be read in full is refused, never accepted: the
+/// part left unread could hold a record that disagrees.
+#[tokio::test]
+async fn an_overlap_that_cannot_be_read_is_refused() {
+    let (log, dir) = follower().await;
+    let stale = "s".repeat(2048);
+    ship(&log, 0, &["a", &stale]).await.expect("applied");
+    corrupt_stored(dir.path(), stale.as_bytes());
+
+    let payloads = batch(&["a", "b", "c"]);
+    let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
+    let outcome = apply(&log, 0, checksum, &payloads, &[], &[], &[], None, None).await;
+
+    assert!(
+        outcome.is_err(),
+        "an overlap with an unreadable record was answered {outcome:?}",
+    );
+    assert_eq!(
+        log.tail_offset().await.expect("tail"),
+        2,
+        "nothing appended"
+    );
+}
+
+/// Flip a byte inside the stored copy of `payload`, wherever its segment is.
+fn corrupt_stored(root: &std::path::Path, payload: &[u8]) {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read dir") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|extension| extension != "log") {
+                continue;
+            }
+            let mut bytes = std::fs::read(&path).expect("read segment");
+            if let Some(at) = bytes
+                .windows(payload.len())
+                .position(|window| window == payload)
+            {
+                bytes[at + payload.len() / 2] ^= 0xff;
+                std::fs::write(&path, bytes).expect("write segment");
+                return;
+            }
+        }
+    }
+    panic!("the payload is not in any segment");
+}
+
 /// Marks are stored as shipped, and a record whose mark disagrees with the
 /// leader's is a divergence even when its bytes agree: kept, it would leave
 /// this follower and the leader disagreeing about where a producer stands.
@@ -322,7 +408,7 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
     };
     let marks = [opens, ProducerMark::Continues];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
-    apply(&log, 0, checksum, &payloads, &marks, &[], &[], None)
+    apply(&log, 0, checksum, &payloads, &marks, &[], &[], None, None)
         .await
         .expect("apply")
         .expect("in order");
@@ -337,7 +423,7 @@ async fn marks_are_stored_as_shipped_and_a_different_mark_is_a_conflict() {
 
     // The same bytes, unmarked, at the same offsets.
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
-    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], None)
+    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], None, None)
         .await
         .expect("apply")
         .expect_err("a record with a different mark was taken as the same");
@@ -382,7 +468,15 @@ async fn an_append_at_a_stale_tail_writes_nothing() {
     let (log, _dir) = follower().await;
     ship(&log, 0, &["a"]).await.expect("first");
     let refused = log
-        .begin_append_marked_at(0, &batch(&["b"]), &[RecordMark::None], &[], &[], None)
+        .begin_append_marked_at(
+            0,
+            &batch(&["b"]),
+            &[RecordMark::None],
+            &[],
+            &[],
+            None,
+            felix_storage::log::WrittenBy::Leader,
+        )
         .await
         .expect("append");
     assert!(refused.is_none());
@@ -398,10 +492,20 @@ async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
     let payloads = batch(&["a", "b"]);
     let publishers = vec![Some(payload("alice")), None];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &publishers, &[]);
-    apply(&log, 0, checksum, &payloads, &[], &publishers, &[], None)
-        .await
-        .expect("apply")
-        .expect("stored");
+    apply(
+        &log,
+        0,
+        checksum,
+        &payloads,
+        &[],
+        &publishers,
+        &[],
+        None,
+        None,
+    )
+    .await
+    .expect("apply")
+    .expect("stored");
     let held = log.read_from(0, 1 << 20).await.expect("read");
     assert_eq!(
         held.iter()
@@ -411,15 +515,25 @@ async fn publishers_are_stored_as_shipped_and_compared_on_a_resend() {
     );
     // The leader's records, shipped again: an overlap that agrees.
     assert!(
-        apply(&log, 0, checksum, &payloads, &[], &publishers, &[], None)
-            .await
-            .expect("apply")
-            .is_ok()
+        apply(
+            &log,
+            0,
+            checksum,
+            &payloads,
+            &[],
+            &publishers,
+            &[],
+            None,
+            None
+        )
+        .await
+        .expect("apply")
+        .is_ok()
     );
 
     let other = vec![Some(payload("mallory")), None];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &other, &[]);
-    let refused = apply(&log, 0, checksum, &payloads, &[], &other, &[], None)
+    let refused = apply(&log, 0, checksum, &payloads, &[], &other, &[], None, None)
         .await
         .expect("apply");
     assert!(matches!(
@@ -442,33 +556,63 @@ async fn header_blocks_are_stored_as_shipped_and_compared_on_a_resend() {
     let payloads = batch(&["a", "b", "c"]);
     let headers = vec![None, Some(payload("block")), None];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &headers);
-    apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&headers))
-        .await
-        .expect("apply")
-        .expect("stored");
+    apply(
+        &log,
+        0,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[],
+        Some(&headers),
+        None,
+    )
+    .await
+    .expect("apply")
+    .expect("stored");
     let held = log.read_replicated_from(0, 1 << 20).await.expect("read");
     assert_eq!(headers_to_wire(&held), Some(headers.clone()));
 
     // The leader's records, shipped again: an overlap that agrees.
     assert!(
-        apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&headers))
-            .await
-            .expect("apply")
-            .is_ok()
+        apply(
+            &log,
+            0,
+            checksum,
+            &payloads,
+            &[],
+            &[],
+            &[],
+            Some(&headers),
+            None
+        )
+        .await
+        .expect("apply")
+        .is_ok()
     );
 
     let other = vec![None, Some(payload("other")), None];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &other);
-    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&other))
-        .await
-        .expect("apply");
+    let refused = apply(
+        &log,
+        0,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[],
+        Some(&other),
+        None,
+    )
+    .await
+    .expect("apply");
     assert!(matches!(
         refused,
         Err(Divergence::Conflict { offset: 1, .. })
     ));
 
     let bare = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
-    let refused = apply(&log, 0, bare, &payloads, &[], &[], &[], None)
+    let refused = apply(&log, 0, bare, &payloads, &[], &[], &[], None, None)
         .await
         .expect("apply");
     assert!(matches!(
@@ -485,9 +629,19 @@ async fn a_header_block_that_did_not_survive_the_trip_is_refused() {
     let sent = vec![Some(payload("block"))];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &sent);
     let arrived = vec![Some(payload("blocc"))];
-    let refused = apply(&log, 0, checksum, &payloads, &[], &[], &[], Some(&arrived))
-        .await
-        .expect("apply");
+    let refused = apply(
+        &log,
+        0,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[],
+        Some(&arrived),
+        None,
+    )
+    .await
+    .expect("apply");
     assert!(matches!(refused, Err(Divergence::Corrupt { .. })));
     assert!(stored(&log).await.is_empty());
 }
@@ -511,18 +665,38 @@ async fn times_are_stored_as_shipped() {
     let (log, _dir) = follower().await;
     let payloads = batch(&["a", "b"]);
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
-    apply(&log, 0, checksum, &payloads, &[], &[], &[11, 12], None)
-        .await
-        .expect("apply")
-        .expect("stored");
+    apply(
+        &log,
+        0,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[11, 12],
+        None,
+        None,
+    )
+    .await
+    .expect("apply")
+    .expect("stored");
     assert_eq!(stored_times(&log).await, vec![11, 12]);
 
     let payloads = batch(&["b", "c"]);
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
-    apply(&log, 1, checksum, &payloads, &[], &[], &[99, 13], None)
-        .await
-        .expect("apply")
-        .expect("the overlap agrees on everything compared");
+    apply(
+        &log,
+        1,
+        checksum,
+        &payloads,
+        &[],
+        &[],
+        &[99, 13],
+        None,
+        None,
+    )
+    .await
+    .expect("apply")
+    .expect("the overlap agrees on everything compared");
     assert_eq!(stored_times(&log).await, vec![11, 12, 13]);
 }
 
@@ -534,7 +708,7 @@ async fn a_batch_without_times_takes_this_brokers_clock() {
     let payloads = batch(&["a"]);
     let checksum = felix_wire::internal::batch_checksum(&payloads, &[], &[], &[]);
     let before = crate::durable::append_time_now();
-    apply(&log, 0, checksum, &payloads, &[], &[], &[], None)
+    apply(&log, 0, checksum, &payloads, &[], &[], &[], None, None)
         .await
         .expect("apply")
         .expect("stored");
@@ -547,7 +721,7 @@ async fn a_batch_without_times_takes_this_brokers_clock() {
 /// arrival, a trim a later leader truncates would still hide records.
 #[tokio::test]
 async fn a_replicated_trim_applies_its_floor_only_at_commit() {
-    let trim = mark_to_wire(RecordMark::Trim { floor: 3 });
+    let trim = mark_to_wire(RecordMark::Trim { floor: 3 }).expect("ships");
     assert_eq!(trim, ProducerMark::Trim { floor: 3 });
     assert_eq!(mark_from_wire(trim), RecordMark::Trim { floor: 3 });
 
@@ -557,7 +731,7 @@ async fn a_replicated_trim_applies_its_floor_only_at_commit() {
     let payloads = batch(&["headers"]);
     let marks = [trim];
     let checksum = felix_wire::internal::batch_checksum(&payloads, &marks, &[], &[]);
-    apply(&log, 4, checksum, &payloads, &marks, &[], &[], None)
+    apply(&log, 4, checksum, &payloads, &marks, &[], &[], None, None)
         .await
         .expect("apply")
         .expect("stored");
@@ -570,4 +744,18 @@ async fn a_replicated_trim_applies_its_floor_only_at_commit() {
         log.read_from(0, 1 << 20).await,
         Err(BrokerError::CursorTooOld { oldest: 3, .. })
     ));
+}
+
+/// The v9 kinds have no replication mark yet. Sending one under another mark
+/// would hand a follower a membership or counter record as an event.
+#[test]
+fn the_v9_kinds_have_no_wire_mark() {
+    for mark in [
+        RecordMark::Membership,
+        RecordMark::CounterDelta,
+        RecordMark::CounterCheckpoint,
+    ] {
+        assert_eq!(mark_to_wire(mark), None, "{mark:?}");
+    }
+    assert_eq!(mark_to_wire(RecordMark::Commit), Some(ProducerMark::Commit));
 }

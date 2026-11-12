@@ -2,6 +2,7 @@
 //! it holding the start of the generation that names its new copy
 //! (`FelixShard.tla`, the non-voting rejoin; docs/control-plane.md,
 //! "Re-admitting a replaced copy").
+use super::super::moves::READMITS_PER_PASS;
 use super::reconciler::shard_zero;
 use super::*;
 use crate::model::{Namespace, ReplicaReport, Tenant};
@@ -182,6 +183,129 @@ fn failover_skips_a_replaced_member_until_its_leader_shows_it_holding_the_start(
     assert_eq!(leader_after(&learner, &[], false), "broker-c");
 }
 
+/// **A given-up leader's probe admits a learner too.** broker-a led the
+/// generation that re-admitted broker-c and crashed before a pass reported
+/// broker-c holding its start, so its probe is the only report it can still
+/// send. broker-b is behind, so broker-c is the one copy that can take over.
+#[test]
+fn a_given_up_leaders_probe_admits_a_learner_holding_the_start() {
+    let nodes = vec![
+        registered("broker-a", 1, NodeLifecycle::Live),
+        registered("broker-b", 2, NodeLifecycle::Live),
+        registered("broker-c", 33, NodeLifecycle::Live),
+    ];
+    let learner = ShardAssignment {
+        learners: ["broker-c".to_string()].into(),
+        ..named(
+            "broker-a",
+            &["broker-b", "broker-c"],
+            &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        )
+    };
+    let decision = |holds: &[&str]| {
+        let said = Said {
+            generation: 5,
+            leader: "broker-a",
+            offsets: &[("broker-a", 9), ("broker-b", 5), ("broker-c", 11)],
+            seen: &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+            holds,
+        };
+        let incarnations = nodes
+            .iter()
+            .map(|n| (n.node_id.clone(), n.status.incarnation))
+            .collect();
+        let report = ReplicaReport {
+            given_up: true,
+            leader_offset: None,
+            caught_up: ["broker-c".to_string()].into(),
+            ..said.report(incarnations, 1_000)
+        };
+        let positions = ReplicaPositions::new(vec![report], &Default::default(), 1_000)
+            .with_nodes(&nodes, std::slice::from_ref(&learner))
+            .with_joint_fence(true);
+        plan_for(&nodes, &learner, &positions, true)
+    };
+
+    assert!(
+        matches!(
+            decision(&[]),
+            Decision::Unplaceable(Unplaceable::NoCaughtUpReplica)
+        ),
+        "{:?}",
+        decision(&[])
+    );
+    match decision(&["broker-c"]) {
+        Decision::Place(leader, _) => assert_eq!(leader, "broker-c"),
+        other => panic!("expected broker-c promoted, got {other:?}"),
+    }
+}
+
+/// **Known gap, pinned as it is today: a given-up leader at N+1 strands a
+/// readmitted learner that is the furthest copy.** broker-b was elected at
+/// generation 5 while the control plane was paused and went down. The control
+/// plane, still naming broker-a, readmitted broker-c as a learner, then a late
+/// report from broker-b collided and moved the shard to generation 6 naming
+/// broker-b, which came back from an unclean stop and gave the shard up. Its
+/// probe shows broker-c level with it and broker-a behind, but broker-c is a
+/// learner and no leader ever writes generation 6, so it never holds a start
+/// to leave that state; broker-a is behind and a reclaim needs every follower
+/// behind. The shard stays without a leader (a sim stall).
+///
+/// A fix has to let placement promote broker-c here, either by taking the
+/// probe's evidence of the elected generation it voted into, or by not moving
+/// the shard to a leader that has no heartbeat. When it does, flip the final
+/// assertion to expect `Decision::Place` of broker-c.
+#[test]
+fn known_gap_a_given_up_leader_leaves_the_furthest_learner_unpromotable() {
+    let nodes = vec![
+        registered("broker-a", 1, NodeLifecycle::Live),
+        registered("broker-b", 2, NodeLifecycle::Live),
+        registered("broker-c", 33, NodeLifecycle::Live),
+    ];
+    let collided = ShardAssignment {
+        generation: 6,
+        learners: ["broker-c".to_string()].into(),
+        ..named(
+            "broker-b",
+            &["broker-a", "broker-c"],
+            &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        )
+    };
+    let said = Said {
+        generation: 6,
+        leader: "broker-b",
+        offsets: &[("broker-a", 3), ("broker-b", 4), ("broker-c", 4)],
+        seen: &[("broker-a", 1), ("broker-b", 2), ("broker-c", 33)],
+        // Nobody wrote generation 6, so no follower holds its start.
+        holds: &[],
+    };
+    let incarnations = nodes
+        .iter()
+        .map(|n| (n.node_id.clone(), n.status.incarnation))
+        .collect();
+    let report = ReplicaReport {
+        given_up: true,
+        leader_offset: None,
+        caught_up: ["broker-c".to_string()].into(),
+        ..said.report(incarnations, 1_000)
+    };
+    let positions = ReplicaPositions::new(vec![report], &Default::default(), 1_000)
+        .with_nodes(&nodes, std::slice::from_ref(&collided))
+        .with_joint_fence(true);
+    let key = shard_zero();
+
+    assert!(positions.is_learner(&key, "broker-c"));
+    assert!(!positions.is_caught_up(&key, "broker-c"));
+    assert!(!positions.is_caught_up(&key, "broker-a"));
+    assert!(!positions.reclaimable(&key, "broker-b", &["broker-a", "broker-c"]));
+
+    // Today's behaviour. After the fix this is `Place` of broker-c.
+    match plan_for(&nodes, &collided, &positions, true) {
+        Decision::Unplaceable(Unplaceable::NoCaughtUpReplica) => {}
+        other => panic!("expected the stall, got {other:?}"),
+    }
+}
+
 /// **A move's old-set majority does not count a learner.** A set above its
 /// factor drops the first follower whose leaving leaves the rest at the
 /// drained leader's tail. broker-b is a learner, so it does not count as at
@@ -251,7 +375,7 @@ fn a_trim_does_not_count_a_learner_toward_the_rest_holding_the_tail() {
 
 /// Three brokers with storage ids 1 to 3, a durable `Quorum` stream of three
 /// copies led by broker-b, and `joint_fence` finalized when asked.
-async fn cluster(joint_fence: bool) -> (InMemoryStore, ShardAssignment) {
+pub(super) async fn cluster(joint_fence: bool) -> (InMemoryStore, ShardAssignment) {
     let store = InMemoryStore::new(StoreConfig {
         changes_limit: 1000,
         change_retention_max_rows: Some(1000),
@@ -375,6 +499,23 @@ async fn a_wiped_member_is_readmitted_then_counts_once_it_holds_the_start() {
 
         let holds: &[&str] = if admit { &["broker-c"] } else { &[] };
         b_reports(&store, readmitted.generation, holds).await;
+        // The leader of the set naming the new copy showed it caught up:
+        // that is the durable evidence a fence may trust it on. broker-a was
+        // never replaced and gets none.
+        let evidenced = store
+            .get_shard_assignment(&shard_zero())
+            .await
+            .expect("assignment");
+        assert_eq!(
+            evidenced.readmitted,
+            vec![crate::model::Readmitted {
+                node: "broker-c".to_string(),
+                storage_id: sid(33),
+                generation: readmitted.generation,
+                offset: 10,
+            }]
+        );
+        let readmitted = evidenced;
         let read = PlacementRead::load(&store, &Default::default())
             .await
             .expect("read");
@@ -549,4 +690,57 @@ fn a_readmission_needs_the_new_copy_caught_up_and_nothing_else_in_progress() {
     };
     assert_eq!(written.replicas, wiped.replicas);
     assert_eq!(written.leader, wiped.leader);
+}
+
+/// Every shard has broker-c caught up under a new identity.
+struct AllReadmittable;
+
+impl CaughtUp for AllReadmittable {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        true
+    }
+
+    fn readmittable(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> Option<String> {
+        Some("broker-c".to_string())
+    }
+}
+
+/// **Re-admissions are paced.** Each is a new fenced term on its leader, so
+/// a broker that comes back wiped under many shards is re-admitted into a
+/// bounded number a pass, and into none while placement is paused.
+#[test]
+fn one_pass_readmits_a_bounded_number_and_none_while_paused() {
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let shards = 3 * READMITS_PER_PASS as u32;
+    let existing: Vec<ShardAssignment> = (0..shards)
+        .map(|n| {
+            let mut assignment = named("broker-b", &["broker-a", "broker-c"], &[]);
+            assignment.key.shard = n;
+            assignment
+        })
+        .collect();
+    let stream = Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", shards, 3)
+    };
+    let readmitted = |paused: bool| {
+        let policy = MovePolicy {
+            joint_fence: true,
+            paused,
+            ..MovePolicy::default()
+        };
+        plan_with(
+            std::slice::from_ref(&stream),
+            &[],
+            &nodes,
+            &existing,
+            &AllReadmittable,
+            policy,
+        )
+        .moves()
+        .filter(|(_, step, _)| matches!(step, MoveStep::Readmit { .. }))
+        .count()
+    };
+    assert_eq!(readmitted(false), READMITS_PER_PASS);
+    assert_eq!(readmitted(true), 0);
 }

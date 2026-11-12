@@ -251,8 +251,8 @@ accepting that latency and setup cost are not those of a NATS request. Keep NATS
 RPC-style traffic.
 
 **Message headers.** A record is a payload and, on durable streams, an offset and
-append time. A single broker can carry a key and named headers with each record for
-the Rust client; a clustered broker, consumer groups and the other clients do not
+append time. A broker can carry a key and named headers with each record for
+the Rust client, and a cluster does once its fleet finalizes `record_headers`. Consumer groups and the other clients do not
 yet (see [What Felix Is For](/getting-started/what-felix-is-for/)). Elsewhere, put
 metadata in the payload.
 
@@ -263,8 +263,8 @@ routing of subjects.
 **Object store.** Keep blobs elsewhere and publish a reference.
 
 **MQTT.** A broker can accept MQTT connections on a listener with token
-authentication, but publish and subscribe over it are not built yet, so keep MQTT
-traffic on NATS for now ([MQTT](/features/mqtt/)). A Kafka listener serves producers
+authentication, and a device can publish at QoS 0 and 1 to a mounted stream. Subscribing over it is not built yet, so keep MQTT
+subscribers on NATS for now ([MQTT](/features/mqtt/)). A Kafka listener serves producers
 and self-assigning consumers; see [Coming from Kafka](/use-cases/kafka-migration/).
 
 **Leaf nodes, superclusters and mirrors.** Felix brokers form one cluster, and there
@@ -274,8 +274,8 @@ possible; see [Data residency](/use-cases/data-residency/).
 
 **Follower reads.** Every read goes to the shard's leader.
 
-**Deployment.** A Felix deployment has brokers and a control plane, backed by
-Postgres or its Raft backend, so it takes more to run than a single NATS binary.
+**Deployment.** A Felix deployment has brokers and a control plane, with
+its Raft backend, so it takes more to run than a single NATS binary.
 
 ## Related
 

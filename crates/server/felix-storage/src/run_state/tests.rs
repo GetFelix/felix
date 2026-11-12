@@ -217,21 +217,32 @@ fn a_watched_directory_forgets_its_boot_on_poison() {
     );
 }
 
-/// Forgetting the boot leaves an `OnCommit` run and a clean stop as they
-/// were: neither depends on the page cache.
+/// A poisoned `OnCommit` run names no boot, but its page cache is as
+/// suspect as a relaxed run's, so forgetting rewrites it to rotate the id on
+/// the next start. Forgetting twice changes nothing more.
 #[test]
-fn forgetting_the_boot_leaves_other_records_alone() {
+fn forgetting_the_boot_of_an_on_commit_run_rotates_the_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut fresh = counter(0);
     let first = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
     forget_boot(dir.path()).expect("forget");
+    forget_boot(dir.path()).expect("forget again");
     assert_eq!(
         read(dir.path(), first.id).expect("read"),
-        LastRun::Crashed {
-            relaxed: false,
-            boot: None
-        }
+        relaxed_crash(None)
     );
+    let second = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+}
+
+/// Forgetting the boot leaves a clean stop as it was: it does not depend on
+/// the page cache.
+#[test]
+fn forgetting_the_boot_leaves_a_clean_stop_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
     mark_clean(dir.path(), first.id).expect("mark clean");
     forget_boot(dir.path()).expect("forget");
     assert_eq!(read(dir.path(), first.id).expect("read"), LastRun::Clean);
@@ -592,4 +603,68 @@ fn the_head_trim_marker_is_kept_once_recorded() {
     record_head_trimmed(dir.path()).expect("record again");
     assert!(head_trimmed(dir.path()).expect("read"));
     assert!(!dir.path().join("head-trimmed.tmp").exists());
+}
+
+#[test]
+fn the_replaced_marker_names_the_id_and_incarnation_it_was_written_for() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(read_replaced(dir.path()).unwrap(), None);
+    record_replaced(dir.path(), StorageId::from_bytes([7; 16]), 41).unwrap();
+    assert!(replaced(dir.path()).unwrap());
+    assert_eq!(
+        read_replaced(dir.path()).unwrap(),
+        Some(ReplacedMark::Under {
+            storage_id: "07".repeat(16),
+            after: 41,
+        })
+    );
+    // What an older build wrote says nothing about when.
+    std::fs::write(dir.path().join(REPLACED_FILE_NAME), b"replaced\n").unwrap();
+    assert_eq!(
+        read_replaced(dir.path()).unwrap(),
+        Some(ReplacedMark::Unknown)
+    );
+}
+
+/// A view written before the replacement goes with it, whatever its
+/// incarnation: one above `after` may come from before a node delete reset
+/// the control plane's count.
+#[test]
+fn recording_a_replacement_removes_the_view_written_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::controlplane_view::record(dir.path(), b"{\"incarnation\":9}").unwrap();
+    record_replaced(dir.path(), StorageId::from_bytes([7; 16]), 1).unwrap();
+    assert_eq!(crate::controlplane_view::read(dir.path()), None);
+}
+
+#[test]
+fn rotated_ids_are_kept_newest_first_and_bounded() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert!(rotated_ids(dir.path()).expect("read").is_empty());
+    let id = |n: u8| StorageId::from_bytes([n; 16]);
+    for n in 0..20 {
+        record_rotated_id(dir.path(), id(n)).expect("record");
+    }
+    record_rotated_id(dir.path(), id(15)).expect("record again");
+    let ids = rotated_ids(dir.path()).expect("read");
+    assert_eq!(ids.len(), ROTATED_IDS_KEPT);
+    assert_eq!(ids[0], id(15));
+    assert_eq!(ids[1], id(19));
+    assert!(!ids.contains(&id(3)), "the oldest are dropped");
+}
+
+#[test]
+fn an_unreadable_rotated_ids_record_claims_no_id() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for body in [
+        &b"rotated_ids\nnot-an-id\n"[..],
+        b"something else\n",
+        b"\xff",
+    ] {
+        std::fs::write(dir.path().join(ROTATED_IDS_FILE_NAME), body).expect("write");
+        assert!(
+            rotated_ids(dir.path()).expect("read").is_empty(),
+            "{body:?}"
+        );
+    }
 }

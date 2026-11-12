@@ -33,6 +33,33 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
         ReconnectDeadlineMs = options.ReconnectDeadline is { } window ? (ulong)window.TotalMilliseconds : 0,
         ReconnectBackoffMs = options.ReconnectBackoff is { } first ? (ulong)first.TotalMilliseconds : 0,
         ReconnectMaxBackoffMs = options.ReconnectMaxBackoff is { } longest ? (ulong)longest.TotalMilliseconds : 0,
+        DisableRecordHeaders = options.DisableRecordHeaders ? (byte)1 : (byte)0,
+        AckOnCommit = options.AckOnCommit ? (byte)1 : (byte)0,
+        NoPublishShardStreams = options.PublishShardStreams == 0 ? (byte)1 : (byte)0,
+        ClientSubQueuePolicy = (int)(options.ClientSubQueuePolicy ?? 0),
+        PublishSharding = (int)(options.PublishSharding ?? 0),
+        ClientSubQueueCapacity = (uint)(options.ClientSubQueueCapacity ?? 0),
+        BrokerSubQueueCapacity = (uint)(options.BrokerSubQueueCapacity ?? 0),
+        PublishConnPool = (uint)(options.PublishConnPool ?? 0),
+        PublishStreamsPerConn = (uint)(options.PublishStreamsPerConn ?? 0),
+        PublishQueueDepth = (uint)(options.PublishQueueDepth ?? 0),
+        PublishShardStreams = (uint)(options.PublishShardStreams ?? 0),
+        CacheConnPool = (uint)(options.CacheConnPool ?? 0),
+        CacheStreamsPerConn = (uint)(options.CacheStreamsPerConn ?? 0),
+        EventConnPool = (uint)(options.EventConnPool ?? 0),
+        ClusterConnPool = (uint)(options.ClusterConnPool ?? 0),
+        ClusterStreamsPerConn = (uint)(options.ClusterStreamsPerConn ?? 0),
+        EventRouterMaxPending = (uint)(options.EventRouterMaxPending ?? 0),
+        PublishInflightBytes = (ulong)(options.PublishInflightBytes ?? 0),
+        MaxFrameBytes = (ulong)(options.MaxFrameBytes ?? 0),
+        EventConnRecvWindow = (ulong)(options.EventConnRecvWindow ?? 0),
+        EventStreamRecvWindow = (ulong)(options.EventStreamRecvWindow ?? 0),
+        EventSendWindow = (ulong)(options.EventSendWindow ?? 0),
+        CacheConnRecvWindow = (ulong)(options.CacheConnRecvWindow ?? 0),
+        CacheStreamRecvWindow = (ulong)(options.CacheStreamRecvWindow ?? 0),
+        CacheSendWindow = (ulong)(options.CacheSendWindow ?? 0),
+        ConnectTimeoutMs = options.ConnectTimeout is { } connect ? (ulong)connect.TotalMilliseconds : 0,
+        FinishTimeoutMs = options.FinishTimeout is { } finish ? (ulong)finish.TotalMilliseconds : 0,
     };
 
     /// <summary>Connects to a cluster.</summary>
@@ -51,6 +78,8 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
 
         Arg.OptionalText(options.ServerName, nameof(options.ServerName));
         Arg.OptionalText(options.CaFile, nameof(options.CaFile));
+        Arg.OptionalText(options.ClientCertFile, nameof(options.ClientCertFile));
+        Arg.OptionalText(options.ClientKeyFile, nameof(options.ClientKeyFile));
         foreach (var addr in options.Addrs)
         {
             Arg.Text(addr, nameof(options.Addrs));
@@ -83,16 +112,26 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             throw new ArgumentOutOfRangeException(nameof(options), "ReconnectMaxBackoff must be between 1 millisecond and one year");
         }
 
+        options.ValidateTuning();
         cancellationToken.ThrowIfCancellationRequested();
         var state = new CallState<FelixClientHandle>(cancellationToken);
         var tokens = options.TokenProvider is { } provider ? new TokenSource(provider) : null;
         int status;
         string? error;
+        // The library reads these during the connect call and keeps neither.
+        nint certFile = 0;
+        nint keyFile = 0;
         try
         {
             var userData = state.Pin();
             // The library reads the struct during the call; its size says which fields we know.
             var native = NativeOptionsOf(options);
+            // Either one alone goes through too: the library refuses it as an invalid argument.
+            certFile = options.ClientCertFile is null ? 0 : Marshal.StringToCoTaskMemUTF8(options.ClientCertFile);
+            keyFile = options.ClientKeyFile is null ? 0 : Marshal.StringToCoTaskMemUTF8(options.ClientKeyFile);
+            native.ClientCertFile = certFile;
+            native.ClientKeyFile = keyFile;
+
             if (tokens is not null)
             {
                 native.TokenFetch = (nint)(delegate* unmanaged[Cdecl]<nint, nint, void>)&Callbacks.OnTokenFetch;
@@ -108,7 +147,9 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
                 options.CaFile,
                 options.Publishers || options.Timestamps || tokens is not null
                     || options.ReconnectAttempts is not null || options.ReconnectDeadline is not null
-                    || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null ? &native : null,
+                    || options.ReconnectBackoff is not null || options.ReconnectMaxBackoff is not null
+                    || options.DisableRecordHeaders || options.HasTuning
+                    || certFile != 0 || keyFile != 0 ? &native : null,
                 state.Cancel.Pointer,
                 &Callbacks.OnConnect,
                 userData);
@@ -120,6 +161,11 @@ public sealed partial class FelixClient : IAsyncDisposable, IDisposable
             tokens?.Abandon();
             state.Abandon();
             throw;
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(certFile);
+            Marshal.FreeCoTaskMem(keyFile);
         }
 
         if (status != 0)

@@ -11,7 +11,8 @@
 //!
 //! Being wrong costs availability, never safety: a leader suspected by
 //! mistake is replaced by a leader that fenced a majority first.
-use std::collections::{BTreeSet, HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,39 +26,87 @@ use tokio_util::sync::CancellationToken;
 use crate::peer::PeerRequester;
 
 /// How long a leader may go without answering before this broker names it.
-pub const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_SUSPECT_AFTER: Duration = Duration::from_secs(5);
+/// How long an elected leader that has not started its generation holds the
+/// shard. Generous: a fence or catch-up under load can take many seconds,
+/// and giving up on one costs a generation.
+pub(crate) const DEFAULT_DEFER_FOR: Duration = Duration::from_secs(60);
+const MIN_DEFER_FOR: Duration = Duration::from_secs(1);
+/// How long a copy may go without hearing its leader, with that leader's
+/// generation not started here, before it may stand for the shard though the
+/// leader's broker answers pings. Above the control plane's stuck-leader
+/// backstop (70 s by default), so with the control plane up its rename comes
+/// first and restarts the clock.
+pub(crate) const DEFAULT_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(120);
+const MIN_SHARD_SUSPECT_AFTER: Duration = Duration::from_secs(1);
 
 /// The shortest gap between pings, whatever `suspect_after` is.
 const MIN_PROBE_EVERY: Duration = Duration::from_millis(50);
 
 /// When this broker suspects a leader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SuspicionConfig {
+pub(crate) struct SuspicionConfig {
     /// Silence past this names the leader. Zero turns the watch off.
     pub suspect_after: Duration,
+    /// How long a copy defers to an elected leader that has not started its
+    /// generation. See `Elections::with_defer_for`.
+    pub defer_for: Duration,
+    /// How long a shard's leader may make no progress here before this copy
+    /// may stand for that shard alone. Zero turns per-shard suspicion off.
+    /// See "Suspecting a shard" in `docs/replication-design.md`.
+    pub shard_suspect_after: Duration,
 }
 
 impl Default for SuspicionConfig {
     fn default() -> Self {
         Self {
             suspect_after: DEFAULT_SUSPECT_AFTER,
+            defer_for: DEFAULT_DEFER_FOR,
+            shard_suspect_after: DEFAULT_SHARD_SUSPECT_AFTER,
         }
     }
 }
 
 impl SuspicionConfig {
-    /// `FELIX_LEADER_SUSPECT_AFTER_MS`, or the default.
-    pub fn from_env() -> Self {
-        let suspect_after = std::env::var("FELIX_LEADER_SUSPECT_AFTER_MS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .map_or(DEFAULT_SUSPECT_AFTER, Duration::from_millis);
-        Self { suspect_after }
+    /// `FELIX_LEADER_SUSPECT_AFTER_MS`, `FELIX_ELECTION_DEFER_FOR_MS` and
+    /// `FELIX_SHARD_SUSPECT_AFTER_MS`, or the defaults.
+    pub(crate) fn from_env() -> Self {
+        let millis = |name: &str, default: Duration| {
+            std::env::var(name)
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .map_or(default, Duration::from_millis)
+        };
+        Self {
+            suspect_after: millis("FELIX_LEADER_SUSPECT_AFTER_MS", DEFAULT_SUSPECT_AFTER),
+            // Zero would drop the deferral altogether and let a follower
+            // stand over every standing still fencing.
+            defer_for: millis("FELIX_ELECTION_DEFER_FOR_MS", DEFAULT_DEFER_FOR).max(MIN_DEFER_FOR),
+            shard_suspect_after: shard_bound(millis(
+                "FELIX_SHARD_SUSPECT_AFTER_MS",
+                DEFAULT_SHARD_SUSPECT_AFTER,
+            )),
+        }
+    }
+
+    /// Whether a copy may stand for a shard whose leader's broker answers.
+    pub(crate) fn suspects_shards(&self) -> bool {
+        !self.shard_suspect_after.is_zero()
     }
 
     /// Four pings per window, so one lost ping is not a suspicion.
     pub(crate) fn probe_every(&self) -> Duration {
         (self.suspect_after / 4).max(MIN_PROBE_EVERY)
+    }
+}
+
+/// Zero stays off; anything else is at least a second, so a typo in
+/// milliseconds does not make every quiet moment a suspicion.
+fn shard_bound(bound: Duration) -> Duration {
+    if bound.is_zero() {
+        bound
+    } else {
+        bound.max(MIN_SHARD_SUSPECT_AFTER)
     }
 }
 
@@ -76,7 +125,7 @@ impl Default for Suspects {
 }
 
 impl Suspects {
-    pub fn current(&self) -> BTreeSet<String> {
+    pub(crate) fn current(&self) -> BTreeSet<String> {
         self.names.borrow().clone()
     }
 
@@ -115,7 +164,7 @@ impl Silence {
     pub(crate) fn new(suspect_after: Duration) -> Self {
         Self {
             suspect_after,
-            heard: HashMap::new(),
+            heard: HashMap::default(),
         }
     }
 
@@ -189,7 +238,7 @@ pub(crate) async fn ping<R: PeerRequester>(
 /// nothing about whether it is up, so it must not make it a suspect.
 pub(crate) fn leaders_followed(router: &ShardRouter) -> Vec<(String, SocketAddr)> {
     let local = router.local_node_id();
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     let mut leaders = Vec::new();
     for (_, route) in router.snapshot().iter() {
         if route.leader.node_id == local
@@ -210,7 +259,7 @@ pub(crate) fn leaders_followed(router: &ShardRouter) -> Vec<(String, SocketAddr)
 
 /// Ping the leaders of every shard this broker follows until `shutdown`, and
 /// keep `suspects` current. `None` when the config turns the watch off.
-pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
+pub(crate) fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     router: Arc<ShardRouter>,
     suspects: Arc<Suspects>,

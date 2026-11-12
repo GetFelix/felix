@@ -13,6 +13,7 @@ Located in `demos/broker/` and built from the `felix-broker-service` package:
 - `pubsub-demo-notifications`: Multi-tenant real-time alerts demo.
 - `pubsub-demo-orders`: Orders/payments pipeline demo.
 - `durable-restart-demo`: Publish, crash, restart, recover — the durability guarantee end to end.
+- `queue-semantics-demo`: A consumer group handing out work, redelivering after a worker dies and dead-lettering a poison job.
 
 ### Run
 
@@ -80,7 +81,7 @@ Demonstrates that RBAC mutations applied through the control plane immediately
 change what the broker allows for the same principal (after reissuing a Felix
 access token, since permissions are embedded in tokens).
 
-This demo uses an in-memory control-plane store (no Postgres required).
+This demo uses an in-memory control-plane store.
 
 ### Run
 
@@ -97,10 +98,10 @@ task demo:rbac-live
 ### Expected output (excerpt)
 
 ```
-STEP 9 publish denied: PASS
-STEP 12 RBAC policies added: PASS
-STEP 15 publish allowed: PASS
-STEP 17 cache allowed: PASS
+STEP 10 publish denied: PASS
+STEP 13 RBAC policies added: PASS
+STEP 16 publish allowed: PASS
+STEP 18 cache allowed: PASS
 ```
 
 ## Cross-Tenant Isolation (Control Plane + Broker)
@@ -108,8 +109,8 @@ STEP 17 cache allowed: PASS
 Location: `demos/cross_tenant_isolation/`
 
 Demonstrates that tokens minted for one tenant cannot access another tenant's
-resources, even with the same upstream identity. Uses a Postgres-backed control
-plane, a real broker, and a fake ES256 IdP.
+resources, even with the same upstream identity. Uses a real control
+plane (in-memory store), a real broker, and a fake ES256 IdP.
 
 ### Run
 
@@ -126,7 +127,7 @@ task demo:cross-tenant-isolation
 ### Expected output (excerpt)
 
 ```
-STEP 13 t1 publish allowed: PASS
-STEP 16 t1 token on t2 publish denied: PASS
-STEP 19 t2 token publish denied: PASS
+STEP 15 t1 publish allowed: PASS
+STEP 18 t1 token on t2 publish denied: PASS
+STEP 21 t2 token publish denied: PASS
 ```

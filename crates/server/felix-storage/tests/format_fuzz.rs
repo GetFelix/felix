@@ -23,10 +23,11 @@
 //! cargo +nightly fuzz run segment_recovery -- -max_total_time=300
 //! ```
 
-use felix_storage::log::LogConfig;
+use felix_storage::log::{LogConfig, RecordMark};
 use felix_storage::segment::format::{
-    MAX_PAYLOAD_BYTES, RECORD_HEADER_LEN, SEGMENT_HEADER_LEN, SegmentHeader, decode_record,
-    encode_record,
+    GENERATION_HEADER_LEN, GENERATION_VERSION, MAX_PAYLOAD_BYTES, RECORD_HEADER_LEN,
+    SEGMENT_HEADER_LEN, SegmentHeader, decode_record, decode_record_in, encode_record,
+    encode_record_at,
 };
 use felix_storage::segment::{ScanStart, scan_segment};
 use felix_storage::{CorruptionKind, StorageError, segment};
@@ -91,6 +92,43 @@ fn build_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> {
             None,
             None,
             &Default::default(),
+        );
+    }
+    bytes
+}
+
+/// A kind for a v9 record: mostly plain, often one of the kinds only v9
+/// holds.
+fn v9_mark(rng: &mut Rng) -> RecordMark {
+    match rng.below(6) {
+        0 => RecordMark::Membership,
+        1 => RecordMark::CounterDelta,
+        2 => RecordMark::CounterCheckpoint,
+        3 => RecordMark::GenerationStart,
+        _ => RecordMark::None,
+    }
+}
+
+/// [`build_segment`] at v9, with generations that rise at random and some
+/// records of the v9 kinds.
+fn build_v9_segment(rng: &mut Rng, count: usize, max_payload: usize) -> Vec<u8> {
+    let mut bytes = SegmentHeader::at_version(0, 1, GENERATION_VERSION)
+        .encode()
+        .to_vec();
+    let mut generation = rng.next_u64() % 1000;
+    for offset in 0..count {
+        let payload = rng.bytes_below(max_payload);
+        generation += (rng.below(4) == 0) as u64;
+        let mark = v9_mark(rng);
+        encode_record_at(
+            &mut bytes,
+            Some(generation),
+            offset as u64,
+            offset as u64 * 7,
+            &payload,
+            None,
+            None,
+            &mark,
         );
     }
     bytes
@@ -344,6 +382,152 @@ async fn recovery_of_arbitrary_directories_never_panics() {
 
         // Either it opens or it reports corruption; both are fine, a panic or a
         // hang is not.
+        match felix_storage::DiskLog::open(dir.path(), "fuzz/shard/0", config()) {
+            Ok(_) | Err(StorageError::Corruption(_)) | Err(StorageError::Io(_)) => {}
+            Err(other) => panic!("iteration {iteration}: unexpected error kind: {other}"),
+        }
+    }
+}
+
+#[test]
+fn arbitrary_bytes_never_panic_the_v9_record_decoder() {
+    let mut rng = Rng::new(0x9_F0CA);
+    for iteration in 0..20_000 {
+        let bytes = rng.bytes_below(112);
+        if let Ok((decoded, consumed)) = decode_record_in(&bytes, GENERATION_VERSION) {
+            assert!(decoded.header.generation.is_some(), "iteration {iteration}");
+            assert_eq!(
+                consumed,
+                decoded.header.encoded_len(),
+                "iteration {iteration}"
+            );
+            assert!(consumed >= GENERATION_HEADER_LEN, "iteration {iteration}");
+        }
+    }
+}
+
+#[test]
+fn every_encoded_v9_record_round_trips() {
+    let mut rng = Rng::new(0x9_1234);
+    for iteration in 0..5_000 {
+        let payload = rng.bytes_below(512);
+        let generation = rng.next_u64();
+        let offset = rng.next_u64();
+        let headers = (iteration % 2 == 1).then(|| rng.bytes_below(64));
+        let mark = v9_mark(&mut rng);
+        let mut bytes = Vec::new();
+        let written = encode_record_at(
+            &mut bytes,
+            Some(generation),
+            offset,
+            rng.next_u64(),
+            &payload,
+            headers.as_deref(),
+            None,
+            &mark,
+        );
+        let (decoded, consumed) = decode_record_in(&bytes, GENERATION_VERSION)
+            .unwrap_or_else(|err| panic!("iteration {iteration}: {err}"));
+        assert_eq!(consumed, written);
+        assert_eq!(decoded.header.generation, Some(generation));
+        assert_eq!(decoded.header.offset, offset);
+        assert_eq!(decoded.payload.as_ref(), payload.as_slice());
+        assert_eq!(decoded.headers.as_deref(), headers.as_deref());
+        assert_eq!(decoded.mark, mark);
+    }
+}
+
+#[test]
+fn a_single_flipped_bit_in_a_v9_record_is_always_detected() {
+    let mut rng = Rng::new(0x9_ABCD);
+    for iteration in 0..2_000 {
+        let payload_len = 1 + rng.below(64);
+        let payload = rng.bytes(payload_len);
+        let mark = v9_mark(&mut rng);
+        let mut bytes = Vec::new();
+        encode_record_at(
+            &mut bytes,
+            Some(rng.next_u64()),
+            rng.next_u64(),
+            rng.next_u64(),
+            &payload,
+            None,
+            None,
+            &mark,
+        );
+        let position = rng.below(bytes.len());
+        let bit = 1u8 << rng.below(8);
+        bytes[position] ^= bit;
+        if let Ok((decoded, _)) = decode_record_in(&bytes, GENERATION_VERSION) {
+            panic!(
+                "iteration {iteration}: flipping bit {bit:#04b} at byte {position} went \
+                 undetected (generation {:?})",
+                decoded.header.generation
+            );
+        }
+    }
+}
+
+#[test]
+fn truncating_a_v9_segment_anywhere_keeps_a_prefix() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("00000000000000000000.log");
+    let mut rng = Rng::new(0x9_5EED);
+    let full = build_v9_segment(&mut rng, 40, 48);
+
+    let mut previous_count = None;
+    for cut in (SEGMENT_HEADER_LEN as usize)..full.len() {
+        std::fs::write(&path, &full[..cut]).expect("write");
+        // The strict policy: only a provably unfinished record is cut.
+        let outcome = scan_segment(&path, 0, "fuzz/shard/0", 128, ScanStart::Full, false)
+            .unwrap_or_else(|err| panic!("cut at {cut}: {err}"));
+        assert_eq!(outcome.record_count, outcome.next_offset);
+        if let Some(previous) = previous_count {
+            assert!(outcome.record_count >= previous, "cut at {cut}");
+        }
+        previous_count = Some(outcome.record_count);
+        assert!(outcome.valid_bytes <= cut as u64);
+    }
+    assert_eq!(previous_count, Some(39));
+}
+
+#[test]
+fn corrupting_committed_v9_bytes_is_reported_rather_than_dropped() {
+    let dir = tempdir().expect("dir");
+    let path = dir.path().join("00000000000000000000.log");
+    let mut rng = Rng::new(0x9_C0FF);
+    let clean = build_v9_segment(&mut rng, 30, 32);
+
+    for _ in 0..1_000 {
+        let mut bytes = clean.clone();
+        let position = SEGMENT_HEADER_LEN as usize + rng.below(bytes.len() / 2);
+        bytes[position] ^= 1u8 << rng.below(8);
+        std::fs::write(&path, &bytes).expect("write");
+        // Records follow the damage, so even the permissive policy refuses.
+        match scan_segment(&path, 0, "fuzz/shard/0", 128, ScanStart::Full, true) {
+            Err(StorageError::Corruption(detail)) => assert!(detail.site.position.is_some()),
+            Err(other) => panic!("unexpected error kind: {other}"),
+            Ok(_) => panic!("corruption at byte {position} was not reported"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn recovery_of_v9_directories_never_panics() {
+    let mut rng = Rng::new(0x9_FEED);
+    for iteration in 0..100 {
+        let dir = tempdir().expect("dir");
+        let records = rng.below(8);
+        let mut bytes = build_v9_segment(&mut rng, records, 24);
+        // Damage somewhere, or cut the tail.
+        if !bytes.is_empty() && rng.below(2) == 0 {
+            let at = rng.below(bytes.len());
+            bytes[at] ^= 1u8 << rng.below(8);
+        } else {
+            let keep = rng.below(bytes.len() + 1);
+            bytes.truncate(keep);
+        }
+        std::fs::write(dir.path().join(segment::segment_file_name(0)), bytes).expect("write");
         match felix_storage::DiskLog::open(dir.path(), "fuzz/shard/0", config()) {
             Ok(_) | Err(StorageError::Corruption(_)) | Err(StorageError::Io(_)) => {}
             Err(other) => panic!("iteration {iteration}: unexpected error kind: {other}"),

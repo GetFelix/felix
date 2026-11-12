@@ -11,7 +11,7 @@ use super::epochs::{EPOCH_ENTRY_LEN, EPOCH_HEADER_LEN, EpochMap};
 use super::offload::Manifest;
 use super::producers::{self, SNAPSHOT_HEADER_LEN};
 use super::recovery::{End, plan_recovery, recover_shard};
-use super::replica_state::{ENCODED_LEN, ReplicaState};
+use super::replica_state::ReplicaState;
 use super::set::ReplicaSet;
 use crate::StorageError;
 use crate::log::LogConfig;
@@ -26,7 +26,8 @@ pub(crate) fn sidecars(data: &[u8]) {
         }
     }
 
-    let replica_crc = ENCODED_LEN - 4;
+    // Two lengths, each closed by its CRC.
+    let replica_crc = data.len().saturating_sub(4);
     for bytes in [data.to_vec(), with_crc(data, replica_crc, 0..replica_crc)] {
         if let Some(state) = ReplicaState::decode(&bytes) {
             assert_eq!(ReplicaState::decode(&state.encode()), Some(state));
@@ -36,8 +37,9 @@ pub(crate) fn sidecars(data: &[u8]) {
     // The ballot's CRC closes the file, wherever its length puts the end.
     let ballot_crc = data.len().saturating_sub(4);
     for bytes in [data.to_vec(), with_crc(data, ballot_crc, 0..ballot_crc)] {
-        if let Some(ballot) = Ballot::decode(&bytes) {
-            assert_eq!(Ballot::decode(&ballot.encode()), Some(ballot));
+        if let Ok(ballot) = Ballot::decode(&bytes) {
+            assert!(!ballot.committed || !ballot.leader.is_empty());
+            assert_eq!(Ballot::decode(&ballot.encode()), Ok(ballot));
         }
     }
 

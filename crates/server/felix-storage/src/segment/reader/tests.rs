@@ -2,7 +2,7 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
-use crate::segment::format::SEGMENT_HEADER_LEN;
+use crate::segment::format::{RECORD_HEADER_LEN, SEGMENT_HEADER_LEN};
 use crate::segment::test_support::{read_all, write_segment};
 use crate::segment::{ScanStart, scan_segment};
 

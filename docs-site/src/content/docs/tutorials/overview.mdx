@@ -81,11 +81,10 @@ example.
 
 ## Set up once
 
-The tutorials use the Felix 0.7 client API, which is in preview. Install the
-client libraries at 0.7.0-preview.2, as each language tab shows. The compose
-file below is the one tagged v0.7.0-preview.2. It starts the broker, control
-plane and `felixctl` at the version it names. The Python package spells the same version
-`0.7.0rc2`.
+The tutorials use the Felix 0.7 client API. Install the
+client libraries at 0.7.2, as each language tab shows. The compose
+file below is the one tagged v0.7.2. It starts the broker, control
+plane and `felixctl` at the version it names.
 
 The tutorials run against the development stack from the
 [quickstart](/getting-started/quickstart/): a control plane, one broker with
@@ -104,7 +103,7 @@ details.
 <TabItem label="Docker">
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.7.0-preview.2/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.7.2/compose.yaml
 docker compose up        # stays in the foreground and prints the logs
 # or, in the background:
 docker compose up -d
@@ -115,7 +114,7 @@ docker compose logs -f
 <TabItem label="Podman">
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.7.0-preview.2/compose.yaml
+curl -fsSLO https://raw.githubusercontent.com/GetFelix/felix/v0.7.2/compose.yaml
 export PODMAN_COMPOSE_PROVIDER=docker-compose
 podman compose up        # stays in the foreground and prints the logs
 # or, in the background:
@@ -226,7 +225,7 @@ The file names below follow each language's convention.
 
 ```bash
 cargo new felix-tutorial && cd felix-tutorial
-cargo add felix-client@0.7.0-preview.2 anyhow bytes serde_json
+cargo add felix-client@0.7.2 anyhow bytes serde_json
 cargo add tokio --features rt-multi-thread,macros,time,fs,io-util
 ```
 
@@ -243,7 +242,7 @@ You need Python 3.10 or later. Make a virtual environment for the tutorials:
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install felix-client==0.7.0rc2
+pip install felix-client==0.7.2
 ```
 
 Activate it again in every terminal. The module is `felix`. Each tutorial is one file: `first_stream.py`,
@@ -255,7 +254,7 @@ Activate it again in every terminal. The module is `felix`. Each tutorial is one
 
 ```bash
 mkdir felix-tutorial && cd felix-tutorial
-npm install felix-client@0.7.0-preview.2
+npm install felix-client@0.7.2
 npm install -D tsx
 ```
 
@@ -271,7 +270,7 @@ Each tutorial is its own console project. For the first one:
 
 ```bash
 dotnet new console -o FirstStream && cd FirstStream
-dotnet add package Felix.Client --version 0.7.0-preview.2
+dotnet add package Felix.Client --version 0.7.2
 ```
 
 Make `WorkQueue`, `CacheLeasesWatches` and `BuildAnApp` the same way. A
@@ -282,14 +281,14 @@ tutorial's blocks replace the template's `Program.cs` in its project, and from t
 <TabItem label="C">
 
 Each tutorial's C program is one file: `first-stream.c`, `work-queue.c` and
-`cache-leases-watches.c`. Download the v0.7.0-preview.2 release archive for your
+`cache-leases-watches.c`. Download the v0.7.2 release archive for your
 platform as [the C client page](/clients/c/#install) describes, unpack it and
 save the program inside the unpacked directory. On Linux x64:
 
 ```bash
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.2/libfelix-v0.7.0-preview.2-linux-x64.tar.gz
-tar xzf libfelix-v0.7.0-preview.2-linux-x64.tar.gz
-cd libfelix-v0.7.0-preview.2-linux-x64
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.2/libfelix-v0.7.2-linux-x64.tar.gz
+tar xzf libfelix-v0.7.2-linux-x64.tar.gz
+cd libfelix-v0.7.2-linux-x64
 cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
    -Wl,-rpath,"$PWD/lib" -o first-stream
 ```
@@ -298,9 +297,9 @@ On macOS with Apple silicon, use the `osx-arm64` archive. The command is the
 same and links `lib/libfelix.dylib`:
 
 ```bash
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.2/libfelix-v0.7.0-preview.2-osx-arm64.tar.gz
-tar xzf libfelix-v0.7.0-preview.2-osx-arm64.tar.gz
-cd libfelix-v0.7.0-preview.2-osx-arm64
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.2/libfelix-v0.7.2-osx-arm64.tar.gz
+tar xzf libfelix-v0.7.2-osx-arm64.tar.gz
+cd libfelix-v0.7.2-osx-arm64
 cc -std=c11 -pthread -I include first-stream.c -L lib -lfelix \
    -Wl,-rpath,"$PWD/lib" -o first-stream
 ```

@@ -22,27 +22,41 @@
 //! newer set may list the copy only as leaving, or not at all, and name it
 //! again later, and none of that may end the mark.
 //!
+//! Once `joint_fence` is finalized it also keeps the older sets a fence that
+//! never opened still needs ([`ReplicaSet::earlier`]). They are dropped only
+//! once the log durably holds a record of a newer generation, never on
+//! silence, so a failover from this log fences every set that may still hold
+//! an acknowledged write.
+//!
 //! `DiskLog::accept_set` and the open's reading of the file live here.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
-use super::{DiskLog, SetCheck};
+use super::{DiskLog, GenerationCheck, LogInner, SetCheck};
 use crate::io::sync_dir;
 use crate::{Result, StorageError, StorageId};
 
 /// `"FLRS"`.
 const MAGIC: u32 = 0x464C_5253;
 const VERSION: u16 = 1;
-/// magic(4) + version(2) + flags(2), then the set, the set it is leaving and
-/// the wiped mark when their flags are set, then a crc(4) over everything
-/// before it.
+/// magic(4) + version(2) + flags(2), then the set, the set it is leaving,
+/// the wiped mark and the earlier sets when their flags are set, then a
+/// crc(4) over everything before it.
 pub(super) const HEADER_LEN: usize = 8;
 /// The flags bit for a set being left.
 const FLAG_LEAVING: u16 = 1;
 /// The flags bit for a wiped mark: node length(2), the node id, learner(1).
 const FLAG_WIPED: u16 = 2;
+/// The flags bit for earlier sets: count(2), at least one, then the sets. A
+/// build that predates it refuses the file, which fails the open rather than
+/// forget a set.
+const FLAG_EARLIER: u16 = 4;
+/// Most earlier sets the file keeps. Each is a distinct member list, so only
+/// a run of unopened set changes reaches it; then a raise adding a set fails
+/// and the fence or batch that asked is refused.
+pub(super) const MAX_EARLIER_SETS: usize = 16;
 /// Member flags: a storage id follows; the member does not vote; this copy
 /// found it lost what it held.
 const MEMBER_STORAGE: u8 = 1;
@@ -58,9 +72,7 @@ const FILE_NAME: &str = "replica-set";
 /// Prefix of the temporaries `store` writes: `replica-set.tmp.<pid>.<n>`.
 const TEMPORARY_PREFIX: &str = "replica-set.tmp";
 
-/// The accepted generation and the leader it was accepted from, as the open
-/// reads them from the ballot.
-type Accepted = (u64, Option<Arc<str>>);
+use super::ballot::Accepted;
 
 /// What the file holds: the set and this copy's wiped mark.
 pub(super) type Kept = (ReplicaSet, Option<WipedMark>);
@@ -101,6 +113,12 @@ pub struct Membership {
 pub struct ReplicaSet {
     pub current: Membership,
     pub leaving: Option<Membership>,
+    /// Older sets a fence may still need a majority of besides `leaving`,
+    /// newest first: sets of generations this log holds no record of, and
+    /// the sets their fences named. [`DiskLog::accept_set_keeping_earlier`]
+    /// carries them into each newer set until the log holds a record of the
+    /// set it replaces.
+    pub earlier: Vec<Membership>,
 }
 
 impl ReplicaSet {
@@ -111,7 +129,8 @@ impl ReplicaSet {
             return Err(invalid("a wiped mark past the size the file allows"));
         }
         let flags = (u16::from(self.leaving.is_some()) * FLAG_LEAVING)
-            | (u16::from(wiped.is_some()) * FLAG_WIPED);
+            | (u16::from(wiped.is_some()) * FLAG_WIPED)
+            | (u16::from(!self.earlier.is_empty()) * FLAG_EARLIER);
         let mut out = Vec::with_capacity(HEADER_LEN + 64);
         out.extend_from_slice(&MAGIC.to_be_bytes());
         out.extend_from_slice(&VERSION.to_be_bytes());
@@ -124,6 +143,12 @@ impl ReplicaSet {
             out.extend_from_slice(&(mark.node.len() as u16).to_be_bytes());
             out.extend_from_slice(mark.node.as_bytes());
             out.push(u8::from(mark.learner));
+        }
+        if !self.earlier.is_empty() {
+            out.extend_from_slice(&(self.earlier.len() as u16).to_be_bytes());
+            for earlier in &self.earlier {
+                earlier.encode_into(&mut out);
+            }
         }
         let crc = crate::segment::format::crc32(&[&out]);
         out.extend_from_slice(&crc.to_be_bytes());
@@ -141,7 +166,7 @@ impl ReplicaSet {
             return None;
         }
         let flags = u16::from_be_bytes(body[6..8].try_into().ok()?);
-        if flags & !(FLAG_LEAVING | FLAG_WIPED) != 0 {
+        if flags & !(FLAG_LEAVING | FLAG_WIPED | FLAG_EARLIER) != 0 {
             return None;
         }
         let mut rest = &body[HEADER_LEN..];
@@ -166,14 +191,30 @@ impl ReplicaSet {
         } else {
             None
         };
+        let mut earlier = Vec::new();
+        if flags & FLAG_EARLIER != 0 {
+            let count = u16::from_be_bytes(take(&mut rest, 2)?.try_into().ok()?) as usize;
+            // Zero would be a second encoding of no earlier sets.
+            if count == 0 || count > MAX_EARLIER_SETS {
+                return None;
+            }
+            for _ in 0..count {
+                earlier.push(Membership::decode_from(&mut rest)?);
+            }
+        }
         // Slack would let two byte strings mean one set.
-        let set = Self { current, leaving };
+        let set = Self {
+            current,
+            leaving,
+            earlier,
+        };
         (rest.is_empty() && set.check().is_ok()).then_some((set, wiped))
     }
 
     /// What both `encode` and `decode` insist on: sizes within the file's
-    /// limits, no member listed twice, and a set being left that is older than
-    /// the one replacing it.
+    /// limits, no member listed twice, a set being left that is older than
+    /// the one replacing it, and earlier sets that are older still, newest
+    /// first, each naming members no other kept set names.
     fn check(&self) -> Result<()> {
         self.current.check()?;
         if let Some(leaving) = &self.leaving {
@@ -184,7 +225,77 @@ impl ReplicaSet {
                 ));
             }
         }
+        if self.earlier.len() > MAX_EARLIER_SETS {
+            return Err(invalid("more earlier sets than the file allows"));
+        }
+        for (i, earlier) in self.earlier.iter().enumerate() {
+            earlier.check()?;
+            if earlier.generation >= self.current.generation {
+                return Err(invalid("an earlier set must be older than the current one"));
+            }
+            let before = &self.earlier[..i];
+            if before
+                .last()
+                .is_some_and(|newer| newer.generation < earlier.generation)
+            {
+                return Err(invalid("earlier sets must be kept newest first"));
+            }
+            let repeated = std::iter::once(&self.current)
+                .chain(&self.leaving)
+                .chain(before)
+                .any(|other| other.same_members(earlier));
+            if repeated {
+                return Err(invalid(
+                    "an earlier set repeats the members of another kept set",
+                ));
+            }
+        }
         Ok(())
+    }
+
+    /// Every set kept, current first.
+    fn all(&self) -> impl Iterator<Item = &Membership> {
+        std::iter::once(&self.current)
+            .chain(&self.leaving)
+            .chain(&self.earlier)
+    }
+
+    /// How many distinct member lists the set keeps.
+    fn distinct_sets(&self) -> usize {
+        let mut seen: Vec<&Membership> = Vec::new();
+        for set in self.all() {
+            if !seen.iter().any(|other| other.same_members(set)) {
+                seen.push(set);
+            }
+        }
+        seen.len()
+    }
+
+    /// Whether this names a member list `kept` does not.
+    fn adds_to(&self, kept: &ReplicaSet) -> bool {
+        self.all()
+            .any(|set| !kept.all().any(|other| other.same_members(set)))
+    }
+
+    /// Drop earlier sets that now name the same members as `current` or
+    /// `leaving`: their majorities are those sets' own.
+    fn drop_repeated_earlier(&mut self) {
+        let earlier = std::mem::take(&mut self.earlier);
+        self.carry(earlier);
+    }
+
+    /// Add `sets` to the earlier sets, skipping any that names the same
+    /// members as one already kept or as `current` or `leaving`, and keep
+    /// them newest first.
+    fn carry(&mut self, sets: impl IntoIterator<Item = Membership>) {
+        for set in sets {
+            let kept = self.all().any(|kept| kept.same_members(&set));
+            if !kept && !set.members.is_empty() {
+                self.earlier.push(set);
+            }
+        }
+        self.earlier
+            .sort_by_key(|set| std::cmp::Reverse(set.generation));
     }
 }
 
@@ -208,24 +319,124 @@ impl DiskLog {
     /// leaving entry can start the mark but never makes an existing one a
     /// learner.
     ///
+    /// Without earlier sets: `set.earlier` is ignored and none are kept, so
+    /// the file stays one an older build reads. For a fleet that has not
+    /// finalized `joint_fence`, where nothing reads them.
+    ///
     /// Returns once a raised set is on disk, so a caller that answers at it
     /// afterwards has made a promise that survives a restart. A caller that
     /// also accepts a generation persists the ballot first: the open treats a
     /// set ahead of the ballot as a write that order rules out.
-    pub async fn accept_set(&self, mut set: ReplicaSet) -> Result<SetCheck> {
+    pub async fn accept_set(&self, set: ReplicaSet) -> Result<SetCheck> {
+        self.raise_set(set, false).await
+    }
+
+    /// [`Self::accept_set`] keeping earlier sets, once `joint_fence` is
+    /// finalized. Unless this log holds a record of the kept set's
+    /// generation, the kept set, the set it was leaving and its earlier sets
+    /// are carried into `set`'s earlier sets: that generation may never have
+    /// opened, so a majority of any of them may hold an acknowledged write no
+    /// newer set does.
+    ///
+    /// A raise that would keep a set not kept already is refused once the
+    /// file would hold more than [`MAX_EARLIER_SETS`] besides the current
+    /// set. That leaves room for a raise naming only kept sets, so a fence
+    /// on a kept set can still open and drop them.
+    pub async fn accept_set_keeping_earlier(&self, set: ReplicaSet) -> Result<SetCheck> {
+        self.raise_set(set, true).await
+    }
+
+    /// [`Self::accept_set`], or [`Self::accept_set_keeping_earlier`] with
+    /// `keep_earlier`, for a set `leader` sent at `generation`: refused with
+    /// the ballot's answer, and nothing written, once this log accepted a
+    /// newer generation or another leader at this one. Checked under the
+    /// writer's lock, so a set and a candidate's ballot
+    /// ([`Self::accept_generation_on_set`]) land in one order or the other:
+    /// a candidate never counts a set it did not stand on.
+    pub async fn accept_set_from(
+        &self,
+        set: ReplicaSet,
+        keep_earlier: bool,
+        generation: u64,
+        leader: Option<&str>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
+        let from = (generation, leader.map(Arc::from));
+        self.raise_set_from(set, keep_earlier, Some(from)).await
+    }
+
+    /// Whether this log holds a record written at `generation`. A leader
+    /// writes one only once its fence opened, so this is the evidence that
+    /// it did. The generation's epoch outlives a trim of its records. A
+    /// generation the epoch history no longer lists is no evidence.
+    pub fn holds_records_of(&self, generation: u64) -> bool {
+        holds_records_in(&self.inner, generation)
+    }
+
+    async fn raise_set(&self, set: ReplicaSet, keep_earlier: bool) -> Result<SetCheck> {
+        let raised = self.raise_set_from(set, keep_earlier, None).await?;
+        Ok(raised.expect("no sender to check"))
+    }
+
+    async fn raise_set_from(
+        &self,
+        mut set: ReplicaSet,
+        keep_earlier: bool,
+        from: Option<(u64, Option<Arc<str>>)>,
+    ) -> Result<std::result::Result<SetCheck, GenerationCheck>> {
         if let Some(found) = check_set(self.set_generation(), set.current.generation) {
-            return Ok(found);
+            return Ok(Ok(found));
         }
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
+            if let Some((generation, leader)) = &from
+                && let Some(refused) = super::ballot::check(
+                    &inner.ballot.read(),
+                    *generation,
+                    leader.as_deref(),
+                    false,
+                )
+                && matches!(
+                    refused,
+                    GenerationCheck::Superseded { .. } | GenerationCheck::Promised { .. }
+                )
+            {
+                return Ok(Err(refused));
+            }
             let known = inner.set_generation.load(Ordering::Acquire);
             if let Some(found) = check_set(known, set.current.generation) {
-                return Ok(found);
+                return Ok(Ok(found));
+            }
+            if keep_earlier {
+                // In the file's order and without repeats, whatever the sender sent.
+                let sent = std::mem::take(&mut set.earlier);
+                set.carry(sent);
+                let kept = inner.replica_set.read().clone();
+                if let Some(kept) = &kept
+                    && !holds_durable_records_in(&inner, kept.current.generation)
+                {
+                    set.carry(
+                        std::iter::once(kept.current.clone())
+                            .chain(kept.leaving.clone())
+                            .chain(kept.earlier.clone()),
+                    );
+                }
+                let adds = kept.as_ref().is_none_or(|kept| set.adds_to(kept));
+                if adds && set.distinct_sets() > MAX_EARLIER_SETS + 1 {
+                    return Err(invalid(
+                        "the replica set file already keeps as many sets as it allows; \
+                         a fence on a set it keeps must open first",
+                    ));
+                }
+            } else {
+                set.earlier.clear();
             }
             let mut wiped = inner.wiped.read().clone();
+            // Not the earlier sets: they are old views, and a mark they
+            // carry may since have been settled.
             let listed = set.leaving.iter().flat_map(|leaving| &leaving.members);
             let current = set.current.members.len();
             for (i, member) in set.current.members.iter().chain(listed).enumerate() {
@@ -255,13 +466,19 @@ impl DiskLog {
                     }
                 }
             }
-            store(&inner.dir, &set, wiped.as_ref())?;
+            // The mark may have made the current set one an earlier set
+            // already names.
+            set.drop_repeated_earlier();
+            inner.poison_on_sync_failure(
+                "the replica set file",
+                store(&inner.dir, &set, wiped.as_ref()),
+            )?;
             let generation = set.current.generation;
             // The mark first: a reader that sees the new set sees it too.
             *inner.wiped.write() = wiped;
             *inner.replica_set.write() = Some(set);
             inner.set_generation.store(generation, Ordering::Release);
-            Ok(SetCheck::Raised)
+            Ok(Ok(SetCheck::Raised))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -314,8 +531,9 @@ impl DiskLog {
     pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
         let inner = Arc::clone(&self.inner);
         let node = node.to_string();
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
             let Some(mut set) = inner.replica_set.read().clone() else {
                 return Ok(false);
             };
@@ -340,7 +558,13 @@ impl DiskLog {
             if !changed {
                 return Ok(false);
             }
-            store(&inner.dir, &set, wiped.as_ref())?;
+            // Admission may have made the current set one an earlier set
+            // already names.
+            set.drop_repeated_earlier();
+            inner.poison_on_sync_failure(
+                "the replica set file",
+                store(&inner.dir, &set, wiped.as_ref()),
+            )?;
             *inner.replica_set.write() = Some(set);
             *inner.wiped.write() = wiped;
             Ok(true)
@@ -348,6 +572,38 @@ impl DiskLog {
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
+}
+
+/// A generation's records end where the next epoch starts, or at the tail
+/// for the newest; one that starts where the next does wrote nothing.
+fn holds_records_in(inner: &LogInner, generation: u64) -> bool {
+    let tail = inner.segments.read().tail_offset();
+    holds_records_before(inner, generation, tail)
+}
+
+/// [`holds_records_in`] counting only records a crash keeps: dropping kept
+/// sets on a record a crash then loses would leave the log with neither.
+fn holds_durable_records_in(inner: &LogInner, generation: u64) -> bool {
+    let tail = inner.segments.read().tail_offset();
+    holds_records_before(
+        inner,
+        generation,
+        inner.durability.survives_crash_upto(tail),
+    )
+}
+
+fn holds_records_before(inner: &LogInner, generation: u64, tail: u64) -> bool {
+    let epochs = inner.epochs.lock();
+    let entries = epochs.entries();
+    entries
+        .iter()
+        .position(|epoch| epoch.generation == generation)
+        .is_some_and(|i| {
+            let end = entries
+                .get(i + 1)
+                .map_or(tail, |next| next.start_offset.min(tail));
+            end > entries[i].start_offset
+        })
 }
 
 /// What a set at `generation` is against the one kept at `known`, or `None`
@@ -372,19 +628,24 @@ pub(super) fn reconcile(
     // A shard that never kept a set pays one stat, not a directory scan. A
     // temporary from a crash during the very first write waits for the next
     // open after a set exists; `load` ignores it meanwhile.
-    if path_in(dir).exists() {
+    if crate::fs::exists(path_in(dir)) {
         discard_leftovers(dir)?;
     }
     let set = load(dir)?;
     let accepted = match &set {
-        Some((set, _)) if set.current.generation > accepted.0 => {
+        Some((set, _)) if set.current.generation > accepted.generation => {
             tracing::warn!(
                 shard = %label,
                 set_generation = set.current.generation,
-                accepted_generation = accepted.0,
+                accepted_generation = accepted.generation,
                 "the replica set is newer than the accepted generation; raising it with no leader named"
             );
-            (set.current.generation, None)
+            // The ballot's committed mark was for the older generation.
+            Accepted {
+                generation: set.current.generation,
+                leader: None,
+                committed: false,
+            }
         }
         _ => accepted,
     };
@@ -445,14 +706,33 @@ impl Membership {
         })
     }
 
+    /// Whether the two name the same members. Learner flags and copies
+    /// count: the same names voting differently, or from other copies, are
+    /// another set, whose majorities the other may miss.
+    pub fn same_members(&self, other: &Self) -> bool {
+        fn members(set: &Membership) -> std::collections::BTreeSet<(&str, bool, Option<[u8; 16]>)> {
+            set.members
+                .iter()
+                .map(|m| {
+                    (
+                        m.node.as_str(),
+                        m.learner,
+                        m.storage.map(|id| id.to_bytes()),
+                    )
+                })
+                .collect()
+        }
+        members(self) == members(other)
+    }
+
     fn check(&self) -> Result<()> {
         let too_long = self.members.iter().any(|m| m.node.len() > MAX_NODE_LEN);
         if self.members.len() > MAX_MEMBERS || too_long {
             return Err(invalid("a replica set past the size the file allows"));
         }
         // Counting a member twice would count a majority that isn't one.
-        let mut nodes = std::collections::HashSet::new();
-        let mut storage = std::collections::HashSet::new();
+        let mut nodes = felix_common::random::HashSet::default();
+        let mut storage = felix_common::random::HashSet::default();
         for member in &self.members {
             if !nodes.insert(member.node.as_str()) {
                 return Err(invalid("a node listed twice in a replica set"));
@@ -481,7 +761,7 @@ fn take<'a>(rest: &mut &'a [u8], n: usize) -> Option<&'a [u8]> {
 /// a set.
 pub(super) fn load(dir: &Path) -> Result<Option<Kept>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
+    match crate::fs::read(&path) {
         Ok(bytes) => ReplicaSet::decode(&bytes).map(Some).ok_or_else(|| {
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -515,12 +795,12 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
     let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let temporary = dir.join(format!("{TEMPORARY_PREFIX}.{}.{n}", std::process::id()));
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&bytes).map_err(StorageError::Io)?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
+        crate::io::sync_all(&file)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
-    sync_dir(dir).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    sync_dir(dir)?;
     Ok(())
 }
 
@@ -528,14 +808,14 @@ pub(super) fn store(dir: &Path, set: &ReplicaSet, wiped: Option<&WipedMark>) -> 
 /// runs: a sweep during a write would delete that write's temporary. `load`
 /// ignores them either way.
 pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(dir).map_err(StorageError::Io)? {
+    for entry in crate::fs::read_dir(dir).map_err(StorageError::Io)? {
         let entry = entry.map_err(StorageError::Io)?;
         if entry
             .file_name()
             .to_string_lossy()
             .starts_with(TEMPORARY_PREFIX)
         {
-            std::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
+            crate::fs::remove_file(entry.path()).map_err(StorageError::Io)?;
         }
     }
     Ok(())

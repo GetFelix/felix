@@ -23,6 +23,8 @@ pub(crate) use env::quorum_reads_by_lease;
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
+#[cfg(feature = "sim")]
+pub(crate) use membership::cluster_features;
 pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles};
@@ -88,6 +90,15 @@ pub struct BrokerConfig {
     pub controlplane_token: String,
     /// Poll interval for control-plane changes.
     pub controlplane_sync_interval_ms: u64,
+    /// `FELIX_START_WITHOUT_CONTROLPLANE`: a cluster member with durable
+    /// storage may start from the control-plane view in its data directory
+    /// when the control plane does not answer at startup. Off by default.
+    /// See docs/control-plane.md, "Starting while the control plane is down".
+    pub start_without_controlplane: bool,
+    /// `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`: how long the startup lookup asks
+    /// the control plane before a broker with the switch on starts from its
+    /// view.
+    pub controlplane_startup_wait_ms: u64,
     /// Extra CA bundle trusted for an `https://` control plane.
     pub controlplane_ca: Option<String>,
     /// The certificate the client-facing listeners present.
@@ -125,7 +136,8 @@ pub struct BrokerConfig {
     pub ack_on_commit: bool,
     /// If true, an acknowledged publish to a durable stream is answered after
     /// commit; an in-memory stream still answers on enqueue. On by default,
-    /// and off only when `FELIX_ACK_ON_COMMIT` is set to anything but true.
+    /// and off only when `FELIX_ACK_ON_COMMIT` is an explicit false value
+    /// (`0`, `false`, `no`, `off`).
     pub ack_durable_on_commit: bool,
     /// Store the publishing principal with each durable record, on a broker
     /// outside a cluster. In a cluster the fleet decides: see
@@ -500,6 +512,8 @@ impl Default for BrokerConfig {
             node_refresh_token_file: None,
             node_token_file: None,
             controlplane_sync_interval_ms: 2000,
+            start_without_controlplane: false,
+            controlplane_startup_wait_ms: DEFAULT_CONTROLPLANE_STARTUP_WAIT_MS,
             controlplane_ca: None,
             client_tls: ClientTlsConfig::default(),
             membership: None,

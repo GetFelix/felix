@@ -1,7 +1,7 @@
 //! `felix-broker restore-point`: cut a stopped broker's shard logs back to a
 //! backup point.
 //!
-//! The point comes from `felix-controlplane admin backup-point`, which read
+//! The point comes from `felixctl backup-point`, which read
 //! each shard's committed offsets from its leader. A copy of the leader's
 //! shard directories taken while it ran holds at least those records and
 //! usually more; this cuts each log back to the point, below its commit
@@ -53,7 +53,7 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let durable = DurableStorageConfig::from_env()?
         .context("FELIX_DURABLE_STORAGE_DIR is not set, so this broker keeps no logs to restore")?;
     let config = BrokerConfig::from_env_or_yaml().context("load broker configuration")?;
-    let (broker, storage, _, _, _) = crate::node::storage::open(&config, None)?;
+    let (broker, storage, _, _, _, _) = crate::node::storage::open(&config, None)?;
 
     let restored = restore(&manifest, node.as_deref(), &durable.root, &broker, storage).await?;
     println!(
@@ -145,7 +145,7 @@ async fn restore(
     Ok(plan.len())
 }
 
-/// A backup point as `felix-controlplane admin backup-point` writes it. Only
+/// A backup point as `felixctl backup-point` writes it. Only
 /// the fields a restore needs.
 #[derive(Debug, Deserialize)]
 pub(crate) struct Manifest {

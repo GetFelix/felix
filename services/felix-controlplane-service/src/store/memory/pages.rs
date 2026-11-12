@@ -110,8 +110,7 @@ pub(super) async fn rbac_policies(
 ) -> StoreResult<Page<PolicyRule>> {
     let policies = store.rbac_policies.read().await;
     let mut rules: Vec<PolicyRule> = policies.get(tenant_id).cloned().unwrap_or_default();
-    // Postgres keys the table on the rule, so a duplicate cannot exist there;
-    // it would also be indistinguishable from its twin across a page edge.
+    // A duplicate would be indistinguishable from its twin across a page edge.
     rules.sort_by_key(policy_order);
     rules.dedup();
     let after = page.after.as_ref().map(policy_order);

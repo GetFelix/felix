@@ -110,7 +110,7 @@ Preview an operator move before you make it. A move outside the allowed regions
 is refused:
 
 ```bash
-felix-controlplane admin move t1/payments/orders-eu/0 broker-us-1 --dry-run
+felixctl shard move orders-eu 0 --to broker-us-1 --dry-run
 ```
 
 See [Moving shards](/deployment/moving-shards/) for the arguments. The

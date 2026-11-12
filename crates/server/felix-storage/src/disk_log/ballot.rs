@@ -15,6 +15,13 @@
 //! Like `replica` it cannot be rebuilt, so a file that does not decode fails
 //! the open.
 //!
+//! Format v2 adds the vote's committed flag (openraft's `Vote::committed`).
+//! Only a committed vote is written as v2, and only by a Raft log
+//! ([`DiskLog::save_vote`]) or past the fleet gate for segment format v9,
+//! so every ballot a broker writes today is one the previous release reads. That
+//! release refuses a v2 file at open: its decoder takes only v1. That comes
+//! after the open's torn-tail repair and mark write, which both builds read.
+//!
 //! `DiskLog::accept_generation` and the open's reading of the two files live
 //! here, where `scripts/check_spec_pairing.py` pairs them with the formal model.
 
@@ -22,65 +29,131 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
+use super::crash_point;
 use super::replica_state::{self, ReplicaState};
-use super::{DiskLog, GenerationCheck};
+use super::{DiskLog, GenerationCheck, ReplicaSet};
 use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
 /// `"FLBL"`.
 const MAGIC: u32 = 0x464C_424C;
-const VERSION: u16 = 1;
+/// The newest format this build reads.
+const VERSION: u16 = 2;
+/// The format of a ballot whose vote is not committed.
+const UNCOMMITTED_VERSION: u16 = 1;
 /// magic(4) + version(2) + leader length(2) + generation(8), then the
 /// leader's node id and a crc(4) over everything before it.
 pub(super) const HEADER_LEN: usize = 16;
+/// v2: a flags byte after the generation, then the leader and the crc.
+const COMMITTED_HEADER_LEN: usize = HEADER_LEN + 1;
+const FLAG_COMMITTED: u8 = 1;
 /// Node ids are short; this only bounds what a damaged length can claim.
 pub(super) const MAX_LEADER_LEN: usize = 1024;
 const FILE_NAME: &str = "ballot";
 
-/// A generation and the leader it was accepted from.
+/// A generation, the leader it was accepted from, and whether that vote is
+/// committed: a majority granted it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Ballot {
     pub(super) generation: u64,
     pub(super) leader: String,
+    pub(super) committed: bool,
+}
+
+/// Why a ballot file does not decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Undecodable {
+    Damaged,
+    /// A format newer than this build reads.
+    Newer(u16),
+}
+
+/// The accepted generation as the log holds it: the generation, the leader
+/// named at it, and whether that vote is committed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Accepted {
+    pub(super) generation: u64,
+    pub(super) leader: Option<Arc<str>>,
+    /// Only ever set with a leader, and cleared by any raise.
+    pub(super) committed: bool,
 }
 
 impl Ballot {
+    /// v1 unless the vote is committed, so a ballot without the flag stays
+    /// one the previous release reads.
     pub(super) fn encode(&self) -> Vec<u8> {
         let leader = self.leader.as_bytes();
-        let mut out = Vec::with_capacity(HEADER_LEN + leader.len() + 4);
+        let mut out = Vec::with_capacity(COMMITTED_HEADER_LEN + leader.len() + 4);
         out.extend_from_slice(&MAGIC.to_be_bytes());
-        out.extend_from_slice(&VERSION.to_be_bytes());
+        let version = if self.committed {
+            VERSION
+        } else {
+            UNCOMMITTED_VERSION
+        };
+        out.extend_from_slice(&version.to_be_bytes());
         out.extend_from_slice(&(leader.len() as u16).to_be_bytes());
         out.extend_from_slice(&self.generation.to_be_bytes());
+        if self.committed {
+            out.push(FLAG_COMMITTED);
+        }
         out.extend_from_slice(leader);
         let crc = crate::segment::format::crc32(&[&out]);
         out.extend_from_slice(&crc.to_be_bytes());
         out
     }
 
-    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() < HEADER_LEN + 4 {
-            return None;
-        }
-        let magic = u32::from_be_bytes(bytes[0..4].try_into().ok()?);
-        let version = u16::from_be_bytes(bytes[4..6].try_into().ok()?);
-        let len = u16::from_be_bytes(bytes[6..8].try_into().ok()?) as usize;
-        if magic != MAGIC || version != VERSION || len > MAX_LEADER_LEN {
-            return None;
-        }
-        if bytes.len() != HEADER_LEN + len + 4 {
-            return None;
-        }
-        let body = &bytes[..HEADER_LEN + len];
-        let crc = u32::from_be_bytes(bytes[HEADER_LEN + len..].try_into().ok()?);
-        if crate::segment::format::crc32(&[body]) != crc {
-            return None;
-        }
-        Some(Self {
-            generation: u64::from_be_bytes(bytes[8..16].try_into().ok()?),
-            leader: String::from_utf8(body[HEADER_LEN..].to_vec()).ok()?,
-        })
+    pub(super) fn decode(bytes: &[u8]) -> std::result::Result<Self, Undecodable> {
+        decode_up_to(bytes, VERSION)
     }
+}
+
+/// Decode a ballot as a build that reads formats up to `newest` would.
+///
+/// The crc closes the file in every format, so it is checked before the
+/// version: a damaged version field is damage, never a newer format.
+fn decode_up_to(bytes: &[u8], newest: u16) -> std::result::Result<Ballot, Undecodable> {
+    use Undecodable::Damaged;
+
+    if bytes.len() < HEADER_LEN + 4 {
+        return Err(Damaged);
+    }
+    let (body, crc) = bytes.split_at(bytes.len() - 4);
+    let crc = u32::from_be_bytes(crc.try_into().map_err(|_| Damaged)?);
+    if crate::segment::format::crc32(&[body]) != crc {
+        return Err(Damaged);
+    }
+    let magic = u32::from_be_bytes(body[0..4].try_into().map_err(|_| Damaged)?);
+    let version = u16::from_be_bytes(body[4..6].try_into().map_err(|_| Damaged)?);
+    let len = u16::from_be_bytes(body[6..8].try_into().map_err(|_| Damaged)?) as usize;
+    if magic != MAGIC || version == 0 {
+        return Err(Damaged);
+    }
+    if version > newest {
+        return Err(Undecodable::Newer(version));
+    }
+    let (header_len, committed) = if version == UNCOMMITTED_VERSION {
+        (HEADER_LEN, false)
+    } else {
+        match body.get(HEADER_LEN) {
+            Some(&FLAG_COMMITTED) => (COMMITTED_HEADER_LEN, true),
+            Some(0) => (COMMITTED_HEADER_LEN, false),
+            // An unknown flag could change what the vote means.
+            _ => return Err(Damaged),
+        }
+    };
+    if len > MAX_LEADER_LEN || body.len() != header_len + len {
+        return Err(Damaged);
+    }
+    let leader = String::from_utf8(body[header_len..].to_vec()).map_err(|_| Damaged)?;
+    // A given-up generation names no leader, so no vote of it is committed.
+    if committed && leader.is_empty() {
+        return Err(Damaged);
+    }
+    Ok(Ballot {
+        generation: u64::from_be_bytes(body[8..16].try_into().map_err(|_| Damaged)?),
+        leader,
+        committed,
+    })
 }
 
 impl DiskLog {
@@ -92,7 +165,24 @@ impl DiskLog {
 
     /// The leader this log accepted its generation from, if it was named.
     pub fn accepted_leader(&self) -> Option<Arc<str>> {
-        self.inner.ballot.read().1.clone()
+        self.inner.ballot.read().leader.clone()
+    }
+
+    /// Whether the vote for [`Self::accepted_leader`] at the accepted
+    /// generation is committed: a majority granted it (openraft's
+    /// `Vote::committed`). Never true without a leader, and false again once
+    /// a newer generation is accepted.
+    pub fn accepted_vote_committed(&self) -> bool {
+        self.inner.ballot.read().committed
+    }
+
+    /// The accepted generation, its leader and whether the vote is
+    /// committed, read together so a vote saved in between cannot be seen
+    /// half changed.
+    #[cfg(feature = "raft")]
+    pub(crate) fn accepted_vote(&self) -> (u64, Option<Arc<str>>, bool) {
+        let ballot = self.inner.ballot.read();
+        (ballot.generation, ballot.leader.clone(), ballot.committed)
     }
 
     /// Accept `leader` at `generation`, persisting it first if it is new.
@@ -112,52 +202,117 @@ impl DiskLog {
         generation: u64,
         leader: Option<&str>,
     ) -> Result<GenerationCheck> {
-        if let Some(found) = check(&self.inner.ballot.read(), generation, leader) {
-            return Ok(found);
+        let raised = self
+            .raise_ballot(generation, leader, false, None, false)
+            .await?;
+        Ok(raised.expect("no set to check"))
+    }
+
+    /// [`Self::accept_generation`] for a candidate that read `kept` before
+    /// standing: the ballot is raised only while the kept set is still
+    /// `kept`, checked under the writer's lock that every set raise takes,
+    /// so no set lands between the check and the ballot. `None`, with
+    /// nothing written, when the set moved. `Elect`'s guard on the kept set
+    /// in `docs/formal/FelixShard.tla` is atomic with its promise.
+    pub async fn accept_generation_on_set(
+        &self,
+        generation: u64,
+        leader: &str,
+        kept: ReplicaSet,
+    ) -> Result<Option<GenerationCheck>> {
+        self.raise_ballot(generation, Some(leader), false, Some(kept), false)
+            .await
+    }
+
+    /// `committed` marks the vote committed; it needs a leader, or `store`
+    /// refuses it before writing. A raise
+    /// without it, or to another generation, clears the mark.
+    ///
+    /// `adopt` lets a committed vote replace an uncommitted one for another
+    /// leader at the same generation; see [`adopts`].
+    async fn raise_ballot(
+        &self,
+        generation: u64,
+        leader: Option<&str>,
+        committed: bool,
+        kept: Option<ReplicaSet>,
+        adopt: bool,
+    ) -> Result<Option<GenerationCheck>> {
+        let adopt = adopt && committed;
+        let check = move |accepted: &Accepted, leader: Option<&str>| {
+            if adopt && leader.is_some_and(|leader| adopts(accepted, generation, leader)) {
+                return None;
+            }
+            check(accepted, generation, leader, committed)
+        };
+        if kept.is_none()
+            && let Some(found) = check(&self.inner.ballot.read(), leader)
+        {
+            return Ok(Some(found));
         }
         let inner = Arc::clone(&self.inner);
         let leader: Option<Arc<str>> = leader.map(Arc::from);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
+            // `close` sets this under the same lock: once it has, the
+            // directory may already be another log's.
+            inner.check_open()?;
+            inner.check_not_poisoned()?;
+            if let Some(kept) = &kept
+                && inner.replica_set.read().as_ref() != Some(kept)
+            {
+                return Ok(None);
+            }
             // Re-checked under the writer's lock: a concurrent request may
             // have raised it, or named its leader, while this waited.
-            if let Some(found) = check(&inner.ballot.read(), generation, leader.as_deref()) {
-                return Ok(found);
+            if let Some(found) = check(&inner.ballot.read(), leader.as_deref()) {
+                return Ok(Some(found));
             }
             // Before `replica`, so a crash between the two leaves a ballot
             // the open takes the generation from, never a raised generation
-            // with no leader.
+            // with no leader. The committed mark is in the same file, so it
+            // is on disk exactly when its vote is.
             if let Some(leader) = &leader {
-                store(
-                    &inner.dir,
-                    &Ballot {
-                        generation,
-                        leader: leader.to_string(),
-                    },
+                inner.poison_on_sync_failure(
+                    "the ballot",
+                    store(
+                        &inner.dir,
+                        &Ballot {
+                            generation,
+                            leader: leader.to_string(),
+                            committed,
+                        },
+                    ),
                 )?;
             }
             let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
             if raised {
                 let state = replica_state::ReplicaState {
                     accepted_generation: generation,
-                    commit_offset: inner.commit_offset.load(Ordering::Acquire),
-                    hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
+                    ..inner.replica_state()
                 };
-                replica_state::store(&inner.dir, &state)?;
+                inner.poison_on_sync_failure(
+                    "the replica state",
+                    replica_state::store(&inner.dir, &state),
+                )?;
                 inner
                     .commit_persisted
                     .store(state.commit_offset, Ordering::Release);
-                *persisted = (state, Some(std::time::Instant::now()));
+                *persisted = (state, Some(tokio::time::Instant::now()));
             }
-            *inner.ballot.write() = (generation, leader);
+            *inner.ballot.write() = Accepted {
+                generation,
+                committed: committed && leader.is_some(),
+                leader,
+            };
             inner
                 .accepted_generation
                 .store(generation, Ordering::Release);
-            Ok(if raised {
+            Ok(Some(if raised {
                 GenerationCheck::Raised
             } else {
                 GenerationCheck::Current
-            })
+            }))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -173,51 +328,154 @@ impl DiskLog {
     /// to lead the generation too.
     pub async fn give_up_generation(&self) -> Result<u64> {
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();
+            inner.check_open()?;
+            inner.check_not_poisoned()?;
             let generation = inner.accepted_generation.load(Ordering::Acquire);
-            store(
-                &inner.dir,
-                &Ballot {
-                    generation,
-                    leader: String::new(),
-                },
+            inner.poison_on_sync_failure(
+                "the ballot",
+                store(
+                    &inner.dir,
+                    &Ballot {
+                        generation,
+                        leader: String::new(),
+                        committed: false,
+                    },
+                ),
             )?;
-            *inner.ballot.write() = (generation, Some(Arc::from("")));
+            *inner.ballot.write() = Accepted {
+                generation,
+                leader: Some(Arc::from("")),
+                committed: false,
+            };
             Ok(generation)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
+    /// Mark the vote for `leader` at `generation` committed (openraft's
+    /// `Vote::committed`), accepting it first if it is new. The ballot is
+    /// then written in format v2, which the previous release refuses, so
+    /// this is refused with [`StorageError::Unsupported`], writing nothing,
+    /// until the log's [`crate::log::GenerationGate`] allows v9: in a
+    /// cluster, once the fleet has finalized `record_generations`.
+    pub async fn commit_vote(&self, generation: u64, leader: &str) -> Result<GenerationCheck> {
+        if !self.inner.config.generations.allows() {
+            return Err(StorageError::Unsupported(
+                "a committed vote needs ballot format v2, which this log does not write yet",
+            ));
+        }
+        let raised = self
+            .raise_ballot(generation, Some(leader), true, None, false)
+            .await?;
+        Ok(raised.expect("no set to check"))
+    }
+
+    /// Save the vote for `leader` at `generation`, committed or not, for a
+    /// caller that has already decided it, as openraft has. On disk before
+    /// this returns.
+    ///
+    /// A saved vote only moves forward: to a higher generation, or to a
+    /// committed vote from an uncommitted one of the same generation. The
+    /// second may name another leader: a member that voted for one candidate
+    /// follows the one a majority elected. Saving the vote held writes
+    /// nothing. Anything else is refused with nothing written: a vote that
+    /// goes back, a second uncommitted vote in a generation, or a second
+    /// committed leader in one, can elect two leaders.
+    ///
+    /// A committed vote is written in ballot format v2 whatever the log's
+    /// [`crate::log::GenerationGate`] says, so the caller must know every
+    /// build that may open the directory reads it.
+    pub async fn save_vote(&self, generation: u64, leader: &str, committed: bool) -> Result<()> {
+        let refused = |why: String| {
+            Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{}: {why}", self.inner.label),
+            )))
+        };
+        // An empty leader is how a given-up generation is kept.
+        if leader.is_empty() {
+            return refused(format!("a vote at generation {generation} names no leader"));
+        }
+        {
+            let held = self.inner.ballot.read();
+            if held.generation == generation
+                && held.leader.as_deref() == Some(leader)
+                && held.committed
+                && !committed
+            {
+                return refused(format!(
+                    "the vote for {leader} at generation {generation} is already committed"
+                ));
+            }
+        }
+        match self
+            .raise_ballot(generation, Some(leader), committed, None, true)
+            .await?
+            .expect("no set to check")
+        {
+            GenerationCheck::Raised | GenerationCheck::Current => Ok(()),
+            GenerationCheck::Superseded { accepted } => refused(format!(
+                "a vote at generation {generation} is behind the one held at {accepted}"
+            )),
+            GenerationCheck::Promised { leader: held } => refused(format!(
+                "a vote for {leader} at generation {generation} follows one for {held:?}"
+            )),
+        }
+    }
+
     /// Whether this log gave up its accepted generation and has accepted no
     /// newer one since. See [`Self::give_up_generation`].
     pub fn gave_up(&self) -> bool {
-        self.inner.ballot.read().1.as_deref() == Some("")
+        self.inner.ballot.read().leader.as_deref() == Some("")
+    }
+}
+
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Mark the vote for `leader` at `generation` committed, accepting it
+    /// first if it is new, the way a build past the v9 fleet gate will. The
+    /// ballot is then written in format v2, which the previous release
+    /// refuses. Not an API: tests use it until the gated caller exists.
+    #[doc(hidden)]
+    pub async fn commit_vote_for_tests(
+        &self,
+        generation: u64,
+        leader: &str,
+    ) -> Result<GenerationCheck> {
+        let raised = self
+            .raise_ballot(generation, Some(leader), true, None, false)
+            .await?;
+        Ok(raised.expect("no set to check"))
     }
 }
 
 /// What the accepted ballot says of `leader` at `generation`, or `None` when
-/// the answer needs a write: a raise, or the first leader named at the
-/// accepted generation.
+/// the answer needs a write: a raise, the first leader named at the
+/// accepted generation, or `committed` marking that leader's vote.
 pub(super) fn check(
-    (accepted, promised): &(u64, Option<Arc<str>>),
+    accepted: &Accepted,
     generation: u64,
     leader: Option<&str>,
+    committed: bool,
 ) -> Option<GenerationCheck> {
-    if generation < *accepted {
+    if generation < accepted.generation {
         return Some(GenerationCheck::Superseded {
-            accepted: *accepted,
+            accepted: accepted.generation,
         });
     }
-    if generation > *accepted {
+    if generation > accepted.generation {
         return None;
     }
-    match (leader, promised) {
+    match (leader, &accepted.leader) {
         (None, _) => Some(GenerationCheck::Current),
-        (Some(leader), Some(promised)) if **promised == *leader => Some(GenerationCheck::Current),
+        (Some(leader), Some(promised)) if **promised == *leader => {
+            (!committed || accepted.committed).then_some(GenerationCheck::Current)
+        }
         (Some(_), Some(promised)) => Some(GenerationCheck::Promised {
             leader: promised.to_string(),
         }),
@@ -225,28 +483,59 @@ pub(super) fn check(
     }
 }
 
-/// The generation and leader a shard opens with, from its `replica` state
-/// and its ballot.
-pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<(u64, Option<Arc<str>>)> {
+/// Whether a committed vote for `leader` at `generation` may replace the
+/// accepted one, which names another leader.
+///
+/// It may when the accepted vote is at that generation and uncommitted: this
+/// log voted for a candidate that lost, and now hears from the leader the
+/// majority elected. Once the committed vote is held, no other vote at the
+/// generation is taken, so the log still votes once and follows one leader.
+/// A generation that was given up stays given up.
+fn adopts(accepted: &Accepted, generation: u64, leader: &str) -> bool {
+    generation == accepted.generation
+        && !accepted.committed
+        && accepted
+            .leader
+            .as_deref()
+            .is_some_and(|held| !held.is_empty() && held != leader)
+}
+
+/// The generation, leader and committed mark a shard opens with, from its
+/// `replica` state and its ballot.
+pub(super) fn reconcile(dir: &Path, replica: &ReplicaState) -> Result<Accepted> {
     // A ballot ahead of `replica` is a raise that crashed between the two
-    // writes; it was never answered, but taking it only refuses more.
+    // writes; it was never answered, but taking it only refuses more. One
+    // behind it belongs to an older generation, and so does its mark.
     Ok(match load(dir)? {
-        Some(ballot) if ballot.generation >= replica.accepted_generation => {
-            (ballot.generation, Some(Arc::<str>::from(ballot.leader)))
-        }
-        _ => (replica.accepted_generation, None),
+        Some(ballot) if ballot.generation >= replica.accepted_generation => Accepted {
+            generation: ballot.generation,
+            leader: Some(Arc::<str>::from(ballot.leader)),
+            committed: ballot.committed,
+        },
+        _ => Accepted {
+            generation: replica.accepted_generation,
+            leader: None,
+            committed: false,
+        },
     })
 }
 
 /// Read a shard's ballot, or `None` if it has never kept one.
 pub(super) fn load(dir: &Path) -> Result<Option<Ballot>> {
     let path = path_in(dir);
-    match std::fs::read(&path) {
-        Ok(bytes) => Ballot::decode(&bytes).map(Some).ok_or_else(|| {
+    match crate::fs::read(&path) {
+        Ok(bytes) => Ballot::decode(&bytes).map(Some).map_err(|err| {
+            let why = match err {
+                Undecodable::Damaged => "does not decode".to_string(),
+                Undecodable::Newer(version) => format!(
+                    "is ballot format v{version}, written by a newer build; this build \
+                     reads up to v{VERSION}"
+                ),
+            };
             StorageError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "{} does not decode; it names the leader this replica accepted \
+                    "{} {why}; it names the leader this replica accepted \
                      its generation from and cannot be rebuilt from the log",
                     path.display()
                 ),
@@ -268,15 +557,27 @@ pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
             format!("a leader id of {} bytes is too long", ballot.leader.len()),
         )));
     }
+    // The decoder refuses this, so writing it would fail the next open.
+    if ballot.committed && ballot.leader.is_empty() {
+        return Err(StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "a committed vote needs a leader",
+        )));
+    }
     let path = path_in(dir);
     let temporary = path.with_extension("tmp");
+    let step = || crash_point::reached(dir).map_err(StorageError::Io);
+    step()?;
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&ballot.encode()).map_err(StorageError::Io)?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
+        step()?;
+        crate::io::sync_all(&file)?;
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
-    sync_dir(dir).map_err(StorageError::Io)?;
+    step()?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    step()?;
+    sync_dir(dir)?;
     Ok(())
 }
 

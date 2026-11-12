@@ -159,3 +159,150 @@ async fn offset_for_time_finds_the_first_record_at_or_after_a_time() {
     let times: Vec<u64> = records.iter().map(|r| r.timestamp_micros).collect();
     assert_eq!(times, [100, 200, 200, 300]);
 }
+
+/// One record of each v9 kind with a client record after it, in a v9
+/// segment.
+async fn append_v9_kinds(log: &StreamLog, after: &'static str) {
+    let records: Vec<AppendRecord> = [
+        (RecordMark::Membership, "set"),
+        (RecordMark::CounterDelta, "add"),
+        (RecordMark::CounterCheckpoint, "sums"),
+        (RecordMark::None, after),
+    ]
+    .into_iter()
+    .map(|(mark, payload)| AppendRecord {
+        payload: Bytes::from(payload),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    })
+    .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+}
+
+/// **A replay never returns a membership or counter record.** Each keeps its
+/// offset, so the records around them sit at their own offsets with a gap
+/// between, and a read that starts on one of them returns the next client
+/// record, not an empty page.
+#[tokio::test]
+async fn a_read_leaves_out_membership_and_counter_records() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    log.append(&payloads(&["a"])).await.expect("append");
+    append_v9_kinds(&log, "b").await;
+
+    let seen = |records: Vec<LogRecord>| -> Vec<(Offset, Bytes)> {
+        records.into_iter().map(|r| (r.offset, r.payload)).collect()
+    };
+    assert_eq!(
+        seen(log.read_from(0, usize::MAX).await.expect("read")),
+        vec![(0, Bytes::from("a")), (4, Bytes::from("b"))]
+    );
+    for start in 1..=3 {
+        assert_eq!(
+            seen(log.read_from(start, 1).await.expect("read")),
+            vec![(4, Bytes::from("b"))],
+            "from {start}"
+        );
+    }
+}
+
+/// The client records end before trailing membership and counter records,
+/// so a reader waiting for the tail is not left waiting on them.
+#[tokio::test]
+async fn the_event_end_steps_back_over_membership_and_counter_records() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(dir.path(), config()).expect("open");
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    log.append(&payloads(&["a"])).await.expect("append");
+    append_v9_kinds(&log, "b").await;
+    let records: Vec<AppendRecord> = [RecordMark::Membership, RecordMark::CounterCheckpoint]
+        .into_iter()
+        .map(|mark| AppendRecord {
+            payload: Bytes::from_static(b"x"),
+            timestamp_micros: 1,
+            mark,
+            publisher: None,
+            headers: None,
+        })
+        .collect();
+    log.append_v9_for_tests(&records, 1)
+        .await
+        .expect("v9 append");
+
+    assert_eq!(log.tail_offset().await.expect("tail"), 7);
+    assert_eq!(log.event_end(0, 7).await.expect("end"), 5);
+}
+
+/// **Past the gate, events go into v9 and read back as written.** The log
+/// moves onto v9 only at a roll after the gate opens, and a read returns
+/// every event at its own offset, with nothing that is not one.
+#[tokio::test]
+async fn past_the_gate_a_stream_moves_onto_v9_and_reads_back() {
+    let dir = tempdir().expect("dir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            segment_size_bytes: felix_storage::segment::SEGMENT_HEADER_LEN + 120,
+            ..config()
+        },
+    )
+    .expect("open");
+    let open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let check = Arc::clone(&open);
+    storage.record_generations_when(move || check.load(std::sync::atomic::Ordering::Acquire));
+    let log = storage
+        .open_stream("t1", "default", "orders", 0)
+        .expect("stream");
+    // A v9 segment stamps a leader's records with the generation it leads at.
+    log.accept_generation(1, Some("a")).await.expect("accept");
+    log.record_generation(1, 0).expect("record");
+    log.lead_at(1);
+    let events: Vec<String> = (0..12).map(|n| format!("e{n}")).collect();
+    for event in &events[..6] {
+        log.append(&payloads(&[event.as_str()]))
+            .await
+            .expect("append");
+    }
+    let versions =
+        |log: &StreamLog| -> Vec<u16> { log.log.segments().iter().map(|s| s.version).collect() };
+    let closed = versions(&log);
+    assert!(
+        closed
+            .iter()
+            .all(|v| *v < felix_storage::segment::GENERATION_VERSION)
+    );
+    open.store(true, std::sync::atomic::Ordering::Release);
+    for event in &events[6..] {
+        log.append(&payloads(&[event.as_str()]))
+            .await
+            .expect("append");
+    }
+    let opened = versions(&log);
+    assert_eq!(
+        opened.last(),
+        Some(&felix_storage::segment::GENERATION_VERSION),
+        "{opened:?}"
+    );
+    let read: Vec<(Offset, Bytes)> = log
+        .read_from(0, usize::MAX)
+        .await
+        .expect("read")
+        .into_iter()
+        .map(|r| (r.offset, r.payload))
+        .collect();
+    let written: Vec<(Offset, Bytes)> = events
+        .iter()
+        .enumerate()
+        .map(|(offset, event)| (offset as Offset, Bytes::from(event.clone())))
+        .collect();
+    assert_eq!(read, written);
+}

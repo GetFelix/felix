@@ -112,10 +112,13 @@ fn every_message() -> Vec<InternalMessage> {
             log_end: 120,
             commit_offset: 100,
             last_generation: 6,
+            kept_ballot: false,
+            attestation: None,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
             headers: false,
+            writers: false,
             correlation_id: 42,
             shard: shard(),
             log: ReplicaLog::Stream,
@@ -134,6 +137,7 @@ fn every_message() -> Vec<InternalMessage> {
             code: ErrorCode::LogGap,
             expected_offset: 100,
             detail: "batch starts at 105, expected 100".to_string(),
+            reason: None,
         }),
         InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
             correlation_id: 42,
@@ -203,6 +207,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCacheBootstrap(ReplicateBootstrap {
@@ -222,6 +227,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateGroupBootstrap(ReplicateBootstrap {
@@ -241,6 +247,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateDeadLetterBootstrap(ReplicateBootstrap {
@@ -260,6 +267,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCounterBootstrap(ReplicateBootstrap {
@@ -291,6 +299,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateRecords(ReplicateRecords {
@@ -305,6 +314,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
@@ -323,6 +333,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateCacheRecords(ReplicateRecords {
@@ -337,6 +348,7 @@ fn every_message() -> Vec<InternalMessage> {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
     ]
@@ -356,6 +368,7 @@ fn replicate() -> InternalMessage {
         generations: None,
         publishers: Vec::new(),
         headers: None,
+        writers: None,
         set_generation: None,
     })
 }

@@ -4,7 +4,7 @@
 //! by `tokio::sync::RwLock`. It exists for:
 //! - local development and tests (no external dependencies)
 //! - deployments where durability is not required
-//! - as a fallback when a durable backend (e.g., Postgres) is not configured
+//! - the state machine under the Raft backend, which replicates it
 //!
 //! # Durability and consistency
 //! - **Not durable**: all state is lost on process restart.
@@ -46,7 +46,7 @@ mod tenants;
 
 pub(crate) use nodes::FleetRule;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -105,9 +105,9 @@ pub struct InMemoryStore {
     cache_tombstones: Arc<RwLock<HashMap<CacheKey, u64>>>,
     /// Every stream name deleted, so one is not created again before the
     /// fleet finalized `stream_incarnations` (#1447).
-    deleted_stream_names: Arc<RwLock<std::collections::HashSet<StreamKey>>>,
+    deleted_stream_names: Arc<RwLock<felix_common::random::HashSet<StreamKey>>>,
     /// As `deleted_stream_names`, for caches and `cache_incarnations`.
-    deleted_cache_names: Arc<RwLock<std::collections::HashSet<CacheKey>>>,
+    deleted_cache_names: Arc<RwLock<felix_common::random::HashSet<CacheKey>>>,
     /// Broker membership keyed by `node_id`, with its change log.
     ///
     /// One lock over both, unlike the entities above: a snapshot has to read
@@ -151,8 +151,8 @@ pub struct InMemoryStore {
     rbac_groupings: Arc<RwLock<HashMap<String, Vec<GroupingRule>>>>,
     /// Per-tenant auth bootstrap completion.
     auth_bootstrapped: Arc<RwLock<HashMap<String, bool>>>,
-    /// Serializes `bootstrap_tenant_auth`, standing in for the row lock the
-    /// Postgres backend takes. Held across the whole operation; nothing else
+    /// Serializes `bootstrap_tenant_auth`, making the check and the write one
+    /// step. Held across the whole operation; nothing else
     /// acquires it, so it cannot deadlock against the field locks above.
     bootstrap_serial: Arc<tokio::sync::Mutex<()>>,
     /// Refresh tokens keyed by `(tenant_id, token_id)`.
@@ -192,15 +192,26 @@ impl InMemoryStore {
 
     /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
     /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it.
+    /// knows it apply it, and with `own_leader_set` false, as members below
+    /// the level that names this set's own leader on the set it was elected
+    /// on apply it (only its generation is taken).
     pub(crate) async fn apply_adopt_elected_leader(
         &self,
         key: &ShardKey,
         expected_generation: u64,
         elected: &crate::model::ElectedLeader,
         elected_set: bool,
+        own_leader_set: bool,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, elected, elected_set).await
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            elected,
+            elected_set,
+            own_leader_set,
+        )
+        .await
     }
 
     /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
@@ -265,13 +276,16 @@ impl InMemoryStore {
     }
 
     /// [`ControlPlaneStore::record_replica_report`], with the leadership
-    /// check optional for the Raft apply of entries that predate it.
+    /// check optional for the Raft apply of entries that predate it, and
+    /// `readmit` false for entries proposed below the level that records
+    /// [`crate::model::Readmitted`] evidence.
     pub(crate) async fn apply_replica_report(
         &self,
         report: ReplicaReport,
         leader: Option<&str>,
+        readmit: bool,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, leader).await
+        shards::record_replica_report(self, report, leader, readmit).await
     }
 
     /// [`ControlPlaneStore::register_node`], with the fleet check optional
@@ -300,37 +314,37 @@ impl InMemoryStore {
             config,
             #[cfg(test)]
             faults: Faults::default(),
-            tenants: Arc::new(RwLock::new(HashMap::new())),
-            namespaces: Arc::new(RwLock::new(HashMap::new())),
-            streams: Arc::new(RwLock::new(HashMap::new())),
-            stream_tombstones: Arc::new(RwLock::new(HashMap::new())),
-            caches: Arc::new(RwLock::new(HashMap::new())),
-            cache_tombstones: Arc::new(RwLock::new(HashMap::new())),
+            tenants: Arc::new(RwLock::new(HashMap::default())),
+            namespaces: Arc::new(RwLock::new(HashMap::default())),
+            streams: Arc::new(RwLock::new(HashMap::default())),
+            stream_tombstones: Arc::new(RwLock::new(HashMap::default())),
+            caches: Arc::new(RwLock::new(HashMap::default())),
+            cache_tombstones: Arc::new(RwLock::new(HashMap::default())),
             deleted_stream_names: Default::default(),
             deleted_cache_names: Default::default(),
             nodes: Arc::new(RwLock::new(NodeState {
-                records: HashMap::new(),
+                records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
                 fleet_enabled: Default::default(),
             })),
             shards: Arc::new(RwLock::new(ShardState {
-                records: HashMap::new(),
+                records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
                 placement: PlacementState::default(),
             })),
-            replica_reports: Arc::new(RwLock::new(HashMap::new())),
-            suspicions: Arc::new(RwLock::new(HashMap::new())),
+            replica_reports: Arc::new(RwLock::new(HashMap::default())),
+            suspicions: Arc::new(RwLock::new(HashMap::default())),
             tenant_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             namespace_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             stream_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             cache_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
-            idp_issuers: Arc::new(RwLock::new(HashMap::new())),
-            tenant_signing_keys: Arc::new(RwLock::new(HashMap::new())),
-            rbac_policies: Arc::new(RwLock::new(HashMap::new())),
-            rbac_groupings: Arc::new(RwLock::new(HashMap::new())),
-            auth_bootstrapped: Arc::new(RwLock::new(HashMap::new())),
+            idp_issuers: Arc::new(RwLock::new(HashMap::default())),
+            tenant_signing_keys: Arc::new(RwLock::new(HashMap::default())),
+            rbac_policies: Arc::new(RwLock::new(HashMap::default())),
+            rbac_groupings: Arc::new(RwLock::new(HashMap::default())),
+            auth_bootstrapped: Arc::new(RwLock::new(HashMap::default())),
             bootstrap_serial: Arc::new(tokio::sync::Mutex::new(())),
-            refresh_tokens: Arc::new(RwLock::new(HashMap::new())),
+            refresh_tokens: Arc::new(RwLock::new(HashMap::default())),
             moves_paused: Arc::new(RwLock::new(false)),
             revocations: Arc::new(RwLock::new(Default::default())),
         }
@@ -339,19 +353,14 @@ impl InMemoryStore {
     /// Forget every shard assignment belonging to a stream or cache that has
     /// just been deleted.
     ///
-    /// Postgres does this with `ON DELETE CASCADE`, and the reason is in the
-    /// migration: ownership records for shards that no longer exist leave
-    /// placement chasing ghosts. Doing it only there would be the more
-    /// dangerous divergence of the two — a suite running in memory would see
-    /// stale assignments the deployed system never produces, so a placement bug
-    /// that needs orphaned rows is invisible in memory and real in Postgres.
+    /// Ownership records for shards that no longer exist leave placement
+    /// chasing ghosts.
     ///
-    /// [`ShardCleanup::Unassign`] records an unassignment for each shard, as
-    /// Postgres does: a broker follows the shard change log, not the stream's,
+    /// [`ShardCleanup::Unassign`] records an unassignment for each shard: a broker follows the shard change log, not the stream's,
     /// and without one keeps leading a shard of a stream that is gone (#1435).
     ///
     /// Anything but [`ShardCleanup::Legacy`] also drops the shards' replica
-    /// reports, as Postgres cascades them: a name created again can start at
+    /// reports: a name created again can start at
     /// the same generation after a restore, and the old log's report would
     /// read as the new one's.
     async fn drop_shard_assignments_for(
@@ -629,14 +638,23 @@ impl ControlPlaneStore for InMemoryStore {
         shards::put_shard_assignment(self, assignment, true).await
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         assignment: ShardAssignment,
         expected_generation: Option<u64>,
         fence: u64,
+        at_least: u64,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::put_shard_assignment_if(self, assignment, expected_generation, Some(fence), true)
-            .await
+        shards::put_shard_assignment_if(
+            self,
+            assignment,
+            expected_generation,
+            Some(fence),
+            true,
+            at_least,
+            true,
+        )
+        .await
     }
 
     async fn adopt_elected_leader(
@@ -645,7 +663,28 @@ impl ControlPlaneStore for InMemoryStore {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(self, key, expected_generation, &elected, true).await
+        let own_leader_set = {
+            #[cfg(test)]
+            {
+                !self
+                    .faults
+                    .keep_own_leader
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        };
+        shards::adopt_elected_leader(
+            self,
+            key,
+            expected_generation,
+            &elected,
+            true,
+            own_leader_set,
+        )
+        .await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
@@ -659,6 +698,10 @@ impl ControlPlaneStore for InMemoryStore {
         key: &ShardKey,
     ) -> StoreResult<super::ConfirmedAssignment> {
         super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
+    }
+
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
+        Ok(Some(self.shards.read().await.changes.next_seq))
     }
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
@@ -688,6 +731,14 @@ impl ControlPlaneStore for InMemoryStore {
         shards::shard_assignment_snapshot(self).await
     }
 
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+        shards::first_shard_assignments(self).await
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
+        shards::previous_shard_assignments(self).await
+    }
+
     async fn shard_assignment_changes(
         &self,
         since: u64,
@@ -695,16 +746,21 @@ impl ControlPlaneStore for InMemoryStore {
         shards::shard_assignment_changes(self, since).await
     }
 
-    async fn record_replica_report(
+    async fn record_replica_report_with(
         &self,
         report: ReplicaReport,
         leader: &str,
+        readmits: bool,
     ) -> StoreResult<ReportWrite> {
-        shards::record_replica_report(self, report, Some(leader)).await
+        shards::record_replica_report(self, report, Some(leader), readmits).await
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
         shards::list_replica_reports(self).await
+    }
+
+    async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
+        Ok(self.replica_reports.read().await.get(key).cloned())
     }
 
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
@@ -1151,6 +1207,10 @@ pub(crate) struct Faults {
     pub(crate) shard_reads: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
+    /// Adopts elected leaders as members below the own-leader-set level
+    /// do: an own leader elected on another set has only its generation
+    /// taken.
+    pub(crate) keep_own_leader: std::sync::atomic::AtomicBool,
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,

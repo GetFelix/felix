@@ -19,7 +19,7 @@
 //! run there can show a trend -- but the generator still shares the machine's
 //! cores with the broker. Treat any run here as directional, never as the
 //! per-broker ceiling, which needs generators on separate machines
-//! (`scripts/perf/azure`); see #597.
+//! (`scripts/perf/cloud`); see #597.
 //!
 //! Full method, prior results, and what this test's own local run found (a
 //! flat 1.00x-0.98x across 1-8 listeners, and why) are in

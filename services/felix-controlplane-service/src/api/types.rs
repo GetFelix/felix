@@ -283,6 +283,10 @@ pub struct NodeHeartbeatRequest {
     /// pings. Absent from a broker that suspects nobody, or predates it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub suspects: std::collections::BTreeSet<String>,
+    /// Asks for `assignment_seq` in the answer. Absent from a broker that
+    /// does not need it, or predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub want_assignment_seq: bool,
 }
 
 /// What the control plane tells a broker in return.
@@ -302,6 +306,13 @@ pub struct NodeHeartbeatResponse {
     /// only ever adds to what it has from this.
     #[serde(default)]
     pub fleet_features: std::collections::BTreeSet<String>,
+    /// The shard-assignment feed's `next_seq`, read after this heartbeat was
+    /// accepted: every assignment change committed before then has a lower
+    /// seq. Only when asked for, and left out by a Raft leader that predates
+    /// it. A broker marked down serves again only on routes built from the
+    /// feed at or past it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assignment_seq: Option<u64>,
 }
 
 /// A broker claiming its identity on boot.
@@ -466,9 +477,64 @@ pub struct ShardAssignmentListResponse {
     pub next_cursor: Option<String>,
 }
 
+/// A [`RoutedShardAssignment`] in a snapshot.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct SnapshotShardAssignment {
+    #[serde(flatten)]
+    pub assigned: RoutedShardAssignment,
+    /// The shard's first assignment: written when the control plane had none
+    /// for it, so no set came before this one. The snapshot's counterpart of
+    /// an `assigned` change. Absent means not known, never "not first": the
+    /// change that would show it may have left the retained log.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_assignment: bool,
+    /// The set of the assignment right before this one, as the change log
+    /// holds it: the generation below, or the one `previous_generation`
+    /// names. A broker that learns the shard here takes it as the set this
+    /// generation leaves, as a watching broker does from the change before
+    /// (#2024). Absent when the change log no longer holds it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PreviousSet>,
+}
+
+/// The set of an assignment a snapshot item replaced.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct PreviousSet {
+    pub generation: u64,
+    pub leader: String,
+    #[serde(default)]
+    pub replicas: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub successor: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub fence_storage_ids: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub member_storage_ids: std::collections::BTreeMap<String, String>,
+}
+
+impl PreviousSet {
+    /// `before`'s set, when it is the assignment right before `current`.
+    pub(crate) fn of(
+        before: &crate::model::ShardAssignment,
+        current: &crate::model::ShardAssignment,
+    ) -> Option<Self> {
+        let right_before = before.generation.checked_add(1) == Some(current.generation)
+            || current.previous_generation == Some(before.generation);
+        (before.key == current.key && before.incarnation == current.incarnation && right_before)
+            .then(|| Self {
+                generation: before.generation,
+                leader: before.leader.clone(),
+                replicas: before.replicas.clone(),
+                successor: before.successor.clone(),
+                fence_storage_ids: before.fence_storage_ids.clone(),
+                member_storage_ids: before.member_storage_ids.clone(),
+            })
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ShardAssignmentSnapshotResponse {
-    pub items: Vec<RoutedShardAssignment>,
+    pub items: Vec<SnapshotShardAssignment>,
     /// Where to start polling changes. A consumer that applies this snapshot and
     /// then polls from here sees every committed change exactly once.
     pub next_seq: u64,
@@ -480,6 +546,18 @@ pub struct ShardAssignmentSnapshotResponse {
 pub struct ConfirmedShardAssignmentResponse {
     /// Absent when the shard has no assignment.
     pub assignment: Option<RoutedShardAssignment>,
+}
+
+/// Several shards to read as `GET /v1/shard-assignments/confirmed` reads one.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfirmedShardAssignmentsRequest {
+    pub keys: Vec<crate::model::ShardKey>,
+}
+
+/// One answer per requested shard, in the request's order.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct ConfirmedShardAssignmentsResponse {
+    pub items: Vec<ConfirmedShardAssignmentResponse>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

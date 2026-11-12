@@ -5,14 +5,21 @@
 //!
 //! Each follower is sent a fence at the generation this broker led. One that
 //! took that generation from it changes nothing; one still at an older
-//! generation takes it, as it would this broker's batch at it. Only a probe every follower answered is reported: a follower not
-//! heard from may hold what this broker lost. When none is ahead of this
+//! generation takes it, as it would this broker's batch at it. A follower not
+//! heard from may hold what this broker lost, so nothing is reported while
+//! its answer could still change the verdict. When none is ahead of this
 //! broker's copy, nothing a client was promised is held beyond it, and
 //! placement may name this broker leader again at a new generation. When one
 //! is level with it or ahead, the furthest are reported caught up and
 //! placement promotes one of them instead: every copy is accounted for, so
 //! the furthest holds whatever any copy holds. Reclaim is only for when every
 //! follower is behind.
+//!
+//! A follower that answers but does not vote (a learner, or a copy replaced
+//! and not yet re-admitted) has no position. When the followers that do have
+//! one do not meet every majority of the replicas, the report is held: it
+//! names nobody caught up and the copy is not reclaimable, so placement finds
+//! no replica to promote and an operator may abandon the log (#2066).
 
 use std::sync::Arc;
 
@@ -23,12 +30,12 @@ use felix_storage::StorageId;
 use felix_wire::internal::{Fence, InternalMessage};
 
 use crate::peer::{Incarnation, PeerRequester};
-use crate::replica::last_generation;
+use crate::replica::{last_generation, not_a_voter};
 use crate::reporter::ShardReport;
 
 /// What a probe found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Probe {
+pub(crate) struct Probe {
     pub report: ShardReport,
     /// No follower's copy is ahead of this broker's on any of the shard's logs.
     pub reclaimable: bool,
@@ -50,9 +57,14 @@ struct LogPosition {
 type Answer = (String, felix_wire::internal::FenceOk, StorageId, u64);
 
 /// Probe every follower `route` names for the shard this broker gave up at
-/// `route.generation`. `None` when the shard has no followers, or any of
-/// them did not answer with its copy and identity.
-pub async fn probe<R: PeerRequester>(
+/// `route.generation`. `None` when the shard has no followers, or while a
+/// follower that did not answer could still change the verdict.
+///
+/// A follower that answers but does not vote has no position. Unless the
+/// followers that do have one meet every majority of the route's set, and of
+/// the set a pending change leaves, the probe is a held report: nobody is
+/// named caught up and the copy is not reclaimable.
+pub(crate) async fn probe<R: PeerRequester>(
     requester: &R,
     broker: &Arc<Broker>,
     local_node_id: &str,
@@ -72,9 +84,18 @@ pub async fn probe<R: PeerRequester>(
         ShardKind::Cache => &[LogKind::Cache, LogKind::Counters],
     };
     let shard = crate::incarnation::shard_ref(broker, key, route.generation);
+    // A pending change leaves a set whose majority could hold acknowledged
+    // records too, as the acknowledgement path counts it (`held_by_both`).
+    let mut sets: Vec<Vec<&str>> =
+        vec![route.replicas.iter().map(|r| r.node_id.as_str()).collect()];
+    if let Some(pending) = &route.pending {
+        sets.push(pending.leaving.iter().map(String::as_str).collect());
+    }
+    let mut holds = true;
     let mut reclaimable = true;
     let mut report: Option<ShardReport> = None;
     let mut positions = Vec::with_capacity(logs.len());
+    let mut start_holders: Option<Vec<String>> = None;
     for &kind in logs {
         let Some(log) = broker
             .shard_log_for(
@@ -97,6 +118,8 @@ pub async fn probe<R: PeerRequester>(
         let tail = log.tail_offset().await.ok()?;
         let own = (last_generation(&log.generations(), tail), tail);
         let mut answers = Vec::with_capacity(followers.len());
+        let mut silent = 0;
+        let mut refused: Vec<&str> = Vec::new();
         for follower in &followers {
             let request = InternalMessage::Fence(Fence {
                 correlation_id: 0,
@@ -104,20 +127,49 @@ pub async fn probe<R: PeerRequester>(
                 log: crate::ship::replica_log(kind),
                 election: None,
             });
-            let (answer, identity) = requester
+            let Ok((answer, identity)) = requester
                 .request_identified(&follower.node_id, follower.advertise_addr, request)
                 .await
-                .ok()?;
-            let InternalMessage::FenceOk(ok) = answer else {
-                return None;
+            else {
+                silent += 1;
+                continue;
             };
-            let storage = identity.storage?;
-            let incarnation = match identity.incarnation {
-                Incarnation::At(at) => at,
+            match answer {
+                InternalMessage::FenceOk(ok) => {
+                    let (Some(storage), Incarnation::At(incarnation)) =
+                        (identity.storage, identity.incarnation)
+                    else {
+                        silent += 1;
+                        continue;
+                    };
+                    answers.push((follower.node_id.clone(), ok, storage, incarnation));
+                }
+                // It answered, but does not vote: its position counts for nothing.
+                InternalMessage::ReplicateError(err) if not_a_voter(&err) => {
+                    refused.push(follower.node_id.as_str());
+                }
                 _ => return None,
-            };
-            answers.push((follower.node_id.clone(), ok, storage, incarnation));
+            }
         }
+        // Silence decides nothing: wait while the silent members, counted,
+        // could still let a claim hold.
+        let counted: Vec<&str> = answers.iter().map(|(node, ..)| node.as_str()).collect();
+        let mut possible = counted.clone();
+        possible.extend(
+            followers
+                .iter()
+                .map(|follower| follower.node_id.as_str())
+                .filter(|node| !counted.contains(node) && !refused.contains(node)),
+        );
+        if silent > 0 && meets_every_majority(&possible, &sets) {
+            return None;
+        }
+        holds &= meets_every_majority(&counted, &sets);
+        start_holders = Some(still_holding_start(
+            start_holders,
+            &answers,
+            route.generation,
+        ));
         let furthest = answers
             .iter()
             .map(|(_, ok, _, _)| (ok.last_generation, ok.log_end))
@@ -146,12 +198,55 @@ pub async fn probe<R: PeerRequester>(
         }
     }
     let mut report = report?;
-    report.caught_up = caught_up(&positions);
+    // A re-admitted learner counts again only once its leader reports it
+    // holding the start record. A leader that crashed before a pass said so
+    // can only say it here, or the learner stays one for good.
+    report.holds_start = start_holders.unwrap_or_default();
+    // A refusing or silent member has no position. Unless the followers that
+    // have one meet every majority, a record could sit only on those that do
+    // not, so nobody is named and nothing is reclaimed: a held report.
+    if holds {
+        report.caught_up = caught_up(&positions);
+    }
     let report = report.at_incarnation(crate::incarnation::of(broker, key));
     Some(Probe {
         report,
-        reclaimable,
+        reclaimable: reclaimable && holds,
     })
+}
+
+/// Whether `trusted` followers share a member with every majority of each of
+/// `sets`, the leader that gave up counted in each set it belongs to.
+fn meets_every_majority(trusted: &[&str], sets: &[Vec<&str>]) -> bool {
+    sets.iter().all(|set| {
+        let held = set.iter().filter(|node| trusted.contains(node)).count();
+        2 * held >= set.len()
+    })
+}
+
+/// The followers of `held`, the ones found holding `generation`'s start
+/// record on every log checked before this one (`None` before the first),
+/// whose answer on this log does too.
+///
+/// A copy whose last record is of `generation` holds its start record, the
+/// generation's first. One ahead of it would have refused the fence, and one
+/// that refused or was not heard from has no answer to judge. Under the
+/// unified fence a learner answers instead of refusing, attesting it keeps
+/// no promise; it is left out, as it has not admitted itself yet.
+fn still_holding_start(
+    held: Option<Vec<String>>,
+    answers: &[Answer],
+    generation: u64,
+) -> Vec<String> {
+    let here = answers
+        .iter()
+        .filter(|(_, ok, _, _)| ok.last_generation == generation)
+        .filter(|(_, ok, _, _)| ok.attestation.is_none_or(|a| a.kept_from != u64::MAX))
+        .map(|(node, ..)| node.clone());
+    match held {
+        None => here.collect(),
+        Some(held) => here.filter(|node| held.contains(node)).collect(),
+    }
 }
 
 /// Who the probe names caught up, from each of the shard's logs, the
@@ -181,11 +276,12 @@ fn caught_up(positions: &[LogPosition]) -> Vec<String> {
 }
 
 /// The report for a shard this broker was named leader of and refused to open
-/// at `refused.generation`, having promised it to another node. It measures
+/// at `refused.generation`, having promised it to another node or lacking the
+/// set its joint fence leaves there. It measures
 /// nothing: the broker never opened the shard, and placement needs only the
 /// refusal. Without it the control plane, which still names this broker at
 /// that generation, would wait on silence.
-pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport {
+pub(crate) fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport {
     ShardReport {
         key: key.clone(),
         generation: refused.generation,
@@ -208,7 +304,8 @@ pub fn refusal_report(key: &ShardKey, refused: RefusedGeneration) -> ShardReport
     }
 }
 
-/// The report on a probe, naming nobody caught up; the caller fills that in.
+/// The report on a probe, naming nobody caught up or holding the start; the
+/// caller fills those in.
 fn given_up_report(
     key: &ShardKey,
     generation: u64,

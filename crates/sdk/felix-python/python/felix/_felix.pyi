@@ -5,7 +5,16 @@ so a signature cannot drift here without a test noticing.
 """
 
 from types import TracebackType
-from typing import AsyncIterator, Awaitable, Callable, Iterator, Literal, Sequence
+from typing import AsyncIterator, Awaitable, Callable, Iterator, Literal, Mapping, Sequence
+
+from .answers import (
+    BrokerEndpoint,
+    Supports,
+    ShardInspection,
+    ShardOwner,
+    SubscriptionCursor,
+    SubscriptionsPage,
+)
 
 __version__: str
 
@@ -13,6 +22,92 @@ AckMode = Literal["none", "per_message", "per_batch"]
 StartPosition = Literal["latest", "earliest"] | int
 
 RetryClass = Literal["retry", "retry_after", "redirect", "outcome_unknown", "fatal"]
+ShardKind = Literal["stream", "cache"]
+HeadersArg = RecordHeaders | Mapping[str, bytes] | Sequence[tuple[str, bytes]]
+"""Headers to publish: a ``RecordHeaders``, a dict, or ``(name, value)`` pairs."""
+
+class RecordHeaders:
+    """A record's own key and headers.
+
+    The key belongs to the record and does not route it. Names may repeat and keep
+    their order; a name must not be empty or start with ``felix.``.
+    """
+
+    key: bytes | None
+    headers: list[tuple[str, bytes]]
+    def __init__(
+        self,
+        headers: Mapping[str, bytes] | Sequence[tuple[str, bytes]] | None = None,
+        *,
+        key: bytes | None = None,
+    ) -> None: ...
+    def get(self, name: str) -> bytes | None:
+        """The first value under ``name``."""
+    def __len__(self) -> int: ...
+
+class ClientTuning:
+    """Connection, window and queue settings; an argument left out keeps the default.
+
+    ``publish_sharding`` is ``"hash_stream"`` or ``"round_robin"``.
+    ``client_sub_queue_policy`` is ``"block"``, ``"drop_new"`` or ``"drop_old"``.
+    Durations are seconds.
+    """
+
+    def __init__(
+        self,
+        *,
+        publish_conn_pool: int | None = None,
+        publish_streams_per_conn: int | None = None,
+        publish_queue_depth: int | None = None,
+        publish_inflight_bytes: int | None = None,
+        publish_sharding: Literal["hash_stream", "round_robin"] | None = None,
+        publish_shard_streams: int | None = None,
+        cache_conn_pool: int | None = None,
+        cache_streams_per_conn: int | None = None,
+        event_conn_pool: int | None = None,
+        cluster_conn_pool: int | None = None,
+        cluster_streams_per_conn: int | None = None,
+        event_conn_recv_window: int | None = None,
+        event_stream_recv_window: int | None = None,
+        event_send_window: int | None = None,
+        cache_conn_recv_window: int | None = None,
+        cache_stream_recv_window: int | None = None,
+        cache_send_window: int | None = None,
+        event_router_max_pending: int | None = None,
+        client_sub_queue_capacity: int | None = None,
+        client_sub_queue_policy: Literal["block", "drop_new", "drop_old"] | None = None,
+        broker_sub_queue_capacity: int | None = None,
+        max_frame_bytes: int | None = None,
+        ack_on_commit: bool | None = None,
+        connect_timeout: float | None = None,
+        finish_timeout: float | None = None,
+    ) -> None: ...
+
+class LeaseToken:
+    """A bearer token for a lease's holder; ``repr`` leaves the secret out."""
+
+    token: str
+    expires_at: int
+    """Seconds since the Unix epoch."""
+
+class LeaseWrite:
+    result: CacheConditionResult
+    token: LeaseToken | None
+    token_refused: str | None
+    """Why an applied write came back without a token. The write stands."""
+
+class Handed:
+    """A producer call that is queued and not yet answered.
+
+    ``offset()`` and ``done()`` read the answer; one of them works, once.
+    """
+
+    def offset(self) -> int | None: ...
+    def done(self) -> None: ...
+
+class AsyncHanded:
+    async def offset(self) -> int | None: ...
+    async def done(self) -> None: ...
 
 class FelixError(Exception):
     code: str | None
@@ -181,6 +276,19 @@ class Producer:
         self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
     ) -> None: ...
     def abandon_in_doubt(self, tenant_id: str, namespace: str, stream: str) -> None: ...
+    def hand_off_batch(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        *,
+        key: bytes | None = None,
+    ) -> Handed: ...
+    def hand_off_batches(
+        self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
+    ) -> Handed: ...
+    def hand_off_abandon(self, tenant_id: str, namespace: str, stream: str) -> Handed: ...
     def id_for(self, tenant_id: str, namespace: str, stream: str) -> int: ...
     def close(self, timeout: float | None = None) -> None: ...
     def __enter__(self) -> "Producer": ...
@@ -215,6 +323,19 @@ class AsyncProducer:
         self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
     ) -> None: ...
     async def abandon_in_doubt(self, tenant_id: str, namespace: str, stream: str) -> None: ...
+    async def hand_off_batch(
+        self,
+        tenant_id: str,
+        namespace: str,
+        stream: str,
+        payloads: list[bytes],
+        *,
+        key: bytes | None = None,
+    ) -> AsyncHanded: ...
+    async def hand_off_batches(
+        self, tenant_id: str, namespace: str, stream: str, batches: list[list[bytes]]
+    ) -> AsyncHanded: ...
+    async def hand_off_abandon(self, tenant_id: str, namespace: str, stream: str) -> AsyncHanded: ...
     async def id_for(self, tenant_id: str, namespace: str, stream: str) -> int: ...
     async def close(self, timeout: float | None = None) -> None: ...
     @property
@@ -234,6 +355,12 @@ class Event:
     payload: bytes
     offset: int | None
     skipped_before: int
+    publisher: str | None
+    """Who published the record; needs ``publishers=True``."""
+    timestamp_micros: int | None
+    """When the broker appended it, in microseconds since the epoch; needs ``timestamps=True``."""
+    headers: RecordHeaders | None
+    """The key and headers the publisher gave the record."""
 
 class SubscriptionHandle:
     closed: bool
@@ -241,6 +368,14 @@ class SubscriptionHandle:
     """Where the subscription began, as of when it opened; None for an in-memory stream."""
     live_offset: int | None
     """The offset live delivery began at, as of when it opened."""
+    moves: int
+    """How many times the subscription followed its shard to a new owner."""
+    reconnects: int
+    """How many times it was reopened after losing its connection."""
+    stream_deleted: bool
+    """The broker said the stream was deleted."""
+    queue_capacity: int | None
+    """Batches the broker queues for this subscription, as granted."""
     def next_event(self, timeout: float | None = None) -> Event | None: ...
     def close(self) -> None: ...
     def __iter__(self) -> Iterator[Event]: ...
@@ -266,6 +401,10 @@ class GroupRecord:
     attempts: int
     skipped_before: int
     """Offsets directly below this one settled without delivery; such a hole will not fill."""
+    publisher: str | None
+    """Who published the record; needs ``publishers=True``."""
+    timestamp_micros: int | None
+    """When the record was appended; needs ``timestamps=True``."""
 
 class CacheChange:
     key: str
@@ -511,11 +650,17 @@ class Client:
         token_provider: Callable[[], str | Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
+        client_cert_file: str | None = None,
+        client_key_file: str | None = None,
         offer_alpn: bool = False,
         reconnect_attempts: int | None = None,
         reconnect_deadline: float | None = None,
         reconnect_backoff: float | None = None,
         reconnect_max_backoff: float | None = None,
+        publishers: bool | None = None,
+        timestamps: bool | None = None,
+        record_headers: bool | None = None,
+        tuning: ClientTuning | None = None,
     ) -> None:
         """Pass ``token``, ``token_provider``, or both (``token`` is then the first token).
 
@@ -541,6 +686,7 @@ class Client:
         key: bytes | None = None,
         ack: AckMode = "per_message",
         at_least_once: bool = False,
+        headers: HeadersArg | None = None,
     ) -> int | None: ...
     def publish_on_shard(
         self,
@@ -598,6 +744,17 @@ class Client:
         *,
         ttl: float | None = None,
     ) -> CacheConditionResult: ...
+    def cache_put_if_lease(
+        self,
+        tenant_id: str,
+        namespace: str,
+        cache: str,
+        key: str,
+        value: bytes,
+        condition: CacheCondition,
+        *,
+        ttl: float | None = None,
+    ) -> LeaseWrite: ...
     def cache_delete_if(
         self, tenant_id: str, namespace: str, cache: str, key: str, version: int
     ) -> CacheConditionResult: ...
@@ -772,6 +929,7 @@ class Client:
         *,
         key: bytes | None = None,
         ack: AckMode = "per_message",
+        headers: Sequence[HeadersArg | None] | None = None,
     ) -> int | None: ...
     def publish_records(
         self,
@@ -783,6 +941,33 @@ class Client:
         ack: AckMode = "per_message",
         at_least_once: bool = False,
     ) -> BatchReport: ...
+    def supports(self) -> Supports:
+        """Which questions the broker in use answers."""
+    def inspect_shard(
+        self, kind: ShardKind, tenant_id: str, namespace: str, name: str, shard: int
+    ) -> ShardInspection:
+        """The connected broker's own view of one shard; needs ``node.view:cluster:*``."""
+    def list_subscriptions(
+        self,
+        *,
+        tenant_id: str | None = None,
+        namespace: str | None = None,
+        stream: str | None = None,
+        shard: int | None = None,
+        principal: str | None = None,
+        dropping: bool = False,
+        limit: int | None = None,
+        cursor: SubscriptionCursor | None = None,
+    ) -> SubscriptionsPage:
+        """One page of the subscriptions the connected broker serves."""
+    def topology(self) -> list[BrokerEndpoint]: ...
+    def shard_owners(
+        self, kind: ShardKind, tenant_id: str, namespace: str, name: str
+    ) -> list[ShardOwner]: ...
+    def stream_routing(
+        self, tenant_id: str, namespace: str, stream: str
+    ) -> tuple[int, Literal["modulo", "jump_hash"]]: ...
+    def cache_shards(self, tenant_id: str, namespace: str, cache: str) -> int: ...
     def refresh_topology(self) -> int: ...
     def connections_per_node(self) -> list[tuple[str, int]]: ...
     def group_dead_letter(
@@ -836,6 +1021,10 @@ class AsyncSubscription:
 
     start_offset: int | None
     live_offset: int | None
+    moves: int
+    reconnects: int
+    stream_deleted: bool
+    queue_capacity: int | None
 
     @property
     def closed(self) -> Awaitable[bool]: ...
@@ -863,11 +1052,17 @@ class AsyncClient:
         token_provider: Callable[[], Awaitable[str]] | None = None,
         server_name: str = "localhost",
         ca_file: str | None = None,
+        client_cert_file: str | None = None,
+        client_key_file: str | None = None,
         offer_alpn: bool = False,
         reconnect_attempts: int | None = None,
         reconnect_deadline: float | None = None,
         reconnect_backoff: float | None = None,
         reconnect_max_backoff: float | None = None,
+        publishers: bool | None = None,
+        timestamps: bool | None = None,
+        record_headers: bool | None = None,
+        tuning: ClientTuning | None = None,
     ) -> "AsyncClient":
         """``token_provider`` must be an ``async def`` (or return an awaitable); one returning a ``str`` fails with ``AuthError``.
 
@@ -891,6 +1086,7 @@ class AsyncClient:
         key: bytes | None = None,
         ack: AckMode = "per_message",
         at_least_once: bool = False,
+        headers: HeadersArg | None = None,
     ) -> int | None: ...
     async def publish_on_shard(
         self,
@@ -948,6 +1144,17 @@ class AsyncClient:
         *,
         ttl: float | None = None,
     ) -> CacheConditionResult: ...
+    async def cache_put_if_lease(
+        self,
+        tenant_id: str,
+        namespace: str,
+        cache: str,
+        key: str,
+        value: bytes,
+        condition: CacheCondition,
+        *,
+        ttl: float | None = None,
+    ) -> LeaseWrite: ...
     async def cache_delete_if(
         self, tenant_id: str, namespace: str, cache: str, key: str, version: int
     ) -> CacheConditionResult: ...
@@ -1122,6 +1329,7 @@ class AsyncClient:
         *,
         key: bytes | None = None,
         ack: AckMode = "per_message",
+        headers: Sequence[HeadersArg | None] | None = None,
     ) -> int | None: ...
     async def publish_records(
         self,
@@ -1133,6 +1341,33 @@ class AsyncClient:
         ack: AckMode = "per_message",
         at_least_once: bool = False,
     ) -> BatchReport: ...
+    async def supports(self) -> Supports:
+        """Which questions the broker in use answers."""
+    async def inspect_shard(
+        self, kind: ShardKind, tenant_id: str, namespace: str, name: str, shard: int
+    ) -> ShardInspection:
+        """The connected broker's own view of one shard; needs ``node.view:cluster:*``."""
+    async def list_subscriptions(
+        self,
+        *,
+        tenant_id: str | None = None,
+        namespace: str | None = None,
+        stream: str | None = None,
+        shard: int | None = None,
+        principal: str | None = None,
+        dropping: bool = False,
+        limit: int | None = None,
+        cursor: SubscriptionCursor | None = None,
+    ) -> SubscriptionsPage:
+        """One page of the subscriptions the connected broker serves."""
+    async def topology(self) -> list[BrokerEndpoint]: ...
+    async def shard_owners(
+        self, kind: ShardKind, tenant_id: str, namespace: str, name: str
+    ) -> list[ShardOwner]: ...
+    async def stream_routing(
+        self, tenant_id: str, namespace: str, stream: str
+    ) -> tuple[int, Literal["modulo", "jump_hash"]]: ...
+    async def cache_shards(self, tenant_id: str, namespace: str, cache: str) -> int: ...
     async def refresh_topology(self) -> int: ...
     async def connections_per_node(self) -> list[tuple[str, int]]: ...
     async def group_dead_letter(

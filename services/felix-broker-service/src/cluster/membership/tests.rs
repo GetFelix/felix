@@ -7,6 +7,7 @@ use axum::routing::post;
 use serde_json::json;
 
 use super::*;
+use crate::cluster::controlplane_view::ViewFile;
 use crate::test_support::{build_test_client, spawn_axum_with_shutdown, wait_for_listen};
 
 /// Records what the broker sent, so a test can assert on the calls rather than
@@ -28,6 +29,9 @@ struct Calls {
     heartbeat_interval_ms: Option<u64>,
     /// Each heartbeat's body, in order.
     heartbeat_bodies: Vec<serde_json::Value>,
+    /// What `GET /v1/nodes/{id}` answers: the incarnation and storage id the
+    /// node last registered with. 404 when unset.
+    lookup: Option<(u64, String)>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -38,20 +42,43 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let (incarnation, fleet) = {
+                    let (incarnation, fleet, interval) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
                         (
                             calls.registrations.len() as u64 - 1,
                             calls.fleet_features.clone(),
+                            calls.heartbeat_interval_ms.unwrap_or(20),
                         )
                     };
                     Json(json!({
                         "node": { "status": { "incarnation": incarnation, "lifecycle": "live" } },
-                        "heartbeat_interval_ms": 20,
+                        "heartbeat_interval_ms": interval,
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
                     }))
+                },
+            ),
+        )
+        .route(
+            "/v1/nodes/{node_id}",
+            axum::routing::get(
+                |State(state): State<Shared>, Path(id): Path<String>| async move {
+                    let lookup = state.lock().expect("lock").lookup.clone();
+                    match lookup {
+                        Some((incarnation, storage_id)) => Ok(Json(json!({
+                            "node": {
+                                "node_id": id,
+                                "status": {
+                                    "incarnation": incarnation,
+                                    "lifecycle": "down",
+                                    "storage_id": storage_id,
+                                },
+                            },
+                            "placement": { "eligible": false },
+                        }))),
+                        None => Err(axum::http::StatusCode::NOT_FOUND),
+                    }
                 },
             ),
         )
@@ -118,6 +145,13 @@ async fn serve(
     (format!("http://{addr}"), stop, handle)
 }
 
+fn link(
+    client: &reqwest::Client,
+    base_url: &str,
+) -> felix_replication::controlplane_link::HttpControlPlaneLink {
+    felix_replication::controlplane_link::HttpControlPlaneLink::new(client.clone(), base_url)
+}
+
 fn config() -> MembershipConfig {
     MembershipConfig {
         node_id: "broker-a".to_string(),
@@ -138,8 +172,7 @@ async fn registration_sends_the_identity_and_returns_the_incarnation() {
     let client = build_test_client().expect("client");
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -175,8 +208,7 @@ async fn registration_sends_the_kafka_address_when_the_listener_is_on() {
     };
 
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -202,8 +234,7 @@ async fn registration_sends_the_zone_when_one_is_set() {
     };
 
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config,
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -228,15 +259,14 @@ async fn registration_sends_the_storage_id_as_hex_when_one_is_set() {
     let mut bytes = [0u8; 16];
     bytes[0] = 0xab;
     register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &credential,
         Some(StorageId::from_bytes(bytes)),
     )
     .await
     .expect("register");
-    register(&client, &base_url, &config(), &credential, None)
+    register(&link(&client, &base_url), &config(), &credential, None)
         .await
         .expect("register");
 
@@ -266,8 +296,7 @@ async fn a_rejected_registration_is_an_error() {
 
     let client = build_test_client().expect("client");
     let err = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -289,8 +318,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let client = build_test_client().expect("client");
 
     let mut registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -302,8 +330,7 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -336,6 +363,56 @@ async fn heartbeats_carry_the_registered_incarnation() {
     let _ = handle.await;
 }
 
+/// **The first beat goes out at startup, not an interval later.** The lease is
+/// invalid until a beat is answered, so waiting an interval would have the
+/// broker refuse every publish for that long.
+#[tokio::test]
+async fn the_first_heartbeat_does_not_wait_an_interval() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        heartbeat_interval_ms: Some(60_000),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let mut registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    registration.heartbeat_interval_ms = 60_000;
+
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(
+        std::time::Duration::from_secs(30),
+    ));
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+    ));
+
+    for _ in 0..300 {
+        if lease.is_valid_now() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let valid = lease.is_valid_now();
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    assert!(valid, "the lease stayed invalid well before one interval");
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
 /// **A new suspicion goes out at once, not an interval later.** The control
 /// plane promotes on it, so waiting for the next beat would add the whole
 /// interval to a failover. With nothing suspected the field is left out.
@@ -348,8 +425,7 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
     let client = build_test_client().expect("client");
     let mut registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -361,8 +437,7 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
     let shutdown = CancellationToken::new();
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::new(AtomicU64::new(0)),
@@ -373,20 +448,12 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
         Arc::clone(&suspects),
     ));
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(calls.lock().expect("lock").heartbeat_bodies.is_empty());
+    // Only the startup beat, which has nothing to report.
+    let startup = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(startup.len(), 1, "{startup:?}");
+    assert!(startup[0].get("suspects").is_none(), "{startup:?}");
 
     suspects.publish(["broker-b".to_string()].into_iter().collect());
-    for _ in 0..200 {
-        if !calls.lock().expect("lock").heartbeat_bodies.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
-    assert_eq!(bodies.len(), 1, "{bodies:?}");
-    assert_eq!(bodies[0]["suspects"], json!(["broker-b"]));
-
-    suspects.publish(Default::default());
     for _ in 0..200 {
         if calls.lock().expect("lock").heartbeat_bodies.len() > 1 {
             break;
@@ -395,7 +462,18 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     }
     let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
     assert_eq!(bodies.len(), 2, "{bodies:?}");
-    assert!(bodies[1].get("suspects").is_none(), "{bodies:?}");
+    assert_eq!(bodies[1]["suspects"], json!(["broker-b"]));
+
+    suspects.publish(Default::default());
+    for _ in 0..200 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() > 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let bodies = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert_eq!(bodies.len(), 3, "{bodies:?}");
+    assert!(bodies[2].get("suspects").is_none(), "{bodies:?}");
 
     shutdown.cancel();
     beating.await.expect("heartbeat task");
@@ -415,8 +493,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
     let client = build_test_client().expect("client");
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -426,8 +503,7 @@ async fn heartbeat_failures_are_counted_and_then_recovered_from() {
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -464,10 +540,10 @@ async fn draining_and_deregistering_hit_the_right_endpoints() {
     let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
     let client = build_test_client().expect("client");
 
-    drain(&client, &base_url, "broker-a", "test-token")
+    drain(&link(&client, &base_url), "broker-a", "test-token")
         .await
         .expect("drain");
-    deregister(&client, &base_url, "broker-a", "test-token")
+    deregister(&link(&client, &base_url), "broker-a", "test-token")
         .await
         .expect("deregister");
 
@@ -530,8 +606,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
 
     let client = build_test_client().expect("client");
     let refused = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -548,8 +623,7 @@ async fn a_refusal_and_an_outage_are_different_kinds() {
 
     // Nothing listening: no answer at all.
     let outage = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -579,8 +653,7 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
 
     let client = build_test_client().expect("client");
     let err = register(
-        &client,
-        &format!("http://{addr}"),
+        &link(&client, &format!("http://{addr}")),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -594,6 +667,53 @@ async fn a_server_error_counts_as_an_outage_not_a_refusal() {
     assert!(
         matches!(err, MembershipError::Unavailable(_)),
         "a 5xx must stay retryable",
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that answers down at once must not be re-registered with
+/// at round-trip speed: re-registrations stay about one interval apart.
+#[tokio::test]
+async fn a_control_plane_answering_down_is_not_hammered() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        down_through_incarnation: Some(u64::MAX),
+        heartbeat_interval_ms: Some(300),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let data = tempfile::tempdir().expect("tempdir");
+
+    let task = spawn(
+        link(&client, &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        Some(data.path().to_path_buf()),
+        None,
+    );
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+
+    let registrations = calls.lock().expect("lock").registrations.len();
+    assert!(
+        registrations <= 7,
+        "re-registered {registrations} times in 1.5 s with a 300 ms interval",
     );
 
     let _ = stop.send(());
@@ -620,8 +740,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
     let data = tempfile::tempdir().expect("tempdir");
 
     let task = spawn(
-        client,
-        base_url,
+        link(&client, &base_url),
         config(),
         crate::cluster::credential::NodeCredential::new("a-node-token"),
         serving,
@@ -633,6 +752,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         tokio::sync::watch::channel(None).0,
         None,
         Some(data.path().to_path_buf()),
+        None,
     );
 
     for _ in 0..300 {
@@ -706,8 +826,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         Duration::from_millis(400),
     ));
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        format!("http://{addr}"),
+        link(&client, &format!("http://{addr}")),
         registration,
         shutdown.clone(),
         Arc::clone(&failures),
@@ -767,14 +886,14 @@ async fn registration_reports_features_only_when_there_are_some() {
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
 
-    register(&client, &base_url, &config(), &credential, None)
+    register(&link(&client, &base_url), &config(), &credential, None)
         .await
         .expect("register");
     let with_features = MembershipConfig {
         features: ["jump".to_string()].into(),
         ..config()
     };
-    register(&client, &base_url, &with_features, &credential, None)
+    register(&link(&client, &base_url), &with_features, &credential, None)
         .await
         .expect("register");
 
@@ -797,8 +916,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
     let fleet = Arc::new(felix_common::fleet::FleetGate::new(["jump"]));
 
     let registration = register(
-        &client,
-        &base_url,
+        &link(&client, &base_url),
         &config(),
         &crate::cluster::credential::NodeCredential::new("a-node-token"),
         None,
@@ -807,8 +925,7 @@ async fn heartbeats_open_the_fleet_gate_and_never_close_it() {
     .expect("register");
     let shutdown = CancellationToken::new();
     let beating = tokio::spawn(run_heartbeat(
-        client,
-        base_url,
+        link(&client, &base_url),
         registration,
         shutdown.clone(),
         Arc::new(AtomicU64::new(0)),
@@ -912,7 +1029,7 @@ async fn the_lookup_reads_the_registration() {
     let client = build_test_client().expect("client");
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     assert_eq!(
-        registered(&client, &base_url, "broker-a", &credential)
+        registered(&link(&client, &base_url), "broker-a", &credential)
             .await
             .expect("lookup"),
         Some(Registered {
@@ -921,7 +1038,7 @@ async fn the_lookup_reads_the_registration() {
         })
     );
     assert_eq!(
-        registered(&client, &base_url, "broker-z", &credential)
+        registered(&link(&client, &base_url), "broker-z", &credential)
             .await
             .expect("lookup"),
         None
@@ -945,7 +1062,7 @@ async fn the_startup_lookup_waits_for_an_answer() {
         let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
         let answer = tokio::time::timeout(
             Duration::from_secs(20),
-            await_registered(&client, &base_url, "broker-a", &credential),
+            await_registered(&link(&client, &base_url), "broker-a", &credential),
         )
         .await
         .expect("answered once the control plane did")
@@ -964,7 +1081,11 @@ async fn the_startup_lookup_waits_for_an_answer() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let waiting = tokio::time::timeout(
         Duration::from_millis(1500),
-        await_registered(&client, &format!("http://{addr}"), "broker-a", &credential),
+        await_registered(
+            &link(&client, &format!("http://{addr}")),
+            "broker-a",
+            &credential,
+        ),
     )
     .await;
     assert!(waiting.is_err(), "returned without an answer: {waiting:?}");
@@ -979,7 +1100,7 @@ async fn a_refused_startup_lookup_fails_the_start() {
     let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
     let refused = tokio::time::timeout(
         Duration::from_secs(5),
-        await_registered(&client, &base_url, "broker-a", &credential),
+        await_registered(&link(&client, &base_url), "broker-a", &credential),
     )
     .await
     .expect("a refusal is final");
@@ -996,8 +1117,7 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
     serving.cancel();
     let shutdown = CancellationToken::new();
     let task = spawn(
-        build_test_client().expect("client"),
-        base_url,
+        link(&build_test_client().expect("client"), &base_url),
         config(),
         crate::cluster::credential::NodeCredential::new("a-node-token"),
         serving,
@@ -1011,6 +1131,7 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
         tokio::sync::watch::channel(None).0,
         None,
         Some(data.to_path_buf()),
+        None,
     );
     for _ in 0..300 {
         if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
@@ -1031,10 +1152,15 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
 async fn a_trimmed_directory_refuses_a_fleet_without_head_trim() {
     let data = tempfile::tempdir().expect("tempdir");
     felix_storage::run_state::record_head_trimmed(data.path()).expect("mark");
+    felix_storage::controlplane_view::record(data.path(), b"{}").expect("a view");
     let calls: Shared = Arc::default();
 
     let task = join_with(&calls, data.path()).await;
     assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        felix_storage::controlplane_view::read(data.path()).is_none(),
+        "a refused broker keeps no view to start from"
+    );
     let calls = calls.lock().expect("lock");
     assert!(calls.heartbeats.is_empty(), "never heartbeats as a member");
     assert_eq!(calls.deregistered, vec!["broker-a".to_string()]);
@@ -1063,6 +1189,489 @@ async fn a_trimmed_directory_joins_a_fleet_with_head_trim() {
     let task = join_with(&calls, untrimmed.path()).await;
     assert!(!task.fatal.is_cancelled());
     assert!(!calls.lock().expect("lock").heartbeats.is_empty());
+}
+
+/// Only a deregistration that never reached the control plane leaves the
+/// node's control-plane view in place, so this must not read an answer, even
+/// an error, as "never sent".
+#[tokio::test]
+async fn a_deregistration_counts_as_sent_unless_nothing_answered() {
+    let client = build_test_client().expect("client");
+    // A port nothing listens on.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        listener.local_addr().expect("addr")
+    };
+    assert!(
+        !shutdown_membership(&link(&client, &format!("http://{closed}")), "node-a", "t").await,
+        "refused at connect, yet counted as sent",
+    );
+
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}/{action}",
+        post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    assert!(
+        shutdown_membership(&link(&client, &format!("http://{addr}")), "node-a", "t").await,
+        "a 503 may follow a deregistration the control plane applied",
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// **A start from the view needs the control plane down, not refusing.** A
+/// 5xx or no answer at all is down; a 401 or another 4xx is a control plane
+/// that is up and has not accepted this node, which a start from the view
+/// must not paper over.
+#[tokio::test]
+async fn the_bounded_lookup_tells_down_from_refusing() {
+    let client = build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let wait = Duration::from_millis(400);
+    for (status, expected) in [
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, Bounded::Down),
+        (axum::http::StatusCode::INTERNAL_SERVER_ERROR, Bounded::Down),
+        (axum::http::StatusCode::UNAUTHORIZED, Bounded::Refusing),
+        (axum::http::StatusCode::FORBIDDEN, Bounded::Refusing),
+    ] {
+        let (base_url, _, stop, handle) = serve_lookup(usize::MAX, status, Some(3)).await;
+        let bounded = tokio::time::timeout(
+            Duration::from_secs(10),
+            registered_within(&link(&client, &base_url), "broker-a", &credential, wait),
+        )
+        .await
+        .expect("the wait is bounded");
+        assert_eq!(bounded, expected, "{status}");
+        let _ = stop.send(());
+        let _ = handle.await;
+    }
+
+    // Nothing listening is down.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    drop(listener);
+    let bounded = tokio::time::timeout(
+        Duration::from_secs(10),
+        registered_within(
+            &link(&client, &format!("http://{addr}")),
+            "broker-a",
+            &credential,
+            wait,
+        ),
+    )
+    .await
+    .expect("the wait is bounded");
+    assert_eq!(bounded, Bounded::Down);
+
+    // An answer within the wait, after an outage, is taken.
+    let (base_url, _, stop, handle) =
+        serve_lookup(1, axum::http::StatusCode::SERVICE_UNAVAILABLE, Some(3)).await;
+    let bounded = registered_within(
+        &link(&client, &base_url),
+        "broker-a",
+        &credential,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        bounded,
+        Bounded::Answered(Some(Registered {
+            incarnation: 3,
+            storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+        }))
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+const DIRECTORY_ID: [u8; 16] = [0xab; 16];
+
+/// A data directory under `root` that recorded registration `recorded`
+/// under [`DIRECTORY_ID`].
+fn directory(root: &std::path::Path, recorded: u64) -> StorageId {
+    let (id, _) =
+        felix_storage::storage_identity::load_or_create(root, || DIRECTORY_ID).expect("id");
+    felix_storage::run_state::record_registration(root, recorded).expect("record");
+    id
+}
+
+/// **The deferred restore check (#1334).** A control plane that registered
+/// the node at an incarnation the directory never recorded finds a restored
+/// copy: the directory is marked replaced and gets a new storage id, as a
+/// start that asked first would have done.
+#[test]
+fn a_directory_behind_the_control_plane_is_a_restore() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 2);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    // The running broker's record of which copies it trusts.
+    let trust =
+        felix_storage::run_state::copy_trust::CopyTrust::open_live(dir.path()).expect("trust");
+    assert!(trust.trusted(b"a copy"));
+    let judged = judge_directory(dir.path(), id, Some(&registered), None).expect("judge");
+    let Directory::Restored { rotated } = judged else {
+        panic!("not a restore: {judged:?}");
+    };
+    assert_ne!(rotated, id);
+    assert!(
+        !trust.trusted(b"a copy"),
+        "the rotation distrusts every copy at once"
+    );
+    assert_eq!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(rotated)
+    );
+    // Only a view from a registration of the new id may start it again.
+    assert_eq!(
+        felix_storage::run_state::read_replaced(dir.path()).expect("marker"),
+        Some(felix_storage::run_state::ReplacedMark::Under {
+            storage_id: rotated.to_hex(),
+            after: 5,
+        })
+    );
+}
+
+#[test]
+fn a_directory_the_control_plane_registered_is_current() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(id.to_hex()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
+        Directory::Current
+    );
+    assert_eq!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(id)
+    );
+    assert!(!felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+#[test]
+fn a_node_registered_under_another_id_is_replaced() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered), None).expect("judge"),
+        Directory::Replaced
+    );
+    assert_eq!(
+        felix_storage::run_state::read_replaced(dir.path()).expect("marker"),
+        Some(felix_storage::run_state::ReplacedMark::Under {
+            storage_id: id.to_hex(),
+            after: 5,
+        })
+    );
+}
+
+/// **Marking the directory replaced goes through the view file the writer
+/// shares**, so the writer cannot record the view after it.
+#[tokio::test]
+async fn a_replacement_judged_through_the_view_file_stops_its_writer() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let view = ViewFile::new(dir.path().to_path_buf());
+    let registered = Registered {
+        incarnation: 5,
+        storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
+    };
+    assert_eq!(
+        judge_directory(dir.path(), id, Some(&registered), Some(&view)).expect("judge"),
+        Directory::Replaced
+    );
+    let mut writer = crate::cluster::controlplane_view::Writer::new(view);
+    writer
+        .write(Some(crate::cluster::controlplane_view::View {
+            node_id: "broker-a".to_owned(),
+            storage_id: id.to_hex(),
+            incarnation: 9,
+            fleet: Vec::new(),
+            routes: Vec::new(),
+            nodes: Vec::new(),
+            catalog: Default::default(),
+        }))
+        .await;
+    assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
+}
+
+/// Spawn membership as a start from the view does, with the restore check
+/// deferred, and wait until it registers or gives up.
+async fn join_from_view(
+    calls: &Shared,
+    data: &std::path::Path,
+    id: StorageId,
+) -> (
+    MembershipTask,
+    CancellationToken,
+    ViewFile,
+    Arc<Mutex<Vec<Option<Registered>>>>,
+) {
+    let (base_url, stop, handle) = serve(Arc::clone(calls)).await;
+    let view = ViewFile::new(data.to_path_buf());
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let checked = CancellationToken::new();
+    let passed = Arc::new(Mutex::new(Vec::new()));
+    let check = DeferredCheck {
+        checked: checked.clone(),
+        passed: Box::new({
+            let passed = Arc::clone(&passed);
+            move |registered| passed.lock().expect("lock").push(registered.cloned())
+        }),
+    };
+    let task = spawn_with(
+        link(&build_test_client().expect("client"), &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::for_this_build()),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        Some(id),
+        Some(data.to_path_buf()),
+        Some(view.clone()),
+        Some(check),
+        true,
+    );
+    for _ in 0..500 {
+        if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    let _ = stop.send(());
+    let _ = handle.await;
+    (task, checked, view, passed)
+}
+
+/// **A restored directory that started from its view stops before it
+/// registers.** It never registers under the old id, the catalog sync never
+/// starts (the check token stays uncancelled), and the next start comes back
+/// under a new id as a copy peers rebuild.
+#[tokio::test]
+async fn a_restore_found_after_a_start_from_the_view_stops_before_registering() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 2);
+    felix_storage::controlplane_view::record(dir.path(), b"{}").expect("a view");
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
+
+    let (task, checked, _, passed) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        passed.lock().expect("lock").is_empty(),
+        "a restored copy never attests"
+    );
+    assert!(felix_storage::controlplane_view::read(dir.path()).is_none());
+    assert!(
+        !checked.is_cancelled(),
+        "nothing waiting on the check is released"
+    );
+    assert!(
+        calls.lock().expect("lock").registrations.is_empty(),
+        "it never registers the restored directory"
+    );
+    assert_ne!(
+        felix_storage::storage_identity::load(dir.path()).expect("load"),
+        Some(id)
+    );
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+}
+
+#[tokio::test]
+async fn a_current_directory_registers_once_the_check_passes() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, id.to_hex()));
+
+    let (task, checked, _, passed) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(!task.fatal.is_cancelled());
+    assert!(checked.is_cancelled());
+    assert_eq!(
+        *passed.lock().expect("lock"),
+        vec![Some(Registered {
+            incarnation: 5,
+            storage_id: Some(id.to_hex()),
+        })],
+        "the pass hands on the record it judged, once"
+    );
+    let calls = calls.lock().expect("lock");
+    assert_eq!(calls.registrations.len(), 1);
+    assert_eq!(calls.registrations[0]["storage_id"], json!(id.to_hex()));
+}
+
+/// **A directory the control plane last registered under another id stops
+/// before registering, and keeps no view**, so a restart during a later
+/// outage waits for the control plane instead of voting from it.
+#[tokio::test]
+async fn a_replaced_directory_found_after_a_start_from_the_view_forgets_its_view() {
+    let dir = tempfile::tempdir().expect("dir");
+    let id = directory(dir.path(), 5);
+    felix_storage::controlplane_view::record(dir.path(), b"{}").expect("a view");
+    let calls = Shared::default();
+    calls.lock().expect("lock").lookup = Some((5, LOOKUP_STORAGE_ID.to_string()));
+
+    let (task, checked, view, passed) = join_from_view(&calls, dir.path(), id).await;
+
+    assert!(task.fatal.is_cancelled(), "the broker stops");
+    assert!(
+        passed.lock().expect("lock").is_empty(),
+        "a replaced copy never attests"
+    );
+    assert!(!checked.is_cancelled());
+    assert!(calls.lock().expect("lock").registrations.is_empty());
+    assert!(felix_storage::run_state::replaced(dir.path()).expect("marker"));
+    assert!(
+        felix_storage::controlplane_view::read(dir.path()).is_none(),
+        "the view is gone"
+    );
+    // The writer, still running until the stop, shares the file and must not
+    // bring it back.
+    let mut writer = crate::cluster::controlplane_view::Writer::new(view);
+    writer
+        .write(Some(crate::cluster::controlplane_view::View {
+            node_id: "broker-a".to_owned(),
+            storage_id: id.to_hex(),
+            incarnation: 5,
+            fleet: Vec::new(),
+            routes: Vec::new(),
+            nodes: Vec::new(),
+            catalog: Default::default(),
+        }))
+        .await;
+    assert!(
+        felix_storage::controlplane_view::read(dir.path()).is_none(),
+        "the writer put the view back"
+    );
+}
+
+/// A control plane that answers 200 with a body this build cannot read is up,
+/// so it is not down.
+#[tokio::test]
+async fn an_answer_that_does_not_decode_is_not_down() {
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}",
+        axum::routing::get(|| async { "not a node" }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    let bounded = registered_within(
+        &link(
+            &build_test_client().expect("client"),
+            &format!("http://{addr}"),
+        ),
+        "broker-a",
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        Duration::from_millis(300),
+    )
+    .await;
+    assert_eq!(bounded, Bounded::Refusing);
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// Captures what the current thread logs.
+#[derive(Clone, Default)]
+struct Captured(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// **A control plane that is up but refuses the restore check's lookup is
+/// reported as a warning**, not folded into "still down" at debug, where a
+/// broker could wait on a bad credential forever unseen.
+#[tokio::test(flavor = "current_thread")]
+async fn a_restore_check_refused_by_a_live_control_plane_warns() {
+    let app = axum::Router::new().route(
+        "/v1/nodes/{node_id}",
+        axum::routing::get(|| async { axum::http::StatusCode::UNAUTHORIZED }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = spawn_axum_with_shutdown(listener, app);
+    wait_for_listen(addr).await.expect("listen");
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_ansi(false)
+        .with_writer({
+            let captured = captured.clone();
+            move || captured.clone()
+        })
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let shutdown = CancellationToken::new();
+    let stopper = {
+        let shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            shutdown.cancel();
+        })
+    };
+    let checked = deferred_restore_check(
+        &link(
+            &build_test_client().expect("client"),
+            &format!("http://{addr}"),
+        ),
+        "broker-a",
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+        None,
+        None,
+        &shutdown,
+    )
+    .await;
+    assert_eq!(checked, None, "it waits until the stop");
+    let _ = stopper.await;
+    let logged = String::from_utf8(captured.0.lock().expect("lock").clone()).expect("utf8");
+    assert!(
+        logged
+            .lines()
+            .any(|line| line.contains("WARN") && line.contains("credential")),
+        "no warning for the refused lookup: {logged}"
+    );
+    let _ = stop.send(());
+    let _ = handle.await;
 }
 
 /// **A directory that stored a record with headers does not join a fleet
@@ -1105,4 +1714,193 @@ async fn the_refusal_names_the_missing_feature() {
         .expect("refused");
     assert!(reason.contains("record_headers"), "{reason}");
     assert!(!reason.contains("head_trim"), "{reason}");
+}
+
+/// A directory that started a v9 segment joins only a fleet that has
+/// finalized `record_generations`.
+#[tokio::test]
+async fn a_directory_with_a_v9_segment_waits_for_record_generations() {
+    let data = tempfile::tempdir().expect("tempdir");
+    felix_storage::run_state::record_generations_written(data.path()).expect("mark");
+    let reason = join_refusal(Some(data.path()), &std::collections::BTreeSet::new())
+        .await
+        .expect("refused");
+    assert!(reason.contains("record_generations"), "{reason}");
+    let finalized = [felix_common::fleet::RECORD_GENERATIONS.name().to_string()]
+        .into_iter()
+        .collect();
+    assert_eq!(join_refusal(Some(data.path()), &finalized).await, None);
+}
+
+/// Registration, the lookup and a lifecycle call each go through the link
+/// alone; an unset reply reads as an outage, not a refusal.
+#[tokio::test]
+async fn a_fake_link_drives_membership() {
+    use crate::test_support::fake_link::FakeLink;
+
+    let credential = crate::cluster::credential::NodeCredential::new("a-node-token");
+    let link = FakeLink::default().reply(
+        "register",
+        json!({
+            "node": { "status": { "incarnation": 4, "lifecycle": "ready" } },
+            "heartbeat_interval_ms": 20,
+        }),
+    );
+    let registration = register(&link, &config(), &credential, None)
+        .await
+        .expect("register");
+    assert_eq!(registration.incarnation, 4);
+
+    let outage = registered(&link, "broker-a", &credential).await;
+    assert!(matches!(outage, Err(MembershipError::Unavailable(_))));
+    drain(&link, "broker-a", "t").await.expect_err("no reply");
+    assert_eq!(link.calls(), ["register", "node", "lifecycle"]);
+}
+
+/// Serve the stub control plane from a thread and runtime of its own, so a
+/// test can block every worker of its own runtime and still be answered.
+fn serve_on_own_thread(state: Shared) -> (String, tokio::sync::oneshot::Sender<()>) {
+    let (addr_tx, addr_rx) = std::sync::mpsc::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            addr_tx
+                .send(listener.local_addr().expect("addr"))
+                .expect("send addr");
+            let _ = axum::serve(listener, stub_control_plane(state))
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await;
+        });
+    });
+    let addr = addr_rx.recv().expect("stub address");
+    (format!("http://{addr}"), stop)
+}
+
+/// **Heartbeats keep going while every broker runtime worker is blocked.**
+/// A filesystem journal stall can park every worker in a blocking write or
+/// fsync at once. The heartbeat is the lease renewal, so if it ran on those
+/// workers the broker would lose its lease and every shard it leads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn heartbeats_continue_while_every_runtime_worker_is_blocked() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop) = serve_on_own_thread(Arc::clone(&calls));
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let task = spawn(
+        link(&build_test_client().expect("client"), &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        None,
+        None,
+    );
+    for _ in 0..300 {
+        if !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !calls.lock().expect("lock").heartbeats.is_empty(),
+        "membership never heartbeat"
+    );
+
+    // Park both workers. The test body runs on neither, so it can wait them out.
+    let parked = Arc::new(std::sync::Barrier::new(3));
+    let blockers: Vec<_> = (0..2)
+        .map(|_| {
+            let parked = Arc::clone(&parked);
+            tokio::spawn(async move {
+                parked.wait();
+                std::thread::sleep(Duration::from_millis(1500));
+            })
+        })
+        .collect();
+    parked.wait();
+    let before = calls.lock().expect("lock").heartbeats.len();
+    std::thread::sleep(Duration::from_millis(1000));
+    let during = calls.lock().expect("lock").heartbeats.len() - before;
+    for blocker in blockers {
+        blocker.await.expect("blocker");
+    }
+
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+    let _ = stop.send(());
+    // 20 ms cadence: a second holds about fifty. A handful proves the loop ran.
+    assert!(
+        during >= 10,
+        "only {during} heartbeats while the runtime's workers were blocked"
+    );
+}
+
+/// **A broker whose runtime stops for good stops renewing its lease.** The
+/// heartbeat has a thread of its own, so it would otherwise keep a deadlocked
+/// broker's shards on it forever. Here the pulse is never ticked, as if the
+/// main runtime had stopped as soon as the heartbeat started.
+#[tokio::test]
+async fn a_stopped_runtime_stops_the_heartbeat() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+
+    let shutdown = CancellationToken::new();
+    let pulse = Arc::new(RuntimePulse::new(Duration::from_millis(200)));
+    let beating = tokio::spawn(run_heartbeat_checked(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::default(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Some(pulse),
+    ));
+
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let before = calls.lock().expect("lock").heartbeats.len();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = calls.lock().expect("lock").heartbeats.len();
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+
+    assert!(
+        before > 0,
+        "the heartbeat never ran while the runtime was live"
+    );
+    assert_eq!(
+        after, before,
+        "heartbeats went out after the runtime stopped"
+    );
 }

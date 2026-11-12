@@ -7,7 +7,8 @@
 //! past its own repairs (an unsealed retired segment is cut, then the chain is
 //! checked again) and still reach the verdict startup reaches.
 
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use super::discover_segment_ids;
@@ -15,6 +16,7 @@ use crate::disk_log::durable_mark::{self, DurableMark};
 use crate::disk_log::offload::Manifest;
 use crate::log::{LogConfig, Offset, SegmentDescriptor, SegmentId};
 use crate::segment::format::{IndexEntry, SEGMENT_HEADER_LEN};
+use crate::segment::known::KnownGenerations;
 use crate::segment::scan::scan_segment_upto;
 use crate::segment::{
     ScanOutcome, ScanStart, SparseIndex, TailRepair, index_file_name, read_segment_header,
@@ -45,6 +47,9 @@ pub(crate) enum Step {
     RebuildIndex {
         id: SegmentId,
         index: SparseIndex,
+        /// A v9 segment's known generations and its length, for the file
+        /// beside it.
+        known: Option<(KnownGenerations, u64)>,
         why: IndexRebuild,
     },
     /// Cut a retired segment whose seal never finished back to its last
@@ -82,6 +87,9 @@ pub(crate) enum IndexRebuild {
     Mismatch,
     /// `verify_all_on_open` asked for every sealed segment to be walked.
     VerifyAll,
+    /// The file naming a v9 segment's known generations is missing or does
+    /// not match the segment.
+    Generations,
 }
 
 /// Where the log stands once the steps are made.
@@ -103,6 +111,9 @@ pub(crate) struct Resume {
     pub(crate) active: ScanOutcome,
     /// Sealed indexes rebuilt by the pass that succeeded.
     pub(crate) sealed_index_rebuilds: usize,
+    /// The generation of the newest v9 record in the log, which the active
+    /// writer must not append below.
+    pub(crate) generation_floor: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -110,6 +121,10 @@ pub(crate) struct PlannedSealed {
     pub(crate) descriptor: SegmentDescriptor,
     pub(crate) holds_marks: bool,
     pub(crate) holds_trims: bool,
+    /// The generations of the segment's first and last records, `None`
+    /// before v9.
+    pub(crate) first_generation: Option<u64>,
+    pub(crate) last_generation: Option<u64>,
 }
 
 /// Plan the recovery of the shard in `dir`. Reads only.
@@ -121,7 +136,7 @@ pub(crate) fn plan_recovery(
 ) -> Result<RecoveryPlan> {
     // A shard that is not here yet is a fresh log; startup creates the
     // directory.
-    let mut ids = if dir.exists() {
+    let mut ids = if crate::fs::exists(dir) {
         discover_segment_ids(dir)?
     } else {
         Vec::new()
@@ -217,8 +232,8 @@ impl<'a> View<'a> {
             config,
             mark,
             removed: BTreeSet::new(),
-            cut: HashMap::new(),
-            indexes: HashMap::new(),
+            cut: HashMap::default(),
+            indexes: HashMap::default(),
             steps: Vec::new(),
         }
     }
@@ -228,7 +243,7 @@ impl<'a> View<'a> {
     }
 
     fn len(&self, id: SegmentId) -> Result<u64> {
-        let on_disk = std::fs::metadata(self.path(id))?.len();
+        let on_disk = crate::fs::metadata(self.path(id))?.len();
         Ok(self.cut.get(&id).map_or(on_disk, |cut| (*cut).min(on_disk)))
     }
 
@@ -516,6 +531,9 @@ impl<'a> View<'a> {
         let mut sealed: Vec<PlannedSealed> = Vec::with_capacity(sealed_ids.len());
         let mut sealed_index_rebuilds = 0usize;
         let mut expected_base: Option<Offset> = None;
+        // Each segment's scan checks that generations never fall inside it;
+        // this carries the check across segment boundaries.
+        let mut newest_generation: Option<u64> = None;
 
         for id in sealed_ids {
             let opened = self.open_sealed(*id)?;
@@ -532,12 +550,29 @@ impl<'a> View<'a> {
                 return Err(gap_error(self.label, *id, expected, base_offset));
             }
             expected_base = Some(opened.next_offset);
-            sealed.push(opened.sealed);
+            check_generations(
+                self.label,
+                *id,
+                &mut newest_generation,
+                opened.sealed.first_generation,
+                opened.sealed.last_generation,
+            )?;
+            // A segment holding only unknown writers keeps the floor before it.
+            let mut planned = opened.sealed;
+            planned.last_generation = newest_generation;
+            sealed.push(planned);
         }
 
         // The newest segment is the only one that can have been mid-write when
         // the process died, so it always gets a full scan.
         let active = self.scan(active_id, ScanStart::Full, self.tail_repair(active_id))?;
+        check_generations(
+            self.label,
+            active_id,
+            &mut newest_generation,
+            active.first_generation,
+            active.last_generation,
+        )?;
         if let Some(expected) = expected_base
             && expected != active.header.base_offset
             && !self.drop_offloaded_below(
@@ -559,6 +594,7 @@ impl<'a> View<'a> {
             active_id,
             active,
             sealed_index_rebuilds,
+            generation_floor: newest_generation,
         })
     }
 
@@ -638,8 +674,32 @@ impl<'a> View<'a> {
             (Some(_), true) => Err(IndexRebuild::VerifyAll),
             (None, _) => Err(IndexRebuild::Missing),
         };
+        // A resume scan sees only the segment's last records, so the known
+        // generations come from the file beside it, checked against the
+        // segment. Without it the segment is walked once and the file
+        // rewritten, rather than on every open.
+        let resumed = resumed.and_then(|outcome| {
+            if !header.holds_generations() {
+                return Ok((outcome, KnownGenerations::default()));
+            }
+            KnownGenerations::load_verified(
+                self.dir,
+                id,
+                self.label,
+                header.version,
+                base_offset,
+                file_len,
+            )
+            .filter(|known| {
+                outcome
+                    .last_generation
+                    .is_none_or(|found| known.last_generation() == Some(found))
+            })
+            .map(|known| (outcome, known))
+            .ok_or(IndexRebuild::Generations)
+        });
         let rebuilt_index = resumed.is_err();
-        let outcome = match resumed {
+        let (outcome, known) = match resumed {
             Ok(resumed) => resumed,
             Err(why) => {
                 // Walk the whole segment and rebuild its index from it.
@@ -649,9 +709,13 @@ impl<'a> View<'a> {
                 self.steps.push(Step::RebuildIndex {
                     id,
                     index: outcome.index.clone(),
+                    known: header
+                        .holds_generations()
+                        .then_some((outcome.known, outcome.valid_bytes)),
                     why,
                 });
-                outcome
+                let known = outcome.known;
+                (outcome, known)
             }
         };
 
@@ -675,6 +739,8 @@ impl<'a> View<'a> {
             ));
         }
 
+        let (first_generation, last_generation) =
+            (known.first_generation(), known.last_generation());
         Ok(OpenedSealed {
             sealed: PlannedSealed {
                 descriptor: SegmentDescriptor {
@@ -682,9 +748,12 @@ impl<'a> View<'a> {
                     base_offset,
                     last_offset: outcome.next_offset.saturating_sub(1).max(base_offset),
                     size_bytes: file_len,
+                    version: header.version,
                 },
                 holds_marks: header.holds_marks(),
                 holds_trims: header.holds_trims(),
+                first_generation,
+                last_generation,
             },
             next_offset: outcome.next_offset,
             rebuilt_index,
@@ -697,13 +766,38 @@ impl<'a> View<'a> {
 /// of its own, and every flush that would cover it syncs the retired segment
 /// first, so nothing in such a segment was ever reported durable.
 fn header_never_written(path: &Path) -> Result<bool> {
-    let file = std::fs::File::open(path)?;
+    let file = crate::fs::File::open(path)?;
     if file.metadata()?.len() < SEGMENT_HEADER_LEN {
         return Ok(true);
     }
     let mut header = [0u8; SEGMENT_HEADER_LEN as usize];
     let read = crate::io::read_at(&file, &mut header, 0)?;
     Ok(read == header.len() && header.iter().all(|byte| *byte == 0))
+}
+
+/// Refuse a segment whose first generation is below the newest one before it,
+/// then make its last the newest. The writer never appends such a record, so
+/// it is damage wherever it sits.
+fn check_generations(
+    label: &str,
+    id: SegmentId,
+    newest: &mut Option<u64>,
+    first: Option<u64>,
+    last: Option<u64>,
+) -> Result<()> {
+    if let (Some(previous), Some(found)) = (*newest, first)
+        && found < previous
+    {
+        return Err(StorageError::Corruption(
+            Corruption::new(CorruptionKind::GenerationFell { previous, found })
+                .in_segment(label, id)
+                .at_position(SEGMENT_HEADER_LEN),
+        ));
+    }
+    if last.is_some() {
+        *newest = last;
+    }
+    Ok(())
 }
 
 fn gap_error(label: &str, id: SegmentId, expected: Offset, found: Offset) -> StorageError {

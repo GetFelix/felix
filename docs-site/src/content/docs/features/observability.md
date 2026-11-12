@@ -20,6 +20,14 @@ Log lines are structured key-value events (tenant, stream, subscription id,
 error), so they grep and parse cleanly. There is no JSON output mode today;
 if your aggregation pipeline needs JSON, wrap the process output.
 
+The broker writes log lines to stdout from a thread of its own. A slow disk
+under a redirected stdout then delays the log, not the broker: a worker that
+logs hands the line to a queue and carries on. No line is dropped. If the
+queue fills, logging waits for it to drain. The queue is written out when the
+broker exits cleanly and when it panics. A broker killed outright (`SIGKILL`,
+the kernel's OOM killer) can lose the last lines still queued, usually a few
+milliseconds' worth.
+
 The lines worth knowing on sight:
 
 - Startup: the QUIC listen address, and whether control-plane sync is on.
@@ -46,6 +54,11 @@ scrape_configs:
     static_configs:
       - targets: ['broker-1:8080', 'broker-2:8080', 'broker-3:8080']
 ```
+
+Histogram metrics (such as `felix_sub_conn_queue_depth`) hold their raw samples
+only until the next fold into a summary. The broker folds every five seconds
+whether or not anything scrapes it, so memory stays flat on a broker that
+Prometheus never visits.
 
 The metrics below are grouped by the question they answer. The list is not
 exhaustive; the [Metrics reference](/reference/metrics/) has every metric the
@@ -331,7 +344,7 @@ A broker restart makes these non-zero for as long as the broker is down. Once
 a follower's broker has been gone for `FELIX_SHARD_RESTORE_AFTER_MS`,
 placement copies the shard elsewhere, and the count falls when the copy is
 seated. Alert when either stays above zero for longer than the restore delay
-plus the time a shard takes to copy. `felix-controlplane admin replication`
+plus the time a shard takes to copy. `felixctl placement replication`
 (or `GET /v1/placement/replication`) lists which shards, which members are
 unavailable, and where a copy is going. See
 [Restoring the replication factor](/deployment/moving-shards/#restoring-the-replication-factor).
@@ -539,6 +552,35 @@ restarting every instance because a dependency is down turns one outage into
 a restart loop. `/ready` says "send this instance traffic," and goes false
 first thing during shutdown so load balancers steer away before anything
 stops working. See [Graceful shutdown](/deployment/graceful-shutdown/).
+
+A broker with durable storage and a control plane starts with `/ready` false.
+It turns true once the catalog is applied, every durable stream is recovered,
+and every listener is bound. A broker that cannot bind a port exits without
+ever reporting ready, so whatever started it sees a failed start, not a crash.
+
+`/ready` also turns false when a log is poisoned, which happens when a disk
+flush (an fsync) fails on it. The body has one line per poisoned log, with
+its tenant and what stopped it:
+
+```text
+a log of tenant acme is poisoned: a flush of the replica state failed (...)
+reboot the host before restarting the broker; the broker log names each shard
+```
+
+A poisoned log refuses writes until the broker restarts, because the
+operating system may have dropped the data the failed flush was meant to
+keep. The process does not exit and `/live` stays ok, so restarting is up to
+you. Check the disk, then reboot the host before starting the broker again.
+The listener has no authentication, so the body names the tenant only, as
+`/metrics` does; the broker's log has the full shard name. A broker that
+restarts on the same boot cuts a poisoned `OnCommit` log back to its last
+synced point and writes its state files again, but the reboot is still the
+safe path.
+
+For now one poisoned log makes the whole broker not ready, healthy shards
+included. The plan is for only that shard to stop, with its leader handing
+over to another copy and `/ready` staying 200
+([#2300](https://github.com/GetFelix/felix/issues/2300)).
 
 ## Distributed tracing
 

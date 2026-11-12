@@ -157,17 +157,15 @@ A cluster is brokers plus a control plane:
 
 ![Clients connect to any broker over QUIC. Brokers are peers that forward requests for shards they do not own and replicate the ones they lead. A control plane places shards by rendezvous hashing, and brokers watch its assignment feed. Inside a shard, one append-only log is read as a stream by offset and as a cache through a key index.](/diagrams/architecture.svg)
 
-The control plane keeps its metadata in one of three backends:
+The control plane keeps its metadata in one of two backends:
 
 | Backend | What holds the metadata | When to pick it |
 | --- | --- | --- |
-| `memory` | This process, nothing else. The default. | Development, and the harness |
-| `postgres` | One external database the instances share | A platform that already runs an HA Postgres |
-| `raft` | The control-plane instances themselves, replicated between them | No external database to run: edge sites, appliances, or anywhere Postgres is a burden |
+| `memory` | This process, nothing else. The default when no Raft variables are set. | Development, and the harness |
+| `raft` | The control-plane instances themselves, replicated between them | Everything that must survive a restart: there is no external database to run |
 
-Raft has shipped: the instances form a quorum and survive losing one without
-losing an acknowledged write. Postgres remains fully supported; the trade
-between the two, and the migration path, are in
+Raft is the production backend: the instances form a quorum and survive losing
+one without losing an acknowledged write. See
 [Metadata Raft](/architecture/metadata-raft/) and
 [Control-plane HA](/deployment/control-plane-ha/).
 

@@ -12,16 +12,18 @@ use std::sync::atomic::Ordering;
 
 use super::segments::{RollOutcome, SegmentSet};
 use super::{DiskLog, LogInner, PendingAppend, producers};
-use crate::log::{AppendRecord, AppendResult, Offset, RecordMark};
+use crate::log::{AppendRecord, AppendResult, Offset, RecordMark, WrittenBy};
 use crate::segment::SegmentWriter;
 use crate::segment::reservation::Extension;
+use crate::segment::writer::Stamps;
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
 
 impl DiskLog {
     /// Roll if needed, then assign offsets and write the batch, if `condition`
     /// holds; `Err` with the log's tail, and nothing written, when it does
     /// not. With `order`, the batch's range is claimed there as soon as its
-    /// offsets are assigned.
+    /// offsets are assigned. `writers` names the generations a v9 segment
+    /// stamps the records with.
     ///
     /// The work runs on the log's append thread. A batch whose caller gives
     /// up before the thread starts on it is skipped. Once started it is
@@ -34,6 +36,7 @@ impl DiskLog {
         records: Vec<AppendRecord>,
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
+        writers: WrittenBy,
     ) -> Result<std::result::Result<Written, Offset>> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
@@ -42,6 +45,18 @@ impl DiskLog {
         // Digested here rather than where they are observed, which is under
         // the `segments` write lock every other append waits on.
         let digests: Vec<u64> = if records.iter().any(|r| r.mark != RecordMark::None) {
+            // Refused before the roll, which would otherwise move the log
+            // onto v9 ahead of the fleet gate, and refused past the gate too:
+            // replication cannot carry these kinds yet. A Raft log is v9
+            // throughout and its membership entries are these records.
+            let raft_log = inner.config.raft_log;
+            if records.iter().any(|r| {
+                r.mark.needs_generation() && !(raft_log && r.mark == RecordMark::Membership)
+            }) {
+                return Err(StorageError::Unsupported(
+                    "membership and counter records are not written yet",
+                ));
+            }
             records
                 .iter()
                 .map(|r| producers::marked_digest(r.mark, &r.payload))
@@ -58,8 +73,14 @@ impl DiskLog {
                 // `gone` turns true once this future is dropped: a batch the
                 // thread has not started on is then skipped.
                 move |gone| {
-                    let kept =
-                        appender.append_now(&records, &digests, condition, order.as_ref(), gone);
+                    let kept = appender.append_now(
+                        &records,
+                        &digests,
+                        condition,
+                        order.as_ref(),
+                        &writers,
+                        gone,
+                    );
                     let (reply, index) = match kept {
                         Ok(Ok(kept)) => (
                             Ok(Ok((kept.written, kept.prepare_roll, kept.extension))),
@@ -152,6 +173,56 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Append `records` at `generation` into a new v9 segment, the way a
+    /// build past the v9 fleet gate will. Normal appends are refused from
+    /// then on, since nothing else writes v9 yet. Not an API: tests use it to
+    /// put membership and counter records in a log.
+    #[doc(hidden)]
+    pub async fn append_v9_for_tests(
+        &self,
+        records: &[AppendRecord],
+        generation: u64,
+    ) -> Result<AppendResult> {
+        let inner = &self.inner;
+        let (result, target) = {
+            let _appends = inner.append_lock.lock();
+            let mut segments = inner.segments.write();
+            inner.sync_pending_seal()?;
+            // Taken right after the roll, as an inline roll does, so it
+            // covers only records already on the device.
+            let mut snapshot = None;
+            if segments.active().version() < crate::segment::format::GENERATION_VERSION {
+                segments.roll_to(crate::segment::format::GENERATION_VERSION)?;
+                inner.note_sealed_before(segments.active().id());
+                snapshot = Some(inner.snapshot(&segments));
+            }
+            let (first_offset, last_offset) =
+                segments.active_mut().append_at(records, Some(generation))?;
+            let digests: Vec<u64> = records
+                .iter()
+                .map(|r| producers::marked_digest(r.mark, &r.payload))
+                .collect();
+            inner.observe_marks(first_offset, records, &digests);
+            let target = segments.tail_offset();
+            drop(segments);
+            if let Some(snapshot) = snapshot {
+                inner.store_snapshot(snapshot);
+            }
+            (
+                AppendResult {
+                    first_offset,
+                    last_offset,
+                },
+                target,
+            )
+        };
+        inner.ensure_durable(target).await?;
+        Ok(result)
+    }
+}
+
 /// Holds the roll slot for [`LogInner::fence_rolls`] and gives it back on drop.
 pub(super) struct RollFence(Arc<LogInner>);
 
@@ -231,6 +302,7 @@ impl LogInner {
         digests: &[u64],
         condition: WriteIf,
         order: Option<&Arc<CommitSequencer>>,
+        writers: &WrittenBy,
         gone: &dyn Fn() -> bool,
     ) -> Result<std::result::Result<Kept, Offset>> {
         let _appends = self.append_lock.lock();
@@ -246,7 +318,8 @@ impl LogInner {
             self.sync_pending_seal()?;
             if let Err(err) = segments.roll_for(records) {
                 self.poison_after_writer_failure(&segments);
-                return Err(err);
+                // The index or the directory, which the writer does not own.
+                return self.poison_on_sync_failure("a segment rollover", Err(err));
             }
             // `roll` sealed the retired segment, so the snapshot describes
             // only records already on the device.
@@ -268,7 +341,8 @@ impl LogInner {
             return Ok(Err(segments.tail_offset()));
         }
         segments.check_open()?;
-        let staged = segments.active_mut().stage(records)?;
+        let stamps = self.stamps_for(segments.active(), writers, segments.tail_offset())?;
+        let staged = segments.active_mut().stage_at(records, stamps)?;
         drop(segments);
 
         self.hold_append_at(HoldAt::Write);
@@ -309,6 +383,54 @@ impl LogInner {
         }))
     }
 
+    /// The generations a batch appended to `active` at `first` is stamped
+    /// with: none before v9, and otherwise the ones that wrote it. A leader's
+    /// is the generation it leads at ([`DiskLog::lead_at`]), and only while
+    /// that is the one this log accepted and the newest in its history, with
+    /// the batch at or past where the history says it starts. A newer
+    /// accepted generation belongs to another leader; a history that does
+    /// not yet hold the led one, or starts it past the batch, means the
+    /// append was admitted before this leadership's start was recorded.
+    /// Either way the stamp would disagree with the history, so the batch is
+    /// refused. Never raised to the floor; the writer refuses a stamp below
+    /// it. Read under the append lock.
+    #[inline]
+    fn stamps_for<'a>(
+        &self,
+        active: &SegmentWriter,
+        writers: &'a WrittenBy,
+        first: Offset,
+    ) -> Result<Option<Stamps<'a>>> {
+        if !active.holds_generations() {
+            return Ok(None);
+        }
+        match writers {
+            WrittenBy::Leader => {
+                let led = self.led_generation.load(Ordering::Acquire).checked_sub(1);
+                let accepted = self.accepted_generation.load(Ordering::Acquire);
+                let Some(led) = led.filter(|led| *led == accepted) else {
+                    return Err(StorageError::WriterUnknown(
+                        "this log does not lead at the generation it accepted",
+                    ));
+                };
+                let started =
+                    self.epochs.lock().newest().is_some_and(|newest| {
+                        newest.generation == led && newest.start_offset <= first
+                    });
+                if !started {
+                    return Err(StorageError::WriterUnknown(
+                        "this log has not recorded where the generation it leads at starts",
+                    ));
+                }
+                Ok(Some(Stamps::All(led)))
+            }
+            WrittenBy::Writers(runs) => Ok(Some(Stamps::Runs(runs))),
+            WrittenBy::Unknown => Err(StorageError::WriterUnknown(
+                "the sender did not say which generations wrote the batch",
+            )),
+        }
+    }
+
     /// Build the next segment and swap it in, with every fsync off the lock.
     ///
     /// Runs on a blocking thread. The segment lock is taken twice and held only
@@ -318,7 +440,7 @@ impl LogInner {
     /// never queues behind a rollover's flushes.
     async fn roll_in_background(self: Arc<Self>) -> Result<()> {
         let inner = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             // The plan is copied out under a read lock; the segment is built
             // with no lock at all. Creating it fsyncs its header and its parent
             // directory, so by the time anything can be appended here it is
@@ -392,7 +514,7 @@ impl LogInner {
     /// failure only means later writes allocate their own blocks, which the
     /// write path already handles down to a full disk.
     fn extend_reservation(self: Arc<Self>, extension: Extension) {
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             #[cfg(test)]
             {
                 let hold = self.hold_next_extension.lock().take();
@@ -577,6 +699,7 @@ impl LogInner {
                 return;
             }
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
+            super::note_poisoned(&self.label, &reason);
             *failure = Some(reason);
             super::ANY_POISONED.store(true, Ordering::Release);
         }
@@ -585,6 +708,14 @@ impl LogInner {
         // every log's poison, not only the first: this one must not return
         // before the record says so. Forgetting twice writes nothing.
         crate::run_state::forget_watched();
+        if let Err(err) = self.mark.record_poison(&self.config.fsync_mode) {
+            tracing::warn!(
+                shard = %self.label,
+                error = %err,
+                "could not record the poison; a restart in this boot may keep bytes the failed \
+                 flush wrote"
+            );
+        }
     }
 
     /// Poison the log if a truncation or reset failed partway. Its segment,
@@ -622,21 +753,50 @@ impl LogInner {
         if self.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(self.label.clone()));
         }
+        self.check_not_poisoned()
+    }
+
+    /// Fails once [`DiskLog::close`] has finished. Only meaningful under
+    /// `replica_persisted`, the lock `close` sets it under.
+    pub(super) fn check_open(&self) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
+        Ok(())
+    }
+
+    /// [`Self::check_healthy`] without the closed check, for the state
+    /// writes a closing log still makes.
+    pub(super) fn check_not_poisoned(&self) -> Result<()> {
         if let Some(reason) = self.failure.lock().as_deref() {
-            return Err(StorageError::SyncFailed(format!(
-                "{}: {reason}; the log is no longer accepting appends",
-                self.label
-            )));
+            return Err(StorageError::Poisoned {
+                shard: self.label.clone(),
+                reason: reason.to_string(),
+            });
         }
         // A `Failed` state with no recorded reason means the rollover task
         // itself panicked or was cancelled. Still terminal.
         if RollState::from_u8(self.roll_state.load(Ordering::Acquire)) == RollState::Failed {
-            return Err(StorageError::SyncFailed(format!(
-                "{}: a background segment rollover failed; the log is no longer accepting appends",
-                self.label
-            )));
+            return Err(StorageError::Poisoned {
+                shard: self.label.clone(),
+                reason: "a background segment rollover failed".to_string(),
+            });
         }
         Ok(())
+    }
+
+    /// Poison the log if `result` is a flush that failed. For the small
+    /// state files (the vote, the replica set and state, the generation
+    /// history, the snapshots): the file on disk may be the new one, the old
+    /// one or neither, memory keeps the old value, and a retry could report
+    /// success for pages the kernel dropped.
+    pub(super) fn poison_on_sync_failure<T>(&self, what: &str, result: Result<T>) -> Result<T> {
+        if let Err(err) = &result
+            && err.is_sync_failure()
+        {
+            self.poison(format!("a flush of {what} failed ({err})"));
+        }
+        result
     }
 }
 

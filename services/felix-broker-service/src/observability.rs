@@ -7,6 +7,7 @@
 //! In tests, metrics recorder initialization is cached to avoid conflicts, and subscriber initialization is adapted accordingly.
 
 pub(crate) mod backup;
+pub mod log_writer;
 pub(crate) mod tenants;
 pub mod timings;
 
@@ -48,7 +49,8 @@ pub(crate) fn init_observability(service_name: &str) -> PrometheusHandle {
 
         // Use environment variable for log filtering; default to "info" if unset or invalid.
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-        let fmt_layer = tracing_subscriber::fmt::layer();
+        // Off the calling thread: see `log_writer`.
+        let fmt_layer = tracing_subscriber::fmt::layer().with_writer(log_writer::install());
         let registry = tracing_subscriber::registry().with(filter).with(fmt_layer);
 
         if let Some(provider) = provider {
@@ -183,11 +185,10 @@ fn health_router(
         .route(
             "/ready",
             axum::routing::get(move || async move {
-                if readiness.is_ready() {
-                    (axum::http::StatusCode::OK, "ok")
-                } else {
-                    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
-                }
+                ready_status(
+                    &felix_storage::disk_log::poisoned_logs(),
+                    readiness.is_ready(),
+                )
             }),
         )
         // Read-only, and deliberately so: this listener has no authentication
@@ -198,6 +199,46 @@ fn health_router(
             "/replication/halted",
             axum::routing::get(move || async move { axum::Json(halted.snapshot()) }),
         )
+}
+
+/// What `/ready` answers. A poisoned log refuses writes until it is
+/// reopened, so the body names each one's tenant and what stopped it. One
+/// poisoned log fails the whole broker's probe for now: see "A failed fsync
+/// poisons the log" in `docs/durable-storage.md`.
+///
+/// This listener has no authentication and `/metrics` on it exposes tenant
+/// labels only, so the namespace and stream stay out of the body; the
+/// broker's log has the full shard name. The process does not exit and
+/// `/live` stays ok, so the body tells the operator what to do.
+fn ready_status(
+    poisoned: &[felix_storage::disk_log::PoisonedLog],
+    ready: bool,
+) -> (axum::http::StatusCode, String) {
+    if !poisoned.is_empty() {
+        let mut lines: Vec<String> = poisoned
+            .iter()
+            .map(|log| {
+                let tenant = log.shard.split('/').next().unwrap_or_default();
+                let reason = log.reason.replace(&log.shard, "<shard>");
+                format!("a log of tenant {tenant} is poisoned: {reason}")
+            })
+            .collect();
+        lines.push(
+            "reboot the host before restarting the broker; the broker log names each shard"
+                .to_string(),
+        );
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            lines.join("\n"),
+        )
+    } else if ready {
+        (axum::http::StatusCode::OK, "ok".to_string())
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "draining".to_string(),
+        )
+    }
 }
 
 /// The probes a broker answers before it is built: `/live` says ok, `/ready`
@@ -272,17 +313,56 @@ fn install_metrics_recorder() -> PrometheusHandle {
         if let Some(handle) = METRICS_HANDLE.get() {
             return handle.clone();
         }
-        let handle = builder()
-            .install_recorder()
-            .expect("install metrics recorder");
+        let handle = install_recorder_with_upkeep();
         let _ = METRICS_HANDLE.set(handle.clone());
         handle
     }
     #[cfg(not(test))]
     {
-        builder()
-            .install_recorder()
-            .expect("install metrics recorder")
+        install_recorder_with_upkeep()
+    }
+}
+
+/// Both builds go through here, so a test of this covers the production path.
+fn install_recorder_with_upkeep() -> PrometheusHandle {
+    let handle = builder()
+        .install_recorder()
+        .expect("install metrics recorder");
+    spawn_metrics_upkeep(handle.clone());
+    handle
+}
+
+/// Upkeep threads started by this process; lets a test see the recorder was wired.
+static UPKEEP_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// How often the exporter's raw histogram samples are folded into summaries.
+const METRICS_UPKEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Folds the recorder's raw histogram samples into bounded summaries on a
+/// timer.
+///
+/// The exporter keeps every recorded sample until something renders or runs
+/// upkeep. Without this a broker nobody scrapes holds one `f64` per histogram
+/// record for as long as it runs, and a scraped one holds a scrape interval's
+/// worth.
+pub fn spawn_metrics_upkeep(handle: PrometheusHandle) {
+    spawn_metrics_upkeep_every(handle, METRICS_UPKEEP_INTERVAL);
+}
+
+/// [`spawn_metrics_upkeep`] with an explicit period. A plain thread, so it
+/// needs no runtime and keeps draining while the runtime is saturated.
+pub fn spawn_metrics_upkeep_every(handle: PrometheusHandle, every: std::time::Duration) {
+    UPKEEP_THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let spawned = std::thread::Builder::new()
+        .name("felix-metrics-upkeep".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(every);
+                handle.run_upkeep();
+            }
+        });
+    if let Err(err) = spawned {
+        tracing::warn!(%err, "metrics upkeep thread did not start; histogram samples will accumulate");
     }
 }
 
@@ -332,3 +412,8 @@ where
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn upkeep_threads_started() -> usize {
+    UPKEEP_THREADS.load(std::sync::atomic::Ordering::Relaxed)
+}

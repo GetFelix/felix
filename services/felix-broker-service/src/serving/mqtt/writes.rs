@@ -19,15 +19,16 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_broker::{Broker, BrokerError, PublishOutcome, SequenceReuse, StreamHandle};
 use felix_mqtt::{Refusal, WriteBatch, WriteError, Writes};
+use felix_replication::engine::Engine;
 use felix_replication::peer::{PeerPool, PeerRequester};
-use felix_replication::quorum::{QuorumError, QuorumMarks};
+use felix_replication::quorum::QuorumError;
 use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer};
 
 use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
 use crate::serving::limits::TenantRates;
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, IngressRouter, dispatch_write};
+use crate::shards::routing::{Dispatch, StreamEngine, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest wait between two sends of a batch whose answer was lost. A
@@ -37,8 +38,7 @@ const MAX_RESEND_DELAY: Duration = Duration::from_millis(500);
 /// [`Writes`] for this broker.
 pub struct BrokerWrites<P = PeerPool> {
     broker: Arc<Broker>,
-    ingress: Option<Arc<IngressRouter>>,
-    marks: Option<Arc<QuorumMarks>>,
+    engine: Arc<StreamEngine>,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
     forwarding: Option<Forwarding<P>>,
@@ -66,18 +66,12 @@ enum Sent {
 }
 
 impl BrokerWrites<PeerPool> {
-    /// `ingress` and `marks` are the cluster view and `None` outside a
-    /// cluster, where this broker owns every shard.
-    pub fn new(
-        broker: Arc<Broker>,
-        ingress: Option<Arc<IngressRouter>>,
-        marks: Option<Arc<QuorumMarks>>,
-        quorum_timeout: Duration,
-    ) -> Self {
+    /// `engine` carries the cluster view (its shard routing and quorum marks),
+    /// which is absent outside a cluster, where this broker owns every shard.
+    pub fn new(broker: Arc<Broker>, engine: Arc<StreamEngine>, quorum_timeout: Duration) -> Self {
         Self {
             broker,
-            ingress,
-            marks,
+            engine,
             quorum_timeout,
             quotas: Arc::new(TenantRates::unlimited()),
             forwarding: None,
@@ -86,14 +80,18 @@ impl BrokerWrites<PeerPool> {
 }
 
 impl<P> BrokerWrites<P> {
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<StreamEngine> {
+        &self.engine
+    }
+
     /// Forward a batch for a shard another broker owns over `peers`, within
     /// `budget` for the whole write. Without it such a batch is refused
     /// `not_owner`.
     pub(crate) fn with_forwarding<Q>(self, peers: Arc<Q>, budget: Duration) -> BrokerWrites<Q> {
         BrokerWrites {
             broker: self.broker,
-            ingress: self.ingress,
-            marks: self.marks,
+            engine: self.engine,
             quorum_timeout: self.quorum_timeout,
             quotas: self.quotas,
             forwarding: Some(Forwarding { peers, budget }),
@@ -205,11 +203,11 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         headers: &[Option<Bytes>],
         deadline: Option<Instant>,
     ) -> Sent {
-        let ingress = self.ingress.as_deref();
-        let permit = match dispatch_write(ingress, key).await {
+        let ingress = self.engine.serving().map(|ingress| &**ingress);
+        let (permit, generation) = match dispatch_write(ingress, key).await {
             (Dispatch::Local { generation }, mut held) => {
                 match fence::enter_or_keep(&mut held, ingress, Some(key), generation) {
-                    Ok(permit) => permit,
+                    Ok(permit) => (permit, generation),
                     Err(_) => return Sent::Refused(Refusal::NotOwner),
                 }
             }
@@ -267,21 +265,16 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 subscribers: 0,
                 offsets: written.outcome.offsets,
             };
-            let shard = self.ingress.as_ref().map(|_| key);
+            let shard = self.engine.serving().map(|_| key);
             // A re-send late in the budget does not wait past it.
             let wait = deadline.map_or(self.quorum_timeout, |deadline| {
                 self.quorum_timeout
                     .min(deadline.saturating_duration_since(Instant::now()))
             });
-            let quorum = felix_replication::quorum::await_quorum(
-                handle,
-                shard,
-                &outcome,
-                self.marks.as_deref(),
-                ingress,
-                wait,
-            )
-            .await;
+            let quorum = self
+                .engine
+                .await_commit(handle, shard, &outcome, generation, wait)
+                .await;
             if let Err(err) = quorum {
                 return match err.downcast_ref::<QuorumError>() {
                     Some(QuorumError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),

@@ -64,7 +64,8 @@ impl PlacementWakes {
         self.pass.notify_one();
     }
 
-    pub(crate) async fn pass_requested(&self) {
+    /// Resolves when a pass has been asked for since the last one was taken.
+    pub async fn pass_requested(&self) {
         self.pass.notified().await;
     }
 

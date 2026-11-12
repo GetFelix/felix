@@ -17,7 +17,8 @@ felix/
 │   ├── server/       felix-broker, felix-storage, felix-kafka, felix-replication,
 │   │                 felix-router, felix-authz, felix-common, felix-mqtt
 │   ├── sdk/          felix-client, felix-capi, felix-python*, felix-typescript*
-│   ├── testing/      felix-cluster, felix-conformance, felix-loadgen
+│   ├── testing/      felix-cluster, felix-conformance, felix-loadgen,
+│   │                 felix-sim
 │   └── tools/        felixctl
 ├── services/
 │   ├── felix-broker-service/        builds the felix-broker binary
@@ -68,11 +69,11 @@ crates to crates.io: `felix-wire`, `felix-transport`, `felix-client`,
   (`stream/delivery.rs`). Start at `Broker`.
 - `felix-storage`: a log-structured segment store and the caches projected
   from it. See below.
-- `felix-kafka`: a read-only Kafka listener that answers Kafka consumers from
-  the broker's shard logs.
+- `felix-kafka`: the Kafka listener. It answers Kafka consumers from the
+  broker's shard logs and accepts producers.
 - `felix-mqtt`: the MQTT 3.1.1 and 5.0 listener and its mounts onto streams
-  and caches. Publish and subscribe over MQTT are refused for now; see
-  `service/refuse.rs`.
+  and caches. A device can publish at QoS 0 and 1 to a mounted stream;
+  subscribing is refused for now (`service/refuse.rs`).
 - `felix-replication`: broker-to-broker transport (`peer/`, including its
   mTLS in `peer/tls.rs`) and log replication (`driver/`, `replica.rs`,
   `quorum.rs`, `promotion.rs`, `reporter.rs`). It does not depend on the broker
@@ -107,6 +108,9 @@ crates to crates.io: `felix-wire`, `felix-transport`, `felix-client`,
   (`task cluster:up`). See
   [How Felix Is Tested](/architecture/testing/).
 - `felix-conformance`: the client conformance catalogue and verifier.
+- `felix-sim`: the deterministic simulator. Brokers, the control plane and an
+  in-memory network and filesystem run from a seed on virtual time, with
+  checkers for the histories they record.
 - `felix-loadgen`: the load generator for the real-network performance suite.
 
 ### felix-storage
@@ -131,6 +135,9 @@ A segment store, not a WAL. The crate docs in `src/lib.rs` are the map:
   `compaction.rs`.
 - `commit_order.rs`: the `CommitSequencer` that orders publishes per log.
 - `fault.rs`: the test-only fsync fault seam.
+- `fs.rs`: where storage reaches the filesystem, so a simulation can keep a
+  data directory in memory. `sim_fs.rs` is that in-memory filesystem and its
+  power-loss model.
 
 [docs/durable-storage.md](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md)
 and
@@ -148,8 +155,8 @@ routing, `restore.rs` is the `felix-broker restore-point` subcommand, and
 `observability/` serves metrics. It also builds the `demos/broker/*` binaries and the `soak` harness.
 
 `services/felix-controlplane-service` is the REST control plane: `api/`,
-`store/` (memory, Postgres or Raft), `raft/`, `cluster/` (membership and
-placement), `auth/` and `admin/` (the `felix-controlplane admin` CLI).
+`store/` (memory or Raft), `raft/`, `cluster/` (membership and
+placement) and `auth/`. The operator commands over its API are in `felixctl`.
 
 ## Demos
 
@@ -172,9 +179,9 @@ Run `task demo:check` after changing a public API they might use.
 - `docker/*.Dockerfile`: the broker and control-plane images, plus Prometheus
   and an OpenTelemetry collector for local stacks.
 - `deploy/helm/felix/`: the Helm chart, checked by `task chart:check`.
-- `.github/workflows/`: `ci`, `coverage`, `history`, `fuzz-nightly`, `soak`,
-  `pages`, `release`, `cla`, `perf-pr`, `perf-publish` and
-  `perf-comprehensive`. [Building & Testing](/development/building/#what-ci-runs)
+- `.github/workflows/`: among others `ci`, `coverage`, `history`,
+  `fuzz-nightly`, `soak`, `pages`, `release`, `cla`, `perf-pr`, `perf-publish`
+  and `perf-comprehensive`. [Building & Testing](/development/building/#what-ci-runs)
   says what each runs.
 
 Licences differ by path.

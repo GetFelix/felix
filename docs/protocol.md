@@ -1431,6 +1431,9 @@ field of `detail` is optional. See [Error codes](#error-codes).
   negotiated [pipelining](#pipelined-publishes), in which case they come back
   in the order the stream carried the publishes. Then an in-memory stream's ack
   can wait behind an earlier durable publish's commit ack on the same stream.
+  A pipelining client that also negotiated
+  [answers on completion](#answers-on-completion) gets that order only among its
+  idempotent publishes.
 - CachePut returns `ok` when stored (TTL is optional).
 - CacheGet returns `cache_value` with `null` when missing/expired.
 - CacheDelete returns `cache_value` carrying whatever was removed, and `null`
@@ -1565,7 +1568,9 @@ with `FLAG_BINARY_PUBLISH_ACKED`, and every `publish_idempotent`):
   until every publish the stream carried before it has been answered. Nothing
   else changes: each publish gets the answer it would have got, only later.
   Other responses on the stream (`cache_value`, `subscribed`, and so on) are
-  not held back.
+  not held back. A client that also negotiated
+  [answers on completion](#answers-on-completion) keeps this order only among
+  its idempotent publishes.
 - **At most `publish_window` are unanswered per stream.** At that depth the
   broker stops reading that stream's publishes until one of its answers is
   written. Each stream has its own window, so a stream whose publishes wait
@@ -1601,16 +1606,51 @@ client reads a window without the bit as no window.
 It is a feature bit rather than a frame flag because no payload changes shape:
 the same frames go both ways, and only their timing and order differ.
 
+#### Answers on completion
+
+Request order has a cost. A publish to a shard stuck on a quorum wait holds
+back the answers of every publish behind it on the stream, including publishes
+to healthy shards that committed long ago. During a failover that turns one
+stalled shard into timeouts for every shard sharing its stream.
+
+Only an idempotent producer needs the order (see below). So a client may also
+offer `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` in the extended feature word, next
+to `FEATURE_PUBLISH_PIPELINE`. A broker that grants a window and sees the bit
+answers it back in `server_features_hi`, and from then on:
+
+- **A plain acked publish is answered as soon as it completes.** That is every
+  acked `publish`, `publish_batch` and binary batch without
+  `FLAG_BINARY_PUBLISH_IDEMPOTENT`. Its answer waits for no other.
+- **An idempotent publish keeps request order** among the stream's other
+  idempotent publishes: `publish_idempotent` and binary batches with
+  `FLAG_BINARY_PUBLISH_IDEMPOTENT`. It never waits for a plain one.
+- **The window is unchanged.** Every acked publish holds its slot until its
+  answer is written, so a stalled shard still counts against the stream's
+  `publish_window`.
+
+Per-shard order does not depend on answer order: the broker commits each
+shard's publishes in the order it read them. A client must match answers by
+`request_id`, as it does without pipelining. A broker that does not answer the
+bit keeps request order for every publish, and a client that did not offer it
+gets the frames it always got.
+
+The Rust client offers the bit. When it is granted, the stream's writer keeps
+writing new publishes while answers are outstanding and settles each answer as
+it arrives, so a stalled publish does not stop the stream.
+
 A broker that loses an answer it owes a pipelining stream would hold every
 answer behind it forever. Every publish is answered within its enqueue wait
-plus its ack wait, so a broker whose oldest held answer is overdue by twice
-that closes the stream instead; the client sees the stream fail and every
+plus its ack wait, so a broker whose oldest held-back answer is overdue by
+twice that closes the stream instead. On a stream that answers on completion
+it watches the oldest unanswered publish of any kind, since a lost answer
+there holds nothing back but keeps its window slot for good. Either way the
+client sees the stream fail and every
 unanswered publish on it as failed.
 
 **One stream per shard.** Request order and the window are both per stream,
 so shards that share a stream share a fate: a shard stuck on a quorum wait
-holds back answers the others have committed, then fills the window and stops
-the stream. The Rust `Client` therefore sends each publish on a stream
+holds back answers the others have committed (unless the broker answers on
+completion), then fills the window and stops the stream. The Rust `Client` therefore sends each publish on a stream
 that carries only its shard, opened on the shard's first publish on the same
 connection. It can, because it computes the shard of every publish to pick
 the owner: keyed, unkeyed (shard 0) and idempotent alike. Which shard stream
@@ -1630,7 +1670,7 @@ stay in order. Nothing on the wire changes: the broker cannot tell these
 streams from any other.
 
 **Why the order matters to an idempotent producer.** With answers in request
-order, the first failure a producer reads is the earliest one, never a
+order (which idempotent publishes keep with answers on completion too), the first failure a producer reads is the earliest one, never a
 consequence of it: a batch refused with `sequence_gap` because the batch before
 it failed is answered after that failure, not before. So a producer can keep
 several batches unanswered and, when one fails, treat it and everything behind
@@ -2048,7 +2088,8 @@ Bits in the extended word (see [Extended feature word](#extended-feature-word)):
 | `0x8` | `FEATURE_EXPLICIT_SHARD` | The broker honours `shard` on `publish`, `publish_batch`, `publish_idempotent`, `publish_if`, `commit` and `state_get`. See [Named shards](#named-shards) |
 | `0x10` | `FEATURE_HEAD_TRIM` | From a broker: it answers `trim_before`, though it refuses every trim with `feature_not_enabled` until its fleet finalizes `head_trim`. From a client: it reads `trim_headers` on `subscribe_cursor_error`. See [TrimBefore](#trimbefore) |
 | `0x20` | `FEATURE_LEASE_TOKEN` | The broker mints a lease token on a `cache_put_if` with `lease_token: true`. Advertised only by a broker configured with a lease key (`FELIX_LEASE_TOKEN_KEY_FILE`). See [CachePutIf](#cacheputif) |
-| `0x40` | `FEATURE_SUBSCRIBE_END` | The broker honours `end` on `subscribe` and finishes such a subscription with `subscription_ended`. See [Subscribe](#subscribe) |
+| `0x40` | `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` | Offered by a client with `FEATURE_PUBLISH_PIPELINE`, answered by a broker that grants it a window: plain acked publishes are answered as they complete, and only idempotent ones keep request order. See [answers on completion](#answers-on-completion) |
+| `0x80` | `FEATURE_SUBSCRIBE_END` | The broker honours `end` on `subscribe` and finishes such a subscription with `subscription_ended`. See [Subscribe](#subscribe) |
 
 Features are advertised in **both** directions. A client offers its own in the
 `auth` it already sends:
@@ -2138,7 +2179,8 @@ ignores.
 `FEATURE_INSPECT` is the first feature in the second word,
 `FEATURE_STREAM_DELETED` the second, `FEATURE_PUBLISH_WIDTH` the third,
 `FEATURE_EXPLICIT_SHARD` the fourth, `FEATURE_HEAD_TRIM` the fifth,
-`FEATURE_LEASE_TOKEN` the sixth and `FEATURE_SUBSCRIBE_END` the seventh. The Rust constants are
+`FEATURE_LEASE_TOKEN` the sixth, `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` the
+seventh and `FEATURE_SUBSCRIBE_END` the eighth. The Rust constants are
 `FEATURE_EXTENDED` and `KNOWN_FEATURES_HI` in `felix-wire`, with
 `offer_features`, `answer_features` and `peer_features_hi` applying the rules
 above.
@@ -2445,7 +2487,10 @@ appends another. Each step of a move is a new generation, so a move can leave
 several in a row. A record takes the next
 offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
-`N+1` across a generation start at `N`.
+`N+1` across a generation start at `N`. A trim record, and the membership and
+counter records storage format v9 defines, are skipped the same way and
+counted in `skipped_before` like a generation start (`docs/storage-format.md`,
+"Record kinds").
 
 When `flags & 0x0800 != 0` (only ever alongside `0x0020`), a `u64 skipped_before`
 follows `base_offset`:

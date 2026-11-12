@@ -34,8 +34,8 @@ crates/sdk/felix-python/dist/
 .env
 .env.*
 perf-results/
-scripts/perf/azure/sessions/
-scripts/perf/azure/session.env
+scripts/perf/cloud/sessions/
+scripts/perf/cloud/session.env
 
 # Prose. Changing a README should not invalidate a build layer.
 *.md

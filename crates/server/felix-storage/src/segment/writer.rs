@@ -19,7 +19,7 @@
 //! * **The staging buffer is never freed.** Steady-state appends do no
 //!   allocation at all beyond growing it once to the high-water batch size.
 
-use std::fs::{File, OpenOptions};
+use crate::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,10 +28,12 @@ use crate::Result;
 use crate::io::{preallocate, sync_data, sync_dir};
 use crate::log::{AppendRecord, Offset, RecordMark, SegmentDescriptor, SegmentId};
 use crate::segment::format::{
-    BASELINE_VERSION, HEADERS_VERSION, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION, SEGMENT_HEADER_LEN,
-    SegmentHeader, TRIM_VERSION, body_fits, body_len, encode_record, record_len,
+    BASELINE_VERSION, GENERATION_VERSION, HEADERS_VERSION, MAX_PUBLISHER_BYTES, PUBLISHER_VERSION,
+    SEGMENT_HEADER_LEN, SegmentHeader, TRIM_VERSION, body_fits, body_len, encode_record_at,
+    record_len_in,
 };
 use crate::segment::index::{IndexWriter, SparseIndex, UnwrittenEntries};
+use crate::segment::known::{KnownGenerations, known_file_name};
 use crate::segment::reservation::{Extension, Reservation};
 use crate::segment::{index_file_name, segment_file_name};
 use crate::{StorageError, metrics_names};
@@ -73,6 +75,13 @@ pub struct SegmentWriter {
     /// older build is rolled before a record it cannot hold goes in: that
     /// build reading it would take the new flag bit for a bad length.
     version: u16,
+    /// The generation of the last record this writer appended to a v9
+    /// segment. A batch below it is refused, since the scan would then call
+    /// the segment corrupt.
+    last_generation: Option<u64>,
+    /// Where this segment's first and last known generations sit, for the
+    /// file written beside it at seal. `None` once a cut left it unknown.
+    known: Option<KnownGenerations>,
 }
 
 impl SegmentWriter {
@@ -107,16 +116,59 @@ impl SegmentWriter {
         index_spacing_bytes: u64,
         version: u16,
     ) -> Result<Self> {
-        let created = BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes)?
-            .activate(base_offset, created_at_micros, version)
-            .and_then(|mut writer| {
-                // The header must be durable before any record claims to live
-                // here. The directory entry already is: `BlankSegment::create`
-                // synced it.
-                sync_data(&writer.file)?;
-                writer.mark_synced(SEGMENT_HEADER_LEN);
-                Ok(writer)
-            });
+        Self::create_with(
+            dir,
+            id,
+            base_offset,
+            created_at_micros,
+            (reserve_limit_bytes, index_spacing_bytes),
+            version,
+            DirEntry::Sync,
+        )
+    }
+
+    /// [`Self::create`] for the first segment of a log being opened, leaving
+    /// its directory entry unsynced. The open syncs the directory once, after
+    /// its other files are created and before it returns, which covers this
+    /// entry too. Until then nothing can rely on the segment: a crash that
+    /// loses it leaves a log that recovers as fresh.
+    pub(crate) fn create_in_opening_log(
+        dir: &Path,
+        base_offset: Offset,
+        created_at_micros: u64,
+        (reserve_limit_bytes, index_spacing_bytes): (u64, u64),
+        version: u16,
+    ) -> Result<Self> {
+        Self::create_with(
+            dir,
+            0,
+            base_offset,
+            created_at_micros,
+            (reserve_limit_bytes, index_spacing_bytes),
+            version,
+            DirEntry::Deferred,
+        )
+    }
+
+    fn create_with(
+        dir: &Path,
+        id: SegmentId,
+        base_offset: Offset,
+        created_at_micros: u64,
+        (reserve_limit_bytes, index_spacing_bytes): (u64, u64),
+        version: u16,
+        entry: DirEntry,
+    ) -> Result<Self> {
+        let created =
+            BlankSegment::create(dir, id, reserve_limit_bytes, index_spacing_bytes, entry)?
+                .activate(base_offset, created_at_micros, version)
+                .and_then(|mut writer| {
+                    // The header must be durable before any record claims to live
+                    // here.
+                    sync_data(&writer.file)?;
+                    writer.mark_synced(SEGMENT_HEADER_LEN);
+                    Ok(writer)
+                });
         if created.is_err() {
             remove_unused_segment(dir, id);
         }
@@ -141,6 +193,8 @@ impl SegmentWriter {
             record_count,
             index,
             version,
+            generation_floor,
+            known,
         } = resume;
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new().write(true).open(&path)?;
@@ -178,6 +232,8 @@ impl SegmentWriter {
             #[cfg(test)]
             fail_next_sync: false,
             version,
+            last_generation: generation_floor,
+            known,
         })
     }
 
@@ -231,13 +287,39 @@ impl SegmentWriter {
         self.version >= TRIM_VERSION
     }
 
+    /// Whether this segment's records carry a generation, so appends must
+    /// name one.
+    pub fn holds_generations(&self) -> bool {
+        self.version >= GENERATION_VERSION
+    }
+
     /// The layout version in the segment header.
     pub fn version(&self) -> u16 {
         self.version
     }
 
+    /// The lowest generation the next record may carry: that of the newest
+    /// record in the log, in this segment or before it. `None` when the log
+    /// holds no v9 record.
+    pub(crate) fn last_generation(&self) -> Option<u64> {
+        self.last_generation
+    }
+
+    /// Where this segment's first and last known generations sit, or `None`
+    /// when a cut left that unknown.
+    pub(crate) fn known_generations(&self) -> Option<KnownGenerations> {
+        self.known
+    }
+
+    /// Carry the generation floor over from the segment this one follows, so
+    /// a new segment cannot start below the one it continues.
+    pub(crate) fn continue_generations(&mut self, floor: Option<u64>) {
+        self.last_generation = floor;
+    }
+
     /// The version a segment following this one is written at so that it
-    /// holds `records`: never below this one's, v8 when a record carries a
+    /// holds `records`: never below this one's, v9 for a membership or
+    /// counter record (which `DiskLog` refuses before it gets here), v8 when a record carries a
     /// key and headers, v7 when `records` include a
     /// trim record, v6 when a record carries its
     /// publisher, v5 when `records` include a commit record, v4 when they
@@ -248,6 +330,7 @@ impl SegmentWriter {
         let needed = records
             .iter()
             .map(|record| match record.mark {
+                mark if mark.needs_generation() => GENERATION_VERSION,
                 _ if record.headers.is_some() => HEADERS_VERSION,
                 RecordMark::Trim { .. } => TRIM_VERSION,
                 _ if record.publisher.is_some() => PUBLISHER_VERSION,
@@ -269,6 +352,9 @@ impl SegmentWriter {
                 RecordMark::GenerationStart => self.holds_generation_starts(),
                 RecordMark::Commit => self.holds_commits(),
                 RecordMark::Trim { .. } => self.holds_trims(),
+                RecordMark::Membership
+                | RecordMark::CounterDelta
+                | RecordMark::CounterCheckpoint => self.holds_generations(),
             };
             mark && (record.publisher.is_none() || self.holds_publishers())
                 && (record.headers.is_none() || self.holds_headers())
@@ -313,11 +399,12 @@ impl SegmentWriter {
             // is empty rather than wrapping below zero.
             last_offset: self.next_offset.saturating_sub(1).max(self.base_offset),
             size_bytes: self.size_bytes,
+            version: self.version,
         }
     }
 
     /// A second descriptor for the same file, for flushing off the write path.
-    pub fn sync_handle(&self) -> Arc<File> {
+    pub(crate) fn sync_handle(&self) -> Arc<File> {
         Arc::clone(&self.sync_handle)
     }
 
@@ -327,13 +414,14 @@ impl SegmentWriter {
     /// across two segments.
     pub fn projected_size(&self, records: &[AppendRecord]) -> u64 {
         records.iter().fold(self.size_bytes, |acc, record| {
-            acc + record_len(
+            acc + record_len_in(
                 body_len(
                     record.payload.len(),
                     record.headers.as_deref().map(|headers| &headers[..]),
                     record.publisher.as_deref(),
                 ),
                 &record.mark,
+                self.version,
             )
         })
     }
@@ -344,18 +432,33 @@ impl SegmentWriter {
     /// durable until [`SegmentWriter::sync`] succeeds. Callers that promise
     /// durability must sequence the two.
     pub fn append(&mut self, records: &[AppendRecord]) -> Result<(Offset, Offset)> {
-        let staged = self.stage(records)?;
+        self.append_at(records, None)
+    }
+
+    /// [`Self::append`] with every record at `generation`, which a v9
+    /// segment needs and an older one cannot hold. A generation below the
+    /// last one appended is refused.
+    pub(crate) fn append_at(
+        &mut self,
+        records: &[AppendRecord],
+        generation: Option<u64>,
+    ) -> Result<(Offset, Offset)> {
+        let staged = self.stage_at(records, generation.map(Stamps::All))?;
         let written = staged.write();
         let (offsets, index) = self.finish(staged, written)?;
         index.write(self.id);
         Ok(offsets)
     }
 
-    /// The first step of [`Self::append`], split out so a log can write a
+    /// The first step of [`Self::append_at`], split out so a log can write a
     /// batch without holding the lock around this writer: encode `records`
-    /// for the end of the segment and change nothing. Nothing else may change
-    /// this segment until [`Self::finish`].
-    pub(crate) fn stage(&mut self, records: &[AppendRecord]) -> Result<StagedAppend> {
+    /// with `stamps` for the end of the segment and change nothing. Nothing
+    /// else may change this segment until [`Self::finish`].
+    pub(crate) fn stage_at(
+        &mut self,
+        records: &[AppendRecord],
+        stamps: Option<Stamps<'_>>,
+    ) -> Result<StagedAppend> {
         debug_assert!(!records.is_empty());
 
         if self.poisoned {
@@ -370,6 +473,15 @@ impl SegmentWriter {
                 "the record's mark is newer than the segment's version; roll first",
             ));
         }
+        if stamps.is_some() != self.holds_generations() {
+            return Err(StorageError::Unsupported(
+                "a v9 segment's records need a generation, and an older segment cannot hold one",
+            ));
+        }
+        let last_offset = self.next_offset + records.len() as u64 - 1;
+        if let Some(stamps) = stamps {
+            stamps.check(self.next_offset, last_offset, self.last_generation)?;
+        }
 
         let mut bytes = std::mem::take(&mut self.staging);
         bytes.clear();
@@ -377,9 +489,13 @@ impl SegmentWriter {
         // never needs a second pass over the batch.
         let mut boundaries = Vec::with_capacity(records.len());
         let mut position = self.size_bytes;
+        let mut known = KnownGenerations::default();
         for (offset, record) in (self.next_offset..).zip(records) {
-            let written = encode_record(
+            let stamp = stamps.map(|stamps| stamps.at(offset));
+            known.observe(position, stamp);
+            let written = encode_record_at(
                 &mut bytes,
+                stamp,
                 offset,
                 record.timestamp_micros,
                 &record.payload,
@@ -394,10 +510,15 @@ impl SegmentWriter {
             bytes,
             boundaries,
             file: Arc::clone(&self.sync_handle),
+            known,
+            // An unknown writer leaves the floor where it was.
+            generation: stamps
+                .map(|stamps| stamps.at(last_offset))
+                .filter(|generation| *generation != crate::log::UNKNOWN_WRITER),
         })
     }
 
-    /// Take in a batch from [`Self::stage`] once its write has returned
+    /// Take in a batch from [`Self::stage_at`] once its write has returned
     /// `written`. Returns its first and last offsets, and the index entries
     /// it added, for the caller to write once it has released the lock.
     pub(crate) fn finish(
@@ -406,7 +527,11 @@ impl SegmentWriter {
         written: std::io::Result<()>,
     ) -> Result<((Offset, Offset), UnwrittenEntries)> {
         let StagedAppend {
-            bytes, boundaries, ..
+            bytes,
+            boundaries,
+            generation,
+            known,
+            ..
         } = staged;
         let len = bytes.len() as u64;
         self.staging = bytes;
@@ -429,6 +554,13 @@ impl SegmentWriter {
         }
 
         let first_offset = self.next_offset;
+        if generation.is_some() {
+            self.last_generation = generation;
+        }
+        if let Some(segment) = &mut self.known {
+            segment.first = segment.first.or(known.first);
+            segment.last = known.last.or(segment.last);
+        }
         self.size_bytes += len;
         self.next_offset += boundaries.len() as u64;
         self.record_count += boundaries.len() as u64;
@@ -516,6 +648,19 @@ impl SegmentWriter {
             self.poison_after_failed_sync();
             return Err(StorageError::SyncFailed(err.to_string()));
         }
+        // Spares the next open a walk of the segment to find its generations.
+        // Written once the records are durable, and derived, so a failure
+        // costs only that walk.
+        if self.holds_generations()
+            && let Some(known) = self.known
+            && let Err(err) = known.persist(
+                &self.path.with_file_name(known_file_name(self.id)),
+                self.base_offset,
+                self.size_bytes,
+            )
+        {
+            tracing::warn!(segment = self.id, error = %err, "could not write a sealed segment's known generations");
+        }
         Ok(self.descriptor())
     }
 
@@ -551,15 +696,86 @@ impl SegmentWriter {
     }
 }
 
-/// A batch [`SegmentWriter::stage`] has encoded, to write and then hand to
+/// A batch [`SegmentWriter::stage_at`] has encoded, to write and then hand to
 /// [`SegmentWriter::finish`].
 #[derive(Debug)]
 pub(crate) struct StagedAppend {
     bytes: Vec<u8>,
     /// `(offset, position, length)` of each record.
     boundaries: Vec<(Offset, u64, u64)>,
-    /// Shares the writer's cursor, which `stage` left at the end of the file.
+    /// Shares the writer's cursor, which `stage_at` left at the end of the file.
     file: Arc<File>,
+    /// The last record's generation, the floor for the next append.
+    generation: Option<u64>,
+    /// Where the batch's first and last known generations sit.
+    known: KnownGenerations,
+}
+
+/// The generations a batch is stamped with in a v9 segment.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Stamps<'a> {
+    /// Every record at one generation.
+    All(u64),
+    /// Runs, oldest first, each covering its records up to the next run's
+    /// start. The first starts at or before the batch.
+    Runs(&'a [crate::log::Epoch]),
+}
+
+impl Stamps<'_> {
+    /// The generation of the record at `offset`.
+    pub(crate) fn at(self, offset: Offset) -> u64 {
+        match self {
+            Self::All(generation) => generation,
+            Self::Runs(runs) => runs
+                .iter()
+                .rev()
+                .find(|run| run.start_offset <= offset)
+                .or(runs.first())
+                .map_or(0, |run| run.generation),
+        }
+    }
+
+    /// Refuse stamps that do not cover `first..=last`, that fall within it,
+    /// or that start below `floor`, the generation of the record before.
+    fn check(self, first: Offset, last: Offset, floor: Option<u64>) -> Result<()> {
+        if let Self::Runs(runs) = self {
+            let covers = runs.first().is_some_and(|run| run.start_offset <= first);
+            let rising = runs.windows(2).all(|pair| {
+                pair[0].start_offset < pair[1].start_offset
+                    && pair[0].generation < pair[1].generation
+            });
+            if !covers || !rising {
+                return Err(StorageError::WriterUnknown(
+                    "the batch's generations do not cover it in order",
+                ));
+            }
+        }
+        // Unknown records are exempt, so the batch's first known record is
+        // the one the scan compares with the floor.
+        let first_known = match self {
+            Self::All(generation) => Some((first, generation)),
+            Self::Runs(runs) => {
+                let from = runs.iter().rposition(|run| run.start_offset <= first);
+                runs[from.unwrap_or(0)..]
+                    .iter()
+                    .take_while(|run| run.start_offset <= last)
+                    .find(|run| run.generation != crate::log::UNKNOWN_WRITER)
+                    .map(|run| (run.start_offset.max(first), run.generation))
+            }
+        };
+        match (first_known, floor) {
+            (Some((offset, generation)), Some(floor))
+                if generation < floor && generation != crate::log::UNKNOWN_WRITER =>
+            {
+                Err(StorageError::GenerationBelowFloor {
+                    offset,
+                    generation,
+                    floor,
+                })
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl StagedAppend {
@@ -600,14 +816,23 @@ pub(crate) struct BlankSegment {
     reserve_limit_bytes: u64,
 }
 
+/// Whether creating a segment syncs its directory entry itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirEntry {
+    Sync,
+    /// The caller syncs the directory before anything relies on the segment.
+    Deferred,
+}
+
 impl BlankSegment {
     /// Create the file and its index, reserve the first blocks, and make the
-    /// directory entry durable.
+    /// directory entry durable unless `entry` leaves that to the caller.
     pub(crate) fn create(
         dir: &Path,
         id: SegmentId,
         reserve_limit_bytes: u64,
         index_spacing_bytes: u64,
+        entry: DirEntry,
     ) -> Result<Self> {
         let path = dir.join(segment_file_name(id));
         let file = OpenOptions::new()
@@ -615,7 +840,11 @@ impl BlankSegment {
             .create_new(true)
             .open(&path)?;
         let reserve = Reservation::initial_bytes(reserve_limit_bytes);
-        if let Err(err) = preallocate(&file, 0, reserve).and_then(|()| sync_dir(dir)) {
+        let created = preallocate(&file, 0, reserve).and_then(|()| match entry {
+            DirEntry::Sync => sync_dir(dir),
+            DirEntry::Deferred => Ok(()),
+        });
+        if let Err(err) = created {
             // On a full disk the reservation is what fails. A file left behind
             // would be a log's only segment with no header.
             drop(file);
@@ -680,6 +909,8 @@ impl BlankSegment {
             #[cfg(test)]
             fail_next_sync: false,
             version,
+            last_generation: None,
+            known: Some(KnownGenerations::default()),
         })
     }
 
@@ -694,7 +925,7 @@ impl BlankSegment {
         drop(file);
         let dir = path.parent().map(Path::to_path_buf);
         for path in [path, index_path] {
-            match std::fs::remove_file(&path) {
+            match crate::fs::remove_file(&path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(StorageError::Io(err)),
@@ -716,7 +947,7 @@ fn remove_unused_segment(dir: &Path, id: SegmentId) {
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
     ] {
-        let _ = std::fs::remove_file(path);
+        let _ = crate::fs::remove_file(path);
     }
 }
 
@@ -735,6 +966,14 @@ pub struct ResumeState {
     pub index: SparseIndex,
     /// From the segment header: see [`SegmentWriter::holds`].
     pub version: u16,
+    /// The generation of the newest record in the log, which appends here
+    /// must not fall below. From a full scan of this segment, or the segment
+    /// before it when this one holds no v9 record; a resume scan sees only
+    /// part of a segment and must not supply it.
+    pub generation_floor: Option<u64>,
+    /// Where this segment's first and last known generations sit, from a
+    /// full scan; `None` when they are not known.
+    pub(crate) known: Option<KnownGenerations>,
 }
 
 /// Refuse a record too large to write. A log checks this before it rolls for

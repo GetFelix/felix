@@ -26,11 +26,26 @@
 //! headers block (storage format v8) and `record_headers`. See
 //! [`record_headers_stored`].
 //!
+//! `<durable root>/record-generations` says the same of a v9 segment and
+//! `record_generations`. See [`record_generations_written`].
+//!
 //! `<durable root>/replaced-storage` says the control plane once registered
 //! this node under another storage id, so this directory may lack copies the
 //! node held. See [`record_replaced`].
+//!
+//! `<durable root>/rotated-ids` names the ids this directory had before a
+//! crash rotated them while it kept every ballot. See [`record_rotated_id`].
+//!
+//! `<durable root>/copy-trust` names the copies a leader has vouched for
+//! since the last rotation, and the copies this broker led before a crash.
+//! See [`copy_trust`].
+//!
+//! `<durable root>/run-token` pairs the directory with a witness outside it,
+//! which a restore cannot bring back. See [`witness`].
 
 mod boot;
+pub mod copy_trust;
+pub mod witness;
 
 use std::path::{Path, PathBuf};
 
@@ -162,6 +177,7 @@ pub fn begin(
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
+    copy_trust::ensure(root, origin == Origin::Created)?;
     let last_run = read(root, loaded)?;
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
@@ -179,7 +195,9 @@ pub fn begin(
         };
     let rotate = restored || crashed;
     let id = if rotate {
-        let id = storage_identity::replace(root, fresh())?;
+        // Before the new id: a crash in between must not leave a rotated
+        // directory whose copies a later clean start still trusts.
+        let id = copy_trust::rotate_storage_id(root, fresh())?;
         if restored {
             tracing::warn!(
                 previous = %loaded,
@@ -286,9 +304,7 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// Whether a log under `root` may hold a head trim. Only the file's presence
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
-    root.join(HEAD_TRIMMED_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(HEAD_TRIMMED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The record-headers marker's name under the durable root. Not a directory,
@@ -306,34 +322,187 @@ pub fn record_headers_stored(root: &Path) -> Result<()> {
 /// Whether a log under `root` may hold a record with headers. Only the
 /// file's presence counts: it is renamed into place whole, and never removed.
 pub fn has_record_headers(root: &Path) -> Result<bool> {
-    root.join(RECORD_HEADERS_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(RECORD_HEADERS_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The record-generations marker's name under the durable root. Not a
+/// directory, so shard discovery passes over it.
+pub const RECORD_GENERATIONS_FILE_NAME: &str = "record-generations";
+
+/// Record, durably, that a log under `root` is about to start a segment in
+/// format v9. Call before the first such segment is created, for the same
+/// reason as [`record_headers_stored`].
+pub fn record_generations_written(root: &Path) -> Result<()> {
+    write_atomically(
+        root,
+        RECORD_GENERATIONS_FILE_NAME,
+        b"record_generations\n",
+        true,
+    )
+}
+
+/// Whether a log under `root` may hold a v9 segment. Only the file's presence
+/// counts: it is renamed into place whole, and never removed.
+pub fn has_record_generations(root: &Path) -> Result<bool> {
+    crate::fs::try_exists(root.join(RECORD_GENERATIONS_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The replaced-storage marker's name under the durable root.
 pub const REPLACED_FILE_NAME: &str = "replaced-storage";
 
 /// Record, durably, that the control plane last registered this node under
-/// another storage id. Call before the node registers the new one, after
-/// which the registration no longer says so. Never removed,
-/// since a copy with no replica set on this directory may be one the node
-/// held under the old id, however many restarts later.
-pub fn record_replaced(root: &Path) -> Result<()> {
-    write_atomically(root, REPLACED_FILE_NAME, b"replaced\n", true)
+/// another storage id, when its record of the node was at incarnation
+/// `after` and the directory now runs under `storage_id`. Call before the
+/// node registers `storage_id`, after which the registration no longer says
+/// so. Never removed, since a copy with no replica set on this directory may
+/// be one the node held under the old id, however many restarts later. A
+/// later replacement overwrites the incarnation and id.
+///
+/// Removes the control-plane view first, durably: a view on disk predates the
+/// replacement, and `after` alone cannot date it, since the control plane's
+/// incarnations restart when a node is deleted or the control plane is
+/// restored. So any view beside a marker was written after it.
+pub fn record_replaced(root: &Path, storage_id: StorageId, after: u64) -> Result<()> {
+    crate::controlplane_view::forget(root)?;
+    let body = format!(
+        "replaced\nstorage_id={}\nafter={after}\n",
+        storage_id.to_hex()
+    );
+    write_atomically(root, REPLACED_FILE_NAME, body.as_bytes(), true)
 }
 
 /// Whether [`record_replaced`] ran on `root`.
 pub fn replaced(root: &Path) -> Result<bool> {
-    root.join(REPLACED_FILE_NAME)
-        .try_exists()
-        .map_err(StorageError::Io)
+    crate::fs::try_exists(root.join(REPLACED_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The lost-copy marker's name under the durable root. Not a directory, so
+/// shard discovery passes over it.
+pub const LOST_COPY_FILE_NAME: &str = "lost-copy";
+
+/// Record, durably, whether this directory replaced a copy the node lost:
+/// one wiped, restored from a snapshot, or not the one the control plane
+/// last registered. Unlike [`record_replaced`], never written for a storage
+/// id a crash rotated on the same directory. Callers never write `false`
+/// over `true`, and the file is never removed.
+pub fn record_lost_copy(root: &Path, lost: bool) -> Result<()> {
+    let body: &[u8] = if lost { b"lost\n" } else { b"kept\n" };
+    write_atomically(root, LOST_COPY_FILE_NAME, body, true)
+}
+
+/// What [`record_lost_copy`] last wrote under `root`, or `None` if it never
+/// ran there. A file that says anything else reads as a lost copy.
+pub fn lost_copy(root: &Path) -> Result<Option<bool>> {
+    match crate::fs::read(root.join(LOST_COPY_FILE_NAME)) {
+        Ok(bytes) => Ok(Some(bytes != b"kept\n")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
+/// The rotated-ids record's name under the durable root. Not a directory, so
+/// shard discovery passes over it.
+pub const ROTATED_IDS_FILE_NAME: &str = "rotated-ids";
+const ROTATED_IDS_HEADER: &str = "rotated_ids\n";
+/// How many ids [`record_rotated_id`] keeps, newest first. A set naming an
+/// older one reads as naming a lost copy, which costs a readmission, no more.
+const ROTATED_IDS_KEPT: usize = 16;
+
+/// Record, durably, that this directory ran under `id` until a crash rotated
+/// it away and kept every ballot, so a set naming `id` names this directory's
+/// own copy. Call before the new id registers, and only for a rotation that
+/// [`record_lost_copy`] did not mark lost.
+pub fn record_rotated_id(root: &Path, id: StorageId) -> Result<()> {
+    let mut ids = rotated_ids(root)?;
+    ids.retain(|kept| *kept != id);
+    ids.insert(0, id);
+    ids.truncate(ROTATED_IDS_KEPT);
+    let mut body = String::from(ROTATED_IDS_HEADER);
+    for id in &ids {
+        body.push_str(&id.to_hex());
+        body.push('\n');
+    }
+    write_atomically(root, ROTATED_IDS_FILE_NAME, body.as_bytes(), true)
+}
+
+/// The ids [`record_rotated_id`] recorded under `root`, newest first. Empty
+/// without the file, or for one that does not decode, which claims no id as
+/// this directory's own.
+pub fn rotated_ids(root: &Path) -> Result<Vec<StorageId>> {
+    let bytes = match crate::fs::read(root.join(ROTATED_IDS_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    Ok(decode_rotated_ids(&bytes).unwrap_or_default())
+}
+
+pub(crate) fn decode_rotated_ids(bytes: &[u8]) -> Option<Vec<StorageId>> {
+    let body = std::str::from_utf8(bytes)
+        .ok()?
+        .strip_prefix(ROTATED_IDS_HEADER)?;
+    body.lines().map(StorageId::from_hex).collect()
+}
+
+/// The replaced-storage marker's raw bytes under `root`, or `None` without one.
+pub fn read_replaced_bytes(root: &Path) -> Result<Option<Vec<u8>>> {
+    match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
+/// What the replaced-storage marker under `root` says, or `None` without one.
+pub fn read_replaced(root: &Path) -> Result<Option<ReplacedMark>> {
+    let bytes = match crate::fs::read(root.join(REPLACED_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    Ok(Some(decode_replaced(&bytes)))
+}
+
+/// The replaced-storage marker's contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplacedMark {
+    /// Written by an older build, or unreadable: when it was written is
+    /// unknown.
+    Unknown,
+    /// Written for `storage_id` when the control plane's record of the node
+    /// was at incarnation `after`. A registration under `storage_id` since
+    /// then has a higher incarnation.
+    Under { storage_id: String, after: u64 },
+}
+
+pub(crate) fn decode_replaced(bytes: &[u8]) -> ReplacedMark {
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return ReplacedMark::Unknown;
+    };
+    let mut lines = text.lines();
+    if lines.next() != Some("replaced") {
+        return ReplacedMark::Unknown;
+    }
+    let storage_id = lines
+        .next()
+        .and_then(|line| line.strip_prefix("storage_id="));
+    let after = lines
+        .next()
+        .and_then(|line| line.strip_prefix("after="))
+        .and_then(|after| after.parse().ok());
+    match (storage_id, after) {
+        (Some(storage_id), Some(after)) => ReplacedMark::Under {
+            storage_id: storage_id.to_owned(),
+            after,
+        },
+        _ => ReplacedMark::Unknown,
+    }
 }
 
 /// The node incarnation recorded under `root`.
 pub fn read_registration(root: &Path) -> Result<Recorded> {
     let path = root.join(REGISTRATION_FILE_NAME);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Recorded::Unrecorded),
         Err(err) => return Err(StorageError::Io(err)),
@@ -387,21 +556,33 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// Record that the run under way on `root` may have lost records it
 /// acknowledged without a machine crash: a failed fsync may have dropped the
 /// pages it could not write, or a stop could not flush them. A crash after
-/// this rotates the id whatever the boot. Only a relaxed run's record names a
-/// boot, so any other is left as it is.
+/// this rotates the id whatever the boot. A relaxed run's record loses its
+/// boot, and an `OnCommit` run's, which names none, becomes a relaxed run
+/// without one: the page cache keeps the unsynced marker on the same boot,
+/// and a poisoned `OnCommit` log may hold bytes the failed flush never wrote.
+/// A clean stop is left as it is.
 ///
 /// Not synced. Only a crash of the process has to find it, and the page cache
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
 pub fn forget_boot(root: &Path) -> Result<()> {
-    let bytes = match std::fs::read(path_in(root)) {
+    let bytes = match crate::fs::read(path_in(root)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(StorageError::Io(err)),
     };
     match decode(&bytes) {
         Some(Record {
-            id, boot: Some(_), ..
+            state: RUNNING,
+            id,
+            boot: Some(_),
+            ..
+        })
+        | Some(Record {
+            state: RUNNING,
+            id,
+            flags: 0,
+            boot: None,
         }) => write(root, &encode(RUNNING, RELAXED, id), false),
         _ => Ok(()),
     }
@@ -433,7 +614,7 @@ pub(crate) fn forget_watched() {
 /// What the record under `root` says, judged against the id now there.
 pub fn read(root: &Path, id: StorageId) -> Result<LastRun> {
     let path = path_in(root);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(LastRun::Unrecorded),
         Err(err) => return Err(StorageError::Io(err)),
@@ -543,19 +724,19 @@ fn write(root: &Path, record: &[u8], durable: bool) -> Result<()> {
 
 /// A crash leaves the old record or the new one, never a mix. With `durable`
 /// the record and the rename are synced.
-fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
+pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
     use std::io::Write;
 
     let path = root.join(name);
     let temporary = path.with_extension("tmp");
     {
-        let mut file = std::fs::File::create(&temporary).map_err(StorageError::Io)?;
+        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(bytes).map_err(StorageError::Io)?;
         if durable {
             crate::io::sync_all(&file).map_err(StorageError::Io)?;
         }
     }
-    std::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
+    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     if durable {
         sync_dir(root).map_err(StorageError::Io)?;
     }

@@ -134,6 +134,7 @@ export default defineConfig({
             { label: 'Semantics', slug: 'architecture/semantics' },
             { label: 'Projections', slug: 'architecture/projections' },
             { label: 'How Felix Is Tested', slug: 'architecture/testing' },
+            { label: 'Correctness Evidence', slug: 'architecture/correctness-evidence' },
             { label: 'Metadata Raft', slug: 'architecture/metadata-raft' },
           ],
         },
@@ -174,7 +175,7 @@ export default defineConfig({
             { label: 'felix-arena', slug: 'built-on-felix/arena' },
             { label: 'felix-metro', slug: 'built-on-felix/metro' },
             { label: 'felix-blocks', slug: 'built-on-felix/blocks' },
-            { label: 'felix-agents', slug: 'built-on-felix/agents' },
+            { label: 'KBL', slug: 'built-on-felix/agents' },
             {
               label: 'felixd',
               collapsed: true,
@@ -205,6 +206,7 @@ export default defineConfig({
           items: [
             { label: 'QUIC Transport', slug: 'features/quic-transport' },
             { label: 'Pub/Sub Streaming', slug: 'features/pubsub' },
+            { label: 'Sharding', slug: 'features/sharding' },
             { label: 'Queues and Consumer Groups', slug: 'features/queues' },
             { label: 'Atomic Commits', slug: 'features/atomic-commits' },
             { label: 'Distributed Cache', slug: 'features/cache' },
@@ -229,6 +231,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { label: 'Running in Production', slug: 'deployment/production' },
+            { label: 'Choosing a Configuration', slug: 'deployment/choosing-a-configuration' },
             { label: 'Local Development', slug: 'deployment/local' },
             { label: 'Docker Compose', slug: 'deployment/docker-compose' },
             { label: 'Kubernetes', slug: 'deployment/kubernetes' },

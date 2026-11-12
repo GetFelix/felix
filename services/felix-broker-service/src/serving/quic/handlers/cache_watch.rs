@@ -322,8 +322,7 @@ pub(crate) async fn handle_cache_watch_message(
     let gate = CommitGate {
         broker: Arc::clone(&broker),
         key: shard_key,
-        marks: publish_ctx.marks.clone(),
-        ingress: publish_ctx.ingress.clone(),
+        engine: Arc::clone(&publish_ctx.engine),
         timeout: publish_ctx.quorum_timeout,
     };
     if let Err(err) = gate.wait(tail).await {
@@ -499,8 +498,7 @@ pub(crate) async fn handle_cache_watch_message(
 struct CommitGate {
     broker: Arc<Broker>,
     key: crate::shards::ShardKey,
-    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
-    ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
     timeout: std::time::Duration,
 }
 
@@ -508,19 +506,14 @@ impl CommitGate {
     /// Wait until every change below `end` is committed. Returns at once for
     /// a cache that is not `Quorum`, or a broker with no replicas to wait for.
     async fn wait(&self, end: u64) -> Result<(), felix_replication::quorum::QuorumError> {
+        use felix_replication::engine::Engine;
         let consistency = self
             .broker
             .cache_consistency(&self.key.tenant_id, &self.key.namespace, &self.key.stream)
             .await;
-        felix_replication::quorum::await_readable(
-            consistency,
-            &self.key,
-            self.marks.as_deref(),
-            self.ingress.as_deref(),
-            end,
-            self.timeout,
-        )
-        .await
+        self.engine
+            .await_readable(consistency, &self.key, end, self.timeout)
+            .await
     }
 
     /// [`Self::wait`] for as long as it takes, for a live change. False once
@@ -570,40 +563,49 @@ async fn write_replayed_changes(
             if record.offset >= until {
                 return Ok(());
             }
-            if record.mark.is_generation_start() {
-                // Replication's, not a change; see the cache index.
-                continue;
+            if let Some(message) = replayed_change(record, filter)? {
+                write_message(event_send, message).await?;
             }
-            let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
-                Ok(op) => op,
-                Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),
-            };
-            if !filter.matches(op.key()) {
-                continue;
-            }
-            let message = match op {
-                felix_storage::cache::CacheOp::Put {
-                    key,
-                    value,
-                    expires_at_millis,
-                    ..
-                } => Message::CacheEvent {
-                    key,
-                    value: Some(value),
-                    offset: record.offset,
-                    expires_at_millis,
-                },
-                felix_storage::cache::CacheOp::Delete { key } => Message::CacheEvent {
-                    key,
-                    value: None,
-                    offset: record.offset,
-                    expires_at_millis: 0,
-                },
-            };
-            write_message(event_send, message).await?;
         }
     }
     Ok(())
+}
+
+/// The change a replayed record delivers, if it is data and matches.
+fn replayed_change(
+    record: felix_storage::log::LogRecord,
+    filter: &CacheWatchFilter,
+) -> Result<Option<Message>> {
+    if !record.mark.is_data() {
+        // Not a change; see the cache index.
+        return Ok(None);
+    }
+    let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
+        Ok(op) => op,
+        Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),
+    };
+    if !filter.matches(op.key()) {
+        return Ok(None);
+    }
+    Ok(Some(match op {
+        felix_storage::cache::CacheOp::Put {
+            key,
+            value,
+            expires_at_millis,
+            ..
+        } => Message::CacheEvent {
+            key,
+            value: Some(value),
+            offset: record.offset,
+            expires_at_millis,
+        },
+        felix_storage::cache::CacheOp::Delete { key } => Message::CacheEvent {
+            key,
+            value: None,
+            offset: record.offset,
+            expires_at_millis: 0,
+        },
+    }))
 }
 
 /// Each matching key's current value below `tail`, in offset order.

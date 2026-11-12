@@ -51,7 +51,7 @@ pub struct LogCache {
     observer: Observer,
     /// Whether each cache's logs are held at the commit offset, keyed by
     /// tenant, namespace and cache. See [`StorageApi::set_retention_hold`].
-    holds: SyncMutex<std::collections::HashMap<(String, String, String), bool>>,
+    holds: SyncMutex<felix_common::random::HashMap<(String, String, String), bool>>,
     /// Which incarnation of each name to open: a cache's own, or for
     /// consumer-group state and dead letters, their stream's.
     incarnations: crate::incarnation::Incarnations,
@@ -81,7 +81,7 @@ impl LogCache {
             dirs: Default::default(),
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
-            holds: SyncMutex::new(std::collections::HashMap::new()),
+            holds: SyncMutex::new(felix_common::random::HashMap::default()),
         })
     }
 
@@ -366,9 +366,9 @@ impl LogCache {
 
     /// The delete behind [`StorageApi::delete`].
     ///
-    /// Same two-half shape as [`LogCache::put_checked`]. The previous value is
-    /// read at staging time; against concurrent writers to the same key, the
-    /// delete's place in the shard's history is its disk offset.
+    /// Same two-half shape as [`LogCache::put_checked`]. Against concurrent
+    /// writers to the same key, the delete's place in the shard's history is
+    /// its disk offset, and the value it returns is the one the key held there.
     pub async fn delete_checked(
         &self,
         tenant_id: &str,
@@ -501,11 +501,6 @@ impl LogCache {
                 if !holds {
                     return Ok(Err(live.then_some(entry.version)));
                 }
-                let previous = if live {
-                    shard.read_value(&state, entry).await?
-                } else {
-                    None
-                };
                 let payload = op.encode();
                 let bytes = payload.len() as u64;
                 let (pending, turn) = state
@@ -537,11 +532,11 @@ impl LogCache {
                     observer,
                     _in_flight: in_flight,
                 });
-                Ok(Ok((previous, staged)))
+                Ok(Ok(staged))
             }
         })
         .await?;
-        let (previous, mut staged) = match staged {
+        let mut staged = match staged {
             Ok(staged) => staged,
             Err(current) => {
                 return Ok(Deleted {
@@ -554,10 +549,22 @@ impl LogCache {
 
         staged.commit().await?;
         let mut state = shard.state.lock().await;
+        // Read now, in turn order: a put to this key staged before the delete
+        // may not have applied when the delete staged, and the value from
+        // before it is not what the delete removed. Applied before a read
+        // error is returned, since the record is already durable.
+        let previous = match state.index.entries.get(key).copied() {
+            Some(entry)
+                if matches!(when, DeleteWhen::Always) && !entry.is_expired(now_millis()) =>
+            {
+                shard.read_value(&state, entry).await
+            }
+            _ => Ok(None),
+        };
         staged.apply(&mut state);
         Ok(Deleted {
             written: true,
-            previous,
+            previous: previous?,
             current: None,
         })
     }
@@ -662,6 +669,47 @@ impl LogCache {
             .shard_with_base(tenant, namespace, cache, shard, Some(base_offset), None)?
             .current_log()
             .await)
+    }
+
+    /// Whether the shard has a directory on disk at its current incarnation,
+    /// open or not. Nothing is created or recovered.
+    pub fn on_disk(&self, tenant: &str, namespace: &str, cache: &str, shard: u32) -> bool {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: cache.to_string(),
+            shard,
+        };
+        self.incarnations
+            .resolve(tenant, namespace, cache)
+            .is_some_and(|incarnation| {
+                crate::fs::is_dir(layout::incarnation_dir(&self.root, &key, incarnation))
+            })
+    }
+
+    /// What [`LogCache::shard_log_for`] would return, when the shard is open
+    /// already; `None` without creating or recovering anything otherwise.
+    /// `None` for `incarnation` checks nothing, as [`LogCache::shard_log`] does.
+    pub async fn opened_shard_log(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<DiskLog> {
+        let held = self
+            .incarnations
+            .resolve(tenant, namespace, cache)
+            .filter(|held| incarnation.is_none_or(|expected| expected == *held))?;
+        let id = (
+            tenant.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+            held,
+        );
+        Some(self.shards.get_open(&id)?.current_log().await)
     }
 
     /// [`LogCache::shard_log`], or [`LogCache::shard_log_at`] with a base,

@@ -27,8 +27,9 @@
 
 mod fair_queue;
 
+use felix_common::random::HashMap;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -303,7 +304,7 @@ impl Partition {
         Self {
             state: Mutex::new(State {
                 queue: FairQueue::new(capacity, share, QUANTUM_BYTES),
-                waiters: HashMap::new(),
+                waiters: HashMap::default(),
                 heads: BTreeSet::new(),
                 next_id: 0,
                 #[cfg(test)]

@@ -17,11 +17,11 @@ use crate::peer::{Incarnation, PeerIdentity};
 /// leader only has to be momentarily idle. Loosening it is a change to make
 /// deliberately, with a measurement behind it, rather than a default nobody
 /// chose.
-pub const CATCH_UP_BOUND: u64 = 0;
+pub(crate) const CATCH_UP_BOUND: u64 = 0;
 
 /// How far a follower has got, as this leader understands it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FollowerCursor {
+pub(crate) struct FollowerCursor {
     pub node_id: String,
     pub addr: SocketAddr,
     /// The offset to send next. Moved only by the follower's own answers.
@@ -33,6 +33,10 @@ pub struct FollowerCursor {
     /// Set once this follower has answered something that does not resolve by
     /// retrying. Nothing more is shipped to it at this generation.
     pub halted: Option<Halt>,
+    /// The ballot this follower named when it fenced this leader
+    /// ([`Halt::Fenced`]): a newer generation, or this one promised to
+    /// another node. `None` when it named none, such as for a newer set.
+    pub(crate) fenced_by: Option<u64>,
     /// This follower discarded its copy at the leader's request and is being
     /// shipped from the leader's base. Holds one of the policy's slots until
     /// it reaches the tail.
@@ -47,9 +51,18 @@ pub struct FollowerCursor {
     /// A new cursor starts stalled, since its offset is only where shipping
     /// will start and says nothing about what the follower holds.
     pub stalled: bool,
+    /// The follower's last answer to a batch was that its routing view is
+    /// behind, and it took the fence the pass sent it again, so the next
+    /// pass resolves it. Stalled, but up and answering, unlike a follower
+    /// the request never reached or one refusing for a reason a pass cannot
+    /// fix.
+    pub(crate) refused: bool,
     /// The follower refused the frame kind that carries a commit offset, so
     /// it is shipped without one.
     pub legacy_frames: bool,
+    /// The follower refused a batch that named no writers: it stamps records
+    /// though this log does not yet. It is sent them from then on.
+    pub(crate) wants_writers: bool,
     /// The storage identity the follower gave when this cursor's positions
     /// were learned; `None` from one that gives none. A different one is a
     /// different copy of the log, so the cursor starts over.
@@ -68,36 +81,94 @@ pub struct FollowerCursor {
     ///
     /// [`ReplicateOk::learner`]: felix_wire::internal::ReplicateOk::learner
     pub learner: bool,
+    /// What the follower's last checked answer said it holds, and the copy
+    /// and generation that answer came from. `confirmed` counts toward a
+    /// mark only up to this, and only while the cursor still names that copy
+    /// (see [`Self::vouched_at`]).
+    pub(crate) vouched: Option<Vouched>,
+    /// The newer generation the follower's ballot holds, from the refusal
+    /// that halted it. Only set beside a fenced halt, and only while the
+    /// cursor names the copy that refused.
+    pub(crate) superseded_by: Option<u64>,
+    /// The fenced halt's refusal said the control plane assigned a newer
+    /// generation. See [`crate::replica::assigned_newer`].
+    pub(crate) assigned_newer: bool,
+    /// The follower's last answer said its copy does not follow this leader
+    /// at this generation. See [`crate::replica::refuses_leader`].
+    pub(crate) refuses_leader: bool,
+    /// This copy stored a batch that left it level through the batch's end,
+    /// this leader's start and a commit offset above zero: what a follower
+    /// back from an unclean restart needs to be trusted again, or answered
+    /// the one empty batch a log that never held a record sends instead.
+    /// Until then a level follower is sent its last record again with the
+    /// mark, since on an idle shard nothing else would reach it.
+    pub(crate) mark_carried: bool,
+}
+
+/// A follower's answer that came from the copy its cursor describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Vouched {
+    pub(crate) identity: PeerIdentity,
+    pub(crate) generation: u64,
+    pub(crate) offset: u64,
 }
 
 impl FollowerCursor {
-    pub fn new(node_id: impl Into<String>, addr: SocketAddr, next_offset: u64) -> Self {
+    pub(crate) fn new(node_id: impl Into<String>, addr: SocketAddr, next_offset: u64) -> Self {
         Self {
             node_id: node_id.into(),
             addr,
             next_offset,
             confirmed: 0,
             halted: None,
+            fenced_by: None,
             rebuilding: false,
             rebuild_refused: None,
             shipped_bytes: 0,
             stalled: true,
+            refused: false,
             legacy_frames: false,
+            wants_writers: false,
             storage_id: None,
             incarnation: Incarnation::Unsent,
             route_behind: false,
             learner: false,
+            vouched: None,
+            superseded_by: None,
+            assigned_newer: false,
+            refuses_leader: false,
+            mark_carried: false,
+        }
+    }
+
+    /// What this follower's last checked answer vouched for at `generation`,
+    /// while the cursor still describes the copy and generation that answer
+    /// came from. A copy the leader has seen change since, even only its
+    /// incarnation, has to answer again. A halted follower vouches for
+    /// nothing: it is no longer shipped to or pinged, so it must not be named
+    /// holding the start. A learner is still reported holding what it vouched
+    /// for; the marks leave it out ([`Self::counts`]).
+    pub(crate) fn vouched_at(&self, generation: u64) -> u64 {
+        match self.vouched {
+            Some(vouched)
+                if self.halted.is_none()
+                    && vouched.identity == self.identity()
+                    && vouched.generation == generation =>
+            {
+                vouched.offset.min(self.confirmed)
+            }
+            _ => 0,
         }
     }
 
     /// Whether this follower's `confirmed` counts toward a mark: not while it
     /// is halted, nor while its copy is a learner.
-    pub fn counts(&self) -> bool {
+    pub(crate) fn counts(&self) -> bool {
         self.halted.is_none() && !self.learner
     }
 
     /// The identity this cursor's positions were learned under.
-    pub fn identity(&self) -> PeerIdentity {
+    pub(crate) fn identity(&self) -> PeerIdentity {
         PeerIdentity {
             storage: self.storage_id,
             incarnation: self.incarnation,
@@ -112,7 +183,7 @@ impl FollowerCursor {
 /// is harmless, since a rebuild either keeps a follower's committed records or
 /// refuses, so the only cost of asking is the round trip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RebuildBackoff {
+pub(crate) struct RebuildBackoff {
     /// Refusals in a row from this follower at this generation.
     pub refusals: u32,
     /// No rebuild is requested before this.
@@ -121,12 +192,12 @@ pub struct RebuildBackoff {
 
 impl RebuildBackoff {
     /// The first wait after a refusal. Doubles with each refusal in a row.
-    pub const FIRST: std::time::Duration = std::time::Duration::from_secs(5);
+    pub(crate) const FIRST: std::time::Duration = std::time::Duration::from_secs(5);
     /// The longest wait between two requests.
-    pub const MAX: std::time::Duration = std::time::Duration::from_secs(300);
+    pub(crate) const MAX: std::time::Duration = std::time::Duration::from_secs(300);
 
     /// The backoff after one more refusal than `previous`.
-    pub fn after(previous: Option<Self>, now: tokio::time::Instant) -> Self {
+    pub(crate) fn after(previous: Option<Self>, now: tokio::time::Instant) -> Self {
         let refusals = previous.map_or(0, |backoff| backoff.refusals) + 1;
         let wait = Self::FIRST
             .saturating_mul(1 << (refusals - 1).min(16))
@@ -140,7 +211,7 @@ impl RebuildBackoff {
 
 /// Why replication to a follower stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum Halt {
+pub(crate) enum Halt {
     /// The follower holds different bytes at an offset both sides have. Records
     /// are never rewritten, so there is no repair.
     #[error("the follower's log has diverged from this one")]
@@ -180,13 +251,41 @@ impl Halt {
 // Written as a comparison because the bound is the thing meant to change: if it
 // is ever raised, this reads correctly without being rediscovered.
 #[allow(clippy::absurd_extreme_comparisons)]
-pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
+pub(crate) fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
     followers
         .iter()
         .filter(|follower| follower.halted.is_none())
         .filter(|follower| tail.saturating_sub(follower.confirmed) <= CATCH_UP_BOUND)
         .map(|follower| follower.node_id.clone())
         .collect()
+}
+
+/// The newest generation a follower refused this leader's with, when the
+/// followers left cannot make a majority with the leader.
+///
+/// Such a refusal never goes back, and it came after the fence, so no fence
+/// reports it. A follower counts as left unless it is halted, a learner, the
+/// staged `learner`, or stalled: one whose exchanges hang to their timeout
+/// must not hold the report off.
+pub(crate) fn refused_without_majority(
+    followers: &[FollowerCursor],
+    learner: Option<&str>,
+) -> Option<u64> {
+    let set: Vec<&FollowerCursor> = followers
+        .iter()
+        .filter(|follower| learner != Some(follower.node_id.as_str()))
+        .collect();
+    let ballot = set
+        .iter()
+        .filter(|follower| follower.halted == Some(Halt::Fenced))
+        .filter_map(|follower| follower.superseded_by)
+        .max()?;
+    let left = set
+        .iter()
+        .filter(|follower| follower.counts())
+        .filter(|follower| !follower.stalled)
+        .count();
+    (left + 1 < crate::quorum::majority_of(set.len())).then_some(ballot)
 }
 
 /// How far behind the slowest follower is, in records.
@@ -198,7 +297,7 @@ pub fn caught_up(tail: u64, followers: &[FollowerCursor]) -> Vec<String> {
 /// A halted follower is excluded. It is not lagging, it has stopped, and
 /// folding "stopped" into a lag figure hides it behind a number that merely
 /// looks large.
-pub fn lag_records(tail: u64, followers: &[FollowerCursor]) -> Option<u64> {
+pub(crate) fn lag_records(tail: u64, followers: &[FollowerCursor]) -> Option<u64> {
     followers
         .iter()
         .filter(|follower| follower.halted.is_none())

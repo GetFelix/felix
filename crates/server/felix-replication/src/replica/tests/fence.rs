@@ -5,7 +5,7 @@ use felix_wire::internal::{Fence, FenceOk, ReplicaLog, ReplicateBootstrap, Repli
 
 use super::*;
 
-fn fence(generation: u64) -> Fence {
+pub(super) fn fence(generation: u64) -> Fence {
     Fence {
         correlation_id: 9,
         shard: batch(generation, 0, &[]).shard,
@@ -14,7 +14,7 @@ fn fence(generation: u64) -> Fence {
     }
 }
 
-fn taken(answer: &InternalMessage) -> FenceOk {
+pub(super) fn taken(answer: &InternalMessage) -> FenceOk {
     match answer {
         InternalMessage::FenceOk(ok) => *ok,
         other => panic!("expected the fence to be taken, got {other:?}"),
@@ -416,6 +416,7 @@ async fn a_group_log_answers_the_fence_and_the_fetch() {
 
 fn fetch(generation: u64, from_offset: u64) -> felix_wire::internal::ReplicateFetch {
     felix_wire::internal::ReplicateFetch {
+        writers: false,
         timed: false,
         headers: false,
         correlation_id: 4,
@@ -473,17 +474,19 @@ struct OverTheWire(ReplicaHandler);
 #[async_trait::async_trait]
 impl crate::peer::PeerRequestHandler for OverTheWire {
     async fn handle(&self, request: InternalMessage) -> InternalMessage {
-        self.handle_from(None, request).await
+        self.handle_from(None, PeerCapabilities::NONE, request)
+            .await
     }
 
     async fn handle_from(
         &self,
         peer: Option<Arc<str>>,
+        caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
         let sender = peer.as_deref();
         match request {
-            InternalMessage::Fence(fence) => self.0.fence(sender, fence).await,
+            InternalMessage::Fence(fence) => self.0.fence_from(sender, caller, fence).await,
             InternalMessage::ReplicateFetch(fetch) => self.0.fetch(sender, fetch).await,
             other => panic!("unexpected {:?}", other.kind()),
         }
@@ -884,7 +887,7 @@ async fn the_ballot_names_the_peer_that_said_hello() {
 
 /// `LOCAL` as it led the shard at generation 5 before a crash: a record, and
 /// its own ballot.
-async fn led_before_a_crash(dir: &std::path::Path) {
+pub(super) async fn led_before_a_crash(dir: &std::path::Path) {
     let broker = broker_on(dir);
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
     handler
@@ -987,6 +990,7 @@ fn failover_router(members: &[&str], generation: u64, acknowledged: &[&str]) -> 
                 .collect(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1207,8 +1211,9 @@ async fn a_crashed_leader_of_four_copies_refuses_the_fence() {
     );
 }
 
-/// A batch a leader ships after an unclean start vouches for the copy: a
-/// leader has compared it since the crash.
+/// A batch a leader ships after an unclean start, labelled with records of
+/// its own generation, vouches for the copy: a leader has compared it since
+/// the crash.
 #[tokio::test]
 async fn a_batch_vouches_for_the_copy_after_an_unclean_start() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1236,7 +1241,7 @@ async fn a_batch_vouches_for_the_copy_after_an_unclean_start() {
     let answer = handler
         .apply(
             SENDER,
-            batch(5, 0, &["a", "b"]),
+            labelled(5, 5, 0, &["a", "b"]),
             felix_broker::LogKind::Stream,
         )
         .await;
@@ -1537,6 +1542,65 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
     assert!(log.accepted_leader().is_none());
 }
 
+/// A refusal from a broker that predates [`RefusalReason`]: its detail alone.
+fn old_peer(detail: String) -> ReplicateError {
+    ReplicateError {
+        correlation_id: 0,
+        code: ErrorCode::FencedEpoch,
+        expected_offset: 0,
+        detail,
+        reason: None,
+    }
+}
+
+/// **A leader reads a refusal's reason from its fields when it has them**,
+/// not from the detail, whose wording is for people.
+#[test]
+fn a_refusal_with_a_reason_is_read_from_its_fields() {
+    let with = |reason: RefusalReason| ReplicateError {
+        detail: "reworded".to_string(),
+        reason: Some(reason),
+        ..old_peer(String::new())
+    };
+    let promised = with(RefusalReason::PromisedTo {
+        generation: 4,
+        leader: "broker-d".to_string(),
+    });
+    assert_eq!(promised_to(&promised, 4), Some("broker-d"));
+    assert_eq!(promised_to(&promised, 5), None, "another generation");
+    assert!(crate::replica::refuses_leader(&promised, 4));
+    assert_eq!(superseded_by(&promised, 4), None);
+
+    let accepted = with(RefusalReason::Accepted {
+        accepted: 6,
+        sender: 4,
+    });
+    assert_eq!(superseded_by(&accepted, 4), Some(6));
+    assert_eq!(superseded_by(&accepted, 5), None, "another sender");
+    assert_eq!(promised_to(&accepted, 4), None);
+    assert!(!crate::replica::refuses_leader(&accepted, 4));
+
+    let view = with(RefusalReason::View { have: 6, sender: 4 });
+    assert_eq!(superseded_by(&view, 4), Some(6));
+
+    let assigned = with(RefusalReason::Assigned {
+        assigned: 6,
+        sender: 4,
+    });
+    assert!(crate::replica::assigned_newer(&assigned, 4));
+    assert!(
+        !crate::replica::assigned_newer(&assigned, 5),
+        "another sender"
+    );
+    assert!(!crate::replica::assigned_newer(&accepted, 4));
+
+    let not_a_replica = ReplicateError {
+        code: ErrorCode::Unauthorized,
+        ..with(RefusalReason::NotAReplica)
+    };
+    assert!(crate::replica::refuses_leader(&not_a_replica, 4));
+}
+
 /// **A leader reads whom a refused generation was promised to.** It tells a
 /// ballot cast for another node at its own generation from a newer leader,
 /// and only the first says the control plane recorded an election it did
@@ -1545,13 +1609,83 @@ async fn a_copy_with_no_promise_refuses_a_lagging_views_leader_a_rebuild() {
 fn a_promise_refusal_names_the_node_it_was_promised_to() {
     let promised = promised_detail(4, "broker-d");
 
-    assert_eq!(promised_to(&promised, 4), Some("broker-d"));
-    assert_eq!(promised_to(&promised, 5), None, "another generation");
     assert_eq!(
-        promised_to("this broker accepted generation 6, the sender is at 4", 4),
+        promised_to(&old_peer(promised.clone()), 4),
+        Some("broker-d")
+    );
+    assert_eq!(
+        promised_to(&old_peer(promised.clone()), 5),
+        None,
+        "another generation"
+    );
+    assert_eq!(
+        promised_to(
+            &old_peer("this broker accepted generation 6, the sender is at 4".to_string()),
+            4
+        ),
         None,
         "a newer generation is not a promise"
     );
+}
+
+/// **A leader reads the newer ballot a replica refused it for**, and only
+/// that: a promise at its own generation, or a newer generation refused
+/// against another sender's, is not one.
+#[test]
+fn a_superseded_refusal_names_the_newer_ballot() {
+    assert_eq!(
+        superseded_by(&old_peer(superseded_detail(6, 4)), 4),
+        Some(6)
+    );
+    assert_eq!(
+        superseded_by(&old_peer(superseded_detail(6, 4)), 5),
+        None,
+        "another sender"
+    );
+    assert_eq!(
+        superseded_by(&old_peer(promised_detail(4, "broker-d")), 4),
+        None
+    );
+    assert_eq!(
+        superseded_by(&old_peer(superseded_detail(4, 4)), 4),
+        None,
+        "not newer"
+    );
+}
+
+/// **A routing view above the sender's is read as a newer generation too.**
+/// A replica that took a candidate's fence answers from its view before its
+/// ballot is checked, and that refusal must not read as an unknown one.
+#[test]
+fn a_newer_routing_view_names_the_newer_generation() {
+    assert_eq!(superseded_by(&old_peer(view_detail(6, 4)), 4), Some(6));
+    assert_eq!(
+        superseded_by(&old_peer(view_detail(6, 4)), 5),
+        None,
+        "another sender"
+    );
+    assert_eq!(
+        superseded_by(&old_peer(view_detail(4, 4)), 4),
+        None,
+        "not newer"
+    );
+}
+
+/// **Only a newer assignment reads as one.** A ballot or view names no leader.
+#[test]
+fn a_newer_assignment_is_read_from_its_refusal() {
+    use crate::replica::{assigned_detail, assigned_newer};
+    assert!(assigned_newer(&old_peer(assigned_detail(6, 4)), 4));
+    assert!(
+        !assigned_newer(&old_peer(assigned_detail(6, 4)), 5),
+        "another sender"
+    );
+    assert!(
+        !assigned_newer(&old_peer(assigned_detail(4, 4)), 4),
+        "not newer"
+    );
+    assert!(!assigned_newer(&old_peer(superseded_detail(6, 4)), 4));
+    assert!(!assigned_newer(&old_peer(view_detail(6, 4)), 4));
 }
 
 /// A control plane that names broker-a at generation 1 for every shard, but
@@ -1701,6 +1835,7 @@ fn router_naming(generation: u64, incarnation: u64, local_id: [u8; 16]) -> Arc<S
             ]
             .into(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1862,4 +1997,876 @@ async fn confirmed_check_cost() {
         "confirmed check: fresh copy {fresh_copy:?}, promised copy {promised_copy:?}; \
          batch apply (promised, 1 record) {apply:?}"
     );
+}
+
+/// **A ballot this broker wrote standing for election after an unclean
+/// start is not evidence that it led before the crash (#2025).** It only
+/// followed the shard; refusing a newer candidate's fence over its own
+/// candidacy would leave a set of three with a dead leader no majority.
+#[tokio::test]
+async fn a_copy_that_stood_after_an_unclean_start_takes_a_newer_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 5));
+        handler
+            .apply(SENDER, batch(5, 0, &["a"]), felix_broker::LogKind::Stream)
+            .await;
+    }
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    // The candidacy, as `stand` in election/candidate.rs takes it: its own
+    // ballot one generation up, then no majority.
+    start.stand(&crate::driver::watch_key(&key()), &log, 6);
+    log.accept_generation(6, Some(LOCAL)).await.expect("stand");
+
+    taken(&handler.fence(Some("broker-c"), fence(7)).await);
+}
+
+/// A batch from `leader` at `generation` whose records are labelled as
+/// written at `written`.
+pub(super) fn labelled(
+    generation: u64,
+    written: u64,
+    first_offset: u64,
+    values: &[&str],
+) -> ReplicateRecords {
+    ReplicateRecords {
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: written,
+            start_offset: first_offset,
+        }]),
+        ..batch(generation, first_offset, values)
+    }
+}
+
+/// **A batch that brings back only part of what a crashed leader lost does
+/// not vouch for its copy (#2029).** `LOCAL` led at 5 and its crash lost
+/// records it acknowledged there. The next leader ships the first of them
+/// back at 6: the copy now names that leader in its ballot but is still
+/// short, so it answers no other fence and may not stand. Counted, it and an
+/// empty third copy would elect a leader without the record it still lacks.
+/// A batch that leaves it level with the shipping leader up to where that
+/// leader's generation starts vouches for it: everything the leader held
+/// comes before that offset.
+#[tokio::test]
+async fn a_partly_reshipped_copy_is_not_vouched_for_until_it_reaches_the_leaders_generation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let next = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-a", &[LOCAL, "broker-c"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+
+    // A record it led at 5 comes back from the leader at 6.
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 5, 0, &["a"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-c"));
+    assert!(start.led_before(&shard, &log, 7), "still short");
+    assert!(start.unvouched(&shard, &log, 7), "may not stand");
+    assert_eq!(
+        refusal(&next.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable
+    );
+
+    // The copy reaches where generation 6 starts: everything the leader
+    // held came first.
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 6, 1, &["start"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(!start.led_before(&shard, &log, 7));
+    assert!(!start.unvouched(&shard, &log, 7));
+    taken(&next.fence(SENDER, fence(7)).await);
+}
+
+/// **A batch that names the leader's generation starting past what the copy
+/// holds does not vouch for it.** The copy is level with the batch but not
+/// yet with where the leader's generation starts, and the records between
+/// may be ones the crash lost.
+#[tokio::test]
+async fn a_batch_short_of_where_the_leaders_generation_starts_does_not_vouch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            ReplicateRecords {
+                generations: Some(vec![
+                    felix_wire::internal::GenerationStart {
+                        generation: 4,
+                        start_offset: 0,
+                    },
+                    felix_wire::internal::GenerationStart {
+                        generation: 6,
+                        start_offset: 2,
+                    },
+                ]),
+                ..batch(6, 0, &["a"])
+            },
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log.tail_offset().await.expect("tail"), 1, "level at 1");
+    assert!(
+        start.unvouched(&crate::driver::watch_key(&key()), &log, 7),
+        "generation 6 starts at 2"
+    );
+}
+
+/// **An unlabelled batch does not vouch for a crashed leader's copy.** It
+/// labels what it carried with the sender's generation, the record the
+/// crashed leader wrote at 5 included, so the copy would look as if it held
+/// the new leader's generation while still short of what it acknowledged.
+#[tokio::test]
+async fn an_unlabelled_batch_does_not_vouch_for_a_copy_led_before_the_crash() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let next = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-a", &[LOCAL, "broker-c"], 7),
+    )
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+
+    // Two records the crashed leader wrote at 5 come back, unlabelled.
+    for (offset, value) in [(0, "a"), (1, "b")] {
+        let answer = leader
+            .apply(
+                Some("broker-c"),
+                batch(6, offset, &[value]),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    assert!(
+        log.holds_records_of(6),
+        "labelled with the sender's generation"
+    );
+    assert!(start.unvouched(&shard, &log, 7), "may not stand");
+    assert_eq!(
+        refusal(&next.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// Records nothing about a peer until something dials it, as the pool does.
+struct FirstContact {
+    handler: ReplicaHandler,
+    dialled: std::sync::atomic::AtomicBool,
+}
+
+impl FirstContact {
+    const OFFERED: felix_wire::internal::PeerCapabilities =
+        felix_wire::internal::PeerCapabilities::GENERATION_LABELS
+            .union(felix_wire::internal::PeerCapabilities::RECORD_TIMES)
+            .union(felix_wire::internal::PeerCapabilities::RECORD_HEADERS);
+}
+
+impl crate::peer::PeerRequester for FirstContact {
+    async fn request(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, crate::peer::PeerError> {
+        self.dialled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        match message {
+            InternalMessage::ReplicateRecords(batch)
+            | InternalMessage::ReplicateMarkedRecords(batch) => Ok(self
+                .handler
+                .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+                .await),
+            other => panic!("unexpected {:?}", other.kind()),
+        }
+    }
+
+    async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: std::net::SocketAddr,
+    ) -> std::result::Result<felix_wire::internal::PeerCapabilities, crate::peer::PeerError> {
+        self.dialled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(Self::OFFERED)
+    }
+
+    fn recorded_capabilities(
+        &self,
+        _node_id: &str,
+    ) -> Option<felix_wire::internal::PeerCapabilities> {
+        self.dialled
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then_some(Self::OFFERED)
+    }
+}
+
+/// **A new leader's first batch to a crashed leader's copy is labelled**, so
+/// it vouches for the copy even when the shard goes idle after it. Unlabelled,
+/// it could not, and with no further records to ship the copy would stay
+/// doubted and refuse every fence.
+#[tokio::test]
+async fn a_first_contact_batch_vouches_for_the_copy_on_an_idle_shard() {
+    let (tail, vouched) = ship_to_a_crashed_leaders_copy(true).await;
+    assert_eq!(tail, 2, "shipped");
+    assert!(vouched, "vouched on first contact");
+}
+
+/// **A leader that writes no start record still vouches for the copy**, as
+/// on a fleet that has not finalized `generation_start`. It opened after
+/// fencing a majority, so a copy level with it up to where its generation
+/// starts holds every acknowledged record, whether or not a record of that
+/// generation follows.
+#[tokio::test]
+async fn a_leader_without_a_start_record_vouches_for_the_copy_on_an_idle_shard() {
+    let (tail, vouched) = ship_to_a_crashed_leaders_copy(false).await;
+    assert_eq!(tail, 1, "nothing past where generation 6 starts");
+    assert!(vouched, "vouched without a record of generation 6");
+}
+
+/// A leader at 6 ships to the copy a crashed leader at 5 kept, until there
+/// is nothing more to ship. Returns the copy's tail and whether it was
+/// vouched for.
+async fn ship_to_a_crashed_leaders_copy(start_record: bool) -> (u64, bool) {
+    let follower_dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(follower_dir.path()).await;
+    let follower = broker_on(follower_dir.path());
+    let start = unclean();
+    let requester = FirstContact {
+        handler: ReplicaHandler::new(
+            Arc::clone(&follower),
+            router_led_by("broker-c", &[LOCAL, "broker-c"], 6),
+        )
+        .with_unclean_start(Arc::clone(&start)),
+        dialled: std::sync::atomic::AtomicBool::new(false),
+    };
+
+    let leader_dir = tempfile::tempdir().expect("tempdir");
+    let leader = broker_on(leader_dir.path());
+    ReplicaHandler::new(Arc::clone(&leader), router_with(&[LOCAL], 4))
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let leader_log = leader
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    leader_log
+        .accept_generation(6, Some("broker-c"))
+        .await
+        .expect("lead");
+    leader_log.record_generation(6, 1).expect("record");
+    if start_record {
+        leader_log.append_generation_start(6).await.expect("start");
+    }
+
+    let mut shard = batch(6, 0, &[]).shard;
+    shard.generation = 6;
+    let mut cursor =
+        crate::follower::FollowerCursor::new(LOCAL, "10.0.0.4:7002".parse().expect("addr"), 0);
+    for _ in 0..4 {
+        crate::ship::ship_once(
+            &requester,
+            &leader_log,
+            &shard,
+            felix_broker::LogKind::Stream,
+            &mut cursor,
+            1 << 20,
+            &crate::rebuild::Rebuilds::disabled(),
+        )
+        .await;
+    }
+
+    let log = follower
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let tail = log.tail_offset().await.expect("tail");
+    (
+        tail,
+        !start.unvouched(&crate::driver::watch_key(&key()), &log, 7),
+    )
+}
+
+pub(super) fn kept_marks() -> Arc<crate::quorum::QuorumMarks> {
+    let marks = Arc::new(crate::quorum::QuorumMarks::new());
+    marks.set_kept_ballots(true);
+    marks
+}
+
+pub(super) fn attested(
+    kept_from: u64,
+    trusted: bool,
+) -> Option<felix_wire::internal::FenceAttestation> {
+    Some(felix_wire::internal::FenceAttestation {
+        kept_from,
+        trusted,
+        by_record: false,
+    })
+}
+
+/// **A clean start attests kept ballots and a trusted copy, and only a
+/// directory that kept its ballots does.** Without the record a broker
+/// counts for no set and covers nothing (`CountNonKept`, `TrustsRegistered`
+/// in `docs/formal/FelixShardUnified.tla`). A group log carries no
+/// attestation: nothing vouches for it apart from the shard's own log.
+#[tokio::test]
+async fn a_fence_answer_attests_what_the_directory_kept() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_on(dir.path());
+    let kept =
+        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4)).with_fleet(kept_marks());
+    kept.apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(
+        taken(&unified_fence(&kept, SENDER, fence(5)).await).attestation,
+        attested(0, true)
+    );
+
+    let lost = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+        .with_fleet(Arc::new(crate::quorum::QuorumMarks::new()));
+    assert_eq!(
+        taken(&unified_fence(&lost, SENDER, fence(6)).await).attestation,
+        attested(u64::MAX, false)
+    );
+}
+
+/// **A poisoned log takes the trust away at once.** A failed flush may have
+/// dropped acknowledged pages in this process, and the next start only marks
+/// the directory unclean. The ballots are synced apart from the log, so the
+/// copy still promises.
+#[tokio::test]
+async fn a_poisoned_log_attests_no_trusted_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker_on(dir.path());
+    let mut handler =
+        ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4)).with_fleet(kept_marks());
+    handler.poisoned = || true;
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    assert_eq!(
+        taken(&unified_fence(&handler, SENDER, fence(5)).await).attestation,
+        attested(0, false)
+    );
+}
+
+/// **After an unclean start a copy is trusted only once a batch leaves it
+/// level through both the shipping leader's start and the commit offset it
+/// carries, above zero.** The mark alone can sit below records an earlier
+/// generation acknowledged (`VouchBelowStart`), the start alone is short of
+/// what the leader acknowledged since (`StandInNoCatchUp`), and a commit
+/// offset of zero only picks a frame layout. The copy is vouched for as
+/// before at the start; trust is the stricter of the two.
+#[tokio::test]
+async fn an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    let shard = crate::driver::watch_key(&key());
+    let ship = |records: ReplicateRecords| {
+        let leader = &leader;
+        async move {
+            let answer = leader
+                .apply(Some("broker-c"), records, felix_broker::LogKind::Stream)
+                .await;
+            assert!(
+                matches!(answer, InternalMessage::ReplicateOk(_)),
+                "{answer:?}"
+            );
+        }
+    };
+    let from_six = |first_offset: u64, values: &[&str], commit: Option<u64>| ReplicateRecords {
+        commit_offset: commit,
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: 6,
+            start_offset: 1,
+        }]),
+        ..batch(6, first_offset, values)
+    };
+    assert_eq!(
+        leader.attestation(&key(), true, false, false),
+        attested(0, false).expect("some")
+    );
+
+    // Level through the mark, short of where generation 6 starts.
+    ship(ReplicateRecords {
+        commit_offset: Some(1),
+        ..labelled(6, 4, 0, &["a"])
+    })
+    .await;
+    assert!(!start.trusted(&shard), "below the start record");
+
+    // Level through the start with a mark of zero.
+    ship(from_six(1, &["start"], Some(0))).await;
+    assert!(
+        !start.unvouched(&shard, &log, 7),
+        "vouched for at the start"
+    );
+    assert!(!start.trusted(&shard), "a mark of zero vouches for nothing");
+
+    // Through the start, short of the mark.
+    ship(from_six(2, &["w"], Some(4))).await;
+    assert!(!start.trusted(&shard), "short of the mark");
+
+    // Through both.
+    ship(from_six(3, &["x"], Some(4))).await;
+    assert!(start.trusted(&shard));
+    assert_eq!(
+        leader.attestation(&key(), true, false, false),
+        attested(0, true).expect("some")
+    );
+}
+
+/// **An unclean copy level with an idle leader is trusted by its last record
+/// sent again with the mark.** The batch that brought the start record went
+/// before any follower's answer raised the mark, so it carried zero. The
+/// leader sends the copy its last record again once the mark covers it, and
+/// that batch, wholly a record the copy holds, vouches for it
+/// (`FelixShardUnifiedIdleVouch`). Below the start record it would not: see
+/// [`an_unclean_copy_is_trusted_only_level_through_the_start_and_the_mark`].
+#[tokio::test]
+async fn an_unclean_copy_level_with_an_idle_leader_is_trusted_by_its_last_record_again() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let start = unclean();
+    let leader = ReplicaHandler::new(
+        Arc::clone(&broker),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    let shard = crate::driver::watch_key(&key());
+    let start_record = |commit: u64| ReplicateRecords {
+        commit_offset: Some(commit),
+        generations: Some(vec![felix_wire::internal::GenerationStart {
+            generation: 6,
+            start_offset: 1,
+        }]),
+        ..batch(6, 1, &["start"])
+    };
+    let answer = leader
+        .apply(
+            Some("broker-c"),
+            labelled(6, 4, 0, &["a"]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    for (commit, trusted) in [(0, false), (2, true)] {
+        let answer = leader
+            .apply(
+                Some("broker-c"),
+                start_record(commit),
+                felix_broker::LogKind::Stream,
+            )
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.durable_offset == 2),
+            "{answer:?}"
+        );
+        assert_eq!(start.trusted(&shard), trusted, "a mark of {commit}");
+    }
+    assert_eq!(
+        leader.attestation(&key(), true, false, false),
+        attested(0, true).expect("some")
+    );
+}
+
+/// An empty batch from generation 6 at offset 0 carrying the mark 0, labelled
+/// with `starts`: what a leader of a log that never held a record sends.
+fn empty_vouch(starts: &[(u64, u64)]) -> ReplicateRecords {
+    ReplicateRecords {
+        commit_offset: Some(0),
+        generations: Some(
+            starts
+                .iter()
+                .map(
+                    |&(generation, start_offset)| felix_wire::internal::GenerationStart {
+                        generation,
+                        start_offset,
+                    },
+                )
+                .collect(),
+        ),
+        ..batch(6, 0, &[])
+    }
+}
+
+/// An unclean copy of the shard in `dir`, followed under broker-c at 6.
+fn unclean_follower(dir: &std::path::Path) -> (ReplicaHandler, Arc<crate::unclean::UncleanStart>) {
+    let start = unclean();
+    let handler = ReplicaHandler::new(
+        broker_on(dir),
+        router_led_by("broker-c", &[LOCAL, "broker-a"], 6),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(Arc::clone(&start));
+    (handler, start)
+}
+
+/// **An empty unclean copy is trusted by an empty batch from a leader whose
+/// generation starts at 0.** Such a leader holds no record, so nothing was
+/// ever acknowledged and the empty copy holds all of it. Its mark stays 0,
+/// and no batch through a mark above zero can ever come
+/// (`FelixShardUnifiedVouchEmptyLegacy`).
+#[tokio::test]
+async fn an_empty_unclean_copy_is_trusted_by_an_empty_leaders_batch() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (handler, start) = unclean_follower(dir.path());
+    let answer = handler
+        .apply(
+            Some("broker-c"),
+            empty_vouch(&[(6, 0)]),
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(ref ok) if ok.durable_offset == 0),
+        "{answer:?}"
+    );
+    assert!(start.trusted(&crate::driver::watch_key(&key())));
+    assert_eq!(
+        handler.attestation(&key(), true, false, false),
+        attested(0, true).expect("some")
+    );
+}
+
+/// **Nothing else empty or unmarked trusts an unclean copy.** Not an empty
+/// batch to a copy that holds records, which it compares with nothing; not
+/// a batch of records with a mark of zero; not an empty batch from a leader
+/// whose generation does not start at 0, or that names no start of its own.
+#[tokio::test]
+async fn an_empty_batch_trusts_only_an_empty_copy_of_an_empty_leader() {
+    let holding = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(holding.path()).await;
+    let records = || {
+        let mut batch = empty_vouch(&[(6, 0)]);
+        let payloads = vec![Bytes::from_static(b"a")];
+        batch.checksum = batch_checksum(&payloads, &[], &[], &[]);
+        batch.payloads = payloads;
+        batch
+    };
+    let cases: [(&str, Option<&std::path::Path>, ReplicateRecords); 4] = [
+        (
+            "a copy holding records",
+            Some(holding.path()),
+            empty_vouch(&[(6, 0)]),
+        ),
+        ("records with a mark of zero", None, records()),
+        ("a start past 0", None, empty_vouch(&[(5, 0), (6, 1)])),
+        ("no start of its own", None, empty_vouch(&[(5, 0)])),
+    ];
+    for (case, dir, batch) in cases {
+        let empty = tempfile::tempdir().expect("tempdir");
+        let (handler, start) = unclean_follower(dir.unwrap_or(empty.path()));
+        let answer = handler
+            .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{case}: {answer:?}"
+        );
+        assert!(!start.trusted(&crate::driver::watch_key(&key())), "{case}");
+    }
+
+    // The copy holding records still drops them as a dead leader's suffix
+    // when the empty leader's first record arrives.
+    let (handler, _) = unclean_follower(holding.path());
+    for batch in [empty_vouch(&[(6, 0)]), labelled(6, 6, 0, &["b"])] {
+        let answer = handler
+            .apply(Some("broker-c"), batch, felix_broker::LogKind::Stream)
+            .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+    }
+    let log = handler
+        .broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.tail_offset().await.expect("tail"), 1);
+}
+
+/// A fence from a caller that offered `UNIFIED_FENCE`.
+async fn unified_fence(
+    handler: &ReplicaHandler,
+    sender: Option<&str>,
+    fence: Fence,
+) -> InternalMessage {
+    handler
+        .fence_from(sender, PeerCapabilities::UNIFIED_FENCE, fence)
+        .await
+}
+
+/// **To a caller that counts by attestation, a crashed leader's copy answers
+/// untrusted (#1295).** Its ballots survived, so its promise counts; its log
+/// may be short, so it covers nothing. Without the bit it refuses as before.
+/// The doubt goes with the ballot the copy takes, so a later fence from an
+/// older leader is still refused, and every ballot refusal stands.
+#[tokio::test]
+async fn a_crashed_leaders_copy_answers_a_unified_fence_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 6);
+
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable,
+        "the copy took a ballot and no batch: it is still the one led before"
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(7)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+    assert_eq!(
+        refusal(&unified_fence(&handler, SENDER, fence(6)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    assert_eq!(
+        refusal(&unified_fence(&handler, Some("broker-c"), fence(7)).await).code,
+        ErrorCode::FencedEpoch
+    );
+}
+
+/// **A copy given up before a clean restart refuses a unified fence too.**
+/// Nothing in this process tracks its doubt, and taking a ballot would
+/// overwrite the one record of it.
+#[tokio::test]
+async fn a_given_up_copy_after_a_clean_restart_refuses_a_unified_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    {
+        let broker = broker_on(dir.path());
+        let handler =
+            ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+                .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(6)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks());
+    assert_eq!(
+        refusal(&unified_fence(&handler, SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+}
+
+/// **The set-of-two exception does not decide a unified fence (#1336).** A
+/// crashed leader of a set that shrank to two refuses an older caller, since
+/// the record it lost may be on the dropped copy alone. A caller that counts
+/// by attestation gets an untrusted answer instead.
+#[tokio::test]
+async fn a_crashed_leader_of_a_shrunk_set_answers_a_unified_fence_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+    )
+    .with_fleet(kept_marks())
+    .with_unclean_start(unclean());
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(6)).await).code,
+        ErrorCode::Unavailable
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+}
+
+/// **A copy given up on disk is never trusted.** After a clean restart the
+/// set of two still lets this crashed leader's copy answer, but its log may
+/// be short of what it acknowledged before the crash.
+#[tokio::test]
+async fn a_given_up_copy_of_a_set_of_two_answers_untrusted() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_with_its_start_record(dir.path()).await;
+    {
+        let broker = broker_on(dir.path());
+        let handler = ReplicaHandler::new(
+            Arc::clone(&broker),
+            failover_router(&[LOCAL], 6, &["broker-a", LOCAL, "broker-c"]),
+        )
+        .with_unclean_start(unclean());
+        assert_eq!(
+            refusal(&handler.fence(SENDER, fence(6)).await).code,
+            ErrorCode::Unavailable
+        );
+    }
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(
+        Arc::clone(&broker),
+        failover_router(&[LOCAL], 6, &["broker-a", LOCAL]),
+    )
+    .with_fleet(kept_marks());
+    let ok = taken(&unified_fence(&handler, SENDER, fence(6)).await);
+    assert_eq!(ok.attestation, attested(0, false));
+}
+
+/// **Over the wire, a crashed leader's copy refuses a caller that does not
+/// offer `UNIFIED_FENCE`**, as `FELIX_UNIFIED_FENCE=0` leaves it. Its answer
+/// in place of a refusal is safe only facing a leader that counts by the
+/// attestation.
+#[tokio::test]
+async fn over_the_wire_a_crashed_leaders_copy_still_refuses() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    let config = crate::peer::PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        unified_fence: false,
+        ..Default::default()
+    };
+    let server =
+        crate::peer::PeerServer::bind(LOCAL.to_string(), &config, Arc::new(OverTheWire(handler)))
+            .expect("bind");
+    let addr = server.local_addr().expect("addr");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    tokio::spawn(server.serve(shutdown.clone()));
+    let pool =
+        crate::peer::PeerPool::new("broker-a".to_string(), config, shutdown.clone()).expect("pool");
+    let answer = pool
+        .request(LOCAL, addr, InternalMessage::Fence(fence(6)))
+        .await
+        .expect("fence");
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable, "{answer:?}");
+    shutdown.cancel();
+}
+
+/// **A unified fence the ballot refuses leaves the crashed leader's copy as
+/// it was.** The doubt is noted before the ballot is taken; a refused ballot
+/// must not move the copy or what it attests.
+#[tokio::test]
+async fn a_refused_unified_fence_leaves_a_crashed_leaders_copy_unchanged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    led_before_a_crash(dir.path()).await;
+    let broker = broker_on(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL, "broker-c"], 6))
+        .with_fleet(kept_marks())
+        .with_unclean_start(unclean());
+    taken(&unified_fence(&handler, SENDER, fence(6)).await);
+
+    assert_eq!(
+        refusal(&unified_fence(&handler, Some("broker-c"), fence(6)).await).code,
+        ErrorCode::FencedEpoch
+    );
+    let log = broker
+        .shard_log(felix_broker::LogKind::Stream, TENANT, NAMESPACE, STREAM, 0)
+        .await
+        .expect("log");
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), SENDER);
+    assert_eq!(
+        refusal(&handler.fence(SENDER, fence(7)).await).code,
+        ErrorCode::Unavailable,
+        "still the copy led before"
+    );
+    let ok = taken(&unified_fence(&handler, SENDER, fence(7)).await);
+    assert_eq!(ok.attestation, attested(0, false));
 }

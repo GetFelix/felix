@@ -6,6 +6,8 @@ mod append_and_read;
 mod commit;
 mod conditional;
 mod durability;
+#[cfg(feature = "sim")]
+mod flush_failures;
 mod generation_start;
 mod head_floor;
 mod headers;
@@ -16,15 +18,23 @@ mod power_loss;
 mod producers;
 mod provider;
 mod publisher;
+mod record_generations;
 mod replica_set;
 mod replica_state;
 mod reservation;
 mod restore;
 mod retention;
 mod rollover;
+#[cfg(feature = "sim")]
+mod simulated_fs;
 mod stalled_write;
 mod trim;
 mod truncation;
+#[cfg(feature = "sim")]
+mod v9_crash_points;
+mod v9_kinds;
+#[cfg(feature = "sim")]
+mod vote_crash_points;
 
 use std::time::Duration;
 

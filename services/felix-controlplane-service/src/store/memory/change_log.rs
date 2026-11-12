@@ -12,7 +12,7 @@ use crate::store::export::ExportedLog;
 /// - Eviction means a consumer may miss changes if it polls too slowly; in that case it must
 ///   re-bootstrap by calling the corresponding `*_snapshot()` API.
 ///
-/// This structure is intentionally simple. Unlike the Postgres backend:
+/// This structure is intentionally simple:
 /// - There is no transactional coupling between authoritative state and the change log.
 /// - Atomicity is achieved by sequencing operations under locks.
 #[derive(Debug)]

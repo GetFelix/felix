@@ -435,6 +435,13 @@ struct fixture {
   /* A token that may also trim, and the stream nothing else writes to, for the
      head trim scenarios. Empty when the fixture has none. */
   const char *trimmer_token, *trim_stream;
+  /* A token with node.view:cluster:*, which inspection needs. Empty when the
+     fixture has none. */
+  const char *inspector_token;
+  /* The cache brokers mint lease tokens for, a token that may claim its keys
+     but not publish to their outputs (wl.<key>.out), and the keys whose
+     outputs exist, comma separated. Empty when the fixture has none. */
+  const char *lease_cache, *lease_node_token, *lease_keys;
   /* Empty when the fixture has no control endpoint. */
   const char *movable_stream, *quorum_stream, *control_url;
   /* "true" when the fixture's brokers store each record's publisher. That
@@ -444,6 +451,9 @@ struct fixture {
   /* Brokers that advertise no features, so no commits. Empty when the fixture
      has none. */
   const char *no_commit_addrs;
+  /* A broker that serves only a client presenting a certificate, and a
+     certificate and key it accepts. Empty when the fixture has none. */
+  const char *mtls_addr, *client_cert_file, *client_key_file;
   /* The link interposer: a broker address that faults can be injected on, and
      the single-shard stream behind it. Empty when the fixture has none. */
   const char *link_addr, *link_stream;
@@ -500,11 +510,18 @@ static bool load_fixture(const char *path, struct fixture *f) {
       {&f->control_url, "control_url", false},
       {&f->records_publishers, "records_publishers", false},
       {&f->no_commit_addrs, "no_commit_addrs", false},
+      {&f->mtls_addr, "mtls_addr", false},
+      {&f->client_cert_file, "client_cert_file", false},
+      {&f->client_key_file, "client_key_file", false},
       {&f->link_addr, "link_addr", false},
       {&f->link_stream, "link_stream", false},
       {&f->kill_helper, "kill_helper", false},
       {&f->trimmer_token, "trimmer_token", false},
       {&f->trim_stream, "trim_stream", false},
+      {&f->inspector_token, "inspector_token", false},
+      {&f->lease_cache, "lease_cache", false},
+      {&f->lease_node_token, "lease_node_token", false},
+      {&f->lease_keys, "lease_keys", false},
   };
   bool ok = true;
   for (size_t i = 0; i < sizeof fields / sizeof *fields; i++) {
@@ -822,6 +839,33 @@ static void offline(void) {
                                 "/nonexistent/ca.pem", NULL, on_connect, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing ca_file gave %d",
         (int)status);
+
+  /* A client certificate needs its key, and the other way round. */
+  FelixConnectOptions cert_only;
+  memset(&cert_only, 0, sizeof cert_only);
+  cert_only.size = sizeof cert_only;
+  cert_only.client_cert_file = "/nonexistent/client.pem";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "cert without key gave %d",
+        (int)status);
+  message = felix_last_error_message();
+  CHECK(message && strstr(message, "together"),
+        "message does not say they go together");
+  cert_only.client_cert_file = NULL;
+  cert_only.client_key_file = "/nonexistent/client.key";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "key without cert gave %d",
+        (int)status);
+  cert_only.client_cert_file = "/nonexistent/client.pem";
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                     &cert_only, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "missing cert file gave %d",
+        (int)status);
+  message = felix_last_error_message();
+  CHECK(message && strstr(message, "client.pem"),
+        "message does not name the certificate file");
 
   status = felix_client_endpoints(NULL, NULL, on_endpoints, &w);
   CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "endpoints of a null client gave %d",
@@ -3770,6 +3814,65 @@ static void commits_negotiated(const struct fixture *f, const char *run) {
   SCENARIO_END("commit.negotiated");
 }
 
+/* Mutual TLS: a broker that requires a client certificate serves a client that
+   presents one, refuses one that does not, and a certificate file that is not
+   a key is the caller's bad argument. */
+static void client_certificate(const struct fixture *f) {
+  if (!f->mtls_addr[0] || !f->client_cert_file[0] || !f->client_key_file[0]) {
+    fprintf(stderr, "FAIL: the fixture file has no mtls_addr, client_cert_file "
+                    "or client_key_file\n");
+    failures++;
+    return;
+  }
+  FelixConnectOptions options;
+  memset(&options, 0, sizeof options);
+  options.size = sizeof options;
+  options.reconnect_attempts = 1;
+  options.client_cert_file = f->client_cert_file;
+  options.client_key_file = f->client_key_file;
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with(
+      f->mtls_addr, f->tenant, f->token, NULL, f->ca_file, &options, NULL,
+      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_OK, "connect with a client certificate gave %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(w.handle);
+  }
+  waiter_destroy(&w);
+
+  options.client_cert_file = NULL;
+  options.client_key_file = NULL;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->mtls_addr, f->tenant, f->token, NULL,
+                                     f->ca_file, &options, NULL, on_connect,
+                                     &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status != FELIX_STATUS_OK,
+        "connect without a client certificate gave %d", (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(w.handle);
+  }
+  waiter_destroy(&w);
+
+  /* A certificate file is not a key file. */
+  options.client_cert_file = f->client_cert_file;
+  options.client_key_file = f->client_cert_file;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->mtls_addr, f->tenant, f->token, NULL,
+                                     f->ca_file, &options, NULL, on_connect,
+                                     &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT,
+        "a certificate used as the key gave %d", (int)status);
+  waiter_destroy(&w);
+}
+
 /* A trim of `shard` 0 of `stream` below `before`, only if its next offset is
    `expected`. */
 static FelixStatus c_trim(FelixClient *client, const struct fixture *f,
@@ -5734,9 +5837,1009 @@ static void token_scenarios(const struct fixture *f) {
   SCENARIO_END("token.timeout_joins");
 }
 
+/* Record headers, stream reads, identities, topology and the live offset. */
+struct read_page {
+  struct waiter w;
+  size_t count;
+  uint64_t next_offset, first_offset;
+  char first[64];
+};
+
+static void on_page(void *user_data, FelixStatus status, const char *message,
+                    const FelixStreamRecord *records, size_t count,
+                    uint64_t next_offset) {
+  struct read_page *p = user_data;
+  p->count = count;
+  p->next_offset = next_offset;
+  if (count > 0) {
+    p->first_offset = records[0].offset;
+    size_t len = records[0].payload_len < sizeof p->first - 1
+                     ? records[0].payload_len
+                     : sizeof p->first - 1;
+    memcpy(p->first, records[0].payload, len);
+    p->first[len] = '\0';
+  }
+  finish(&p->w, status, message, NULL);
+}
+
+struct connections {
+  struct waiter w;
+  size_t len, total;
+};
+
+static void on_connections(void *user_data, FelixStatus status,
+                           const char *message, const char *const *addrs,
+                           const size_t *counts, size_t len) {
+  struct connections *c = user_data;
+  c->len = len;
+  c->total = 0;
+  for (size_t i = 0; i < len; i++) {
+    c->total += addrs[i] && counts[i];
+  }
+  finish(&c->w, status, message, NULL);
+}
+
+static void on_count(void *user_data, FelixStatus status, const char *message,
+                     size_t count) {
+  struct connections *c = user_data;
+  c->len = count;
+  finish(&c->w, status, message, NULL);
+}
+
+static void on_headered_event(void *user_data, FelixStatus status,
+                              const char *message, FelixEvent *event) {
+  finish(user_data, status, message, event);
+}
+
+static void parity(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+
+  FelixSubscription *sub = NULL;
+  REQUIRE_OK(subscribe(client, f, FELIX_START_LATEST, 0, &sub));
+
+  /* The live offset is the tail at registration, which from Latest is the
+     start offset. */
+  uint64_t start = 0, live = 0;
+  bool has_start = false, has_live = false;
+  felix_subscription_start_offset(sub, &start, &has_start);
+  CHECK(felix_subscription_live_offset(sub, &live, &has_live) ==
+            FELIX_STATUS_OK,
+        "live_offset failed");
+  CHECK(has_live == has_start && live == start,
+        "live offset %" PRIu64 " is not the start %" PRIu64, live, start);
+
+  /* A record with a key and headers, back with them on the event. */
+  char body[64];
+  snprintf(body, sizeof body, "c-%s-headered", run);
+  static const uint8_t trace[] = "t-1", kind[] = "order";
+  FelixHeader headers[3] = {
+      {(const uint8_t *)"trace", 5, trace, 3},
+      {(const uint8_t *)"trace", 5, NULL, 0},
+      {(const uint8_t *)"kind", 4, kind, 5},
+  };
+  FelixRecord record;
+  memset(&record, 0, sizeof record);
+  record.size = sizeof record;
+  record.payload = (const uint8_t *)body;
+  record.payload_len = strlen(body);
+  record.key = (const uint8_t *)"k-1";
+  record.key_len = 3;
+  record.headers = headers;
+  record.header_count = 3;
+
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_publish_with_headers(
+      client, f->tenant, f->ns, f->stream, &record, FELIX_ACK_PER_MESSAGE,
+      NULL, on_publish, &w);
+  CHECK(status == FELIX_STATUS_OK, "publish_with_headers was refused: %d",
+        (int)status);
+  status = wait_for(&w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK, "publish_with_headers gave %d (%s)",
+        (int)status, w.message);
+  uint64_t offset = w.offset;
+  CHECK(w.has_offset, "a headered publish reported no offset");
+  waiter_destroy(&w);
+
+  waiter_init(&w);
+  status = felix_subscription_next(sub, WAIT_MS, NULL, on_headered_event, &w);
+  CHECK(status == FELIX_STATUS_OK, "next was refused: %d", (int)status);
+  status = wait_for(&w, WAIT_MS * 2);
+  CHECK(status == FELIX_STATUS_OK && w.handle, "no headered event: %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK && w.handle) {
+    FelixEvent *event = w.handle;
+    const uint8_t *data = NULL;
+    size_t len = 0, count = 0;
+    felix_event_key(event, &data, &len);
+    CHECK(len == 3 && memcmp(data, "k-1", 3) == 0, "the key came back as %zu bytes", len);
+    felix_event_header_count(event, &count);
+    CHECK(count == 3, "%zu headers came back", count);
+    const uint8_t *name = NULL, *value = NULL;
+    size_t name_len = 0, value_len = 0;
+    CHECK(felix_event_header(event, 0, &name, &name_len, &value, &value_len) ==
+                  FELIX_STATUS_OK &&
+              name_len == 5 && memcmp(name, "trace", 5) == 0 &&
+              value_len == 3 && memcmp(value, "t-1", 3) == 0,
+          "the first header is wrong");
+    CHECK(felix_event_header(event, 1, &name, &name_len, &value, &value_len) ==
+                  FELIX_STATUS_OK &&
+              name_len == 5 && value == NULL && value_len == 0,
+          "the repeated empty header is wrong");
+    CHECK(felix_event_header(event, 3, &name, &name_len, &value, &value_len) ==
+              FELIX_STATUS_INVALID_ARGUMENT,
+          "an index past the end was not refused");
+    felix_event_free(event);
+  }
+  waiter_destroy(&w);
+
+  /* A header the broker reserves is refused before anything is sent. */
+  FelixHeader reserved = {(const uint8_t *)"felix.x", 7, NULL, 0};
+  record.headers = &reserved;
+  record.header_count = 1;
+  waiter_init(&w);
+  status = felix_client_publish_with_headers(client, f->tenant, f->ns,
+                                             f->stream, &record,
+                                             FELIX_ACK_PER_MESSAGE, NULL,
+                                             on_publish, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a reserved header gave %d",
+        (int)status);
+  waiter_destroy(&w);
+  felix_subscription_free(sub);
+
+  /* A batch of two headered records takes consecutive offsets. */
+  FelixRecord batch[2];
+  memset(batch, 0, sizeof batch);
+  for (int i = 0; i < 2; i++) {
+    batch[i].size = sizeof batch[i];
+    batch[i].payload = (const uint8_t *)body;
+    batch[i].payload_len = strlen(body);
+    batch[i].headers = headers;
+    batch[i].header_count = 1;
+  }
+  struct batch_waiter b;
+  batch_init(&b);
+  status = felix_client_publish_batch_with_headers(
+      client, f->tenant, f->ns, f->stream, batch, 2, FELIX_ACK_PER_BATCH, NULL,
+      on_batch, &b);
+  CHECK(status == FELIX_STATUS_OK, "batch with headers was refused: %d",
+        (int)status);
+  status = batch_wait(&b, status);
+  CHECK(status == FELIX_STATUS_OK && all_offsets(&b, 2),
+        "batch with headers gave %d", (int)status);
+  waiter_destroy(&b.w);
+
+  /* Read the first record back by offset, without subscribing. */
+  struct read_page page;
+  memset(&page, 0, sizeof page);
+  waiter_init(&page.w);
+  status = felix_client_read(client, f->tenant, f->ns, f->stream, 0, offset,
+                             false, 0, 1, NULL, on_page, &page);
+  CHECK(status == FELIX_STATUS_OK, "read was refused: %d", (int)status);
+  status = wait_for(&page.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK, "read gave %d (%s)", (int)status,
+        page.w.message);
+  CHECK(page.count == 1 && page.first_offset == offset &&
+            strcmp(page.first, body) == 0,
+        "the page held %zu records, first at %" PRIu64 " (%s)", page.count,
+        page.first_offset, page.first);
+  CHECK(page.next_offset == offset + 1, "next offset was %" PRIu64,
+        page.next_offset);
+  waiter_destroy(&page.w);
+
+  /* The cluster names its brokers, and the client holds connections to them. */
+  struct connections c;
+  memset(&c, 0, sizeof c);
+  waiter_init(&c.w);
+  status = felix_client_refresh_topology(client, NULL, on_count, &c);
+  CHECK(status == FELIX_STATUS_OK, "refresh_topology was refused: %d",
+        (int)status);
+  status = wait_for(&c.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && c.len >= 1, "refresh_topology gave %d, %zu brokers (%s)",
+        (int)status, c.len, c.w.message);
+  waiter_destroy(&c.w);
+  memset(&c, 0, sizeof c);
+  waiter_init(&c.w);
+  status = felix_client_connections_per_node(client, NULL, on_connections, &c);
+  CHECK(status == FELIX_STATUS_OK, "connections_per_node was refused: %d",
+        (int)status);
+  status = wait_for(&c.w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && c.len >= 1 && c.total >= 1,
+        "connections_per_node gave %d with %zu brokers", (int)status, c.len);
+  waiter_destroy(&c.w);
+
+  /* An identity on the same connections publishes, and outlives its parent. */
+  FelixClient *identity = NULL;
+  waiter_init(&w);
+  status = felix_client_with_identity(client, f->tenant, f->token, NULL,
+                                      on_connect, &w);
+  CHECK(status == FELIX_STATUS_OK, "with_identity was refused: %d", (int)status);
+  status = wait_for(&w, WAIT_MS);
+  CHECK(status == FELIX_STATUS_OK && w.handle, "with_identity gave %d (%s)",
+        (int)status, w.message);
+  identity = w.handle;
+  waiter_destroy(&w);
+  felix_client_free(client);
+  if (identity) {
+    snprintf(body, sizeof body, "c-%s-identity", run);
+    status = publish(identity, f, f->stream, body, NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "an identity publish gave %d", (int)status);
+    felix_client_free(identity);
+  }
+
+  /* A token the broker does not know is refused when the identity is made. */
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  waiter_init(&w);
+  status = felix_client_with_identity(client, f->tenant, "not-a-token", NULL,
+                                      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  CHECK(status != FELIX_STATUS_OK, "a bad identity token was accepted");
+  CHECK(w.handle == NULL, "a refused identity produced a client");
+  waiter_destroy(&w);
+  felix_client_free(client);
+}
+
+/* Row 7 to 14 answers: the callbacks copy what they are given, since a string
+   is valid only while the callback runs. */
+struct answer {
+  struct waiter w;
+  char *json, *next;
+  uint32_t flags, shards;
+  int32_t routing;
+  size_t count;
+};
+
+static void answer_init(struct answer *a) {
+  memset(a, 0, sizeof *a);
+  waiter_init(&a->w);
+}
+
+static void answer_destroy(struct answer *a) {
+  free(a->json);
+  free(a->next);
+  waiter_destroy(&a->w);
+}
+
+static void on_json(void *user_data, FelixStatus status, const char *message,
+                    const char *json) {
+  struct answer *a = user_data;
+  a->json = json ? strdup(json) : NULL;
+  finish(&a->w, status, message, NULL);
+}
+
+static void on_subscriptions(void *user_data, FelixStatus status,
+                             const char *message, const char *json,
+                             const char *next_cursor) {
+  struct answer *a = user_data;
+  a->json = json ? strdup(json) : NULL;
+  a->next = next_cursor ? strdup(next_cursor) : NULL;
+  finish(&a->w, status, message, NULL);
+}
+
+static void on_supports(void *user_data, FelixStatus status,
+                        const char *message, uint32_t flags) {
+  struct answer *a = user_data;
+  a->flags = flags;
+  finish(&a->w, status, message, NULL);
+}
+
+static void on_routing(void *user_data, FelixStatus status, const char *message,
+                       uint32_t shards, FelixShardRouting routing) {
+  struct answer *a = user_data;
+  a->shards = shards;
+  a->routing = routing;
+  finish(&a->w, status, message, NULL);
+}
+
+static void on_shard_count(void *user_data, FelixStatus status,
+                           const char *message, size_t count) {
+  struct answer *a = user_data;
+  a->count = count;
+  finish(&a->w, status, message, NULL);
+}
+
+static void on_handed(void *user_data, FelixStatus status, const char *message,
+                      FelixHanded *handed) {
+  finish(user_data, status, message, handed);
+}
+
+/* The call's status, or the callback's when the call was accepted. */
+static FelixStatus answered(struct answer *a, FelixStatus started) {
+  return started == FELIX_STATUS_OK ? wait_for(&a->w, WAIT_MS) : started;
+}
+
+/* The `host:port` the first "addr" field of a shard owners answer holds. */
+static bool first_owner_addr(const char *json, char *out, size_t cap) {
+  const char *at = json ? strstr(json, "\"addr\":\"") : NULL;
+  if (!at) {
+    return false;
+  }
+  at += strlen("\"addr\":\"");
+  const char *end = strchr(at, '"');
+  if (!end || (size_t)(end - at) >= cap) {
+    return false;
+  }
+  memcpy(out, at, (size_t)(end - at));
+  out[end - at] = '\0';
+  return true;
+}
+
+static void parity_questions(const struct fixture *f, FelixClient *client) {
+  struct answer a;
+  answer_init(&a);
+  FelixStatus status = answered(&a, felix_client_supports(client, NULL, on_supports, &a));
+  CHECK(status == FELIX_STATUS_OK, "supports gave %d (%s)", (int)status, a.w.message);
+  const uint32_t want = FELIX_SUPPORTS_INSPECT | FELIX_SUPPORTS_TOPOLOGY |
+                        FELIX_SUPPORTS_STREAM_SHARDS | FELIX_SUPPORTS_CACHE_SHARDS |
+                        FELIX_SUPPORTS_SHARD_OWNERS;
+  CHECK((a.flags & want) == want, "supports flags were 0x%x", (unsigned)a.flags);
+  answer_destroy(&a);
+
+  answer_init(&a);
+  status = answered(&a, felix_client_stream_routing(client, f->tenant, f->ns, f->stream,
+                                                    NULL, on_routing, &a));
+  CHECK(status == FELIX_STATUS_OK && a.shards >= 1 &&
+            (a.routing == FELIX_ROUTING_MODULO || a.routing == FELIX_ROUTING_JUMP_HASH),
+        "stream_routing gave %d, %u shards, routing %d (%s)", (int)status,
+        (unsigned)a.shards, (int)a.routing, a.w.message);
+  uint32_t shards = a.shards;
+  answer_destroy(&a);
+
+  answer_init(&a);
+  status = answered(&a, felix_client_cache_shards(client, f->tenant, f->ns, f->cache,
+                                                  NULL, on_shard_count, &a));
+  CHECK(status == FELIX_STATUS_OK && a.count >= 1, "cache_shards gave %d, %zu (%s)",
+        (int)status, a.count, a.w.message);
+  answer_destroy(&a);
+
+  answer_init(&a);
+  status = answered(&a, felix_client_topology(client, NULL, on_json, &a));
+  CHECK(status == FELIX_STATUS_OK && a.json && a.json[0] == '[' && strstr(a.json, "\"node_id\""),
+        "topology gave %d: %s", (int)status, a.json ? a.json : a.w.message);
+  answer_destroy(&a);
+
+  answer_init(&a);
+  status = answered(&a, felix_client_shard_owners(client, FELIX_KIND_STREAM, f->tenant,
+                                                  f->ns, f->stream, NULL, on_json, &a));
+  CHECK(status == FELIX_STATUS_OK && a.json && a.json[0] == '[' && strstr(a.json, "\"shard\":0") &&
+            strstr(a.json, "\"generation\""),
+        "shard_owners gave %d: %s", (int)status, a.json ? a.json : a.w.message);
+  answer_destroy(&a);
+  (void)shards;
+
+  /* A kind that is neither is refused before anything is sent. */
+  answer_init(&a);
+  status = felix_client_shard_owners(client, 7, f->tenant, f->ns, f->stream, NULL,
+                                     on_json, &a);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a bad kind gave %d", (int)status);
+  answer_destroy(&a);
+
+  /* A tenant token lacks node.view:cluster:*, so inspection is refused. */
+  answer_init(&a);
+  status = answered(&a, felix_client_inspect_shard(client, FELIX_KIND_STREAM, f->tenant,
+                                                   f->ns, f->stream, 0, NULL, on_json, &a));
+  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_TIMEOUT,
+        "a tenant token inspected a shard: %d", (int)status);
+  CHECK(a.json == NULL, "a refused inspection carried an answer");
+  answer_destroy(&a);
+  answer_init(&a);
+  status = answered(&a, felix_client_list_subscriptions(client, NULL, 0, NULL, NULL,
+                                                        on_subscriptions, &a));
+  CHECK(status != FELIX_STATUS_OK && status != FELIX_STATUS_TIMEOUT,
+        "a tenant token listed subscriptions: %d", (int)status);
+  answer_destroy(&a);
+
+  /* A cursor that is not one is refused at the call. */
+  answer_init(&a);
+  status = felix_client_list_subscriptions(client, NULL, 0, "{\"tenant_id\":3}", NULL,
+                                           on_subscriptions, &a);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a bad cursor gave %d", (int)status);
+  answer_destroy(&a);
+}
+
+static void parity_inspector(const struct fixture *f, FelixClient *client) {
+  /* The client fixture always hands out an inspector token. */
+  CHECK(f->inspector_token[0], "the fixture file has no inspector_token");
+  if (!f->inspector_token[0]) {
+    return;
+  }
+  struct answer a;
+  answer_init(&a);
+  FelixStatus status = answered(&a, felix_client_shard_owners(client, FELIX_KIND_STREAM, f->tenant,
+                                                              f->ns, f->stream, NULL, on_json, &a));
+  char owner[128];
+  bool found = status == FELIX_STATUS_OK && first_owner_addr(a.json, owner, sizeof owner);
+  answer_destroy(&a);
+  CHECK(found, "no owner address in the shard owners");
+  if (!found) {
+    return;
+  }
+
+  /* The owner answers for its own shard. */
+  FelixClient *ops = NULL;
+  REQUIRE_OK(connect_sync(owner, f->tenant, f->inspector_token, f->ca_file, &ops));
+  answer_init(&a);
+  status = answered(&a, felix_client_inspect_shard(ops, FELIX_KIND_STREAM, f->tenant,
+                                                   f->ns, f->stream, 0, NULL, on_json, &a));
+  CHECK(status == FELIX_STATUS_OK && a.json && a.json[0] == '{' &&
+            strstr(a.json, "\"role\":\"leader\"") && strstr(a.json, "\"serving\":true"),
+        "inspect_shard gave %d: %s", (int)status, a.json ? a.json : a.w.message);
+  answer_destroy(&a);
+
+  /* Three subscribers on the owner, paged two at a time. */
+  FelixClient *holder = NULL;
+  FelixSubscription *held[3] = {NULL, NULL, NULL};
+  FelixStatus connected = connect_sync(owner, f->tenant, f->token, f->ca_file, &holder);
+  CHECK(connected == FELIX_STATUS_OK, "the subscriber could not connect to the owner: %d",
+        (int)connected);
+  if (connected != FELIX_STATUS_OK) {
+    felix_client_free(ops);
+    return;
+  }
+  {
+    for (int i = 0; i < 3; i++) {
+      CHECK(subscribe(holder, f, FELIX_START_LATEST, 0, &held[i]) == FELIX_STATUS_OK,
+            "subscriber %d was refused", i);
+    }
+    FelixSubscriptionFilter filter;
+    memset(&filter, 0, sizeof filter);
+    filter.size = sizeof filter;
+    filter.tenant_id = f->tenant;
+    filter.ns = f->ns;
+    filter.stream = f->stream;
+    filter.has_shard = true;
+    filter.shard = 0;
+    char *cursor = NULL;
+    int pages = 0;
+    size_t listed = 0;
+    do {
+      answer_init(&a);
+      status = answered(&a, felix_client_list_subscriptions(ops, &filter, 2, cursor, NULL,
+                                                            on_subscriptions, &a));
+      CHECK(status == FELIX_STATUS_OK && a.json && strstr(a.json, "\"subscriptions\":["),
+            "list_subscriptions gave %d: %s", (int)status, a.json ? a.json : a.w.message);
+      for (const char *at = a.json; status == FELIX_STATUS_OK && (at = strstr(at, "\"subscriber_id\":"));
+           at++) {
+        listed++;
+      }
+      free(cursor);
+      cursor = a.next ? strdup(a.next) : NULL;
+      answer_destroy(&a);
+      pages++;
+    } while (cursor && pages < 50);
+    CHECK(listed >= 3 && pages >= 2, "listed %zu subscriptions over %d pages", listed, pages);
+    for (int i = 0; i < 3; i++) {
+      felix_subscription_free(held[i]);
+    }
+    felix_client_free(holder);
+  }
+  felix_client_free(ops);
+}
+
+static void parity_accessors(const struct fixture *f, const char *run) {
+  /* Queue knobs and transport tuning go through the connect options, and the
+     broker reports what it granted. */
+  FelixConnectOptions options;
+  memset(&options, 0, sizeof options);
+  options.size = sizeof options;
+  options.client_sub_queue_policy = FELIX_QUEUE_BLOCK;
+  options.client_sub_queue_capacity = 64;
+  options.broker_sub_queue_capacity = 8;
+  options.publish_conn_pool = 2;
+  options.publish_streams_per_conn = 2;
+  options.publish_queue_depth = 32;
+  options.publish_inflight_bytes = 2u << 20;
+  options.publish_sharding = FELIX_SHARDING_ROUND_ROBIN;
+  options.no_publish_shard_streams = true;
+  options.cache_conn_pool = 2;
+  options.cache_streams_per_conn = 2;
+  options.event_conn_pool = 2;
+  options.cluster_conn_pool = 4;
+  options.cluster_streams_per_conn = 512;
+  options.event_router_max_pending = 4096;
+  options.max_frame_bytes = 8u << 20;
+  options.event_conn_recv_window = 64u << 20;
+  options.event_stream_recv_window = 16u << 20;
+  options.event_send_window = 64u << 20;
+  options.cache_conn_recv_window = 64u << 20;
+  options.cache_stream_recv_window = 16u << 20;
+  options.cache_send_window = 64u << 20;
+  options.ack_on_commit = true;
+  options.connect_timeout_ms = 8000;
+  options.finish_timeout_ms = 30000;
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with(f->addrs, f->tenant, f->token, NULL,
+                                                 f->ca_file, &options, NULL, on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+  }
+  FelixClient *tuned = w.handle;
+  CHECK(status == FELIX_STATUS_OK && tuned, "a tuned connect gave %d (%s)", (int)status, w.message);
+  waiter_destroy(&w);
+  if (!tuned) {
+    return;
+  }
+
+  FelixSubscription *sub = NULL;
+  REQUIRE_OK(subscribe(tuned, f, FELIX_START_LATEST, 0, &sub));
+  uint32_t capacity = 0;
+  bool has = false;
+  CHECK(felix_subscription_queue_capacity(sub, &capacity, &has) == FELIX_STATUS_OK &&
+            has && capacity == 8,
+        "queue capacity was %u (%d)", (unsigned)capacity, (int)has);
+
+  char body[64];
+  snprintf(body, sizeof body, "c-%s-accessors", run);
+  CHECK(publish(tuned, f, f->stream, body, NULL, NULL, 0) == FELIX_STATUS_OK,
+        "a tuned publish failed");
+  waiter_init(&w);
+  status = felix_subscription_next(sub, WAIT_MS, NULL, on_headered_event, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS * 2);
+  }
+  CHECK(status == FELIX_STATUS_OK && w.handle, "no event on the tuned client: %d", (int)status);
+  felix_event_free(w.handle);
+  waiter_destroy(&w);
+
+  /* Nothing moved the shard or dropped the connection. */
+  uint64_t moves = 99, reconnects = 99;
+  bool deleted = true;
+  CHECK(felix_subscription_moves(sub, &moves) == FELIX_STATUS_OK && moves == 0,
+        "moves was %" PRIu64, moves);
+  CHECK(felix_subscription_reconnects(sub, &reconnects) == FELIX_STATUS_OK && reconnects == 0,
+        "reconnects was %" PRIu64, reconnects);
+  CHECK(felix_subscription_stream_deleted(sub, &deleted) == FELIX_STATUS_OK && !deleted,
+        "the stream was reported deleted");
+  felix_subscription_free(sub);
+  felix_client_free(tuned);
+
+  /* Without a request the broker's own queue size is not reported. */
+  FelixClient *plain = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &plain));
+  REQUIRE_OK(subscribe(plain, f, FELIX_START_LATEST, 0, &sub));
+  CHECK(felix_subscription_queue_capacity(sub, &capacity, &has) == FELIX_STATUS_OK && !has,
+        "an unrequested capacity was reported as %u", (unsigned)capacity);
+  felix_subscription_free(sub);
+  felix_client_free(plain);
+
+  /* A policy the library does not know is refused at connect. */
+  options.client_sub_queue_policy = 99;
+  waiter_init(&w);
+  status = felix_client_connect_with(f->addrs, f->tenant, f->token, NULL, f->ca_file,
+                                     &options, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a bad policy gave %d", (int)status);
+  waiter_destroy(&w);
+}
+
+static FelixStatus make_producer(FelixClient *client, FelixProducer **out) {
+  struct waiter made;
+  waiter_init(&made);
+  FelixStatus status = felix_client_idempotent_producer(client, NULL, on_producer, &made);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&made, WAIT_MS);
+  }
+  *out = made.handle;
+  waiter_destroy(&made);
+  return status;
+}
+
+static void parity_hand_off(const struct fixture *f, FelixClient *client, const char *run) {
+  FelixProducer *p = NULL;
+  REQUIRE_OK(make_producer(client, &p));
+
+  /* Several batches handed off back to back, answers read afterwards. */
+  enum { N = 4 };
+  FelixHanded *handed[N] = {NULL};
+  for (int i = 0; i < N; i++) {
+    struct laid l;
+    char tag[16];
+    snprintf(tag, sizeof tag, "hand%d", i);
+    lay(&l, run, tag, 2);
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_producer_hand_off_batch(
+        p, f->tenant, f->ns, f->stream, (const uint8_t *)l.data, l.lens, l.count,
+        NULL, 0, NULL, on_handed, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK && w.handle, "hand_off_batch %d gave %d (%s)", i,
+          (int)status, w.message);
+    handed[i] = w.handle;
+    waiter_destroy(&w);
+  }
+  bool seen = false;
+  uint64_t previous = 0;
+  for (int i = 0; i < N; i++) {
+    if (!handed[i]) {
+      continue;
+    }
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_handed_offset(handed[i], NULL, on_publish, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "handed %d answered %d (%s)", i, (int)status, w.message);
+    if (status == FELIX_STATUS_OK && w.has_offset) {
+      CHECK(!seen || w.offset > previous, "offset %" PRIu64 " did not follow %" PRIu64,
+            w.offset, previous);
+      seen = true;
+      previous = w.offset;
+    }
+    /* The answer is read once, by either call. */
+    FelixStatus again = felix_handed_offset(handed[i], NULL, on_publish, &w);
+    CHECK(again == FELIX_STATUS_INVALID_ARGUMENT, "a second offset read gave %d", (int)again);
+    again = felix_handed_done(handed[i], NULL, on_producer_done, &w);
+    CHECK(again == FELIX_STATUS_INVALID_ARGUMENT, "a done after an offset gave %d", (int)again);
+    waiter_destroy(&w);
+    felix_handed_free(handed[i]);
+  }
+
+  /* Two batches handed off together, answered by done. */
+  {
+    struct laid l;
+    lay(&l, run, "hand-many", 3);
+    size_t sizes[2] = {2, 1};
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_producer_hand_off_batches(
+        p, f->tenant, f->ns, f->stream, (const uint8_t *)l.data, l.lens, 3, sizes, 2,
+        NULL, on_handed, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    FelixHanded *h = w.handle;
+    CHECK(status == FELIX_STATUS_OK && h, "hand_off_batches gave %d (%s)", (int)status, w.message);
+    waiter_destroy(&w);
+    if (h) {
+      waiter_init(&w);
+      status = felix_handed_done(h, NULL, on_producer_done, &w);
+      if (status == FELIX_STATUS_OK) {
+        status = wait_for(&w, WAIT_MS);
+      }
+      CHECK(status == FELIX_STATUS_OK, "done gave %d (%s)", (int)status, w.message);
+      CHECK(felix_handed_done(h, NULL, on_producer_done, &w) == FELIX_STATUS_INVALID_ARGUMENT,
+            "a second done was accepted");
+      waiter_destroy(&w);
+      felix_handed_free(h);
+    }
+    /* Sizes that do not add up are refused at the call. */
+    size_t bad[2] = {2, 2};
+    waiter_init(&w);
+    status = felix_producer_hand_off_batches(p, f->tenant, f->ns, f->stream,
+                                             (const uint8_t *)l.data, l.lens, 3, bad, 2,
+                                             NULL, on_handed, &w);
+    CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "uneven sizes gave %d", (int)status);
+    waiter_destroy(&w);
+  }
+
+  /* Nothing is in doubt, so handing off an abandon succeeds. */
+  {
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_producer_hand_off_abandon(p, f->tenant, f->ns, f->stream,
+                                                         NULL, on_handed, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    FelixHanded *h = w.handle;
+    CHECK(status == FELIX_STATUS_OK && h, "hand_off_abandon gave %d (%s)", (int)status, w.message);
+    waiter_destroy(&w);
+    if (h) {
+      waiter_init(&w);
+      status = felix_handed_done(h, NULL, on_producer_done, &w);
+      if (status == FELIX_STATUS_OK) {
+        status = wait_for(&w, WAIT_MS);
+      }
+      CHECK(status == FELIX_STATUS_OK, "abandon answered %d (%s)", (int)status, w.message);
+      waiter_destroy(&w);
+      felix_handed_free(h);
+    }
+  }
+
+  /* A closed producer takes no more hand-offs. */
+  {
+    struct waiter w;
+    waiter_init(&w);
+    FelixStatus status = felix_producer_close(p, 5000, NULL, on_producer_done, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_OK, "close gave %d", (int)status);
+    waiter_destroy(&w);
+    struct laid l;
+    lay(&l, run, "hand-late", 1);
+    waiter_init(&w);
+    status = felix_producer_hand_off_batch(p, f->tenant, f->ns, f->stream,
+                                           (const uint8_t *)l.data, l.lens, 1, NULL, 0, NULL,
+                                           on_handed, &w);
+    if (status == FELIX_STATUS_OK) {
+      status = wait_for(&w, WAIT_MS);
+    }
+    CHECK(status == FELIX_STATUS_CLOSED, "a hand-off after close gave %d", (int)status);
+    waiter_destroy(&w);
+  }
+  felix_producer_free(p);
+}
+
+static void parity_more(const struct fixture *f, const char *run) {
+  FelixClient *client = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->token, f->ca_file, &client));
+  parity_questions(f, client);
+  parity_inspector(f, client);
+  parity_hand_off(f, client, run);
+  felix_client_free(client);
+  parity_accessors(f, run);
+}
+
+/* Null handles and bad arguments are refused before anything runs. */
+static void parity_more_offline(void) {
+  struct answer a;
+  answer_init(&a);
+  CHECK(felix_client_supports(NULL, NULL, on_supports, &a) == FELIX_STATUS_INVALID_ARGUMENT,
+        "supports of a null client was accepted");
+  CHECK(felix_client_inspect_shard(NULL, FELIX_KIND_STREAM, "t", "n", "s", 0, NULL, on_json,
+                                   &a) == FELIX_STATUS_INVALID_ARGUMENT,
+        "inspect_shard of a null client was accepted");
+  CHECK(felix_client_list_subscriptions(NULL, NULL, 0, NULL, NULL, on_subscriptions, &a) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "list_subscriptions of a null client was accepted");
+  CHECK(felix_client_topology(NULL, NULL, on_json, &a) == FELIX_STATUS_INVALID_ARGUMENT,
+        "topology of a null client was accepted");
+  CHECK(felix_client_stream_routing(NULL, "t", "n", "s", NULL, on_routing, &a) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "stream_routing of a null client was accepted");
+  CHECK(felix_client_shard_owners(NULL, FELIX_KIND_CACHE, "t", "n", "c", NULL, on_json, &a) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "shard_owners of a null client was accepted");
+  CHECK(felix_client_cache_shards(NULL, "t", "n", "c", NULL, on_shard_count, &a) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "cache_shards of a null client was accepted");
+  answer_destroy(&a);
+
+  uint64_t n = 0;
+  bool flag = false;
+  uint32_t capacity = 0;
+  CHECK(felix_subscription_moves(NULL, &n) == FELIX_STATUS_INVALID_ARGUMENT, "moves of null");
+  CHECK(felix_subscription_reconnects(NULL, &n) == FELIX_STATUS_INVALID_ARGUMENT,
+        "reconnects of null");
+  CHECK(felix_subscription_stream_deleted(NULL, &flag) == FELIX_STATUS_INVALID_ARGUMENT,
+        "stream_deleted of null");
+  CHECK(felix_subscription_queue_capacity(NULL, &capacity, &flag) == FELIX_STATUS_INVALID_ARGUMENT,
+        "queue_capacity of null");
+
+  CHECK(felix_handed_offset(NULL, NULL, on_publish, NULL) == FELIX_STATUS_INVALID_ARGUMENT,
+        "handed_offset of null");
+  CHECK(felix_handed_done(NULL, NULL, on_producer_done, NULL) == FELIX_STATUS_INVALID_ARGUMENT,
+        "handed_done of null");
+  felix_handed_free(NULL);
+  CHECK(felix_producer_hand_off_batch(NULL, "t", "n", "s", NULL, NULL, 1, NULL, 0, NULL,
+                                      on_handed, NULL) == FELIX_STATUS_INVALID_ARGUMENT,
+        "hand_off_batch of a null producer");
+  CHECK(felix_producer_hand_off_abandon(NULL, "t", "n", "s", NULL, on_handed, NULL) ==
+            FELIX_STATUS_INVALID_ARGUMENT,
+        "hand_off_abandon of a null producer");
+
+  /* A size the struct does not reach leaves later options at their defaults. */
+  FelixConnectOptions options;
+  memset(&options, 0, sizeof options);
+  options.size = sizeof options;
+  options.publish_sharding = 77;
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL,
+                                                 &options, NULL, on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "an unknown sharding gave %d", (int)status);
+  options.publish_sharding = 0;
+  options.event_conn_recv_window = UINT64_MAX;
+  status = felix_client_connect_with("127.0.0.1:1", "t1", "token", NULL, NULL, &options, NULL,
+                                     on_connect, &w);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "a window past 2^62 gave %d", (int)status);
+  waiter_destroy(&w);
+}
+
+struct lease_waiter {
+  struct waiter w;
+  bool applied;
+  bool has_token;
+  char token[2048];
+  char refused[256];
+};
+
+static void on_lease(void *user_data, FelixStatus status, const char *message,
+                     bool applied, bool has_version, uint64_t version,
+                     const char *token, uint64_t expires_at,
+                     const char *token_refused) {
+  (void)has_version;
+  (void)version;
+  struct lease_waiter *l = user_data;
+  l->applied = applied;
+  l->has_token = token != NULL;
+  if (token) {
+    snprintf(l->token, sizeof l->token, "%s", token);
+    CHECK(expires_at > 0, "a lease token has no expiry");
+  }
+  if (token_refused) {
+    snprintf(l->refused, sizeof l->refused, "%s", token_refused);
+  }
+  finish(&l->w, status, message, NULL);
+}
+
+static FelixStatus claim(FelixClient *client, const struct fixture *f,
+                         const char *key, struct lease_waiter *l) {
+  memset(l, 0, sizeof *l);
+  waiter_init(&l->w);
+  FelixStatus status = felix_client_cache_put_if_lease(
+      client, f->tenant, f->ns, f->lease_cache, key, (const uint8_t *)"node", 4,
+      2000, FELIX_IF_ABSENT, 0, NULL, on_lease, l);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&l->w, WAIT_MS);
+  }
+  return status;
+}
+
+static FelixStatus identity_with(FelixClient *client, const struct fixture *f,
+                                 const char *token, FelixClient **out) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_with_identity(client, f->tenant, token,
+                                                  NULL, on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* An identity whose token comes from the app's fetch, as a connect's does. */
+static FelixStatus identity_provided(FelixClient *client,
+                                     const struct fixture *f,
+                                     struct token_app *app,
+                                     const char *first, FelixClient **out) {
+  struct waiter w;
+  waiter_init(&w);
+  FelixStatus status = felix_client_with_identity_provider(
+      client, f->tenant, first, token_fetch, app, token_release, NULL,
+      on_connect, &w);
+  if (status == FELIX_STATUS_OK) {
+    status = wait_for(&w, WAIT_MS);
+    *out = w.handle;
+  }
+  waiter_destroy(&w);
+  return status;
+}
+
+/* Lease tokens against a broker that mints them: the holder's token publishes
+   to its own output and to no other, a lost claim gets none, and a token past
+   its expiry opens nothing. */
+static void leases(const struct fixture *f) {
+  CHECK(f->lease_cache[0] && f->lease_node_token[0] &&
+            strstr(f->lease_keys, "c2"),
+        "the fixture file has no lease cache, node token or keys");
+  if (!f->lease_cache[0] || !f->lease_node_token[0]) {
+    return;
+  }
+  FelixClient *node = NULL;
+  REQUIRE_OK(connect_sync(f->addrs, f->tenant, f->lease_node_token,
+                          f->ca_file, &node));
+
+  /* The node's own token names no output, so it cannot publish to one. */
+  FelixStatus status = publish(node, f, "wl.c.out", "denied", NULL, NULL, 0);
+  CHECK(status != FELIX_STATUS_OK, "a node without a lease published");
+
+  struct lease_waiter l;
+  status = claim(node, f, "c", &l);
+  CHECK(status == FELIX_STATUS_OK && l.applied && l.has_token,
+        "claiming a free key gave %d, applied %d, token %d (%s)", (int)status,
+        l.applied, l.has_token, l.refused);
+  char token[sizeof l.token];
+  snprintf(token, sizeof token, "%s", l.token);
+  waiter_destroy(&l.w);
+
+  FelixClient *holder = NULL;
+  status = identity_with(node, f, token, &holder);
+  CHECK(status == FELIX_STATUS_OK && holder, "the lease token was refused: %d",
+        (int)status);
+  if (holder) {
+    status = publish(holder, f, "wl.c.out", "held", NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "the holder's publish gave %d",
+          (int)status);
+  }
+
+  /* The key is taken, so a second claim loses the write and gets no token. */
+  status = claim(node, f, "c", &l);
+  CHECK(status == FELIX_STATUS_OK && !l.applied && !l.has_token,
+        "a second claim gave %d, applied %d, token %d", (int)status, l.applied,
+        l.has_token);
+  waiter_destroy(&l.w);
+
+  /* The token names its key's output and no other. */
+  FelixClient *wrong = NULL;
+  status = identity_with(node, f, token, &wrong);
+  CHECK(status == FELIX_STATUS_OK && wrong, "a second identity gave %d",
+        (int)status);
+  if (wrong) {
+    status = publish(wrong, f, "wl.c2.out", "other", NULL, NULL, 0);
+    CHECK(status != FELIX_STATUS_OK, "a lease token published to another key");
+    felix_client_free(wrong);
+  }
+
+  /* Past its expiry the holder's stream ends and no new identity opens. */
+  bool ended = false;
+  for (int i = 0; holder && i < 80 && !ended; i++) {
+    ended = publish(holder, f, "wl.c.out", "late", NULL, NULL, 0) !=
+            FELIX_STATUS_OK;
+    if (!ended) {
+      pause_ms(100);
+    }
+  }
+  CHECK(ended, "a stale lease token kept publishing");
+  FelixClient *stale = NULL;
+  status = identity_with(node, f, token, &stale);
+  CHECK(status != FELIX_STATUS_OK && stale == NULL,
+        "an expired lease token opened an identity");
+  if (holder) {
+    felix_client_free(holder);
+  }
+
+  /* A token provider hands the identity a lease token, and is released once. */
+  status = claim(node, f, "c2", &l);
+  CHECK(status == FELIX_STATUS_OK && l.applied && l.has_token,
+        "claiming the second key gave %d", (int)status);
+  snprintf(token, sizeof token, "%s", l.token);
+  waiter_destroy(&l.w);
+
+  struct token_app app;
+  token_app_init(&app, token);
+  FelixClient *provided = NULL;
+  status = identity_provided(node, f, &app, NULL, &provided);
+  CHECK(status == FELIX_STATUS_OK && provided,
+        "a provider identity gave %d", (int)status);
+  if (provided) {
+    status = publish(provided, f, "wl.c2.out", "provided", NULL, NULL, 0);
+    CHECK(status == FELIX_STATUS_OK, "the provider identity's publish gave %d",
+          (int)status);
+    CHECK(atomic_load(&app.fetches) >= 1, "the provider was never asked");
+    CHECK(atomic_load(&app.released) == 0, "released while the identity lives");
+    felix_client_free(provided);
+  }
+  CHECK(released_once(&app), "token_release ran %d times",
+        atomic_load(&app.released));
+
+  /* A first token in hand needs no fetch; a refusal hands out no client but
+     still releases; a missing fetch is refused with the data left alone. */
+  struct token_app unused;
+  token_app_init(&unused, "never");
+  status = identity_provided(node, f, &unused, "not-a-token", &provided);
+  CHECK(status != FELIX_STATUS_OK, "a bad first token was accepted");
+  CHECK(released_once(&unused), "a refused identity released %d times",
+        atomic_load(&unused.released));
+
+  struct token_app untouched;
+  token_app_init(&untouched, "never");
+  status = felix_client_with_identity_provider(
+      node, f->tenant, NULL, NULL, &untouched, token_release, NULL, on_connect,
+      NULL);
+  CHECK(status == FELIX_STATUS_INVALID_ARGUMENT, "no fetch gave %d",
+        (int)status);
+  CHECK(atomic_load(&untouched.released) == 0, "a refused call released");
+
+  felix_client_free(node);
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "offline") == 0) {
     offline();
+    parity_more_offline();
   } else if (argc == 3 && strcmp(argv[1], "fixture") == 0) {
     struct fixture f;
     memset(&f, 0, sizeof f);
@@ -5751,6 +6854,9 @@ int main(int argc, char **argv) {
     snprintf(run, sizeof run, "%ld-%09ld", (long)ts.tv_sec, (long)ts.tv_nsec);
     pubsub(&f, run);
     batches(&f, run);
+    parity(&f, run);
+    parity_more(&f, run);
+    leases(&f);
     subscriptions(&f, run);
     groups(&f, run);
     connect_options(&f, run);
@@ -5760,6 +6866,7 @@ int main(int argc, char **argv) {
     caches(&f, run);
     commits(&f, run);
     commits_negotiated(&f, run);
+    client_certificate(&f);
     head_trims(&f);
     producers(&f, run);
     concurrency(&f, run);

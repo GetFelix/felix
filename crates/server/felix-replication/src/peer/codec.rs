@@ -15,7 +15,7 @@ use quinn::{RecvStream, SendStream};
 /// A single `write_all` per frame is what lets several requests share a stream:
 /// the caller holds the only handle to this `SendStream`, so frames cannot
 /// interleave.
-pub async fn write_frame(send: &mut SendStream, message: &InternalMessage) -> Result<()> {
+pub(crate) async fn write_frame(send: &mut SendStream, message: &InternalMessage) -> Result<()> {
     let frame = message.encode().context("encode internal frame")?;
     send.write_all(&frame)
         .await
@@ -27,7 +27,7 @@ pub async fn write_frame(send: &mut SendStream, message: &InternalMessage) -> Re
 // One per frame read and consumed at once, so boxing the message would only
 // add an allocation per frame.
 #[allow(clippy::large_enum_variant)]
-pub enum Incoming {
+pub(crate) enum Incoming {
     Message(InternalMessage),
     /// A frame whose kind this build does not know, stepped over rather than
     /// fatal. The caller answers it and the stream carries on.
@@ -50,7 +50,7 @@ pub enum Incoming {
 /// stream that ends part-way through one is an error: the peer stopped
 /// mid-message, and treating that as a clean close would silently drop a
 /// request.
-pub async fn read_frame(recv: &mut RecvStream) -> Result<Incoming> {
+pub(crate) async fn read_frame(recv: &mut RecvStream) -> Result<Incoming> {
     let mut head = [0u8; InternalHeader::LEN];
     match recv.read_exact(&mut head).await {
         Ok(()) => {}

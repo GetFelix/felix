@@ -9,6 +9,7 @@ mod control_batch;
 mod control_binary;
 mod control_message;
 mod declared_width;
+mod direct;
 mod durable_default_ack;
 mod explicit_shard;
 mod group_commit;
@@ -22,7 +23,7 @@ mod stream_cache;
 mod tenant_quota;
 mod uni;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -74,7 +75,7 @@ pub(super) fn context_with(scheduler: Arc<PublishScheduler>) -> PublishContext {
         peers: None,
         lease: None,
         lease_headroom: Duration::ZERO,
-        marks: None,
+        engine: Default::default(),
         quorum_timeout: Duration::from_secs(1),
         scheduler,
         wait_timeout: Duration::from_millis(100),
@@ -171,6 +172,10 @@ fn watch_key() -> crate::shards::ShardKey {
 }
 
 fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
+    ingress_with_replicas(leader, servable, Vec::new())
+}
+
+fn ingress_with_replicas(leader: &str, servable: bool, replicas: Vec<String>) -> IngressRouter {
     let router = Arc::new(felix_router::ShardRouter::new(
         "broker-a",
         "us-west-2",
@@ -179,7 +184,7 @@ fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
     let assignment = crate::shards::watch::ShardAssignment {
         key: watch_key(),
         leader: leader.to_string(),
-        replicas: Vec::new(),
+        replicas,
         generation: 1,
         state: "active".to_string(),
         successor: None,
@@ -188,6 +193,8 @@ fn ingress_for(leader: &str, servable: bool) -> IngressRouter {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     let assignments: HashMap<crate::shards::ShardKey, crate::shards::watch::ShardAssignment> =
         [(watch_key(), assignment)].into_iter().collect();

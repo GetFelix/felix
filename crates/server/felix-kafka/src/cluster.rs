@@ -52,12 +52,13 @@ pub trait Cluster: Send + Sync + 'static {
 
     /// Wait until a written batch has what its stream's consistency asks for:
     /// a majority of the replica set on a `Quorum` stream, nothing more on a
-    /// `Leader` one.
+    /// `Leader` one. `generation` is the batch's [`WritePermit::generation`].
     async fn await_consistency(
         &self,
         shard: &ShardRef<'_>,
         handle: &StreamHandle,
         outcome: &PublishOutcome,
+        generation: u64,
     ) -> Result<(), WriteError>;
 
     /// The offset below which a shard's records are committed, which is where
@@ -89,15 +90,24 @@ pub trait Cluster: Send + Sync + 'static {
 /// A write's place in its shard's fence. Dropping it lets a move proceed.
 #[derive(Default)]
 pub struct WritePermit {
+    generation: u64,
     _guard: Option<Box<dyn Any + Send + Sync>>,
 }
 
 impl WritePermit {
-    /// A permit that holds `guard` until it is dropped.
-    pub fn holding(guard: impl Any + Send + Sync) -> Self {
+    /// A permit that holds `guard`, entered at `generation`, until it is
+    /// dropped.
+    pub fn holding(guard: impl Any + Send + Sync, generation: u64) -> Self {
         Self {
+            generation,
             _guard: Some(Box::new(guard)),
         }
+    }
+
+    /// The generation the write was admitted at; zero for a permit that
+    /// holds no fence.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 }
 

@@ -22,6 +22,8 @@ Files:
 - `binary_publish_ack_error.json` / `.hex` (binary, flags `0x0010`)
 - `auth_with_capabilities.json` / `.hex` (capability offer on the auth handshake)
 - `auth_ok.json` / `.hex` (the broker's capability advertisement)
+- `auth_extended_features.json` (extended feature bits offered on the auth handshake)
+- `auth_ok_extended_features.json` (extended feature bits in the broker's answer)
 
 Each JSON file describes:
 - message type and fields

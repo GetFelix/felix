@@ -189,6 +189,10 @@ new shard's copy skips it once streams carry incarnations: a creation set
 naming the copy's current storage id shows it never held the shard before
 ([#1791](https://github.com/GetFelix/felix/issues/1791)).
 
+A wiped copy that rejoins is a non-voting learner under `joint_fence` until the
+control plane re-admits it, so it counts in no majority and casts no vote while it
+holds nothing. See [Failover without the control plane](/deployment/failover-without-control-plane/).
+
 A **follower** that crashed under `periodic` or `none`, or lost its disk, may
 have answered for records it no longer holds. A failover's assignment names
 the storage id each replica had in the report it was decided on, and the
@@ -442,9 +446,9 @@ is read rather than at boot. Set `FELIX_DURABLE_VERIFY_ALL_ON_OPEN=true` to trad
 startup time for eager detection.
 
 Recovery plans every repair before it makes any, and
-`felix-broker inspect segments` runs that plan alone: it reports what startup would
+`felixctl data inspect segments` runs that plan alone: it reports what startup would
 do with a data directory, read-only, without a broker, and
-`felix-broker inspect records` decodes the records around one offset the same
+`felixctl data inspect records` decodes the records around one offset the same
 way. See
 [Diagnosing a cluster](/deployment/diagnosing/#a-broker-will-not-start-or-will-not-open-a-shard).
 

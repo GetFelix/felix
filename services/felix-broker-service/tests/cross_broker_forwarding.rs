@@ -203,6 +203,8 @@ impl Owner {
                 fence_storage_ids: Default::default(),
                 member_storage_ids: Default::default(),
                 pending_set: None,
+                previous_generation: None,
+                readmitted: Default::default(),
             },
         )]
         .into_iter()
@@ -219,19 +221,21 @@ impl Owner {
         self.ingress.publish_servable(if servable {
             [(shard_key(), generation)].into_iter().collect()
         } else {
-            HashMap::new()
+            Default::default()
         });
     }
 
     fn handler(&self, advertise_addr: &str) -> Arc<ForwardingHandler> {
         Arc::new(ForwardingHandler::new(
             Arc::clone(&self.broker),
-            Arc::clone(&self.ingress),
-            Arc::clone(&self.router),
-            advertise_addr.to_string(),
             // No quorum marks: these exercise forwarding itself, and every
             // stream here is leader-acknowledged.
-            None,
+            Arc::new(felix_broker_service::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&self.ingress)),
+            )),
+            Arc::clone(&self.router),
+            advertise_addr.to_string(),
             std::time::Duration::from_secs(5),
             owner_auth(),
         ))

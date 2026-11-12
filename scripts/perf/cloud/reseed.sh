@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Seed a running session again: a new tenant, streams, caches and tokens, on
+# the VMs and builds it already has. The session control plane keeps its state
+# in memory, so a restart of it (an OS update, a reboot) leaves every token in
+# the session invalid and the brokers never ready. Usage: SESSION=<name> ./reseed.sh
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+: "${SESSION:?SESSION=<name>}"
+session="${SESSION}"
+set -a
+# A caller that already loaded its session.env (run-ab.sh, session.sh) may keep it elsewhere.
+if [ -f "${here}/session.env" ]; then
+  # shellcheck disable=SC1091
+  source "${here}/session.env"
+elif [ "${FELIX_ENV_LOADED:-}" != 1 ]; then
+  echo "!! no ${here}/session.env and none loaded (FELIX_ENV_LOADED unset)" >&2; exit 1
+fi
+# session.env may name another session.
+SESSION="${session}"
+# shellcheck disable=SC1090
+source "${here}/sessions/${SESSION}.env"
+set +a
+# A caller that switches builds (run-ab.sh) names the build under test here. It
+# survives the inventory source above, whose ACTIVE_REF is always side A, and it
+# puts the control plane on the same build as the brokers.
+if [ -n "${AB_ACTIVE_REF:-}" ]; then
+  ACTIVE_REF="${AB_ACTIVE_REF}"
+  CONTROLPLANE_REF="${AB_ACTIVE_REF}"
+  export CONTROLPLANE_REF
+fi
+# The same IdP derivation session.sh does.
+if [ "${IDP_MODE:-}" != local ] && [ -z "${IDP_TOKEN:-}" ] && [ -n "${IDP_TENANT_ID:-}" ]; then
+  export IDP_SCOPE="${IDP_SCOPE:-${IDP_AUDIENCE:-}}"
+  : "${IDP_SCOPE:?set IDP_SCOPE (the app Application ID URI, or the bare client id)}"
+  export IDP_JWKS_URL="${IDP_JWKS_URL:-https://login.microsoftonline.com/${IDP_TENANT_ID}/discovery/v2.0/keys}"
+  IDP_TOKEN="$("${here}/idp-token.sh")"
+  export IDP_TOKEN
+  echo ">> minted an IdP token for scope ${IDP_SCOPE}"
+fi
+IFS=',' read -ra broker_ip_list <<<"${BROKER_IPS}"
+# A reseed starts the cluster's history over: the new control plane hands out
+# generations from zero, and a broker that still holds a newer one for a shard
+# refuses to open it (the fence working as intended). So the brokers start
+# empty too.
+# shellcheck source=lib.sh
+source "${here}/lib.sh"
+for i in "${!broker_ip_list[@]}"; do
+  run_on_str "$(broker_vm "${i}")" 'felix-agent wipe
+echo __RUNOK__' | grep '^wiped=' || { echo "!! could not wipe $(broker_vm "${i}")" >&2; exit 1; }
+done
+# The control plane keeps tenants, streams and shard assignments in memory
+# (FELIX_CONTROLPLANE_STORAGE_BACKEND is unset in controlplane.env, so the
+# default Memory backend), so stopping it drops the store; seed.sh then restarts
+# it empty on the build under test. There is no data directory to clear.
+agent_on "$(cp_vm)" 'systemctl stop felix-controlplane
+echo __RUNOK__' >/dev/null || { echo "!! could not stop the control plane" >&2; exit 1; }
+CONTROLPLANE_IP="${CONTROLPLANE_IP}" \
+BROKER_COUNT="${#broker_ip_list[@]}" \
+BOOTSTRAP_TOKEN="${BOOTSTRAP_TOKEN}" \
+IDP_MODE="${IDP_MODE:-}" \
+IDP_JWKS_URL="${IDP_JWKS_URL:-}" \
+IDP_AUDIENCE="${IDP_AUDIENCE:-}" \
+IDP_TOKEN="${IDP_TOKEN:-}" \
+GROUP="${GROUP}" \
+ARTIFACT_BASE="${ARTIFACT_BASE}" \
+BROKER_LABELS="${BROKER_LABELS}" \
+ACTIVE_REF="${ACTIVE_REF}" \
+BROKER_LISTENERS="${BROKER_LISTENERS:-1}" \
+ASSIGNMENTS_OUT="${here}/sessions/${SESSION}-results/system/assignments.txt" \
+  bash "${here}/seed.sh"

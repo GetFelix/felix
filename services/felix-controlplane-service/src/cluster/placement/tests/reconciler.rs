@@ -319,6 +319,8 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("staged move");
@@ -462,6 +464,8 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("placed");

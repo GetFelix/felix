@@ -1,1 +1,0 @@
-A wiped copy that finished catching up after its replication pass had moved on is now reported holding its generation's start, so the control plane re-admits it even when nothing more is written to the shard (#1892).

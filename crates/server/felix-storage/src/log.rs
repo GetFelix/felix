@@ -2,8 +2,10 @@
 //! [`AppendOnlyLog`] trait that [`crate::DiskLog`] implements.
 
 mod config;
+#[cfg(test)]
+mod tests;
 
-pub use config::{FsyncMode, LogConfig, OffloadTarget, Retention, RetentionHold};
+pub use config::{FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -119,6 +121,18 @@ pub enum RecordMark {
     /// segment, so a log moves onto v7 only when it writes one. See
     /// `docs/storage-format.md`, "Trim records".
     Trim { floor: Offset },
+    /// A change to the shard's replica set, committed through the log. The
+    /// payload is the engine's. Only a v9 segment holds one, and nothing
+    /// writes one yet.
+    Membership,
+    /// A signed add to a counter, for a cache shard whose counters share its
+    /// log. The payload is the counter store's. v9 only, and nothing writes
+    /// one yet.
+    CounterDelta,
+    /// The running sum of every counter, written when counter deltas are
+    /// compacted. The payload is the counter store's. v9 only, and nothing
+    /// writes one yet.
+    CounterCheckpoint,
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -131,6 +145,31 @@ pub struct ProducerBatch {
 }
 
 impl RecordMark {
+    /// Whether a client reads the record: an event or cache entry, or a
+    /// commit record holding one. Generation-start, trim, membership and
+    /// counter records belong to storage and replication, and every client
+    /// read skips them. A skipped record keeps its offset, so a reader sees
+    /// the gap and can tell it from a drop; see `docs/storage-format.md`,
+    /// "Record kinds".
+    pub fn is_data(&self) -> bool {
+        match self {
+            Self::None | Self::Opens(_) | Self::Continues | Self::Commit => true,
+            Self::GenerationStart
+            | Self::Trim { .. }
+            | Self::Membership
+            | Self::CounterDelta
+            | Self::CounterCheckpoint => false,
+        }
+    }
+
+    /// Whether only a v9 segment may hold the record.
+    pub fn needs_generation(&self) -> bool {
+        matches!(
+            self,
+            Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
+        )
+    }
+
     /// Whether the record is a generation-start record rather than a
     /// client's.
     pub fn is_generation_start(&self) -> bool {
@@ -248,6 +287,36 @@ pub struct LogRecord {
     /// The record's encoded key and headers, when it was stored with them.
     /// Boxed for the same reason as [`AppendRecord::headers`].
     pub headers: Option<Box<Bytes>>,
+    /// The generation of the leader that wrote the record, kept in its
+    /// header from segment format v9. `None` for a record in an older
+    /// segment.
+    pub generation: Option<u64>,
+}
+
+/// The generation a v9 segment stamps on a record whose writer nobody knows:
+/// one a sender held in an older segment, where no generation was kept. It
+/// is never compared: it neither raises nor breaks the floor. Generation 0 is
+/// also a shard's first, which loses nothing: no record precedes it.
+pub const UNKNOWN_WRITER: u64 = 0;
+
+/// Which generation wrote the records of a batch, for a log whose segment
+/// stamps each record with one (format v9). An older segment ignores it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum WrittenBy {
+    /// This log's own leader: the generation it leads at
+    /// (`DiskLog::lead_at`), which must be the one the log accepted. Anything
+    /// else is refused rather than stamped with a generation that did not
+    /// write the record.
+    #[default]
+    Leader,
+    /// Records copied from another log, at the generations that wrote them
+    /// there: runs oldest first, each covering its records up to the next
+    /// run's start, the first starting at or before the batch. A run at
+    /// [`UNKNOWN_WRITER`] covers records whose writer the sender did not know.
+    Writers(Vec<Epoch>),
+    /// Records copied from a sender that did not say which generations wrote
+    /// them. A v9 segment refuses them.
+    Unknown,
 }
 
 /// One leadership generation, and the offset its first record took.
@@ -271,6 +340,8 @@ pub struct SegmentDescriptor {
     pub base_offset: Offset,
     pub last_offset: Offset,
     pub size_bytes: u64,
+    /// The layout version in the segment header, which sets the record header size.
+    pub version: u16,
 }
 
 /// Names one shard's log. Caches and counters reuse it, with the cache or

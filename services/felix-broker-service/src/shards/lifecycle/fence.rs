@@ -23,7 +23,7 @@
 //! group state does too once the fleet reads by round, confirmed by a round
 //! instead ([`ShardFence::sessions_lease_free`]).
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
@@ -53,6 +53,9 @@ pub struct ShardFence {
     /// `Active`; kept here so replication, which runs the fence, can read it
     /// without the lifecycle's lock.
     promotions: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards whose fenced generation continues one this process was serving
+    /// (see [`Self::continuing`]), and that generation.
+    continuing: RwLock<HashMap<ShardKey, u64>>,
     /// Each shard's lifecycle phase, mirrored as the lifecycle sets it, for an
     /// operator's `shard_inspect`. Here for the reason `promotions` is: the
     /// lifecycle sets the phase and the fence together, and a read must not
@@ -75,6 +78,8 @@ pub struct ShardFence {
     /// Given-up shards whose last probe found no follower ahead of this
     /// broker's copy, and the generation they were given up at.
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
+    /// Shards whose failed open was reported refused since they last opened.
+    failed_reported: parking_lot::Mutex<felix_common::random::HashSet<ShardKey>>,
 }
 
 impl ShardFence {
@@ -104,9 +109,31 @@ impl ShardFence {
             .insert(key.clone(), (generation, promised_to.to_string()));
     }
 
+    /// `key`'s open at `generation` failed for a reason no retry at that
+    /// generation clears. Reported refused, naming no node, so the control
+    /// plane names it again one up, but once per shard until it opens: a fault
+    /// that outlasts a fresh open would otherwise bump the generation on every
+    /// placement pass.
+    pub(crate) fn open_failed(&self, key: &ShardKey, generation: u64) {
+        if self.failed_reported.lock().insert(key.clone()) {
+            self.refused(key, generation, "");
+        }
+    }
+
+    /// `key` was assigned here at `generation` after this broker had taken a
+    /// newer one itself: refused, naming no node, unless a refusal at or above
+    /// it is already held.
+    pub(crate) fn superseded(&self, key: &ShardKey, generation: u64) {
+        let mut refused = self.refused.write();
+        if refused.get(key).is_none_or(|(at, _)| *at < generation) {
+            refused.insert(key.clone(), (generation, String::new()));
+        }
+    }
+
     /// `key` opened at `generation`, so a refusal at or below it no longer
     /// holds the shard back and is not reported again.
     pub(crate) fn opened_at(&self, key: &ShardKey, generation: u64) {
+        self.failed_reported.lock().remove(key);
         let mut refused = self.refused.write();
         if refused.get(key).is_some_and(|(at, _)| *at <= generation) {
             refused.remove(key);
@@ -173,6 +200,22 @@ impl ShardFence {
             .is_some_and(|gate| gate.lease_free_at.load(SeqCst) == generation)
     }
 
+    /// Note whether the generation `key` opens at continues one this process
+    /// was serving: the next one, not draining, with no restart between.
+    pub(crate) fn set_continuing(&self, key: &ShardKey, generation: Option<u64>) {
+        match generation {
+            Some(generation) => self.continuing.write().insert(key.clone(), generation),
+            None => self.continuing.write().remove(key),
+        };
+    }
+
+    /// Whether `key`'s fence at `generation` continues a generation this
+    /// process served itself, so this broker already holds every record
+    /// acknowledged before it.
+    pub fn continuing(&self, key: &ShardKey, generation: u64) -> bool {
+        self.continuing.read().get(key) == Some(&generation)
+    }
+
     /// The generation `key` waits at for the promotion fence, if it does.
     pub fn awaiting_promotion(&self, key: &ShardKey) -> Option<u64> {
         self.promotions.read().get(key).copied()
@@ -181,6 +224,10 @@ impl ShardFence {
     /// Let writes to `key` in, if they were admitted at `generation`.
     pub fn open(&self, key: &ShardKey, generation: u64) {
         let gate = Arc::clone(self.gates.write().entry(key.clone()).or_default());
+        // Silence ended the last term only until a majority answered, and the
+        // watch that would have heard it stopped tracking the closed shard.
+        // A deposal for a newer leader is evidence, and stays.
+        gate.unheard_at.store(CLOSED, SeqCst);
         gate.open_at.store(generation, SeqCst);
         gate.opened_below
             .fetch_max(generation.saturating_add(1), SeqCst);
@@ -251,15 +298,10 @@ impl ShardFence {
     }
 
     /// Whether `key`'s readers at `generation` go on without the lease:
-    /// [`Self::confirms_by_round`], and this broker has not learned it was
-    /// deposed at that generation.
+    /// [`Self::confirms_by_round`], and [`Self::is_deposed`] does not hold at
+    /// that generation.
     pub fn sessions_lease_free(&self, key: &ShardKey, generation: u64) -> bool {
-        self.confirms_by_round(key, generation)
-            && self
-                .gates
-                .read()
-                .get(key)
-                .is_some_and(|gate| gate.deposed_at.load(SeqCst) != generation)
+        self.confirms_by_round(key, generation) && !self.is_deposed(key, generation)
     }
 
     /// Whether `key` at `generation` is a replicated `Quorum` shard in a fleet
@@ -283,10 +325,9 @@ impl ShardFence {
             .is_some_and(|gate| gate.passed_at.load(SeqCst) == generation)
     }
 
-    /// Note that `key` has a newer leader than `generation`, or that no
-    /// majority answered this broker for a lease duration. Its sessions stop
-    /// going on without the lease, and the first report at a generation is
-    /// queued for [`Self::take_deposals`].
+    /// Note that `key` has a newer leader than `generation`. Its sessions stop
+    /// going on without the lease for good at that generation, and the first
+    /// report at a generation is queued for [`Self::take_deposals`].
     pub fn depose(&self, key: &ShardKey, generation: u64) {
         let Some(gate) = self.gates.read().get(key).cloned() else {
             return;
@@ -298,12 +339,58 @@ impl ShardFence {
         self.deposal.notify_one();
     }
 
-    /// Whether this broker learned `key` has a newer leader than `generation`.
+    /// `key` at `generation` went a lease duration with no majority
+    /// answering while the lease was lapsed. Ends its readers as
+    /// [`Self::depose`] does, but only until [`Self::heard`]: silence is not
+    /// evidence of a newer leader.
+    pub(crate) fn unheard(&self, key: &ShardKey, generation: u64) {
+        let Some(gate) = self.gates.read().get(key).cloned() else {
+            return;
+        };
+        if gate.unheard_at.swap(generation, SeqCst) == generation
+            || gate.deposed_at.load(SeqCst) == generation
+        {
+            return;
+        }
+        self.deposals.lock().push((key.clone(), generation));
+        self.deposal.notify_one();
+    }
+
+    /// A majority answered `key` at `generation` again: clears
+    /// [`Self::unheard`] at that generation. A deposal for a newer leader
+    /// stays.
+    pub(crate) fn heard(&self, key: &ShardKey, generation: u64) {
+        if let Some(gate) = self.gates.read().get(key) {
+            let _ = gate
+                .unheard_at
+                .compare_exchange(generation, CLOSED, SeqCst, SeqCst);
+        }
+    }
+
+    /// Whether `key` at `generation` must refuse readers: this broker learned
+    /// of a newer leader there ([`Self::depose`]), or no majority has
+    /// answered it since [`Self::unheard`].
     pub fn is_deposed(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates.read().get(key).is_some_and(|gate| {
+            gate.deposed_at.load(SeqCst) == generation || gate.unheard_at.load(SeqCst) == generation
+        })
+    }
+
+    /// Whether this broker learned `key` has a newer leader than
+    /// `generation` ([`Self::depose`]).
+    pub(crate) fn names_newer_leader(&self, key: &ShardKey, generation: u64) -> bool {
         self.gates
             .read()
             .get(key)
             .is_some_and(|gate| gate.deposed_at.load(SeqCst) == generation)
+    }
+
+    /// Whether `key`'s fence is open at `generation`.
+    pub(crate) fn is_open_at(&self, key: &ShardKey, generation: u64) -> bool {
+        self.gates
+            .read()
+            .get(key)
+            .is_some_and(|gate| gate.open_at.load(SeqCst) == generation)
     }
 
     /// Resolves once a deposal is queued, or at once if one was queued with
@@ -392,6 +479,7 @@ impl felix_replication::driver::WriteFence for ShardFence {
             .map(|(generation, promised_to)| RefusedGeneration {
                 generation: *generation,
                 promised_to: promised_to.clone(),
+                ballot: 0,
             })
     }
 
@@ -539,6 +627,9 @@ struct Gate {
     passed_at: AtomicU64,
     /// The generation this broker learned it was deposed at, or [`CLOSED`].
     deposed_at: AtomicU64,
+    /// The generation no majority answered at for a lease duration, or
+    /// [`CLOSED`]: see [`ShardFence::unheard`].
+    unheard_at: AtomicU64,
     /// One past the newest generation this process opened the shard at, or
     /// 0 if it never has. Closing leaves it.
     opened_below: AtomicU64,
@@ -554,6 +645,7 @@ impl Default for Gate {
             sessions_free_at: AtomicU64::new(CLOSED),
             passed_at: AtomicU64::new(CLOSED),
             deposed_at: AtomicU64::new(CLOSED),
+            unheard_at: AtomicU64::new(CLOSED),
             opened_below: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),

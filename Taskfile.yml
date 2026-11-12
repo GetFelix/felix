@@ -1,10 +1,6 @@
 version: "3"
 
 vars:
-  # docker or podman, or empty when neither answers. CONTAINER_ENGINE in the
-  # environment overrides it. Exported to the tests that run containers too.
-  CONTAINER_ENGINE:
-    sh: scripts/container_engine.sh
   # Left out of the coverage report. The Python binding's glue is only driven
   # by its pytest suite, which runs against an installed wheel and is not
   # instrumented; counting it would report thousands of unexecuted lines. Its
@@ -42,41 +38,22 @@ tasks:
       # Build it up front (the felix-broker bin needs no such help: services/felix-broker-service
       # has its own integration tests, so cargo builds it).
       - "cargo build -p felix-loadgen"
-      # One managed Postgres, torn down afterwards. Without it the Postgres
-      # tests start their own through testcontainers, and pg_store_e2e holds
-      # that one in a `static` — which never drops, so every run of the suite
-      # leaves a container and its volume behind.
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:up
-        fi
-      - |
-        # With a database, the store's Postgres tests run too; they are behind
-        # a feature so a plain `cargo test` never needs one.
-        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
-        if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          cargo test --workspace --features felix-controlplane-service/pg-tests
-        elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo test --workspace --features felix-controlplane-service/pg-tests
-        else
-          cargo test --workspace
-        fi
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:down
-        fi
+      - "cargo test --workspace"
   # `task test` in two halves, so CI can run them on separate runners: every
   # crate but felix-cluster, then the cluster suites. `task test:cluster
   # SUITE=routing` runs one suite; SUITE=rest runs every suite not named in
   # CLUSTER_OWN_JOB, so a new suite is never left out.
   test:workspace:
     cmds:
-      - |
-        if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          cargo test --workspace --exclude felix-cluster --features felix-controlplane-service/pg-tests
-        else
-          cargo test --workspace --exclude felix-cluster
-        fi
+      - "cargo test --workspace --exclude felix-cluster"
+  # What `task coverage` does not run, for a pull request: doctests (llvm-cov
+  # skips them) and the tests behind `cfg(not(feature = ...))` in the crates
+  # that have a `telemetry` feature, which coverage's --all-features switches
+  # off. Everything else in `test:workspace` runs under `task coverage`.
+  test:residual:
+    cmds:
+      - "cargo test --workspace --exclude felix-cluster --doc"
+      - "cargo test -p felix-broker -p felix-client -p felix-broker-service --lib"
   test:cluster:
     vars:
       # The suites that each get a CI job of their own (ci.yml, `cluster`).
@@ -86,10 +63,11 @@ tasks:
     cmds:
       # The harness runs the prebuilt broker beside the test binary, which
       # `cargo test -p felix-cluster` does not rebuild; loadgen.rs shells out
-      # to felix-loadgen the same way. Two commands: a --bin filter would apply
-      # to both packages and skip felix-loadgen.
+      # to felix-loadgen and the backup tests to felixctl the same way. Separate
+      # commands: a --bin filter would apply to every package and skip the rest.
       - "cargo build -p felix-broker-service --bin felix-broker"
       - "cargo build -p felix-loadgen"
+      - "cargo build -p felixctl"
       - |
         suite="{{.SUITE}}"
         if [ "$suite" != rest ]; then
@@ -109,48 +87,46 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+  # Replays the seed in FELIX_SIM_SEED exactly. Tokio seeds `select!` only
+  # under `--cfg tokio_unstable`, which changes every crate's build, so this
+  # keeps its own target directory. A plain `cargo test` replay repeats the
+  # faults but not the interleaving under them.
+  sim:replay:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds replay -- --nocapture
+  # Runs each simulator seed twice in one process and fails on the first
+  # event that differs, then the seeds pinned to an issue (`seed_*`).
+  # FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds the first test
+  # runs. Then replays one seed (FELIX_SIM_REPLAY_SEED, default 1) in two
+  # processes through `sim:replay`, the command a failing seed prints, and
+  # compares the histories: two runs in one process share per-process state,
+  # so only this catches a replay that differs from process to process.
+  sim:determinism:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test seeds seed_ -- --nocapture
+      - |
+        dir="$(mktemp -d)"
+        for run in a b; do
+          FELIX_SIM_SEED="${FELIX_SIM_REPLAY_SEED:-1}" FELIX_SIM_HISTORY="$dir/$run.txt" \
+            task sim:replay > "$dir/$run.log" 2>&1 || true
+          # A seed may fail its checks; only a missing history is an error here.
+          [ -s "$dir/$run.txt" ] || { cat "$dir/$run.log"; exit 1; }
+        done
+        if ! cmp -s "$dir/a.txt" "$dir/b.txt"; then
+          echo "seed ${FELIX_SIM_REPLAY_SEED:-1} replayed differently in two processes:"
+          diff "$dir/a.txt" "$dir/b.txt" | head -20
+          exit 1
+        fi
+        echo "seed ${FELIX_SIM_REPLAY_SEED:-1}: two replays, the same history"
 
-  pg:up:
-    cmds:
-      - |
-        engine="{{.CONTAINER_ENGINE}}"
-        if [ -n "$engine" ]; then
-          # Fully qualified, so Podman does not have to resolve a short name.
-          "$engine" inspect felix-pg-tests >/dev/null 2>&1 || "$engine" run -d --rm \
-            --name felix-pg-tests -e POSTGRES_PASSWORD=postgres -p 55432:5432 \
-            docker.io/library/postgres:16-alpine
-        else
-          echo "task: [pg:up] skipping postgres container (no docker or podman)"
-        fi
-  pg:down:
-    # `-v` so the anonymous data volume goes with it. Without that the volumes
-    # accumulate even though the containers do not.
-    cmds: ['{{if .CONTAINER_ENGINE}}{{.CONTAINER_ENGINE}} rm -f -v felix-pg-tests >/dev/null 2>&1 || true{{end}}']
-  pg:sweep:
-    desc: Remove Postgres test containers and volumes an interrupted run left behind.
-    cmds:
-      - |
-        # By name, because testcontainers sets no labels — the tests name what
-        # they start `felix-test-pg-*` precisely so this can tell them from a
-        # Postgres someone is running themselves. `-v` takes the data volume
-        # with the container; those are what actually accumulate.
-        engine="{{.CONTAINER_ENGINE}}"
-        if [ -z "$engine" ]; then
-          echo "no docker or podman"
-          exit 0
-        fi
-        stray="$("$engine" ps -aq --filter name=felix-test-pg- 2>/dev/null || true)"
-        if [ -n "$stray" ]; then
-          echo "removing $(echo "$stray" | wc -l | tr -d ' ') stray test container(s)"
-          echo "$stray" | xargs "$engine" rm -f -v >/dev/null 2>&1 || true
-        else
-          echo "no stray test containers"
-        fi
-        # Volumes already orphaned by containers removed without -v. Dangling
-        # only, so nothing in use is in scope — but this is the one step that
-        # can touch a volume Felix did not create, so it is opt-in rather than
-        # part of `task test`.
-        "$engine" volume ls -qf dangling=true 2>/dev/null | head -100 | xargs -r "$engine" volume rm >/dev/null 2>&1 || true
   coverage:
     cmds:
       # Same reason as `test`: felix-cluster's loadgen integration test shells
@@ -159,23 +135,7 @@ tasks:
       # target/llvm-cov-target, not target/debug, so build the binary straight
       # into that dir — the exact path the test resolves relative to itself.
       - "cargo build -p felix-loadgen --target-dir target/llvm-cov-target"
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:down
-          task pg:up
-        else
-          echo "task: [coverage] skipping pg:down/pg:up (CI detected)"
-        fi
-      - |
-        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
-        flags="--no-cfg-coverage --skip-functions --all-features --workspace"
-        if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-report $flags
-        elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-report $flags
-        else
-          cargo llvm-cov --no-report $flags
-        fi
+      - "cargo llvm-cov --no-report --no-fail-fast --no-cfg-coverage --skip-functions --all-features --workspace"
       # The C ABI is only exercised by its conformance harness, so the
       # workspace tests alone leave felix-capi mostly uncovered. This run adds
       # its profiles before the report.
@@ -184,37 +144,10 @@ tasks:
       - "bash scripts/ci/coverage-python.sh"
       - "cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex '{{.COVERAGE_IGNORE}}'"
       - "cargo llvm-cov report --summary-only --ignore-filename-regex '{{.COVERAGE_IGNORE}}'"
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:down
-        else
-          echo "task: [coverage] skipping pg:down (CI detected)"
-        fi
   coverage:demos:
     cmds:
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:down
-          task pg:up
-        else
-          echo "task: [coverage:demos] skipping pg:down/pg:up (CI detected)"
-        fi
-      - |
-        export CONTAINER_ENGINE="{{.CONTAINER_ENGINE}}"
-        if [ -n "${FELIX_TEST_DATABASE_URL:-}" ]; then
-          FELIX_TEST_DATABASE_URL="$FELIX_TEST_DATABASE_URL" cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
-        elif [ -n "$CONTAINER_ENGINE" ]; then
-          FELIX_TEST_DATABASE_URL="postgres://postgres:postgres@127.0.0.1:55432/postgres" cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
-        else
-          cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info
-        fi
+      - "cargo llvm-cov --no-cfg-coverage --skip-functions --all-features --workspace --ignore-filename-regex '^(?!.*?/demos/)' --lcov --output-path lcov-demos.info"
       - "cargo llvm-cov report --summary-only"
-      - |
-        if [ -z "${CI:-}" ]; then
-          task pg:down
-        else
-          echo "task: [coverage:demos] skipping pg:down (CI detected)"
-        fi
   build:
     cmds: ["cargo build --workspace --release"]
   clean:
@@ -428,10 +361,7 @@ tasks:
       - "cargo run --manifest-path demos/rbac-live/Cargo.toml -- {{.CLI_ARGS}}"
   demo:cross-tenant-isolation:
     cmds:
-      - "task pg:down"
-      - "task pg:up"
       - "cargo run --manifest-path demos/cross_tenant_isolation/Cargo.toml -- {{.CLI_ARGS}}"
-      - "task pg:down"
   perf:deps:
     desc: "Create .venv-perf and install the Python deps the charting pipeline needs"
     cmds:
@@ -652,7 +582,7 @@ tasks:
     desc: Run the Node conformance suite against a fixture cluster it starts itself.
     dir: crates/sdk/felix-typescript
     cmds:
-      - node --test test/errors.test.mjs test/token.test.mjs test/reconnect.test.mjs
+      - node --test test/errors.test.mjs test/token.test.mjs test/reconnect.test.mjs test/client-certificate.test.mjs
       - node --test test/conformance.test.mjs {{.CLI_ARGS}}
   ts:conformance:
     desc: Build what the Node suite needs, run it, and check the verdict against the catalogue.

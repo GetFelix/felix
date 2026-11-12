@@ -83,7 +83,8 @@ impl Broker {
         }
         let mut records = log.read_from(from, max_bytes).await?;
         // Every offset in `[from, read_to)` was either returned or held a
-        // generation-start or trim record, which no client is given.
+        // generation-start, trim, membership or counter record, which no
+        // client is given.
         let read_to = records.last().map_or(stop, |record| record.offset + 1);
         records.retain(|record| record.offset < stop);
         let next_offset = if records.len() > max_records {

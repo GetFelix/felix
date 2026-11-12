@@ -24,6 +24,7 @@ fn records(first_offset: u64, payloads: &[&'static [u8]]) -> ReplicateRecords {
         generations: None,
         times: None,
         headers: None,
+        writers: None,
         set_generation: None,
     }
 }
@@ -64,6 +65,7 @@ fn more() -> Vec<InternalMessage> {
             labelled,
             timed,
             headers: false,
+            writers: false,
         })
     };
     let all_capabilities = PeerCapabilities::FENCE

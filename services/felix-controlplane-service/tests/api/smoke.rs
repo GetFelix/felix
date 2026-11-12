@@ -1133,11 +1133,12 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn put_shard_assignment_if(
+    async fn put_shard_assignment_at_least(
         &self,
         _assignment: ShardAssignment,
         _expected_generation: Option<u64>,
         _fence: u64,
+        _at_least: u64,
     ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -1159,6 +1160,10 @@ impl ControlPlaneStore for FailingStore {
         &self,
         _key: &ShardKey,
     ) -> StoreResult<felix_controlplane_service::store::ConfirmedAssignment> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -1185,10 +1190,11 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn record_replica_report(
+    async fn record_replica_report_with(
         &self,
         _report: ReplicaReport,
         _leader: &str,
+        _readmits: bool,
     ) -> StoreResult<felix_controlplane_service::store::ReportWrite> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -1235,6 +1241,14 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

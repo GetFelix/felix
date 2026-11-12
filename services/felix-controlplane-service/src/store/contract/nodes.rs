@@ -233,8 +233,8 @@ async fn register_is_readable(store: &dyn ControlPlaneStore) {
     assert_eq!(store.list_nodes().await.expect("list"), vec![stored]);
 }
 
-/// The optional listener addresses and zone live in their own columns in
-/// Postgres, so every backend has to be shown to keep them.
+/// The optional listener addresses and zone are separate fields, so every
+/// backend has to be shown to keep them.
 async fn optional_addresses_survive_a_round_trip(store: &dyn ControlPlaneStore) {
     clear(store).await;
     let mut with_addrs = node("broker-a", 7001);

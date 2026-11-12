@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec, ports};
+use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use rumqttc::v5::mqttbytes::QoS;
 use rumqttc::v5::mqttbytes::v5::{Packet, PubAckReason};
 use rumqttc::v5::{AsyncClient, Event, MqttOptions};
@@ -28,21 +28,16 @@ const STREAM: &str = "plant";
 #[serial]
 #[tokio::test]
 async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
-    let ports: Vec<u16> = (0..3)
-        .map(|_| ports::free_tcp().expect("a port").port())
-        .collect();
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3).mounted_at("plant/")],
-        node_env: ports
-            .iter()
-            .map(|port| {
-                vec![
-                    ("FELIX_MQTT_LISTEN".to_string(), format!("127.0.0.1:{port}")),
-                    ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
-                ]
-            })
-            .collect(),
+        // Ports the harness picks per spawn, so a lost race restarts the
+        // broker on another one.
+        tcp_listeners: vec![(
+            "FELIX_MQTT_LISTEN".to_string(),
+            "127.0.0.1:{port}".to_string(),
+        )],
+        broker_env: vec![("FELIX_MQTT_TLS".to_string(), "false".to_string())],
         ..Default::default()
     })
     .await
@@ -51,7 +46,17 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
         .finalize_fleet_features(&["record_headers"], Duration::from_secs(30))
         .await
         .expect("finalize record_headers");
-    let port_of: HashMap<String, u16> = cluster.node_ids().into_iter().zip(ports).collect();
+    let port_of: HashMap<String, u16> = cluster
+        .node_ids()
+        .into_iter()
+        .map(|id| {
+            let port = cluster
+                .node(&id)
+                .and_then(|node| node.tcp_port("FELIX_MQTT_LISTEN"))
+                .expect("an MQTT port");
+            (id, port)
+        })
+        .collect();
 
     let (owner, ingress) = cluster.owner_and_non_owner(STREAM).await.expect("owner");
     let mut retried = Vec::new();

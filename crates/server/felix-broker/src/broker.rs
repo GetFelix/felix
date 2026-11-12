@@ -133,6 +133,8 @@ pub struct Broker {
     cache_registration_required: std::sync::atomic::AtomicBool,
     /// See [`Broker::request_catalog_refresh`].
     catalog_wanted: Arc<tokio::sync::Notify>,
+    /// See [`Broker::catalog_changes`].
+    catalog_changes: AtomicU64,
     /// Serves consumer groups, when this broker keeps their positions.
     group_reader: Option<Arc<GroupReader>>,
     /// Consumer-group positions, when this broker has somewhere to keep them.
@@ -222,12 +224,12 @@ impl Broker {
             .set_change_observer(Arc::clone(&hub) as Arc<dyn felix_storage::CacheObserver>)
             .then_some(hub);
         Self {
-            topics: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            streams: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            topics: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            streams: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             mounts: Default::default(),
-            caches: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            tenants: RwLock::new(HashMap::with_hasher(RandomState::new())),
-            namespaces: RwLock::new(HashMap::with_hasher(RandomState::new())),
+            caches: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            tenants: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
+            namespaces: RwLock::new(HashMap::with_hasher(felix_common::random::hash_state())),
             cache,
             topic_capacity: DEFAULT_TOPIC_CAPACITY,
             log_capacity: DEFAULT_LOG_CAPACITY,
@@ -243,6 +245,7 @@ impl Broker {
             registration_required: Default::default(),
             cache_registration_required: Default::default(),
             catalog_wanted: Default::default(),
+            catalog_changes: AtomicU64::new(0),
             consumer_groups: None,
             group_reader: None,
             counters: None,
@@ -255,7 +258,7 @@ impl Broker {
             headers_marked: std::sync::atomic::AtomicBool::new(false),
             headers_marking: tokio::sync::Mutex::new(()),
             trim_wait: crate::broker::trim::TRIM_WAIT,
-            producer_ids: ahash::RandomState::new(),
+            producer_ids: felix_common::random::id_state(),
             producer_id_counter: std::sync::atomic::AtomicU64::new(0),
             record_publishers: std::sync::OnceLock::new(),
             record_headers: std::sync::OnceLock::new(),
@@ -276,6 +279,18 @@ impl Broker {
     /// Whether a durable publish now stores its publisher.
     pub fn records_publishers(&self) -> bool {
         self.record_publishers.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Let durable stream logs start new segments in storage format v9, and
+    /// save committed votes, whenever `gate` says so. A build that predates
+    /// v9 refuses such a log, so a cluster member says yes only once its
+    /// fleet has finalized `record_generations`. Asked only when a log rolls
+    /// onto a new segment. Only the first call counts, and a broker without
+    /// durable storage ignores it.
+    pub fn record_generations_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        if let Some(storage) = &self.durable_storage {
+            storage.record_generations_when(gate);
+        }
     }
 
     /// Accept record headers on publishes whenever `gate` says so.
@@ -475,7 +490,7 @@ impl Broker {
             return Ok(());
         }
         let root = storage.root().to_path_buf();
-        tokio::task::spawn_blocking(move || felix_storage::run_state::record_head_trimmed(&root))
+        felix_common::blocking::spawn(move || felix_storage::run_state::record_head_trimmed(&root))
             .await
             .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?
             .map_err(|err| BrokerError::Storage(format!("record the head-trim marker: {err}")))?;
@@ -525,14 +540,12 @@ impl Broker {
             return Ok(());
         }
         let root = storage.root().to_path_buf();
-        tokio::task::spawn_blocking(move || felix_storage::run_state::record_headers_stored(&root))
-            .await
-            .map_err(|err| {
-                BrokerError::Storage(format!("record the record-headers marker: {err}"))
-            })?
-            .map_err(|err| {
-                BrokerError::Storage(format!("record the record-headers marker: {err}"))
-            })?;
+        felix_common::blocking::spawn(move || {
+            felix_storage::run_state::record_headers_stored(&root)
+        })
+        .await
+        .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?
+        .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?;
         self.headers_marked.store(true, Ordering::Release);
         Ok(())
     }

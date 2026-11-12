@@ -1,4 +1,5 @@
 //! What a test asks for when it starts a cluster.
+use std::time::Duration;
 
 /// How to build a cluster.
 #[derive(Clone)]
@@ -37,6 +38,12 @@ pub struct ClusterConfig {
     /// `broker_env`. A broker past the end of the list gets none: how a test
     /// builds a fleet whose brokers are not all configured alike.
     pub node_env: Vec<Vec<(String, String)>>,
+    /// Extra TCP listeners every broker binds, as `(env var, value template)`;
+    /// `{port}` in the template becomes a port the harness picks. Picked afresh
+    /// on every spawn, so a broker that loses the port to another process is
+    /// started again on a different one. Read it back with
+    /// [`BrokerNode::tcp_port`](crate::BrokerNode::tcp_port). Empty by default.
+    pub tcp_listeners: Vec<(String, String)>,
     /// Give every broker a plaintext Kafka listener. Off by default. It binds
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker or Podman.
@@ -47,6 +54,9 @@ pub struct ClusterConfig {
     /// a test that injects no link fault talks over the direct path it always
     /// did.
     pub proxy_links: bool,
+    /// Run the control plane as a real three-member metadata Raft group
+    /// instead of one in-memory store, so faults can reach its members.
+    pub metadata_group: bool,
     /// Run every broker's storage under the simulated power-loss model, so
     /// [`Cluster::power_off`](crate::Cluster::power_off) can cut the power.
     /// Off by default: every flush then also reads what it made durable. Needs
@@ -59,6 +69,12 @@ pub struct ClusterConfig {
     /// to turn it on. Needs brokers built with debug assertions, which honour
     /// `FELIX_TEST_FLEET_FEATURES`. Off by default.
     pub joint_fence: bool,
+    /// How long the control plane waits on a silent broker before it marks
+    /// it down, plus the quarter it adds before re-placing its shards. One
+    /// second by default, so failure tests see a stopped broker leave in
+    /// seconds; a test that needs elections to run first sets a deployment's
+    /// 15 seconds.
+    pub node_expiry: Duration,
 }
 
 impl Default for ClusterConfig {
@@ -76,10 +92,13 @@ impl Default for ClusterConfig {
             zones: Vec::new(),
             broker_env: Vec::new(),
             node_env: Vec::new(),
+            tcp_listeners: Vec::new(),
             kafka: false,
             proxy_links: false,
+            metadata_group: false,
             power_loss: false,
             joint_fence: false,
+            node_expiry: Duration::from_secs(1),
         }
     }
 }

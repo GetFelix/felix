@@ -18,6 +18,7 @@ use crate::completion::{Completion, Deliver, user_cancelled};
 use crate::groups::spawn_read;
 use crate::status::{FELIX_STATUS_CANCELLED, FELIX_STATUS_OK, FelixStatus};
 use crate::token::{FelixTokenFetch, FelixTokenRelease, TokenSource, provider};
+use crate::tuning::{FelixPublishSharding, FelixSubQueuePolicy, Tuning};
 
 /// Two workers are plenty for one client's connections and background tasks,
 /// and keep a process with several clients from spawning a thread per core
@@ -62,18 +63,56 @@ pub struct FelixClient {
     pub(crate) shared: Arc<Shared>,
     /// Cancelled when this handle is freed, which ends its pending calls.
     pub(crate) cancel: CancellationToken,
+    /// The client acting as another principal, for a handle made by
+    /// `felix_client_with_identity`. Absent for the connected client itself.
+    identity: Option<Arc<Client>>,
+    /// The identity's own token fetch, failed when this handle is freed so a
+    /// fetch waiting on the app does not outlive it.
+    tokens: Option<Arc<TokenSource>>,
 }
 
 impl FelixClient {
     fn new(shared: Arc<Shared>) -> Self {
         let cancel = shared.cancel.child_token();
-        Self { shared, cancel }
+        Self {
+            shared,
+            cancel,
+            identity: None,
+            tokens: None,
+        }
+    }
+
+    /// A handle on `shared`'s runtime and connections that acts as `identity`.
+    pub(crate) fn acting_as(
+        shared: Arc<Shared>,
+        identity: Client,
+        tokens: Option<Arc<TokenSource>>,
+    ) -> Self {
+        Self {
+            cancel: shared.cancel.child_token(),
+            shared,
+            identity: Some(Arc::new(identity)),
+            tokens,
+        }
+    }
+
+    /// The cluster client every call on this handle goes through.
+    pub(crate) fn cluster(&self) -> &Arc<Client> {
+        self.identity
+            .as_ref()
+            .unwrap_or_else(|| self.shared.client())
     }
 }
 
 impl Drop for FelixClient {
     fn drop(&mut self) {
         self.cancel.cancel();
+        if let Some(tokens) = &self.tokens {
+            tokens.close();
+        }
+        // A client dropped outside the runtime closes its streams without one.
+        let _enter = self.shared.handle().enter();
+        drop(self.identity.take());
     }
 }
 
@@ -285,6 +324,96 @@ pub struct FelixConnectOptions {
     /// 2000. Every wait is capped at it, even when the backoff is larger.
     /// Both backoff fields count anything past a year as a year.
     pub reconnect_max_backoff_ms: u64,
+    /// A PEM file holding the client certificate, leaf first and then any
+    /// intermediates, to present to a broker started with
+    /// `FELIX_TLS_CLIENT_CA`. Null presents none. Needs `client_key_file`.
+    /// Read during `felix_client_connect_with`; the string is not kept.
+    pub client_cert_file: *const c_char,
+    /// A PEM file holding the private key of `client_cert_file`: PKCS#8,
+    /// PKCS#1 or SEC1. Null presents no certificate. Needs `client_cert_file`.
+    pub client_key_file: *const c_char,
+    /// Do not offer record headers to brokers. Off, the default, offers them,
+    /// so `felix_event_key` and `felix_event_header` work against a broker
+    /// that takes them; on, `felix_client_publish_with_headers` fails with
+    /// `FELIX_STATUS_UNSUPPORTED` and events carry no headers.
+    pub disable_record_headers: bool,
+    /// Ask brokers to answer acknowledged publishes after the write, with
+    /// the offset, as the broker-wide `FELIX_ACK_ON_COMMIT=true` does. Slower
+    /// per publish. Whether a broker honours it is
+    /// `FELIX_SUPPORTS_ACK_ON_COMMIT`.
+    pub ack_on_commit: bool,
+    /// Put every publish on the connection pool instead of giving the first
+    /// shards of a stream a publish stream each. Wins over
+    /// `publish_shard_streams`.
+    pub no_publish_shard_streams: bool,
+    /// What a subscription does when its client-side queue is full, a
+    /// `FELIX_QUEUE_*` value. `FELIX_QUEUE_DEFAULT` drops the arriving item.
+    pub client_sub_queue_policy: FelixSubQueuePolicy,
+    /// How publishes are spread across publish streams, a `FELIX_SHARDING_*`
+    /// value. `FELIX_SHARDING_DEFAULT` hashes the stream's name, which keeps
+    /// a stream's publishes in order.
+    pub publish_sharding: FelixPublishSharding,
+    /// Events each subscription's client-side queue holds. Zero is the
+    /// default, 256.
+    pub client_sub_queue_capacity: u32,
+    /// Batches the broker's queue for each subscription should hold. The
+    /// broker clamps it to its maximum; `felix_subscription_queue_capacity`
+    /// reports what was granted. Zero leaves the stream's default.
+    pub broker_sub_queue_capacity: u32,
+    /// Publish connections per client. Zero is the default, 4.
+    pub publish_conn_pool: u32,
+    /// Publish streams per publish connection. Zero is the default, 2.
+    pub publish_streams_per_conn: u32,
+    /// Publishes queued per publish stream before the next waits for room.
+    /// Zero is the default, 64.
+    pub publish_queue_depth: u32,
+    /// Most publish streams opened per broker for one shard each, beside the
+    /// pool. Zero is the default, 4; use `no_publish_shard_streams` for none.
+    pub publish_shard_streams: u32,
+    /// Cache connections per client. Zero is the default, 8.
+    pub cache_conn_pool: u32,
+    /// Cache streams per cache connection. Zero is the default, 4.
+    pub cache_streams_per_conn: u32,
+    /// Connections that carry subscriptions and cache watches. Zero is the
+    /// default, 8.
+    pub event_conn_pool: u32,
+    /// Most connections opened to one broker. Zero is the default, 8.
+    pub cluster_conn_pool: u32,
+    /// Streams one of those connections carries before another is opened.
+    /// Zero is the default, 1024.
+    pub cluster_streams_per_conn: u32,
+    /// Registrations and unclaimed event streams one event connection holds
+    /// before refusing more. Zero is the default, 16384.
+    pub event_router_max_pending: u32,
+    /// Bytes of publishes sent but not yet answered, across the client. Zero
+    /// is the default, 4 MiB.
+    pub publish_inflight_bytes: u64,
+    /// Largest frame the client will read. Zero is the default, 16 MiB.
+    pub max_frame_bytes: u64,
+    /// QUIC receive window per event connection, in bytes. Zero is the
+    /// default, 256 MiB. The six windows must be below 2^62.
+    pub event_conn_recv_window: u64,
+    /// QUIC receive window per event stream, in bytes. Zero is the default,
+    /// 64 MiB.
+    pub event_stream_recv_window: u64,
+    /// QUIC send window per event connection, in bytes. Zero is the default,
+    /// 256 MiB.
+    pub event_send_window: u64,
+    /// QUIC receive window per cache connection, in bytes. Zero is the
+    /// default, 256 MiB.
+    pub cache_conn_recv_window: u64,
+    /// QUIC receive window per cache stream, in bytes. Zero is the default,
+    /// 64 MiB.
+    pub cache_stream_recv_window: u64,
+    /// QUIC send window per cache connection, in bytes. Zero is the default,
+    /// 256 MiB.
+    pub cache_send_window: u64,
+    /// Longest a connect to one broker may take, in milliseconds. Zero is the
+    /// default, 10000.
+    pub connect_timeout_ms: u64,
+    /// Longest a producer waits to flush when closed, in milliseconds. Zero is
+    /// the default, 60000.
+    pub finish_timeout_ms: u64,
 }
 
 /// The options a connect applies, read out of [`FelixConnectOptions`].
@@ -299,6 +428,10 @@ struct ConnectOptions {
     reconnect_deadline: Option<Duration>,
     reconnect_backoff: Option<Duration>,
     reconnect_max_backoff: Option<Duration>,
+    client_cert_file: *const c_char,
+    client_key_file: *const c_char,
+    disable_record_headers: bool,
+    tuning: Tuning,
 }
 
 impl ConnectOptions {
@@ -333,6 +466,10 @@ impl Default for ConnectOptions {
             reconnect_deadline: None,
             reconnect_backoff: None,
             reconnect_max_backoff: None,
+            client_cert_file: ptr::null(),
+            client_key_file: ptr::null(),
+            disable_record_headers: false,
+            tuning: Tuning::default(),
         }
     }
 }
@@ -370,6 +507,8 @@ impl ConnectOptions {
         let deadline = std::mem::offset_of!(FelixConnectOptions, reconnect_deadline_ms);
         let backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_backoff_ms);
         let max_backoff = std::mem::offset_of!(FelixConnectOptions, reconnect_max_backoff_ms);
+        let cert_file = std::mem::offset_of!(FelixConnectOptions, client_cert_file);
+        let key_file = std::mem::offset_of!(FelixConnectOptions, client_key_file);
         Ok(Self {
             publishers: flag(std::mem::offset_of!(FelixConnectOptions, publishers)),
             timestamps: flag(std::mem::offset_of!(FelixConnectOptions, timestamps)),
@@ -399,6 +538,20 @@ impl ConnectOptions {
                 .map(|p| unsafe { p.cast::<u64>().read_unaligned() })
                 .filter(|&ms| ms != 0)
                 .map(Duration::from_millis),
+            client_cert_file: at(cert_file, size_of::<*const c_char>())
+                .map_or(ptr::null(), |p| unsafe {
+                    p.cast::<*const c_char>().read_unaligned()
+                }),
+            client_key_file: at(key_file, size_of::<*const c_char>())
+                .map_or(ptr::null(), |p| unsafe {
+                    p.cast::<*const c_char>().read_unaligned()
+                }),
+            disable_record_headers: flag(std::mem::offset_of!(
+                FelixConnectOptions,
+                disable_record_headers
+            )),
+            // SAFETY: `size` bytes are readable, per the contract above.
+            tuning: unsafe { Tuning::read(options, size) }?,
         })
     }
 }
@@ -464,18 +617,14 @@ pub unsafe extern "C" fn felix_client_connect_with(
         let seeds = parse_addrs(addrs)?;
         let server_name = server_name.to_string();
 
-        let roots = match ca_file {
-            Some(path) => Some(Arc::new(
-                felix_client::root_store_from_pem_file(path).map_err(invalid)?,
-            )),
-            None => None,
+        // SAFETY: null or NUL-terminated strings, per the contract above.
+        let (cert_file, key_file) = unsafe {
+            (
+                optional_str(options.client_cert_file, "client_cert_file")?,
+                optional_str(options.client_key_file, "client_key_file")?,
+            )
         };
-        let quinn = felix_client::quic_client_config(roots, false).map_err(invalid)?;
-        let mut config = ClientConfig::optimized_defaults(quinn);
-        config.auth_tenant_id = Some(tenant_id.to_string());
-        config.auth_token = token.map(str::to_string);
-        config.publishers = options.publishers;
-        config.timestamps = options.timestamps;
+        let mut config = connect_config(&options, tenant_id, token, ca_file, cert_file, key_file)?;
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
 
@@ -527,6 +676,56 @@ pub unsafe extern "C" fn felix_client_connect_with(
         });
         Ok(FELIX_STATUS_OK)
     })
+}
+
+/// The client config a connect builds: TLS, credentials, the protocol features
+/// the caller asked for, and the queue and transport tuning.
+fn connect_config(
+    options: &ConnectOptions,
+    tenant_id: &str,
+    token: Option<&str>,
+    ca_file: Option<&str>,
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<ClientConfig, Failure> {
+    let mut config = tls_config(ca_file, cert_file, key_file)?;
+    config.auth_tenant_id = Some(tenant_id.to_string());
+    config.auth_token = token.map(str::to_string);
+    config.publishers = options.publishers;
+    config.timestamps = options.timestamps;
+    config.record_headers = !options.disable_record_headers;
+    options.tuning.apply(&mut config);
+    Ok(config)
+}
+
+/// The QUIC config for a connect: the CA to trust, and the client certificate
+/// to present when both files are given.
+fn tls_config(
+    ca_file: Option<&str>,
+    cert_file: Option<&str>,
+    key_file: Option<&str>,
+) -> Result<ClientConfig, Failure> {
+    let roots = match ca_file {
+        Some(path) => Some(Arc::new(
+            felix_client::root_store_from_pem_file(path).map_err(invalid)?,
+        )),
+        None => None,
+    };
+    let quinn = match (cert_file, key_file) {
+        (None, None) => felix_client::quic_client_config(roots, false).map_err(invalid)?,
+        (Some(cert), Some(key)) => {
+            let identity =
+                felix_client::ClientIdentity::from_pem_files(cert, key).map_err(invalid)?;
+            felix_client::quic_client_config_with_identity(roots, identity, false)
+                .map_err(invalid)?
+        }
+        _ => {
+            return Err(Failure::invalid(
+                "client_cert_file and client_key_file must be given together",
+            ));
+        }
+    };
+    Ok(ClientConfig::optimized_defaults(quinn))
 }
 
 /// Connect to a Felix cluster with the default options: the same as
@@ -659,7 +858,7 @@ pub unsafe extern "C" fn felix_client_endpoints(
         // SAFETY: null or a live token, per the contract above.
         let user = unsafe { user_token(cancel) };
         let done = Completion::<Endpoints>::new(callback, user_data)?;
-        let cluster = Arc::clone(client.shared.client());
+        let cluster = Arc::clone(client.cluster());
         let ask = async move {
             Ok(cluster
                 .endpoints()

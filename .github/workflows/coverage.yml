@@ -5,12 +5,15 @@ on:
     branches: [ main ]
   # No path filter here: the changes job skips coverage for docs or the badge
   # alone, so the run still reports `Coverage ok`.
+  # ready_for_review: a draft PR skips the coverage run (see `changes`).
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
-  # A new push cancels that PR's older run. Each main commit keeps its own
-  # group so back-to-back merges all finish and publish their badge.
-  group: coverage-${{ github.event.pull_request.number || github.sha }}
+  # A new push cancels that PR's older run. Main pushes share one group and
+  # never cancel: the running commit finishes, only the newest queued one runs
+  # next, so the badge tracks the newest commit.
+  group: coverage-${{ github.event.pull_request.number || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -18,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      code: ${{ steps.code.outputs.code }}
+      code: ${{ github.event.pull_request.draft != true && steps.code.outputs.code || 'false' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -35,6 +38,8 @@ jobs:
   # job.
   # Main publishes the badge and its line percentage; a pull request runs the
   # same job and fails if it drops coverage by more than the gate allows.
+  # On a pull request this is also the workspace test run of record: ci.yml's
+  # `test` job runs only what this skips (Taskfile.yml, test:residual).
   coverage:
     needs: changes
     if: needs.changes.outputs.code == 'true'
@@ -44,21 +49,6 @@ jobs:
       contents: write
     env:
       CARGO_TERM_COLOR: always
-      FELIX_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:55432/postgres
-    services:
-      postgres:
-        # The official image through Google's Docker Hub mirror. Docker Hub and AWS's
-        # mirror both throttle anonymous pulls from shared runner addresses.
-        image: mirror.gcr.io/library/postgres:16-alpine
-        ports:
-          - 55432:5432
-        env:
-          POSTGRES_PASSWORD: postgres
-        options: >-
-          --health-cmd="pg_isready -U postgres"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=5
 
     steps:
       - uses: actions/checkout@v7
@@ -101,17 +91,15 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: cargo llvm-cov clean --workspace
 
-      - name: Wait for Postgres service
+      # The mixed-version test (felix-controlplane-service, tests/raft_runtime.rs)
+      # runs this build next to the last release that ran openraft 0.9. It
+      # skips without the binary, so the second variable makes that a failure.
+      - name: Fetch the released control plane
         run: |
-          set -euxo pipefail
-          for _ in $(seq 1 30); do
-            if pg_isready -h 127.0.0.1 -p 55432 -U postgres; then
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Postgres did not become ready in time" >&2
-          exit 1
+          set -euo pipefail
+          bin=$(scripts/fetch-released-controlplane.sh "$RUNNER_TEMP/released")
+          echo "RELEASED_CONTROLPLANE_BIN=$bin" >> "$GITHUB_ENV"
+          echo "REQUIRE_RELEASED_CONTROLPLANE_BIN=1" >> "$GITHUB_ENV"
 
       # Larger than the test job's: coverage instrumentation slows everything
       # it measures, and this is the job where the failover suite's replication
@@ -121,7 +109,27 @@ jobs:
           FELIX_TEST_TIMEOUT_SCALE: "5"
         run: |
           set -euxo pipefail
-          task coverage
+          task coverage 2>&1 | tee "$RUNNER_TEMP/coverage.log"
+
+      # The tests run inside the coverage build, so a failure is a test
+      # failure first. Name the failing tests in the annotations and summary.
+      - name: Summarize failed tests
+        if: failure()
+        run: |
+          # The log is coloured (CARGO_TERM_COLOR), which splits "FAILED".
+          sed 's/\x1b\[[0-9;]*m//g' "$RUNNER_TEMP/coverage.log" |
+            grep -E '^test .* \.\.\. FAILED$|^error: test failed|^error: [0-9]+ targets? failed|panicked at' > "$RUNNER_TEMP/failed.txt" || true
+          # No test lines: the gate or the build failed, and its own step says why.
+          [ -s "$RUNNER_TEMP/failed.txt" ] || exit 0
+          grep -E '^test .* \.\.\. FAILED$' "$RUNNER_TEMP/failed.txt" | sed 's/^test //; s/ \.\.\. FAILED$//' | sort -u | while read -r name; do
+            echo "::error title=Test failed::$name"
+          done
+          {
+            echo "### Failed tests"
+            echo '```'
+            head -100 "$RUNNER_TEMP/failed.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Before the gate, and even when coverage failed, so a drop can be
       # inspected from the artifact.
@@ -137,9 +145,15 @@ jobs:
       # points between runs of the same tree, hence 0.3. No baseline yet passes.
       - name: Gate on main's line coverage
         if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          if git fetch --quiet --depth=1 origin badges &&
+          # The baseline is main's; another base would be compared to the wrong numbers.
+          if [ "$BASE_REF" != main ]; then
+            echo "::notice::base is $BASE_REF, not main; skipping the coverage gate"
+            python3 scripts/ci/coverage_gate.py percent lcov.info
+          elif git fetch --quiet --depth=1 origin badges &&
             git show FETCH_HEAD:coverage-lines.txt > "$RUNNER_TEMP/baseline.txt"; then
             # The per-file summary is newer than the badge; absent, the gate
             # just skips the breakdown.
@@ -211,6 +225,10 @@ jobs:
     steps:
       - env:
           RESULTS: ${{ toJSON(needs.*.result) }}
+          DRAFT: ${{ github.event.pull_request.draft }}
         run: |
           echo "$RESULTS"
+          # A draft skips the heavy jobs, so a pass here would sit on the SHA
+          # until the ready run replaces it. Fail instead; a draft cannot merge.
+          if [ "$DRAFT" = true ]; then echo "draft: mark the PR ready to run the jobs"; exit 1; fi
           if grep -qE '"(failure|cancelled)"' <<< "$RESULTS"; then exit 1; fi

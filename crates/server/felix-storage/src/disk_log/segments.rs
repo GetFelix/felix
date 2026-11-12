@@ -12,7 +12,7 @@ mod truncation;
 mod test_support;
 
 pub(super) use rollover::RollOutcome;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub(super) use truncation::{stop_after_unlinks, stop_point};
 
 use std::path::{Path, PathBuf};
@@ -26,6 +26,7 @@ use crate::io::read_at;
 #[cfg(test)]
 use crate::log::AppendRecord;
 use crate::log::{LogConfig, LogRecord, Offset, SegmentDescriptor, SegmentId};
+use crate::segment::known::known_file_name;
 use crate::segment::{
     ReadBudget, SegmentReader, SegmentWriter, TrimRecords, index_file_name, segment_file_name,
 };
@@ -428,6 +429,34 @@ impl ReadPlan {
     }
 }
 
+impl ReadPlan {
+    /// The generation in the header of the record at `offset`, for a plan
+    /// made with that offset as its start. `None` when the plan holds no
+    /// such record; `Some(None)` when its segment predates v9.
+    #[cfg(feature = "raft")]
+    pub(super) fn generation_at(&self, offset: Offset, label: &str) -> Result<Option<Option<u64>>> {
+        // The record is in the first span or nowhere: a plan starts at the
+        // segment holding its start.
+        match self.spans.first() {
+            None => Ok(None),
+            Some(ReadSpan::Sealed(locator)) => {
+                let handle = locator.open(&self.files, label)?;
+                handle.reader.generation_at(
+                    handle.index.seek_position(offset),
+                    offset,
+                    locator.valid_bytes(),
+                    label,
+                )
+            }
+            Some(ReadSpan::Active {
+                reader,
+                position,
+                valid_bytes,
+            }) => reader.generation_at(*position, offset, *valid_bytes, label),
+        }
+    }
+}
+
 /// The sealed segments a retention pass may delete, captured under the lock.
 #[derive(Debug)]
 pub(super) struct RetentionPlan {
@@ -499,8 +528,9 @@ pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
     for path in [
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
+        dir.join(known_file_name(id)),
     ] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(StorageError::Io(err)),
@@ -511,7 +541,7 @@ pub(super) fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
 
 /// CRC-32 of an entire file, streamed in fixed chunks.
 pub(super) fn checksum_file(path: &Path) -> Result<u64> {
-    let file = std::fs::File::open(path)?;
+    let file = crate::fs::File::open(path)?;
     let mut hasher = crc32fast::Hasher::new();
     let mut buf = vec![0u8; 64 * 1024];
     let mut position = 0u64;

@@ -291,3 +291,359 @@ async fn a_failed_writer_sync_stops_later_flushes() {
         .expect_err("flush after a failed writer sync");
     assert_eq!(log.durable_offset(), 0);
 }
+
+/// The names in `path` each time opening a log there flushed `path` itself.
+fn dir_syncs_opening(path: &std::path::Path, base: Option<Offset>) -> Vec<Vec<String>> {
+    crate::io::DIR_SYNCS.with(|syncs| syncs.borrow_mut().clear());
+    let log = match base {
+        Some(base) => DiskLog::open_at(path, "t/ns/s/0", config(FsyncMode::OnCommit), base),
+        None => DiskLog::open(path, "t/ns/s/0", config(FsyncMode::OnCommit)),
+    }
+    .expect("open");
+    drop(log);
+    crate::io::DIR_SYNCS.with(|syncs| {
+        syncs
+            .borrow()
+            .iter()
+            .filter(|(dir, _)| dir == path)
+            .map(|(_, names)| names.clone())
+            .collect()
+    })
+}
+
+/// **Opening a log flushes its directory once, after its files exist.** The
+/// first segment, its index and the durable mark all get their entries from
+/// that one flush. A bulk create opens hundreds of logs, and every extra flush
+/// there waits on the filesystem's journal.
+#[tokio::test]
+async fn opening_a_log_flushes_its_directory_once() {
+    let dir = tempdir().expect("dir");
+    let covered = [
+        crate::segment::segment_file_name(0),
+        crate::segment::index_file_name(0),
+        crate::disk_log::durable_mark::mark_file_name().to_string(),
+    ];
+    let fresh = dir.path().join("fresh");
+    let placed = dir.path().join("placed");
+    for (path, base, label) in [
+        (&fresh, None, "a new log"),
+        (&fresh, None, "an existing log"),
+        (&placed, Some(40), "a log placed at a base"),
+    ] {
+        let syncs = dir_syncs_opening(path, base);
+        assert_eq!(syncs.len(), 1, "{label}: {syncs:?}");
+        for name in &covered {
+            assert!(
+                syncs[0].contains(name),
+                "{label}: {name} missing from {syncs:?}"
+            );
+        }
+    }
+}
+
+/// `commit_now` answers what `commit` would without waiting, and nothing
+/// when a flush has to cover the batch first.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn commit_now_answers_only_when_there_is_nothing_to_wait_for() {
+    let dir = tempdir().expect("dir");
+    let relaxed = open(&dir, FsyncMode::None);
+    let pending = relaxed
+        .append_pending(&records(&["a"]))
+        .await
+        .expect("append");
+    assert!(matches!(relaxed.commit_now(&pending), Some(Ok(()))));
+
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let pending = log.append_pending(&records(&["a"])).await.expect("append");
+    assert!(log.commit_now(&pending).is_none(), "nothing is flushed yet");
+    log.commit(&pending).await.expect("commit");
+    assert!(matches!(log.commit_now(&pending), Some(Ok(()))));
+
+    // A covered batch on a log that has since failed is not acknowledged.
+    log.fail_next_flush();
+    let unflushed = log.append_pending(&records(&["b"])).await.expect("append");
+    log.commit(&unflushed).await.expect_err("the flush failed");
+    assert!(matches!(log.commit_now(&pending), Some(Err(_))));
+}
+
+/// A restart in the boot that poisoned the log: the failed flush's bytes are
+/// still in the page cache and read back as valid records. They were never
+/// acknowledged under `OnCommit`, so the log opens without them and takes
+/// the next append where they began.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_cuts_the_unsynced_bytes() {
+    // Small segments, so the bytes of the failed flush span a rollover.
+    for failing in 3..6 {
+        let dir = tempdir().expect("dir");
+        let log = open(&dir, FsyncMode::OnCommit);
+        for i in 0..failing {
+            log.append(&records(&[&format!("v{i}")]))
+                .await
+                .expect("append");
+        }
+        log.inner
+            .fail_next_flush
+            .store(true, std::sync::atomic::Ordering::Release);
+        log.append(&records(&["lost"]))
+            .await
+            .expect_err("flush failed");
+        assert!(log.is_poisoned());
+        drop(log);
+        assert!(dir.path().join("poisoned").exists());
+
+        let log = open(&dir, FsyncMode::OnCommit);
+        let kept: Vec<String> = (0..failing).map(|i| format!("v{i}")).collect();
+        assert_eq!(read_all(&log, 0).await, kept, "failing at {failing}");
+        assert!(!dir.path().join("poisoned").exists());
+        log.append(&records(&["next"])).await.expect("append");
+        let mut expected = kept;
+        expected.push("next".to_string());
+        assert_eq!(read_all(&log, 0).await, expected);
+    }
+}
+
+/// The cut stays off for a relaxed mode, whose records past the last sync
+/// were acknowledged, and the marker is still cleared.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_keeps_a_relaxed_logs_records() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b"])).await.expect("append");
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.sync().await.expect_err("flush failed");
+    drop(log);
+    assert!(dir.path().join("poisoned").exists());
+
+    let log = open(&dir, FsyncMode::None);
+    assert_eq!(read_all(&log, 0).await, ["a", "b"]);
+    assert!(!dir.path().join("poisoned").exists());
+}
+
+/// A state file whose last write failed is read back from the page cache as
+/// if it were durable, so a start after a poison writes it again.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_writes_the_state_files_again() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(3, Some("leader-a"))
+        .await
+        .expect("accept");
+    let ballot = dir.path().join("ballot");
+    let before = (
+        std::fs::metadata(&ballot).expect("ballot").ino(),
+        std::fs::read(&ballot).expect("read"),
+    );
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.append(&records(&["lost"]))
+        .await
+        .expect_err("flush failed");
+    drop(log);
+
+    let log = open(&dir, FsyncMode::OnCommit);
+    let after = (
+        std::fs::metadata(&ballot).expect("ballot").ino(),
+        std::fs::read(&ballot).expect("read"),
+    );
+    assert_ne!(before.0, after.0, "the ballot was not written again");
+    assert_eq!(before.1, after.1);
+    drop(log);
+}
+
+/// Poison a log by failing the flush of `lost`, after `kept` went in.
+async fn poison_after(dir: &TempDir, mode: FsyncMode, kept: &[&str]) {
+    let log = open(dir, mode);
+    log.append(&records(kept)).await.expect("append");
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    if matches!(mode, FsyncMode::OnCommit) {
+        log.append(&records(&["lost"]))
+            .await
+            .expect_err("flush failed");
+    } else {
+        log.append(&records(&["late"])).await.expect("append");
+        log.sync().await.expect_err("flush failed");
+    }
+    assert!(log.is_poisoned());
+    drop(log);
+    assert!(dir.path().join("poisoned").exists());
+}
+
+/// A relaxed run acknowledged the records past its last sync, so the next
+/// start keeps them and writes them again: a sync alone would find their
+/// pages clean and write nothing.
+#[tokio::test]
+async fn a_restart_after_a_relaxed_poison_writes_the_unsynced_bytes_again() {
+    let dir = tempdir().expect("dir");
+    poison_after(&dir, FsyncMode::None, &["a", "b"]).await;
+    super::recovery::REWRITTEN_BYTES.with(|total| total.set(0));
+    let log = open(&dir, FsyncMode::None);
+    let segment = dir.path().join(crate::segment::segment_file_name(0));
+    let len = std::fs::metadata(&segment).expect("segment").len();
+    let rewritten = super::recovery::REWRITTEN_BYTES.with(std::cell::Cell::get);
+    // Everything past the header: the poisoned run never synced a record.
+    assert_eq!(
+        rewritten,
+        len - crate::segment::SEGMENT_HEADER_LEN,
+        "the unsynced bytes were not written again"
+    );
+    assert_eq!(read_all(&log, 0).await, ["a", "b", "late"]);
+    assert!(!dir.path().join("poisoned").exists());
+}
+
+/// The cut follows the mode of the run that was poisoned, not the one that
+/// reopens the log.
+#[tokio::test]
+async fn a_poisoned_logs_mode_decides_the_cut_across_a_mode_change() {
+    let dir = tempdir().expect("dir");
+    poison_after(&dir, FsyncMode::None, &["a", "b"]).await;
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&log, 0).await, ["a", "b", "late"]);
+    drop(log);
+
+    let dir = tempdir().expect("dir");
+    poison_after(&dir, FsyncMode::OnCommit, &["a", "b"]).await;
+    let log = open(&dir, FsyncMode::None);
+    assert_eq!(read_all(&log, 0).await, ["a", "b"]);
+}
+
+/// A sync that succeeded whose mark could not be written still counts: the
+/// poison records the synced point, so the cut keeps what that sync
+/// acknowledged.
+#[tokio::test]
+async fn a_failed_mark_write_does_not_let_the_cut_remove_an_acknowledged_record() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a"])).await.expect("append");
+    log.inner
+        .mark
+        .fail_next_write
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.append(&records(&["b"])).await.expect("append");
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.append(&records(&["lost"]))
+        .await
+        .expect_err("flush failed");
+    drop(log);
+
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&log, 0).await, ["a", "b"]);
+}
+
+/// A rollover that failed poisons the log too. Every record it acknowledged
+/// was synced, so the start after it keeps them all.
+#[tokio::test]
+async fn a_restart_after_a_roll_failure_keeps_the_acknowledged_records() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let kept: Vec<String> = (0..6).map(|i| format!("v{i}")).collect();
+    for value in &kept {
+        log.append(&records(&[value])).await.expect("append");
+    }
+    log.inner
+        .record_roll_failure(&crate::StorageError::SyncFailed("injected".to_string()));
+    assert!(log.is_poisoned());
+    drop(log);
+    assert!(dir.path().join("poisoned").exists());
+
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&log, 0).await, kept);
+    assert!(!dir.path().join("poisoned").exists());
+}
+
+/// A crash at any step of the cut leaves the marker, so the next start
+/// finishes the cut.
+#[tokio::test]
+async fn a_crash_part_way_through_the_cut_is_finished_by_the_next_start() {
+    let lost: Vec<String> = (0..8).map(|i| format!("lost-{i}")).collect();
+    let lost: Vec<&str> = lost.iter().map(String::as_str).collect();
+    for steps in 0..4 {
+        let dir = tempdir().expect("dir");
+        let log = open(&dir, FsyncMode::OnCommit);
+        log.append(&records(&["a", "b"])).await.expect("append");
+        log.inner
+            .fail_next_flush
+            .store(true, std::sync::atomic::Ordering::Release);
+        log.append(&records(&lost)).await.expect_err("flush failed");
+        drop(log);
+
+        super::recovery::CUT_STEPS_LEFT.with(|left| left.set(Some(steps)));
+        let crashed = DiskLog::open(dir.path(), "t/ns/s/0", config(FsyncMode::OnCommit));
+        super::recovery::CUT_STEPS_LEFT.with(|left| left.set(None));
+        if steps == 0 {
+            assert!(crashed.is_err(), "the injected crash did not stop the open");
+        }
+        drop(crashed);
+
+        let log = open(&dir, FsyncMode::OnCommit);
+        assert_eq!(
+            read_all(&log, 0).await,
+            ["a", "b"],
+            "crashed after {steps} steps"
+        );
+    }
+}
+
+/// A marker that cannot be read cuts nothing, and says so.
+#[tokio::test]
+async fn an_unreadable_poison_marker_is_logged() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().expect("lock").extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.append(&records(&["a", "b"])).await.expect("append");
+    drop(log);
+    std::fs::write(dir.path().join("poisoned"), b"not a mark").expect("marker");
+
+    let captured = Captured::default();
+    let writer = captured.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(move || writer.clone())
+        .with_ansi(false)
+        .finish();
+    let log = tracing::subscriber::with_default(subscriber, || open(&dir, FsyncMode::OnCommit));
+    let logged = String::from_utf8(captured.0.lock().expect("lock").clone()).expect("utf8");
+    assert!(logged.contains("marker cannot be read"), "logged: {logged}");
+    assert_eq!(read_all(&log, 0).await, ["a", "b"]);
+    assert!(!dir.path().join("poisoned").exists());
+}
+
+/// After the cut, `durable.mark` says where the log was cut to, even when a
+/// flush in flight at the poison had moved it further.
+#[tokio::test]
+async fn the_cut_moves_the_durable_mark_back_to_the_marker() {
+    let dir = tempdir().expect("dir");
+    poison_after(&dir, FsyncMode::OnCommit, &["a", "b"]).await;
+    let poison = super::durable_mark::load_poison(dir.path())
+        .expect("marker")
+        .expect("readable");
+    let ahead = super::durable_mark::DurableMark {
+        segment: poison.mark.segment,
+        synced_bytes: poison.mark.synced_bytes + 1_000,
+    };
+    std::fs::write(dir.path().join("durable.mark"), ahead.encode()).expect("mark");
+
+    super::recovery::after_poison(dir.path(), "t/ns/s/0", Some(poison)).expect("cut");
+    assert_eq!(super::durable_mark::load(dir.path()), Some(poison.mark));
+}

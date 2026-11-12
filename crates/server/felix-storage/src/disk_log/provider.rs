@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::{DiskLog, layout};
 use crate::incarnation::{self, Incarnations};
@@ -54,9 +54,12 @@ impl std::fmt::Debug for OpenHook {
 }
 
 impl DiskLogProvider {
-    pub fn new(root: impl Into<PathBuf>, config: LogConfig) -> Result<Self> {
+    pub fn new(root: impl Into<PathBuf>, mut config: LogConfig) -> Result<Self> {
         config.validate()?;
         let root = root.into();
+        // Its own gate, so a config cloned from the caller's (a cache's, say)
+        // never moves onto v9 when this provider's logs do.
+        config.generations = crate::log::GenerationGate::under(root.clone());
         crate::io::create_dir_all_durable(&root)?;
         // Whatever a delete left before a crash or restart.
         incarnation::purge_in_background(root.clone());
@@ -67,8 +70,8 @@ impl DiskLogProvider {
             open_logs: ShardSlots::new(),
             incarnations: Incarnations::default(),
             dirs: Default::default(),
-            stream_retention: parking_lot::RwLock::new(HashMap::new()),
-            stream_hold: parking_lot::RwLock::new(HashMap::new()),
+            stream_retention: parking_lot::RwLock::new(HashMap::default()),
+            stream_hold: parking_lot::RwLock::new(HashMap::default()),
             #[cfg(test)]
             open_hook: parking_lot::Mutex::new(None),
         })
@@ -80,6 +83,13 @@ impl DiskLogProvider {
 
     pub fn config(&self) -> &LogConfig {
         &self.config
+    }
+
+    /// Let this provider's logs start new segments in format v9 whenever
+    /// `check` says so, for every log open now or later. Only the first call
+    /// counts. See [`crate::log::GenerationGate`].
+    pub fn record_generations_when(&self, check: impl Fn() -> bool + Send + Sync + 'static) {
+        self.config.generations.open_when(check);
     }
 
     /// Open or return the cached log for `shard`.
@@ -96,6 +106,14 @@ impl DiskLogProvider {
     pub fn opened_shard(&self, shard: &ShardKey) -> Option<DiskLog> {
         let incarnation = self.incarnation_of(shard)?;
         self.open_logs.get_open(&(shard.clone(), incarnation))
+    }
+
+    /// Whether `shard` has a directory on disk at its current incarnation,
+    /// open or not. Reads the directory only; nothing is created or recovered.
+    pub fn on_disk(&self, shard: &ShardKey) -> bool {
+        self.incarnation_of(shard).is_some_and(|incarnation| {
+            crate::fs::is_dir(layout::incarnation_dir(&self.root, shard, incarnation))
+        })
     }
 
     /// Open or return the cached log for `shard`, creating it to begin at
@@ -122,6 +140,20 @@ impl DiskLogProvider {
         incarnation: u64,
     ) -> Result<DiskLog> {
         self.open_with(shard, base_offset, Some(incarnation))
+    }
+
+    /// What [`Self::open_incarnation`] would return, when the log is open
+    /// already; `None` without creating, recovering or waiting otherwise.
+    /// `None` for `incarnation` checks nothing, as [`Self::open_shard`] does.
+    pub fn opened_incarnation(
+        &self,
+        shard: &ShardKey,
+        incarnation: Option<u64>,
+    ) -> Option<DiskLog> {
+        let held = self
+            .incarnation_of(shard)
+            .filter(|held| incarnation.is_none_or(|expected| expected == *held))?;
+        self.open_logs.get_open(&(shard.clone(), held))
     }
 
     /// Close `shard`'s log and forget it, for a shard this broker no longer

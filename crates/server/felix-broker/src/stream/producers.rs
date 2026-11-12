@@ -20,7 +20,8 @@
 //! with a digest of each batch's payloads, and they last as long as the
 //! leader does.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use felix_storage::log::PayloadDigest;

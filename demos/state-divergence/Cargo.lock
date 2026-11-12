@@ -495,18 +495,18 @@ checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32c"
-version = "0.6.8"
+version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a47af21622d091a8f0fb295b88bc886ac74efcc613efc19f5d0b21de5c89e47"
+checksum = "7f132a176423ee852e8f0a35d43088d1850966b50745be818a88b76f64b1c6cb"
 dependencies = [
  "rustc_version",
 ]
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "2b929dd2a135771f40afabd1073f85eed59c800b7c61901e5c254270497dad64"
 dependencies = [
  "cfg-if",
 ]
@@ -916,7 +916,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "felix-authz"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek",
@@ -928,11 +928,12 @@ dependencies = [
 
 [[package]]
 name = "felix-broker"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "ahash",
  "arc-swap",
  "bytes",
+ "felix-common",
  "felix-storage",
  "felix-wire",
  "hashbrown 0.17.1",
@@ -945,7 +946,7 @@ dependencies = [
 
 [[package]]
 name = "felix-broker-service"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -997,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "felix-client"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1021,8 +1022,9 @@ dependencies = [
 
 [[package]]
 name = "felix-common"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
+ "ahash",
  "arc-swap",
  "libc",
  "metrics",
@@ -1037,7 +1039,7 @@ dependencies = [
 
 [[package]]
 name = "felix-kafka"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1061,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "felix-mqtt"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1079,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "felix-mqtt-wire"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "bytes",
  "thiserror 2.0.21",
@@ -1087,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "felix-replication"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1109,6 +1111,7 @@ dependencies = [
  "rustls",
  "rustls-webpki",
  "serde",
+ "serde_json",
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
@@ -1117,7 +1120,7 @@ dependencies = [
 
 [[package]]
 name = "felix-router"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "arc-swap",
  "felix-common",
@@ -1126,12 +1129,13 @@ dependencies = [
 
 [[package]]
 name = "felix-storage"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "async-trait",
  "bytes",
  "crc",
  "crc32fast",
+ "felix-common",
  "io-uring",
  "libc",
  "metrics",
@@ -1143,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "felix-transport"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "anyhow",
  "libc",
@@ -1157,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "felix-wire"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 dependencies = [
  "base64 0.23.1",
  "bytes",
@@ -1204,9 +1208,9 @@ checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
 
 [[package]]
 name = "flate2"
-version = "1.1.10"
+version = "1.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e634e2e0ebac1ee034020da1ca582e17ffe4e0f5e985823721e168928136dcb"
+checksum = "626d4928326b646e70f65ed36fc7cf9f206bdb68a0019ee7c6b4709da4e084c4"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
@@ -1394,9 +1398,9 @@ dependencies = [
 
 [[package]]
 name = "granit-parser"
-version = "2.0.0"
+version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da55feca5d1625466bae068f9fd4b87892caeae70c3fe671ddb0f50d41aebf37"
+checksum = "05f05586d4d4df3d47123207826c40b252728b438a1a07bad3c01ee6bea401df"
 dependencies = [
  "arraydeque",
  "smallvec",
@@ -3318,9 +3322,9 @@ dependencies = [
 
 [[package]]
 name = "serde-saphyr"
-version = "2.0.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a253edfdea34032da21af84e16fcc94f4c7a6ba237f9f3bc2dbf43cea8535c44"
+checksum = "d43fb82d550b07e6f929a58d7d0935182602f48ddead875f5ee313c41c8f07fe"
 dependencies = [
  "annotate-snippets",
  "base64 0.23.1",
@@ -4171,9 +4175,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.29.0"
+version = "1.29.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a0e2d11620c50695fe12bbbfde96b3477fe606e7284c22d505c12ce51214514"
+checksum = "4a06f08a856b009bc7bbaf7d3e79808595d032dd19074c0c2ef26e49e03e6bdc"
 dependencies = [
  "atomic",
  "getrandom 0.4.3",

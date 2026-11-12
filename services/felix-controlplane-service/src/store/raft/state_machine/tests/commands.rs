@@ -153,8 +153,7 @@ async fn an_unknown_command_variant_is_refused_without_touching_state() {
 /// from.
 #[tokio::test]
 async fn an_import_replaces_everything_and_respects_the_guard() {
-    // A populated source, exported the way the migration tool exports
-    // Postgres: through the traits, sequence heads carried, windows empty.
+    // A populated source, exported through the traits, sequence heads carried, windows empty.
     let source = machine();
     run_script(&source).await;
     let exported = crate::store::export::export_state_from(
@@ -361,6 +360,7 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             .dispatch(MetaCommand::RecordReplicaReport {
                 report,
                 leader: None,
+                readmit: false,
             })
             .await
             .expect("report");

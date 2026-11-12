@@ -369,6 +369,10 @@ pub struct Fixture {
     /// discard, redrive); `token` only consumes them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_operator_token: Option<String>,
+    /// A token with `node.view:cluster:*`, which shard and subscription
+    /// inspection needs and `token` lacks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspector_token: Option<String>,
     /// A token that may also trim a stream's head (`stream.trim`); `token`
     /// may not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -379,6 +383,19 @@ pub struct Fixture {
     /// scenarios of one suite must not run at the same time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trim_stream: Option<String>,
+    /// A cache the brokers mint lease tokens for: a conditional write to a key
+    /// of it returns a token for the output stream `wl.<key>.out`. The lease
+    /// token slot in the node token's templates is this cache's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_cache: Option<String>,
+    /// A token that may write `lease_cache` and holds the template for the
+    /// output streams, but may not publish to them itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_node_token: Option<String>,
+    /// The keys of `lease_cache` whose output streams exist, so each client
+    /// suite takes its own and runs do not collide.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lease_keys: Vec<String>,
     /// True when the brokers store each record's publisher, so a client that
     /// asks for it (`ClientConfig::publishers`) gets one back. Absent from a
     /// fixture whose brokers do not, and a suite then expects none.
@@ -390,6 +407,17 @@ pub struct Fixture {
     /// skips the scenarios that need one rather than claiming them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub no_commit_addrs: Vec<String>,
+    /// A broker that answers `auth` only for a client presenting the
+    /// certificate below, as one started with `FELIX_TLS_CLIENT_CA` does. Its
+    /// certificate is in `ca_file`. Absent from a fixture that has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mtls_addr: Option<String>,
+    /// PEM file of a certificate the broker at `mtls_addr` accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_cert_file: Option<String>,
+    /// PEM file of the private key for `client_cert_file`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_key_file: Option<String>,
     /// The catalogue's fault scenarios, so a suite that cannot read TOML gets
     /// the steps without hard-coding them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

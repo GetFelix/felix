@@ -285,6 +285,8 @@ async fn a_dead_destination_unfences_through_the_store() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("fenced");

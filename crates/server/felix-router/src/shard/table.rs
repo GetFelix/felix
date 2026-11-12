@@ -1,6 +1,7 @@
 //! The routing table: an immutable snapshot of where every shard is served.
 
 use std::collections::{BTreeMap, HashMap};
+use std::hash::BuildHasher;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -34,9 +35,9 @@ impl RoutingTable {
     /// carrying [`Unavailable::LeaderUnknown`](crate::Unavailable::LeaderUnknown) at lookup time. Dropping it here
     /// instead would make a missing address indistinguishable from a missing
     /// assignment, and those are different problems.
-    pub fn build(
+    pub fn build<S: BuildHasher>(
         assignments: impl IntoIterator<Item = (ShardKey, String, Vec<String>, u64)>,
-        nodes: &HashMap<String, NodeRef>,
+        nodes: &HashMap<String, NodeRef, S>,
     ) -> Self {
         Self::build_with(
             assignments
@@ -53,15 +54,16 @@ impl RoutingTable {
                     fence_storage_ids: BTreeMap::new(),
                     member_storage_ids: BTreeMap::new(),
                     pending: None,
+                    readmitted: Vec::new(),
                 }),
             nodes,
         )
     }
 
     /// [`RoutingTable::build`], with each assignment's draining flag.
-    pub fn build_with(
+    pub fn build_with<S: BuildHasher>(
         assignments: impl IntoIterator<Item = Placed>,
-        nodes: &HashMap<String, NodeRef>,
+        nodes: &HashMap<String, NodeRef, S>,
     ) -> Self {
         let mut routes = HashMap::new();
         let mut placements: HashMap<String, StreamPlacement> = HashMap::new();
@@ -77,6 +79,7 @@ impl RoutingTable {
             fence_storage_ids,
             member_storage_ids,
             pending,
+            readmitted,
         } in assignments
         {
             // The count is the highest shard index placed plus one, not the
@@ -127,6 +130,7 @@ impl RoutingTable {
                     member_storage_ids: (!member_storage_ids.is_empty())
                         .then(|| Arc::new(member_storage_ids)),
                     pending: pending.map(Arc::new),
+                    readmitted: (!readmitted.is_empty()).then(|| Arc::new(readmitted)),
                 },
             );
         }
@@ -139,8 +143,8 @@ impl RoutingTable {
 
     /// This table with what came before each route, as the shard watch saw
     /// the control plane's assignments change.
-    pub fn with_priors(mut self, priors: HashMap<ShardKey, PriorSet>) -> Self {
-        self.priors = priors;
+    pub fn with_priors(mut self, priors: impl IntoIterator<Item = (ShardKey, PriorSet)>) -> Self {
+        self.priors = priors.into_iter().collect();
         self
     }
 
@@ -235,12 +239,17 @@ impl RoutingTable {
         self.routes.get(key)
     }
 
-    /// Every route in the table.
+    /// Every route in the table, in key order.
     ///
     /// For a caller that has to visit shards rather than look one up -- the
     /// replication driver walks the table to find the shards this node leads.
+    /// The order is fixed, not the map's, so what a caller does shard by shard
+    /// happens in the same order every run of a simulated seed. Not for a
+    /// per-request path: it sorts.
     pub fn iter(&self) -> impl Iterator<Item = (&ShardKey, &Route)> {
-        self.routes.iter()
+        let mut entries: Vec<_> = self.routes.iter().collect();
+        entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+        entries.into_iter()
     }
 
     pub fn len(&self) -> usize {
@@ -314,6 +323,23 @@ pub struct Route {
     /// it is pending, `replicas` are the pending set's followers and this
     /// names the set being left.
     pub pending: Option<Arc<PendingChange>>,
+    /// Copies the control plane recorded as readmitted after their storage
+    /// was replaced (`readmitted` on the assignment). A fence trusts a
+    /// matching answer from one. `None` for none, and from a control plane
+    /// that sends none.
+    pub readmitted: Option<Arc<Vec<Readmitted>>>,
+}
+
+/// A copy the leader of `generation` showed caught up to `offset` under the
+/// storage identity `storage_id`, which a set written after the copy's
+/// storage was replaced names it by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Readmitted {
+    pub node: String,
+    /// 32 lowercase hex.
+    pub storage_id: String,
+    pub generation: u64,
+    pub offset: u64,
 }
 
 /// A set change the control plane holds as pending (`pending_set` on the
@@ -370,6 +396,8 @@ pub struct Placed {
     pub member_storage_ids: BTreeMap<String, String>,
     /// See [`Route::pending`].
     pub pending: Option<PendingChange>,
+    /// See [`Route::readmitted`]; empty for none.
+    pub readmitted: Vec<Readmitted>,
 }
 
 /// How a stream was placed: how many shards it has and how keys map onto them.

@@ -54,6 +54,8 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -169,6 +171,9 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::start_holders_are_kept(store).await;
     replica_reports::a_refusal_is_kept(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
+    a_write_at_least_a_generation_lands_there_within_the_window(store).await;
+    a_write_past_the_next_generation_names_the_one_it_replaced(store).await;
+    the_assignment_before_the_current_one_is_listed(store).await;
     a_fence_planned_before_a_cut_over_is_refused_after_it(store).await;
     a_consistency_change_fences_placement(store).await;
     why_a_move_started_is_persisted(store).await;
@@ -177,6 +182,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     learners_are_persisted_until_the_next_write(store).await;
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
+    replica_reports::readmitted_copies_are_recorded_from_a_set_naming_them(store).await;
     super::adoption::run(store).await;
 }
 
@@ -206,6 +212,8 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -322,6 +330,8 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -928,6 +938,168 @@ async fn pausing_moves_is_persisted(store: &dyn ControlPlaneStore) {
     assert!(!store.moves_paused().await.expect("read"));
 }
 
+/// A placement write with a floor lands on it when it is above the next
+/// generation, and on the next one otherwise; a floor past the election
+/// window is refused, writing nothing (#1951).
+async fn a_write_at_least_a_generation_lands_there_within_the_window(
+    store: &dyn ControlPlaneStore,
+) {
+    clear(store).await;
+    let write = |expected: Option<u64>, at_least: u64| async move {
+        store
+            .put_shard_assignment_at_least(
+                assignment(0, "broker-x"),
+                expected,
+                token(store).await,
+                at_least,
+            )
+            .await
+    };
+    let Ok(AssignmentWrite::Written(first)) = write(None, 0).await else {
+        panic!("a first write lands");
+    };
+    let at = first.generation;
+
+    let Ok(AssignmentWrite::Written(above)) = write(Some(at), at + 3).await else {
+        panic!("a floor in the window lands");
+    };
+    assert_eq!(above.generation, at + 3);
+    let Ok(AssignmentWrite::Written(next)) = write(Some(at + 3), at + 2).await else {
+        panic!("a floor below the next generation lands on the next");
+    };
+    assert_eq!(next.generation, at + 4);
+    let past = write(
+        Some(at + 4),
+        at + 6 + crate::model::ELECTION_GENERATION_WINDOW,
+    )
+    .await;
+    assert!(matches!(past, Err(StoreError::Conflict(_))), "{past:?}");
+    assert_eq!(
+        store
+            .get_shard_assignment(&key(0))
+            .await
+            .expect("read")
+            .generation,
+        at + 4,
+        "a refused floor wrote nothing"
+    );
+}
+
+/// A placement write that lands past the next generation names the one it
+/// replaced, in the store, the snapshot and the change feed, so a broker can
+/// take that assignment's set as the one right before it (#2024). The store
+/// decides it: a value the caller passes, or one copied forward from the
+/// assignment being replaced, is not kept.
+async fn a_write_past_the_next_generation_names_the_one_it_replaced(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let write = |expected: Option<u64>, at_least: u64, previous: Option<u64>| async move {
+        store
+            .put_shard_assignment_at_least(
+                ShardAssignment {
+                    previous_generation: previous,
+                    ..assignment(0, "broker-x")
+                },
+                expected,
+                token(store).await,
+                at_least,
+            )
+            .await
+    };
+    let Ok(AssignmentWrite::Written(first)) = write(None, 0, Some(7)).await else {
+        panic!("a first write lands");
+    };
+    assert_eq!(first.previous_generation, None, "nothing came before it");
+    let at = first.generation;
+
+    let Ok(AssignmentWrite::Written(next)) = write(Some(at), 0, Some(at)).await else {
+        panic!("a write at the next generation lands");
+    };
+    assert_eq!(next.previous_generation, None, "one step needs no name");
+
+    let Ok(AssignmentWrite::Written(above)) = write(Some(at + 1), at + 3, None).await else {
+        panic!("a floor in the window lands");
+    };
+    assert_eq!(above.generation, at + 3);
+    assert_eq!(above.previous_generation, Some(at + 1));
+    assert_eq!(
+        store
+            .get_shard_assignment(&key(0))
+            .await
+            .expect("read")
+            .previous_generation,
+        Some(at + 1),
+    );
+    let snapshot = store.shard_assignment_snapshot().await.expect("snapshot");
+    assert_eq!(
+        snapshot
+            .items
+            .iter()
+            .find(|item| item.key == key(0))
+            .and_then(|item| item.previous_generation),
+        Some(at + 1),
+    );
+    let changes = store.shard_assignment_changes(0).await.expect("changes");
+    assert_eq!(
+        changes
+            .items
+            .iter()
+            .filter_map(|change| change.assignment.as_ref())
+            .find(|written| written.generation == at + 3)
+            .and_then(|written| written.previous_generation),
+        Some(at + 1),
+    );
+
+    let Ok(AssignmentWrite::Written(after)) =
+        write(Some(at + 3), 0, above.previous_generation).await
+    else {
+        panic!("the next write lands");
+    };
+    assert_eq!(after.previous_generation, None, "not copied forward");
+}
+
+/// The change log's assignment right before each current one is listed, so a
+/// snapshot can carry the set a reseeded broker's fence leaves (#2024). A
+/// shard with one write lists nothing, and neither does one whose change
+/// before was an unassignment.
+async fn the_assignment_before_the_current_one_is_listed(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let previous = || async {
+        store
+            .previous_shard_assignments()
+            .await
+            .expect("previous")
+            .into_iter()
+            .filter(|before| before.key == key(0))
+            .map(|before| (before.leader, before.generation))
+            .collect::<Vec<_>>()
+    };
+    let written = |leader: &'static str| async move {
+        store
+            .put_shard_assignment(assignment(0, leader))
+            .await
+            .expect("write")
+    };
+    let first = written("broker-x").await;
+    assert_eq!(previous().await, Vec::new(), "nothing before a first write");
+    written("broker-y").await;
+    assert_eq!(
+        previous().await,
+        vec![("broker-x".to_string(), first.generation)]
+    );
+    let second = written("broker-x").await;
+    assert_eq!(
+        previous().await,
+        vec![("broker-y".to_string(), second.generation - 1)]
+    );
+
+    store
+        .delete_shard_assignment(&key(0))
+        .await
+        .expect("delete");
+    written("broker-x").await;
+    assert_eq!(previous().await, Vec::new(), "an unassignment came before");
+}
+
 /// A conditional write lands only over the generation it names, or where
 /// there is no assignment when it names none; anything else writes nothing
 /// and publishes nothing.
@@ -1315,38 +1487,10 @@ async fn a_snapshot_and_the_changes_after_it_lose_nothing(store: &dyn ControlPla
     assert_eq!(reconstructed, actual);
 }
 
-/// Seeding exposed for the restart test, which needs the catalog in place
-/// across two store handles.
-///
-/// Gated to match its only caller: `postgres::tests::database` is `pg-tests`-only, so
-/// without that feature this has no users and is dead code.
-#[cfg(feature = "pg-tests")]
-pub(crate) async fn seed_for_restart(store: &dyn ControlPlaneStore) {
-    seed(store).await;
-}
-
-/// Write one assignment and hand it back, for the restart test to compare.
-///
-/// `pg-tests`-only for the same reason as [`seed_for_restart`].
-#[cfg(feature = "pg-tests")]
-pub(crate) async fn assign_for_restart(store: &dyn ControlPlaneStore) -> ShardAssignment {
-    clear(store).await;
-    let first = store
-        .put_shard_assignment(assignment(0, "broker-x"))
-        .await
-        .expect("put");
-    let mut active = assignment(0, "broker-x");
-    active.state = ShardState::Active;
-    let _ = first;
-    store.put_shard_assignment(active).await.expect("activate")
-}
-
 /// Deleting a stream or a cache must not leave its shards owned.
 ///
-/// Postgres enforces this with `ON DELETE CASCADE`; the point of running it
-/// here is that the in-memory store must do the same thing, and the divergence
-/// runs the dangerous way — a suite in memory that kept the rows would be
-/// asserting against ghosts the deployed system has already cleaned up.
+/// A store that kept the rows would leave placement chasing ghosts of shards
+/// that no longer exist.
 ///
 /// Uses names of its own rather than the shared fixtures, because the cases
 /// after it still need those to exist.
@@ -1518,6 +1662,8 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     for shard in 0..2 {
         store
@@ -1612,7 +1758,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
 }
 
 /// A namespace or tenant delete takes its streams' and caches' assignments and
-/// reports, as a stream delete does (and as Postgres's cascade does). Left
+/// reports, as a stream delete does. Left
 /// behind, a stream created again under the name would be "updated" from the
 /// deleted one's assignment, and its first report weighed against the old log's.
 async fn a_cascading_delete_takes_shard_assignments_and_reports(store: &dyn ControlPlaneStore) {
@@ -1802,6 +1948,8 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -1916,6 +2064,8 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

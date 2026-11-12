@@ -122,8 +122,8 @@ ConfirmCommit(b, f) ==
     /\ cvotes' = [cvotes EXCEPT ![b] = @ \cup {f}]
     /\ UNCHANGED << now, clock, gen, leader, cpExpiry, report, inflight, bgen, bexpiry,
                     hbOut, hbAt, log, hwm, halted, queued, pending, acked, writes, staleCommit,
-                    handoffVars, fencing, answered, confirmed, opened, setVars, ackGen, heard, counterVars, idVars, named,
-                    wipeVars >>
+                    handoffVars, fencing, answered, confirmed, opened, setVars, ackGen, heard, counterVars, idVars, named, refusalVars,
+                    wipeVars, waits, pinVars, cpGone >>
     /\ UNCHANGED << snext, sdel, committing, cgen, ctop, commits, staleGroup >>
 
 CommitConfirmed(b) ==

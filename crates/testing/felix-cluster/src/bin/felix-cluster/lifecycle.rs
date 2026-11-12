@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use felix_cluster::session;
 use felix_cluster::{CacheSpec, Cluster, ClusterConfig, StreamSpec};
 
-use crate::args::flag_usize;
+use crate::args::{flag, flag_usize};
 use crate::signals::stop_signal;
 use crate::{STREAM, init_tracing};
 
@@ -15,7 +15,9 @@ pub(crate) async fn up(args: &[String]) -> Result<()> {
     init_tracing(true);
     let nodes = flag_usize(args, "--nodes")?.unwrap_or(3);
     eprintln!("starting a {nodes}-node cluster...");
-    let cluster = Cluster::start(cluster_config(nodes, true)).await?;
+    let mut config = cluster_config(nodes, true);
+    config.streams = vec![up_stream(args)?];
+    let cluster = Cluster::start(config).await?;
 
     let path = session::default_path();
     if let Some(existing) = session::live_session(&path).await {
@@ -87,6 +89,24 @@ pub(crate) async fn smoke_command(args: &[String]) -> Result<()> {
     let result = smoke(&mut cluster).await;
     cluster.shutdown().await;
     result
+}
+
+/// The stream `up` creates. `--stream`, `--shards` and `--replication-factor`
+/// let a perf run measure a replicated stream; a factor above 1 is
+/// quorum-acknowledged.
+pub(crate) fn up_stream(args: &[String]) -> Result<StreamSpec> {
+    let name = flag(args, "--stream")?.unwrap_or_else(|| STREAM.to_string());
+    let shards = flag_usize(args, "--shards")?.unwrap_or(1);
+    let factor = flag_usize(args, "--replication-factor")?.unwrap_or(1);
+    if shards == 0 || factor == 0 {
+        bail!("--shards and --replication-factor must be at least 1");
+    }
+    let (shards, factor) = (shards as u32, factor as u32);
+    Ok(if factor == 1 {
+        StreamSpec::new(name, shards)
+    } else {
+        StreamSpec::quorum(name, shards, factor)
+    })
 }
 
 pub(crate) fn cluster_config(nodes: usize, inherit_output: bool) -> ClusterConfig {
@@ -163,3 +183,6 @@ async fn smoke(cluster: &mut Cluster) -> Result<()> {
     println!("smoke: ok — the record crossed the node boundary");
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

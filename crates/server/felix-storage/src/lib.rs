@@ -36,10 +36,19 @@
 //!   opens, and retires a deleted one's directories.
 //! - [`storage_identity`]: the random id a data directory keeps, so peers can
 //!   tell a restarted disk from a wiped one. [`run_state`] gives it a new one
-//!   when a crash may have lost what it acknowledged.
+//!   when a crash may have lost what it acknowledged. [`controlplane_view`]
+//!   keeps what the control plane last told this broker, for a start without
+//!   it.
+//! - `fs`: where every file and directory call goes, so a simulation can keep
+//!   a broker's data directory in memory. `sim_fs`, behind the `sim` feature,
+//!   registers those directories and cuts their power.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
 //!   [`Corruption`]).
+//! - `raft_log`, behind the `raft` feature: a [`DiskLog`] as an openraft
+//!   log, one record per entry. `metadata_store`, behind the same feature:
+//!   the member file the control plane keeps beside that log, and whether a
+//!   member may start on a data directory.
 //! - [`tiered`] is an interface with no implementation yet.
 //! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
 //!   reach decoders this crate does not export.
@@ -47,11 +56,13 @@
 pub mod cache;
 mod commit_order;
 mod compaction;
+pub mod controlplane_view;
 pub mod counter_log;
 pub mod disk_log;
 mod error;
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub mod fault;
+pub(crate) mod fs;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
@@ -60,10 +71,16 @@ mod index_snapshot;
 pub(crate) mod io;
 mod legacy_swap;
 pub mod log;
+#[cfg(feature = "raft")]
+pub mod metadata_store;
 pub mod metrics_names;
+#[cfg(feature = "raft")]
+pub mod raft_log;
 pub mod run_state;
 pub mod segment;
 mod shard_slots;
+#[cfg(feature = "sim")]
+pub mod sim_fs;
 pub mod storage_identity;
 mod task;
 pub mod tiered;

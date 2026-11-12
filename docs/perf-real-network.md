@@ -23,7 +23,7 @@ below: this suite provisions, runs, and **tears down**; nothing idles.
 > **Results are published.** The "Performance on Azure (v0.6.0)" page on the docs
 > site (`docs-site/src/content/docs/features/v060-performance.md`) carries the
 > current numbers with every condition stated. Raw data lives under
-> `scripts/perf/azure/sessions/`.
+> `scripts/perf/cloud/sessions/`.
 
 **The deliverable is a comprehensive performance-analysis page on the docs
 site**, of publication quality: every scenario's aggregates *and* spread,
@@ -183,7 +183,7 @@ benchmarks page in the same shape with an environment column (`loopback` |
    client-credential parameters and does the exchange itself), a scenario
    spec, emits the standard JSONL. Ships *in* the release tarball so the
    load-gen VM downloads the same artifact as the brokers.
-2. **`scripts/perf/azure/`**: reproducible IaC in **Bicep**
+2. **`scripts/perf/cloud/`**: reproducible IaC in **Bicep**
    (`main.bicep`: one resource group per session with VNet + NSG, a proximity
    placement group for T1 or per-zone pinning for T2, broker/control-plane/
    load-gen VMs with cloud-init) plus the session lifecycle scripts
@@ -237,7 +237,7 @@ session.
    bumps to 0.3.0, tag `v0.3.0` triggers `release.yml`, and every VM in this
    suite downloads that tarball. `felix-loadgen` should be in the same
    release, which makes it the one code change gating the suite.
-2. Build `felix-loadgen` + `scripts/perf/azure/`, validated against a local
+2. Build `felix-loadgen` + `scripts/perf/cloud/`, validated against a local
    cluster (the felix-cluster harness) before any Azure spend.
 3. T1 session, twice. Publish the first real-network numbers beside the
    loopback ones. Expect them to be *worse*, and say so plainly; that is the

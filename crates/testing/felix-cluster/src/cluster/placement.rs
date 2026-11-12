@@ -144,12 +144,13 @@ impl Cluster {
                 .ok_or_else(|| anyhow!("control plane is gone"))?;
             let node = spawn_broker(
                 &self.binary,
-                control_plane,
+                &control_plane.base_url,
                 &self.credentials,
                 &self.config,
                 self._root.path(),
                 index,
                 self.links.as_ref(),
+                None,
             )
             .with_context(|| format!("start broker {index}"))?;
             let node_id = node.node_id.clone();
@@ -310,10 +311,9 @@ impl Cluster {
     /// `kind name/shard`: a staged successor or joining follower, or a leader
     /// fenced for the cut-over.
     pub async fn moving_shards(&self) -> Result<Vec<String>> {
-        use felix_controlplane_service::store::ControlPlaneStore;
         let assignments = self
             .control_plane()
-            .store
+            .live_store()
             .list_shard_assignments()
             .await
             .map_err(|err| anyhow!("list shard assignments: {err}"))?;
@@ -339,8 +339,7 @@ impl Cluster {
     /// reported a caught-up replica at the current generation.
     pub(crate) async fn shard_statuses(&self) -> Result<Vec<ShardStatus>> {
         use felix_controlplane_service::model::ShardState;
-        use felix_controlplane_service::store::ControlPlaneStore;
-        let store = &self.control_plane().store;
+        let store = self.control_plane().live_store();
         let assignments = store
             .list_shard_assignments()
             .await

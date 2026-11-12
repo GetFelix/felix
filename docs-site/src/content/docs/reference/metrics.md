@@ -152,6 +152,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_heartbeats_total` | counter | - | Heartbeats the control plane accepted. |
 | `felix_broker_heartbeat_failures_total` | counter | `kind` | Heartbeats that did not land: `rejected` or `unavailable`. |
 | `felix_broker_heartbeat_age_seconds` | gauge | - | Seconds since the last accepted heartbeat. Alert when it nears the control plane's expiry timeout. |
+| `felix_restored_directory_total` | counter | - | Data directories found older than the node's last registration once the control plane answered, after a start from the control-plane view (`FELIX_START_WITHOUT_CONTROLPLANE`). The broker stopped for each. Any increase is a restore that kept its `storage-id`. |
 | `felix_broker_lease_held` | gauge | - | `1` while this broker may serve the shards it leads. |
 | `felix_broker_lease_expiries_total` | counter | - | Times the lease lapsed. Each is a window in which this broker's shards were unavailable here and not yet reassigned. |
 | `felix_broker_lease_refusals_total` | counter | `boundary` | Requests refused because the lease was invalid. `boundary` is `admission`, `commit` or `ack` for writes and `read` for reads. A non-zero `commit` count means requests were outliving the lease. |
@@ -202,7 +203,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers that was not sent because the follower does not offer `record_headers`; that follower stays behind the record until it is upgraded. |
+| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers that was not sent because the follower does not offer `record_headers`; that follower stays behind the record until it is upgraded. `kind_unsupported` is a batch not sent because its next record is a membership or counter record, which this build cannot replicate yet; the follower stays behind it. |
 | `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
@@ -210,7 +211,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
 | `felix_broker_replication_passes_waiting` | gauge | - | Shards waiting for a pass or fence slot right now. Staying high means more shards have work than this broker ships at once. |
-| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `urgent` is an append, a write waiting on the mark, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
+| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `appended` is an append since the shard was last asked; `urgent` is a write waiting on the mark, a shard new to this leader, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
 | `felix_broker_replication_drain_withheld_total` | counter | `log` | Drained reports held back because a follower was still behind on a log. A planned move waits on this. |
 | `felix_broker_replicated_total` | counter | `outcome` | Replication batches stored as a follower. `gap` is ordinary during catch-up; other failure outcomes need different responses. |
 | `felix_broker_replica_reports_per_request` | histogram | - | Shards' reports sharing one control-plane request. One means nothing was batched. |
@@ -219,6 +220,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_publish_quorum_wait_seconds` | histogram | - | How long a `Quorum` publish waited for its majority, whatever the outcome. |
 | `felix_broker_promotions_opened_total` | counter | `path` | Shards opened for writes at a new leadership. `path` is `fenced` once a majority took the fence and `lease` when some replica did not offer it. |
 | `felix_broker_promotion_truncated_total` | counter | - | Times a promoted leader dropped records of its own that a replica's newer log had superseded. |
+| `felix_broker_fence_set_unknown_total` | counter | - | Fences under `joint_fence` that could not learn the set before this generation but proved this broker opened it (its own set kept at the generation, or its own ballot and start record there), or a shard at generation 0, and reported the generation refused so the control plane names the leader again one generation up. |
 | `felix_broker_fence_refused_ids_beyond_two_total` | counter | - | Fences a crashed leader's copy refused because the failover's fence ids also name a copy beside the set of two. With this control plane that is a staged or joining successor the failover left out. The shard stays closed; the [remedy](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#a-leaders-own-crash) is in the replication design ([#1635](https://github.com/GetFelix/felix/issues/1635)). |
 
 ## Storage

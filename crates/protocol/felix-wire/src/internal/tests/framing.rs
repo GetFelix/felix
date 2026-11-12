@@ -94,6 +94,8 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (50, Kind::ReplicateHeaderedFetch),
         (51, Kind::HeaderedForwardPublish),
         (52, Kind::SequencedForwardPublish),
+        (53, Kind::FenceKeptOk),
+        (54, Kind::FenceAttestedOk),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -156,10 +158,13 @@ fn every_body_begins_with_its_correlation_id() {
             log_end: 1,
             commit_offset: 1,
             last_generation: 1,
+            kept_ballot: true,
+            attestation: None,
         }),
         InternalMessage::ReplicateFetch(ReplicateFetch {
             timed: false,
             headers: false,
+            writers: false,
             correlation_id: id,
             shard: shard.clone(),
             log: ReplicaLog::Stream,
@@ -179,6 +184,7 @@ fn every_body_begins_with_its_correlation_id() {
             generations: None,
             publishers: Vec::new(),
             headers: None,
+            writers: None,
             set_generation: None,
         }),
         InternalMessage::ReplicateOk(ReplicateOk {
@@ -191,6 +197,7 @@ fn every_body_begins_with_its_correlation_id() {
             code: ErrorCode::LogGap,
             expected_offset: 3,
             detail: "gap".to_string(),
+            reason: None,
         }),
         InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
             correlation_id: id,

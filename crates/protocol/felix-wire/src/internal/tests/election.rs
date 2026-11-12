@@ -27,6 +27,7 @@ fn election() -> FenceElection {
         candidate: true,
         set: view(9, &["a", "b", "c"]),
         leaving: Some(view(8, &["a", "b", "d"])),
+        earlier: Vec::new(),
     }
 }
 
@@ -150,6 +151,7 @@ fn a_candidate_fence_round_trips() {
                 ],
             },
             leaving: None,
+            earlier: Vec::new(),
         },
     ] {
         let message = InternalMessage::Fence(fence(Some(election)));
@@ -191,6 +193,7 @@ fn a_candidate_fence_matches_its_golden_vector() {
             }],
         },
         leaving: None,
+        earlier: Vec::new(),
     })));
     let mut expected = fence_prefix();
     expected.put_u8(1);
@@ -219,6 +222,7 @@ fn a_set_at_the_limits_is_accepted_and_one_past_them_is_not() {
                 .collect(),
         },
         leaving: None,
+        earlier: Vec::new(),
     };
     let message = InternalMessage::Fence(fence(Some(largest.clone())));
     let encoded = message.encode().expect("the limits themselves are fine");
@@ -401,6 +405,7 @@ fn a_headered_batch_round_trips_inside_the_stamp_and_the_incarnation() {
     };
     let headered = ReplicateRecords {
         headers: Some(vec![Some(Bytes::from_static(b"block")), None]),
+        writers: None,
         // A block needs the generations and times beside it.
         generations: Some(vec![GenerationStart {
             generation: 3,
@@ -769,5 +774,57 @@ fn unwrapping_an_envelope_copies_no_payload() {
         };
         let payload = decoded.payloads[0].as_ptr_range();
         assert!(range.start <= payload.start && payload.end <= range.end);
+    }
+}
+
+fn kept_fence() -> FenceElection {
+    FenceElection {
+        earlier: vec![view(7, &["a", "e", "f"]), view(5, &["g", "h", "i"])],
+        ..election()
+    }
+}
+
+#[test]
+fn a_fence_with_earlier_sets_travels_as_its_own_kind_and_round_trips() {
+    assert_eq!(Kind::ElectionKeptFence as u16, 48);
+    assert_eq!(PeerCapabilities::KEPT_SETS.bits(), 1 << 16);
+    let message = InternalMessage::Fence(fence(Some(kept_fence())));
+    assert_eq!(message.kind(), Kind::ElectionKeptFence);
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+    );
+    let back = InternalMessage::decode(message.encode().expect("encode")).expect("decode");
+    assert_eq!(back, message);
+}
+
+/// With no earlier set the fence is kind 41, byte for byte, so a peer
+/// without `KEPT_SETS` reads it as it always did. Kind 48 with none would
+/// be a second encoding of it.
+#[test]
+fn a_fence_without_earlier_sets_is_unchanged_and_an_empty_count_is_refused() {
+    let plain = InternalMessage::Fence(fence(Some(election())));
+    assert_eq!(plain.kind(), Kind::ElectionFence);
+    assert_eq!(
+        plain.required_capability(),
+        Some(PeerCapabilities::ELECTION)
+    );
+    let bytes = plain.encode().expect("encode");
+    let mut body = bytes[InternalHeader::LEN..].to_vec();
+    body.extend_from_slice(&0u16.to_be_bytes());
+    assert!(InternalMessage::decode(frame(Kind::ElectionKeptFence, &body)).is_err());
+}
+
+#[test]
+fn an_earlier_set_must_be_older_than_the_fence_set() {
+    for generation in [9, 10] {
+        let mut election = kept_fence();
+        election.earlier[1].generation = generation;
+        assert!(
+            InternalMessage::Fence(fence(Some(election)))
+                .encode()
+                .is_err(),
+            "{generation}"
+        );
     }
 }

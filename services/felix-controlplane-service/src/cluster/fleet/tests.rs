@@ -130,18 +130,39 @@ fn follower_features_wait_for_generation_start() {
 }
 
 /// A new cluster starts with every feature this build implements but
-/// `publisher_principal`; a feature added later fails this until it picks.
+/// `publisher_principal` and `record_generations`; a feature added later
+/// fails this until it picks.
 #[test]
-fn a_new_cluster_leaves_only_publisher_principal_to_the_operator() {
+fn a_new_cluster_leaves_publisher_principal_to_the_operator() {
     let manual: Vec<_> = felix_common::fleet::IMPLEMENTED
         .iter()
         .filter(|feature| !NEW_CLUSTER.contains(feature))
         .collect();
-    assert_eq!(manual, [&felix_common::fleet::PUBLISHER_PRINCIPAL]);
     assert_eq!(
-        NEW_CLUSTER.len() + 1,
+        manual,
+        [
+            &felix_common::fleet::PUBLISHER_PRINCIPAL,
+            &felix_common::fleet::RECORD_GENERATIONS
+        ]
+    );
+    assert_eq!(
+        NEW_CLUSTER.len() + 2,
         felix_common::fleet::IMPLEMENTED.len()
     );
+}
+
+/// `finalize_in_order` skips the election gate, which only the election
+/// features meet. Holds for a fleet that reports nothing and a level that
+/// is not ready.
+#[test]
+fn a_new_cluster_finalizes_nothing_the_election_gate_checks() {
+    let nodes = [at("a", NodeLifecycle::Live, &[])];
+    for feature in NEW_CLUSTER {
+        assert!(
+            check_election(&nodes, feature.name(), false).is_ok(),
+            "{feature} is gated by check_election; finalize_in_order must check it"
+        );
+    }
 }
 
 /// Finalized in order, a feature never meets a prerequisite still off.
@@ -363,4 +384,12 @@ fn replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized() {
 fn other_features_pass_the_election_check() {
     let nodes = [at("a", NodeLifecycle::Live, &["majority_ack"])];
     assert!(check_election(&nodes, "majority_ack", false).is_ok());
+}
+
+/// Replication carries the writer's generation, so the operator may finalize
+/// `record_generations`.
+#[test]
+fn record_generations_can_be_finalized() {
+    check_operator_finalizable("record_generations").expect("finalizable");
+    assert!(check_operator_finalizable("head_trim").is_ok());
 }

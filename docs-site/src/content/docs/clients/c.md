@@ -1,6 +1,6 @@
 ---
 title: "C Client"
-description: "Installing from a release or building, and linking libfelix, the asynchronous callback model, and the C ABI for publishing, subscribing, consumer groups, caches, atomic commits and idempotent producers."
+description: "Installing from a release or building, and linking libfelix, the asynchronous callback model, and the C ABI for publishing, subscribing, consumer groups, caches, atomic commits, idempotent producers and hand-offs, queue and transport options, and inspecting shards and subscriptions."
 ---
 
 `libfelix` is a C ABI over the Rust client, built from `crates/sdk/felix-capi`.
@@ -15,34 +15,34 @@ It is a base for bindings: any language with a C FFI can bind to it, C# included
 ## Install
 
 Every GitHub release attaches an archive per platform, with a `.sha256` beside
-it: `libfelix-v0.7.0-preview.2-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64` and
-`osx-arm64`, and `libfelix-v0.7.0-preview.2-<rid>.zip` for `win-x64` and `win-arm64`.
+it: `libfelix-v0.7.2-<rid>.tar.gz` for `linux-x64`, `linux-arm64`, `osx-x64` and
+`osx-arm64`, and `libfelix-v0.7.2-<rid>.zip` for `win-x64` and `win-arm64`.
 Later releases follow the same naming with their own tag. With the GitHub CLI:
 
 ```bash
 gh release download -R GetFelix/felix -p 'libfelix-*-linux-x64.*'
 ```
 
-Or with a plain URL, here for v0.7.0-preview.2 on Linux x64:
+Or with a plain URL, here for v0.7.2 on Linux x64:
 
 ```bash
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.2/libfelix-v0.7.0-preview.2-linux-x64.tar.gz
-curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.0-preview.2/libfelix-v0.7.0-preview.2-linux-x64.tar.gz.sha256
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.2/libfelix-v0.7.2-linux-x64.tar.gz
+curl -fLO https://github.com/GetFelix/felix/releases/download/v0.7.2/libfelix-v0.7.2-linux-x64.tar.gz.sha256
 ```
 
 Check the checksum, then unpack (on macOS use `shasum -a 256 -c`; on Windows
 compare `Get-FileHash` with the `.sha256` file and use `Expand-Archive`):
 
 ```bash
-sha256sum -c libfelix-v0.7.0-preview.2-linux-x64.tar.gz.sha256
-tar xzf libfelix-v0.7.0-preview.2-linux-x64.tar.gz
-cd libfelix-v0.7.0-preview.2-linux-x64
+sha256sum -c libfelix-v0.7.2-linux-x64.tar.gz.sha256
+tar xzf libfelix-v0.7.2-linux-x64.tar.gz
+cd libfelix-v0.7.2-linux-x64
 ```
 
 The archive holds:
 
 ```text
-libfelix-v0.7.0-preview.2-linux-x64/
+libfelix-v0.7.2-linux-x64/
   include/felix.h
   lib/            libfelix.so and libfelix.a (.dylib on macOS; felix.dll,
                   felix.dll.lib and felix.lib on Windows)
@@ -577,7 +577,70 @@ TLS is always on. `server_name` is the name the broker's certificate carries
 (`"localhost"` when null), and `ca_file` is a PEM file of CAs to trust, or null
 for the system store. `addrs` is a `host:port` string.
 
-Client certificates (mutual TLS) are Rust only: this library trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Set `client_cert_file` and `client_key_file` in `FelixConnectOptions` to PEM files holding the certificate and its key. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key. Both fields follow `reconnect_max_backoff_ms` in the struct, so a caller built against an older header presents none. The library reads the two paths during the call and keeps neither:
+
+```c
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdio.h>
+
+#include "felix.h"
+
+struct connect_result {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    bool done;
+    FelixStatus status;
+    FelixClient *client;
+    char message[256]; /* copied: the callback's message dies with the callback */
+};
+
+static void on_connected(void *user_data, FelixStatus status, const char *message,
+                         FelixClient *client) {
+    struct connect_result *r = user_data;
+    pthread_mutex_lock(&r->mu);
+    r->done = true;
+    r->status = status;
+    r->client = client;
+    snprintf(r->message, sizeof r->message, "%s", message ? message : "");
+    pthread_cond_signal(&r->cv);
+    pthread_mutex_unlock(&r->mu);
+}
+
+int main(void) {
+    struct connect_result r = {.mu = PTHREAD_MUTEX_INITIALIZER,
+                               .cv = PTHREAD_COND_INITIALIZER};
+    FelixConnectOptions options = {
+        .size = sizeof options,
+        .client_cert_file = "client.pem",
+        .client_key_file = "client.key",
+    };
+    FelixStatus status = felix_client_connect_with(
+        "felix-0:5000", "t1", "my-token", "localhost", "ca.pem", &options, NULL,
+        on_connected, &r);
+    if (status != FELIX_STATUS_OK) {
+        /* Refused before it started, such as an unreadable certificate file:
+           the callback never runs. */
+        fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+        return 1;
+    }
+
+    pthread_mutex_lock(&r.mu);
+    while (!r.done) pthread_cond_wait(&r.cv, &r.mu);
+    pthread_mutex_unlock(&r.mu);
+    if (r.status != FELIX_STATUS_OK) {
+        /* The broker refused the handshake, or no broker answered. */
+        fprintf(stderr, "connect failed: %s\n", r.message);
+        return 1;
+    }
+
+    /* ... use r.client ... */
+    felix_client_free(r.client);
+    return 0;
+}
+```
+
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two makes `felix_client_connect_with` return `FELIX_STATUS_INVALID_ARGUMENT` with a message naming the problem, and the callback never runs. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
 
 ## Publishing
 
@@ -644,6 +707,78 @@ accepted; otherwise it is the status, and message, of the first record that
 failed. The results are null when no record has an outcome of its own: the
 batch was empty, or the call was cancelled or panicked.
 
+## Record headers
+
+A record can carry its own key and named byte values next to its payload. They are stored with
+the record and come back on the delivered event. `felix_client_publish_with_headers` sends one
+`FelixRecord`; `felix_client_publish_batch_with_headers` sends an array of them to shard 0's
+owner as one frame. Set `size` to `sizeof(FelixRecord)` in each record: a batch call steps through
+the array by the first record's `size`, so a caller built against an older header keeps working when
+fields are added. A batch needs at least one record: a `count` of zero is
+`FELIX_STATUS_INVALID_ARGUMENT`, as an empty batch is `ArgumentException` in the C# client.
+
+```c
+/* on_publish is any FelixPublishCallback: it gets the offset when there is one. */
+static void on_publish(void *user_data, FelixStatus status, const char *message,
+                       bool has_offset, uint64_t offset) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish failed (%d): %s\n", (int)status, message ? message : "");
+    } else if (has_offset) {
+        printf("stored at %" PRIu64 "\n", offset);
+    }
+}
+
+static FelixStatus publish_with_headers(const FelixClient *client, void *state) {
+    static const uint8_t body[] = "order 17 shipped";
+    static const uint8_t trace[] = "t-1";
+    const FelixHeader headers[] = {
+        {(const uint8_t *)"trace", 5, trace, sizeof trace - 1},
+        {(const uint8_t *)"kind", 4, (const uint8_t *)"order", 5},
+    };
+    const FelixRecord record = {
+        .size = sizeof record,
+        .payload = body, .payload_len = sizeof body - 1,
+        .key = (const uint8_t *)"order-17", .key_len = 8,
+        .headers = headers, .header_count = 2,
+    };
+    FelixStatus status = felix_client_publish_with_headers(
+        client, "t1", "default", "events", &record, FELIX_ACK_PER_MESSAGE, NULL,
+        on_publish, state);
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "publish refused: %s\n", felix_last_error_message());
+    }
+    return status;
+}
+```
+
+The key stored with a record does not route it; the record goes where an unkeyed publish goes. A
+header name is UTF-8, not empty, and must not start with `felix.`, which the broker keeps for itself;
+one that does fails with `FELIX_STATUS_INVALID_ARGUMENT` and nothing is sent. A name may repeat, and
+order is kept. A record with no key and no headers is published plain. A broker that did not accept
+record headers, or a client connected with `disable_record_headers` set in `FelixConnectOptions`, fails
+with `FELIX_STATUS_UNSUPPORTED`: the headers are never dropped quietly.
+
+On a delivered event, `felix_event_key` writes the stored key (null and zero when there is none),
+`felix_event_header_count` the number of headers, and `felix_event_header` the name and value at an
+index. The pointers are valid until the event is freed. Headers reach a durable stream's subscribers,
+not group records.
+
+```c
+static void print_headers(const FelixEvent *event) {
+    size_t count = 0;
+    if (felix_event_header_count(event, &count) != FELIX_STATUS_OK) return;
+    for (size_t i = 0; i < count; i++) {
+        const uint8_t *name, *value;
+        size_t name_len, value_len;
+        if (felix_event_header(event, i, &name, &name_len, &value, &value_len) ==
+            FELIX_STATUS_OK) {
+            printf("%.*s = %zu bytes\n", (int)name_len, (const char *)name, value_len);
+        }
+    }
+}
+```
+
 ## Subscribing
 
 `felix_client_subscribe` reads one shard. It follows the shard to its owner when
@@ -677,6 +812,82 @@ time in microseconds, to subscribe from with `FELIX_START_OFFSET`. The callback'
 `has_offset` is false when no record is that recent yet; subscribe with
 `FELIX_START_LATEST` to wait for one. A time older than every record answers
 with the oldest. It only reads, so a cancel is `FELIX_STATUS_CANCELLED`.
+
+### What a subscription reports about itself
+
+`felix_subscription_moves` is how many times the subscription followed its shard to a new owner, and
+`felix_subscription_reconnects` how many times it resubscribed after losing its connection, resuming after the
+last event it delivered. `felix_subscription_stream_deleted` is true once a read has reported
+`FELIX_STATUS_CLOSED` because the stream was deleted, the same fact as `felix_subscription_close_reason` giving
+`FELIX_CLOSE_STREAM_DELETED`. `felix_subscription_queue_capacity` is how many batches the broker's queue for this
+subscription holds, as the broker granted it; `out_has` is false from a broker that does not report it. The values
+are copied out as each read returns, so they can trail a read still pending. Against a single broker `moves` stays
+0 unless the shard changes owner, and `reconnects` stays 0 unless the connection drops.
+
+```c
+static FelixStatus report_subscription(const FelixSubscription *sub) {
+    uint64_t moves = 0, reconnects = 0;
+    uint32_t capacity = 0;
+    bool deleted = false, has_capacity = false;
+
+    FelixStatus status = felix_subscription_moves(sub, &moves);
+    if (status == FELIX_STATUS_OK) {
+        status = felix_subscription_reconnects(sub, &reconnects);
+    }
+    if (status == FELIX_STATUS_OK) {
+        status = felix_subscription_stream_deleted(sub, &deleted);
+    }
+    if (status == FELIX_STATUS_OK) {
+        status = felix_subscription_queue_capacity(sub, &capacity, &has_capacity);
+    }
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "subscription counters: %s\n", felix_last_error_message());
+        return status;
+    }
+    printf("followed %" PRIu64 " move(s), resubscribed %" PRIu64 " time(s), deleted: %s\n",
+           moves, reconnects, deleted ? "yes" : "no");
+    if (has_capacity) {
+        printf("the broker queues %" PRIu32 " batches\n", capacity);
+    }
+    return FELIX_STATUS_OK;
+}
+```
+
+### Reading a range without subscribing
+
+`felix_client_read` returns one page of a durable shard's committed records, from an offset and
+stopping before `end` when `has_end` is set. It never waits: a page that reaches what is committed comes
+back short or empty. Read the next page from `next_offset`, which is not always the last offset plus
+one, since offsets that hold no record are passed over. `max_records` of zero takes the broker's cap.
+A `from` below what retention kept, or past the tail, completes with `FELIX_STATUS_CURSOR`.
+
+```c
+static void on_page(void *user_data, FelixStatus status, const char *message,
+                    const FelixStreamRecord *records, size_t count,
+                    uint64_t next_offset) {
+    uint64_t *next = user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "read failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        printf("%" PRIu64 ": %zu bytes\n", records[i].offset, records[i].payload_len);
+    }
+    *next = next_offset;
+}
+
+static FelixStatus read_page(const FelixClient *client, uint64_t from, uint64_t *next) {
+    return felix_client_read(client, "t1", "default", "events", 0, from,
+                             false, 0, 100, NULL, on_page, next);
+}
+```
+
+The records are valid only while the callback runs. This is not `felix_subscription_next`, which waits
+for the next live event.
+
+`felix_subscription_live_offset` is the stream's tail when the subscription was registered: an event
+below it was already in the stream, and one at or past it was written after. A reader that reaches it has
+caught up. From `FELIX_START_LATEST` it equals the start offset.
 
 ### All shards
 
@@ -842,6 +1053,9 @@ static FelixStatus connect_with_metadata(const char *token, void *state) {
 }
 ```
 
+`disable_record_headers` stops the client offering [record headers](#record-headers) to brokers; leave it off
+unless you want events without them.
+
 `publishers` asks brokers to say who published each event, which adds the
 principal to every event batch; `timestamps` asks for each record's append time,
 which adds eight bytes per event. With them set, `felix_event_publisher` writes a
@@ -916,6 +1130,145 @@ of what reads have handed out, in ascending shard order with `cap` and
 item's `shard` is meaningful, and
 `felix_cache_watch_retained_count` reports how many entries a retained watch
 started from.
+
+### Lease tokens and other identities
+
+A lease cache hands the writer that wins a key a token, so the holder can act with the access its lease
+templates name for the key. `felix_client_cache_put_if_lease` is `felix_client_cache_put_if` that asks for one;
+a renewal (a put at the held version) gets a fresh token. The callback's `token` is a NUL-terminated string
+when the write applied and the broker minted one, with `expires_at` in seconds since the Unix epoch. When an
+applied write has no token, `token_refused` says why and the write stands. The token is a bearer secret and
+is valid only while the callback runs, so copy it.
+
+`felix_client_with_identity` makes a new `FelixClient` that acts as a tenant with a token, over the
+connections of the client it was made from. A gateway serving many principals needs no pool of its own: each
+identity is its own client with its own routing state, and the requests it makes are checked against its
+token's grants alone. Free it with `felix_client_free`, which closes only its own streams. It shares the runtime
+with its parent, so freeing the parent first does not stop it; keep it alive while subscriptions made from it
+are in use. A refused token completes with `FELIX_STATUS_AUTH`.
+
+A token passed to `felix_client_with_identity` is fixed for the new client, so make another when it expires (a
+lease token is short-lived by design). For a token that must be renewed,
+`felix_client_with_identity_provider` takes the same `token_fetch`, `token_user_data` and `token_release` as
+`FelixConnectOptions`, with the same rules: `token_release` runs exactly once after it returns
+`FELIX_STATUS_OK`, once the identity is freed and every reply is answered, and never when it returns anything
+else. `token` is the first token and may be `NULL`.
+
+The callbacks run on a library thread, so the example hands each result to the waiting thread under a lock and
+copies the token out of the callback.
+
+```c
+#include <inttypes.h>
+#include <pthread.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "felix.h"
+
+struct claim {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    bool done;
+    FelixStatus status;
+    bool applied;
+    char *token;  /* malloc'd by on_lease; the waiter owns it afterwards */
+};
+
+static void on_lease(void *user_data, FelixStatus status, const char *message,
+                     bool applied, bool has_version, uint64_t version,
+                     const char *token, uint64_t expires_at,
+                     const char *token_refused) {
+    (void)has_version; (void)version; (void)expires_at;
+    struct claim *claim = user_data;
+    pthread_mutex_lock(&claim->lock);
+    claim->status = status;
+    claim->applied = applied;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "lease write failed (%d): %s\n", (int)status, message ? message : "");
+    } else if (applied && token) {
+        size_t len = strlen(token) + 1;
+        claim->token = malloc(len);
+        if (claim->token) {
+            memcpy(claim->token, token, len);
+        } else {
+            claim->status = FELIX_STATUS_ERROR;
+        }
+    } else if (applied) {
+        fprintf(stderr, "no token: %s\n", token_refused ? token_refused : "");
+    }
+    claim->done = true;
+    pthread_cond_signal(&claim->changed);
+    pthread_mutex_unlock(&claim->lock);
+}
+
+/* Claims `key` in the lease cache `locks`. Returns the lease token, which the
+   caller frees, or NULL when the claim was refused, lost or minted no token. */
+static char *take_lease(const FelixClient *client, const char *key) {
+    static const uint8_t holder[] = "worker-7";
+    struct claim claim = {.lock = PTHREAD_MUTEX_INITIALIZER,
+                          .changed = PTHREAD_COND_INITIALIZER};
+    FelixStatus status = felix_client_cache_put_if_lease(
+        client, "t1", "default", "locks", key, holder, sizeof holder - 1,
+        30000, FELIX_IF_ABSENT, 0, NULL, on_lease, &claim);
+    if (status != FELIX_STATUS_OK) { /* the callback will not run */
+        fprintf(stderr, "lease refused: %s\n", felix_last_error_message());
+        return NULL;
+    }
+    pthread_mutex_lock(&claim.lock);
+    while (!claim.done) pthread_cond_wait(&claim.changed, &claim.lock);
+    pthread_mutex_unlock(&claim.lock);
+    pthread_cond_destroy(&claim.changed);
+    pthread_mutex_destroy(&claim.lock);
+    if (claim.status != FELIX_STATUS_OK) {
+        free(claim.token);
+        return NULL;
+    }
+    return claim.token;
+}
+
+struct opened {
+    pthread_mutex_t lock;
+    pthread_cond_t changed;
+    bool done;
+    FelixStatus status;
+    FelixClient *client;
+};
+
+static void on_identity(void *user_data, FelixStatus status, const char *message,
+                        FelixClient *client) {
+    struct opened *opened = user_data;
+    pthread_mutex_lock(&opened->lock);
+    opened->status = status;
+    opened->client = client;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "identity failed (%d): %s\n", (int)status, message ? message : "");
+    }
+    opened->done = true;
+    pthread_cond_signal(&opened->changed);
+    pthread_mutex_unlock(&opened->lock);
+}
+
+/* A client acting as the lease holder, or NULL. Free it with felix_client_free. */
+static FelixClient *act_as_holder(const FelixClient *client, const char *lease_token) {
+    struct opened opened = {.lock = PTHREAD_MUTEX_INITIALIZER,
+                            .changed = PTHREAD_COND_INITIALIZER};
+    FelixStatus status = felix_client_with_identity(
+        client, "t1", lease_token, NULL, on_identity, &opened);
+    if (status != FELIX_STATUS_OK) { /* the callback will not run */
+        fprintf(stderr, "identity refused: %s\n", felix_last_error_message());
+        return NULL;
+    }
+    pthread_mutex_lock(&opened.lock);
+    while (!opened.done) pthread_cond_wait(&opened.changed, &opened.lock);
+    pthread_mutex_unlock(&opened.lock);
+    pthread_cond_destroy(&opened.changed);
+    pthread_mutex_destroy(&opened.lock);
+    return opened.client;
+}
+```
 
 ## Atomic commits and conditional writes
 
@@ -1083,6 +1436,65 @@ returned, and they do not wait for each other's answers.
   for a send that may be out), and batches already handed over may still be
   sent.
 
+### Hand-offs
+
+`felix_producer_publish` reports once the leader has answered. When calls must stay in order but you do not want
+to wait for each answer, hand the batch off instead: `felix_producer_hand_off_batch` reports as soon as the
+producer's task has the batch, with a `FelixHanded` handle, and `felix_handed_offset` then waits for the leader's
+answer, the same first offset `felix_producer_publish` reports. `felix_producer_hand_off_batches` and
+`felix_producer_hand_off_abandon` are `felix_producer_publish_batches` and `felix_producer_abandon_in_doubt` up to
+the hand-off; their answer is `felix_handed_done`. Batches handed off one after another are sent in that order.
+
+```c
+static void on_answer(void *user_data, FelixStatus status, const char *message,
+                      bool has_offset, uint64_t offset) {
+    FelixHanded *handed = user_data;
+    if (status == FELIX_STATUS_OK) {
+        if (has_offset) {
+            printf("landed at %" PRIu64 "\n", offset);
+        } else {
+            printf("landed, offset not reported\n");
+        }
+    } else if (status == FELIX_STATUS_OUTCOME_UNKNOWN) {
+        /* In doubt: hand off the same batch again to settle it. */
+        fprintf(stderr, "in doubt: %s\n", message ? message : "");
+    } else {
+        fprintf(stderr, "failed (%d): %s\n", (int)status, message ? message : "");
+    }
+    felix_handed_free(handed);
+}
+
+static void on_handed(void *user_data, FelixStatus status, const char *message, FelixHanded *handed) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "hand-off failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    /* The producer has the batch. Read the answer, once, whenever it suits. */
+    FelixStatus asked = felix_handed_offset(handed, NULL, on_answer, handed);
+    if (asked != FELIX_STATUS_OK) {
+        fprintf(stderr, "answer refused: %s\n", felix_last_error_message());
+        felix_handed_free(handed);
+    }
+}
+
+static FelixStatus hand_off_two(const FelixProducer *producer, void *state) {
+    static const uint8_t data[] = "abb";
+    static const size_t lens[] = {1, 2};
+    return felix_producer_hand_off_batch(producer, "t1", "default", "orders",
+                                         data, lens, 2, NULL, 0, NULL, on_handed, state);
+}
+```
+
+- The answer is read once, by `felix_handed_offset` or `felix_handed_done`. A second read returns
+  `FELIX_STATUS_INVALID_ARGUMENT` and calls nothing back.
+- The batch is sent whether or not the answer is read, and `felix_handed_free` does not stop it. A wait still
+  pending when the handle is freed completes with `FELIX_STATUS_OUTCOME_UNKNOWN`.
+- A cancel before the producer's task has the batch stops it (`FELIX_STATUS_CANCELLED`). After, the batch is still
+  sent, and the call, or the wait for its answer, completes with `FELIX_STATUS_OUTCOME_UNKNOWN`: settle it as
+  `felix_producer_publish` describes.
+- A closed producer completes the hand-off with `FELIX_STATUS_CLOSED`.
+
 ## Connecting to a cluster
 
 See [Every client is a cluster client](/clients/overview/#every-client-is-a-cluster-client).
@@ -1155,11 +1567,223 @@ A deadline shorter than one attempt's own timeout means no retry happens: the fi
 
 The Rust page covers [clusters](/clients/rust/operations/#clusters) in full. [Building Resilient Clients](/clients/resilient-clients/) shows reconnection, token refresh, retries, resuming and shutdown side by side in every language.
 
+### Queue and transport options
+
+The Rust client's `ClientConfig` has more knobs than a program usually needs, and the defaults suit most.
+`FelixConnectOptions` carries them when you must. They follow `disable_record_headers` in the struct, so a caller
+built against an older header leaves them all at their defaults. Zero, `false` or the enum's `*_DEFAULT` keeps the
+Rust client's own value. An unknown enum value, or a window of 2^62 or more, is refused as
+`FELIX_STATUS_INVALID_ARGUMENT` before anything is started.
+
+| Field | Default | What it sets |
+| --- | --- | --- |
+| `client_sub_queue_policy` | `FELIX_QUEUE_DROP_NEW` | What a subscription does when its client-side queue is full: `FELIX_QUEUE_BLOCK` stops reading the event stream until your code catches up, `FELIX_QUEUE_DROP_NEW` drops the arriving item. `FELIX_QUEUE_DROP_OLD` is meant to drop the oldest queued item and currently behaves as drop new. |
+| `client_sub_queue_capacity` | 256 | Events each subscription's client-side queue holds. |
+| `broker_sub_queue_capacity` | the stream's | Batches the broker's queue for each subscription should hold. The broker clamps it to its maximum; `felix_subscription_queue_capacity` reports what was granted. |
+| `publish_conn_pool`, `publish_streams_per_conn`, `publish_queue_depth` | 4, 2, 64 | Publish connections per client, publish streams per connection, and publishes queued per stream. |
+| `publish_inflight_bytes` | 4 MiB | Bytes of publishes sent but not yet answered, across the client. |
+| `publish_sharding` | `FELIX_SHARDING_HASH_STREAM` | How publishes spread over publish streams. Hash keeps a stream's publishes in order; `FELIX_SHARDING_ROUND_ROBIN` can reorder them. |
+| `publish_shard_streams`, `no_publish_shard_streams` | 4 | Most publish streams opened per broker for one shard each. Set `no_publish_shard_streams` to put every publish on the pool: zero is the default here, so it cannot mean none. |
+| `cache_conn_pool`, `cache_streams_per_conn` | 8, 4 | Cache connections per client, and streams per connection. |
+| `event_conn_pool` | 8 | Connections that carry subscriptions and cache watches. |
+| `cluster_conn_pool`, `cluster_streams_per_conn` | 8, 1024 | Most connections opened to one broker, and the streams one carries before another is opened. |
+| `event_conn_recv_window`, `event_stream_recv_window`, `event_send_window` | 256 MiB, 64 MiB, 256 MiB | QUIC windows for event connections and streams, in bytes. |
+| `cache_conn_recv_window`, `cache_stream_recv_window`, `cache_send_window` | 256 MiB, 64 MiB, 256 MiB | QUIC windows for cache connections and streams, in bytes. |
+| `event_router_max_pending` | 16384 | Registrations and unclaimed event streams one event connection holds before refusing more. |
+| `max_frame_bytes` | 16 MiB | Largest frame the client reads. A bigger one fails the stream. |
+| `ack_on_commit` | false | Ask brokers to answer acknowledged publishes after the write, with the offset. Slower per publish; `FELIX_SUPPORTS_ACK_ON_COMMIT` says whether a broker honours it. |
+| `connect_timeout_ms` | 10000 | Longest a connect to one broker may take. A larger value than a year counts as a year, as does `finish_timeout_ms`. |
+| `finish_timeout_ms` | 60000 | Longest closing a producer waits for queued publishes to be acknowledged. |
+
+```c
+static bool connect_tuned(void) {
+  FelixConnectOptions options = {
+      .size = sizeof options,
+      .client_sub_queue_policy = FELIX_QUEUE_BLOCK,
+      .client_sub_queue_capacity = 1024,
+      .broker_sub_queue_capacity = 64,
+      .publish_conn_pool = 2,
+      .max_frame_bytes = 32u << 20,
+      .connect_timeout_ms = 5000,
+  };
+  FelixStatus status = felix_client_connect_with(
+      "felix-0:5000,felix-1:5000", "t1", "my-token", "localhost", NULL,
+      &options, NULL, on_connect, NULL);
+  if (status != FELIX_STATUS_OK) {
+    fprintf(stderr, "connect refused: %s\n", felix_last_error_message());
+    return false;
+  }
+  return true;
+}
+```
+
+A subscription with `FELIX_QUEUE_BLOCK` never drops, but a consumer that stops reading stops the whole event
+connection it shares with the others, so pair it with a bounded read loop.
+
 ### Brokers the client knows
 
 `felix_client_endpoints` reports the `host:port` of every broker the client
 would try, including the ones it discovered from its seeds. The strings are
 valid while the callback runs.
+
+`felix_client_refresh_topology` asks a broker which brokers a client may connect to and adds them to that
+list; the configured seeds stay whatever the answer was, and a broker that has left the cluster stops being
+tried. The callback's `count` is how many brokers the cluster named. Zero is a legitimate answer for a broker
+with no cluster behind it, while a broker that predates discovery completes with an error.
+`felix_client_connections_per_node` lists the live connections the client holds to each broker. A broker
+starts at one, shared by all traffic, and gains more only when its streams are saturated.
+
+```c
+static void on_connections(void *user_data, FelixStatus status, const char *message,
+                           const char *const *addrs, const size_t *counts, size_t len) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    for (size_t i = 0; i < len; i++) {
+        printf("%s: %zu connection(s)\n", addrs[i], counts[i]);
+    }
+}
+
+static FelixStatus show_connections(const FelixClient *client, void *state) {
+    return felix_client_connections_per_node(client, NULL, on_connections, state);
+}
+```
+
+## Inspecting the cluster
+
+A client can ask the broker it is connected to what it supports and how it is laid out. Call
+`felix_client_supports` first: a call the broker does not answer fails without being sent, and the callback's
+`flags` tells that apart from other failures, with a `FELIX_SUPPORTS_*` bit for each question. A tenant's token is
+enough for the layout questions. Inspecting a shard or a broker's subscriptions needs the `node.view:cluster:*`
+permission, which an operator's token has, and a broker answers for itself only: connect to the broker you want
+to ask.
+
+- `felix_client_stream_routing` gives a stream's shard count and `FELIX_ROUTING_MODULO` or `FELIX_ROUTING_JUMP_HASH`; `felix_client_cache_shards` gives a cache's shard count.
+- `felix_client_shard_owners` says who owns each shard of a stream or a cache (`FELIX_KIND_STREAM` or `FELIX_KIND_CACHE`), with the owner's `addr` to connect to. A shard nobody can serve has no node and says why in `unavailable`. It is a snapshot and can be stale.
+- `felix_client_topology` names the brokers the connected broker knows. `felix_client_refresh_topology` is what adds them to the endpoints the client tries.
+- `felix_client_inspect_shard` is the broker's own view of one shard: role, phase, generation, fence, lease, tail and, on a leader, every replica's position.
+- `felix_client_list_subscriptions` pages through the subscriptions a broker serves: each one's queue depth, capacity, overflow policy, records dropped, position against the tail, connection and principal. A `FelixSubscriptionFilter` narrows the list, and the callback's `next_cursor` is passed back for the next page.
+
+The structured answers (shard owners, topology, an inspection, a page of subscriptions) arrive as one
+NUL-terminated JSON string with the wire's field names, valid only while the callback runs, so parse what you need
+and copy it. The field names are the wire's. A newer library or broker may add fields, so a parser must ignore the
+ones it does not know, and a field a broker leaves out is absent from the JSON. The scalar answers are plain
+arguments.
+
+```c
+static void on_supports(void *user_data, FelixStatus status, const char *message, uint32_t flags) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "supports failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    printf("inspect: %s, shard owners: %s\n",
+           (flags & FELIX_SUPPORTS_INSPECT) ? "yes" : "no",
+           (flags & FELIX_SUPPORTS_SHARD_OWNERS) ? "yes" : "no");
+}
+
+static void on_routing(void *user_data, FelixStatus status, const char *message,
+                       uint32_t shards, FelixShardRouting routing) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "routing failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    printf("%" PRIu32 " shards, %s routing\n", shards,
+           routing == FELIX_ROUTING_JUMP_HASH ? "jump hash" : "modulo");
+}
+
+static void on_json(void *user_data, FelixStatus status, const char *message, const char *json) {
+    (void)user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    /* Copy what you keep: json is gone when this returns. */
+    printf("%s\n", json);
+}
+
+static FelixStatus ask_the_cluster(const FelixClient *client, void *state) {
+    FelixStatus status = felix_client_supports(client, NULL, on_supports, state);
+    if (status == FELIX_STATUS_OK) {
+        status = felix_client_stream_routing(client, "t1", "default", "orders", NULL, on_routing, state);
+    }
+    if (status == FELIX_STATUS_OK) {
+        status = felix_client_shard_owners(client, FELIX_KIND_STREAM, "t1", "default", "orders",
+                                           NULL, on_json, state);
+    }
+    return status;
+}
+```
+
+To look inside one broker, connect to it with an operator's token (the `addr` of a shard owner is a good
+choice) and ask it. This lists every subscription on the broker that has dropped records, a page at a time,
+starting the next page from the callback:
+
+```c
+struct paging {
+    const FelixClient *ops;
+    FelixSubscriptionFilter filter;
+};
+
+static void on_page(void *user_data, FelixStatus status, const char *message,
+                    const char *json, const char *next_cursor) {
+    struct paging *paging = user_data;
+    if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "list failed (%d): %s\n", (int)status, message ? message : "");
+        return;
+    }
+    printf("%s\n", json);
+    if (next_cursor == NULL) {
+        return; /* the last page */
+    }
+    /* The cursor is valid only in this callback; the library copies it during the call. */
+    size_t cursor_len = strlen(next_cursor) + 1;
+    char *cursor = malloc(cursor_len);
+    if (cursor == NULL) {
+        return;
+    }
+    memcpy(cursor, next_cursor, cursor_len);
+    FelixStatus next = felix_client_list_subscriptions(paging->ops, &paging->filter, 100,
+                                                       cursor, NULL, on_page, paging);
+    free(cursor);
+    if (next != FELIX_STATUS_OK) {
+        fprintf(stderr, "next page refused: %s\n", felix_last_error_message());
+    }
+}
+
+static FelixStatus list_dropping(const FelixClient *ops, struct paging *paging) {
+    memset(paging, 0, sizeof *paging);
+    paging->ops = ops;
+    paging->filter.size = sizeof paging->filter;
+    paging->filter.stream = "orders";
+    paging->filter.dropping = true;
+    return felix_client_list_subscriptions(ops, &paging->filter, 100, NULL, NULL, on_page, paging);
+}
+
+static void on_inspection(void *user_data, FelixStatus status, const char *message, const char *json) {
+    (void)user_data;
+    if (status == FELIX_STATUS_AUTH) {
+        fprintf(stderr, "this token may not inspect: %s\n", message ? message : "");
+    } else if (status != FELIX_STATUS_OK) {
+        fprintf(stderr, "inspect failed (%d): %s\n", (int)status, message ? message : "");
+    } else {
+        printf("%s\n", json);
+    }
+}
+
+static FelixStatus inspect_first_shard(const FelixClient *ops, void *state) {
+    return felix_client_inspect_shard(ops, FELIX_KIND_STREAM, "t1", "default", "orders", 0,
+                                      NULL, on_inspection, state);
+}
+```
+
+`felix_client_list_subscriptions` takes `limit` (zero is the broker's default, 100; the broker caps a page at
+1000), and `cursor` as the `next_cursor` string the previous page gave, or null for the first page. A cursor that
+is not one is `FELIX_STATUS_INVALID_ARGUMENT`. `FelixSubscriptionFilter.size` is set like
+`FelixConnectOptions.size`; a field it does not cover is not read.
 
 ## Status codes
 
@@ -1242,9 +1866,11 @@ These rules hold for any managed binding, C# included.
 - Every `bool` that crosses the ABI is one byte (`byte` in an
   `[UnmanagedCallersOnly]` signature or a sequential struct in C#), and `size_t`
   is `nuint`. That covers callback parameters (`found`, `applied`, `has_offset`,
-  `existed`, `written`, `moved`), out-pointers (`out_has`, `out_has_offset`),
+  `existed`, `written`, `moved`), out-pointers (`out_has`, `out_has_offset`, `out_deleted`),
   call arguments (`reclaim`, `retained`, `has_from_offset`), and struct fields:
   `FelixRecordResult`, `FelixConnectOptions.publishers` and `.timestamps`,
+  `FelixConnectOptions.ack_on_commit` and `.no_publish_shard_streams`,
+  `FelixSubscriptionFilter.has_shard` and `.dropping`,
   `FelixGroupPosition.moved`, `FelixGroupRecord.has_timestamp`,
   `FelixGroupInfo.has_committed`, `FelixWatchItem` (`has_shard`, `has_value`,
   `has_resume_from`) and `FelixStateValue`.
@@ -1259,6 +1885,16 @@ These rules hold for any managed binding, C# included.
   thread or under a lock. The order is the order the C calls return, so calls
   racing across threads have no order of their own. Retry a failed publish with
   the same buffers.
+
+## What is not wrapped
+
+The [Rust client](/clients/rust/) has two things this binding leaves out on purpose:
+
+- **`publish_json` and `publish_batch_json`.** C has no JSON type to serialize: encode the value with the JSON
+  library you already use and publish the bytes.
+- **A custom `quinn` transport** (`connect_with_policy`, `connect_any_with_transport`). It is Rust-only by
+  design: it takes a Rust transport object a C program cannot build. TLS, the server name and client
+  certificates are options on `felix_client_connect_with`.
 
 ## Conformance
 

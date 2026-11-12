@@ -1,8 +1,7 @@
-//! The `felix-controlplane` binary: `migrate` and `admin` as subcommands,
-//! otherwise the server, configured from the environment and an optional
-//! YAML file.
+//! The `felix-controlplane` binary: the server, configured from the
+//! environment and an optional YAML file.
 use felix_common::lifecycle;
-use felix_controlplane_service::{admin, config, migrate, server};
+use felix_controlplane_service::{config, server};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -10,16 +9,10 @@ async fn main() -> anyhow::Result<()> {
     // process default means a library that asks for the default gets the same
     // provider as the configs we build explicitly, instead of panicking.
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    // The migration tool rides the same binary so an operator's image has
-    // it wherever the control plane runs; everything else stays env-driven.
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
-    if args.first().map(String::as_str) == Some("migrate") {
-        args.remove(0);
-        return migrate::run(args).await;
-    }
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    // The old operator commands: refuse rather than start a second server.
     if args.first().map(String::as_str) == Some("admin") {
-        args.remove(0);
-        return admin::run(args).await;
+        anyhow::bail!("`felix-controlplane admin` moved to `felixctl`; see `felixctl --help`");
     }
 
     let config = config::ControlPlaneConfig::from_env_or_yaml().expect("control plane config");

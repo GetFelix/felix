@@ -27,11 +27,13 @@ pub use node::{
     NodeStatus, NodeSuspicion, NodeValidationError,
 };
 pub use shard::{
-    ElectedLeader, HaltedCopy, MoveReason, PendingSet, ReplicaReport, ShardAssignment,
+    ElectedLeader, HaltedCopy, MoveReason, PendingSet, Readmitted, ReplicaReport, ShardAssignment,
     ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState,
     ShardValidationError,
 };
-pub(crate) use shard::{Learning, check_elected_generation, first_generation, next_generation};
+pub(crate) use shard::{
+    Learning, check_elected_generation, first_generation, generation_at_least, previous_generation,
+};
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;
 pub use stream::{

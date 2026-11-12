@@ -23,9 +23,9 @@ pub mod fence;
 pub mod metrics;
 pub mod promotion;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use tokio::time::Instant;
 
 use crate::shards::lifecycle::metrics as mm;
 use crate::shards::{ShardKey, ShardKind, watch::ShardAssignment};
@@ -165,7 +165,7 @@ pub struct ShardLifecycle {
     /// Shards the last assignment set gave this broker any role in. Leaving
     /// this set is what closes a shard's logs: until then a replica or a
     /// move's destination still needs them.
-    held: std::collections::HashSet<ShardKey>,
+    held: felix_common::random::HashSet<ShardKey>,
     /// Whether a shard this broker starts leading waits for the fence
     /// before it serves. Set when a replication driver is there to fence it.
     fence_promotions: bool,
@@ -173,7 +173,7 @@ pub struct ShardLifecycle {
     /// `joint_fence`, the generation right after one it serves is fenced too.
     joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
     /// Shards opening to be fenced, which go to `Fencing` once open.
-    promoting: std::collections::HashSet<ShardKey>,
+    promoting: felix_common::random::HashSet<ShardKey>,
     /// Opens held back until the catalog registers the shard's stream at the
     /// incarnation its assignment names. The shard stays `Opening` meanwhile.
     awaiting_registration: HashMap<ShardKey, Action>,
@@ -190,15 +190,15 @@ impl ShardLifecycle {
     pub fn new(node_id: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
-            shards: HashMap::new(),
+            shards: HashMap::default(),
             fence: Arc::default(),
-            incoming: HashMap::new(),
-            headed: HashMap::new(),
-            held: std::collections::HashSet::new(),
+            incoming: HashMap::default(),
+            headed: HashMap::default(),
+            held: felix_common::random::HashSet::default(),
             fence_promotions: false,
             joint_fence: None,
-            promoting: std::collections::HashSet::new(),
-            awaiting_registration: HashMap::new(),
+            promoting: felix_common::random::HashSet::default(),
+            awaiting_registration: HashMap::default(),
         }
     }
 
@@ -391,7 +391,15 @@ impl ShardLifecycle {
                 }
                 if generation < existing.generation {
                     // Older than what we already acted on: a duplicate, a
-                    // reordered poll, or a snapshot replay.
+                    // reordered poll, or a snapshot replay. Or the control
+                    // plane naming this broker below a standing of its own,
+                    // withdrawn or still fencing: nothing opens below it, so
+                    // report the refusal or the control plane never names it
+                    // past (#1914). A refusal the control plane has passed is
+                    // ignored.
+                    if !existing.phase.may_serve() {
+                        self.fence.superseded(key, generation);
+                    }
                     mm::record_stale_event();
                     return Action::None;
                 }
@@ -522,7 +530,7 @@ impl ShardLifecycle {
     ) -> Vec<Action> {
         let node = self.node_id.as_str();
         let mut closes = Vec::new();
-        for (key, assignment) in assignments {
+        for (key, assignment) in in_key_order(assignments) {
             let has_role = assignment.leader == node
                 || assignment.replicas.iter().any(|replica| replica == node)
                 || assignment.successor.as_deref() == Some(node);
@@ -539,6 +547,7 @@ impl ShardLifecycle {
                 });
             }
         }
+        let from_assignments = closes.len();
         self.held.retain(|key| {
             let assigned = assignments.contains_key(key);
             if !assigned {
@@ -549,6 +558,9 @@ impl ShardLifecycle {
             }
             assigned
         });
+        // Retain walks the set in hash order; closing in key order keeps the
+        // order of the flushes the same from one run to the next.
+        closes[from_assignments..].sort_by(|a, b| close_key(a).cmp(&close_key(b)));
         closes
     }
 
@@ -562,14 +574,17 @@ impl ShardLifecycle {
         &self,
         present: impl IntoIterator<Item = &'a ShardKey>,
     ) -> Vec<ShardKey> {
-        let present: std::collections::HashSet<&ShardKey> = present.into_iter().collect();
-        self.shards
+        let present: felix_common::random::HashSet<&ShardKey> = present.into_iter().collect();
+        let mut missing: Vec<ShardKey> = self
+            .shards
             .iter()
             .filter(|(key, shard)| {
                 !present.contains(*key) && !matches!(shard.phase, Phase::Closed | Phase::Unassigned)
             })
             .map(|(key, _)| key.clone())
-            .collect()
+            .collect();
+        missing.sort();
+        missing
     }
 
     /// Record that the driver opened the log successfully.
@@ -603,7 +618,8 @@ impl ShardLifecycle {
     }
 
     /// Record that the driver could not open the log, and why.
-    /// Hold `open` until its stream is registered; see [`Self::ready_to_open`].
+    /// Hold `open` for a later pass, until its stream is registered; see
+    /// [`Self::ready_to_open`]. Also holds an open that must simply go again.
     pub fn await_registration(&mut self, open: Action) {
         if let Action::Open { key, .. } = &open {
             self.awaiting_registration.insert(key.clone(), open);
@@ -615,7 +631,10 @@ impl ShardLifecycle {
     /// any the assignments have moved past are dropped.
     pub fn ready_to_open(&mut self, ready: impl Fn(&ShardKey) -> bool) -> Vec<Action> {
         let mut opens = Vec::new();
-        let held = std::mem::take(&mut self.awaiting_registration);
+        let mut held: Vec<(ShardKey, Action)> = std::mem::take(&mut self.awaiting_registration)
+            .into_iter()
+            .collect();
+        held.sort_by(|a, b| a.0.cmp(&b.0));
         for (key, open) in held {
             let Action::Open { generation, .. } = &open else {
                 continue;
@@ -669,7 +688,7 @@ impl ShardLifecycle {
 
     /// How many shards sit in each phase, for the gauge.
     pub fn counts(&self) -> HashMap<Phase, usize> {
-        let mut counts = HashMap::new();
+        let mut counts = HashMap::default();
         for shard in self.shards.values() {
             *counts.entry(shard.phase).or_default() += 1;
         }
@@ -724,6 +743,13 @@ impl ShardLifecycle {
             .joint_fence
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
+        // A continuing generation fenced jointly still needs only promises:
+        // this broker holds every record acknowledged before it, so the fence
+        // neither counts copies by identity nor takes a tail (#2047).
+        self.fence.set_continuing(
+            key,
+            (continues && joint && self.fence_promotions).then_some(generation),
+        );
         let continues = continues && !joint;
         // Every other generation this broker starts leading at is fenced, not
         // only a promotion (`FenceEveryChange` in the model). A cut-over, a
@@ -834,6 +860,29 @@ impl std::fmt::Display for PromisedAway {
 }
 
 impl std::error::Error for PromisedAway {}
+
+/// An open refused because this broker had already accepted a newer
+/// generation than the one it was named at. With elections that can be a
+/// ballot of its own standing that never opened, which no assignment names,
+/// so the control plane must name it again above it.
+#[derive(Debug)]
+pub struct Superseded {
+    pub generation: u64,
+    pub accepted: u64,
+}
+
+impl std::fmt::Display for Superseded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this broker already accepted generation {} for the shard, newer than the {} it \
+             was assigned to lead",
+            self.accepted, self.generation
+        )
+    }
+}
+
+impl std::error::Error for Superseded {}
 
 /// What a driver needs to open and close local shard state.
 ///
@@ -975,10 +1024,15 @@ impl ShardReaders {
     ///
     /// A shard whose sessions need no lease ([`ShardFence::sessions_lease_free`])
     /// is left serving at the lapse. Its readers end instead when a follower
-    /// refuses it for a newer leader ([`ShardFence::depose`]), or when no
-    /// majority has confirmed it for a lease duration. The rounds that check
-    /// run only while the lease is lapsed; while it holds, a new assignment
-    /// reaches this broker the usual way.
+    /// says the control plane assigned a newer generation, or this broker took
+    /// one itself ([`ShardFence::depose`]), or when no
+    /// majority has confirmed it for a lease duration
+    /// ([`ShardFence::unheard`]). The rounds that check run only while the
+    /// lease is lapsed; while it holds, a new assignment reaches this broker
+    /// the usual way. Silence alone names no newer leader, and the shard's
+    /// `Quorum` writes go on wherever a majority answers, so rounds go on for
+    /// a shard ended for silence, lease or no lease, and the first one
+    /// confirmed admits its readers again.
     ///
     /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
@@ -994,7 +1048,9 @@ impl ShardReaders {
         };
         // Lease-free shards kept serving past the lapse, and when a majority
         // last confirmed each.
-        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::new();
+        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::default();
+        // Shards ended for silence, and the generation, until heard again.
+        let mut unheard: HashMap<ShardKey, u64> = HashMap::default();
         loop {
             let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
@@ -1007,6 +1063,8 @@ impl ShardReaders {
                             .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
                             .collect()
                     };
+                    let mut led = led;
+                    led.sort();
                     let now = tokio::time::Instant::now();
                     for (key, generation) in led {
                         if fence.sessions_lease_free(&key, generation) {
@@ -1025,44 +1083,79 @@ impl ShardReaders {
                         }
                     }
                 }
-                _ = tokio::time::sleep(probe), if !unleased.is_empty() => {
+                _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
+                    unheard.retain(|key, generation| {
+                        let tracked = fence.is_open_at(key, *generation)
+                            && !fence.names_newer_leader(key, *generation);
+                        // Untracked, no round would ever hear it again.
+                        if !tracked {
+                            fence.heard(key, *generation);
+                        }
+                        tracked
+                    });
+                    // A renewed lease alone does not clear silence: the
+                    // routes it serves on may predate a promotion made while
+                    // it was cut off. Only a round says no one replaced it.
                     if lease.is_valid_now() {
                         unleased.clear();
-                        continue;
                     }
-                    self.probe(&fence, &marks, &mut unleased, lease.usable()).await;
+                    self.probe(&fence, &marks, &mut unleased, &mut unheard, lease.usable())
+                        .await;
                 }
             }
         }
     }
 
-    /// One round for each lease-free shard kept past the lapse. A shard no
-    /// majority has confirmed for `silence` is deposed, which ends its readers
-    /// on the next turn of [`Self::watch_leadership`].
+    /// One round for each lease-free shard kept past the lapse, and for each
+    /// one ended for silence. A shard no majority has confirmed for `silence`
+    /// is marked [`fence::ShardFence::unheard`], which ends its readers on the
+    /// next turn of [`Self::watch_leadership`]; one confirmed again is heard
+    /// and serves its readers again.
     async fn probe(
         &self,
         fence: &fence::ShardFence,
         marks: &felix_replication::quorum::QuorumMarks,
         unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
+        unheard: &mut HashMap<ShardKey, u64>,
         silence: std::time::Duration,
     ) {
         let check = marks.reads_by_round();
-        let rounds = unleased.iter().map(|(key, (generation, _))| async move {
+        let mut probed: Vec<(ShardKey, u64)> = unleased
+            .iter()
+            .map(|(key, (generation, _))| (key.clone(), *generation))
+            .chain(
+                unheard
+                    .iter()
+                    .map(|(key, generation)| (key.clone(), *generation)),
+            )
+            .collect();
+        probed.sort();
+        let rounds = probed.into_iter().map(|(key, generation)| async move {
             let confirmed = match check {
-                Some(check) => check.confirm(key, *generation).await.is_ok(),
+                Some(check) => check.confirm(&key, generation).await.is_ok(),
                 None => false,
             };
-            (key.clone(), confirmed)
+            (key, generation, confirmed)
         });
         let now = tokio::time::Instant::now();
-        for (key, confirmed) in futures::future::join_all(rounds).await {
-            let Some((generation, heard)) = unleased.get_mut(&key) else {
+        for (key, generation, confirmed) in futures::future::join_all(rounds).await {
+            if unheard.get(&key) == Some(&generation) {
+                if confirmed {
+                    unheard.remove(&key);
+                    fence.heard(&key, generation);
+                    unleased.insert(key, (generation, now));
+                }
+                continue;
+            }
+            let Some((_, heard)) = unleased.get_mut(&key) else {
                 continue;
             };
             if confirmed {
                 *heard = now;
             } else if now.saturating_duration_since(*heard) >= silence {
-                fence.depose(&key, *generation);
+                unleased.remove(&key);
+                fence.unheard(&key, generation);
+                unheard.insert(key, generation);
             }
         }
     }
@@ -1327,6 +1420,36 @@ impl DurableShardStore {
 }
 
 impl DurableShardStore {
+    /// A stream shard's log, at `incarnation` when it is not 0, opened on the
+    /// blocking pool. Opening a new log takes several fsyncs, and a bulk create
+    /// opens hundreds at once: on the runtime's workers a slow disk would stall
+    /// everything else they run.
+    async fn open_stream_log(
+        &self,
+        key: &ShardKey,
+        incarnation: u64,
+    ) -> anyhow::Result<felix_broker::StreamLog> {
+        let storage = std::sync::Arc::clone(&self.storage);
+        let key = key.clone();
+        let opened = felix_common::blocking::spawn(move || match incarnation {
+            0 => storage.open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
+            incarnation => storage.open_stream_for(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                None,
+                incarnation,
+            ),
+        })
+        .await;
+        match opened {
+            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
+        }
+    }
+
     /// The shard's own log, stream or cache, at `incarnation` when it is not
     /// 0. `None` for a cache this store cannot reach.
     async fn own_log(
@@ -1335,38 +1458,18 @@ impl DurableShardStore {
         incarnation: u64,
     ) -> anyhow::Result<Option<felix_broker::StreamLog>> {
         match key.kind {
-            ShardKind::Stream => match incarnation {
-                0 => {
-                    self.storage
-                        .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                }
-                incarnation => self.storage.open_stream_for(
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    incarnation,
-                ),
-            }
-            .map(Some)
-            .map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            ShardKind::Stream => self.open_stream_log(key, incarnation).await.map(Some),
             ShardKind::Cache => {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(starts
-                    .broker
-                    .shard_log_for(
-                        felix_broker::LogKind::Cache,
-                        &key.tenant_id,
-                        &key.namespace,
-                        &key.stream,
-                        key.shard,
-                        None,
-                        (incarnation != 0).then_some(incarnation),
-                    )
-                    .await)
+                Ok(open_broker_log(
+                    &starts.broker,
+                    felix_broker::LogKind::Cache,
+                    key,
+                    incarnation,
+                )
+                .await)
             }
         }
     }
@@ -1402,19 +1505,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = starts
-                .broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1445,18 +1536,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = broker
-                .shard_log_for(
-                    kind,
-                    &key.tenant_id,
-                    &key.namespace,
-                    &key.stream,
-                    key.shard,
-                    None,
-                    (incarnation != 0).then_some(incarnation),
-                )
-                .await
-            else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -1545,14 +1625,16 @@ impl ShardStore for DurableShardStore {
         };
         // Reclaimed: a probe of every follower since the give-up found none
         // ahead of this copy, so nothing a client was promised is held beyond
-        // it. Only at a newer generation, which placement names for it.
+        // it. The probe runs at the generation placement named when it gave
+        // up, which can be past the one the copy accepted. Only at a newer
+        // generation than the probe's, which placement names for it.
         let accepted = log.accepted_generation();
         let reclaimed = log.gave_up()
-            && generation > accepted
-            && self
-                .fence
-                .as_ref()
-                .is_some_and(|fence| fence.reclaimable_at(key) == Some(accepted));
+            && self.fence.as_ref().is_some_and(|fence| {
+                fence
+                    .reclaimable_at(key)
+                    .is_some_and(|probed| probed >= accepted && generation > probed)
+            });
         if replicated && log.gave_up() && !reclaimed {
             return Err(GaveUp { generation }.into());
         }
@@ -1592,20 +1674,7 @@ impl ShardStore for DurableShardStore {
         }
         // Recovery happens here: validating the tail and rebuilding indexes is
         // exactly the cost the `Opening` phase is holding writes back for.
-        let log = match incarnation {
-            0 => self
-                .storage
-                .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard),
-            incarnation => self.storage.open_stream_for(
-                &key.tenant_id,
-                &key.namespace,
-                &key.stream,
-                key.shard,
-                None,
-                incarnation,
-            ),
-        }
-        .map_err(|err| anyhow::anyhow!("open shard log: {err}"))?;
+        let log = self.open_stream_log(key, incarnation).await?;
 
         // Where this leadership begins. Followers record what they accept, and
         // until now a leader recorded nothing — so a broker's history had a
@@ -1632,6 +1701,11 @@ impl ShardStore for DurableShardStore {
         if begins_here && let Some(starts) = starts {
             start_generation(&starts.broker, &log, key, generation).await?;
         }
+        // With or without a start record: a hold dropped when this broker
+        // last gave the shard up left records the stream never took in.
+        if begins_here && let Some(starts) = &self.generation_starts {
+            lead_from_tail(&starts.broker, key).await?;
+        }
         self.open_group_logs(key, generation, incarnation, begins_here)
             .await
     }
@@ -1640,10 +1714,7 @@ impl ShardStore for DurableShardStore {
         if key.kind == ShardKind::Cache {
             return Ok(());
         }
-        let log = self
-            .storage
-            .open_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .map_err(|err| anyhow::anyhow!("open shard log to flush it: {err}"))?;
+        let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
             .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
@@ -1887,6 +1958,29 @@ async fn apply_open(
                 ),
             }
         }
+        // A release still fanning out to a slow subscriber, which ends on its
+        // own. Failed would be final for this assignment, so the open goes
+        // again on a later pass; every step before it tolerates a repeat.
+        Err(err)
+            if matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::ReleaseInFlight)
+            ) =>
+        {
+            tracing::info!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                "shard's held batches are still being released; opening on a later pass",
+            );
+            lifecycle.lock().await.await_registration(Action::Open {
+                key,
+                generation,
+                new_term,
+                fence,
+                incarnation,
+            });
+        }
         Err(err) => {
             mm::record_open_failure();
             let mut lifecycle = lifecycle.lock().await;
@@ -1897,6 +1991,17 @@ async fn apply_open(
                 lifecycle
                     .fence()
                     .refused(&key, generation, &promised.promised_to);
+            }
+            // Reported like a promise, with no node: nothing else moves the
+            // control plane past a ballot it never issued (#1914).
+            if err.downcast_ref::<Superseded>().is_some() {
+                lifecycle.fence().refused(&key, generation, "");
+            } else if err.downcast_ref::<GaveUp>().is_none()
+                && err.downcast_ref::<PromisedAway>().is_none()
+            {
+                // The same assignment never retries the open, so unreported
+                // this is a dead end. Once, so a lasting fault does not churn.
+                lifecycle.fence().open_failed(&key, generation);
             }
             lifecycle.open_failed(&key, generation, format!("{err:#}"));
             drop(lifecycle);
@@ -1948,11 +2053,25 @@ pub async fn record_term_start(
     generation: u64,
     required: bool,
 ) -> anyhow::Result<()> {
+    // A v9 log stamps this leader's appends with it.
+    log.lead_at(generation);
     let tail = log
         .tail_offset()
         .await
         .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
-    if let Err(err) = log.record_generation(generation, tail) {
+    // Writes and fsyncs the generation history, so not on a runtime worker.
+    let recorded = {
+        let log = log.clone();
+        felix_common::blocking::spawn(move || log.record_generation(generation, tail))
+            .await
+            .unwrap_or_else(|err| {
+                if err.is_panic() {
+                    std::panic::resume_unwind(err.into_panic())
+                }
+                Err(felix_broker::BrokerError::Storage(err.to_string()))
+            })
+    };
+    if let Err(err) = recorded {
         if required {
             anyhow::bail!("record where generation {generation} begins: {err}");
         }
@@ -1969,6 +2088,28 @@ pub async fn record_term_start(
     Ok(())
 }
 
+/// One of the broker's logs for `key`, opened on the blocking pool for the
+/// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
+/// broker has no such store or refuses the incarnation.
+async fn open_broker_log(
+    broker: &std::sync::Arc<felix_broker::Broker>,
+    kind: felix_broker::LogKind,
+    key: &ShardKey,
+    incarnation: u64,
+) -> Option<felix_broker::StreamLog> {
+    broker
+        .shard_log_off_runtime(
+            kind,
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            None,
+            (incarnation != 0).then_some(incarnation),
+        )
+        .await
+}
+
 /// Accept `generation` on a log this broker is about to lead, failing if the
 /// log already took a newer leader's, or this generation from another node.
 async fn accept_led_generation(
@@ -1977,18 +2118,20 @@ async fn accept_led_generation(
     ballot: Option<&str>,
 ) -> anyhow::Result<()> {
     match log.accept_generation(generation, ballot).await {
-        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => {
-            anyhow::bail!(
-                "this broker already accepted generation {accepted} for the shard, \
-                 newer than the {generation} it was assigned to lead"
-            );
+        Ok(felix_storage::disk_log::GenerationCheck::Superseded { accepted }) => Err(Superseded {
+            generation,
+            accepted,
         }
+        .into()),
         Ok(felix_storage::disk_log::GenerationCheck::Promised { leader }) => Err(PromisedAway {
             generation,
             promised_to: leader,
         }
         .into()),
-        Ok(_) => Ok(()),
+        Ok(_) => {
+            log.lead_at(generation);
+            Ok(())
+        }
         Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
     }
 }
@@ -2138,6 +2281,18 @@ async fn start_generation(
     write_generation_start(broker, log, key, generation).await
 }
 
+/// Move a stream shard up to its log's tail before this broker leads it. See
+/// [`felix_broker::Broker::lead_from_tail`].
+pub(super) async fn lead_from_tail(
+    broker: &felix_broker::Broker,
+    key: &ShardKey,
+) -> anyhow::Result<()> {
+    broker
+        .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| anyhow::Error::new(err).context("move the stream to its log's tail"))
+}
+
 /// End a shard's readers once the writes already inside its fence are done,
 /// so each reader is handed every record this broker committed for the shard.
 ///
@@ -2176,7 +2331,7 @@ pub async fn reconcile(
     store: &dyn ShardStore,
     assignments: &HashMap<ShardKey, ShardAssignment>,
 ) {
-    reconcile_renewed(lifecycle, store, assignments, &HashMap::new()).await;
+    reconcile_renewed(lifecycle, store, assignments, &HashMap::default()).await;
 }
 
 /// [`reconcile`], with the watch's renewal count for each shard; see
@@ -2187,6 +2342,38 @@ pub(crate) async fn reconcile_renewed(
     assignments: &HashMap<ShardKey, ShardAssignment>,
     renewals: &HashMap<ShardKey, u64>,
 ) {
+    reconcile_reporting(lifecycle, store, assignments, renewals, &mut NoProgress).await;
+}
+
+/// What a caller of [`reconcile_reporting`] does while its pass opens shards.
+pub(crate) trait PassProgress: Send {
+    /// Whether [`PassProgress::opened`] wants to hear about the next open.
+    fn due(&self) -> bool;
+    /// A shard just opened, and `servable` is what this broker serves now.
+    /// Called with the lifecycle lock held.
+    fn opened(&mut self, servable: HashMap<ShardKey, u64>);
+}
+
+struct NoProgress;
+
+impl PassProgress for NoProgress {
+    fn due(&self) -> bool {
+        false
+    }
+
+    fn opened(&mut self, _servable: HashMap<ShardKey, u64>) {}
+}
+
+/// [`reconcile_renewed`], telling `progress` after each shard it opens. A
+/// pass can open hundreds of shards, one after another, and the caller can
+/// then route each as soon as it serves instead of after the last.
+pub(crate) async fn reconcile_reporting(
+    lifecycle: &tokio::sync::Mutex<ShardLifecycle>,
+    store: &dyn ShardStore,
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+    renewals: &HashMap<ShardKey, u64>,
+    progress: &mut dyn PassProgress,
+) {
     let ready = |key: &ShardKey| {
         let incarnation = assignments
             .get(key)
@@ -2196,7 +2383,9 @@ pub(crate) async fn reconcile_renewed(
     let mut actions = Vec::new();
     {
         let mut owned = lifecycle.lock().await;
-        for (key, assignment) in assignments {
+        // Every open runs this pass, so key order only decides which come up
+        // first; after a restart, streams whose keys sort last come up last.
+        for (key, assignment) in in_key_order(assignments) {
             let renewal = renewals.get(key).copied().unwrap_or(0);
             actions.push(owned.observe_renewed(key, Some(assignment), renewal));
         }
@@ -2223,7 +2412,32 @@ pub(crate) async fn reconcile_renewed(
             lifecycle.lock().await.await_registration(action);
             continue;
         }
+        let opens = matches!(action, Action::Open { .. });
         apply(lifecycle, store, action).await;
+        if opens && progress.due() {
+            // Held through the publish: a fence publishes under this lock too,
+            // and the two would otherwise overwrite each other.
+            let owned = lifecycle.lock().await;
+            progress.opened(owned.servable());
+        }
+    }
+}
+
+/// An assignment set's entries in key order. A hash map walks in an order that
+/// changes between processes, and this pass opens and closes shards in the
+/// order it walks them, so a simulated run would otherwise differ from its replay.
+fn in_key_order(
+    assignments: &HashMap<ShardKey, ShardAssignment>,
+) -> Vec<(&ShardKey, &ShardAssignment)> {
+    let mut entries: Vec<_> = assignments.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    entries
+}
+
+fn close_key(action: &Action) -> Option<&ShardKey> {
+    match action {
+        Action::Close { key, .. } => Some(key),
+        _ => None,
     }
 }
 

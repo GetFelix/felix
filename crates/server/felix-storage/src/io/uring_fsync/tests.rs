@@ -7,7 +7,7 @@ use tempfile::tempdir;
 use super::*;
 
 fn temp_file(dir: &std::path::Path, name: &str) -> Arc<File> {
-    let mut file = File::options()
+    let mut file = std::fs::File::options()
         .create(true)
         .truncate(true)
         .read(true)
@@ -15,7 +15,7 @@ fn temp_file(dir: &std::path::Path, name: &str) -> Arc<File> {
         .open(dir.join(name))
         .expect("open");
     file.write_all(b"record").expect("write");
-    Arc::new(file)
+    Arc::new(crate::fs::from_os(file))
 }
 
 /// A flush must reach the kernel while another operation is still in the
@@ -29,7 +29,9 @@ async fn a_new_flush_is_not_held_behind_an_outstanding_one() {
     // A poll on an empty pipe stands in for a slow fsync: it stays in the
     // ring until the test writes to the pipe.
     let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
     let held = tokio::spawn(poll_readable(gate));
     // Let the gate reach the ring and the service thread go back to waiting.
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -55,7 +57,9 @@ async fn more_requests_than_ring_entries_wait_rather_than_fail() {
         return;
     }
     let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
     let requests = RING_ENTRIES as usize * 4;
     let held: Vec<_> = (0..requests)
         .map(|_| tokio::spawn(poll_readable(Arc::clone(&gate))))
@@ -105,7 +109,9 @@ async fn a_submit_error_fails_waiters_but_keeps_in_flight_files_open() {
         return;
     };
     let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
     let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
@@ -157,7 +163,9 @@ async fn a_busy_ring_delays_flushes_rather_than_failing_them() {
         return;
     };
     let (reader, mut writer) = std::io::pipe().expect("pipe");
-    let gate = Arc::new(File::from(OwnedFd::from(reader)));
+    let gate = Arc::new(crate::fs::from_os(std::fs::File::from(OwnedFd::from(
+        reader,
+    ))));
     let held = tokio::spawn(submit_to(ring, Arc::clone(&gate), Op::PollReadable));
     tokio::time::sleep(Duration::from_millis(50)).await;
 

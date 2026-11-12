@@ -18,7 +18,8 @@
 //!   capacity, but never the last `share` slots. A tenant flooding the queue is
 //!   refused while a quiet one still gets in.
 
-use std::collections::{HashMap, VecDeque};
+use felix_common::random::HashMap;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -40,9 +41,9 @@ impl<K: Clone + Eq + Hash, T> FairQueue<K, T> {
     pub(crate) fn new(capacity: usize, share: usize, quantum: usize) -> Self {
         let capacity = capacity.max(1);
         Self {
-            tenants: HashMap::new(),
+            tenants: HashMap::default(),
             active: VecDeque::new(),
-            lanes: HashMap::new(),
+            lanes: HashMap::default(),
             queued: 0,
             capacity,
             share: share.clamp(1, capacity),

@@ -141,3 +141,48 @@ fn routing_mode_spells_as_snake_case() {
         ShardRouting::Modulo
     );
 }
+
+/// The worked examples on the docs site's sharding page
+/// (docs-site/src/content/docs/features/sharding.md). Change the page with
+/// these, or the page teaches a mapping the code does not have.
+#[test]
+fn the_sharding_page_examples_hold() {
+    let at = |routing, shards, key: &str| shard_for_routing(routing, shards, Some(key.as_bytes()));
+    // (key, jump hash over 4, modulo over 4)
+    let table = [
+        ("user-17", 0, 3),
+        ("user-42", 3, 3),
+        ("order-9001", 1, 3),
+        ("user-7", 3, 2),
+        ("user-8", 1, 0),
+    ];
+    for (key, jump, modulo) in table {
+        assert_eq!(at(ShardRouting::JumpHash, 4, key), jump, "{key} jump");
+        assert_eq!(at(ShardRouting::Modulo, 4, key), modulo, "{key} modulo");
+    }
+    assert_eq!(shard_for_routing(ShardRouting::JumpHash, 4, None), 0);
+
+    // Growing 4 -> 5 shards: of user-0..user-11, jump hash moves user-4 and
+    // user-8, both to the new shard 4, and modulo moves all twelve.
+    let moved = |routing| -> Vec<String> {
+        (0..12)
+            .map(|i| format!("user-{i}"))
+            .filter(|key| at(routing, 4, key) != at(routing, 5, key))
+            .collect()
+    };
+    assert_eq!(moved(ShardRouting::JumpHash), ["user-4", "user-8"]);
+    for key in moved(ShardRouting::JumpHash) {
+        assert_eq!(at(ShardRouting::JumpHash, 5, &key), 4);
+    }
+    assert_eq!(moved(ShardRouting::Modulo).len(), 12);
+
+    // Over 10,000 keys: about 1/5 move under jump hash, about 4/5 under modulo.
+    let count = |routing| {
+        (0..10_000)
+            .map(|i| format!("user-{i}"))
+            .filter(|key| at(routing, 4, key) != at(routing, 5, key))
+            .count()
+    };
+    assert_eq!(count(ShardRouting::JumpHash), 1941);
+    assert_eq!(count(ShardRouting::Modulo), 7993);
+}

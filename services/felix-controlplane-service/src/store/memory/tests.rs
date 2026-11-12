@@ -5,7 +5,7 @@ use crate::model::{
 };
 use crate::store::StoreError;
 
-/// The same suite Postgres runs, so parity is enforced rather than assumed.
+/// The same suite Raft runs, so parity is enforced rather than assumed.
 #[tokio::test]
 async fn satisfies_the_node_store_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
@@ -35,7 +35,7 @@ async fn a_clamp_pulls_a_future_stamp_back_to_now() {
     assert_eq!(node.status.last_heartbeat_at_millis, 1_000_000);
 }
 
-/// The same suite Postgres runs. These are the security properties —
+/// The same suite Raft runs. These are the security properties —
 /// single use, replay detection, revocation — so parity is not a nicety.
 #[tokio::test]
 async fn satisfies_the_refresh_token_contract() {
@@ -43,28 +43,28 @@ async fn satisfies_the_refresh_token_contract() {
     crate::store::contract::refresh_tokens::run_refresh_contract(store).await;
 }
 
-/// The same suite Postgres and Raft run.
+/// The same suite Raft runs.
 #[tokio::test]
 async fn satisfies_the_revocation_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::revocations::run_revocation_contract(store).await;
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_signing_key_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::signing_keys::run_signing_key_contract(store).await;
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test]
 async fn satisfies_the_rbac_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::rbac::run_rbac_contract(store).await;
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_shard_store_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
@@ -73,14 +73,14 @@ async fn satisfies_the_shard_store_contract() {
     crate::store::contract::shards::run_node_delete_race_contract(store, 5000).await;
 }
 
-/// The same suite Postgres and Raft run.
+/// The same suite Raft runs.
 #[tokio::test]
 async fn satisfies_the_pagination_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::pagination::run_pagination_contract(store).await;
 }
 
-/// The same suite Postgres runs, with both instances on one store.
+/// The same suite Raft runs, with both instances on one store.
 #[tokio::test]
 async fn satisfies_the_placement_contract() {
     let store: std::sync::Arc<dyn crate::store::ControlPlaneStore> =
@@ -270,21 +270,21 @@ async fn backend_health_and_identity() {
     assert_eq!(store.backend_name(), "memory");
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_incarnation_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::incarnations::run_incarnation_contract(store).await;
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_cache_incarnation_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::cache_incarnations::run_cache_incarnation_contract(store).await;
 }
 
-/// The same suite Postgres runs.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_resources_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
@@ -292,7 +292,7 @@ async fn satisfies_the_resources_contract() {
     crate::store::contract::resources::run_resources_race_contract(store, 200).await;
 }
 
-/// The same suite Postgres and Raft run.
+/// The same suite Raft runs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn satisfies_the_mount_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
@@ -300,7 +300,7 @@ async fn satisfies_the_mount_contract() {
     crate::store::contract::mounts::run_mount_race_contract(store, 200).await;
 }
 
-/// The same suite Postgres runs, at a page of two so every feed spans pages.
+/// The same suite Raft runs, at a page of two so every feed spans pages.
 #[tokio::test]
 async fn satisfies_the_change_feed_contract() {
     let store = std::sync::Arc::new(store_with_limits(2, 1000));
@@ -526,6 +526,8 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     member_storage_ids: Default::default(),
                     learners: Default::default(),
                     pending_set: None,
+                    previous_generation: None,
+                    readmitted: Default::default(),
                 })
                 .await
                 .expect("assign")

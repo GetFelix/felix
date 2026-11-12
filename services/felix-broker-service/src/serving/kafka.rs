@@ -28,9 +28,10 @@ use crate::observability::tenants;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, IngressRouter, Reason, dispatch, dispatch_write};
+use crate::shards::routing::{Dispatch, Reason, StreamEngine, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
-use felix_replication::quorum::{QuorumError, QuorumMarks};
+use felix_replication::engine::Engine;
+use felix_replication::quorum::QuorumError;
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
 /// that connects and sends nothing does not hold a connection slot.
@@ -42,10 +43,10 @@ pub const STANDALONE_NODE_ID: &str = "felix";
 /// [`Cluster`] for this broker.
 pub struct BrokerCluster {
     auth: Arc<BrokerAuth>,
-    ingress: Option<Arc<IngressRouter>>,
     endpoints: Option<Arc<ClientEndpoints>>,
     local: Endpoint,
-    marks: Option<Arc<QuorumMarks>>,
+    /// What a write waits on and how far a fetch may read.
+    replication: Arc<StreamEngine>,
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
 }
@@ -55,7 +56,7 @@ impl BrokerCluster {
     /// outside a cluster; `advertise` is this broker's Kafka address.
     pub fn new(
         auth: Arc<BrokerAuth>,
-        ingress: Option<Arc<IngressRouter>>,
+        engine: Arc<StreamEngine>,
         endpoints: Option<Arc<ClientEndpoints>>,
         local_node_id: &str,
         advertise: &str,
@@ -64,13 +65,17 @@ impl BrokerCluster {
             .with_context(|| format!("Kafka advertise address {advertise:?}"))?;
         Ok(Self {
             auth,
-            ingress,
+            replication: engine,
             endpoints,
             local,
-            marks: None,
             quorum_timeout: Duration::from_secs(5),
             quotas: Arc::new(TenantRates::unlimited()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn engine(&self) -> &Arc<StreamEngine> {
+        &self.replication
     }
 
     /// The tenant publish quotas a produce is charged to: the broker's own,
@@ -80,14 +85,9 @@ impl BrokerCluster {
         self
     }
 
-    /// What a write waits on, as the QUIC publish path does: the quorum marks
-    /// a `Quorum` stream's write waits for. `None` outside a cluster.
-    pub fn with_writes(
-        mut self,
-        marks: Option<Arc<QuorumMarks>>,
-        quorum_timeout: Duration,
-    ) -> Self {
-        self.marks = marks;
+    /// How long a write waits on the quorum marks a `Quorum` stream's write
+    /// waits for, as the QUIC publish path does.
+    pub fn with_writes(mut self, quorum_timeout: Duration) -> Self {
         self.quorum_timeout = quorum_timeout;
         self
     }
@@ -170,8 +170,8 @@ impl Cluster for BrokerCluster {
     fn placement(&self, shard: &ShardRef<'_>) -> Placement {
         let key = Self::key(shard);
         let route = self
-            .ingress
-            .as_deref()
+            .replication
+            .serving()
             .and_then(|ingress| ingress.route(&key));
         let replicas = route
             .as_ref()
@@ -183,7 +183,7 @@ impl Cluster for BrokerCluster {
                     .collect()
             })
             .unwrap_or_default();
-        match dispatch(self.ingress.as_deref(), &key) {
+        match dispatch(self.replication.serving().map(|ingress| &**ingress), &key) {
             Dispatch::Local { .. } => Placement::Local { replicas },
             Dispatch::Forward { node_id, .. } => Placement::Remote {
                 leader: node_id,
@@ -208,12 +208,12 @@ impl Cluster for BrokerCluster {
         // so a move waits for this write. The fence checks the lease against
         // the clock, except on a shard whose followers decide its acks.
         let key = Self::key(shard);
-        let ingress = self.ingress.as_deref();
+        let ingress = self.replication.serving().map(|ingress| &**ingress);
         match dispatch_write(ingress, &key).await {
             (Dispatch::Local { generation }, held) => {
                 let mut held = held;
                 match fence::enter_or_keep(&mut held, ingress, Some(&key), generation) {
-                    Ok(Some(guard)) => Ok(WritePermit::holding(guard)),
+                    Ok(Some(guard)) => Ok(WritePermit::holding(guard, generation)),
                     Ok(None) => Ok(WritePermit::default()),
                     Err(_) => Err(WriteError::NotLeader),
                 }
@@ -229,21 +229,22 @@ impl Cluster for BrokerCluster {
         shard: &ShardRef<'_>,
         handle: &StreamHandle,
         outcome: &PublishOutcome,
+        generation: u64,
     ) -> Result<(), WriteError> {
-        let key = self.ingress.as_ref().map(|_| Self::key(shard));
-        felix_replication::quorum::await_quorum(
-            handle,
-            key.as_ref(),
-            outcome,
-            self.marks.as_deref(),
-            self.ingress.as_deref(),
-            self.quorum_timeout,
-        )
-        .await
-        .map_err(|err| match err.downcast_ref::<QuorumError>() {
-            Some(QuorumError::TimedOut { .. }) => WriteError::QuorumTimeout,
-            _ => WriteError::LeadershipLost,
-        })
+        let key = self.replication.serving().map(|_| Self::key(shard));
+        self.replication
+            .await_commit(
+                handle,
+                key.as_ref(),
+                outcome,
+                generation,
+                self.quorum_timeout,
+            )
+            .await
+            .map_err(|err| match err.downcast_ref::<QuorumError>() {
+                Some(QuorumError::TimedOut { .. }) => WriteError::QuorumTimeout,
+                _ => WriteError::LeadershipLost,
+            })
     }
 
     fn committed_until(
@@ -252,16 +253,16 @@ impl Cluster for BrokerCluster {
         handle: &StreamHandle,
     ) -> Result<Option<u64>, felix_kafka::Unreadable> {
         let key = Self::key(shard);
-        felix_replication::quorum::read_bound(
-            Some(handle.consistency()),
-            &key,
-            self.marks.as_deref(),
-            self.ingress.as_deref(),
-        )
-        .map_err(|unreadable| match unreadable {
-            felix_replication::quorum::Unreadable::NotServed => felix_kafka::Unreadable::NotServed,
-            felix_replication::quorum::Unreadable::Settling => felix_kafka::Unreadable::Settling,
-        })
+        self.replication
+            .read_bound(Some(handle.consistency()), &key)
+            .map_err(|unreadable| match unreadable {
+                felix_replication::quorum::Unreadable::NotServed => {
+                    felix_kafka::Unreadable::NotServed
+                }
+                felix_replication::quorum::Unreadable::Settling => {
+                    felix_kafka::Unreadable::Settling
+                }
+            })
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration {

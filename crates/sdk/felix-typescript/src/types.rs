@@ -10,6 +10,8 @@
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::headers::RecordHeaders;
+
 /// One delivered record.
 #[napi(object)]
 pub struct Event {
@@ -27,6 +29,32 @@ pub struct Event {
     /// the first event after a leader change, whose generation-start record
     /// took an offset; zero from a broker that predates it.
     pub skipped_before: BigInt,
+    /// The principal that published the record. Null unless `publishers` was
+    /// set on `connect`, and for a record the broker has no principal for.
+    pub publisher: Either<String, Null>,
+    /// When the broker appended the record, in microseconds since the Unix
+    /// epoch. Null unless `timestamps` was set on `connect`, and on an
+    /// in-memory stream.
+    pub timestamp_micros: Either<BigInt, Null>,
+    /// The key and headers the publisher gave the record. Null for a record
+    /// published without either, and when `recordHeaders` is off.
+    pub headers: Either<RecordHeaders, Null>,
+}
+
+impl From<felix_client::Event> for Event {
+    fn from(event: felix_client::Event) -> Self {
+        Self {
+            tenant_id: event.tenant_id.to_string(),
+            namespace: event.namespace.to_string(),
+            stream: event.stream.to_string(),
+            payload: event.payload.to_vec().into(),
+            offset: or_null(event.offset.map(BigInt::from)),
+            skipped_before: BigInt::from(event.skipped_before),
+            publisher: or_null(event.publisher.map(|p| p.to_string())),
+            timestamp_micros: or_null(event.timestamp_micros.map(BigInt::from)),
+            headers: or_null(event.headers.map(RecordHeaders::from)),
+        }
+    }
 }
 
 /// One record handed out by a consumer group.
@@ -42,6 +70,25 @@ pub struct GroupRecord {
     /// delivered (generation starts, records retention removed), so a hole
     /// with this count will not fill. Zero from a broker that predates it.
     pub skipped_before: BigInt,
+    /// The principal that published the record. Null unless `publishers` was
+    /// set on `connect`.
+    pub publisher: Either<String, Null>,
+    /// When the record was appended, in microseconds since the Unix epoch.
+    /// Null unless `timestamps` was set on `connect`.
+    pub timestamp_micros: Either<BigInt, Null>,
+}
+
+impl From<felix_wire::GroupRecord> for GroupRecord {
+    fn from(record: felix_wire::GroupRecord) -> Self {
+        Self {
+            offset: BigInt::from(record.offset),
+            payload: record.payload.to_vec().into(),
+            attempts: record.attempts,
+            skipped_before: BigInt::from(record.skipped_before),
+            publisher: or_null(record.publisher),
+            timestamp_micros: or_null(record.timestamp_micros.map(BigInt::from)),
+        }
+    }
 }
 
 /// The delivery a nack names: a [`GroupRecord`] as `groupPoll` returned it.

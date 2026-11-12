@@ -220,27 +220,32 @@ request belongs to, it forwards the request to the one that does and relays the
 answer. The client never has to find the right broker first, and never talks to
 two of them for a single request.
 
-**Ownership comes from the control plane and nowhere else.** Every shard of every
-stream and cache has exactly one leader, chosen by rendezvous hashing over the
-live nodes. Brokers watch the assignment feed (a snapshot, then a change stream)
-and never negotiate ownership among themselves.
+**The control plane assigns ownership.** Every shard of every stream and cache
+has exactly one leader, chosen by rendezvous hashing over the live nodes.
+Brokers watch the assignment feed (a snapshot, then a change stream). The one
+exception is opt-in replica election: when it is enabled and the control plane
+is unreachable, the replicas of a shard elect a leader among themselves. See
+[`replication-design.md`](replication-design.md).
 
-**No consensus protocol runs between brokers.** Placement is deterministic over
+**No consensus protocol runs on records.** Placement is deterministic over
 the rows it reads, and control-plane instances do not coordinate a shared
 snapshot: every assignment write is conditional on the generation and placement
 token it was planned from, so a write planned from stale reads is refused. Durability across a leader change
 comes from log shipping and leader leases instead; `replication-design.md` argues
 that choice in full, including why per-shard Raft was rejected.
+[`replication-engine.md`](replication-engine.md) sets up the test that
+revisits it. The only
+agreement between brokers is the leader election among a shard's replicas, when
+replica election is enabled.
 
 That rejection is about replicating *records*. Making the control plane's own
 metadata highly available is a separate problem, and Raft is the decided
 answer there. It is designed in
-[`metadata-raft-design.md`](metadata-raft-design.md) and tracked as milestone
-M13 under [#333](https://github.com/GetFelix/felix/issues/333), and shipped:
+[`metadata-raft-design.md`](metadata-raft-design.md) and tracked
+under [#333](https://github.com/GetFelix/felix/issues/333), and shipped:
 `FELIX_CONTROLPLANE_STORAGE_BACKEND=raft` selects it and the instances hold
-the metadata themselves, with no external database. Postgres remains fully
-supported: any number of stateless instances over one HA database, whose
-required properties are spelled out in [`ha-postgres.md`](ha-postgres.md).
+the metadata themselves, with no external database. The earlier Postgres backend was removed, so Raft is the only production
+backend.
 
 Resolving an owner is an atomic load of a routing snapshot the broker already
 holds, with no lock and no network call, because it is the hottest question a broker
@@ -257,7 +262,9 @@ be a promise nothing could keep.
 
 So a quorum acknowledgement costs a control-plane round trip, and a control
 plane that cannot be reached stalls `Quorum` publishes rather than
-acknowledging them on a report that never landed. `Leader` publishes,
+acknowledging them on a report that never landed. Once the fleet has finalized
+`majority_ack`, the leader no longer waits on the report, and a leader elected
+by its replicas keeps serving while the control plane is down. `Leader` publishes,
 subscribes and cache operations are untouched by this. Coalescing those round
 trips across a sweep is #479.
 

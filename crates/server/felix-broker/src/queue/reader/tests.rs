@@ -912,6 +912,51 @@ async fn a_record_after_generation_starts_reports_them_as_skipped() {
     assert_eq!(skipped, vec![(0, 0), (3, 2)]);
 }
 
+/// **Membership and counter records are skipped like generation starts.** A
+/// group is never handed one, the record after them reports all three as
+/// skipped rather than dropped, and the cursor closes over them.
+#[tokio::test]
+async fn a_group_steps_over_membership_and_counter_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    publish(&fx.log, &["a"]).await;
+    let record = |mark, payload: &'static [u8]| felix_storage::log::AppendRecord {
+        payload: Bytes::from_static(payload),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    };
+    fx.log
+        .append_v9_for_tests(
+            &[
+                record(felix_storage::log::RecordMark::Membership, b"set"),
+                record(felix_storage::log::RecordMark::CounterDelta, b"add"),
+                record(felix_storage::log::RecordMark::CounterCheckpoint, b"sums"),
+                record(felix_storage::log::RecordMark::None, b"b"),
+            ],
+            1,
+        )
+        .await
+        .expect("v9 append");
+    let key = key();
+
+    let claimed = fx
+        .reader
+        .poll(&key, &fx.log, 10, Instant::now())
+        .await
+        .expect("poll");
+    assert_eq!(payloads(&claimed), vec!["a", "b"]);
+    let skipped: Vec<(u64, u64)> = claimed
+        .iter()
+        .map(|c| (c.offset, c.skipped_before))
+        .collect();
+    assert_eq!(skipped, vec![(0, 0), (4, 3)]);
+    fx.reader.ack(&key, 0).await.expect("ack");
+    fx.reader.ack(&key, 4).await.expect("ack");
+    assert_eq!(fx.reader.committed(&key).await.expect("committed"), Some(5));
+}
+
 /// A poll that settles a run and stops short of the record after it leaves
 /// the count for the poll that delivers that record.
 #[tokio::test]
@@ -954,6 +999,7 @@ async fn a_group_hands_out_each_records_publisher() {
             &[Some(alice.clone())],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")

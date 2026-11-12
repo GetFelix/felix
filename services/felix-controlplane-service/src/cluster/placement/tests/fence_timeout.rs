@@ -142,10 +142,9 @@ async fn pass(
     .await
 }
 
-/// Through the store: an instance that watches a fence across passes gives
-/// it up once the timeout passes, and the write lands at the next generation.
-#[tokio::test]
-async fn a_watched_fence_is_given_up_through_the_store() {
+/// A shard fenced to move from broker-x to broker-y, the new leader already
+/// reporting, and the fenced generation.
+async fn fenced_in_store() -> (crate::store::memory::InMemoryStore, u64) {
     use super::reconciler::{cluster, report, shard_zero};
     use crate::store::ControlPlaneStore;
     let store = cluster(&["broker-x", "broker-y"]).await;
@@ -178,11 +177,22 @@ async fn a_watched_fence_is_given_up_through_the_store() {
             member_storage_ids: Default::default(),
             learners: Default::default(),
             pending_set: None,
+            previous_generation: None,
+            readmitted: Default::default(),
         })
         .await
         .expect("fenced");
     report(&store, fenced.generation, &["broker-y"], false).await;
+    (store, fenced.generation)
+}
 
+/// Through the store: an instance that watches a fence across passes gives
+/// it up once the timeout passes, and the write lands at the next generation.
+#[tokio::test]
+async fn a_watched_fence_is_given_up_through_the_store() {
+    use super::reconciler::{report, shard_zero};
+    use crate::store::ControlPlaneStore;
+    let (store, generation) = fenced_in_store().await;
     let policy = MovePolicy {
         fence_timeout_millis: Some(1),
         ..MovePolicy::default()
@@ -191,7 +201,7 @@ async fn a_watched_fence_is_given_up_through_the_store() {
     let first = pass(&store, &policy, &mut progress).await;
     assert_eq!(first.moved, 0, "the first pass only starts watching");
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    report(&store, fenced.generation, &["broker-y"], false).await;
+    report(&store, generation, &["broker-y"], false).await;
     let second = pass(&store, &policy, &mut progress).await;
     assert_eq!(second.moved, 1, "{second:?}");
 
@@ -202,7 +212,50 @@ async fn a_watched_fence_is_given_up_through_the_store() {
     assert_eq!(after.leader, "broker-x");
     assert_eq!(after.state, ShardState::Assigning);
     assert_eq!(after.successor, None);
-    assert!(after.generation > fenced.generation);
+    assert!(after.generation > generation);
+}
+
+/// A process that keeps its memory between passes gives a fence up once the
+/// timeout passes; one that forgets it every pass never does.
+#[tokio::test]
+async fn placement_memory_carries_a_fence_across_passes() {
+    use super::reconciler::{report, shard_zero};
+    use crate::store::ControlPlaneStore;
+    let policy = MovePolicy {
+        fence_timeout_millis: Some(1),
+        ..MovePolicy::default()
+    };
+    let wakes = PlacementWakes::default();
+    let liveness = Default::default();
+
+    let (store, generation) = fenced_in_store().await;
+    let mut memory = PlacementMemory::default();
+    for _ in 0..2 {
+        reconcile_remembering(&store, &liveness, policy.clone(), &wakes, &mut memory).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        report(&store, generation, &["broker-y"], false).await;
+    }
+    let after = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(after.state, ShardState::Assigning, "the fence timed out");
+
+    let (store, generation) = fenced_in_store().await;
+    for _ in 0..3 {
+        reconcile_once_waking(&store, &liveness, policy.clone(), &wakes).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        report(&store, generation, &["broker-y"], false).await;
+    }
+    let after = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(
+        after.state,
+        ShardState::Draining,
+        "a fresh memory starts over"
+    );
 }
 
 /// Reports as of `NOW`, every copy level, with `give_ups` moves of the shard
@@ -319,4 +372,177 @@ fn give_ups_count_in_a_row_and_reset_on_a_new_leader() {
     let led_by_b = [assigned("orders", "broker-b", &["broker-a", "broker-c"])];
     assert_eq!(progress.give_ups(&led_by_b).get(&key), None);
     assert_eq!(progress.give_ups(&led_by_a).get(&key), None, "forgotten");
+}
+
+/// A Quorum shard replicated twice on broker-a and broker-b, with broker-c
+/// staged as the move's destination: a set of three.
+fn staged_above_two(state: ShardState) -> ShardAssignment {
+    ShardAssignment {
+        state,
+        successor: Some("broker-c".to_string()),
+        move_started_at_millis: Some(NOW - 10 * MINUTE),
+        move_reason: Some(MoveReason::Balance),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    }
+}
+
+fn decide_twice(nodes: &[Node], existing: ShardAssignment, reports: &dyn CaughtUp) -> Decision {
+    let streams = [Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    }];
+    plan_with(
+        &streams,
+        &[],
+        nodes,
+        &[existing],
+        reports,
+        MovePolicy::default(),
+    )
+    .shards
+    .remove(0)
+    .decision
+}
+
+fn down_c() -> Vec<Node> {
+    vec![
+        node("broker-a", NodeLifecycle::Live, None),
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Down, None),
+    ]
+}
+
+/// **A set of three keeps a destination the fence timeout gives up.** A
+/// record can be acknowledged on the leader and the destination alone; with
+/// the destination dropped it is on the leader only, and a leader that then
+/// crashes uncleanly is reclaimed without it. `FelixShardMoveGiveUpDrop.cfg`.
+#[test]
+fn a_fence_timeout_keeps_the_staged_destination() {
+    let decision = decide_twice(
+        &live(&["broker-a", "broker-b", "broker-c"]),
+        staged_above_two(ShardState::Draining),
+        &Fenced {
+            fenced_at: Some(NOW - DEFAULT_FENCE_TIMEOUT_MILLIS - 1),
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::FenceTimedOut { .. }, retaken) = decision else {
+        panic!("not timed out: {decision:?}");
+    };
+    assert_eq!(retaken.successor, None);
+    assert_eq!(retaken.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// The same when the destination is down at the fence.
+#[test]
+fn an_abandoned_fence_keeps_the_staged_destination() {
+    let decision = decide_twice(
+        &down_c(),
+        staged_above_two(ShardState::Draining),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::Abandon { .. }, retaken) = decision else {
+        panic!("not abandoned: {decision:?}");
+    };
+    assert_eq!(retaken.successor, None);
+    assert_eq!(retaken.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// And before the fence, where a leader with no earlier pass counts the
+/// destination toward the quorum.
+#[test]
+fn a_staged_destination_lost_before_the_fence_stays_in_a_set_of_three() {
+    let decision = decide_twice(
+        &down_c(),
+        staged_above_two(ShardState::Assigning),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    let Decision::Move(MoveStep::Abandon { .. }, undone) = decision else {
+        panic!("not abandoned: {decision:?}");
+    };
+    assert_eq!(undone.successor, None);
+    assert_eq!(undone.replicas, ["broker-b", "broker-c"], "dropped");
+}
+
+/// The copy kept above the factor leaves later behind a trim fence, so the
+/// set does not stay above it.
+#[test]
+fn a_set_kept_above_its_factor_is_trimmed() {
+    let decision = decide_twice(
+        &down_c(),
+        assigned("orders", "broker-a", &["broker-b", "broker-c"]),
+        &Fenced {
+            fenced_at: None,
+            drained: false,
+        },
+    );
+    assert!(
+        matches!(decision, Decision::Move(MoveStep::TrimFence, _)),
+        "{decision:?}"
+    );
+}
+
+/// [`Fenced`] with broker-c halted at generation 3.
+struct HaltedC {
+    fenced: Fenced,
+    halt: crate::model::HaltedCopy,
+}
+
+impl CaughtUp for HaltedC {
+    fn is_caught_up(&self, key: &ShardKey, node_id: &str) -> bool {
+        self.fenced.is_caught_up(key, node_id)
+    }
+
+    fn is_drained(&self, key: &ShardKey, generation: u64) -> bool {
+        self.fenced.is_drained(key, generation)
+    }
+
+    fn reported_generation(&self, key: &ShardKey) -> Option<u64> {
+        self.fenced.reported_generation(key)
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        self.fenced.as_of_millis()
+    }
+
+    fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
+        self.fenced.fenced_at_millis(key, generation)
+    }
+
+    fn halted(&self, _key: &ShardKey, node_id: &str) -> Option<&crate::model::HaltedCopy> {
+        (node_id == "broker-c").then_some(&self.halt)
+    }
+}
+
+/// A destination that halts after the fence stops being the successor, but
+/// a set of three keeps it until the trim.
+#[test]
+fn a_halted_destination_stays_in_a_set_of_three() {
+    let decision = decide_twice(
+        &live(&["broker-a", "broker-b", "broker-c"]),
+        staged_above_two(ShardState::Draining),
+        &HaltedC {
+            fenced: Fenced {
+                fenced_at: None,
+                drained: false,
+            },
+            halt: crate::model::HaltedCopy {
+                reason: "diverged".to_string(),
+                generation: 3,
+                since_millis: NOW,
+            },
+        },
+    );
+    let Decision::Move(MoveStep::Halted { .. }, next) = decision else {
+        panic!("not given up: {decision:?}");
+    };
+    assert_eq!(next.successor, None);
+    assert_eq!(next.state, ShardState::Draining);
+    assert_eq!(next.replicas, ["broker-b", "broker-c"], "dropped");
 }

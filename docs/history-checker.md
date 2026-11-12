@@ -7,7 +7,8 @@ nemesis kills, pauses and partitions brokers, and in the long runs also cuts
 links, skews clocks, fails fsyncs, moves shards and drains brokers. An
 adversarial nemesis overlaps faults, forces failovers, cuts moves and
 restarts short, cuts the power to every broker and crashes the control plane
-with work in flight. Every operation is recorded with
+with work in flight. An election nemesis kills leaders while the control plane
+is down, so the replicas must elect a new one. Every operation is recorded with
 when it started, when it ended and what it returned. Once the faults are healed,
 the checker compares that history with what a replicated append-only log
 promises. During the run, after every heal, the campaign also checks that the
@@ -18,7 +19,7 @@ list-append: each list is a single-shard stream, and an append adds a unique
 value to it. Felix hands a reader the offset of every record, so the checker
 never has to infer an order the way Elle does. It reads positions directly,
 and most rules reduce to lookups against the final read. Cache keys are
-checked as registers (`history/register.rs`).
+checked as registers (`history/register.rs`, `history/linearizable.rs`).
 
 ## The model
 
@@ -79,12 +80,27 @@ before B was invoked" means the same thing to every client.
 | 9 | Delivery order | A live subscriber is delivered an offset at or below one it already had, in the same session or after a resume, or below where it started |
 | 10 | No lost deliveries | A live subscriber is delivered a record the final log does not hold at that offset: another value is there, no record is, or the log ends before it |
 | 11 | No missing deliveries | A record in the final log sits at an offset a subscriber was told holds no event (`skipped_before`), or past the last offset the subscriber was delivered once it had time to catch up |
+| 12-19 | No dependency cycles | Appends and reads form a loop of "must come before" edges, so no single order explains them (see "Cycles") |
+| 20 | Cache keys are linearizable | No order of a key's operations both respects real time and is what a single register would produce (see below) |
+| 21 | One leader per generation | Two brokers opened one shard for writes at the same generation |
 
 Rule 8 leans on the order of the three looks. Every commit event the first
 read saw was committed before the state was read, so the state must be at
 least that commit; a commit landing in between can only make the state newer,
 which is allowed. The state's version is an offset, so the read after it must
 hold that commit's event there, whatever landed since.
+
+Rule 21 is `OneLeaderPerGeneration` from the TLA+ shard model
+([`FelixShard.tla`](formal/FelixShard.tla)). No client can see which
+broker opened a shard, so it is read from the broker logs instead of the
+operations: each broker logs "a majority took the fence; opening the shard
+for writes" with the shard and the generation. That is the lease-free open.
+The lease path logs a different line, which this rule does not read.
+
+The campaign collects those lines only when the brokers elect leaders
+themselves (see "Elections without the control plane"). It reads them after
+every fault, from each broker's current log and from `broker.log.earlier`,
+where the harness appends every earlier run at each restart.
 
 Rule 5 covers cache gets too: a get that returns a value no put to that key
 wrote, or returns it before its put began, is a phantom.
@@ -95,6 +111,82 @@ get that returned it completes. Every linearization then orders `u` before
 it reports only what no linearization explains and does not search for one.
 A deposed leader serving a value one write behind its successor is what it
 is for.
+
+### Cycles
+
+Rules 12 to 19 draw a graph of the operations on one list and look for a
+loop. An edge points from the operation that has to come first:
+
+- **ww**: one append sits right before another in the list.
+- **wr**: an append came first because a read saw it.
+- **rw**: a read came first because it did not see the append sitting just
+  after its last record (the first append, for a read that returned nothing).
+- **rt**: one operation finished before the other began.
+
+A loop means nothing can be the real order of the list. The name says what
+kind of loop it is:
+
+| Name | The loop is made of | Example |
+| --- | --- | --- |
+| `G0` | ww only | Value A sits before B, and also after B, because A appears at two offsets |
+| `G1c` | ww and wr | A read saw `B`, and `B` can only sit after that read |
+| `G-single` | exactly one rw | A read missed `B`, yet the loop puts `B` before the read |
+| `G2` | two or more rw | Two reads each missed an append the other had seen |
+| `...-realtime` | any of the above plus an rt edge | A read began after `B` was acknowledged and did not see it |
+
+The realtime forms are the ones a real log produces. `G-single-realtime` is a
+stale read: `append(B)` returned, then a read began and stopped before `B`.
+`G1c-realtime` is a read that saw a record which, by the clock, was only
+appended after the read finished. With one agreed order of offsets, the plain
+forms only appear next to a contradiction in that order: a duplicate (rule 2)
+or a read that disagrees with the final read about what an offset holds
+(rule 3). Those rules already report it, so the cycle is not named twice. An
+append whose outcome is unknown never starts an rt edge, because it may land
+late.
+
+The rw edge needs reads that stop at the true end of the log. A live
+subscriber may drop its newest records, so the cluster runs leave
+`History::exact_tails` off and report no rw edges. The simulator's reads do
+not drop their tail and turn it on; with it on, a read that returned nothing
+means the list was empty, so reads start at the list's base.
+
+A leader that was replaced and has not heard yet still serves reads up to its
+own committed mark, which is short of what its successor acknowledged. So the
+simulator records a read only once the broker confirms it still leads the
+shard at the generation it read at. The confirmation is a round, or the lease
+where the fleet reads by lease.
+
+The loops are
+found with Tarjan's strongly connected components, then one short loop per
+component, so a large history costs about as much as reading it. `check_list_append(&History)`
+returns the cycles alone.
+
+**Rule 20, linearizability.** A cache key is *linearizable* when every
+operation on it can be said to have happened at one instant between its start
+and its end, and the key behaved like a single variable at those instants: a
+get returns the latest value put at or before its instant, a delete empties
+the key, a conditional put applies only when the key holds what it expected.
+Rule 7 only reports what it can prove cheaply. Rule 20 searches for such an
+order (the Wing-Gong-Lowe search, as in Porcupine), one key at a time, so it
+also catches an anomaly that needs several operations to show, such as two
+conditional puts on an absent key that both applied. A put whose outcome is
+unknown may have happened at any time after it started, or never, and
+nothing has to follow it. Rule 20 runs on a key only after rules 5 and 7 found
+nothing on it, so a simple stale read keeps its old name. Expiry (TTL) is not
+modelled: a key a TTL removes would look like a lost write.
+
+The search is bounded. A key with many overlapping operations can take
+exponential time, so past its step budget (`Budget`, 20 million tries by
+default) the key is reported under `undecided:` at the top of the report. That
+is not a pass or a failure: nothing was proven either way. Shorten the run or
+raise the budget to decide it.
+
+A rule 20 violation prints a witness: the longest order the search managed to
+build, one operation per line in the order they take effect, then the value
+the key holds after that order, then the operations that could not come next
+and what each needed (for example, a get that returned 1 when the key held 2).
+Read it top to bottom: the last operation of the order plus the stuck ones are
+the conflict.
 
 Two more findings concern the harness rather than the broker.
 `incomplete-final-read` means the final read has a hole. When that happens,
@@ -117,6 +209,13 @@ The campaign only runs `Quorum` streams. Under `Quorum`, readers stop at the
 quorum mark, so a read that sees past the end of the final log is a real
 violation.
 
+> `random_correct_histories_have_no_cycle`: a seeded correct list with
+> overlapping and unknown appends, reads from the start or mid-list with
+> dropped records, and a subscriber that resumes, passes all rules over 300
+> seeds. `a_contradictory_order_is_g0`, `a_read_that_saw_the_future_is_g1c_realtime`,
+> `a_stale_read_is_g_single_realtime` and `two_anti_dependencies_are_g2`: one
+> case per cycle class.
+>
 > `random_linearizable_histories_are_valid`: histories generated from a
 > correct log, with concurrency, unknown outcomes and dropped records, pass.
 > `breaking_a_valid_history_is_caught`: losing, duplicating or failing one
@@ -136,6 +235,10 @@ violation.
 > `a_get_older_than_an_earlier_get_is_stale`,
 > `a_miss_after_an_acknowledged_put_is_stale`,
 > `a_value_nobody_put_is_a_phantom`: one hand-built violation per case.
+> In `linearizable`: `random_linearizable_histories_are_valid` (puts, gets,
+> deletes and conditional puts against a correct register, 500 seeds),
+> one hand-built violation per anomaly class, and
+> `a_tangled_history_returns_unknown_quickly`.
 > `a_reader_that_sees_both_halves_is_valid`,
 > `the_event_without_the_state_is_a_partial_commit`,
 > `the_state_without_the_event_is_a_partial_commit`: rule 8, both ways round.
@@ -148,6 +251,14 @@ violation.
 > `a_skip_over_a_record_is_a_missing_delivery` and
 > `a_subscriber_that_stops_short_is_a_missing_delivery`: rules 9 to 11, one
 > case each.
+> `two_brokers_opening_one_generation_is_a_violation` and
+> `one_broker_opening_several_generations_is_not`: rule 21.
+> `an_open_is_read_from_a_coloured_log_line`: the log line is read as the
+> broker writes it, colours and all.
+> `a_candidacy_is_read_from_its_log_line`,
+> `an_open_nobody_stood_for_is_not_an_election` and
+> `every_run_of_a_broker_is_read`: an election counts only an open its broker
+> stood for, and every earlier run's log is read.
 
 ## The campaign
 
@@ -322,6 +433,24 @@ it had started resumes or is dropped once it is back, and the heal waits up
 to 60s for no shard to be moving, as it does after a `MoveShard` or `Drain`.
 A killed leader's shards fail over only once it is back.
 
+The metadata nemesis (`FELIX_HISTORY_NEMESIS=metadata`, `RandomNemesis::metadata`)
+runs the control plane as a real three-member Raft group instead of one
+in-memory store: three members on their own redb directories, each serving the
+API, the expiry sweep and placement only while it leads, behind one address
+that forwards to any live member. It picks `MetadataKill` (one member),
+`MetadataKillLeader` and `MetadataPartitionLeader` (the leader cut off from the
+other two, both directions), mixed with broker kills. Brokers and the history
+checker run as always. After each fault the harness writes a tenant through
+the degraded group and records it once acknowledged. After the heal it restarts any member that is
+down and waits up to 60s for all three to agree: every acknowledged write
+present on every member, identical tenants, namespaces, streams, caches, shard
+assignments and node specs, and identical state, replica reports included,
+wherever two members sit at the same applied index. Members that never agree,
+or lose an acknowledged write, fail the run. A killed member shuts down
+cleanly in this process; a real crash, and two members down at once, are not
+exercised yet. Without the group the nemesis fails at its first fault, naming
+the missing group. The nightly workflow runs it with its own seed.
+
 The adversarial nemesis runs on four brokers (`Campaign::with_spare_broker`)
 with every list and the cache on three of them. The fourth broker matters in
 two ways. A drain now has somewhere to move a follower copy, so it changes the
@@ -341,6 +470,71 @@ A compound fault is healed in reverse order, except that a move or drain is
 healed last, because waiting for its moves to finish needs the brokers the
 other fault took away. If one part fails to heal, the rest are still healed
 and the first error is reported.
+
+### Elections without the control plane
+
+With the `replica_election` fleet feature on, a shard's followers elect a new
+leader among themselves when the old one dies, even if the control plane is
+down (see "Electing without the control plane" in
+[replication design](replication-design.md)). The `ElectWithoutControlPlane`
+fault is the history campaign's evidence for that claim. Only
+`RandomNemesis::election()` picks it, and only a campaign with the feature on
+can run it.
+
+Each fault goes like this, with the clients and subscribers running
+throughout:
+
+```mermaid
+sequenceDiagram
+    participant N as Nemesis
+    participant CP as Control plane
+    participant L as Leader
+    participant F as Followers
+    N->>CP: wait until the leader's shards have a caught-up replica
+    N->>CP: crash (state kept)
+    N->>L: SIGKILL
+    F->>F: suspect the leader, pre-vote, fence a majority
+    N->>F: probe each shard through the broker that opened it
+    Note over N,F: the hold, control plane still down
+    opt half the time
+        N->>L: start again while the control plane is down
+    end
+    N->>CP: recover
+    N->>L: start, or wait for the early start to be ready
+    N->>CP: liveness check, as after every heal
+```
+
+1. With the control plane up, the nemesis waits up to 30s until every shard
+   the chosen leader leads has a replica reported caught up and nothing in
+   flight. A follower only stands on a set its leader kept, so a fault
+   aimed too early would test nothing. If the wait fails, the fault is
+   logged as one that could not be injected and the run goes on. The test
+   fails only if no fault was healed at all, and prints how many were
+   skipped.
+2. It crashes the control plane and kills the leader.
+3. Within 20s (times `FELIX_TEST_TIMEOUT_SCALE`), each of the killed
+   leader's shards must have been opened at a later generation by another
+   broker that stood for election at that generation, as its log says, and
+   that broker must take a probe: an append for a list, a get for the cache. The control plane must still be down.
+   If not, the run fails, naming each shard and the last refusal. Each
+   shard that passes adds a line to the fault timeline naming the elected
+   broker, its generation, and how long it took.
+4. After the hold, half the time the killed broker is started again before
+   the control plane returns and given 3s. A broker started during an outage
+   stays out of elections until the control plane answers, so nothing
+   checks that it rejoins then. Rule 21 and the history checks still cover
+   whatever it does.
+5. The control plane comes back over the same store. The killed broker is
+   started (or its early start waited on), and the usual liveness check
+   runs.
+
+A campaign that runs this fault also finalizes `joint_fence` and
+`replica_election` on top of the lease-free features, and starts brokers with
+`FELIX_INTERNAL_ELECTION=true`, `FELIX_LEADER_SUSPECT_AFTER_MS=1000`,
+`FELIX_PUBLISH_QUORUM_TIMEOUT_MS=2000`, and `FELIX_TEST_FLEET_FEATURES`
+naming the election features. After the features are on, it writes each of
+the workload's assignments again, so each leader fences and keeps its set at
+the new generation. It refuses to run in `lease` mode.
 
 ### Liveness
 
@@ -460,6 +654,13 @@ faults a failing run printed, implement `Nemesis`.
 > lease-free campaign that pauses, kills or partitions whichever broker leads
 > the cache, in turn, leaves a valid history, and the cache changes leader at
 > least once, so its puts are written across a fenced promotion.
+> `replicas_elect_a_leader_while_the_control_plane_is_down`: a 90-second
+> lease-free campaign of `ElectWithoutControlPlane` faults leaves a valid
+> history, rule 21 included, with at least one fault healed, an elected
+> leader serving each killed leader's shards while the control plane was
+> down, and at least one open read from the logs.
+> `an_election_kills_a_leader_and_needs_elections`: the fault is aimed at a
+> leader, draws both heals, and asks for elections.
 > `a_power_loss_needs_on_commit_flushes_and_the_model` and
 > `a_control_plane_crash_interrupts_a_move_a_drain_or_a_failover`: a power
 > loss runs only with on-commit flushes, and a control plane crash lands
@@ -487,7 +688,7 @@ cargo test -p felix-cluster --test history -- --nocapture
 | `FELIX_HISTORY_SEED` | a fixed seed | The schedule's seed: a number, or `random` |
 | `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs. When set, the main campaign uses every fault family |
 | `FELIX_HISTORY_MODE` | `lease-free` for the main campaign, `lease` for the every-family one | `lease` or `lease-free`; see "Modes" |
-| `FELIX_HISTORY_NEMESIS` | `all` | Which faults the main campaign injects when `FELIX_HISTORY_DURATION_SECS` is set: `all` for every single kind on three brokers, `adversarial` for the compound kinds on four |
+| `FELIX_HISTORY_NEMESIS` | `all` | Which faults the main campaign injects: `all` for every single kind on three brokers and `adversarial` for the compound kinds on four (both only when `FELIX_HISTORY_DURATION_SECS` is set), or `election` for leader kills with the control plane down |
 
 ```bash
 FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 FELIX_HISTORY_MODE=lease-free \
@@ -502,18 +703,19 @@ a few times.
 Each active segment reserves blocks as it fills, up to a full segment. On a
 small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 
-The per-PR run uses the fixed seed and takes about a minute per test, cluster
-start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
+The per-PR run uses the fixed seed and takes one to three minutes per test,
+cluster start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
 it for 20 minutes as two jobs, one per nemesis (`all` and `adversarial`), each
 with its own random seed, in `lease-free` mode unless a manual run picks
 `lease`. Each prints its seed, mode and nemesis first, and in the job summary,
 so a red night can be replayed. Setting `FELIX_HISTORY_DURATION_SECS` is what
 switches the main campaign off the per-PR schedule, so replay a nightly seed
 with it, the mode and the nemesis set. A manual run takes `nemesis=both`,
-`all` or `adversarial`:
+`all`, `adversarial` or `election`:
 
 ```bash
 gh workflow run history.yml -f mode=lease-free -f duration_secs=1200 -f nemesis=adversarial
+gh workflow run history.yml -f mode=lease-free -f duration_secs=600 -f nemesis=election
 ```
 
 ## Reading a violation

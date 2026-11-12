@@ -17,7 +17,9 @@ publish = false
 serde = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
-# Only needed by the `lifecycle` module; optional so pure-library consumers of this
+# Only needed by `random::hash_state`.
+ahash = { workspace = true, optional = true }
+# Only needed by the `lifecycle` and `blocking` modules; optional so pure-library consumers of this
 # crate do not inherit an async runtime.
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
@@ -45,6 +47,10 @@ serde-saphyr = { workspace = true, features = ["deserialize"] }
 
 [features]
 default = []
+# `blocking::spawn`, the blocking pool a simulator can keep on its own runtime.
+blocking = ["dep:tokio"]
+# `random::hash_state`, a hasher a simulator can seed.
+hasher = ["dep:ahash"]
 # Signal handling, readiness gating, and bounded drain for service binaries.
 lifecycle = ["dep:tokio", "dep:tracing", "dep:metrics"]
 # `ToSchema` on the membership shapes, for the control plane's OpenAPI.
@@ -54,6 +60,9 @@ tls = ["dep:rustls", "dep:arc-swap", "dep:tokio", "dep:tracing"]
 # The test-only clock faults in `clock::fault`. Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []
+# `clock::sim`, which lets a simulator drive the clocks, in an optimised build.
+# Debug builds have it regardless.
+sim = []
 # The config-file YAML rules in `yaml`, for the service binaries.
 yaml = ["dep:serde-saphyr"]
 

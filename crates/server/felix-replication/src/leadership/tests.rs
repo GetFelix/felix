@@ -108,6 +108,9 @@ async fn broker_at(generation: u64) -> (Arc<Broker>, TempDir) {
 struct Replica {
     handler: ReplicaHandler,
     reachable: bool,
+    /// Runs with `FELIX_INTERNAL_FENCE=false`, so the pool never sends it a
+    /// fence.
+    fences: bool,
     _dir: TempDir,
 }
 
@@ -117,6 +120,7 @@ impl Replica {
         Self {
             handler: ReplicaHandler::new(broker, router_for(node_id)),
             reachable: true,
+            fences: true,
             _dir: dir,
         }
     }
@@ -182,6 +186,12 @@ impl PeerRequester for Replicas {
         message: InternalMessage,
     ) -> Result<InternalMessage, PeerError> {
         let replica = &self.replicas[node_id];
+        if !replica.fences {
+            return Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind: message.kind(),
+            });
+        }
         if !replica.reachable {
             return Err(PeerError::Unavailable {
                 node_id: node_id.to_string(),
@@ -375,4 +385,107 @@ async fn a_replica_whose_counters_took_a_newer_leader_refuses_the_round() {
         matches!(&answer, InternalMessage::ReplicateError(err) if err.code == felix_wire::internal::ErrorCode::FencedEpoch),
         "{answer:?}"
     );
+}
+
+/// **A replica that no longer takes the fence does not vouch.** A successor
+/// fenced both followers, which then restarted with
+/// `FELIX_INTERNAL_FENCE=false`. Their refusal to take the round says nothing
+/// about the processes the successor fenced, so the deposed leader must not
+/// read it as "no majority could have been fenced". GetFelix/felix#2161.
+#[tokio::test]
+async fn followers_that_restarted_without_the_fence_do_not_confirm_a_read() {
+    let mut replicas = Replicas::new().await;
+    for replica in replicas.replicas.values_mut() {
+        replica.fenced_at(LEADING + 1).await;
+        replica.fences = false;
+    }
+    let replicas = Arc::new(replicas);
+    let (index, _dir) = read_index(&replicas, LEADING).await;
+    let refused = index
+        .confirm(&key(), LEADING)
+        .await
+        .expect_err("a read confirmed by followers that never took the round");
+    assert!(
+        matches!(refused, QuorumError::LeadershipLost { .. }),
+        "{refused:?}"
+    );
+}
+
+/// The leader serving the shard at [`LEADING`], with a valid lease.
+struct Leads;
+
+impl crate::quorum::ShardServing for Leads {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(LEADING)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// **`engine::bind_read_rounds` gives a state read its round.** In a fleet
+/// that reads by round, a read on a leader whose replicas took a newer fence
+/// is refused once the round is bound, waits out the round's timeout when
+/// the replicas do not answer, and is left to the lease when the operator
+/// kept reads there.
+#[tokio::test]
+async fn bound_read_rounds_confirm_a_state_read_against_the_replicas() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.observe(names);
+    let replicas = Arc::new(Replicas::new().await);
+    for replica in replicas.replicas.values() {
+        replica.fenced_at(LEADING + 1).await;
+    }
+    let (broker, _dir) = broker_at(LEADING).await;
+    let bind = |marks: &crate::quorum::QuorumMarks, timeout: Duration, by_lease: bool| {
+        crate::engine::bind_read_rounds(
+            marks,
+            Arc::clone(&replicas),
+            Arc::clone(&broker),
+            router_for(LEADER),
+            timeout,
+            by_lease,
+        );
+    };
+    let confirm = crate::quorum::confirm_state_read::<Leads>;
+
+    let marks = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    confirm(&key(), Some(&marks), Some(&Leads))
+        .await
+        .expect("no round bound: the lease decides");
+    bind(&marks, Duration::from_secs(5), false);
+    confirm(&key(), Some(&marks), Some(&Leads))
+        .await
+        .expect_err("the replicas follow a newer leader");
+
+    let kept = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    bind(&kept, Duration::from_secs(5), true);
+    confirm(&key(), Some(&kept), Some(&Leads))
+        .await
+        .expect("kept on the lease");
+
+    let silent = crate::quorum::QuorumMarks::with_fleet(Arc::clone(&fleet));
+    let timeout = Duration::from_millis(300);
+    bind(&silent, timeout, false);
+    replicas.open.send_replace(false);
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    confirm(&key(), Some(&silent), Some(&Leads))
+        .await
+        .expect_err("no replica answered");
+    assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+    assert!(started.elapsed() < timeout * 2, "{:?}", started.elapsed());
 }

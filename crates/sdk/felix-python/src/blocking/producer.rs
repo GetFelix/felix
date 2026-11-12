@@ -6,6 +6,7 @@ use bytes::Bytes;
 use pyo3::prelude::*;
 
 use crate::errors::to_py_err;
+use crate::handed::{Handed, Slot};
 use crate::producer::{Core, check_batches, check_payloads, timeout_of};
 use crate::runtime::block_on;
 
@@ -82,6 +83,83 @@ impl ProducerHandle {
                 .await
                 .map_err(to_py_err)
         })
+    }
+
+    /// Queue a batch and return once it is queued, without waiting for the
+    /// leader. Returns a `Handed`; `handed.offset()` gives what `publish_batch`
+    /// returns. Calls handed off one after another are sent in that order,
+    /// which concurrent `publish_batch` calls do not promise. The batch is
+    /// sent whether or not you wait, and a failure shows only when you read the answer.
+    #[pyo3(signature = (tenant_id, namespace, stream, payloads, *, key=None))]
+    fn hand_off_batch(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        payloads: Vec<Vec<u8>>,
+        key: Option<&[u8]>,
+    ) -> PyResult<Handed> {
+        check_payloads(&payloads)?;
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let key = key.map(Bytes::copy_from_slice);
+        let handed = block_on(py, async move {
+            core.hand_off_batch(&tenant_id, &namespace, &stream, key, payloads)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(Handed::new(Slot::new(handed)))
+    }
+
+    /// `publish_batches` up to the hand-off. `handed.done()` waits for success.
+    fn hand_off_batches(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        batches: Vec<Vec<Vec<u8>>>,
+    ) -> PyResult<Handed> {
+        check_batches(&batches)?;
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let handed = block_on(py, async move {
+            core.hand_off_batches(&tenant_id, &namespace, &stream, batches)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(Handed::new(Slot::new(handed)))
+    }
+
+    /// `abandon_in_doubt` up to the hand-off. `handed.done()` waits for success.
+    fn hand_off_abandon(
+        &self,
+        py: Python<'_>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> PyResult<Handed> {
+        let core = Arc::clone(&self.core);
+        let (tenant_id, namespace, stream) = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let handed = block_on(py, async move {
+            core.hand_off_abandon(&tenant_id, &namespace, &stream)
+                .await
+                .map_err(to_py_err)
+        })?;
+        Ok(Handed::new(Slot::new(handed)))
     }
 
     /// Publish several batches to shard 0, once each, under consecutive

@@ -1,16 +1,18 @@
 //! What a publish does once the scheduler hands it to an executor, and the
 //! publish context every connection derives its own from.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::Broker;
+use felix_replication::engine::Engine;
 use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::task::TaskTracker;
 
+use super::direct::first_offset;
 use super::scheduler::{LaneGuard, PublishScheduler};
 use super::{ConnLimits, IdentityKey, PublishAdmission, PublishContext, PublishJob, PublishTarget};
 use crate::config::BrokerConfig;
@@ -46,13 +48,13 @@ pub(crate) fn build_tracked_publish_context(
     work: &TaskTracker,
 ) -> PublishContext {
     let ClusterContext {
-        ingress,
+        engine,
         peers,
         lease,
-        marks,
         client_endpoints,
         shard_status,
     } = cluster;
+    let ingress = engine.serving().cloned();
     let quorum_timeout = std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1));
     // Process-wide, not per connection: executors bound how many publishes
     // are inside broker state at once, and one pool per connection turned
@@ -70,7 +72,7 @@ pub(crate) fn build_tracked_publish_context(
     let lanes = Arc::new(LaneWork {
         broker,
         peers: peers.clone(),
-        marks: marks.clone(),
+        engine: Arc::clone(&engine),
         ingress: ingress.clone(),
         quorum_timeout,
         // A forward that outlasts this is cut off with its own answer rather
@@ -115,7 +117,7 @@ pub(crate) fn build_tracked_publish_context(
         lease,
         lease_headroom: lease_headroom(config),
         client_endpoints,
-        marks,
+        engine,
         shard_status,
         quorum_timeout,
         scheduler,
@@ -147,7 +149,7 @@ pub(crate) fn build_tracked_publish_context(
 struct LaneWork {
     broker: Arc<Broker>,
     peers: Option<Arc<felix_replication::peer::PeerPool>>,
-    marks: Option<Arc<felix_replication::quorum::QuorumMarks>>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
     ingress: Option<Arc<crate::shards::routing::IngressRouter>>,
     quorum_timeout: Duration,
     forward_budget: Duration,
@@ -335,45 +337,22 @@ impl LaneWork {
             }
         };
         let broker = Arc::clone(&self.broker);
-        let marks = self.marks.clone();
-        let ingress = self.ingress.clone();
+        let engine = Arc::clone(&self.engine);
         let quorum_timeout = self.quorum_timeout;
         self.work.spawn(async move {
             let ClaimGroup { members, fences } = group;
-            // Answered before the fanout, so the acks do not queue behind
-            // the work of waking every subscriber. A `Quorum` answer waits
-            // for its quorum, so it keeps the old order.
-            if handle.consistency() != felix_broker::ConsistencyLevel::Quorum {
-                broker
-                    .complete_publish_answering(claimed, |completed| {
-                        let result = completed
-                            .map(|outcome| first_offset(&outcome))
-                            .map_err(Into::into);
-                        settle_group(members, shard.as_ref(), result);
-                    })
-                    .await;
-                drop(fences);
-                drop(slot);
-                return;
-            }
-            let completed = broker.complete_publish(claimed).await;
-            drop(fences);
-            let result = match completed {
-                // One wait for the group's last offset: the mark is
-                // monotonic, so it covers every member at once.
-                Ok(outcome) => felix_replication::quorum::await_quorum(
-                    &handle,
-                    shard.as_ref(),
-                    &outcome,
-                    marks.as_deref(),
-                    ingress.as_deref(),
-                    quorum_timeout,
-                )
-                .await
-                .map(|()| first_offset(&outcome)),
-                Err(err) => Err(err.into()),
-            };
-            settle_group(members, shard.as_ref(), result);
+            super::direct::finish_claimed(
+                &broker,
+                &handle,
+                shard.as_ref(),
+                claimed,
+                fences,
+                generation,
+                &engine,
+                quorum_timeout,
+                |result| settle_group(members, shard.as_ref(), result),
+            )
+            .await;
             drop(slot);
         });
     }
@@ -520,20 +499,20 @@ impl LaneWork {
             Ok(outcome) if handle.consistency() == felix_broker::ConsistencyLevel::Quorum => {
                 let handle = handle.clone();
                 let shard = shard.clone();
-                let marks = self.marks.clone();
-                let ingress = self.ingress.clone();
+                let engine = Arc::clone(&self.engine);
                 let quorum_timeout = self.quorum_timeout;
+                let generation = *generation;
                 self.work.spawn(async move {
-                    let result = felix_replication::quorum::await_quorum(
-                        &handle,
-                        shard.as_ref(),
-                        &outcome,
-                        marks.as_deref(),
-                        ingress.as_deref(),
-                        quorum_timeout,
-                    )
-                    .await
-                    .map(|()| first_offset(&outcome));
+                    let result = engine
+                        .await_commit(
+                            &handle,
+                            shard.as_ref(),
+                            &outcome,
+                            generation,
+                            quorum_timeout,
+                        )
+                        .await
+                        .map(|()| first_offset(&outcome));
                     settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
                 });
             }
@@ -606,16 +585,17 @@ impl LaneWork {
             // A duplicate waits on the same quorum the original did: its
             // offsets are the original's, and the answer must mean the same
             // thing, so it reports the original's offset too.
-            Ok(idempotent) => felix_replication::quorum::await_quorum(
-                handle,
-                shard.as_ref(),
-                &idempotent.outcome,
-                self.marks.as_deref(),
-                self.ingress.as_deref(),
-                self.quorum_timeout,
-            )
-            .await
-            .map(|()| first_offset(&idempotent.outcome)),
+            Ok(idempotent) => self
+                .engine
+                .await_commit(
+                    handle,
+                    shard.as_ref(),
+                    &idempotent.outcome,
+                    *generation,
+                    self.quorum_timeout,
+                )
+                .await
+                .map(|()| first_offset(&idempotent.outcome)),
             Err(err) => Err(err),
         };
         settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
@@ -783,12 +763,6 @@ fn headers_unsupported(
         .into(),
         _ => err.into(),
     }
-}
-
-/// The offset a successful publish reports: its first record's, when the
-/// stream has a log.
-fn first_offset(outcome: &felix_broker::PublishOutcome) -> Option<u64> {
-    outcome.offsets.map(|(first, _)| first)
 }
 
 /// Run a publish executor, starting a fresh one on the same queue whenever it

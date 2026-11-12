@@ -115,6 +115,7 @@ fn a_counter_fence_needs_the_cache_fence() {
     };
     let fetch = |log| {
         InternalMessage::ReplicateFetch(ReplicateFetch {
+            writers: false,
             timed: false,
             headers: false,
             correlation_id: 0,
@@ -161,6 +162,7 @@ fn a_batch_holding_a_trim_needs_head_trim() {
     use felix_wire::internal::{ProducerMark, ReplicateRecords, ShardRef};
     let batch = |marks: Vec<ProducerMark>| {
         InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+            writers: None,
             correlation_id: 0,
             shard: ShardRef {
                 tenant_id: "t1".into(),
@@ -228,6 +230,7 @@ fn election_messages_need_election() {
                 members: Vec::new(),
             },
             leaving: None,
+            earlier: Vec::new(),
         }),
     });
     assert_eq!(
@@ -252,6 +255,7 @@ fn election_messages_need_election() {
     );
     let batch = |set_generation| {
         InternalMessage::ReplicateRecords(ReplicateRecords {
+            writers: None,
             correlation_id: 0,
             shard: shard.clone(),
             first_offset: 0,

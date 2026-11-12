@@ -29,6 +29,7 @@ fn moving_router_at(replicas: &[&str], successor: &str, generation: u64) -> Arc<
             fence_storage_ids: Default::default(),
             member_storage_ids: Default::default(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -52,9 +53,9 @@ async fn pass(
         &QuorumMarks::new(),
         None,
         cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         throttle,
     )
@@ -93,7 +94,7 @@ async fn a_move_destination_is_held_to_the_limit() {
     // Four bytes a second: the first batch spends it, and the next is
     // seconds away.
     let throttle = MoveThrottle::new(4);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     pass(&follower, &broker, &router, &throttle, &mut cursors).await;
     assert_eq!(shipped_to(&follower, "broker-b"), 3);
@@ -119,7 +120,7 @@ async fn a_destination_the_quorum_needs_is_not_held_back() {
     let router = moving_router(&["broker-c"], "broker-c");
     let follower = AcceptingFollower::default();
     let throttle = MoveThrottle::new(4);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     pass(&follower, &broker, &router, &throttle, &mut cursors).await;
     append(&broker, 3).await;
@@ -134,7 +135,7 @@ async fn a_learner_is_held_to_the_limit() {
     let (broker, _dir) = leader_with(3).await;
     let follower = AcceptingFollower::default();
     let throttle = MoveThrottle::new(4);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // Led alone first, so the destination is one the move added.
     pass(
@@ -162,7 +163,7 @@ async fn the_remainder_after_the_fence_is_not_paced() {
     let (broker, _dir) = leader_with(3).await;
     let follower = AcceptingFollower::default();
     let throttle = MoveThrottle::new(4);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let copying = moving_router(&["broker-b", "broker-c"], "broker-c");
     pass(&follower, &broker, &copying, &throttle, &mut cursors).await;

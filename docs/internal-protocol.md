@@ -116,8 +116,13 @@ never have dialled the one that shipped to it.
 | `1 << 13` | `FORWARD_INCARNATION` | reads a forwarded publish or cache op inside an `Incarnated` frame, and refuses one whose incarnation is not the one its routes name (see "Naming the stream incarnation") |
 | `1 << 14` | `HEAD_TRIM` | reads a head trim's mark (byte `5`) in a records batch and stores the trim record, applying its floor on a `Quorum` stream only once its commit offset passes the record. A batch holding a trim goes only to a peer that offered it |
 | `1 << 15` | `LEARNER_ACKS` | offered by a caller: it reads `ReplicateLearnerOk`, so a follower whose copy is a learner answers it with that kind (see "A learner's answers" under "Replication") |
+| `1 << 16` | `KEPT_SETS` | keeps every set an election fence names and every set its log kept from generations that never opened, and reads `ElectionKeptFence`. A joint fence counts only replicas that offer it (see "Electing without the control plane") |
 | `1 << 17` | `RECORD_HEADERS` | reads `ReplicateHeaderedRecords` and stores each record's key-and-headers block with it, answers `ReplicateHeaderedFetch`, and reads `HeaderedForwardPublish`. A peer that offers it also offers `GENERATION_LABELS` and `RECORD_TIMES`. A batch or forward holding a block goes only to a peer that offered it |
 | `1 << 18` | `SEQUENCED_FORWARDS` | reads `SequencedForwardPublish` and applies it as the named producer's idempotent batch, answering a batch its log already holds with that batch's offsets (see "A forward that names its producer"). It goes only to a peer that offered both this and `RECORD_HEADERS` |
+| `1 << 19` | `REFUSAL_REASONS` | offered by a caller: it reads a `ReplicateError`'s reason fields, so a refusal to it carries them after the detail (see "Refusal reasons" under "Errors") |
+| `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
+| `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
+| `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 
 #### Storage identity
 
@@ -235,11 +240,35 @@ Responses are matched within the connection they arrive on and nowhere else.
 
 Responses on one stream need not come back in request order. A broker answers
 `ForwardPublish` and `ForwardCacheOp` as each finishes, up to 256 at once per
-stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker,
-and every other request on that stream in turn. A forward past either limit
-is refused as `Overload` rather than queued, since queueing would stall the
-stream. Requesters have always matched by correlation id alone, so this needs
-no capability bit.
+stream and `FELIX_INTERNAL_MAX_SERVED_FORWARDS` (4096) across the broker.
+A forward past either limit is refused as `Overload` rather than queued, since
+queueing would stall the stream. Record batches (`ReplicateRecords`,
+`ReplicateMarkedRecords` and the records of the group, dead-letter, counter
+and cache logs) are also stored side by side and answered as each finishes,
+up to 16 at once per stream; past that the broker stops reading the stream
+until one finishes. A batch is not refused like a forward, because the leader
+would only send it again. So one stream holds at most 17 batches in memory: 16
+being stored and one read. Across every connection a broker stores at most 256
+batches at once, each about the leader's 1 MiB batch budget plus one record,
+so a follower holds roughly 256 MiB of batches however many peers and streams
+it serves. One peer node, on any of its connections, holds at most 64 of those
+256, so a peer whose stores stall cannot starve the others. A stream that
+finds either limit taken also stops reading. Raising `FELIX_INTERNAL_STREAMS_PER_CONN` or
+`FELIX_INTERNAL_CONNS_PER_PEER` past 64 batches per peer meets the per-peer
+limit. Before its `Hello` a connection has a limit of its own; peers are
+trusted, and the pool always sends `Hello` first. A batch whose handler overruns this broker's peer
+request timeout ends its stream, as an overrun request answered in turn does,
+but only for a requester that offered stream renewal; an older requester's
+stream waits for it. The overrun handler runs on and keeps its place in the
+broker-wide limit until it finishes. Every other request on a stream,
+bootstraps and rebuilds included, is answered in turn. Requesters have always matched by correlation
+id alone, so this needs no capability bit.
+
+Record batches are not answered in turn because a leader ships many shards at
+once over a few streams. Stored one at a time, a batch waited behind every
+batch ahead of it on its stream, so the leader's round trip grew with the
+number of shards it was shipping while each store stayed fast
+([#1968](https://github.com/GetFelix/felix/issues/1968)).
 
 ## Flows
 
@@ -722,6 +751,36 @@ leader's only in its block answers `LogConflict` on a resend, and a block
 altered in transit is refused as corrupt. A batch with no block anywhere
 travels as before and checksums as before.
 
+**The generation that wrote each record** rides with a batch to a follower
+that offered `WRITER_GENERATIONS`, once the leader's log stamps records (it is
+on storage format v9) or the fleet has finalized `record_generations`. Until
+then the leader sends the kinds it always did, byte for byte, even to a
+follower that offers the bit. Such a batch travels as
+`ReplicateStampedRecords` (kind 55): the kind 49 body, then `count u32` and
+`count` pairs of `generation u64` and `start_offset u64`. Each pair is a run:
+it covers the records from its `start_offset` up to the next pair's, the last
+to the end of the batch. A batch with no block anywhere sends the blocks
+section as all absent, which a decoder accepts on this kind only and reads as
+no headers. A decoder
+refuses a `count` over 512 or over what the body could hold; on a batch with
+records, a `count` of zero, a first `start_offset` other than `first_offset`,
+offsets that do not strictly increase or reach past the last record, and
+generations that do not strictly increase; and on an empty batch, any run. The
+encoder refuses a shape the decoder would. The runs are not covered by the
+checksum. A batch without them travels as before, byte for byte. A run at
+generation 0 covers records whose writer the sender does not know (it holds
+them in a segment older than v9); the follower stores them as such, and the
+generation floor skips them.
+
+A follower whose log stamps each record with its writer's generation never
+stamps its own. It refuses a batch without runs with `UnsupportedKind`, storing
+nothing. A leader that hears that refusal from a follower offering
+`WRITER_GENERATIONS` sends it runs from then on, whether or not its own log
+stamps records yet. It answers
+`LogConflict` to a run below the generation of the record before it, storing
+nothing and truncating nothing: the leader halts that follower as diverged, and
+a rebuild is the way back.
+
 A follower stores each block with its record, so its log reads back what the
 leader's does. Only a stream's log carries blocks; a headered batch for any
 other log is refused as `Malformed`. A leader whose follower did not offer
@@ -826,6 +885,35 @@ its last record, its commit offset, and the generation its last record was
 written at. See `docs/replication-design.md`, "Fencing a promotion", for what
 the leader does with it.
 
+`FenceKeptOk` (kind 53) is the same answer with the same body, plus an
+attestation the kind carries: before this fence, the replica's ballot named
+the sender at the generation right before the fence's, and its data directory
+kept every ballot it took (an unclean crash of that directory, never a wipe or
+a restore). A leader moving on to the next generation of a shard it serves
+counts an answer from a copy it does not expect only with this attestation.
+Only a caller that offered `KEPT_BALLOTS` gets kind 53. To any other the
+replica sends `FenceOk`, byte for byte as before.
+
+`FenceAttestedOk` (kind 54) is the `FenceOk` body followed by the replica's
+attestation of its copy:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kept_from` | u64 | the set generation from which the copy's promises count: zero when its data directory never lost a ballot, otherwise the generation of the set that readmitted it |
+| flags | u8 | bit 0 `trusted`: the copy holds every record its seat acknowledged (a clean start, or a batch since that left it level through the shipping leader's acknowledged mark). Bit 1: the kept ballot `FenceKeptOk` would carry. Bit 2: `trusted` rests only on the control plane's `readmitted` record, which a leader that does not count readmissions ignores. Any other bit is refused |
+
+It is for a leader that counts a fence's promises and its coverage of
+acknowledged records separately: promises from copies that kept their
+ballots, coverage from trusted copies. Only a caller that offered
+`UNIFIED_FENCE` gets kind 54. To any other the replica drops the attestation
+and answers with `FenceKeptOk` or `FenceOk` as before. A replica attests on
+every answer for a shard's own log (never a group or counter log). A broker
+with `FELIX_UNIFIED_FENCE=0`, or a memory-only one, neither offers
+`UNIFIED_FENCE` nor attests, and answers as before. `kept_from` is `u64::MAX`
+(counts for no set) for a learner, a copy with an unkept ballot, and a copy
+that lost its ballots and was not readmitted (`docs/replication-design.md`,
+"Readmission and elections").
+
 | The replica | Answer |
 | --- | --- |
 | has accepted this generation or an older one, and its routing view is not past it | persists it, `FenceOk` |
@@ -835,6 +923,29 @@ the leader does with it.
 | has no copy of the named log to keep the promise in | `Unauthorized` |
 | led the shard before a crash that may have cost it acknowledged records, no newer leader has shipped to it since, and a set of two did not acknowledge what it may have lost: its last record is from an earlier generation than the one it accepted, or the route is not the failover straight after it with the same two members that failover's `fence_storage_ids` names, or the fence is not at the route's generation from the route's leader | `Unavailable`; retried, and the leader waits for a majority without it (`docs/replication-design.md`, "A leader's own crash") |
 | predates the kind, or runs with `FELIX_INTERNAL_FENCE=false` | `UnsupportedKind`; the leader should never have sent it |
+
+To a caller that offered `UNIFIED_FENCE`, the shard's own log answers
+`FenceAttestedOk` where it would refuse a learner (`Unauthorized`), or the copy
+it led before a crash (`Unavailable`, the set-of-two check included). The
+attestation says what the answer counts for: a learner's `kept_from` is
+`u64::MAX`, and a crashed leader's copy is not trusted. That includes a
+learner whose ballot names the fencing leader at the generation before, which
+an older caller counts: a unified fence gives a learner a ballot, so its
+ballot may be one taken while its promises counted for nothing; the
+replica records the copy as unkept before writing it, so an older caller
+does not count it after a crash either. A crashed leader's copy is recorded
+as doubted before its ballot, so it stays untrusted after a clean restart;
+if that record cannot be written the fence is refused `StorageFailed`. A
+learner's answer that counts for no set does not make this replica route the
+shard to a candidate. Three cases still refuse:
+
+- a copy given up on disk before a clean restart (`Unavailable`);
+- a copy with evidence of a wipe while the `joint_fence` gate is unread
+  (`Unavailable`, retried until the gate is read);
+- every group or counter log.
+
+The ballot and set refusals hold for every caller. No broker offers the bit
+yet, so every fence on the wire is still answered as the table says.
 
 The fence comes with a promotion, usually before the replica's routing view
 has the new generation, so a replica that is behind takes it rather than
@@ -857,7 +968,12 @@ the tail the leader takes keeps its generations. `ReplicateTimedFetch` (kind
 and is answered with `ReplicateTimedRecords`, so the tail keeps its times
 too. `ReplicateHeaderedFetch` (kind 50) goes to a replica that also offered
 `RECORD_HEADERS` and is answered with `ReplicateHeaderedRecords` when any
-record in the page has a block, so the tail keeps its keys and headers. A
+record in the page has a block, so the tail keeps its keys and headers. `ReplicateStampedFetch` (kind 56), the same body again, goes to a replica that
+also offered `WRITER_GENERATIONS` and is answered with
+`ReplicateStampedRecords`, so the tail keeps the generation that wrote each
+record. A promoting leader asks for them only once its own log stamps records,
+as above. The kind reads back as a headered fetch, so an encoder refuses a
+fetch that asks for writers without asking for headers. A
 replica refuses with `UnsupportedKind` a fetch that did not ask for blocks
 when its page holds one: the leader would take those records bare.
 
@@ -900,6 +1016,12 @@ member the node id (`u16` length, bytes), a flags byte and, when bit 0 is
 set, the 16-byte storage id. Bit 1 marks a learner, which is listed and not
 counted. This is the layout of the replica-set file. A fence with none of it
 is the original kind 29.
+
+`ElectionKeptFence` (kind 48) is `ElectionFence` followed by the older sets
+the fence also needs a majority of: a count (`u16`, 1 to 16) and the sets,
+each older than the fence's set. A replica keeps them beside the set being
+left. It goes only to a peer that offered `KEPT_SETS`; a fence with no older
+set is kind 41, byte for byte as before.
 
 `SetStamped` (kind 42) wraps a records batch of any log, the same way
 `Incarnated` wraps a request: the correlation id, the generation of the set
@@ -1038,6 +1160,27 @@ Typed, because they need different responses:
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
 | `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to that kind | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
 
+### Refusal reasons
+
+A replica's `ReplicateError` names why it refused in `detail`, as text.
+To a caller that offered `REFUSAL_REASONS` it also sends the reason as
+fields after the detail, and the leader reads those instead of the text:
+
+```text
+u8 tag    1 PromisedTo: u64 generation, u32+bytes leader
+          2 Accepted:   u64 accepted, u64 sender
+          3 View:       u64 have, u64 sender
+          4 Assigned:   u64 assigned, u64 sender
+          5 NotAReplica
+          6 NotVoter
+```
+
+`sender` is the generation the refused request named, so a reason is read
+only for the request it answers. A tag the reader does not know fails the
+decode rather than reading as no reason. Any other caller gets the original
+body, byte for byte, and reads the detail as it always has; a leader falls
+back to the detail whenever the fields are absent.
+
 `ReplicateBootstrap` is kind 10, `ReplicateRebuild` kind 24,
 `ReplicateMarkedRecords` kind 25, `ReplicateCommittedRecords` kind 26,
 `HelloCapable` 27, `HelloCapableOk` 28, `Fence` 29, `FenceOk` 30,
@@ -1046,8 +1189,11 @@ Typed, because they need different responses:
 `ReplicateTimedFetch` 37, `Incarnated` 40, `ElectionFence` 41,
 `SetStamped` 42, `PreVote` 43, `PreVoteAnswer` 44, `LeaseForwardCacheOp` 45,
 `LeaseForwardCacheOk` 46, `ReplicateLearnerOk` 47,
-`ReplicateHeaderedRecords` 49, `ReplicateHeaderedFetch` 50,
-`HeaderedForwardPublish` 51 and `SequencedForwardPublish` 52. A peer
+`ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
+`ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
+`SequencedForwardPublish` 52, `FenceKeptOk` 53 and
+`FenceAttestedOk` 54, `ReplicateStampedRecords` 55 and
+`ReplicateStampedFetch` 56. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

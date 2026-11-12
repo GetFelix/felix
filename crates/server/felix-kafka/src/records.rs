@@ -26,7 +26,8 @@ use kafka_protocol::records::{
 
 /// Encode a page read straight from the log, from `start` up to `end`: its
 /// client records as one batch, then an empty batch over the offsets after
-/// the last of them, which hold generation-start or trim records.
+/// the last of them, which hold records that are not data (see
+/// `RecordMark::is_data`).
 ///
 /// A gap before or between client records needs nothing, since each record
 /// carries its own offset delta. A trailing run does: a consumer would keep
@@ -40,7 +41,7 @@ pub(crate) fn encode_page(
 ) -> anyhow::Result<(Bytes, usize)> {
     let visible: Vec<LogRecord> = records
         .iter()
-        .filter(|record| !record.mark.is_generation_start())
+        .filter(|record| record.mark.is_data())
         .cloned()
         .collect();
     let mut out = BytesMut::from(encode_batch(&visible)?.as_ref());

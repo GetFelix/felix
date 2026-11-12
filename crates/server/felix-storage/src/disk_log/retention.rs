@@ -141,7 +141,7 @@ impl LogInner {
             return offloaded.map(|_| RetentionOutcome::default());
         }
         let inner = Arc::clone(&self);
-        let retained = tokio::task::spawn_blocking(move || -> Result<RetentionOutcome> {
+        let retained = felix_common::blocking::spawn(move || -> Result<RetentionOutcome> {
             let bounds = *inner.retention_bounds.lock();
             let mut outcome = if bounds.is_set() {
                 inner.retain(bounds)?
@@ -196,7 +196,12 @@ impl LogInner {
         // an older one, and recovery refuses the gap that leaves.
         for descriptor in &removed {
             remove_segment_files(&self.dir, descriptor.id)?;
-            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+            // A removal that may come back after a crash, behind a newer
+            // one that did not, is a gap recovery refuses.
+            self.poison_on_sync_failure(
+                "a segment removal",
+                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
+            )?;
             outcome.segments_deleted += 1;
             outcome.bytes_reclaimed += descriptor.size_bytes;
             #[cfg(test)]
@@ -299,7 +304,7 @@ impl LogInner {
         before: crate::log::Offset,
     ) -> Result<Vec<crate::log::SegmentDescriptor>> {
         let inner = Arc::clone(&self);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let manifest = inner.manifest.lock();
             inner.delete_head_before(&manifest, before)
         })
@@ -338,10 +343,15 @@ impl LogInner {
             removed
         };
         for descriptor in &removed {
-            #[cfg(all(test, target_os = "linux"))]
+            #[cfg(test)]
             super::segments::stop_point(&self.dir)?;
             remove_segment_files(&self.dir, descriptor.id)?;
-            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+            // A removal that may come back after a crash, behind a newer
+            // one that did not, is a gap recovery refuses.
+            self.poison_on_sync_failure(
+                "a segment removal",
+                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
+            )?;
         }
         Ok(removed)
     }

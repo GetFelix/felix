@@ -56,14 +56,29 @@ fetch_tools() {
   if [ -f "$JAR" ]; then return; fi
   mkdir -p "$(dirname "$JAR")"
   echo "fetching TLA+ tools ${TLA_VERSION}"
-  curl -sSL -o "$JAR.tmp" "$TLA_URL"
-  actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
-  if [ "$actual" != "$TLA_SHA256" ]; then
-    echo "tla2tools.jar checksum mismatch: $actual" >&2
+  # The release CDN has served a wrong body with a 200 now and then, so a
+  # mismatch is retried. Only a file that matches the pinned hash is kept.
+  local attempt actual delay
+  for attempt in 1 2 3 4; do
+    if curl -sSL --fail --retry 3 -o "$JAR.tmp" "$TLA_URL"; then
+      actual="$(shasum -a 256 "$JAR.tmp" | awk '{print $1}')"
+      if [ "$actual" = "$TLA_SHA256" ]; then
+        mv "$JAR.tmp" "$JAR"
+        return
+      fi
+      echo "tla2tools.jar checksum mismatch (attempt $attempt/4): $actual," \
+        "$(wc -c <"$JAR.tmp" | tr -d ' ') bytes, starts: $(head -c 200 "$JAR.tmp" | LC_ALL=C tr -cd '[:print:]')" >&2
+    else
+      echo "tla2tools.jar download failed (attempt $attempt/4)" >&2
+    fi
     rm -f "$JAR.tmp"
-    exit 1
-  fi
-  mv "$JAR.tmp" "$JAR"
+    if [ "$attempt" -lt 4 ]; then
+      delay=$((attempt == 1 ? 5 : attempt == 2 ? 15 : 30))
+      sleep "$delay"
+    fi
+  done
+  echo "tla2tools.jar could not be fetched with the pinned checksum" >&2
+  exit 1
 }
 
 # Run TLC on one configuration, printing its output; the exit code is TLC's.
@@ -81,12 +96,23 @@ tlc() {
   local module="FelixShard"
   case "$cfg" in
     FelixPlacementPacing*) module="FelixPlacementPacing" ;;
+    FelixShardWalkElectStaleSetReplay) module="FelixShardWalkElectStaleSetReplay" ;;
+    FelixShardWalkSparesSeatEarlyReplay) module="FelixShardWalkSparesSeatEarlyReplay" ;;
     FelixShardFigure8*) module="FelixShardFigure8" ;;
     FelixShardReads*) module="FelixShardReads" ;;
     FelixShardSessions*) module="FelixShardSessions" ;;
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixRaftMembership*) module="FelixRaftMembership" ;;
+    FelixRaftIdentity*) module="FelixRaftIdentity" ;;
+    FelixRaftReform*) module="FelixRaftReform" ;;
+    FelixRaftLease*) module="FelixRaftLease" ;;
+    FelixRaftSleep*) module="FelixRaftSleep" ;;
+    FelixRaftSwitch*) module="FelixRaftSwitch" ;;
+    FelixRaft*) module="FelixRaft" ;;
+    FelixShardUnified*) module="FelixShardUnified" ;;
+    FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
   esac
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
     -config "$cfg.cfg" "$module.tla")
@@ -114,7 +140,11 @@ tlc() {
 
 # Each configuration and what it must do. `pass`, or `violates <Invariant>`.
 expectations=(
+  "FelixShardWalkElectStaleSetReplay violates AckedHeldByLeader"
+  "FelixShardWalkSparesSeatEarlyReplay violates AckedHeldByLeader"
   "FelixShardLease pass"
+  "FelixShardLeaseAnyHeartbeat violates AtMostOneServing"
+  "FelixShardLeaseRoutesHeartbeat pass"
   "FelixShardLogOrder pass"
   "FelixShardThinMargin violates AtMostOneServing"
   "FelixShardRealMarginsLease pass"
@@ -128,9 +158,24 @@ expectations=(
   "FelixShardFigure8CutOverNoStartRecord violates AckedOnMajority"
   "FelixShardFigure8FollowerAcks pass"
   "FelixShardFigure8FollowerAcksNoStartRecord violates AckedOnMajority"
+  "FelixShardFigure8AckWait pass"
+  "FelixShardFigure8AckWaitByOffset violates AckedHeldByLeader"
   "FelixShardUnfencedAck violates AckedHeldByLeader"
   "FelixShardFencedAckAnyKept pass"
   "FelixShardFencedAckAnyReplaced violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeft violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownAny violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownRenames violates NeverRenameUnknownSet"
+  "FelixShardReplacedSetUnknownFirstRenames violates NeverRenameFirstUnknownSet"
+  "FelixShardReplacedSetUnknownMarkAny violates AckedHeldByLeader"
+  "FelixShardReplacedSetUnknownMarkRenames violates NeverRenameUnknownSet"
+  "FelixShardReplacedPendingLeftKept violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftKeptLogBatchDrops violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwice violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAll violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLog violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLogBatchDrops violates AckedHeldByLeader"
+  "FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor violates AckedHeldByLeader"
   "FelixShardFencedAckSeat pass"
   "FelixShardFencedAckGrow pass"
   "FelixShardFencedAckSeatPair pass"
@@ -229,6 +274,8 @@ expectations=(
   "FelixShardFencedAckStagedMoveShort pass"
   "FelixShardFencedAckMoveCancelShort pass"
   "FelixShardFencedAckMoveDestination violates AckedHeldByLeader"
+  "FelixShardFencedAckMovePromoted pass"
+  "FelixShardFencedAckMovePromotedReach violates NeverPromotesDestination"
   "FelixShardFencedCache pass"
   "FelixShardFencedCacheUnfenced violates AckedHeldByLeader"
   "FelixShardFencedCacheNoCounterCatchUp violates CountersHeldByLeader"
@@ -239,6 +286,10 @@ expectations=(
   "FelixShardElectRenameDue violates NeverRenameDue"
   "FelixShardElectRenameFencingDue violates NeverRenameWhileFencing"
   "FelixShardElectAdoptPromote pass"
+  "FelixShardElectReissue pass"
+  "FelixShardElectReissueReplace pass"
+  "FelixShardElectReissueReplaceBatchSet violates AdoptedMatchesOpened"
+  "FelixShardElectAdoptAboveKeptSet violates AdoptedMatchesOpened"
   "FelixShardElectAdoptFailoverApart0Gen2 pass"
   "FelixShardElectAdoptFailoverApart1Gen2 pass"
   "FelixShardElectAdoptFailoverApart0StoodGen2 pass"
@@ -260,6 +311,8 @@ expectations=(
   "FelixShardElectSwapDrop0 pass"
   "FelixShardElectSwapDrop1 pass"
   "FelixShardElectSwapDrop2 pass"
+  "FelixShardElectSwapDrop2DropsChange pass"
+  "FelixShardElectSwapKeep2DropsChange pass"
   "FelixShardElectSwapDrop0StoodOneDest pass"
   "FelixShardElectSwapDrop0StoodOneOther pass"
   "FelixShardElectSwapDrop0StoodSeveralOther pass"
@@ -292,6 +345,40 @@ expectations=(
   "FelixShardElectLive pass"
   "FelixShardElectLiveLoosePreVote violates NoStandAgainstHeardLeader"
   "FelixShardElectLiveNoBackoff violates liveness"
+  "FelixShardElectLiveReissue pass"
+  "FelixShardElectLiveNoReissue violates liveness"
+  "FelixShardElectLiveUnclean pass"
+  "FelixShardElectLiveUncleanOwnBallot violates liveness"
+  "FelixShardElectLiveUncleanLed pass"
+  "FelixShardElectUnclean pass"
+  "FelixShardElectUncleanNoStartRecord pass"
+  "FelixShardElectUncleanVouchOnShip violates AckedHeldByLeader"
+  "FelixShardElectUncleanForgetsLed violates AckedHeldByLeader"
+  "FelixShardCpLiveMain violates liveness"
+  "FelixShardCpLiveNoOverlayRefused violates liveness"
+  "FelixShardCpLiveNoHaltReported violates liveness"
+  "FelixShardCpLiveNoAboveReported violates liveness"
+  "FelixShardCpLiveReleased pass"
+  "FelixShardCpLiveReleasedNoAboveReported violates liveness"
+  "FelixShardCpLiveRefusalsCopyExcluded violates liveness"
+  "FelixShardCpLiveRefusalsPinsForever violates liveness"
+  "FelixShardElectRefusals pass"
+  "FelixShardElectRefusalsPinsCleared violates AckedHeldByLeader"
+  "FelixShardElectRenameMinorityDrop violates OneLeaderPerGeneration"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior violates liveness"
+  "FelixShardCpDownNoSelfSuspicion violates liveness"
+  "FelixShardCpDownBrokerSuspicion violates liveness"
+  "FelixShardCpDownDegraded violates liveness"
+  "FelixShardElectRouteLag pass"
+  "FelixShardElectRouteLagNoFix violates liveness"
+  "FelixShardElectRouteLagReportOnly pass"
+  "FelixShardElectRouteLagFence pass"
+  "FelixShardElectRouteLagFenceNoFix violates liveness"
+  "FelixShardElectRouteLagReportStore pass"
+  "FelixShardElectRouteLagReportStoreNoRepeat violates liveness"
+  "FelixShardElectRouteLagFenceReportStore pass"
+  "FelixShardElectRenameKeep1StoodOneOtherReportStore pass"
+  "FelixShardElectRenameDrop1StoodOneOtherReportStore pass"
   "FelixShardElectPreVote pass"
   "FelixShardElectNoBallotAcks violates AckedHeldByLeader"
   "FelixShardElectStepDown pass"
@@ -332,6 +419,17 @@ expectations=(
   "FelixShardElectWipeNonVoterGroupsKeepDropsMark violates CountersHeldByLeader"
   "FelixShardElectWipeNonVoterIdlessCreation pass"
   "FelixShardElectWipeNonVoterIdlessCreationExempt violates AckedHeldByLeader"
+  "FelixShardElectWipeNonVoterReclaim pass"
+  "FelixShardElectWipeNonVoterReclaimLive pass"
+  "FelixShardElectWipeNonVoterReclaimLivePassOnly violates liveness"
+  "FelixShardElectUncleanContinuing pass"
+  "FelixShardElectUncleanContinuingBatchBallot violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingAnyCopy violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingCountsForgotten violates OneLeaderPerGeneration"
+  "FelixShardElectUncleanContinuingRetry violates RetriedContinuingNeverOpens"
+  "FelixShardElectUncleanContinuingRetryBelowOnly pass"
+  "FelixShardElectUncleanContinuingRetrySafe pass"
+  "FelixShardElectUncleanContinuingDoubted pass"
   "FelixGroups pass"
   "FelixGroupsNoCheck violates NoSkip"
   "FelixGroupsLengthOnly violates NoSkip"
@@ -339,26 +437,243 @@ expectations=(
   "FelixGroupsSplitSources pass"
   "FelixGroupsSplitSourcesLengthOnly violates NoSkip"
   "FelixGroupsShipUnsynced violates NoSkip"
+  "FelixShardUnified pass"
+  "FelixShardUnifiedSets pass"
+  "FelixShardUnifiedReadmit pass"
+  "FelixShardUnifiedRestore pass"
+  "FelixShardUnifiedMixed pass"
+  "FelixShardUnifiedDropEvidenced pass"
+  "FelixShardUnifiedVouch pass"
+  "FelixShardUnifiedCountNonKept violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCoverFromDoubted violates AckedHeldByLeader"
+  "FelixShardUnifiedDropUnopenedLeaving violates AckedHeldByLeader"
+  "FelixShardUnifiedSkipCoverage violates AckedHeldByLeader"
+  "FelixShardUnifiedCountsWiped violates OneLeaderPerGeneration"
+  "FelixShardUnifiedAnyCopy violates OneLeaderPerGeneration"
+  "FelixShardUnifiedBatchBallot violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCountsForgotten violates OneLeaderPerGeneration"
+  "FelixShardUnifiedNamesByRegistration violates OneLeaderPerGeneration"
+  "FelixShardUnifiedTrustsRegistered violates AckedHeldByLeader"
+  "FelixShardUnifiedStandInNoCatchUp violates AckedHeldByLeader"
+  "FelixShardUnifiedVouchBelowStart violates AckedHeldByLeader"
+  "FelixShardUnifiedVouchMark pass"
+  "FelixShardUnifiedContinuingDoubted violates NoContinuingOnForeignBallot"
+  "FelixShardUnifiedContinuingDoubtedLegacy pass"
+  "FelixShardUnifiedCpLiveElectedFailover pass"
+  "FelixShardUnifiedCpLiveElectedFailoverLegacy violates liveness"
+  "FelixShardUnifiedCpLiveReadmitUnopened pass"
+  "FelixShardUnifiedCpLiveReadmitUnopenedLegacy violates liveness"
+  "FelixShardUnifiedCpLiveMoveDoubted pass"
+  "FelixShardUnifiedIdleVouch pass"
+  "FelixShardUnifiedIdleVouchLegacy violates liveness"
+  "FelixShardUnifiedIdleVouchWrite pass"
+  "FelixShardUnifiedVouchEmptyLegacy violates liveness"
+  "FelixShardUnifiedLearnerBlocking pass"
+  "FelixShardUnifiedLearnerBlockingTwo pass"
+  "FelixShardUnifiedLearnerVariantDropped violates AckedHeldByLeader"
+  "FelixShardMoveGiveUp pass"
+  "FelixShardMoveGiveUpStall violates liveness"
+  "FelixShardMoveGiveUpLeads violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpKeep pass"
+  "FelixShardMoveGiveUpKeepLive pass"
+  "FelixShardMoveGiveUpDrop violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpUnstage violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpTwoDrop violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpTwoKeep violates AckedHeldByLeader"
+  "FelixShardMoveGiveUpFourDrop pass"
+  "FelixShardMoveGiveUpFailoverDrop pass"
+  "FelixShardMoveGiveUpFailoverStall violates liveness"
+  "FelixShardMoveGiveUpFailoverLive pass"
+  "FelixShardUnifiedTwoRotated pass"
+  "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
+  "FelixShardUnifiedCpLiveMoveRotated pass"
+  "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
+  "FelixRaft pass"
+  "FelixRaftCrashes pass"
+  "FelixRaftTerms pass"
+  "FelixRaftTermsFull pass"
+  "FelixRaftFourTerms pass"
+  "FelixRaftSnapshot pass"
+  "FelixRaftSnapshotReplace pass"
+  "FelixRaftSnapshotCrashes pass"
+  "FelixRaftOffsets pass"
+  "FelixRaftOffsetsFailover pass"
+  "FelixRaftOffsetsFailoverCrash pass"
+  "FelixRaftOffsetsFull pass"
+  "FelixRaftAckBeforeFlush violates AckedSurvive"
+  "FelixRaftVoteNotDurable violates OneLeaderPerTerm"
+  "FelixRaftLeaderResumes violates LogMatching"
+  "FelixRaftTornTailKept violates LogMatching"
+  "FelixRaftTruncateNotDurable violates StateMachineSafety"
+  "FelixRaftRecoveredTailUnsynced violates AckedSurvive"
+  "FelixRaftSaveCommittedUnflushed violates AckedDelivered"
+  "FelixRaftPurgeBeforeSnapshot violates AckedSurvive"
+  "FelixRaftSnapshotTwoRenames violates StateMachineSafety"
+  "FelixRaftCommitPriorTerm violates LeaderCompleteness"
+  "FelixRaftDeliverUncommitted violates OffsetNeverReused"
+  "FelixRaftDeliverUncommittedDense violates OffsetsDense"
+  "FelixRaftSkipsNotCounted violates OffsetsDense"
+  "FelixRaftReachFailover violates NeverFailover"
+  "FelixRaftReachTruncate violates NeverTruncates"
+  "FelixRaftReachLostTail violates NeverLosesTail"
+  "FelixRaftReachSkips violates NeverSkipsBetweenRecords"
+  "FelixRaftReachInstall violates NeverInstallsSnapshot"
+  "FelixRaftReachInstallCrash violates NeverCrashesMidInstall"
+  "FelixRaftReachSnapshotReplace violates NeverReplacesSnapshot"
+  "FelixRaftReachDeliverFailover violates NeverDeliversAcrossFailover"
+  "FelixRaftMembership pass"
+  "FelixRaftMembershipFailover pass"
+  "FelixRaftMembershipSkipJoint violates OneLeaderPerTerm"
+  "FelixRaftMembershipChangeBeforeCommit violates StateMachineSafety"
+  "FelixRaftMembershipLearnerCounts violates AckedSurvive"
+  "FelixRaftMembershipClaimRaces violates NeverStops"
+  "FelixRaftMembershipReopenOnReturn violates NeverStops"
+  "FelixRaftMembershipReachMove violates NeverMoves"
+  "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
+  "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftIdentity pass"
+  "FelixRaftIdentityRelaxedCrash pass"
+  "FelixRaftIdentityRootRestore pass"
+  "FelixRaftIdentityDirRestore pass"
+  "FelixRaftIdentityMarkExact pass"
+  "FelixRaftIdentityWipeThenRestore pass"
+  "FelixRaftIdentityMarkBatched violates AckedHeldByLeader"
+  "FelixRaftIdentityRootRestoreSameRun violates OneLeaderPerTerm"
+  "FelixRaftIdentityWipeKeepsId violates LeaderCompleteness"
+  "FelixRaftIdentityNoRestoreCheck violates LeaderCompleteness"
+  "FelixRaftIdentityNoStorageIdCheck violates LeaderCompleteness"
+  "FelixRaftIdentityMarkForgetsCopy violates LeaderCompleteness"
+  "FelixRaftIdentityNoVoteMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityVoteBeforeMark violates OneLeaderPerTerm"
+  "FelixRaftIdentityRejoins violates NeverRejoins"
+  "FelixRaftIdentityRejoinLeads violates NeverRotatedLeads"
+  "FelixRaftIdentityRestoreCaught violates NeverRotates"
+  "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
+  "FelixRaftSwitch pass"
+  "FelixRaftSwitchLag pass"
+  "FelixRaftSwitchLagWipe pass"
+  "FelixRaftSwitchWiped pass"
+  "FelixRaftSwitchGenZero pass"
+  "FelixRaftSwitchStarts pass"
+  "FelixRaftSwitchDiffers pass"
+  "FelixRaftSwitchReseal pass"
+  "FelixRaftSwitchDigestCoversGeneration pass"
+  "FelixRaftSwitchAllVoters violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBase violates LeaderCompleteness"
+  "FelixRaftSwitchTermsBelowBaseCuts violates NeverCutsHeldRecord"
+  "FelixRaftSwitchNoDigest violates LeaderCompleteness"
+  "FelixRaftSwitchDigestFromOwnStart violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWrite violates LeaderCompleteness"
+  "FelixRaftSwitchBlindWriteTwoBases violates OneBase"
+  "FelixRaftSwitchStaleIdVotes violates LeaderCompleteness"
+  "FelixRaftSwitchReachCommit violates NeverCommitsAboveBase"
+  "FelixRaftSwitchReachPromote violates NeverPromotes"
+  "FelixRaftSwitchReachPromotedLeads violates NeverPromotedLeads"
+  "FelixRaftSwitchReachInstall violates NeverInstalls"
+  "FelixRaftSwitchReachGenZero violates NeverElects"
+  "FelixRaftSwitchReachWipedSwitch violates NeverSwitches"
+  "FelixRaftSwitchReachReseal violates NeverSwitchesAfterReseal"
+  "FelixRaftReform pass"
+  "FelixRaftReformTwoRotated pass"
+  "FelixRaftReformRejoin pass"
+  "FelixRaftReformStaleMembershipIntact pass"
+  "FelixRaftReformOneReplica pass"
+  "FelixRaftReformBeforeAll violates AckedSurvive"
+  "FelixRaftReformEpochNotChecked violates AckedSurvive"
+  "FelixRaftReformReportNotPromise violates AckedSurvive"
+  "FelixRaftReformOwnMembershipOnly violates AckedSurvive"
+  "FelixRaftReformRetireNotDurable violates AckedSurvive"
+  "FelixRaftReformBaseNotHighest violates AckedSurvive"
+  "FelixRaftReformRotatedNotWaited violates AckedSurvive"
+  "FelixRaftReformJoinKeepsReport violates AckedSurvive"
+  "FelixRaftReformNoCas violates StateMachineSafety"
+  "FelixRaftReformTwoRotatedOffsets violates OffsetNeverReused"
+  "FelixRaftReformCommits violates NeverCommitsAfterReform"
+  "FelixRaftReformOneReplicaCommits violates NeverCommitsAfterReform"
+  "FelixRaftReformSlow violates NeverSlowGroupElects"
+  "FelixRaftReformTwoRotatedOneVoter violates NeverOneVoterCommits"
+  "FelixRaftReformRejoinHappens violates NeverRetiredRejoins"
+  "FelixRaftReformStaleMembership pass"
+  "FelixRaftReformRejoinFull pass"
+  "FelixRaftSwitchGenZeroFull pass"
+  "FelixRaftMembershipTerms pass"
+  "FelixRaftReformTwoRotatedFull pass"
+  "FelixRaftReformStaleMembershipHappens violates NeverReformsAfterChange"
+  "FelixRaftReformStaleMembershipTwoRotated violates AckedSurvive"
+  "FelixRaftReformLearnerHolds violates AckedSurvive"
+  "FelixRaftReformLearnerWaited pass"
+  "FelixRaftLease pass"
+  "FelixRaftLeaseAck pass"
+  "FelixRaftLeaseDeliver pass"
+  "FelixRaftLeaseRestart pass"
+  "FelixRaftLeaseStore pass"
+  "FelixRaftLeaseStoreStall pass"
+  "FelixRaftLeaseStoreWide pass"
+  "FelixRaftLeaseRestartForgets violates LeaseExclusive"
+  "FelixRaftLeaseLong violates LeaseExclusive"
+  "FelixRaftLeaseDrift violates LeaseExclusive"
+  "FelixRaftLeaseFromAck violates LeaseExclusive"
+  "FelixRaftLeaseVoteInWindow violates LeaseExclusive"
+  "FelixRaftLeaseStoreNotDurable violates LeaseExclusive"
+  "FelixRaftLeaseStoreVote violates LeaseExclusive"
+  "FelixRaftLeaseStoreKept violates LeaseExclusive"
+  "FelixRaftLeaseStoreResupport violates LeaseExclusive"
+  "FelixRaftLeaseStoreWithdrawEarly violates LeaseExclusive"
+  "FelixRaftLeaseStoreLong violates LeaseExclusive"
+  "FelixRaftLeaseAckLong violates NoAckBehindNewLeader"
+  "FelixRaftLeaseDeliverUncommitted violates DeliveredNeverReplaced"
+  "FelixRaftLeaseReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseReachRenewed violates NeverLapsedThenRenewed"
+  "FelixRaftLeaseReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
+  "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
+  "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftSleep pass"
+  "FelixRaftSleepWrite pass"
+  "FelixRaftSleepLeaderDies pass"
+  "FelixRaftSleepLivenessMisses pass"
+  "FelixRaftSleepFalseAlarm pass"
+  "FelixRaftSleepRestart pass"
+  "FelixRaftSleepAnyState pass"
+  "FelixRaftSleepEnds pass"
+  "FelixRaftSleepNoWake violates QuiescentLed"
+  "FelixRaftSleepSleepUnsupported violates QuiescentLed"
+  "FelixRaftSleepCampaignOnWake violates NoNeedlessDeposal"
+  "FelixRaftSleepRestartNoHold violates NoNeedlessDeposal"
+  "FelixRaftSleepLeaderSleepsFirst violates NoNeedlessDeposal"
+  "FelixRaftSleepHeartbeatKeepsProposal violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollower violates NoNeedlessDeposal"
+  "FelixRaftSleepAskLost violates NoNeedlessDeposal"
+  "FelixRaftSleepHoldTooShort violates NoNeedlessDeposal"
+  "FelixRaftSleepAcceptUnchecked violates AsleepIsLevel"
+  "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
+  "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
+  "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
 # of set changes, and its negative twin, which must reach its violation
-# within the budget to show the walks get that far at all. The inherited-name
+# within the budget to show the walks get that far at all. The election and
+# spares families' twins are fixed traces instead
+# (FelixShardWalkElectStaleSetReplay, FelixShardWalkSparesSeatEarlyReplay,
+# checked with the others above): the walks found them only by chance. The inherited-name
 # configurations with promotions on suspicion are here too: they outgrow a
 # runner's disk exhaustively, so sampling them is what is left, as are the
 # crashed leader's refusal beside a seat (with and without the fence ids'
 # comparison) and beside a staged copy, voting or not. So is the unprobed
 # crash, which no longer finishes in a runner's six hours exhaustively (#1584);
 # ci.yml walks it per push, with its twin, which also stays an exhaustive check.
+# FelixShardElectUncleanContinuingDoubtedFull (the registered Doubted with one
+# client write) is walked too: exhaustively it passed 178M distinct states
+# unfinished in six hours, so the write case is sampled nightly while Doubted
+# (MaxWrites 0) stays exhaustive.
 walks=(
   "FelixShardWalkSpares pass"
-  "FelixShardWalkSparesSeatEarly violates AckedHeldByLeader"
   "FelixShardWalkMoves pass"
   "FelixShardWalkMovesDestination violates AckedHeldByLeader"
   "FelixShardWalkHandoff pass"
   "FelixShardWalkHandoffNoWait violates AtMostOneServing"
   "FelixShardWalkElect pass"
-  "FelixShardWalkElectStaleSet violates AckedHeldByLeader"
   "FelixShardWalkElectSwap pass"
   "FelixShardWalkElectSwapNoJoint violates AckedHeldByLeader"
   "FelixShardWalkElectRename pass"
@@ -377,6 +692,7 @@ walks=(
   "FelixShardShortCopyStagedVotesSetOnly violates AckedHeldByLeader"
   "FelixShardFencedCrashUnprobed pass"
   "FelixShardFencedCrashCountsUnnamed violates AckedHeldByLeader"
+  "FelixShardElectUncleanContinuingDoubtedFull pass"
 )
 registered=("${expectations[@]}")
 if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
@@ -402,6 +718,17 @@ if [ "$#" -gt 0 ]; then
   done
 fi
 
+# FelixShardCpDown, FelixShardCpDownPreVoteUnbounded and
+# FelixShardCpDownStandBehindDeadOnly are not registered: none finishes in
+# five hours in CI (docs/formal/README.md has how far each got). Nor are
+# FelixShardCpLive and FelixShardCpLiveNoStandBehindBallot, which run past a
+# pull request's hour, and FelixShardElectAdoptAboveKeptSetReissued, which
+# had not finished after seven minutes and 3.9M distinct states on a laptop.
+# FelixShardCpLiveRefusals does not finish on a laptop either, and its twin
+# FelixShardCpLiveRefusalsUnknownNoBallot has found no violation yet.
+# FelixShardCpLiveSkippedGeneration, FelixShardCpLive cut down to the #2024
+# scenario, runs past it too and is checked nightly (tla-walk.yml); its
+# violating twin stays registered.
 # FelixShardElectSwap is not registered: it does not finish in one run, so
 # it is checked in pieces split at the cut-over. The eleven that take under 45
 # minutes are registered above; FelixShardElectSwapKeep0, the four
@@ -417,6 +744,16 @@ fi
 # So are FelixShardElectWipeNonVoter{Twice,Failover,FailoverWipesLeader,
 # WipesLeader,Setless,Groups}: each runs well over an hour on a four-core runner. Their
 # violating twins and witnesses stay registered.
+# So is FelixShardCpLiveReleasedFull, the registered FelixShardCpLiveReleased
+# with every first leader, any number of stops and adoption up to 2. It ran
+# past six hours twice, so nothing checks it yet, not even the nightly job.
+# So is FelixShardCpLiveNoOwnBallotRefused, the single-fix twin of FelixShardCpLive
+# without OwnBallotRefused. It needs adoption up to 4 and a restart; cut to one
+# election and one stop it still reached 37M distinct states and 6 h on a CI
+# runner without finishing, and at adoption 3 it passes. FelixShardCpLiveMain
+# (every fix off) still shows the same violation.
+# So are FelixShardUnifiedReadmitFull and FelixShardUnifiedDropEvidencedFull,
+# the registered Readmit and DropEvidenced with one client write.
 # So is FelixShardElectRename, which is checked in pieces
 # (FelixShardElectRename{Keep,Drop}{0,1}{,Stood...}): the twelve that fit a
 # pull request's shards are registered above.
@@ -433,6 +770,11 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
+# FelixRaftReformStaleMembership{Relaxed,Placed} and FelixRaftLeaseAckWide are
+# not registered: each is registered once a dispatch run gives its declared
+# outcome.
+# FelixRaftReformStaleMembershipFull is not registered either: it gives the
+# violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -442,55 +784,106 @@ fi
 # A configuration missing here weighs one, so it is never left to
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
-  "FelixShardFencedAckMoveShort 31"
+  "FelixShardMoveGiveUpKeep 22"
+  "FelixShardMoveGiveUpKeepLive 22"
+  "FelixShardMoveGiveUpFailoverLive 13"
+  "FelixShardMoveGiveUpFailoverDrop 3"
+  "FelixShardMoveGiveUpFourDrop 20"
+  "FelixShardElectUnclean 39"
+  "FelixShardElectUncleanNoStartRecord 7"
+  "FelixShardElectUncleanContinuingDoubted 50"
+  "FelixShardElectUncleanVouchOnShip 2"
+  "FelixShardElectLiveUncleanLed 2"
+  "FelixShardFencedAckMoveShort 60"
+  "FelixShardFencedAckMovePromoted 235"
   "FelixShardWipeStripped 29"
-  "FelixShardFencedAckMoveCancelShort 45"
-  "FelixShardFencedAckStagedMoveShort 26"
-  "FelixShardFencedAckTwoPromotionsStart 24"
-  "FelixShardFencedCache 22"
-  "FelixShardReadsRound 21"
-  "FelixShardSessionsGroupRound 16"
+  "FelixShardFencedAckMoveCancelShort 95"
+  "FelixShardFencedAckStagedMoveShort 65"
+  "FelixShardFencedAckTwoPromotionsStart 60"
+  "FelixShardFencedCache 51"
+  "FelixShardReadsRound 35"
+  "FelixShardSessionsGroupRound 30"
   "FelixGroupsSplitSources 17"
-  "FelixShardFencedAck 12"
-  "FelixGroups 12"
+  "FelixShardFencedAck 28"
+  "FelixGroups 24"
   "FelixHeadTrim 17"
-  "FelixHeadTrimCrash 13"
+  "FelixHeadTrimCrash 12"
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
-  "FelixShardFigure8CutOver 14"
-  "FelixShard 11"
-  "FelixShardWipeFull 5"
+  "FelixShardFigure8CutOver 19"
+  "FelixShard 12"
+  "FelixShardWipeFull 7"
   "FelixShardLeaderCrashGivesUp 3"
-  "FelixShardProcessCrashKeepsId 20"
-  "FelixShardLeaderProcessCrash 25"
+  "FelixShardProcessCrashKeepsId 15"
+  "FelixShardLeaderProcessCrash 63"
   "FelixShardLeaderCrashReclaim 3"
-  "FelixShardFencedWipe 25"
-  "FelixShardFencedCrash 26"
+  "FelixShardFencedWipe 33"
+  "FelixShardFencedCrash 30"
   "FelixShardFencedCrashInheritedCounts 3"
   "FelixShardFencedLeaderCrashTwiceNamesByInheritance 21"
   "FelixShardFencedPromotion 12"
   "FelixShardCancelResend 11"
   "FelixShardFigure8FollowerAcks 10"
+  "FelixShardFigure8AckWait 10"
   "FelixShardCancel 10"
   "FelixShardReportFloor 10"
-  "FelixShardAckWithoutLease 4"
+  "FelixShardAckWithoutLease 6"
   "FelixShardFigure8 7"
-  "FelixShardRealMargins 4"
+  "FelixShardUnifiedRestore 68"
+  "FelixShardUnifiedDropEvidenced 167"
+  "FelixShardUnifiedReadmit 83"
+  "FelixShardUnified 32"
+  "FelixShardUnifiedMixed 20"
+  "FelixShardUnifiedCpLiveReadmitUnopened 10"
+  "FelixShardUnifiedLearnerBlockingTwo 96"
+  "FelixShardUnifiedLearnerBlocking 8"
+  "FelixShardUnifiedLearnerVariantDropped 5"
+  "FelixShardUnifiedIdleVouchWrite 16"
+  "FelixShardUnifiedCpLiveMoveRotated 1"
+  "FelixShardUnifiedCpLiveMoveRotatedLegacy 1"
+  "FelixShardUnifiedTwoRotated 1"
+  "FelixShardUnifiedTwoRotatedForgets 1"
+  "FelixShardUnifiedSets 7"
+  "FelixShardUnifiedCpLiveMoveDoubted 3"
+  "FelixShardUnifiedVouchMark 3"
+  "FelixShardUnifiedContinuingDoubtedLegacy 2"
+  "FelixShardRealMargins 6"
   "FelixShardRealMarginsLease 4"
   "FelixShardFencedAckSeat 15"
-  "FelixShardFencedAckSeatPair 12"
-  "FelixShardFencedAckUndoPair 26"
-  "FelixShardFencedAckTrim 5"
-  "FelixShardFollowerLabels 5"
-  "FelixShardHandoff 3"
+  "FelixShardFencedAckSeatPair 18"
+  "FelixShardFencedAckUndoPair 16"
+  "FelixShardFencedAckTrim 10"
+  "FelixShardFollowerLabels 6"
+  "FelixShardHandoff 5"
+  "FelixShardHandoffAdmitAck 3"
   "FelixShardIdempotentHandoff 5"
   "FelixShardStalePlannerCas 5"
   "FelixShardLogOrder 3"
   "FelixShardStagedMove 3"
   "FelixShardElectHandoffLeaders 10"
-  "FelixShardElectAdopt 11"
+  "FelixShardElectAdopt 40"
   "FelixShardElectPreVote 1"
   "FelixShardElectAdoptPromote 10"
+  "FelixShardReplacedPendingLeft 3"
+  "FelixShardReplacedPendingLeftKept 5"
+  "FelixShardReplacedPendingLeftKeptLogBatchDrops 5"
+  "FelixShardReplacedPendingLeftTwice 30"
+  "FelixShardReplacedPendingLeftTwiceAllLog 25"
+  "FelixShardReplacedPendingLeftTwiceAll 21"
+  "FelixShardReplacedPendingLeftTwiceAllLogBatchDrops 19"
+  "FelixShardReplacedPendingLeftTwiceAllLogReportNoFloor 42"
+  "FelixShardElectReissue 1"
+  "FelixShardElectReissueReplaceBatchSet 2"
+  "FelixShardElectLiveReissue 10"
+  "FelixShardElectRouteLag 12"
+  "FelixShardElectRouteLagReportOnly 18"
+  "FelixShardElectRouteLagNoFix 2"
+  "FelixShardElectRouteLagFence 27"
+  "FelixShardElectRouteLagFenceNoFix 1"
+  "FelixShardElectRouteLagReportStore 68"
+  "FelixShardElectRouteLagFenceReportStore 69"
+  "FelixShardElectRenameKeep1StoodOneOtherReportStore 4"
+  "FelixShardElectRenameDrop1StoodOneOtherReportStore 4"
   "FelixShardElectAdoptFailoverApart0Gen2 5"
   "FelixShardElectAdoptFailoverApart1Gen2 5"
   "FelixShardElectAdoptFailoverApart0StoodGen2 5"
@@ -504,7 +897,7 @@ weights=(
   "FelixShardElectAdoptFailoverSame1StoodGen4 3"
   "FelixShardElectAdoptFailoverApart1StoodGen4 5"
   "FelixShardSwapCounters 40"
-  "FelixShardSessionsSubscriber 2"
+  "FelixShardSessionsSubscriber 4"
   "FelixShardSuspicion 2"
   "FelixShardSuspicionWipeRoutes 3"
   "FelixShardSuspicionWipeUnbacked 2"
@@ -518,34 +911,130 @@ weights=(
   "FelixShardElectWipeNonVoterFailoverWipesLeader 100"
   "FelixShardElectWipeNonVoterSetless 120"
   "FelixShardElectWipeNonVoterGroups 120"
-  "FelixShardElectWipeNonVoterGroupsKeepDropsMark 19"
+  "FelixShardElectWipeNonVoterGroupsKeepDropsMark 35"
   "FelixShardElectWipeNonVoterIdlessCreation 12"
   "FelixShardElectWipeNonVoterCountersUnchecked 8"
-  "FelixShardElectSwapKeep1 27"
-  "FelixShardElectSwapKeep2 8"
-  "FelixShardElectSwapDrop0 43"
-  "FelixShardElectSwapDrop1 17"
+  "FelixShardElectWipeNonVoterReclaim 21"
+  "FelixShardElectWipeNonVoterReclaimLive 5"
+  "FelixShardElectSwapKeep1 2"
+  "FelixShardElectSwapKeep2 1"
+  "FelixShardElectSwapDrop0 4"
+  "FelixShardElectSwapDrop1 1"
   "FelixShardElectSwapDrop2 5"
-  "FelixShardElectSwapDrop0StoodOneDest 39"
-  "FelixShardElectSwapDrop0StoodOneOther 13"
+  "FelixShardElectSwapDrop2DropsChange 6"
+  "FelixShardElectSwapKeep2DropsChange 9"
+  "FelixShardElectSwapDrop0StoodOneDest 2"
+  "FelixShardElectSwapDrop0StoodOneOther 1"
   "FelixShardElectSwapDrop0StoodSeveralOther 1"
-  "FelixShardElectSwapDrop1StoodOneDest 12"
+  "FelixShardElectSwapDrop1StoodOneDest 1"
   "FelixShardElectSwapDrop1StoodOneOther 5"
-  "FelixShardElectSwapFlipKeep1 15"
-  "FelixShardElectSwapFlipDrop1 20"
-  "FelixShardElectSwapFlipKeep1StoodOneOther 11"
-  "FelixShardElectSwapFlipDrop1StoodOneOther 8"
-  "FelixShardElectSwapFlipDrop0StoodOneOther 41"
-  "FelixShardElectRenameKeep0 28"
-  "FelixShardElectRenameKeep1 16"
-  "FelixShardElectRenameDrop0 26"
-  "FelixShardElectRenameDrop1 14"
-  "FelixShardElectRenameKeep0StoodOneOther 11"
-  "FelixShardElectRenameKeep1StoodOneOther 3"
+  "FelixShardElectSwapFlipKeep1 2"
+  "FelixShardElectSwapFlipDrop1 1"
+  "FelixShardElectSwapFlipKeep1StoodOneOther 2"
+  "FelixShardElectSwapFlipDrop1StoodOneOther 1"
+  "FelixShardElectSwapFlipDrop0StoodOneOther 1"
+  "FelixShardElectRenameKeep0 12"
+  "FelixShardElectRenameKeep1 8"
+  "FelixShardElectRenameDrop0 6"
+  "FelixShardElectRenameDrop1 6"
+  "FelixShardElectRenameKeep0StoodOneOther 4"
+  "FelixShardElectRenameKeep1StoodOneOther 2"
   "FelixShardElectRenameDrop1StoodOneOther 3"
-  "FelixShardElectRenameDrop1StoodSeveralDest 36"
+  "FelixShardElectRenameDrop1StoodSeveralDest 11"
   "FelixShardElectStepDown 3"
   "FelixShardHandoffLeaderAck 3"
+  "FelixShardCpLiveNoOverlayRefused 6"
+  "FelixShardCpLiveNoHaltReported 5"
+  "FelixShardCpLiveNoAboveReported 6"
+  "FelixShardCpLiveReleased 34"
+  "FelixShardCpLiveRefusalsCopyExcluded 2"
+  "FelixShardCpLiveRefusalsPinsForever 2"
+  "FelixShardElectRefusals 6"
+  "FelixShardCpLiveSkippedGenerationUnknownPrior 32"
+  "FelixShardCpDownNoSelfSuspicion 15"
+  "FelixRaft 3"
+  "FelixRaftCrashes 2"
+  "FelixRaftSnapshot 6"
+  "FelixRaftSnapshotReplace 6"
+  "FelixRaftOffsetsFailover 7"
+  "FelixRaftFourTerms 45"
+  "FelixRaftTermsFull 59"
+  "FelixRaftOffsetsFull 20"
+  "FelixRaftSnapshotCrashes 21"
+  "FelixRaftOffsetsFailoverCrash 41"
+  "FelixRaftCommitPriorTerm 1"
+  "FelixRaftSaveCommittedUnflushed 2"
+  "FelixRaftMembership 4"
+  "FelixRaftMembershipFailover 8"
+  "FelixRaftIdentityDirRestore 2"
+  "FelixRaftIdentityWipeThenRestore 2"
+  "FelixRaftSwitchGenZero 6"
+  "FelixRaftSwitchStarts 11"
+  "FelixRaftSwitchReseal 4"
+  "FelixRaftReform 7"
+  "FelixRaftReformTwoRotated 6"
+  "FelixRaftReformOneReplica 2"
+  "FelixRaftReformOwnMembershipOnly 4"
+  "FelixRaftReformStaleMembershipTwoRotated 2"
+  "FelixRaftReformStaleMembership 40"
+  "FelixRaftReformRejoinFull 34"
+  "FelixRaftSwitchGenZeroFull 37"
+  "FelixRaftMembershipTerms 109"
+  "FelixRaftReformTwoRotatedFull 112"
+  "FelixRaftReformLearnerWaited 8"
+  "FelixRaftLeaseAck 2"
+  "FelixRaftLeaseDeliver 6"
+  "FelixRaftLeaseRestart 6"
+  "FelixRaftLeaseStore 2"
+  "FelixRaftLeaseStoreStall 2"
+  "FelixRaftLeaseStoreWide 36"
+  "FelixRaftSleep 2"
+  "FelixRaftSleepEnds 2"
+)
+
+# Minutes a configuration took on a pull request's runner, from the `Finished
+# in` lines of a CI run, where that differs from `weights` (main's runners)
+# by two or more. Only shard balancing reads this; which configurations a
+# pull request runs still goes by `weights`.
+pr_minutes=(
+  "FelixHeadTrimCrashTwoPromotions 1"
+  "FelixRaftCrashes 4"
+  "FelixRaftOffsetsFailover 14"
+  "FelixRaftSnapshotCrashes 26"
+  "FelixRaftSnapshotReplace 10"
+  "FelixShard 7"
+  "FelixShardCpLiveNoHaltReported 7"
+  "FelixShardCpLiveNoOverlayRefused 4"
+  "FelixShardCpLiveRefusalsPinsForever 4"
+  "FelixShardElectAdoptFailoverApart1Gen2 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 3"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 3"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 5"
+  "FelixShardElectHandoffLeaders 16"
+  "FelixShardElectLiveReissue 14"
+  "FelixShardElectRenameDrop0 13"
+  "FelixShardElectRenameDrop1 9"
+  "FelixShardElectRenameDrop1StoodOneOther 1"
+  "FelixShardElectRenameKeep1 12"
+  "FelixShardElectSwapDrop0 2"
+  "FelixShardElectSwapDrop0StoodOneDest 4"
+  "FelixShardElectSwapDrop1StoodOneOther 1"
+  "FelixShardElectSwapDrop2 1"
+  "FelixShardElectSwapDrop2DropsChange 9"
+  "FelixShardElectSwapKeep2DropsChange 5"
+  "FelixShardElectUncleanNoStartRecord 13"
+  "FelixShardElectWipeNonVoterCountersUnchecked 10"
+  "FelixShardElectWipeNonVoterReclaimLive 7"
+  "FelixShardFencedAckTrim 8"
+  "FelixShardFencedCrashInheritedCounts 1"
+  "FelixShardFigure8FollowerAcks 6"
+  "FelixShardLeaderCrashGivesUp 1"
+  "FelixShardLeaderCrashReclaim 1"
+  "FelixShardRealMargins 4"
+  "FelixShardReportFloor 8"
+  "FelixShardSessionsSubscriber 2"
+  "FelixShardStagedMove 5"
+  "FelixShardSuspicionWipeRoutes 1"
 )
 
 weight_of() {
@@ -568,6 +1057,29 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
     f="${f##*/}"
     changed_cfgs="$changed_cfgs${f%.cfg} "
   done <<<"$changed_files"
+  # FelixRaft.tla is behind few configurations, so a change to it counts as a
+  # change to each: FelixRaftFourTerms is the only passing check of the
+  # commit rule for earlier terms and is over ten minutes.
+  # The track 4 modules beside it are each behind their own few, the same way.
+  raft_parts="Membership Identity Reform Lease Sleep Switch"
+  if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
+    for f in "$SPEC_DIR"/FelixRaft*.cfg; do
+      f="${f##*/}"
+      for part in $raft_parts; do
+        case "$f" in FelixRaft"$part"*) continue 2 ;; esac
+      done
+      changed_cfgs="$changed_cfgs${f%.cfg} "
+    done
+  fi
+  for part in $raft_parts; do
+    if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft$part.tla"; then
+      for f in "$SPEC_DIR"/FelixRaft"$part"*.cfg; do
+        [ -e "$f" ] || continue
+        f="${f##*/}"
+        changed_cfgs="$changed_cfgs${f%.cfg} "
+      done
+    fi
+  done
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
@@ -596,8 +1108,10 @@ fi
 # ten minutes, except changed ones of 30 minutes or less. A changed one over
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
-# them. Pull requests check that tier; the rest run when the spec changes on
-# main. Configurations named on the command line always run. FelixShard,
+# them. FelixRaft.tla and the track 4 modules beside it are the exceptions:
+# a change to one counts as a change to each of its configurations (see
+# `changed_cfgs`). Pull requests check that tier; the rest run when the spec
+# changes on main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
@@ -617,11 +1131,20 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   selected=(${quick[@]+"${quick[@]}"})
 fi
 
+# Minutes to balance shards by: a pull request's measured time when listed.
+plan_weight_of() {
+  local w
+  for w in "${pr_minutes[@]}"; do
+    if [ "${w%% *}" = "$1" ]; then echo "${w#* }"; return; fi
+  done
+  weight_of "$1"
+}
+
 # Print the shard for each selected configuration, in order.
 assign_shards() {
   local entry position=0
   for entry in "${selected[@]}"; do
-    echo "$(weight_of "${entry%% *}") $position"
+    echo "$(plan_weight_of "${entry%% *}") $position"
     position=$((position + 1))
   done | sort -k1,1nr -k2,2n | awk -v n="$shard_count" '
     { best = 0

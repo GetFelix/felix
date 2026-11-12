@@ -1,6 +1,7 @@
 //! One sync pass: seed from snapshots on a cold start, then follow the change
 //! feeds.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -43,8 +44,7 @@ const MAX_PAGES_PER_FEED: usize = 64;
 /// already followed would remove the new stream.
 pub(super) async fn sync_into(
     broker: &Arc<Broker>,
-    client: &reqwest::Client,
-    base_url: &str,
+    source: &impl CatalogFetch,
     bearer: Option<&str>,
     state: &mut SyncState,
 ) -> Result<()> {
@@ -52,8 +52,31 @@ pub(super) async fn sync_into(
     // === Cold start snapshot seeding ===
     // 1. Seed tenants first.
     if !state.seeded.tenants {
-        match fetch_tenant_snapshot(client, base_url, bearer).await {
+        match fetch_tenant_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                let named: BTreeSet<&str> = snapshot
+                    .items
+                    .iter()
+                    .map(|tenant| tenant.tenant_id.as_str())
+                    .collect();
+                // Only the registration goes, as a delete in the feed does:
+                // the streams and caches under it are the snapshots' to judge.
+                let missing: Vec<String> = state
+                    .provisional
+                    .tenants
+                    .iter()
+                    .filter(|tenant_id| !named.contains(tenant_id.as_str()))
+                    .cloned()
+                    .collect();
+                for tenant_id in missing {
+                    broker.remove_tenant(&tenant_id).await?;
+                    tracing::warn!(
+                        %tenant_id,
+                        "the control plane does not list a tenant this broker registered from \
+                         its view; unregistered it"
+                    );
+                }
+                state.provisional.tenants.clear();
                 for tenant in snapshot.items {
                     broker.register_tenant(tenant.tenant_id).await?;
                 }
@@ -72,8 +95,35 @@ pub(super) async fn sync_into(
 
     // 2. Seed namespaces after tenants.
     if !state.seeded.namespaces {
-        match fetch_namespace_snapshot(client, base_url, bearer).await {
+        match fetch_namespace_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                let named: BTreeSet<(&str, &str)> = snapshot
+                    .items
+                    .iter()
+                    .map(|namespace| (namespace.tenant_id.as_str(), namespace.namespace.as_str()))
+                    .collect();
+                let missing: Vec<(String, String)> = state
+                    .provisional
+                    .namespaces
+                    .iter()
+                    .filter(|(tenant_id, namespace)| {
+                        !named.contains(&(tenant_id.as_str(), namespace.as_str()))
+                    })
+                    .cloned()
+                    .collect();
+                for (tenant_id, namespace) in missing {
+                    match broker.remove_namespace(&tenant_id, &namespace).await {
+                        Ok(_) | Err(BrokerError::TenantNotFound(_)) => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        "the control plane does not list a namespace this broker registered \
+                         from its view; unregistered it"
+                    );
+                }
+                state.provisional.namespaces.clear();
                 for namespace in snapshot.items {
                     apply_namespace_create(broker, namespace.tenant_id, namespace.namespace)
                         .await?;
@@ -93,7 +143,7 @@ pub(super) async fn sync_into(
 
     // 3. Seed caches after namespaces.
     if !state.seeded.caches {
-        match fetch_cache_snapshot(client, base_url, bearer).await {
+        match fetch_cache_snapshot(source, bearer).await {
             Ok(snapshot) => {
                 // Deletes first, as for streams.
                 let tombstones: Vec<_> = snapshot
@@ -109,6 +159,35 @@ pub(super) async fn sync_into(
                     })
                     .collect();
                 broker.apply_cache_tombstones(&tombstones).await?;
+                let named: BTreeSet<(String, String, String)> = snapshot
+                    .items
+                    .iter()
+                    .map(|cache| {
+                        (
+                            cache.tenant_id.clone(),
+                            cache.namespace.clone(),
+                            cache.cache.clone(),
+                        )
+                    })
+                    .collect();
+                let missing: Vec<_> = state
+                    .provisional
+                    .caches
+                    .difference(&named)
+                    .cloned()
+                    .collect();
+                for entry in missing {
+                    let (tenant_id, namespace, cache) = &entry;
+                    broker.unregister_cache(tenant_id, namespace, cache).await?;
+                    state.provisional.caches.remove(&entry);
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        %cache,
+                        "the control plane does not list a cache this broker registered from \
+                         its view; unregistered it and kept its data"
+                    );
+                }
                 for cache in snapshot.items {
                     let metadata = cache.metadata()?;
                     apply_cache_upsert(
@@ -120,6 +199,8 @@ pub(super) async fn sync_into(
                     )
                     .await?;
                 }
+                // What the snapshot named is the control plane's now.
+                state.provisional.caches.clear();
                 state.next_cache_seq = snapshot.next_seq;
                 state.seeded.caches = true;
             }
@@ -135,7 +216,7 @@ pub(super) async fn sync_into(
 
     // 4. Seed streams after caches.
     if !state.seeded.streams {
-        match fetch_snapshot(client, base_url, bearer).await {
+        match fetch_snapshot(source, bearer).await {
             Ok(snapshot) => {
                 // Deletes first: the data of every incarnation a tombstone
                 // covers goes, whether or not this broker heard of it.
@@ -152,6 +233,37 @@ pub(super) async fn sync_into(
                     })
                     .collect();
                 broker.apply_tombstones(&tombstones).await?;
+                let named: BTreeSet<(String, String, String)> = snapshot
+                    .items
+                    .iter()
+                    .map(|stream| {
+                        (
+                            stream.tenant_id.clone(),
+                            stream.namespace.clone(),
+                            stream.stream.clone(),
+                        )
+                    })
+                    .collect();
+                let missing: Vec<_> = state
+                    .provisional
+                    .streams
+                    .difference(&named)
+                    .cloned()
+                    .collect();
+                for entry in missing {
+                    let (tenant_id, namespace, stream) = &entry;
+                    broker
+                        .unregister_stream(tenant_id, namespace, stream)
+                        .await?;
+                    state.provisional.streams.remove(&entry);
+                    tracing::warn!(
+                        %tenant_id,
+                        %namespace,
+                        %stream,
+                        "the control plane does not list a stream this broker registered from \
+                         its view; unregistered it and kept its data"
+                    );
+                }
                 for stream in snapshot.items {
                     let metadata = stream.metadata()?;
                     apply_stream_upsert(
@@ -163,6 +275,7 @@ pub(super) async fn sync_into(
                     )
                     .await?;
                 }
+                state.provisional.streams.clear();
                 state.next_stream_seq = snapshot.next_seq;
                 state.seeded.streams = true;
             }
@@ -179,7 +292,7 @@ pub(super) async fn sync_into(
     // === Incremental change feed application ===
     // 1. Apply tenant changes first (ensures proper revocation/creation).
     for _ in 0..MAX_PAGES_PER_FEED {
-        match fetch_tenant_changes(client, base_url, bearer, state.next_tenant_seq).await {
+        match fetch_tenant_changes(source, bearer, state.next_tenant_seq).await {
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.tenants,
@@ -226,7 +339,7 @@ pub(super) async fn sync_into(
 
     // 2. Apply namespace changes after tenants.
     for _ in 0..MAX_PAGES_PER_FEED {
-        match fetch_namespace_changes(client, base_url, bearer, state.next_namespace_seq).await {
+        match fetch_namespace_changes(source, bearer, state.next_namespace_seq).await {
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.namespaces,
@@ -286,7 +399,7 @@ pub(super) async fn sync_into(
     // 3. Apply cache changes after namespaces.
     //    (Caches depend on tenant/namespace existence.)
     for _ in 0..MAX_PAGES_PER_FEED {
-        match fetch_cache_changes(client, base_url, bearer, state.next_cache_seq).await {
+        match fetch_cache_changes(source, bearer, state.next_cache_seq).await {
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.caches,
@@ -361,7 +474,7 @@ pub(super) async fn sync_into(
 
     // 4. Apply stream changes last so existence checks have up-to-date scopes.
     for _ in 0..MAX_PAGES_PER_FEED {
-        match fetch_changes(client, base_url, bearer, state.next_stream_seq).await {
+        match fetch_changes(source, bearer, state.next_stream_seq).await {
             Ok(changes) => {
                 if !accept(
                     &mut state.behind.streams,
@@ -443,12 +556,11 @@ pub(super) async fn sync_into(
 #[cfg(test)]
 pub(super) async fn sync_once(
     broker: &Arc<Broker>,
-    client: &reqwest::Client,
-    base_url: &str,
+    source: &impl CatalogFetch,
     bearer: Option<&str>,
     mut state: SyncState,
 ) -> Result<SyncState> {
-    sync_into(broker, client, base_url, bearer, &mut state).await?;
+    sync_into(broker, source, bearer, &mut state).await?;
     Ok(state)
 }
 

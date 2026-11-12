@@ -38,8 +38,10 @@
 //!   reactor worker.
 //! * An `fsync` genuinely blocks, for milliseconds on slow hardware. It runs on
 //!   the log's own flush thread so it cannot stall a reactor thread, and does
-//!   not queue behind other work on the shared blocking pool. Flushes are
-//!   grouped, so one runs for many appends.
+//!   not queue behind other work on the shared blocking pool. The durable
+//!   mark write that follows it runs there too (inline after an io_uring
+//!   fsync): on a busy filesystem journal a write waits like a sync. Flushes
+//!   are grouped, so one runs for many appends.
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
@@ -48,6 +50,7 @@ pub mod layout;
 
 mod append;
 mod ballot;
+pub(crate) mod crash_point;
 mod durable_mark;
 mod epochs;
 mod flush;
@@ -84,7 +87,7 @@ use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
 use crate::log::{
     AppendOnlyLog, AppendRecord, AppendResult, BoxFuture, Epoch, FsyncMode, LogConfig, LogRecord,
-    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor,
+    Offset, ReadPage, ReadRange, RecordMark, SealedSegment, SegmentDescriptor, WrittenBy,
 };
 use crate::segment::{ReadBudget, TrimRecords};
 use crate::{CommitSequencer, CommitTurn, Result, StorageError, metrics_names};
@@ -107,6 +110,35 @@ static ANY_POISONED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBo
 /// that saw one cannot say it stopped with everything it acknowledged synced.
 pub fn any_log_poisoned() -> bool {
     ANY_POISONED.load(Ordering::Acquire)
+}
+
+/// A log a failure stopped, for a readiness probe to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoisonedLog {
+    pub shard: String,
+    /// The first failure, which is not always a flush: a truncation that
+    /// failed partway poisons too.
+    pub reason: String,
+}
+
+/// One entry per shard, with its first failure. Like [`ANY_POISONED`], never
+/// cleared.
+static POISONED: Mutex<Vec<PoisonedLog>> = Mutex::new(Vec::new());
+
+/// The logs a failure has stopped in this process, each with the failure that
+/// stopped it first.
+pub fn poisoned_logs() -> Vec<PoisonedLog> {
+    POISONED.lock().clone()
+}
+
+fn note_poisoned(shard: &str, reason: &str) {
+    let mut poisoned = POISONED.lock();
+    if !poisoned.iter().any(|log| log.shard == shard) {
+        poisoned.push(PoisonedLog {
+            shard: shard.to_string(),
+            reason: reason.to_string(),
+        });
+    }
 }
 
 /// What [`DiskLog::accept_generation`] found.
@@ -159,7 +191,14 @@ impl DiskLog {
         config: LogConfig,
     ) -> Result<Self> {
         let files = SealedFiles::new(config.max_open_sealed_segments);
-        Self::open_shared(dir.into(), label.into(), config, None, files)
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            None,
+            files,
+            OtherCommit::Drop,
+        )
     }
 
     /// Open a shard log, creating it to begin at `base_offset` if it does not
@@ -181,7 +220,49 @@ impl DiskLog {
         base_offset: Offset,
     ) -> Result<Self> {
         let files = SealedFiles::new(config.max_open_sealed_segments);
-        Self::open_shared(dir.into(), label.into(), config, Some(base_offset), files)
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            Some(base_offset),
+            files,
+            OtherCommit::Drop,
+        )
+    }
+
+    /// [`Self::open`] for a Raft log that must not start on a committed id
+    /// saved for some other log. When the index it names holds an entry of
+    /// another term, `open` takes nothing as committed; this fails, with
+    /// the saved id left as it was.
+    ///
+    /// `keep_alive` is held until the last clone of the log is dropped. The
+    /// store passes its lock, so it is not released while a flusher can
+    /// still write.
+    #[cfg(feature = "raft")]
+    pub(crate) fn open_refusing_other_commit(
+        dir: impl Into<PathBuf>,
+        label: impl Into<String>,
+        config: LogConfig,
+        keep_alive: Arc<dyn std::any::Any + Send + Sync>,
+    ) -> Result<Self> {
+        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let log = Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            None,
+            files,
+            OtherCommit::Refuse,
+        )?;
+        *log.inner.keep_alive.lock() = Some(keep_alive);
+        Ok(log)
+    }
+
+    /// Let go of the `keep_alive` value now, for a log that was shut down
+    /// cleanly and is not written again.
+    #[cfg(feature = "raft")]
+    pub(crate) fn release_keep_alive(&self) {
+        self.inner.keep_alive.lock().take();
     }
 
     pub fn label(&self) -> &str {
@@ -296,13 +377,19 @@ impl DiskLog {
     /// the write.
     pub async fn append_pending(&self, records: &[AppendRecord]) -> Result<PendingAppend> {
         let inner = Arc::clone(&self.inner);
-        Self::write_batch(inner, records.to_vec(), append::WriteIf::Always, None)
-            .await
-            .map(|written| {
-                written
-                    .expect("an unconditional write is always written")
-                    .pending
-            })
+        Self::write_batch(
+            inner,
+            records.to_vec(),
+            append::WriteIf::Always,
+            None,
+            WrittenBy::Leader,
+        )
+        .await
+        .map(|written| {
+            written
+                .expect("an unconditional write is always written")
+                .pending
+        })
     }
 
     /// [`DiskLog::append_pending`], with the batch's range claimed in `order`
@@ -321,6 +408,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::Always,
             Some(order),
+            WrittenBy::Leader,
         )
         .await?
         .expect("an unconditional write is always written");
@@ -347,6 +435,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.map(append::Written::claimed))
@@ -360,10 +449,14 @@ impl DiskLog {
     /// such as a follower storing a leader's batch at the leader's offsets:
     /// another append landing in between would otherwise put these records
     /// at offsets their sender never assigned.
+    ///
+    /// `writers` names the generations that wrote the records where they
+    /// came from; a v9 segment stamps them with those, never its own.
     pub async fn append_pending_at(
         &self,
         first_offset: Offset,
         records: &[AppendRecord],
+        writers: WrittenBy,
     ) -> Result<Option<PendingAppend>> {
         let inner = Arc::clone(&self.inner);
         let written = Self::write_batch(
@@ -371,6 +464,7 @@ impl DiskLog {
             records.to_vec(),
             append::WriteIf::At(first_offset),
             None,
+            writers,
         )
         .await?;
         Ok(written.ok().map(|written| written.pending))
@@ -401,6 +495,7 @@ impl DiskLog {
                 sequence,
             },
             Some(order),
+            WrittenBy::Leader,
         )
         .await?;
         Ok(written.ok().map(append::Written::claimed))
@@ -513,7 +608,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -560,7 +655,7 @@ impl DiskLog {
         let fence = inner.fence_rolls().await?;
         let _flush_guard = inner.durability.lock_flushes().await;
         let operation = Arc::clone(&inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
@@ -575,15 +670,33 @@ impl DiskLog {
             {
                 let mut persisted = operation.replica_persisted.lock();
                 if operation.commit_offset.load(Ordering::Acquire) > offset {
-                    let state = replica_state::ReplicaState {
-                        accepted_generation: operation.accepted_generation.load(Ordering::Acquire),
-                        commit_offset: offset,
-                        hold_at_commit: operation.hold_at_commit.load(Ordering::Acquire),
+                    // The generation saved named the record below the old
+                    // offset. A Raft log names the one below the new offset.
+                    let mut committed = operation.committed_generation.lock();
+                    #[cfg(feature = "raft")]
+                    let below = match offset.checked_sub(1) {
+                        Some(last) if operation.config.raft_log && last >= base => segments
+                            .read_plan(last)
+                            .generation_at(last, &operation.label)?
+                            .flatten()
+                            .unwrap_or(0),
+                        _ => 0,
                     };
-                    replica_state::store(&operation.dir, &state)?;
+                    #[cfg(not(feature = "raft"))]
+                    let below = 0;
+                    let state = replica_state::ReplicaState {
+                        commit_offset: offset,
+                        committed_generation: below,
+                        ..operation.replica_state_with(*committed)
+                    };
+                    operation.poison_on_sync_failure(
+                        "the replica state",
+                        replica_state::store(&operation.dir, &state),
+                    )?;
+                    *committed = below;
                     operation.commit_offset.store(offset, Ordering::Release);
                     operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(std::time::Instant::now()));
+                    *persisted = (state, Some(tokio::time::Instant::now()));
                 }
             }
             if offset == tail {
@@ -615,9 +728,66 @@ impl DiskLog {
             epochs.record(epoch.generation, epoch.start_offset.max(from));
         }
         if epochs.entries() != before.as_slice() {
-            epochs::store(&self.inner.dir, &epochs)?;
+            self.inner.check_not_poisoned()?;
+            self.inner.poison_on_sync_failure(
+                "the generation history",
+                epochs::store(&self.inner.dir, &epochs),
+            )?;
         }
         Ok(())
+    }
+
+    /// Whether the generation history labels every record in `first..=last`.
+    ///
+    /// False for any of them that arrived after a cut with no label, such as
+    /// records a promotion took from a replica that sent none: the entry
+    /// before the cut would otherwise claim them. Since this log was opened.
+    pub fn labels_known(&self, first: Offset, last: Offset) -> bool {
+        self.inner.epochs.lock().labelled(first, last)
+    }
+
+    /// Whether [`DiskLog::label_generations`] with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn relabels(&self, from: Offset, generations: &[Epoch]) -> bool {
+        let epochs = self.inner.epochs.lock();
+        let mut labelled = epochs.clone();
+        labelled.truncate_from(from);
+        for epoch in generations {
+            labelled.record(epoch.generation, epoch.start_offset.max(from));
+        }
+        labelled.entries() != epochs.entries()
+    }
+
+    /// Whether `AppendOnlyLog::record_generation` with these arguments would
+    /// change the stored history, and so write and fsync it.
+    pub fn records_generation(&self, generation: u64, start_offset: Offset) -> bool {
+        self.inner
+            .epochs
+            .lock()
+            .clone()
+            .record(generation, start_offset)
+    }
+
+    /// Note that this broker leads the log at `generation` from now on. A v9
+    /// segment stamps the leader's own appends with it, and refuses them once
+    /// the log accepts a newer generation: that belongs to another leader,
+    /// even after this log records where it begins (a deposed leader's
+    /// history takes the new leader's labels). Only rises; kept in memory,
+    /// since a broker opens a shard to lead it again after a restart.
+    pub fn lead_at(&self, generation: u64) {
+        self.inner
+            .led_generation
+            .fetch_max(generation.saturating_add(1), Ordering::AcqRel);
+    }
+
+    /// Whether this log stamps records with the generation that wrote them,
+    /// or may soon: its active segment is v9, or its gate has said yes or
+    /// would now. A sender ships the writers of a batch only then, so a
+    /// cluster that has not finalized `record_generations` sends what it
+    /// always did.
+    pub fn stamps_generations(&self) -> bool {
+        self.inner.config.generations.heard()
+            || self.inner.segments.read().active().holds_generations()
     }
 
     /// Note that the leader wrote `generation`'s start record at `offset`.
@@ -667,7 +837,23 @@ impl DiskLog {
     ///
     /// Fails only on a closed log, or, when not under `OnCommit`, when a write
     /// due now fails.
+    ///
+    /// Refused on a Raft log, whose commit offset moves only with the term
+    /// of the entry it names (the adapter's `save_committed`).
     pub async fn advance_commit_offset(&self, offset: Offset) -> Result<()> {
+        if self.inner.config.raft_log {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{}: a Raft log's commit offset is saved with its entry's term",
+                    self.inner.label
+                ),
+            )));
+        }
+        self.raise_commit_offset(offset).await
+    }
+
+    async fn raise_commit_offset(&self, offset: Offset) -> Result<()> {
         let previous = self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
         // Not `offset <= previous`: a write that failed left memory ahead of
         // disk, and the next call with the same offset has to write again.
@@ -699,8 +885,12 @@ impl DiskLog {
     ///
     /// For a leader about to open reads up to `offset`: a reader let in
     /// before the floor applies is served below an acknowledged trim.
+    ///
+    /// Does nothing on a Raft log, as [`Self::advance_commit_offset`].
     pub fn note_commit_offset(&self, offset: Offset) {
-        self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+        if !self.inner.config.raft_log {
+            self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel);
+        }
     }
 
     /// Keep retention and compaction's head trims below the commit offset.
@@ -758,7 +948,7 @@ impl DiskLog {
         // a log opened after this returns. Every file change checks it under
         // the lock taken here.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _appends = inner.append_lock.lock();
             inner.segments.write().close();
         })
@@ -779,7 +969,7 @@ impl DiskLog {
         // And under the replica-state writer's lock, so a write behind that
         // found the log open lands before this returns.
         let inner = Arc::clone(&self.inner);
-        tokio::task::spawn_blocking(move || {
+        felix_common::blocking::spawn(move || {
             let _persisted = inner.replica_persisted.lock();
             inner
                 .closed
@@ -788,6 +978,17 @@ impl DiskLog {
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
         flushed.and(marked)
+    }
+
+    /// Run `write`, a change to a file in this log's directory, unless the
+    /// log is closed. A close cannot start between the check and the write.
+    pub(crate) fn write_while_open<T>(
+        &self,
+        write: impl FnOnce() -> std::io::Result<T>,
+    ) -> Result<T> {
+        let segments = self.inner.segments.read();
+        segments.check_open()?;
+        write().map_err(StorageError::Io)
     }
 
     /// Whether [`Self::close`] has finished on this log or any clone of it.
@@ -843,6 +1044,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Option<Offset>,
         files: Arc<SealedFiles>,
+        #[cfg_attr(not(feature = "raft"), allow(unused_variables))] other_commit: OtherCommit,
     ) -> Result<Self> {
         config.validate()?;
 
@@ -852,6 +1054,10 @@ impl DiskLog {
         // Before recovery, which needs it to tell a segment that was
         // offloaded from one that was lost.
         let manifest = offload::manifest::load(&dir)?;
+        // Before the segments are looked at, so recovery sees the cut log.
+        if let Some(marker) = durable_mark::load_poison(&dir) {
+            recovery::after_poison(&dir, &label, marker)?;
+        }
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
         // Does not touch the archive: an unreachable one must not stop the
         // log from serving. The first pass opens it.
@@ -881,18 +1087,25 @@ impl DiskLog {
         crate::io::sync_dir(&dir).map_err(StorageError::Io)?;
         // Read before the directory is handed to the segment set.
         let epochs = epochs::load(&dir);
-        let mut replica = replica_state::load(&dir)?;
+        let saved = replica_state::load(&dir)?;
+        let mut replica = saved;
         // Before retention starts below, so its first sweep sees the hold.
         let hold = match config.retention_hold {
             crate::log::RetentionHold::AsSaved => replica.hold_at_commit,
             crate::log::RetentionHold::Held => true,
             crate::log::RetentionHold::Lifted => false,
         };
-        if hold != replica.hold_at_commit {
-            replica.hold_at_commit = hold;
-            replica_state::store(&dir, &replica)?;
+        // openraft may save a committed id whose entry is not flushed yet,
+        // so a crash can leave the offset past the log. Lowered on disk
+        // before anything is appended: what is written at those indexes
+        // later was never committed.
+        let tail = recovered.active.next_offset();
+        let past_the_log = config.raft_log && replica.commit_offset > tail;
+        if past_the_log {
+            replica.commit_offset = tail;
         }
-        let (kept_set, (accepted_generation, accepted_leader)) =
+        replica.hold_at_commit = hold;
+        let (kept_set, accepted) =
             set::reconcile(&dir, &label, ballot::reconcile(&dir, &replica)?)?;
         let (replica_set, wiped) = kept_set.map_or((None, None), |(set, wiped)| (Some(set), wiped));
         let set_generation = replica_set.as_ref().map_or(0, |set| set.current.generation);
@@ -905,6 +1118,42 @@ impl DiskLog {
             recovered.active,
             files,
         )?;
+        #[cfg(feature = "raft")]
+        if config.raft_log {
+            let found = committed_generation_here(&segments, &replica, past_the_log, &label)?;
+            if found.is_none()
+                && other_commit == OtherCommit::Refuse
+                && another_entry_is_there(&segments, &replica, past_the_log, &label)?
+            {
+                // Before the replica state is rewritten below, so the next
+                // open finds the same thing.
+                return Err(StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{label}: index {} was saved as committed at generation {}, but the \
+                         entry there is another one; this log is not the one that id was saved for",
+                        replica.commit_offset.saturating_sub(1),
+                        replica.committed_generation
+                    ),
+                )));
+            }
+            if found.is_none() {
+                tracing::warn!(
+                    shard = %label,
+                    commit_offset = replica.commit_offset,
+                    committed_generation = replica.committed_generation,
+                    "the entry below the saved commit offset is not the one that was committed; \
+                     nothing in this log is taken as committed"
+                );
+                replica.commit_offset = segments.base_offset();
+            }
+            replica.committed_generation = found.unwrap_or(0);
+        }
+        // One write: a lowered offset beside the generation saved for the
+        // higher one would read at the next open as another entry's id.
+        if replica != saved {
+            replica_state::store(&epochs_dir, &replica)?;
+        }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
         let producer_state =
@@ -934,6 +1183,7 @@ impl DiskLog {
         let durable_upto = segments.tail_offset();
         let inner = Arc::new(LogInner {
             label,
+            keep_alive: Mutex::new(None),
             config: config.clone(),
             segments: RwLock::new(segments),
             append_lock: Mutex::new(()),
@@ -947,13 +1197,15 @@ impl DiskLog {
             offloader,
             epochs: Mutex::new(epochs),
             stint: Mutex::new(None),
-            accepted_generation: AtomicU64::new(accepted_generation),
-            ballot: RwLock::new((accepted_generation, accepted_leader)),
+            accepted_generation: AtomicU64::new(accepted.generation),
+            led_generation: AtomicU64::new(0),
+            ballot: RwLock::new(accepted),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
             commit_offset: AtomicU64::new(replica.commit_offset),
             commit_persisted: AtomicU64::new(replica.commit_offset),
+            committed_generation: Mutex::new(replica.committed_generation),
             // Set before retention starts below, so a sweep after a restart
             // is held before any replication pass or batch has run.
             hold_at_commit: std::sync::atomic::AtomicBool::new(replica.hold_at_commit),
@@ -1043,6 +1295,32 @@ impl DiskLog {
 }
 
 impl DiskLog {
+    /// A count that changes whenever records are removed from either end of
+    /// the log or the log is reset. A reader that pages through the log compares
+    /// it before and after, since a cut in between can leave it holding
+    /// records from both sides of the cut.
+    #[cfg(feature = "raft")]
+    pub(crate) fn cuts(&self) -> u64 {
+        self.inner.segments.read().generation()
+    }
+
+    /// The tail as it is now, without a future to poll.
+    #[cfg(feature = "raft")]
+    pub(crate) fn tail_now(&self) -> Offset {
+        self.inner.segments.read().tail_offset()
+    }
+
+    /// What [`Self::commit`] answers when it has nothing to wait for, and
+    /// `None` when a flush must cover the batch first.
+    #[cfg(feature = "raft")]
+    pub(crate) fn commit_now(&self, pending: &PendingAppend) -> Option<Result<()>> {
+        let durability = &self.inner.durability;
+        if durability.acknowledges_before_sync() && !pending.holds_trim {
+            return Some(Ok(()));
+        }
+        (durability.durable_upto() >= pending.durable_target).then(|| self.inner.check_healthy())
+    }
+
     /// The read behind both `read_range` methods, and the tail it ran to.
     /// Without trims a start below the head floor is refused; with them only
     /// one below the oldest segment is, since replication ships from there.
@@ -1057,7 +1335,7 @@ impl DiskLog {
                 return Err(StorageError::Closed(inner.label.clone()));
             }
             let started = std::time::Instant::now();
-            let (records, tail) = tokio::task::spawn_blocking(move || {
+            let (records, tail) = felix_common::blocking::spawn(move || {
                 loop {
                     // Planned under the lock, read without it: a cold `pread`
                     // must not hold up the appends queued on `segments`.
@@ -1111,6 +1389,212 @@ impl DiskLog {
     }
 }
 
+/// Hooks for tests outside this module.
+#[cfg(test)]
+impl DiskLog {
+    /// Hold every flush until the guard is dropped.
+    pub(crate) async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.durability.lock_flushes().await
+    }
+
+    /// Fail the next flush, as a failed fsync would.
+    pub(crate) fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Wait until the commit offset in memory is the one on disk.
+    pub(crate) async fn commit_offset_persisted(&self) {
+        while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    }
+
+    /// Move the commit offset and leave the generation saved with it, which
+    /// nothing outside a test can do to a Raft log.
+    pub(crate) fn move_commit_offset_for_tests(&self, offset: Offset) {
+        self.inner.commit_offset.store(offset, Ordering::Release);
+    }
+
+    /// Stop the next truncation or reset after `unlinks` unlinks.
+    pub(crate) fn stop_after_unlinks(&self, unlinks: usize) {
+        segments::stop_after_unlinks(&self.inner.dir, unlinks);
+    }
+}
+
+/// What an open does with a Raft log whose saved committed id names an
+/// index that holds some other entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OtherCommit {
+    /// Nothing in the log is taken as committed.
+    Drop,
+    /// The open fails, with the saved id left as it was.
+    #[cfg(feature = "raft")]
+    Refuse,
+}
+
+/// The generation of the record below a Raft log's saved commit offset, or
+/// `None` when that record is some other entry than the one that was
+/// committed: its generation is not the one saved with the offset.
+///
+/// When the open lowered the offset to the log's end (`lowered`), the record
+/// there is an earlier entry of the committed one's log, so its generation
+/// may be lower and never higher. An offset at or below the base names no
+/// record this log holds, and what was saved stands.
+#[cfg(feature = "raft")]
+fn committed_generation_here(
+    segments: &SegmentSet,
+    replica: &replica_state::ReplicaState,
+    lowered: bool,
+    label: &str,
+) -> Result<Option<u64>> {
+    let saved = replica.committed_generation;
+    let Some(last) = replica.commit_offset.checked_sub(1) else {
+        return Ok(Some(saved));
+    };
+    if last < segments.base_offset() {
+        return Ok(Some(saved));
+    }
+    let Some(Some(found)) = segments.read_plan(last).generation_at(last, label)? else {
+        return Ok(None);
+    };
+    let same_entry = found == saved || (lowered && found < saved);
+    Ok((saved != 0 && same_entry).then_some(found))
+}
+
+/// Whether the record below the saved commit offset is there, with a known
+/// generation that is not the saved one's. A record that cannot be read
+/// that way is not proof of another log's entry.
+#[cfg(feature = "raft")]
+fn another_entry_is_there(
+    segments: &SegmentSet,
+    replica: &replica_state::ReplicaState,
+    lowered: bool,
+    label: &str,
+) -> Result<bool> {
+    let saved = replica.committed_generation;
+    let Some(last) = replica.commit_offset.checked_sub(1) else {
+        return Ok(false);
+    };
+    if saved == 0 || last < segments.base_offset() {
+        return Ok(false);
+    }
+    Ok(match segments.read_plan(last).generation_at(last, label)? {
+        Some(Some(found)) if found != crate::log::UNKNOWN_WRITER => {
+            found > saved || (!lowered && found != saved)
+        }
+        _ => false,
+    })
+}
+
+#[cfg(feature = "raft")]
+impl DiskLog {
+    /// Record that the entry at `index`, written by `generation`, and every
+    /// entry below it are committed. [`Self::advance_commit_offset`] with
+    /// the generation kept beside the offset, so an open can tell that
+    /// entry from another at the same index.
+    pub(crate) async fn save_committed(&self, index: Offset, generation: u64) -> Result<()> {
+        let offset = index + 1;
+        {
+            let mut committed = self.inner.committed_generation.lock();
+            if offset >= self.inner.commit_offset.fetch_max(offset, Ordering::AcqRel) {
+                *committed = generation;
+            }
+        }
+        self.raise_commit_offset(offset).await
+    }
+
+    /// The directory that holds the log's files.
+    pub(crate) fn dir(&self) -> &std::path::Path {
+        &self.inner.dir
+    }
+
+    /// The commit offset and the generation saved with it, zero for none.
+    pub(crate) fn committed(&self) -> (Offset, u64) {
+        let committed = self.inner.committed_generation.lock();
+        (self.commit_offset(), *committed)
+    }
+}
+
+/// What the log holds at one offset, as its record header says.
+#[cfg(feature = "raft")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriterAt {
+    /// No record: the offset is below the oldest segment, or at or past the
+    /// tail.
+    Absent,
+    /// A record in a segment older than format v9, which keeps no generation.
+    Unstamped,
+    /// The generation stamped on the record. [`crate::log::UNKNOWN_WRITER`]
+    /// means the writer is not known, never that generation 0 wrote it.
+    Generation(u64),
+}
+
+#[cfg(feature = "raft")]
+impl DiskLog {
+    /// Which generation wrote the record at `offset`, read from the record's
+    /// own header and checked against the header checksum. The payload is
+    /// not read.
+    ///
+    /// This is the log's answer, not the generation history's
+    /// ([`AppendOnlyLog::generations`]), which is a hint that can be missing
+    /// or short. A Raft term must come from here.
+    pub(crate) async fn writer_at(&self, offset: Offset) -> Result<WriterAt> {
+        Ok(self.writers_at(Some(offset)).await?.1)
+    }
+
+    /// The offset of the last record and which generation wrote it, or `None`
+    /// for a log that holds no record. One answer about one tail: a
+    /// truncation in between restarts the read.
+    pub(crate) async fn last_writer(&self) -> Result<Option<(Offset, WriterAt)>> {
+        let (tail, writer) = self.writers_at(None).await?;
+        Ok(tail
+            .checked_sub(1)
+            .filter(|_| writer != WriterAt::Absent)
+            .map(|last| (last, writer)))
+    }
+
+    /// The tail, and the writer of the record at `offset`, or of the last
+    /// record when `offset` is `None`.
+    async fn writers_at(&self, offset: Option<Offset>) -> Result<(Offset, WriterAt)> {
+        let inner = Arc::clone(&self.inner);
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(inner.label.clone()));
+        }
+        felix_common::blocking::spawn(move || {
+            loop {
+                // Planned under the lock and read without it, as a range
+                // read is.
+                let (plan, tail, offset) = {
+                    let segments = inner.segments.read();
+                    let tail = segments.tail_offset();
+                    let Some(offset) = offset.or(tail.checked_sub(1)) else {
+                        return Ok((tail, WriterAt::Absent));
+                    };
+                    if offset < segments.base_offset() || offset >= tail {
+                        return Ok((tail, WriterAt::Absent));
+                    }
+                    (segments.read_plan(offset), tail, offset)
+                };
+                let found = plan.generation_at(offset, &inner.label);
+                // A truncation in between may have put another record there.
+                if inner.segments.read().generation() != plan.generation {
+                    continue;
+                }
+                return Ok((
+                    tail,
+                    match found? {
+                        None => WriterAt::Absent,
+                        Some(None) => WriterAt::Unstamped,
+                        Some(Some(generation)) => WriterAt::Generation(generation),
+                    },
+                ));
+            }
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
 impl AppendOnlyLog for DiskLog {
     fn append(&self, records: &[AppendRecord]) -> BoxFuture<'_, Result<AppendResult>> {
         // `records` is borrowed for the duration of the future, so the write
@@ -1119,11 +1603,16 @@ impl AppendOnlyLog for DiskLog {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
             let started = std::time::Instant::now();
-            let pending =
-                Self::write_batch(Arc::clone(&inner), records, append::WriteIf::Always, None)
-                    .await?
-                    .expect("an unconditional write is always written")
-                    .pending;
+            let pending = Self::write_batch(
+                Arc::clone(&inner),
+                records,
+                append::WriteIf::Always,
+                None,
+                WrittenBy::Leader,
+            )
+            .await?
+            .expect("an unconditional write is always written")
+            .pending;
 
             // `OnCommit` is the only policy that makes the caller wait. The
             // others acknowledge once the bytes are in the page cache and rely
@@ -1176,10 +1665,14 @@ impl AppendOnlyLog for DiskLog {
         let segments = self.inner.segments.read();
         segments.check_open()?;
         let mut epochs = self.inner.epochs.lock();
+        self.inner.check_not_poisoned()?;
         if !epochs.record(generation, start_offset) {
             return Ok(false);
         }
-        epochs::store(&self.inner.dir, &epochs)?;
+        self.inner.poison_on_sync_failure(
+            "the generation history",
+            epochs::store(&self.inner.dir, &epochs),
+        )?;
         Ok(true)
     }
 
@@ -1197,7 +1690,7 @@ impl AppendOnlyLog for DiskLog {
             let fence = inner.fence_rolls().await?;
             let _flush_guard = inner.durability.lock_flushes().await;
             let operation = Arc::clone(&inner);
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _fence = fence;
                 // Before the append lock: an offload pass takes it before
                 // the segment lock, and so must everything else.
@@ -1223,7 +1716,7 @@ impl AppendOnlyLog for DiskLog {
     fn seal(&self) -> BoxFuture<'_, Result<SealedSegment>> {
         let inner = Arc::clone(&self.inner);
         Box::pin(async move {
-            tokio::task::spawn_blocking(move || {
+            felix_common::blocking::spawn(move || {
                 let _appends = inner.append_lock.lock();
                 let mut segments = inner.segments.write();
                 inner.sync_pending_seal()?;
@@ -1231,13 +1724,19 @@ impl AppendOnlyLog for DiskLog {
                     Ok(sealed) => sealed,
                     Err(err) => {
                         inner.poison_after_writer_failure(&segments);
-                        return Err(err);
+                        // The index, which the writer does not own.
+                        return inner.poison_on_sync_failure("a segment seal", Err(err));
                     }
                 };
                 // Start a fresh segment so the sealed one is immutable from here
                 // on, which is what makes its checksum meaningful.
                 if segments.active().record_count() > 0 {
-                    segments.roll()?;
+                    if let Err(err) = segments.roll() {
+                        inner.poison_after_writer_failure(&segments);
+                        // Appends would otherwise go on into a segment whose
+                        // directory entry may not survive a crash.
+                        return inner.poison_on_sync_failure("a segment rollover", Err(err));
+                    }
                     inner.note_sealed_before(segments.active().id());
                 }
                 Ok(SealedSegment {
@@ -1295,6 +1794,9 @@ struct Snapshot {
 /// Shared state behind every clone of a [`DiskLog`].
 struct LogInner {
     label: String,
+    /// Dropped with the log; see [`DiskLog::open_refusing_other_commit`].
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    keep_alive: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
     /// under the read lock and does its I/O after releasing it, and an append
@@ -1336,10 +1838,15 @@ struct LogInner {
     /// The highest generation a leader was accepted at, read without a lock
     /// on every replicated batch. Raised only after it is on disk.
     accepted_generation: AtomicU64,
+    /// One past the generation this broker opened the log to lead at, zero
+    /// for none since it opened. A leader's appends are stamped with it. See
+    /// [`DiskLog::lead_at`].
+    led_generation: AtomicU64,
     /// The accepted generation with the leader it was accepted from, when one
-    /// was named. Read together on every replicated batch, so a raise is seen
-    /// with its own leader. Written only under `replica_persisted`.
-    ballot: RwLock<(u64, Option<Arc<str>>)>,
+    /// was named, and whether that vote is committed. Read together on every
+    /// replicated batch, so a raise is seen with its own leader. Written only
+    /// under `replica_persisted`.
+    ballot: RwLock<ballot::Accepted>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,
@@ -1352,6 +1859,11 @@ struct LogInner {
     /// written through or behind with the log's fsync mode; see
     /// [`DiskLog::advance_commit_offset`].
     commit_offset: AtomicU64,
+    /// The generation of the record just below `commit_offset`, as a Raft
+    /// log saved it; zero when not known. The two change together under
+    /// this lock, so the file never pairs one id's index with another's
+    /// term.
+    committed_generation: Mutex<u64>,
     /// The commit offset `replica` last held on disk, so a raise whose write
     /// failed or is still due is told apart from one already written.
     commit_persisted: AtomicU64,
@@ -1368,7 +1880,8 @@ struct LogInner {
     #[cfg(test)]
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
-    replica_persisted: Mutex<(replica_state::ReplicaState, Option<std::time::Instant>)>,
+    /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
@@ -1405,7 +1918,7 @@ struct LogInner {
     /// Cleared only after a *successful* seal. A failed one leaves it in place
     /// so every later flush keeps trying to cover those records rather than
     /// quietly reporting them durable.
-    pending_seal: Mutex<Option<Arc<std::fs::File>>>,
+    pending_seal: Mutex<Option<Arc<crate::fs::File>>>,
     /// Where this log's appends run.
     appender: LogThread,
     /// Where this log's device flushes run.
@@ -1606,6 +2119,7 @@ impl LogInner {
     /// the generation history and the producer table down with them. Called
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        let cuts_records = offset < segments.tail_offset();
         segments.truncate(offset)?;
         segments.active_mut().sync()?;
         self.note_rewound(segments)?;
@@ -1613,7 +2127,11 @@ impl LogInner {
         // The history cannot outlive the records it describes, or it would
         // answer with a start offset the log no longer holds.
         let mut epochs = self.epochs.lock();
-        epochs.truncate_from(offset);
+        if cuts_records {
+            epochs.cut_at(offset);
+        } else {
+            epochs.truncate_from(offset);
+        }
         epochs::store(&self.dir, &epochs)?;
         self.reset_producers(segments)
     }
@@ -1701,16 +2219,30 @@ impl LogInner {
     }
 }
 
+impl LogInner {
+    /// The replica state as memory has it.
+    fn replica_state(&self) -> replica_state::ReplicaState {
+        let committed = self.committed_generation.lock();
+        self.replica_state_with(*committed)
+    }
+
+    /// [`Self::replica_state`] for a caller that holds `committed_generation`.
+    fn replica_state_with(&self, committed_generation: u64) -> replica_state::ReplicaState {
+        replica_state::ReplicaState {
+            accepted_generation: self.accepted_generation.load(Ordering::Acquire),
+            commit_offset: self.commit_offset.load(Ordering::Acquire),
+            hold_at_commit: self.hold_at_commit.load(Ordering::Acquire),
+            committed_generation,
+        }
+    }
+}
+
 /// Write the replica state if memory is ahead of disk. A write is refused
 /// once the log is closed: its directory may already be another log's.
 async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
-    tokio::task::spawn_blocking(move || {
+    felix_common::blocking::spawn(move || {
         let mut persisted = inner.replica_persisted.lock();
-        let state = replica_state::ReplicaState {
-            accepted_generation: inner.accepted_generation.load(Ordering::Acquire),
-            commit_offset: inner.commit_offset.load(Ordering::Acquire),
-            hold_at_commit: inner.hold_at_commit.load(Ordering::Acquire),
-        };
+        let state = inner.replica_state();
         if state == persisted.0 {
             return Ok(());
         }
@@ -1720,13 +2252,19 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         if inner.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(inner.label.clone()));
         }
-        replica_state::store(&inner.dir, &state)?;
+        // Not retried once poisoned: the write behind would otherwise try
+        // again, and a retry after a failed flush proves nothing.
+        inner.check_not_poisoned()?;
+        inner.poison_on_sync_failure(
+            "the replica state",
+            replica_state::store(&inner.dir, &state),
+        )?;
         #[cfg(test)]
         inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
-        *persisted = (state, Some(std::time::Instant::now()));
+        *persisted = (state, Some(tokio::time::Instant::now()));
         Ok(())
     })
     .await
@@ -1784,7 +2322,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
             let Some(inner) = weak.upgrade() else {
                 return;
             };
-            if inner.closed.load(Ordering::Acquire) {
+            // A poisoned log writes nothing more, so there is nothing to
+            // retry.
+            if inner.closed.load(Ordering::Acquire) || inner.is_poisoned() {
                 return;
             }
             if persist_replica_state(Arc::clone(&inner)).await.is_err() {
@@ -1803,8 +2343,9 @@ fn retry_replica_state(inner: &Arc<LogInner>) {
     });
 }
 
+/// Wall-clock microseconds for retention; virtual time under a simulator.
 fn now_micros() -> u64 {
-    std::time::SystemTime::now()
+    felix_common::clock::system_time()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_micros().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)

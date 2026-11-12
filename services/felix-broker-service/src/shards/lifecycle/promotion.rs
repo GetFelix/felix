@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use super::{ShardLifecycle, record_term_start, write_generation_start};
+use super::{ShardLifecycle, lead_from_tail, record_term_start, write_generation_start};
 use crate::shards::ShardKey;
 use crate::shards::routing::IngressRouter;
 
@@ -46,6 +46,10 @@ impl LifecycleGate {
 impl felix_replication::promotion::PromotionGate for LifecycleGate {
     fn awaiting(&self, key: &ShardKey) -> Option<u64> {
         self.ingress.fence().awaiting_promotion(key)
+    }
+
+    fn continuing(&self, key: &ShardKey, generation: u64) -> bool {
+        self.ingress.fence().continuing(key, generation)
     }
 
     async fn open(&self, key: &ShardKey, generation: u64) -> bool {
@@ -131,6 +135,13 @@ impl felix_replication::promotion::PromotionGate for LifecycleGate {
                     "could not write the generation-start record; not serving yet");
                 return false;
             }
+        }
+        if key.kind == crate::shards::ShardKind::Stream
+            && let Err(err) = lead_from_tail(&self.broker, key).await
+        {
+            tracing::warn!(stream = %key.stream, shard = key.shard, error = %err,
+                "could not move the stream to its log's tail; not serving yet");
+            return false;
         }
         if lifecycle.fenced(key, generation) {
             self.ingress.publish_servable(lifecycle.servable());

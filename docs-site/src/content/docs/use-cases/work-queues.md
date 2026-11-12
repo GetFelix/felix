@@ -218,7 +218,8 @@ a log that can be replayed.
 ### How Felix differs
 
 SQS is the simplest to run on AWS and scales without a shard count to choose.
-Felix needs brokers and a shard count at creation. In exchange a failed job is
+Felix needs brokers and a shard count at creation (see
+[choosing a shard count](/features/sharding/#choosing-a-key-and-a-shard-count)). In exchange a failed job is
 still readable in the log, a dead letter is a pointer and not a second queue
 to drain, and one stream can feed both a worker pool and a subscriber. SQS FIFO
 queues order within a message group and deduplicate by deduplication ID. Felix
@@ -273,4 +274,4 @@ either on a single group. The Rust, Python and TypeScript clients have the calls
 - [Rust consumer groups](/clients/rust/groups-and-commits/#consumer-groups)
 - [Idempotent producers](/clients/rust/publishing/#idempotent-producers)
 - [Atomic commits](/features/atomic-commits/), for writing a job and the state it belongs to as one record
-- [felix-agents](/built-on-felix/agents/), which hands tasks out to a swarm of AI workers through a consumer group
+- [KBL](/built-on-felix/agents/), a work tracker that hands each item to one coding agent through a consumer group

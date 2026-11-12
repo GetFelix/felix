@@ -199,8 +199,8 @@ multiplier. Measure your own workload's shape; the concurrency sweep in
 
 A cache key hashes to one shard, and each shard has one owner. Any broker
 forwards an operation to the key's owner, so a value written through one
-broker is readable through every other and there is never a second copy to
-diverge. Concurrent writes to one key land in the order the owner applies
+broker is readable through every other and the owner is the one place a
+key is written. Concurrent writes to one key land in the order the owner applies
 them: last write wins.
 
 ```rust
@@ -236,8 +236,10 @@ vouch for it, so retry. An owner whose lease has lapsed refuses operations with
 By default a `Quorum` read confirms leadership by the owner's lease, which
 trusts the clocks. Once an operator finalizes the `lease_free_reads` fleet
 feature, it confirms with a round of fences answered by a majority instead,
-which makes the read linearizable without clocks. `FELIX_QUORUM_READS=lease`
-keeps a broker's reads on the lease. Writes use the lease in every mode.
+which makes the read linearizable without clocks. An owner that stands for
+election checks both until it hears of the finalize.
+`FELIX_QUORUM_READS=lease` keeps a broker's reads on the lease. Writes use the
+lease in every mode.
 Watches on a replicated `Quorum` cache stop needing it once `lease_free_reads`
 is finalized: a watch sees only committed changes, and ends when its broker
 learns it was replaced or has heard from no majority for a lease duration. [Upgrades](/deployment/upgrades/) has the finalize runbook, and

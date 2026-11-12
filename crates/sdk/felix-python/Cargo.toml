@@ -9,7 +9,7 @@
 
 [package]
 name = "felix-python"
-version = "0.7.0-preview.3"
+version = "0.8.0-preview.0"
 edition = "2024"
 rust-version = "1.97"
 license = "Apache-2.0"
@@ -29,13 +29,19 @@ crate-type = ["cdylib", "rlib"]
 pyo3-build-config = "0.30"
 
 [dependencies]
-felix-client = { path = "../felix-client", version = "0.7.0-preview.3" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.7.0-preview.3" }
+felix-client = { path = "../felix-client", version = "0.8.0-preview.0" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.0" }
 bytes = "1"
 pyo3 = { version = "0.29", features = ["abi3-py39"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 anyhow = "1"
+serde = "1"
+serde_json = "1"
 tokio-util = "0.7"
 quinn = { version = "0.11", default-features = false, features = ["bloom", "log", "platform-verifier", "runtime-tokio", "rustls-aws-lc-rs"] }
 rustls = "0.23"
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3"

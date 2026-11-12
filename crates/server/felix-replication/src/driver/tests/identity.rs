@@ -59,6 +59,7 @@ impl PeerRequester for IdentifiedFollower {
                     code: felix_wire::internal::ErrorCode::Unavailable,
                     expected_offset: 0,
                     detail: "still opening".to_string(),
+                    reason: None,
                 },
             ));
         }
@@ -92,8 +93,8 @@ async fn pass<R: PeerRequester + Sync>(
         None,
         cursors,
         groups,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         rebuilds,
         &MoveThrottle::unlimited(),
     )
@@ -110,7 +111,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = IdentifiedFollower::with(id(1));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     let report = pass(
@@ -118,7 +119,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -131,7 +132,7 @@ async fn a_wiped_follower_on_an_idle_shard_is_not_reported_caught_up() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -149,7 +150,7 @@ async fn a_restarted_follower_still_counts() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = IdentifiedFollower::with(id(1));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     pass(
@@ -157,7 +158,7 @@ async fn a_restarted_follower_still_counts() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -167,7 +168,7 @@ async fn a_restarted_follower_still_counts() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -203,14 +204,14 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
     let router = router(LOCAL, &["broker-b"], 4);
     let first = start();
     let follower = IdentifiedFollower::with(first);
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
     let report = pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -223,7 +224,7 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -241,7 +242,7 @@ async fn a_follower_that_crashed_under_periodic_fsync_is_not_counted_on_its_old_
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -269,7 +270,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         incarnation,
     };
     let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
 
     let report = pass(
@@ -277,7 +278,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -293,7 +294,7 @@ async fn a_new_incarnation_without_storage_ids_starts_the_copy_over() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -320,14 +321,14 @@ async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
         incarnation,
     };
     let follower = IdentifiedFollower::at(at(Incarnation::At(1)));
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
     let rebuilds = Rebuilds::disabled();
     pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -338,7 +339,7 @@ async fn a_new_incarnation_on_unchanged_storage_keeps_the_cursor() {
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &rebuilds,
     )
     .await;
@@ -380,7 +381,7 @@ async fn an_identity_change_resets_ride_along_cursors_and_frees_a_rebuild_slot()
         storage_id: Some(id(1)),
         ..FollowerCursor::new("broker-b", addr, 0)
     });
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
     let mut group = ShardCursors::at(4);
     group.followers.push(FollowerCursor {
         next_offset: 5,
@@ -389,7 +390,7 @@ async fn an_identity_change_resets_ride_along_cursors_and_frees_a_rebuild_slot()
         storage_id: Some(id(1)),
         ..FollowerCursor::new("broker-b", addr, 0)
     });
-    let mut groups = HashMap::from([(key(), group)]);
+    let mut groups = HashMap::from_iter([(key(), group)]);
     let rebuilds = Rebuilds::new(crate::RebuildPolicy {
         max_concurrent: 1,
         bytes_per_sec: 0,
@@ -427,14 +428,14 @@ async fn a_follower_without_identity_is_reported_without_one() {
     let (broker, _dir) = leader_with(3).await;
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let report = pass(
         &follower,
         &broker,
         &router,
         &mut cursors,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
     )
     .await;
@@ -497,9 +498,10 @@ async fn a_wiped_followers_old_position_does_not_move_the_mark() {
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
-    let mut cursors = HashMap::from([(key(), entry)]);
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
     let pass = replicate_once(
         &WipedAndDown,
         &broker,
@@ -561,10 +563,10 @@ async fn a_wiped_followers_old_counter_position_does_not_move_the_counter_mark()
     let seeded = |held: u64| {
         let mut entry = ShardCursors::at(4);
         entry.followers = vec![at("broker-b", 0), at("broker-c", held)];
-        HashMap::from([(cache.clone(), entry)])
+        HashMap::from_iter([(cache.clone(), entry)])
     };
     let (mut cursors, mut counters) = (seeded(2), seeded(3));
-    let (mut group, mut dead) = (HashMap::new(), HashMap::new());
+    let (mut group, mut dead) = (HashMap::default(), HashMap::default());
 
     let pass = replicate_once(
         &WipedAndDown,
@@ -673,9 +675,10 @@ async fn a_stale_connections_identity_does_not_count_a_wiped_follower() {
         };
         let mut entry = ShardCursors::at(4);
         entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
-        let mut cursors = HashMap::from([(key(), entry)]);
+        let mut cursors = HashMap::from_iter([(key(), entry)]);
 
-        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut group, mut dead, mut counters) =
+            (HashMap::default(), HashMap::default(), HashMap::default());
         let follower = StaleConnection {
             answered_by_new_copy,
         };
@@ -784,7 +787,7 @@ fn level_cursors(key: &ShardKey, b: u64, c: u64) -> HashMap<ShardKey, ShardCurso
     };
     let mut entry = ShardCursors::at(4);
     entry.followers = vec![at("broker-b", b, true), at("broker-c", c, false)];
-    HashMap::from([(key.clone(), entry)])
+    HashMap::from_iter([(key.clone(), entry)])
 }
 
 /// **A level follower whose answer the mark needs is asked for one.**
@@ -798,7 +801,8 @@ async fn a_level_follower_the_mark_needs_is_sent_its_last_record_again() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     replicate_once(
         &follower,
@@ -833,7 +837,8 @@ async fn a_level_follower_that_cannot_raise_the_mark_is_not_sent_anything() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     for _ in 0..3 {
         replicate_once(
@@ -885,7 +890,7 @@ async fn an_idle_cache_below_quorum_resends_nothing() {
     let marks = super::quorum::fleet_marks(true);
     let follower = CountingFollower::new("broker-b");
     let (mut cursors, mut counters) = (level_cursors(&cache, 0, 2), level_cursors(&cache, 0, 3));
-    let (mut group, mut dead) = (HashMap::new(), HashMap::new());
+    let (mut group, mut dead) = (HashMap::default(), HashMap::default());
 
     for _ in 0..3 {
         replicate_once(
@@ -920,7 +925,8 @@ async fn a_drain_does_not_hand_over_to_a_wiped_successor() {
             answered_by_new_copy,
         };
         let mut cursors = level_cursors(&key(), 0, 5);
-        let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+        let (mut group, mut dead, mut counters) =
+            (HashMap::default(), HashMap::default(), HashMap::default());
 
         let pass = replicate_once(
             &follower,
@@ -957,7 +963,8 @@ async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
     let marks = super::quorum::follower_ack_marks();
     let follower = CountingFollower::new("broker-b");
     let mut cursors = level_cursors(&key(), 0, 5);
-    let (mut group, mut dead, mut counters) = (HashMap::new(), HashMap::new(), HashMap::new());
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
 
     let pass = replicate_once(
         &follower,
@@ -978,4 +985,335 @@ async fn a_drain_on_an_idle_shard_hands_over_to_a_level_successor() {
         pass.reports,
     );
     assert_eq!(follower.asked("broker-c"), 1);
+}
+
+/// Under identity 1: `broker-b` stores every batch at once, `broker-c` never
+/// answers one, and `broker-d` is down.
+struct OneSlow;
+
+impl PeerRequester for OneSlow {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-c" => std::future::pending().await,
+            "broker-d" => Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            }),
+            _ => {
+                let InternalMessage::ReplicateRecords(batch) = message else {
+                    panic!("the driver sent something other than a replication batch");
+                };
+                Ok(InternalMessage::ReplicateOk(ReplicateOk {
+                    correlation_id: 0,
+                    durable_offset: batch.first_offset + batch.payloads.len() as u64,
+                    learner: false,
+                }))
+            }
+        }
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        if node_id == "broker-d" {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        Ok(PeerIdentity::storage(id(1)))
+    }
+}
+
+/// Under identity 1, every follower but one is down; that one stores every
+/// batch at once.
+struct AllDownBut(&'static str);
+
+impl PeerRequester for AllDownBut {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        if node_id != self.0 {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "down".to_string(),
+            });
+        }
+        OneSlow.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        Ok(PeerIdentity::storage(id(1)))
+    }
+}
+
+/// The mark one pass makes on five records at generation 4, with `broker-b`
+/// answering for all of them, `broker-d` down, and `broker-c` silent on a
+/// cursor at five that an earlier pass's answer vouched for, as `change`
+/// leaves it. Four replicas, so the mark needs `broker-c` as well as
+/// `broker-b`.
+async fn mark_with_earlier_vouch(change: impl FnOnce(&mut FollowerCursor)) -> u64 {
+    mark_with_earlier_vouch_from(&OneSlow, change).await
+}
+
+/// [`mark_with_earlier_vouch`] with the followers `requester` plays.
+async fn mark_with_earlier_vouch_from(
+    requester: &impl PeerRequester,
+    change: impl FnOnce(&mut FollowerCursor),
+) -> u64 {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let fresh = |node: &str| FollowerCursor {
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    let mut slow = FollowerCursor {
+        next_offset: 5,
+        confirmed: 5,
+        stalled: false,
+        ..fresh("broker-c")
+    };
+    slow.vouched = Some(crate::follower::Vouched {
+        identity: slow.identity(),
+        generation: 4,
+        offset: 5,
+    });
+    change(&mut slow);
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![fresh("broker-b"), slow, fresh("broker-d")];
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
+
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
+    let pass = replicate_once(
+        requester,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    // The pass waits on `broker-c` for good; the mark is decided before.
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+    marks.offset(&watch_key(&key()), 4).unwrap_or(0)
+}
+
+/// **An answer an earlier pass checked still counts (#1895).** Two slow
+/// followers answering in different passes otherwise never make a mark
+/// together, though each held the records when it answered.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_passs_checked_answer_counts_toward_the_mark() {
+    assert_eq!(mark_with_earlier_vouch(|_| {}).await, 5);
+}
+
+/// Like [`OneSlow`], but `broker-b` answers only after 100 ms and
+/// `broker-c`'s request fails after 10 ms, as one whose process died under a
+/// pooled connection does once the request times out.
+struct LateAndFailed;
+
+impl PeerRequester for LateAndFailed {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> std::result::Result<InternalMessage, PeerError> {
+        match node_id {
+            "broker-b" => tokio::time::sleep(Duration::from_millis(100)).await,
+            "broker-c" => {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+                return Err(PeerError::Unavailable {
+                    node_id: node_id.to_string(),
+                    detail: "timed out".to_string(),
+                });
+            }
+            _ => {}
+        }
+        OneSlow.request(node_id, addr, message).await
+    }
+
+    async fn identity(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerIdentity, PeerError> {
+        OneSlow.identity(node_id, addr).await
+    }
+}
+
+/// **An earlier answer stops counting once a request to that follower
+/// fails.** The probe may have read a pooled connection older than a crash,
+/// so a failed request is the first sign the copy may be gone, and counting
+/// on through it let a wiped copy stand in the majority.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_stops_counting_when_a_request_fails() {
+    // Behind at three, so the leader ships to it.
+    let mark = mark_with_earlier_vouch_from(&LateAndFailed, |cursor| {
+        cursor.next_offset = 3;
+        cursor.confirmed = 3;
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.offset = 3;
+        }
+    })
+    .await;
+    assert_eq!(mark, 0, "counted a follower whose request failed");
+}
+
+/// **It counts only for the copy that gave it.** A cursor that has since
+/// moved to another incarnation, or another storage identity, names a copy
+/// that never answered for these records.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_from_another_copy_does_not_count() {
+    let restarted = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.identity.incarnation = Incarnation::At(7);
+        }
+    })
+    .await;
+    assert_eq!(restarted, 0, "counted an answer from another incarnation");
+    let wiped = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.identity = PeerIdentity::storage(id(2));
+        }
+    })
+    .await;
+    assert_eq!(wiped, 0, "counted an answer from another storage identity");
+}
+
+/// **Nor at another generation**: what a follower held under an earlier
+/// leader says nothing about this leader's log.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_at_an_older_generation_does_not_count() {
+    let mark = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.generation = 3;
+        }
+    })
+    .await;
+    assert_eq!(mark, 0);
+}
+
+/// **It counts for no more than it vouched for, nor more than the cursor
+/// still holds**, and not at all for a learner.
+#[tokio::test(start_paused = true)]
+async fn an_earlier_answer_counts_only_what_it_vouched_for() {
+    let vouched_less = mark_with_earlier_vouch(|cursor| {
+        if let Some(vouched) = &mut cursor.vouched {
+            vouched.offset = 3;
+        }
+    })
+    .await;
+    assert_eq!(vouched_less, 3, "counted past what the answer vouched for");
+    let rewound = mark_with_earlier_vouch(|cursor| cursor.confirmed = 2).await;
+    assert_eq!(rewound, 2, "counted past what the cursor holds");
+    let learner = mark_with_earlier_vouch(|cursor| cursor.learner = true).await;
+    assert_eq!(learner, 0, "counted a learner");
+}
+
+/// **A follower found wiped since its answer does not count on it.**
+/// `broker-c` answered for all five records under identity 1 in an earlier
+/// pass and was wiped since; the probe finds identity 2 while its exchange is
+/// still under way. Counting its earlier answer there acknowledged three
+/// records only the leader holds.
+#[tokio::test(start_paused = true)]
+async fn a_follower_wiped_since_its_answer_does_not_count_on_it() {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let at = |node: &str, confirmed: u64| {
+        let mut cursor = FollowerCursor {
+            next_offset: confirmed,
+            confirmed,
+            stalled: false,
+            storage_id: Some(id(1)),
+            ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+        };
+        cursor.vouched = Some(crate::follower::Vouched {
+            identity: cursor.identity(),
+            generation: 4,
+            offset: confirmed,
+        });
+        cursor
+    };
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![at("broker-b", 2), at("broker-c", 5)];
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
+
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
+    let pass = replicate_once(
+        &WipedAndDown,
+        &broker,
+        &router,
+        &marks,
+        None,
+        &mut cursors,
+        &mut group,
+        &mut dead,
+        &mut counters,
+    );
+    let _ = tokio::time::timeout(Duration::from_secs(1), pass).await;
+
+    let mark = marks.offset(&watch_key(&key()), 4).unwrap_or(0);
+    assert!(
+        mark <= 2,
+        "acknowledged up to {mark} on a copy that was wiped"
+    );
+}
+
+/// **One follower answering pass after pass is still one follower.** Its
+/// earlier answer and its new one are the same vote, so with `broker-c` and
+/// `broker-d` silent the four-replica mark stays where it was.
+#[tokio::test(start_paused = true)]
+async fn a_follower_answering_in_two_passes_counts_once() {
+    let (broker, _dir) = super::quorum::quorum_leader(5, 4).await;
+    let router = router(LOCAL, &["broker-b", "broker-c", "broker-d"], 4);
+    let marks = super::quorum::follower_ack_marks();
+    let nodes = nodes();
+    let fresh = |node: &str| FollowerCursor {
+        storage_id: Some(id(1)),
+        ..FollowerCursor::new(node, nodes[node].advertise_addr, 0)
+    };
+    let mut entry = ShardCursors::at(4);
+    entry.followers = vec![fresh("broker-b"), fresh("broker-c"), fresh("broker-d")];
+    let mut cursors = HashMap::from_iter([(key(), entry)]);
+    let (mut group, mut dead, mut counters) =
+        (HashMap::default(), HashMap::default(), HashMap::default());
+    for _ in 0..2 {
+        let pass = replicate_once(
+            &AllDownBut("broker-b"),
+            &broker,
+            &router,
+            &marks,
+            None,
+            &mut cursors,
+            &mut group,
+            &mut dead,
+            &mut counters,
+        );
+        pass.await;
+    }
+    let held = &cursors[&key()].followers[0];
+    assert_eq!(held.vouched.map(|vouched| vouched.offset), Some(5));
+    assert_eq!(marks.offset(&watch_key(&key()), 4).unwrap_or(0), 0);
 }

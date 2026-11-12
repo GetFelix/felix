@@ -23,7 +23,10 @@ fn context(leader: &Leader) -> PublishContext {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     )
@@ -296,8 +299,10 @@ async fn a_quorum_group_poll_stops_at_the_quorum_mark() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -749,8 +754,10 @@ async fn the_read_end_of_a_shard_no_longer_served_here_is_refused() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -804,8 +811,10 @@ async fn a_seek_to_latest_is_refused_until_the_new_generation_has_a_mark() {
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
-            marks: Some(Arc::clone(&marks)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -1024,8 +1033,10 @@ impl ByRound {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
-                marks: Some(Arc::clone(&marks)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    Some(Arc::clone(&marks)),
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 ..ClusterContext::default()
             },
         );
@@ -1050,7 +1061,7 @@ impl ByRound {
 
     /// One replication pass against this leader's real fence.
     async fn pass(&self) {
-        use std::collections::HashMap;
+        use felix_common::random::HashMap;
         felix_replication::driver::replicate_once_with(
             &Accepting,
             &self.leader.broker,
@@ -1059,10 +1070,10 @@ impl ByRound {
             &felix_replication::promotion::NoGate,
             &self.marks,
             None,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
             &felix_replication::Rebuilds::disabled(),
             &felix_replication::MoveThrottle::unlimited(),
         )
@@ -1210,4 +1221,32 @@ async fn a_deposed_leader_refuses_group_reads_in_a_fleet_that_reads_by_round() {
         .await
         .expect_err("a deposed leader listed dead letters");
     assert_eq!(refused.code(), &felix_wire::ErrorCode::LeadershipLost);
+}
+
+/// A group read is bounded by the engine's mark at the served generation.
+/// Built without marks the bound would be `None` and a group could read past
+/// what a majority holds.
+#[tokio::test]
+async fn a_group_read_bound_comes_from_the_mark_at_the_served_generation() {
+    let leader = Leader::start().await;
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let publish_ctx = build_publish_context(
+        Arc::clone(&leader.broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                Some(Arc::clone(&marks)),
+                Some(Arc::clone(&leader.ingress)),
+            )),
+            ..ClusterContext::default()
+        },
+    );
+    let owned = Owned {
+        key: leader::stream_key(leader::QUORUM),
+        generation: leader::GENERATION,
+        by_round: std::sync::atomic::AtomicBool::new(false),
+    };
+    marks.publish(&owned.key, leader::GENERATION, 5);
+    let bound = committed_bound(&leader.broker, &publish_ctx, &owned).await;
+    assert_eq!(bound.expect("readable"), Some(5));
 }

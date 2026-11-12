@@ -17,18 +17,21 @@
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
 mod election;
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_broker::replication::{self, Divergence};
 use felix_router::{ReplicaRole, ShardRouter};
 use felix_storage::disk_log::GenerationCheck;
+use felix_storage::run_state::copy_trust::Since;
 use felix_wire::internal::{
-    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, ReplicaLog, ReplicateBootstrap,
-    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ErrorCode, Fence, FenceOk, GenerationStart, InternalMessage, PeerCapabilities, RefusalReason,
+    ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
+    ReplicateRecords,
 };
+use tokio::time::Instant;
 
 /// The most one fetch answer carries, whatever the leader asked for.
 const MAX_FETCH_BYTES: usize = 4 * 1024 * 1024;
@@ -86,6 +89,9 @@ pub struct ReplicaHandler {
     /// The generation each log last took a fence at, which a read round's
     /// fence repeats. Only paces fences; the ballot decides every one.
     fenced_at: parking_lot::Mutex<HashMap<(felix_router::ShardKey, felix_broker::LogKind), u64>>,
+    /// Whether a log in this process is poisoned. A test stands in for the
+    /// process-wide flag, which never clears.
+    poisoned: fn() -> bool,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -137,18 +143,19 @@ impl ReplicaHandler {
         Self {
             broker,
             router,
-            verified: parking_lot::Mutex::new(HashMap::new()),
-            mismatched: parking_lot::Mutex::new(HashMap::new()),
+            verified: parking_lot::Mutex::new(HashMap::default()),
+            mismatched: parking_lot::Mutex::new(HashMap::default()),
             unclean: None,
             confirmed: None,
-            heard: parking_lot::Mutex::new(HashMap::new()),
+            heard: parking_lot::Mutex::new(HashMap::default()),
             confirmed_reads: Default::default(),
             stickiness: crate::suspicion::DEFAULT_SUSPECT_AFTER,
             fleet: None,
             local_storage: None,
             replaced_storage: false,
-            fence_turns: parking_lot::Mutex::new(HashMap::new()),
-            fenced_at: parking_lot::Mutex::new(HashMap::new()),
+            fence_turns: parking_lot::Mutex::new(HashMap::default()),
+            fenced_at: parking_lot::Mutex::new(HashMap::default()),
+            poisoned: felix_storage::disk_log::any_log_poisoned,
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -156,7 +163,7 @@ impl ReplicaHandler {
 
     /// Answer no promotion fence from a copy this broker led before an
     /// unclean start. See [`Self::fence`].
-    pub fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
+    pub(crate) fn with_unclean_start(mut self, unclean: Arc<crate::unclean::UncleanStart>) -> Self {
         self.unclean = Some(unclean);
         self
     }
@@ -164,7 +171,7 @@ impl ReplicaHandler {
     /// Have a copy with no promise on disk check the control plane's
     /// confirmed assignment before it takes a leader. See
     /// [`crate::confirmed`].
-    pub fn with_confirmed_routes(
+    pub(crate) fn with_confirmed_routes(
         mut self,
         confirmed: Arc<dyn crate::confirmed::ConfirmedRoutes>,
     ) -> Self {
@@ -176,7 +183,7 @@ impl ReplicaHandler {
     /// retries it up to `retry` apart: the driver's tick, which is the
     /// control-plane sync interval. Without it the retry is waited for up to
     /// 5 s. Call before [`Self::confirmed_prefetch`].
-    pub fn with_leader_retry(mut self, retry: Duration) -> Self {
+    pub(crate) fn with_leader_retry(mut self, retry: Duration) -> Self {
         self.confirmed_reads = Arc::new(crate::confirmed::ConfirmedReads::new(retry));
         self
     }
@@ -184,7 +191,7 @@ impl ReplicaHandler {
     /// What starts a copy's confirmed read when the routing view first names
     /// it, so the leader's first request finds the answer. `None` without
     /// [`Self::with_confirmed_routes`].
-    pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
+    pub(crate) fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
         self.confirmed.as_ref().map(|routes| {
             crate::confirmed::Prefetch::new(
                 Arc::clone(&self.confirmed_reads),
@@ -196,14 +203,14 @@ impl ReplicaHandler {
 
     /// Read fleet features from `marks`: under `joint_fence` a voter of the
     /// set a joint fence leaves answers it once no route names it.
-    pub fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
+    pub(crate) fn with_fleet(mut self, marks: Arc<crate::quorum::QuorumMarks>) -> Self {
         self.fleet = Some(marks);
         self
     }
 
     /// Name this broker's storage identity, which a set naming another one
     /// for this broker contradicts: that copy was wiped (#1331).
-    pub fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
+    pub(crate) fn with_local_storage(mut self, storage: felix_storage::StorageId) -> Self {
         self.local_storage = Some(storage);
         self
     }
@@ -212,7 +219,7 @@ impl ReplicaHandler {
     /// storage identity, so every shard log it creates without a kept set is
     /// a learner of a set past generation 1 (`ReplacedIdLearner` in
     /// `docs/formal/FelixShard.tla`).
-    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+    pub(crate) fn with_replaced_storage(mut self, replaced: bool) -> Self {
         self.replaced_storage = replaced;
         self
     }
@@ -220,7 +227,7 @@ impl ReplicaHandler {
     /// Refuse a candidate's fence for this long after hearing the shard's
     /// leader. The suspicion window: a replica that would not yet name its
     /// leader as gone does not help replace it either.
-    pub fn with_stickiness(mut self, stickiness: Duration) -> Self {
+    pub(crate) fn with_stickiness(mut self, stickiness: Duration) -> Self {
         self.stickiness = stickiness;
         self
     }
@@ -244,7 +251,7 @@ impl ReplicaHandler {
     /// keeping, and the leader's copy is the one the majority holds. The
     /// records go, the generation history goes with them, and the answer is
     /// where the new copy begins.
-    pub async fn rebuild(
+    pub(crate) async fn rebuild(
         &self,
         sender: Option<&str>,
         request: ReplicateRebuild,
@@ -275,7 +282,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -467,7 +474,7 @@ impl ReplicaHandler {
         }
     }
 
-    pub async fn bootstrap(
+    pub(crate) async fn bootstrap(
         &self,
         sender: Option<&str>,
         request: ReplicateBootstrap,
@@ -502,7 +509,7 @@ impl ReplicaHandler {
         // is the authority either way.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -683,7 +690,7 @@ impl ReplicaHandler {
         // and silently keeping nothing.
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -718,6 +725,30 @@ impl ReplicaHandler {
         ) {
             return refusal;
         }
+        // Before the ballot changes: it is the evidence of a copy this
+        // broker led before an unclean start.
+        if own_kind(log_kind).is_none()
+            && let Err(err) = self
+                .doubt_before_ballot(&key, &log, batch.shard.generation)
+                .await
+        {
+            tracing::error!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record what this copy may have lost before taking a newer ballot \
+                 (that this broker led it before a crash, or since when it is unkept); \
+                 refusing the batch rather than take its ballot",
+            );
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                "this broker could not record what its copy may have lost before taking the ballot"
+                    .to_string(),
+            );
+        }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
         {
@@ -725,7 +756,14 @@ impl ReplicaHandler {
         }
         if let Some(stamped) = batch.set_generation
             && let Some(refusal) = self
-                .check_batch_set(correlation_id, &key, &log, stamped, batch.shard.generation)
+                .check_batch_set(
+                    correlation_id,
+                    &key,
+                    &log,
+                    stamped,
+                    batch.shard.generation,
+                    sender,
+                )
                 .await
         {
             return refusal;
@@ -805,6 +843,7 @@ impl ReplicaHandler {
                     &batch.publishers,
                     batch.times.as_deref().unwrap_or_default(),
                     batch.headers.as_deref(),
+                    batch.writers.as_deref(),
                 )
                 .await
             }
@@ -883,6 +922,7 @@ impl ReplicaHandler {
                             &batch.publishers,
                             batch.times.as_deref().unwrap_or_default(),
                             batch.headers.as_deref(),
+                            batch.writers.as_deref(),
                         )
                         .await;
                     }
@@ -927,14 +967,6 @@ impl ReplicaHandler {
                 if batch.set_generation.is_some() {
                     self.heard_leader(&key);
                 }
-                if let Some(unclean) = &self.unclean
-                    && matches!(
-                        log_kind,
-                        felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
-                    )
-                {
-                    unclean.vouch(&crate::driver::watch_key(&key));
-                }
                 // Not a reason to fail the batch: the offset only guards
                 // truncation, and the log writes it behind. Only what
                 // this batch left level with the leader: past the
@@ -951,11 +983,16 @@ impl ReplicaHandler {
                     );
                 }
                 // Past the durable offset nothing has been compared, so what
-                // this follower holds there keeps its labels until it has.
-                let level = log
-                    .tail_offset()
-                    .await
-                    .is_ok_and(|tail| applied.durable_offset >= tail);
+                // this follower holds there keeps its labels until it has. An
+                // empty batch compares nothing: it is level only with a copy
+                // that holds nothing either.
+                let compared =
+                    !batch.payloads.is_empty() || applied.durable_offset == batch.first_offset;
+                let level = compared
+                    && log
+                        .tail_offset()
+                        .await
+                        .is_ok_and(|tail| applied.durable_offset >= tail);
                 if level
                     && let Err(err) = label_appended(
                         &log,
@@ -964,12 +1001,52 @@ impl ReplicaHandler {
                         batch.shard.generation,
                         batch.generations.as_deref(),
                     )
+                    .await
                 {
                     tracing::warn!(
                         stream = %key.stream,
                         error = %err,
                         "stored a replicated batch but could not record its generation",
                     );
+                }
+                // Only once the copy is level with this leader up to where
+                // its generation starts (#2029). It opened after fencing a
+                // majority, so below that offset it holds every acknowledged
+                // record, start record written or not. Only the batch's own
+                // labels say where that is: an unlabelled batch labels
+                // whatever it carried, inherited records too, with the
+                // sender's generation.
+                let reaches_own = batch.generations.as_deref().is_some_and(|starts| {
+                    starts.iter().any(|start| {
+                        start.generation == batch.shard.generation
+                            && start.start_offset <= applied.durable_offset
+                    })
+                });
+                if own_kind(log_kind).is_none() && level && reaches_own {
+                    let shard = crate::driver::watch_key(&key);
+                    if let Some(unclean) = &self.unclean {
+                        unclean.vouch(&shard);
+                    }
+                    // The commit offset is the quorum offset at the sender's
+                    // generation, so level through it and through the start
+                    // the copy holds what the sender acknowledged. Zero is a
+                    // mark carried only to pick the frame layout.
+                    // A sender whose generation starts at 0 with no record
+                    // was never acknowledged anything, so an empty copy
+                    // holds it all. Its mark stays 0 until a record lands,
+                    // and this is how its empty followers are trusted.
+                    let empty = batch.payloads.is_empty()
+                        && batch.first_offset == 0
+                        && applied.durable_offset == 0
+                        && batch.commit_offset == Some(0);
+                    let trusts = empty
+                        || batch
+                            .commit_offset
+                            .is_some_and(|mark| mark > 0 && mark <= applied.durable_offset);
+                    if trusts && let Some(unclean) = &self.unclean {
+                        unclean.trust(&shard);
+                    }
+                    self.record_vouch(&shard, trusts).await;
                 }
                 // Until the sender's own generation is recorded here, the
                 // newest one recorded is older, and `unverified_from` would
@@ -980,9 +1057,12 @@ impl ReplicaHandler {
                     .generations()
                     .last()
                     .is_some_and(|newest| newest.generation >= batch.shard.generation);
+                // An empty batch that compared nothing must not count this
+                // copy's own records as the sender's, or a later conflict on
+                // them would not be repaired as a dead leader's suffix.
                 if caught_up {
                     self.verified.lock().remove(&key);
-                } else {
+                } else if compared {
                     self.verified.lock().insert(
                         key.clone(),
                         Verified {
@@ -1042,6 +1122,10 @@ impl ReplicaHandler {
                     );
                 }
                 let learner = self.admit_when_caught_up(&key, log_kind, &log).await;
+                if !learner && own_kind(log_kind).is_none() {
+                    self.record_readmitted(&key, &log, batch.shard.generation)
+                        .await;
+                }
                 metrics::record_replicated(metrics::OUTCOME_OK);
                 InternalMessage::ReplicateOk(ReplicateOk {
                     correlation_id,
@@ -1050,12 +1134,41 @@ impl ReplicaHandler {
                 })
             }
             Ok(Err(divergence)) => {
+                if let Divergence::GenerationBelowFloor { .. } = &divergence {
+                    // No truncation: the stamps show the records before the
+                    // batch disagree with the leader's, not where.
+                    tracing::error!(
+                        stream = %key.stream,
+                        shard = key.shard,
+                        sender_generation = batch.shard.generation,
+                        error = %divergence,
+                        "the leader's records disagree with this copy's generations; \
+                         replication stops here",
+                    );
+                }
                 metrics::record_replicated(divergence_outcome(&divergence));
                 refused(
                     correlation_id,
                     divergence_code(&divergence),
                     divergence.expected_offset(),
                     divergence.to_string(),
+                )
+            }
+            Err(felix_broker::BrokerError::WriterUnknown(_)) => {
+                tracing::error!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    sender_generation = batch.shard.generation,
+                    "the leader did not say which generations wrote its records; refusing the batch",
+                );
+                metrics::record_replicated(metrics::OUTCOME_WRITERS_UNKNOWN);
+                refused(
+                    correlation_id,
+                    ErrorCode::UnsupportedKind,
+                    0,
+                    "this follower stamps records with the generation that wrote them; \
+                     the leader must offer writer_generations"
+                        .to_string(),
                 )
             }
             Err(err) => {
@@ -1084,7 +1197,28 @@ impl ReplicaHandler {
     /// writes nothing and skips the queue, so it does not wait behind a
     /// promotion's (#1796). That is known from what this broker last
     /// answered, so after a restart a log's first read round queues once.
+    ///
+    /// Answered as to a caller that offered no capabilities; see
+    /// [`Self::fence_from`].
     pub async fn fence(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+        self.fence_from(sender, PeerCapabilities::NONE, request)
+            .await
+    }
+
+    /// [`Self::fence`] from a caller that offered `caller` in its `Hello`.
+    ///
+    /// To a caller that offered [`PeerCapabilities::UNIFIED_FENCE`], the
+    /// shard's own log answers where it would refuse a copy that is a
+    /// learner, or the one this broker led before a crash: such a leader
+    /// counts the answer by its attestation, which says the copy's promises
+    /// or its log count for nothing. Every ballot and set refusal stands.
+    /// Group and counter logs carry no attestation and refuse as before.
+    pub(crate) async fn fence_from(
+        &self,
+        sender: Option<&str>,
+        caller: PeerCapabilities,
+        request: Fence,
+    ) -> InternalMessage {
         // A candidate's fence on the shard's own log, from a sender that names
         // itself: once taken, this replica routes the shard to it, so its
         // batches pass the role check and clients are sent to it (rule 9).
@@ -1118,7 +1252,11 @@ impl ReplicaHandler {
         } else {
             self.fence_turn(sender).await
         };
-        let answer = self.fence_in_turn(sender, request).await;
+        // A broker with nothing durable to attest from answers as an older one,
+        // under the refusals that caller's counting relies on.
+        let unified = caller.contains(PeerCapabilities::UNIFIED_FENCE)
+            && self.fleet.as_ref().is_none_or(|fleet| fleet.attests());
+        let answer = self.fence_in_turn(sender, unified, request).await;
         if matches!(answer, InternalMessage::FenceOk(_)) {
             let mut fenced_at = self.fenced_at.lock();
             // Forgetting only sends a read round's fence through the queue.
@@ -1131,7 +1269,16 @@ impl ReplicaHandler {
             let at = fenced_at.entry(key).or_insert(generation);
             *at = (*at).max(generation);
         }
-        if let (Some((elections, key, elected)), InternalMessage::FenceOk(_)) = (candidate, &answer)
+        // A unified answer that keeps no promise did nothing to elect the
+        // candidate, so it routes nothing to it: the same as the refusal an
+        // older caller gets from this copy.
+        if let (Some((elections, key, elected)), InternalMessage::FenceOk(ok)) =
+            (candidate, &answer)
+            && !(unified
+                && ok
+                    .attestation
+                    .as_ref()
+                    .is_some_and(|a| a.kept_from == u64::MAX))
         {
             elections.record(key, elected);
         }
@@ -1154,11 +1301,19 @@ impl ReplicaHandler {
             .ok()
     }
 
-    async fn fence_in_turn(&self, sender: Option<&str>, request: Fence) -> InternalMessage {
+    async fn fence_in_turn(
+        &self,
+        sender: Option<&str>,
+        unified: bool,
+        request: Fence,
+    ) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let generation = request.shard.generation;
         let log_kind = log_kind(request.log);
         let key = shard_key(&request.shard, log_kind);
+        // Only the shard's own log carries the attestation that makes an
+        // answer in place of a refusal safe to count.
+        let attested = unified && own_kind(log_kind).is_none();
         // The fence comes with a promotion, usually before this broker's
         // routing view has the new generation. Behind is the normal case here,
         // not a reason to make the new leader wait for the watch.
@@ -1180,7 +1335,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1222,6 +1377,8 @@ impl ReplicaHandler {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
+                    attestation: None,
                 });
             }
             // Nowhere to keep the promise, so no promise: the leader must not
@@ -1254,44 +1411,67 @@ impl ReplicaHandler {
         if log_kind == felix_broker::LogKind::Cache {
             let counters = self
                 .broker
-                .shard_log(
+                .shard_log_off_runtime(
                     felix_broker::LogKind::Counters,
                     &key.tenant_id,
                     &key.namespace,
                     &key.stream,
                     key.shard,
+                    None,
+                    None,
                 )
                 .await
                 .map_or(0, |log| log.accepted_generation());
             if counters > generation {
                 metrics::record_replicated(metrics::OUTCOME_FENCED);
-                return refused(
+                return refused_for(
                     correlation_id,
                     ErrorCode::FencedEpoch,
-                    0,
-                    format!(
-                        "this broker accepted generation {counters}, the sender is at {generation}"
-                    ),
+                    RefusalReason::Accepted {
+                        accepted: counters,
+                        sender: generation,
+                    },
                 );
             }
         }
-        if let Some(refusal) = self
-            .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request)
-            .await
-        {
-            return refusal;
-        }
-        if let Some(refusal) = self
-            .refuse_short_copy(
-                correlation_id,
-                &key,
-                log_kind,
-                &log,
-                generation,
-                sender,
-                request.shard.incarnation,
-            )
-            .await
+        let voter = if attested {
+            match self.fences_as_non_voter(correlation_id, &key, &log, &request) {
+                // Even a learner continuing from its leader keeps no promise
+                // here: unlike an older caller's, a unified fence gives a
+                // learner a ballot, so a ballot it holds may be one taken
+                // while its promises counted for nothing, and a later crash
+                // that keeps it does not make it kept (design-unified-fence.md
+                // section 1, "kept": never lost, or readmitted).
+                Ok(non_voter) => !non_voter,
+                Err(refusal) => return *refusal,
+            }
+        } else {
+            if let Some(refusal) = self
+                .refuse_non_voter_fence(correlation_id, &key, log_kind, &log, &request, sender)
+                .await
+            {
+                return refusal;
+            }
+            true
+        };
+        // A copy led before the crash answers, untrusted, only while this
+        // process tracks that: the ballot it takes would erase the given-up
+        // mark, the one record of it a clean restart has.
+        let tracked = attested.then_some(self.unclean.as_ref()).flatten();
+        // Read before the ballot replaces it.
+        let given_up = log.gave_up();
+        if tracked.is_none()
+            && let Some(refusal) = self
+                .refuse_short_copy(
+                    correlation_id,
+                    &key,
+                    log_kind,
+                    &log,
+                    generation,
+                    sender,
+                    request.shard.incarnation,
+                )
+                .await
         {
             return refusal;
         }
@@ -1313,19 +1493,42 @@ impl ReplicaHandler {
         // is the leader confirming it still leads, once per read round. From
         // any other node it is refused below, by the ballot.
         if let Some(election) = &request.election
-            && let Some(refusal) =
-                self.check_fence_set(correlation_id, &key, &log, election, generation)
+            && let Some(refusal) = self.check_fence_set(
+                correlation_id,
+                &key,
+                &log,
+                election,
+                (generation, sender),
+                attested,
+            )
         {
             return refusal;
         }
         let confirming = log.accepted_generation() == generation;
+        // Read before the ballot moves to this generation: a continuing
+        // leader counts a rotated copy only on this (#2047).
+        let kept_ballot = self.continues_from(&key, &log, generation, sender);
+        // So a later fence from an older leader still finds it led before,
+        // in this process and, through the copy-trust record, after a clean
+        // restart: the ballot replaces the one, or the given-up mark, that
+        // said so.
+        if attested && let Err(err) = self.doubt_before_ballot(&key, &log, generation).await {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
+        // A ballot taken as no voter would read, after a crash that keeps
+        // it, as a promise kept: record first that it is not one.
+        if !voter && let Err(err) = self.unkeep(&key, generation).await {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
+        }
         if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
             return refusal;
         }
         // After the ballot, as the open expects, and before the answer.
         if let Some(election) = &request.election
             && let Some(refusal) = self
-                .keep_fence_set(correlation_id, &key, &log, election)
+                .keep_fence_set(correlation_id, &key, &log, election, (generation, sender))
                 .await
         {
             return refusal;
@@ -1355,12 +1558,259 @@ impl ReplicaHandler {
         if request.election.as_ref().is_some_and(|e| !e.candidate) {
             self.heard_leader(&key);
         }
+        let answered_generation = last_generation(&log.generations(), log_end);
+        let recorded = attested
+            && matches!(
+                log_kind,
+                felix_broker::LogKind::Stream | felix_broker::LogKind::Cache
+            )
+            && self.router.snapshot().get(&key).is_some_and(|route| {
+                vouched_by_record(
+                    route.readmitted.as_deref().map_or(&[], Vec::as_slice),
+                    self.router.local_node_id(),
+                    self.local_storage,
+                    answered_generation,
+                    log_end,
+                )
+            });
         InternalMessage::FenceOk(FenceOk {
             correlation_id,
             log_end,
             commit_offset: log.commit_offset(),
-            last_generation: last_generation(&log.generations(), log_end),
+            last_generation: answered_generation,
+            kept_ballot,
+            attestation: attested.then(|| self.attestation(&key, voter, given_up, recorded)),
         })
+    }
+
+    /// What this replica attests about its copy of `key`'s log in a fence
+    /// answer. It travels only to a caller that offered
+    /// [`PeerCapabilities::UNIFIED_FENCE`].
+    ///
+    /// Its promises count from set generation 0 when the directory kept every
+    /// ballot and the copy votes, from the readmitting set's after a loss
+    /// ([`QuorumMarks::readmission_counts`]), and for no set otherwise. The
+    /// copy is trusted when its promises count, it was not `given_up` and is
+    /// not recorded as the copy this broker led before a crash (marked on
+    /// disk), no log in this process is poisoned (a failed flush may have
+    /// dropped acknowledged pages), and the process started clean or a leader
+    /// has since shipped it level through that leader's mark
+    /// ([`crate::unclean::UncleanStart::trust`]). The directory's copy-trust
+    /// record keeps that last part across restarts: after any start that
+    /// rotated the storage id, a later clean start still waits for the vouch,
+    /// unless the control plane's record vouches for the copy (`recorded`,
+    /// [`vouched_by_record`]).
+    ///
+    /// [`QuorumMarks::readmission_counts`]: crate::quorum::QuorumMarks::readmission_counts
+    ///
+    /// [`PeerCapabilities::UNIFIED_FENCE`]: felix_wire::internal::PeerCapabilities::UNIFIED_FENCE
+    fn attestation(
+        &self,
+        key: &felix_router::ShardKey,
+        voter: bool,
+        given_up: bool,
+        recorded: bool,
+    ) -> felix_wire::internal::FenceAttestation {
+        attest_copy(
+            self.fleet.as_deref(),
+            self.unclean.as_deref(),
+            (self.poisoned)(),
+            key,
+            voter,
+            given_up,
+            recorded,
+        )
+    }
+
+    fn copy_trust(&self) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
+        self.fleet.as_ref().and_then(|fleet| fleet.copy_trust())
+    }
+
+    /// `log`, `key`'s own log, is about to take a newer leader's ballot at
+    /// `generation` from a batch. A copy this broker led before an unclean
+    /// start is recorded as doubted first ([`UncleanStart::accepting`]), and
+    /// so is one given up on disk after a clean restart, whose given-up
+    /// ballot the new one replaces. On an error the ballot must not be taken.
+    ///
+    /// [`UncleanStart::accepting`]: crate::unclean::UncleanStart::accepting
+    async fn doubt_before_ballot(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let shard = crate::driver::watch_key(key);
+        self.pin_unkept_floor(&shard, log).await?;
+        if let Some(unclean) = &self.unclean {
+            return unclean.accepting(&shard, log, generation).await;
+        }
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&shard);
+        if !log.gave_up() || generation < log.accepted_generation() || trust.doubted(&name) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        felix_common::blocking::spawn(move || trust.doubt(&name))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// A copy unkept since a generation the record does not know (it did not
+    /// decode, or named another storage id) is unkept since at least the
+    /// ballot it holds now. Recorded before a newer ballot replaces that, so
+    /// only a set newer than it readmits the copy.
+    async fn pin_unkept_floor(
+        &self,
+        shard: &crate::ShardKey,
+        log: &felix_broker::StreamLog,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(shard);
+        if trust.unkept(&name) != Some(Since::Unknown) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        let floor = log.accepted_generation();
+        felix_common::blocking::spawn(move || trust.unkeep(&name, floor))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// Whether `key`'s copy took a ballot while its promises counted for
+    /// nothing and has not been readmitted since ([`Self::unkeep`]).
+    fn unkept(&self, key: &felix_router::ShardKey) -> bool {
+        self.copy_trust().is_some_and(|trust| {
+            trust
+                .unkept(&crate::unclean::copy_key(&crate::driver::watch_key(key)))
+                .is_some()
+        })
+    }
+
+    /// Record, durably, that `key`'s copy is about to take a ballot while its
+    /// promises count for nothing, as a learner answering a unified fence
+    /// does. Call before the ballot is written. Afterwards the ballot reads
+    /// as a promise kept through any crash, so without this record an older
+    /// caller's fence would count it ([`Self::continues_from`]). An error
+    /// means the ballot must not be taken. `generation` is the ballot's: only
+    /// a set newer than it readmits the copy ([`Self::readmitted_since`]).
+    pub(crate) async fn unkeep(
+        &self,
+        key: &felix_router::ShardKey,
+        generation: u64,
+    ) -> Result<(), felix_storage::StorageError> {
+        let Some(trust) = self.copy_trust() else {
+            return Ok(());
+        };
+        let name = crate::unclean::copy_key(&crate::driver::watch_key(key));
+        if matches!(trust.unkept(&name), Some(Since::At(since)) if since >= generation) {
+            return Ok(());
+        }
+        let trust = Arc::clone(trust);
+        felix_common::blocking::spawn(move || trust.unkeep(&name, generation))
+            .await
+            .unwrap_or_else(|err| Err(felix_storage::StorageError::Io(std::io::Error::other(err))))
+    }
+
+    /// After a batch from the leader of `sent_at`: an unkept copy that is now
+    /// readmitted, a voter in a set newer than its unkept ballot, counts its
+    /// promises again. So does a copy on a directory that lost its ballots,
+    /// from that set on: the set names the copy by its storage id now, which
+    /// only a set written after the loss can. A batch alone, or wipe evidence
+    /// without a set, is no readmission (the design's "Wipe" row).
+    async fn record_readmitted(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        sent_at: u64,
+    ) {
+        let Some(trust) = self.copy_trust() else {
+            return;
+        };
+        // Until the start says what it kept, a lost copy reads as kept, and
+        // clearing its floor now would leave nothing to readmit it from.
+        if self
+            .fleet
+            .as_ref()
+            .is_some_and(|fleet| !fleet.knows_kept_ballots())
+        {
+            return;
+        }
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        let lost = self.fleet.as_ref().is_some_and(|fleet| {
+            !fleet.kept_ballots() && fleet.readmits() && trust.readmitted(&name).is_none()
+        });
+        // An unknown floor is pinned before the batch's ballot; if that did
+        // not happen, nothing says which set is newer. A loss with no floor
+        // counts from 0 only when this start minted the storage id: every set
+        // naming that id came after the loss. An older id (a directory swapped
+        // back without a rotation) may be named by sets from before the loss,
+        // and nothing here says which, so it gets no credit.
+        let unkept = trust.unkept(&name);
+        let minted = self
+            .fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.minted_storage());
+        let since = match unkept {
+            Some(Since::At(since)) => since,
+            None if lost && minted => 0,
+            _ => return,
+        };
+        let (Some(generation), Some(own_id)) = (
+            self.readmitted_since(log, since, sent_at).await,
+            self.local_storage,
+        ) else {
+            return;
+        };
+        let trust = Arc::clone(trust);
+        let recorded = felix_common::blocking::spawn(move || {
+            if lost {
+                trust.readmit(&name, generation, own_id)?;
+            }
+            if unkept.is_some() {
+                trust.clear_unkept(&name)?;
+            }
+            Ok::<_, felix_storage::StorageError>(())
+        })
+        .await;
+        if let Ok(Err(err)) = recorded {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                error = %err,
+                "could not record that this copy was readmitted; its promises count for nothing \
+                 until the next batch records it",
+            );
+        }
+    }
+
+    /// Record in the directory's copy-trust record that a leader shipped
+    /// `shard`'s copy level through its generation's start, which ends any
+    /// doubt, and, when `trusts`, through its mark too. Off the runtime: each
+    /// change is synced, once per copy after a crash.
+    async fn record_vouch(&self, shard: &crate::ShardKey, trusts: bool) {
+        let Some(trust) = self.copy_trust() else {
+            return;
+        };
+        let name = crate::unclean::copy_key(shard);
+        if !trust.doubted(&name) && (!trusts || trust.trusted(&name)) {
+            return;
+        }
+        let trust = Arc::clone(trust);
+        let recorded = felix_common::blocking::spawn(move || trust.vouch(&name, trusts)).await;
+        if let Ok(Err(err)) = recorded {
+            tracing::warn!(
+                stream = %shard.stream,
+                shard = shard.shard,
+                error = %err,
+                "could not record that a leader vouched for this copy; it stays untrusted \
+                 and is vouched for again by the next batch",
+            );
+        }
     }
 
     /// Serve the leader that fenced this replica its copy of the shard's log
@@ -1389,7 +1839,7 @@ impl ReplicaHandler {
         }
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -1436,14 +1886,7 @@ impl ReplicaHandler {
                 // Not fenced by this leader yet; it fences, then reads.
                 ErrorCode::StaleRoute
             };
-            return refused(
-                correlation_id,
-                code,
-                0,
-                format!(
-                    "this broker accepted generation {accepted}, the reader is at {generation}"
-                ),
-            );
+            return refused(correlation_id, code, 0, reader_detail(accepted, generation));
         }
         let max_bytes = (request.max_bytes as usize).clamp(1, MAX_FETCH_BYTES);
         // A promoted leader reads a cursor log whole to take its groups, and
@@ -1452,19 +1895,44 @@ impl ReplicaHandler {
             felix_broker::LogKind::GroupCursors => request.from_offset.max(log.physical_base()),
             _ => request.from_offset,
         };
-        let records = match log.read_replicated_from(from_offset, max_bytes).await {
+        let mut records = match log.read_replicated_from(from_offset, max_bytes).await {
             Ok(records) => records,
             Err(err) => {
                 return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
             }
         };
+        // A kind the wire cannot carry ends the page, so the reader is never
+        // handed it under another mark.
+        if let Some(at) = records
+            .iter()
+            .position(|record| replication::mark_to_wire(record.mark).is_none())
+        {
+            if at == 0 {
+                return refused(
+                    correlation_id,
+                    ErrorCode::UnsupportedKind,
+                    0,
+                    "the next record is a kind replication does not carry yet".to_string(),
+                );
+            }
+            records.truncate(at);
+        }
+        // Read for the labels; a plain fetch reads none.
+        let history = request.labelled.then(|| log.generations());
+        let history = history.as_deref().unwrap_or_default();
+        // Cut before any fall in the generations; the reader asks again.
+        let writers = (request.writers && request.labelled && request.timed).then(|| {
+            let (runs, covered) = replication::writers_to_wire(&records);
+            records.truncate(covered);
+            runs
+        });
         let marks: Vec<felix_wire::internal::ProducerMark> = if records
             .iter()
             .any(|record| record.mark != felix_storage::log::RecordMark::None)
         {
             records
                 .iter()
-                .map(|record| replication::mark_to_wire(record.mark))
+                .filter_map(|record| replication::mark_to_wire(record.mark))
                 .collect()
         } else {
             Vec::new()
@@ -1506,10 +1974,11 @@ impl ReplicaHandler {
             commit_offset: None,
             generations: request
                 .labelled
-                .then(|| generations_over(&log.generations(), first_offset, end)),
+                .then(|| generations_over(history, first_offset, end)),
             publishers,
             times,
             headers,
+            writers,
             set_generation: None,
         };
         crate::ship::carry_marks(&mut batch, log_kind, false);
@@ -1546,7 +2015,7 @@ impl ReplicaHandler {
         };
         let log = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 own,
                 &key.tenant_id,
                 &key.namespace,
@@ -1562,13 +2031,13 @@ impl ReplicaHandler {
         let accepted = log.accepted_generation();
         (accepted > generation).then(|| {
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            refused(
+            refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
+                RefusalReason::Accepted {
+                    accepted,
+                    sender: generation,
+                },
             )
         })
     }
@@ -1600,7 +2069,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1613,9 +2082,22 @@ impl ReplicaHandler {
                 &opened
             }
         };
-        let led_before = self.unclean.as_ref().is_some_and(|unclean| {
-            unclean.led_before(&crate::driver::watch_key(key), log, generation)
-        });
+        // The leader this copy promised the generation before, moving on to
+        // the next: it holds what this copy might have lost (#2047).
+        if self.continues_from(key, log, generation, sender) {
+            return None;
+        }
+        let shard = crate::driver::watch_key(key);
+        let led_before = self
+            .unclean
+            .as_ref()
+            .is_some_and(|unclean| unclean.led_before(&shard, log, generation));
+        // The ballot stops saying so once the copy takes a newer leader's,
+        // and a clean restart forgets the rest; this record does neither.
+        let doubted = self
+            .copy_trust()
+            .is_some_and(|trust| trust.doubted(&crate::unclean::copy_key(&shard)));
+        let led_before = led_before || doubted;
         if !log.gave_up() && !led_before {
             return None;
         }
@@ -1624,17 +2106,39 @@ impl ReplicaHandler {
         if self.acknowledged_by_two(key, log, generation, sender).await {
             return None;
         }
-        if led_before
-            && let Some(unclean) = &self.unclean
-            && log.accepted_leader().as_deref() == Some(unclean.node_id())
-            && let Err(err) = log.give_up_generation().await
-        {
-            tracing::warn!(
-                stream = %key.stream,
-                shard = key.shard,
-                error = %err,
-                "could not record giving up the generation this broker led before its crash",
-            );
+        let gives_up = led_before
+            && self
+                .unclean
+                .as_ref()
+                .is_some_and(|unclean| log.accepted_leader().as_deref() == Some(unclean.node_id()));
+        if gives_up {
+            // A batch after a clean restart replaces the given-up ballot
+            // without asking who led the copy, so record that apart first.
+            // This fence is refused either way, and the given-up ballot only
+            // adds to the record; a batch that would replace it tries again
+            // and is refused if it cannot (`doubt_before_ballot`).
+            if !doubted && let Some(trust) = self.copy_trust() {
+                let trust = Arc::clone(trust);
+                let name = crate::unclean::copy_key(&shard);
+                if let Ok(Err(err)) =
+                    felix_common::blocking::spawn(move || trust.doubt(&name)).await
+                {
+                    tracing::error!(
+                        stream = %key.stream,
+                        shard = key.shard,
+                        error = %err,
+                        "could not record that this broker led the copy before its crash",
+                    );
+                }
+            }
+            if let Err(err) = log.give_up_generation().await {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    error = %err,
+                    "could not record giving up the generation this broker led before its crash",
+                );
+            }
         }
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
         let beyond = self
@@ -1786,7 +2290,7 @@ impl ReplicaHandler {
             Some(own) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         own,
                         &key.tenant_id,
                         &key.namespace,
@@ -1948,8 +2452,43 @@ impl ReplicaHandler {
         self.joint_gate() == Some(true)
     }
 
-    /// Whether the fleet has `joint_fence`, or `None` while this broker has
-    /// not yet taken a registration's answer. The peer listener is bound
+    /// Whether `log`'s ballot names `sender`, another broker, at the
+    /// generation right before `generation`: a fence from the leader this
+    /// copy last promised, moving to its next generation. Or at `generation`
+    /// itself, as a retried fence finds it: that kept ballot promised the
+    /// generation to no one else either. Only after an
+    /// unclean start that kept every ballot: a wiped or restored copy may
+    /// have promised the next generation to a candidate before it lost that
+    /// ballot, and a ballot it took since proves nothing. Such a copy refuses
+    /// as it would. Lets a doubted copy promise, never vouch: it stays
+    /// doubted. The fence answer says it held ([`FenceOk::kept_ballot`]), and
+    /// only that lets a continuing leader count the copy (#2047).
+    ///
+    /// Nor when the copy took its ballot while its promises counted for
+    /// nothing ([`Self::unkeep`]): that ballot looks like any other after a
+    /// restart.
+    fn continues_from(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        generation: u64,
+        sender: Option<&str>,
+    ) -> bool {
+        let kept = self
+            .unclean
+            .as_ref()
+            .is_some_and(|unclean| unclean.kept_promises())
+            && !self.unkept(key);
+        kept && sender.is_some_and(|sender| {
+            sender != self.router.local_node_id()
+                && (generation.checked_sub(1) == Some(log.accepted_generation())
+                    || generation == log.accepted_generation())
+                && log.accepted_leader().as_deref() == Some(sender)
+        })
+    }
+
+    /// Whether the fleet has `joint_fence`, or `None` while it is off here and
+    /// this broker has not yet taken a registration's answer. The peer listener is bound
     /// before registration, so the gate can be unread while requests arrive.
     fn joint_gate(&self) -> Option<bool> {
         joint_gate(self.fleet.as_deref())
@@ -1986,11 +2525,13 @@ impl ReplicaHandler {
             ReplicaRole::Follower => None,
             ReplicaRole::Fenced { have, named } => {
                 metrics::record_replicated(metrics::OUTCOME_FENCED);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::FencedEpoch,
-                    0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    RefusalReason::View {
+                        have,
+                        sender: named,
+                    },
                 ))
             }
             ReplicaRole::Behind { have, named } => {
@@ -1998,20 +2539,21 @@ impl ReplicaHandler {
                 // has not caught up. Retryable, and the leader will find us
                 // ready once it has.
                 metrics::record_replicated(metrics::OUTCOME_BEHIND);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::StaleRoute,
-                    0,
-                    format!("this broker is at generation {have}, the sender at {named}"),
+                    RefusalReason::View {
+                        have,
+                        sender: named,
+                    },
                 ))
             }
             ReplicaRole::NotAReplica => {
                 metrics::record_replicated(metrics::OUTCOME_REFUSED);
-                Some(refused(
+                Some(refused_for(
                     correlation_id,
                     ErrorCode::Unauthorized,
-                    0,
-                    "this broker is not a replica of that shard".to_string(),
+                    RefusalReason::NotAReplica,
                 ))
             }
         }
@@ -2087,14 +2629,13 @@ fn confirmed_refusal(
                 "refusing a leader the control plane has replaced",
             );
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            Some(refused(
+            Some(refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                format!(
-                    "the control plane assigned generation {assigned}, the sender is at \
-                         {generation}"
-                ),
+                RefusalReason::Assigned {
+                    assigned: *assigned,
+                    sender: generation,
+                },
             ))
         }
         Confirmed::Assigned {
@@ -2166,15 +2707,38 @@ async fn accept_sender(
     sender: Option<&str>,
 ) -> Option<InternalMessage> {
     match log.accept_generation(generation, sender).await {
-        Ok(GenerationCheck::Current | GenerationCheck::Raised) => None,
-        Ok(GenerationCheck::Promised { leader }) => Some(promised_elsewhere(
+        Ok(check) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// The refusal a ballot's answer to `sender` at `generation` calls for, if
+/// any.
+fn ballot_refusal(
+    check: GenerationCheck,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+) -> Option<InternalMessage> {
+    match check {
+        GenerationCheck::Current | GenerationCheck::Raised => None,
+        GenerationCheck::Promised { leader } => Some(promised_elsewhere(
             correlation_id,
             key,
             generation,
             &leader,
             sender,
         )),
-        Ok(GenerationCheck::Superseded { accepted }) => {
+        GenerationCheck::Superseded { accepted } => {
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -2183,22 +2747,13 @@ async fn accept_sender(
                 "refusing a leader older than one this replica already accepted",
             );
             metrics::record_replicated(metrics::OUTCOME_FENCED);
-            Some(refused(
+            Some(refused_for(
                 correlation_id,
                 ErrorCode::FencedEpoch,
-                0,
-                format!(
-                    "this broker accepted generation {accepted}, the sender is at {generation}"
-                ),
-            ))
-        }
-        Err(err) => {
-            metrics::record_replicated(metrics::OUTCOME_ERROR);
-            Some(refused(
-                correlation_id,
-                ErrorCode::StorageFailed,
-                0,
-                err.to_string(),
+                RefusalReason::Accepted {
+                    accepted,
+                    sender: generation,
+                },
             ))
         }
     }
@@ -2242,17 +2797,19 @@ fn promised_elsewhere(
         "refusing a second leader at a generation this replica accepted from another",
     );
     metrics::record_replicated(metrics::OUTCOME_FENCED);
-    refused(
+    refused_for(
         correlation_id,
         ErrorCode::FencedEpoch,
-        0,
-        promised_detail(generation, leader),
+        RefusalReason::PromisedTo {
+            generation,
+            leader: leader.to_string(),
+        },
     )
 }
 
 /// The detail of a refusal at a generation promised to `leader`. Brokers that
-/// predate [`promised_to`] send the same text, so it is the only place the
-/// promise is named on the wire.
+/// predate [`RefusalReason`] send only this text, which [`promised_to`] reads
+/// back from them.
 pub(crate) fn promised_detail(generation: u64, leader: &str) -> String {
     format!("this broker accepted generation {generation} from {leader}")
 }
@@ -2260,12 +2817,163 @@ pub(crate) fn promised_detail(generation: u64, leader: &str) -> String {
 /// The node a `FencedEpoch` refusal says `generation` was promised to, or
 /// `None` when the refusal is for any other reason, such as a newer
 /// generation.
-pub(crate) fn promised_to(detail: &str, generation: u64) -> Option<&str> {
-    detail
-        .strip_prefix(&format!(
-            "this broker accepted generation {generation} from "
-        ))
-        .filter(|leader| !leader.is_empty())
+pub(crate) fn promised_to(err: &ReplicateError, generation: u64) -> Option<&str> {
+    match &err.reason {
+        Some(RefusalReason::PromisedTo {
+            generation: promised,
+            leader,
+        }) => (*promised == generation && !leader.is_empty()).then_some(leader.as_str()),
+        Some(_) => None,
+        None => err
+            .detail
+            .strip_prefix(&format!(
+                "this broker accepted generation {generation} from "
+            ))
+            .filter(|leader| !leader.is_empty()),
+    }
+}
+
+/// What a replica answers a batch for a shard whose route at that
+/// generation does not name it a follower; [`refuses_leader`] reads it back.
+pub(crate) const NOT_A_REPLICA: &str = "this broker is not a replica of that shard";
+
+/// What a replica answers a fence while it does not vote; [`not_a_voter`]
+/// reads it back.
+pub(crate) const NOT_A_VOTER: &str = "this broker does not vote until a set change re-admits it";
+
+/// Whether a refusal says its sender holds no vote, so the position it would
+/// have reported counts for nothing.
+pub(crate) fn not_a_voter(err: &ReplicateError) -> bool {
+    match &err.reason {
+        Some(reason) => *reason == RefusalReason::NotVoter,
+        None => err.detail == NOT_A_VOTER,
+    }
+}
+
+/// Whether a follower's refusal of a leader at `generation` says its copy
+/// does not follow that leader there: its route names it outside the set,
+/// as the leader the control plane named, or its ballot holds the
+/// generation for another node.
+pub(crate) fn refuses_leader(err: &ReplicateError, generation: u64) -> bool {
+    match err.code {
+        ErrorCode::Unauthorized => match &err.reason {
+            Some(reason) => *reason == RefusalReason::NotAReplica,
+            None => err.detail == NOT_A_REPLICA,
+        },
+        ErrorCode::FencedEpoch => promised_to(err, generation).is_some(),
+        _ => false,
+    }
+}
+
+/// What a replica answers a sender at `generation` once its ballot holds
+/// the newer `accepted`; [`superseded_by`] reads it back.
+pub(crate) fn superseded_detail(accepted: u64, generation: u64) -> String {
+    format!("this broker accepted generation {accepted}, the sender is at {generation}")
+}
+
+/// What a replica answers a fetch at `generation` when its ballot holds
+/// `accepted`; [`superseded_by`] reads a newer one back.
+pub(crate) fn reader_detail(accepted: u64, generation: u64) -> String {
+    format!("this broker accepted generation {accepted}, the reader is at {generation}")
+}
+
+/// What a replica answers a sender at `generation` when the control plane's
+/// confirmed assignment is at the newer `assigned`; [`assigned_newer`] reads
+/// it back.
+pub(crate) fn assigned_detail(assigned: u64, generation: u64) -> String {
+    format!("the control plane assigned generation {assigned}, the sender is at {generation}")
+}
+
+/// Whether a `FencedEpoch` refusal of a sender at `generation` says the
+/// control plane assigned a newer generation. Unlike a ballot or a view,
+/// which an election may leave behind with no leader, that names one.
+pub(crate) fn assigned_newer(err: &ReplicateError, generation: u64) -> bool {
+    match &err.reason {
+        Some(RefusalReason::Assigned { assigned, sender }) => {
+            *sender == generation && *assigned > generation
+        }
+        Some(_) => false,
+        None => err
+            .detail
+            .strip_prefix("the control plane assigned generation ")
+            .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+            .and_then(|assigned| assigned.parse::<u64>().ok())
+            .is_some_and(|assigned| assigned > generation),
+    }
+}
+
+/// The newer generation a `FencedEpoch` refusal of a sender at `generation`
+/// says the control plane assigned, if it says so.
+pub(crate) fn assigned_by(err: &ReplicateError, generation: u64) -> Option<u64> {
+    match &err.reason {
+        Some(RefusalReason::Assigned { assigned, sender }) => {
+            (*sender == generation && *assigned > generation).then_some(*assigned)
+        }
+        Some(_) => None,
+        None => err
+            .detail
+            .strip_prefix("the control plane assigned generation ")
+            .and_then(|rest| rest.strip_suffix(&format!(", the sender is at {generation}")))
+            .and_then(|assigned| assigned.parse::<u64>().ok())
+            .filter(|assigned| *assigned > generation),
+    }
+}
+
+/// What a replica answers a sender at `generation` when its routing view is
+/// at `have`; [`superseded_by`] reads it back from a fenced refusal.
+pub(crate) fn view_detail(have: u64, generation: u64) -> String {
+    format!("this broker is at generation {have}, the sender at {generation}")
+}
+
+/// The newer generation a `FencedEpoch` refusal says this replica holds,
+/// when it refused a sender at `generation` for that: its ballot, or its
+/// routing view ([`ReplicaRole::Fenced`]). A view above the control plane's
+/// comes from a candidate's fence this replica took, whose ballot it also
+/// holds. `None` for any other refusal.
+pub(crate) fn superseded_by(err: &ReplicateError, generation: u64) -> Option<u64> {
+    let newer = match &err.reason {
+        Some(
+            RefusalReason::Accepted {
+                accepted: newer,
+                sender,
+            }
+            | RefusalReason::View {
+                have: newer,
+                sender,
+            },
+        ) => (*sender == generation).then_some(*newer)?,
+        Some(_) => return None,
+        None => {
+            let detail = &err.detail;
+            detail
+                .strip_prefix("this broker accepted generation ")
+                .and_then(|rest| {
+                    rest.strip_suffix(&format!(", the sender is at {generation}"))
+                        .or_else(|| rest.strip_suffix(&format!(", the reader is at {generation}")))
+                })
+                .or_else(|| {
+                    detail
+                        .strip_prefix("this broker is at generation ")?
+                        .strip_suffix(&format!(", the sender at {generation}"))
+                })?
+                .parse::<u64>()
+                .ok()?
+        }
+    };
+    (newer > generation).then_some(newer)
+}
+
+/// The text a refusal for `reason` carries, which is all a leader that
+/// predates [`RefusalReason`] reads.
+fn detail_of(reason: &RefusalReason) -> String {
+    match reason {
+        RefusalReason::PromisedTo { generation, leader } => promised_detail(*generation, leader),
+        RefusalReason::Accepted { accepted, sender } => superseded_detail(*accepted, *sender),
+        RefusalReason::View { have, sender } => view_detail(*have, *sender),
+        RefusalReason::Assigned { assigned, sender } => assigned_detail(*assigned, *sender),
+        RefusalReason::NotAReplica => NOT_A_REPLICA.to_string(),
+        RefusalReason::NotVoter => NOT_A_VOTER.to_string(),
+    }
 }
 
 /// Where a batch from a leader at `generation` must start for every record
@@ -2294,7 +3002,7 @@ fn unverified_from(
 /// what they keep. A batch from a sender that predates labels says only who
 /// sent it, so its generation is taken to start where the batch appended: an
 /// overclaim when the sender inherited the records, which is why labels exist.
-pub(crate) fn label_appended(
+pub(crate) async fn label_appended(
     log: &felix_broker::StreamLog,
     from: u64,
     durable: u64,
@@ -2311,9 +3019,12 @@ pub(crate) fn label_appended(
                     start_offset: start.start_offset,
                 })
                 .collect();
-            log.label_generations(from, &epochs)
+            log.label_generations_off_runtime(from, epochs).await
         }
-        None => log.record_generation(sender_generation, from).map(|_| ()),
+        None => log
+            .record_generation_off_runtime(sender_generation, from)
+            .await
+            .map(|_| ()),
     }
 }
 
@@ -2338,6 +3049,32 @@ pub(crate) fn generations_over(
             start_offset: epoch.start_offset,
         })
         .collect()
+}
+
+/// Whether the control plane's `readmitted` record (`entries`, from the
+/// route) vouches for `node`'s copy: the leader of an entry's generation
+/// caught the copy with storage id `storage`, never rotated since, up to the
+/// entry's offset, and the log still ends at or past it with a last
+/// generation at least the entry's. The generation clause keeps a copy
+/// missing records an earlier generation acknowledged from passing on its
+/// length alone. Only for the shard's own log, whose offsets the entries
+/// are. See "Fencing a promotion" in `docs/replication-design.md`.
+pub(crate) fn vouched_by_record(
+    entries: &[felix_router::Readmitted],
+    node: &str,
+    storage: Option<felix_storage::StorageId>,
+    last_generation: u64,
+    log_end: u64,
+) -> bool {
+    let Some(storage) = storage.map(|id| id.to_hex()) else {
+        return false;
+    };
+    entries.iter().any(|entry| {
+        entry.node == node
+            && entry.storage_id == storage
+            && last_generation >= entry.generation
+            && log_end >= entry.offset
+    })
 }
 
 /// The generation the record just below `log_end` was written at, from the
@@ -2367,6 +3104,8 @@ fn divergence_code(divergence: &Divergence) -> ErrorCode {
         // A batch that did not survive the trip is a transport problem, and
         // resending the same records is the repair.
         Divergence::Corrupt { .. } => ErrorCode::Malformed,
+        // The leader halts this follower as diverged.
+        Divergence::GenerationBelowFloor { .. } => ErrorCode::LogConflict,
     }
 }
 
@@ -2375,6 +3114,52 @@ fn divergence_outcome(divergence: &Divergence) -> &'static str {
         Divergence::Gap { .. } => metrics::OUTCOME_GAP,
         Divergence::Conflict { .. } => metrics::OUTCOME_CONFLICT,
         Divergence::Corrupt { .. } => metrics::OUTCOME_CORRUPT,
+        Divergence::GenerationBelowFloor { .. } => metrics::OUTCOME_BELOW_FLOOR,
+    }
+}
+
+/// What a copy of `key`'s log attests in a fence answer, for this broker's
+/// copy whether it answers as a replica or fences as a promoted leader. See
+/// [`ReplicaHandler::attestation`].
+pub(crate) fn attest_copy(
+    fleet: Option<&crate::quorum::QuorumMarks>,
+    unclean: Option<&crate::unclean::UncleanStart>,
+    poisoned: bool,
+    key: &felix_router::ShardKey,
+    voter: bool,
+    given_up: bool,
+    recorded: bool,
+) -> felix_wire::internal::FenceAttestation {
+    let shard = crate::driver::watch_key(key);
+    let name = crate::unclean::copy_key(&shard);
+    let trust = fleet.and_then(crate::quorum::QuorumMarks::copy_trust);
+    let readmission_counts = fleet.is_some_and(crate::quorum::QuorumMarks::readmission_counts);
+    // A directory that lost ballots keeps this copy's promises again only
+    // from the set that readmitted it ([`ReplicaHandler::record_readmitted`]).
+    let kept_from = if fleet.is_some_and(crate::quorum::QuorumMarks::kept_ballots) {
+        Some(0)
+    } else if readmission_counts && fleet.is_some_and(crate::quorum::QuorumMarks::readmits) {
+        trust.and_then(|trust| trust.readmitted(&name))
+    } else {
+        None
+    };
+    let kept =
+        voter && kept_from.is_some() && !trust.is_some_and(|trust| trust.unkept(&name).is_some());
+    // The control plane's record stands in only for the copy-trust vouch a
+    // clean restart can lose, never for any other reason to distrust.
+    let vouched = trust.is_none_or(|trust| trust.trusted(&name));
+    let trusted = kept
+        && !given_up
+        && !trust.is_some_and(|trust| trust.doubted(&name))
+        && !poisoned
+        && unclean.is_none_or(|unclean| unclean.trusted(&shard))
+        && (vouched || (recorded && readmission_counts));
+    felix_wire::internal::FenceAttestation {
+        kept_from: kept_from.filter(|_| kept).unwrap_or(u64::MAX),
+        trusted,
+        // This copy may not yet know the fleet finalized `replica_election`
+        // when the leader does, so the leader decides whether the record counts.
+        by_record: trusted && !vouched,
     }
 }
 
@@ -2401,6 +3186,17 @@ fn shard_key(
     }
 }
 
+/// A refusal for `reason`, with the detail an older leader reads instead.
+fn refused_for(correlation_id: u64, code: ErrorCode, reason: RefusalReason) -> InternalMessage {
+    InternalMessage::ReplicateError(ReplicateError {
+        correlation_id,
+        code,
+        expected_offset: 0,
+        detail: detail_of(&reason),
+        reason: Some(reason),
+    })
+}
+
 fn refused(
     correlation_id: u64,
     code: ErrorCode,
@@ -2412,6 +3208,7 @@ fn refused(
         code,
         expected_offset,
         detail,
+        reason: None,
     })
 }
 

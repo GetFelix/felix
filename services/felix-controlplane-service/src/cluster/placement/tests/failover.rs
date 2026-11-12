@@ -225,6 +225,83 @@ fn a_quorum_failover_does_not_promote_a_move_destination() {
     assert_eq!(leader, "broker-b");
 }
 
+/// **A move's destination that fences the promotion is promoted.** The move
+/// fenced the leader toward broker-b, a member of the set, and the leader
+/// died; broker-c is behind. Passing over broker-b leaves the shard unplaced
+/// for good. A broker that fences every change of leader fences a majority
+/// and takes their tails before it serves, so its report predating a record
+/// the leader acknowledged loses nothing. One that does not say so, or a
+/// destination staged on top of the set, is still passed over.
+#[test]
+fn a_quorum_failover_promotes_a_destination_that_fences_the_promotion() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let fences = |id: &str| {
+        let mut node = node(id, NodeLifecycle::Live, None);
+        node.status
+            .features
+            .insert(felix_common::fleet::FENCES_EVERY_CHANGE.name().to_string());
+        node
+    };
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    moving.state = ShardState::Draining;
+    moving.successor = Some("broker-b".to_string());
+    let only_destination = CaughtUpNodes(["broker-b".to_string()].into());
+
+    let nodes = vec![fences("broker-b"), fences("broker-c")];
+    let planned = plan(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&moving),
+        &only_destination,
+    );
+    let (_, leader, replicas) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+        "the promotion fences the set the move left",
+    );
+
+    // A broker that does not say it fences every change opens as the cut-over.
+    let older = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        fences("broker-c"),
+    ];
+    let planned = plan(
+        &streams,
+        &[],
+        &older,
+        std::slice::from_ref(&moving),
+        &only_destination,
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "an unfenced destination was promoted"
+    );
+
+    // A copy staged on top of the set never counted toward an acknowledgement.
+    let mut staged = assigned("orders", "broker-a", &["broker-b", "broker-c", "broker-d"]);
+    staged.successor = Some("broker-d".to_string());
+    let nodes = vec![fences("broker-b"), fences("broker-c"), fences("broker-d")];
+    let planned = plan(
+        &streams,
+        &[],
+        &nodes,
+        &[staged],
+        &CaughtUpNodes(["broker-d".to_string()].into()),
+    );
+    assert_eq!(
+        planned.to_place().count(),
+        0,
+        "a staged destination was promoted"
+    );
+}
+
 /// **A replicated shard is never handed to a node that does not hold it.**
 ///
 /// The leader is gone and no replica is caught up. Placing the shard on a node
@@ -254,6 +331,64 @@ fn a_replicated_shard_with_no_caught_up_replica_is_left_unplaceable() {
         plan.unplaceable()
             .any(|(_, why)| matches!(why, Unplaceable::NoCaughtUpReplica)),
         "the shard was dropped without saying why",
+    );
+}
+
+/// **A draining follower takes over when it alone holds the log.** The leader
+/// is gone, the live follower has not caught up, and the follower on a
+/// draining broker has. Leaving the shard unplaced would wait on a catch-up
+/// that needs the leader that is gone (#1922).
+#[test]
+fn a_draining_follower_is_promoted_when_no_live_one_holds_the_log() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 3)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Draining, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let existing = vec![assigned("orders", "broker-a", &["broker-b", "broker-c"])];
+
+    let only_draining = plan(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &CaughtUpNodes(["broker-b".to_string()].into()),
+    );
+    let (_, leader, replicas) = only_draining.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert_eq!(
+        replicas.iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from([&"broker-a".to_string(), &"broker-c".to_string()]),
+    );
+
+    // A live follower that holds the log is still preferred.
+    let both = plan(
+        &streams,
+        &[],
+        &nodes,
+        &existing,
+        &CaughtUpNodes(["broker-b".to_string(), "broker-c".to_string()].into()),
+    );
+    let (_, leader, _) = both.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-c");
+
+    // Nor is a draining move destination promoted, as for a live one.
+    let mut moving = existing[0].clone();
+    moving.successor = Some("broker-b".to_string());
+    let destination = plan(
+        &streams,
+        &[],
+        &nodes,
+        &[moving],
+        &CaughtUpNodes(["broker-b".to_string()].into()),
+    );
+    assert_eq!(
+        destination.to_place().count(),
+        0,
+        "the move's destination was promoted"
     );
 }
 
@@ -1071,6 +1206,109 @@ fn a_follower_level_with_a_leader_that_gave_up_is_promoted() {
     assert_eq!(leader, "broker-c");
 }
 
+/// What placement decides for `orders`, replicated `factor` times, from
+/// `report`, a second after it, with `existing` as the shard's assignment.
+fn plan_on(
+    nodes: &[Node],
+    report: crate::model::ReplicaReport,
+    existing: ShardAssignment,
+    factor: u32,
+) -> Plan {
+    let streams = vec![replicated_stream("orders", 1, factor)];
+    let existing = vec![existing];
+    let positions = ReplicaPositions::new(vec![report], &report_liveness(), REPORTED_AT + 1_000)
+        .with_nodes(nodes, &existing);
+    plan(&streams, &[], nodes, &existing, &positions)
+}
+
+/// The shard fenced at generation 3 to move from broker-a to broker-c.
+fn fenced_to_c() -> ShardAssignment {
+    ShardAssignment {
+        state: ShardState::Draining,
+        successor: Some("broker-c".to_string()),
+        move_reason: Some(crate::model::MoveReason::Balance),
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    }
+}
+
+/// **A fenced leader that gave its copy up is named again at once.** It came
+/// back from an unclean crash before it reported drained, so it never will,
+/// and failover passes the move's destination over. The move ends with the
+/// fence timeout's write, without waiting out the timeout.
+#[test]
+fn a_fenced_leader_that_gave_up_is_named_again_at_once() {
+    let mut report = given_up_report(10, 4, 10);
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 3);
+    let (_, step, retaken) = plan.moves().next().expect("the move still waits");
+    assert_eq!(
+        step,
+        &MoveStep::LeaderGaveUp {
+            successor: Some("broker-c".to_string())
+        }
+    );
+    assert_eq!(retaken.leader, "broker-a");
+    assert_eq!(retaken.state, ShardState::Assigning);
+    assert_eq!(retaken.successor, None);
+    assert_eq!(
+        retaken.replicas,
+        ["broker-b".to_string(), "broker-c".to_string()],
+        "the destination was a follower already and stays one",
+    );
+}
+
+/// **A staged destination stays in the set when the move ends this way.**
+/// At RF 2 the destination is a third copy, and a record acknowledged on the
+/// leader and the destination may be on nobody else. Dropped, it would be
+/// missing from the next probe, which would then find no follower ahead of
+/// the leader's short copy and let it lead.
+#[test]
+fn a_staged_destination_stays_when_its_leader_gave_up() {
+    let mut report = given_up_report(10, 4, 10);
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 2);
+    let (_, step, retaken) = plan.moves().next().expect("the move still waits");
+    assert!(matches!(step, MoveStep::LeaderGaveUp { .. }), "{step:?}");
+    assert_eq!(
+        retaken.replicas,
+        ["broker-b".to_string(), "broker-c".to_string()],
+        "the destination was dropped",
+    );
+}
+
+/// A give-up from before the fence says nothing about the leader since: the
+/// move waits for its drained report.
+#[test]
+fn a_give_up_from_before_the_fence_does_not_end_the_move() {
+    let mut report = given_up_report(10, 4, 10);
+    report.generation = 2;
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, fenced_to_c(), 3);
+    assert_eq!(plan.moves().count(), 0);
+    assert!(
+        plan.waiting()
+            .any(|(_, why)| matches!(why, Blocked::LeaderStopping)),
+    );
+}
+
+/// After the retake the leader gives that generation up too when a follower
+/// holds more than its copy. With no move left, the destination it was
+/// moving to is promoted like any other follower.
+#[test]
+fn a_retaken_leader_that_gives_up_again_fails_over_to_the_destination() {
+    let mut report = given_up_report(10, 4, 12);
+    report.generation = 4;
+    report.caught_up = BTreeSet::from(["broker-c".to_string()]);
+    let retaken = ShardAssignment {
+        generation: 4,
+        state: ShardState::Assigning,
+        ..assigned("orders", "broker-a", &["broker-b", "broker-c"])
+    };
+    let plan = plan_on(&live_leader_under(A_CRASHED), report, retaken, 3);
+    let (_, leader, _) = plan.to_place().next().expect("promoted");
+    assert_eq!(leader, "broker-c");
+}
+
 /// **A follower the probe names caught up keeps the leader from reclaiming,
 /// even when placement cannot promote it.** The probe compares (last
 /// generation, end), so the follower may hold records of a newer generation
@@ -1245,4 +1483,32 @@ fn a_member_the_report_never_reached_is_named_by_the_inherited_identity() {
     );
     assert_eq!(ids.get("broker-b").map(String::as_str), Some(""));
     assert_eq!(ids.get("broker-c").map(String::as_str), Some(C_STORAGE));
+}
+
+/// **A failover keeps a destination staged on top of a set of two.** A
+/// leader with no earlier pass counts it toward the quorum, so a record may
+/// be on the dead leader and the destination alone. Without it the promoted
+/// follower's fence needs the dead leader's given-up copy, which answers
+/// none, and the shard stalls. `FelixShardMoveGiveUpFailoverStall.cfg` and
+/// `FailoverLive.cfg`.
+#[test]
+fn a_failover_keeps_a_destination_staged_on_a_set_of_two() {
+    let streams = vec![Stream {
+        consistency: ConsistencyLevel::Quorum,
+        ..replicated_stream("orders", 1, 2)
+    }];
+    let nodes = vec![
+        node("broker-b", NodeLifecycle::Live, None),
+        node("broker-c", NodeLifecycle::Live, None),
+    ];
+    let mut moving = assigned("orders", "broker-a", &["broker-b", "broker-c"]);
+    moving.successor = Some("broker-c".to_string());
+    let caught_up = CaughtUpNodes(["broker-b".to_string()].into());
+    let planned = plan(&streams, &[], &nodes, &[moving], &caught_up);
+    let (_, leader, replicas) = planned.to_place().next().expect("placed");
+    assert_eq!(leader, "broker-b");
+    assert!(
+        replicas.iter().any(|replica| replica == "broker-c"),
+        "the destination was dropped: {replicas:?}",
+    );
 }

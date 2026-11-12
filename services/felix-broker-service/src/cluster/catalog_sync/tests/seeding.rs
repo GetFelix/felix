@@ -68,8 +68,7 @@ async fn an_empty_catalog_still_becomes_seeded() -> Result<()> {
 
     let state = sync_once(
         &broker,
-        &client,
-        &format!("http://{addr}"),
+        &HttpSource::new(client.clone(), format!("http://{addr}")),
         None,
         SyncState::new(),
     )
@@ -112,8 +111,7 @@ async fn a_failed_snapshot_never_reports_the_catalog_as_seeded() -> Result<()> {
 
     let state = sync_once(
         &broker,
-        &client,
-        &format!("http://{addr}"),
+        &HttpSource::new(client.clone(), format!("http://{addr}")),
         None,
         SyncState::new(),
     )

@@ -17,7 +17,7 @@ async fn unreachable_followers_are_waited_on_at_the_same_time() {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     let requester = UnreachableFollowers { handshake };
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let started = tokio::time::Instant::now();
     replicate_once(
@@ -27,9 +27,9 @@ async fn unreachable_followers_are_waited_on_at_the_same_time() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -47,7 +47,7 @@ async fn a_led_shard_is_shipped_to_each_follower() {
     let router = router(LOCAL, &["broker-b", "broker-c"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -56,9 +56,9 @@ async fn a_led_shard_is_shipped_to_each_follower() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -79,7 +79,7 @@ async fn a_shard_led_elsewhere_is_not_shipped() {
     let router = router("broker-b", &[LOCAL], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -88,9 +88,9 @@ async fn a_shard_led_elsewhere_is_not_shipped() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -108,7 +108,7 @@ async fn a_shard_with_no_replicas_ships_nothing() {
     let router = router(LOCAL, &[], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -117,9 +117,9 @@ async fn a_shard_with_no_replicas_ships_nothing() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -134,7 +134,7 @@ async fn one_pass_ships_until_the_follower_is_level() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -143,9 +143,9 @@ async fn one_pass_ships_until_the_follower_is_level() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -160,7 +160,7 @@ async fn a_second_pass_with_nothing_new_ships_nothing() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     replicate_once(
         &follower,
@@ -169,9 +169,9 @@ async fn a_second_pass_with_nothing_new_ships_nothing() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let after_first = follower.batches().len();
@@ -182,9 +182,9 @@ async fn a_second_pass_with_nothing_new_ships_nothing() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
 
@@ -203,7 +203,7 @@ async fn a_broker_without_durable_storage_ships_nothing() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     assert_eq!(
         replicate_once(
@@ -213,9 +213,9 @@ async fn a_broker_without_durable_storage_ships_nothing() {
             &marks,
             None,
             &mut cursors,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
         )
         .await
         .worst_lag,
@@ -231,7 +231,7 @@ async fn the_reported_lag_is_the_distance_from_the_tail() {
     let router = router(LOCAL, &["broker-b"], 4);
     let follower = AcceptingFollower::default();
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     // Caught up after a full pass.
     assert_eq!(
@@ -242,9 +242,9 @@ async fn the_reported_lag_is_the_distance_from_the_tail() {
             &marks,
             None,
             &mut cursors,
-            &mut HashMap::new(),
-            &mut HashMap::new(),
-            &mut HashMap::new(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
+            &mut HashMap::default(),
         )
         .await
         .worst_lag,
@@ -451,6 +451,10 @@ async fn a_quorum_cache_put_ships_without_waiting_for_the_tick() {
         Some(&LedCache),
         Duration::from_secs(5),
         crate::quorum::Access::Write,
+        Some(crate::quorum::CacheWrite {
+            generation: 4,
+            from: 0,
+        }),
     )
     .await;
 
@@ -559,7 +563,7 @@ async fn a_slow_follower_does_not_cost_one_delay_per_shard() {
         seen: Mutex::new(Vec::new()),
     };
     let marks = QuorumMarks::new();
-    let mut cursors = HashMap::new();
+    let mut cursors = HashMap::default();
 
     let started = tokio::time::Instant::now();
     replicate_once(
@@ -569,9 +573,9 @@ async fn a_slow_follower_does_not_cost_one_delay_per_shard() {
         &marks,
         None,
         &mut cursors,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
     )
     .await;
     let took = started.elapsed();
@@ -628,10 +632,10 @@ async fn a_withheld_shard_ships_reports_and_marks_nothing() {
         &crate::promotion::NoGate,
         &marks,
         None,
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
-        &mut HashMap::new(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
+        &mut HashMap::default(),
         &Rebuilds::disabled(),
         &MoveThrottle::unlimited(),
     )

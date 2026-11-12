@@ -14,8 +14,8 @@ use super::{
 /// `deny_unknown_fields`, here and on every nested override, because a key
 /// nobody reads is a lie: an operator who writes `bind_adrr` gets the default,
 /// no error, and an instance listening somewhere they did not ask for. A typo
-/// inside `postgres:` is just as silent, which is why the nested ones carry it
-/// too.
+/// inside a nested block is just as silent, which is why the nested ones carry
+/// it too.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlPlaneConfigOverride {
@@ -26,7 +26,6 @@ pub(super) struct ControlPlaneConfigOverride {
     metrics_bind: Option<String>,
     region_id: Option<String>,
     storage: Option<StorageOverride>,
-    postgres: Option<PostgresOverride>,
     changes_limit: Option<u64>,
     change_retention_max_rows: Option<i64>,
     oidc_allowed_algorithms: Option<Vec<String>>,
@@ -41,6 +40,7 @@ pub(super) struct ControlPlaneConfigOverride {
     shard_election_hold_ms: Option<u64>,
     shard_restore_after_ms: Option<u64>,
     shard_restore_stall_ms: Option<u64>,
+    shard_stuck_leader_ms: Option<u64>,
     shutdown_drain_timeout_ms: Option<u64>,
     shutdown_predrain_ms: Option<u64>,
 }
@@ -63,15 +63,6 @@ struct StorageOverride {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PostgresOverride {
-    url: Option<String>,
-    max_connections: Option<u32>,
-    connect_timeout_ms: Option<u64>,
-    acquire_timeout_ms: Option<u64>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct BootstrapOverride {
     enabled: Option<bool>,
     bind_addr: Option<String>,
@@ -85,8 +76,7 @@ impl ControlPlaneConfig {
     /// Fold a parsed config file over the values already taken from the
     /// environment.
     ///
-    /// Separate from the read so the precedence rules — including a postgres
-    /// block selecting the backend — are testable without a file on disk.
+    /// Separate from the read so the precedence rules are testable without a file on disk.
     pub(super) fn apply(&mut self, override_cfg: ControlPlaneConfigOverride) -> Result<()> {
         let config = self;
 
@@ -146,6 +136,9 @@ impl ControlPlaneConfig {
         if let Some(value) = override_cfg.shard_restore_after_ms {
             config.shard_moves.restore_after_millis = (value > 0).then_some(value);
         }
+        if let Some(value) = override_cfg.shard_stuck_leader_ms {
+            config.shard_moves.stuck_leader_millis = (value > 0).then_some(value);
+        }
         if let Some(value) = override_cfg.shard_restore_stall_ms {
             config.shard_moves.restore_stall_millis = (value > 0).then_some(value);
         }
@@ -164,25 +157,6 @@ impl ControlPlaneConfig {
             && let Some(backend) = storage_override.backend
         {
             config.storage = StorageBackend::from_str(&backend)?;
-        }
-        if let Some(pg_override) = override_cfg.postgres {
-            let mut pg_cfg = config.postgres.take().unwrap_or_default();
-            if let Some(url) = pg_override.url {
-                pg_cfg.url = url;
-            }
-            if let Some(max) = pg_override.max_connections {
-                pg_cfg.max_connections = max;
-            }
-            if let Some(timeout) = pg_override.connect_timeout_ms {
-                pg_cfg.connect_timeout_ms = timeout;
-            }
-            if let Some(timeout) = pg_override.acquire_timeout_ms {
-                pg_cfg.acquire_timeout_ms = timeout;
-            }
-            config.postgres = Some(pg_cfg);
-            if matches!(config.storage, StorageBackend::Memory) {
-                config.storage = StorageBackend::Postgres;
-            }
         }
         if let Some(value) = override_cfg.api_ui {
             config.api_ui = value.parse()?;

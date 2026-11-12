@@ -13,6 +13,7 @@ use bytes::Bytes;
 use felix_broker::{
     Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimOutcome,
 };
+use felix_replication::engine::Engine;
 use felix_wire::StateChange;
 
 use crate::serving::quic::client_error::ClientError;
@@ -69,8 +70,8 @@ pub(crate) async fn commit(
     // broker has no replicas to disagree.
     if publish_ctx.ingress.is_some()
         && !publish_ctx
-            .marks
-            .as_deref()
+            .engine
+            .marks()
             .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::ATOMIC_COMMIT))
     {
         return Err(ClientError::new(
@@ -224,16 +225,17 @@ where
     let Some((offset, _)) = outcome.offsets else {
         return Err(ClientError::internal("a write reported no offset").into());
     };
-    felix_replication::quorum::await_quorum(
-        &handle,
-        publish_ctx.ingress.as_ref().map(|_| key),
-        &outcome,
-        publish_ctx.marks.as_deref(),
-        publish_ctx.ingress.as_deref(),
-        publish_ctx.quorum_timeout,
-    )
-    .await
-    .map_err(|err| ClientError::from_anyhow(&err))?;
+    publish_ctx
+        .engine
+        .await_commit(
+            &handle,
+            publish_ctx.ingress.as_ref().map(|_| key),
+            &outcome,
+            generation,
+            publish_ctx.quorum_timeout,
+        )
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))?;
     Ok(offset)
 }
 
@@ -280,8 +282,8 @@ pub(crate) async fn state_get(
 /// relies on [`confirm_read_leader`].
 pub(crate) fn refuse_read_without_lease(publish_ctx: &PublishContext) -> Result<(), ClientError> {
     let by_round = publish_ctx
-        .marks
-        .as_deref()
+        .engine
+        .marks()
         .is_some_and(|marks| marks.reads_by_round().is_some());
     if !by_round
         && publish_ctx
@@ -301,13 +303,11 @@ pub(crate) async fn confirm_read_leader(
     publish_ctx: &PublishContext,
     shard: &ShardKey,
 ) -> Result<(), ClientError> {
-    felix_replication::quorum::confirm_state_read(
-        shard,
-        publish_ctx.marks.as_deref(),
-        publish_ctx.ingress.as_deref(),
-    )
-    .await
-    .map_err(|err| ClientError::from_anyhow(&err))
+    publish_ctx
+        .engine
+        .confirm_read(shard)
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))
 }
 
 fn shard_key(

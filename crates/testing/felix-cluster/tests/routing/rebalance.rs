@@ -306,8 +306,17 @@ async fn a_broker_that_joins_takes_shards_from_an_overloaded_one() {
     let mut sent = Vec::new();
     for i in 0..40 {
         let payload = format!("keyed-{i}").into_bytes();
+        // Settled: a broker's lease is valid only after its first heartbeat,
+        // which can land after its shards open, and a refusal until then is
+        // right.
         cluster
-            .publish_keyed_via(&first, STREAM, format!("k{i}").as_bytes(), payload.clone())
+            .publish_keyed_via_settled(
+                &first,
+                STREAM,
+                format!("k{i}").as_bytes(),
+                payload.clone(),
+                felix_cluster::wait::budget(Duration::from_secs(30)),
+            )
             .await
             .expect("publish");
         sent.push(payload);
@@ -435,8 +444,17 @@ async fn a_drain_and_a_join_at_the_same_time_converge() {
     let mut sent = Vec::new();
     for i in 0..40 {
         let payload = format!("keyed-{i}").into_bytes();
+        // Settled: a broker's lease is valid only after its first heartbeat,
+        // which can land after its shards open, and a refusal until then is
+        // right.
         cluster
-            .publish_keyed_via(&first, STREAM, format!("k{i}").as_bytes(), payload.clone())
+            .publish_keyed_via_settled(
+                &first,
+                STREAM,
+                format!("k{i}").as_bytes(),
+                payload.clone(),
+                felix_cluster::wait::budget(Duration::from_secs(30)),
+            )
             .await
             .expect("publish");
         sent.push(payload);
@@ -483,7 +501,6 @@ async fn a_drain_and_a_join_at_the_same_time_converge() {
 #[tokio::test]
 async fn a_move_switches_over_in_well_under_a_second() {
     use felix_controlplane_service::model::ShardState;
-    use felix_controlplane_service::store::ControlPlaneStore;
 
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
@@ -782,8 +799,6 @@ async fn continuous_publishing_through_a_move_is_never_refused() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
-    use felix_controlplane_service::store::ControlPlaneStore;
-
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::quorum(STREAM, 1, 1)],
@@ -978,7 +993,6 @@ async fn a_move_completes_while_a_publisher_keeps_writing() {
 #[tokio::test]
 async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
     use felix_controlplane_service::cluster::placement::MovePolicy;
-    use felix_controlplane_service::store::ControlPlaneStore;
 
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,

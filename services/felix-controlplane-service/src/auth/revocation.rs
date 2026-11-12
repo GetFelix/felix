@@ -4,7 +4,8 @@
 //! at or before it is refused, and brokers end the streams those tokens
 //! opened. Brokers poll [`principal_revocation_changes`] the way they poll the
 //! catalog feeds. `docs/auth.md` ("Revoking a principal") has the rest.
-use std::collections::{BTreeSet, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use axum::Json;
@@ -55,7 +56,7 @@ pub struct ChangesQuery {
 /// reaches it through role assignments. An IdP group among them has members
 /// only the IdP knows, so the whole tenant is named instead.
 pub(crate) fn reached_by(groupings: &[GroupingRule], subject: &str) -> Vec<String> {
-    let mut members: HashMap<&str, Vec<&str>> = HashMap::new();
+    let mut members: HashMap<&str, Vec<&str>> = HashMap::default();
     for grouping in groupings {
         members
             .entry(grouping.role.as_str())

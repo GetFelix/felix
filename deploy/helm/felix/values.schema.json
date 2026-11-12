@@ -37,16 +37,7 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "backend": { "type": "string", "enum": ["memory", "postgres", "raft"] },
-            "postgres": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "existingSecret": { "type": "string" },
-                "urlKey": { "type": "string", "minLength": 1 },
-                "maxConnections": { "type": "integer", "minimum": 1 }
-              }
-            },
+            "backend": { "type": "string", "enum": ["memory", "raft"] },
             "raft": {
               "type": "object",
               "additionalProperties": false,

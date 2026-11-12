@@ -13,10 +13,10 @@ what the conformance suite does about it.
 ## Installing
 
 ```bash
-pip install felix-client==0.7.0-preview.2
+pip install felix-client==0.7.2
 ```
 
-This page describes the 0.7 API. While 0.7 is in preview, a plain `pip install felix-client` installs the last stable release, which does not have it, so name the preview. Replace `2` with the newest preview on the [releases page](https://github.com/GetFelix/felix/releases).
+This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.
 
 Wheels ship compiled, one per platform, for every Python from 3.9 up, so
 installing needs no Rust toolchain. Linux (x86-64 and arm64), macOS (Intel and
@@ -262,15 +262,22 @@ felix.Client(
     token=tok,                # or token_provider=fn; see above
     server_name="localhost",  # the name the broker's certificate carries
     ca_file=None,             # trust a specific CA; omit for the system store
+    client_cert_file=None,    # present a client certificate; needs client_key_file
+    client_key_file=None,     # the private key for client_cert_file
     offer_alpn=False,         # offer the felix/1 ALPN
     reconnect_attempts=None,      # None keeps the default, 5
     reconnect_deadline=None,      # seconds across all attempts; None is no ceiling
     reconnect_backoff=None,       # seconds before the first retry; None keeps 0.2
     reconnect_max_backoff=None,   # longest wait in seconds; None keeps 2
+    publishers=None,          # True: events say who published them
+    timestamps=None,          # True: events carry the broker's append time
+    record_headers=None,      # False: do not offer record headers; None keeps them on
+    tuning=None,              # a felix.ClientTuning; see below
 )
 ```
 
 The `reconnect_*` options are covered under [Reconnecting](#reconnecting).
+`AsyncClient.connect` takes the same options.
 
 One reachable address is enough. The client discovers the rest of the cluster
 and will use brokers it was never told about. It is built on the Rust
@@ -292,7 +299,92 @@ turn a secure deployment insecure, and a CA file covers development without it.
 running with `FELIX_TLS_REQUIRE_ALPN=true` insists on. It is off by default
 because a broker older than ALPN support refuses a client that offers it.
 
-Client certificates (mutual TLS) are Rust only: this client trusts the broker's certificate but cannot present one of its own. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+A broker started with `FELIX_TLS_CLIENT_CA` refuses a client that does not present a certificate from that CA (mutual TLS). Pass the certificate and its key as PEM files. The certificate file holds the leaf first and then any intermediates, and the key file holds one PKCS#8, PKCS#1 or SEC1 key:
+
+```python
+import felix
+
+with felix.Client(
+    "felix-0:5000",
+    tenant_id="t1",
+    token=tok,
+    ca_file="ca.pem",
+    client_cert_file="client.pem",
+    client_key_file="client.key",
+) as client:
+    client.publish("t1", "app", "events", b"hello")
+```
+
+Give both or neither. A missing file, a file that is not PEM, a key that does not match the certificate, or only one of the two raises `ValueError` naming the problem. `AsyncClient.connect` takes the same two options. [Auth and TLS](/clients/auth-and-tls/) compares the options across clients.
+
+### Events that say who and when
+
+Two options add a field to every event, and to every consumer-group record:
+
+```python
+import felix
+
+with felix.Client(
+    "felix-0:5000", tenant_id="t1", token=tok, publishers=True, timestamps=True
+) as client:
+    with client.subscribe("t1", "app", "orders") as events:
+        for event in events:
+            print(event.publisher, event.timestamp_micros)
+```
+
+`event.publisher` is the principal the broker accepted the write from, the
+subject of the publisher's token. It says nothing about who wrote the payload.
+`event.timestamp_micros` is when the shard's leader appended the record, in
+microseconds since the Unix epoch, by that broker's clock. Both are `None`
+unless you asked for them, and `timestamp_micros` is `None` on an in-memory
+stream, which stores no time. `GroupRecord` has the same two fields. They are
+off by default because they add bytes to every event. `offset_for_time` works
+either way.
+
+### Tuning connections and queues
+
+Most applications never need this. When one does, pass a `ClientTuning`. Every
+argument is optional and keeps the Rust client's default when left out:
+
+```python
+import felix
+
+tuning = felix.ClientTuning(
+    publish_conn_pool=4,                  # connections that carry publishes
+    client_sub_queue_capacity=4096,       # items each subscription queues for you
+    client_sub_queue_policy="block",      # "drop_new" (default), "block" or "drop_old"
+    broker_sub_queue_capacity=256,        # batches the broker queues per subscription
+    connect_timeout=5.0,                  # seconds for one broker connect
+)
+client = felix.Client("felix-0:5000", tenant_id="t1", token=tok, tuning=tuning)
+```
+
+The groups, and the arguments in each:
+
+- **Publishing:** `publish_conn_pool`, `publish_streams_per_conn`,
+  `publish_queue_depth`, `publish_inflight_bytes`, `publish_shard_streams`, and
+  `publish_sharding` (`"hash_stream"`, the default, keeps a stream's publishes
+  in order; `"round_robin"` does not).
+- **Connections:** `cache_conn_pool`, `cache_streams_per_conn`,
+  `event_conn_pool`, `cluster_conn_pool`, `cluster_streams_per_conn`,
+  `event_router_max_pending`.
+- **QUIC windows, in bytes:** `event_conn_recv_window`,
+  `event_stream_recv_window`, `event_send_window`, `cache_conn_recv_window`,
+  `cache_stream_recv_window`, `cache_send_window`.
+- **Queues:** `client_sub_queue_capacity` and `client_sub_queue_policy` for the
+  queue between the connection and your code, and `broker_sub_queue_capacity`
+  for the one on the broker. With `"drop_new"` a full queue drops the arriving
+  record, and the gap shows in the offsets; `"block"` stops reading the stream
+  until you catch up, so the broker's queue for you fills and its own policy
+  applies. `"drop_old"` currently drops the arriving record too.
+  The broker clamps its capacity to its own maximum, and
+  `Subscription.queue_capacity` reports what it granted.
+- **Limits:** `max_frame_bytes` (the largest frame the client reads),
+  `ack_on_commit` (ask the broker to answer after the write; slower),
+  `connect_timeout` and `finish_timeout` (seconds).
+
+Durations (`connect_timeout`, `finish_timeout`) are in seconds, and must be positive. A count or size below 1 raises `ValueError`, except `publish_shard_streams`,
+where 0 puts every publish on the pool.
 
 ### Acting for many users
 
@@ -452,7 +544,7 @@ applied is reported, not re-sent. `AsyncClient.publish_on_shard` is a coroutine.
 
 ### Batches
 
-`publish_batch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It returns the first record's offset, or `None` as `publish` does:
+`publish_batch` sends several payloads as one frame to one shard. With a `key` they go to the shard the key hashes to, and without one to shard 0. It returns the first record's offset, or `None` as `publish` does. An empty list raises `ValueError`:
 
 ```python
 first = client.publish_batch("t1", "default", "orders", ticks, key=customer_id.encode())
@@ -557,9 +649,69 @@ with client.producer() as producer:
 the same methods as coroutines (`id_for` included, so it never blocks the event
 loop) and is an `async with` block.
 
+### Handing a batch off without waiting
+
+`publish_batch` returns after the leader answers. When you need calls to reach the leader in order but not to wait for each answer, `hand_off_batch` returns once the batch is queued on the producer and gives you a `Handed` to read the answer from later:
+
+```python
+batches = [[b"a1", b"a2"], [b"b1"], [b"c1", b"c2", b"c3"]]
+
+with client.producer() as producer:
+    handed = [
+        producer.hand_off_batch("t1", "default", "orders", batch)
+        for batch in batches
+    ]
+    # Sent in the order handed off. Read each answer when you want it.
+    offsets = [pending.offset() for pending in handed]
+```
+
+`offset()` returns what `publish_batch` returns and raises what it would have raised. `done()` only waits for success. One of them works, once. A batch is sent whether or not you wait, so dropping a `Handed` does not cancel it, and a failure shows only when you read the answer. Concurrent `publish_batch` calls promise no order; calls handed off one after another do. `hand_off_batches` and `hand_off_abandon` are the same for `publish_batches` and `abandon_in_doubt`; read them with `done()`. On `AsyncProducer` each is a coroutine returning an `AsyncHanded`, whose `offset()` and `done()` are awaited.
+
 ### Record headers
 
-Record headers, the named byte values a record can carry next to its payload, are Rust only. This binding publishes the payload and a routing `key`; an event it reads has no `headers`. Use the [Rust client](/clients/rust/publishing/#keys-and-headers) when you need them.
+Record headers are named byte values a record carries next to its payload,
+such as a trace id or a content type. Pass a dict, a list of `(name, bytes)`
+pairs, or a `RecordHeaders`:
+
+```python
+import felix
+
+payload = b'{"id": 1}'
+order_id = "order-1"
+first, second = b"one", b"two"
+
+client.publish(
+    "t1", "default", "orders", payload,
+    headers={"trace-id": b"4bf92f35", "content-type": b"application/json"},
+)
+
+# A header list can repeat a name, and a record can carry its own key.
+tagged = felix.RecordHeaders([("tag", b"a"), ("tag", b"b")], key=order_id.encode())
+client.publish("t1", "default", "orders", payload, headers=tagged)
+
+# One entry per payload; None leaves that record plain.
+client.publish_batch(
+    "t1", "default", "orders", [first, second], headers=[{"n": b"1"}, None]
+)
+```
+
+A subscriber reads them back from `event.headers`, which is `None` for a record without any:
+
+```python
+with client.subscribe("t1", "default", "orders") as events:
+    for event in events:
+        if event.headers is not None:
+            print(event.headers.get("trace-id"), event.headers.headers)
+```
+
+The key inside `RecordHeaders(key=...)` belongs to the record. It does not
+route, unlike `publish(key=...)`, so a call cannot take both:
+`headers` with `key` or `at_least_once` raises `ValueError`. Idempotent
+producers take no headers. A name that is empty or starts
+with `felix.` (reserved for the broker) raises `FelixError`, and so does
+publishing headers to a broker that did not accept them; nothing is sent in
+either case. `record_headers=False` on the client stops offering headers, and
+events then carry none.
 
 ## Subscribing
 
@@ -586,6 +738,17 @@ nothing is repeated or skipped; an in-memory stream resumes at the new owner's
 tail.
 
 `subscribe` reads one shard: pass `shard=` for any but shard 0, or use [`subscribe_sharded`](#multi-shard-streams) for all of them. `start_offset` and `live_offset` on the handle say where the subscription began and where live delivery began when it opened, or `None` for an in-memory stream.
+
+The handle also counts what happened to it, readable while another thread is blocked in `next_event`:
+
+| Attribute | Meaning |
+| --- | --- |
+| `moves` | Times it followed its shard to a new owner. |
+| `reconnects` | Times it was reopened after losing its connection. |
+| `stream_deleted` | The broker said the stream was deleted. |
+| `queue_capacity` | Batches the broker queues for it, as granted, or `None`. |
+
+A rising `reconnects` is the signal that the subscription is riding out broker failures, and `offset` jumps tell you whether it dropped anything. On an `AsyncSubscription` these are plain attributes too, not awaitables.
 
 ### Replay from an offset or a time
 
@@ -981,6 +1144,27 @@ if renewed.applied:
 client.cache_delete_if("acme", "prod", "leases", "endpoint-7", version)
 ```
 
+`cache_put_if_lease` is `cache_put_if` that also asks the broker for a lease token. Use it to take a lease on a key and hand the holder a credential for what that key guards. The `LeaseWrite` has the same `result` as `cache_put_if` and, when the write applied and the broker minted one, a `token`:
+
+```python
+import felix
+
+write = client.cache_put_if_lease(
+    "acme", "prod", "leases", "endpoint-7", b"worker-1",
+    felix.CacheCondition.absent(), ttl=30.0,
+)
+if not write.result.applied:
+    raise RuntimeError(f"held already, at version {write.result.version}")
+if write.token is not None:
+    # What the broker's lease templates grant on this key, as this holder.
+    with client.with_identity("acme", write.token.token) as holder:
+        holder.publish("acme", "prod", "endpoint-7-feed", b"online")
+else:
+    print("lease taken without a token:", write.token_refused)
+```
+
+`ttl` is in seconds; a negative or non-finite one raises `ValueError` before anything is sent. `token_refused` says why an applied write came back without a token; the write stands. A `LeaseToken` is a bearer secret, so its `repr` leaves the token out, and `expires_at` is when it stops working, in seconds since the Unix epoch.
+
 For a read-modify-write, read the version, write with `CacheCondition.version`,
 and read again if the write was refused:
 
@@ -1349,6 +1533,44 @@ matters, pass `start="earliest"` alongside `resume`, or make sure every shard
 has reported before you checkpoint.
 :::
 
+## Asking the broker about itself
+
+These calls report what the broker the client is connected to knows, for tools that watch a cluster. Each is routed to that one broker and not forwarded, so to compare brokers connect to each. `supports()` says which questions the broker answers; a broker older than a feature refuses its call.
+
+```python
+import felix
+
+print(client.supports())   # {"inspect": True, "topology": True, ...}
+
+shards, routing = client.stream_routing("t1", "default", "orders")
+for owner in client.shard_owners("stream", "t1", "default", "orders"):
+    print(owner["shard"], owner.get("node_id"), owner.get("unavailable"))
+
+print(client.cache_shards("t1", "default", "sessions"))
+for broker in client.topology():
+    print(broker["node_id"], broker["addr"])
+```
+
+`stream_routing` returns the shard count and how a routing key maps onto it, `"modulo"` or `"jump_hash"`. `shard_owners` takes `"stream"` or `"cache"` and returns one dict per shard with its `node_id`, `addr`, `generation` and, for a shard nobody can serve, `unavailable`. The answer is a snapshot and can be stale the way a redirect can. `topology` lists the brokers clients may connect to, and is empty for a broker with no cluster behind it.
+
+`inspect_shard` and `list_subscriptions` need a token with `node.view:cluster:*`, which a tenant token does not have:
+
+```python
+view = client.inspect_shard("stream", "t1", "default", "orders", 0)
+print(view["role"], view["phase"], view["serving"], view.get("reason"))
+
+cursor = None
+while True:
+    page = client.list_subscriptions(stream="orders", dropping=True, cursor=cursor)
+    for sub in page["subscriptions"]:
+        print(sub["principal"], sub["depth"], "/", sub["capacity"], sub["dropped"])
+    cursor = page["next_cursor"]
+    if cursor is None:
+        break
+```
+
+`inspect_shard` returns the broker's phase and role for the shard, whether it is serving and why not, the generation, fence, lease, tail and commit mark, and on a leader every replica's position. `list_subscriptions` returns `{"node_id", "subscriptions", "next_cursor"}`; pass `next_cursor` back as `cursor` for the next page. `dropping=True` keeps only subscriptions whose queue has dropped records, and `tenant_id`, `namespace`, `stream`, `shard` and `principal` narrow the list. `limit` defaults to 100 and the broker caps it at 1000. The answers are plain dicts with the wire's field names, typed in `felix.ShardInspection`, `felix.SubscriptionsPage` and the other `TypedDict`s. A field the broker has no value for is absent, so read optional ones with `.get`. On `AsyncClient` each call is awaited.
+
 ## Concurrency
 
 One client is meant to be shared. The synchronous surface blocks with the GIL
@@ -1372,23 +1594,10 @@ with its own connection pool, and they do not share discovery.
 
 ## What is not wrapped
 
-The [Rust client](/clients/rust/) has more than this binding wraps. What is
-left out, and why:
+The [Rust client](/clients/rust/) has two things this binding does not wrap:
 
-- **Subscription counters.** `ClusterSubscription::moves`, `reconnects` and
-  `stream_deleted` have no accessor on a subscription, sharded or not. A read
-  in flight holds the handle, so these need their own shared state. A
-  follow-up is planned; a move still shows up as a `ShardMoved` item on a
-  sharded subscription. A cache watch does expose `moves`, `reconnects`, `error` and `resume_from`.
-- **The single-connection `Connection` and `Publisher` layer** (`topology`,
-  `stream_routing`, `shard_owners`, `inspect_shard`, `supports_*`,
-  `publish_batch_binary*`, `connect_with_transport`). The binding wraps
-  `Client`, which owns those connections and runs the feature checks
-  itself.
-- **`hand_off_*` and `Handed` on the idempotent producer.** They hand back raw
-  futures; `publish_batches` is the iterator-shaped equivalent.
-- **`ClientConfig` options** such as `publishers` and `timestamps`. They are
-  connection configuration, set once, not calls.
+- **`publish_json` and `publish_batch_json`.** Python serializes JSON itself, so `client.publish(..., json.dumps(value).encode())` is the whole call.
+- **A custom `quinn` transport** (`connect_with_policy`, `connect_any_with_transport`). The binding builds the QUIC configuration from `ca_file`, the client certificate options and `offer_alpn`; a transport of your own is for Rust programs that embed the client.
 
 ## Conformance
 

@@ -8,9 +8,10 @@
 //! Read with the same credential as the assignment feed: `/v1/nodes` requires
 //! `node.view:cluster:*`, which a broker already holds to read assignments at
 //! all.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use anyhow::{Context, Result, anyhow};
+use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_router::NodeRef;
 use felix_wire::BrokerEndpoint;
 use serde::Deserialize;
@@ -20,7 +21,7 @@ use serde::Deserialize;
 /// The same listing answers "where does this broker forward to" and "where may
 /// a client connect", and they are different addresses on different listeners.
 /// Fetching once and splitting here keeps them from drifting apart.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq)]
 pub struct NodeCatalog {
     pub nodes: HashMap<String, NodeRef>,
     /// Sorted by node id, so the answer a client gets does not reshuffle
@@ -85,8 +86,7 @@ struct Placement {
 /// failing the fetch: one malformed registration must not cost this broker every
 /// other route it knows.
 pub(crate) async fn fetch(
-    client: &reqwest::Client,
-    base_url: &str,
+    link: &impl ControlPlaneLink,
     bearer: Option<&str>,
 ) -> Result<NodeCatalog> {
     let mut all = NodeListResponse {
@@ -95,20 +95,15 @@ pub(crate) async fn fetch(
     };
     let mut cursor: Option<String> = None;
     loop {
-        let mut request = client.get(format!("{base_url}/v1/nodes"));
-        if let Some(cursor) = &cursor {
-            request = request.query(&[("cursor", cursor)]);
-        }
-        if let Some(bearer) = bearer {
-            request = request.bearer_auth(bearer);
-        }
-        let response = request.send().await.context("send node list request")?;
-        let status = response.status();
+        let response = link
+            .node_catalog_page(bearer, cursor.as_deref())
+            .await
+            .context("send node list request")?;
+        let status = response.status;
         if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            return Err(anyhow!("{status}: {body}"));
+            return Err(anyhow!("{status}: {}", response.text()));
         }
-        let page: NodeListResponse = response.json().await.context("decode node list")?;
+        let page: NodeListResponse = response.json().context("decode node list")?;
         all.items.extend(page.items);
         match page.next_cursor {
             // A cursor that does not move would loop forever, and half a
@@ -127,7 +122,7 @@ pub(crate) async fn fetch(
 /// Separate from the request so the skipping rule above is testable without a
 /// server standing in for the control plane.
 fn into_catalog(response: NodeListResponse) -> NodeCatalog {
-    let mut catalog = HashMap::with_capacity(response.items.len());
+    let mut catalog = HashMap::with_capacity_and_hasher(response.items.len(), Default::default());
     let mut client_endpoints = Vec::new();
     let mut redirect_endpoints = Vec::new();
     let mut kafka_endpoints = Vec::new();

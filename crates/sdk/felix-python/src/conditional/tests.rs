@@ -35,3 +35,14 @@ fn a_stale_tail_is_an_answer_with_the_tail() {
         (None, None, Some(31))
     );
 }
+
+#[test]
+fn a_lease_token_never_prints_its_secret() {
+    let token = super::LeaseToken {
+        token: "s3cret-bearer".to_string(),
+        expires_at: 1_900_000_000,
+    };
+    let shown = token.__repr__();
+    assert!(!shown.contains("s3cret"), "{shown}");
+    assert!(shown.contains("1900000000"));
+}

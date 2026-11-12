@@ -3,7 +3,7 @@
 //! This is the application half of the Raft seam
 //! ([`crate::raft::AppStateMachine`]), exactly as the design promised: no
 //! new state container, just [`InMemoryStore`] — already implementing every
-//! store trait, already contract-tested against Postgres — fed committed
+//! store trait, already contract-tested — fed committed
 //! [`MetaCommand`]s in log order. Its snapshot is the store's deterministic
 //! export, so two replicas that applied the same log serialize
 //! byte-identical state; the harness in `state_machine/tests.rs` holds it
@@ -374,12 +374,16 @@ impl MetadataStateMachine {
                 expected_generation,
                 fence,
                 seq_generation,
+                at_least,
+                record_previous,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
                     expected_generation,
                     fence,
                     seq_generation,
+                    at_least,
+                    record_previous,
                 )
                 .await
                 .map(assignment_written)
@@ -389,8 +393,15 @@ impl MetadataStateMachine {
                 expected_generation,
                 elected,
                 elected_set,
+                own_leader_set,
             } => store
-                .apply_adopt_elected_leader(&key, expected_generation, &elected, elected_set)
+                .apply_adopt_elected_leader(
+                    &key,
+                    expected_generation,
+                    &elected,
+                    elected_set,
+                    own_leader_set,
+                )
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -401,8 +412,12 @@ impl MetadataStateMachine {
                     taken: lease.taken,
                 })
             }
-            MetaCommand::RecordReplicaReport { report, leader } => store
-                .apply_replica_report(report, leader.as_deref())
+            MetaCommand::RecordReplicaReport {
+                report,
+                leader,
+                readmit,
+            } => store
+                .apply_replica_report(report, leader.as_deref(), readmit)
                 .await
                 .map(|written| match written {
                     crate::store::ReportWrite::Stored => MetaResponse::Unit,

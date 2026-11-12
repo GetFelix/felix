@@ -113,7 +113,7 @@ The brokers left are busy opening the dead broker's shards during a failover,
 and a leader fenced then can take minutes to hand over, refusing writes the
 whole time. That is worst for a cache, which every client waits on. Holding
 balance until the cluster is whole avoids it. `GET /v1/placement/plan` and
-`admin plan` show the held shards as waiting for the recovery. A broker that
+`placement plan` show the held shards as waiting for the recovery. A broker that
 never comes back holds balancing for at most that window.
 
 ## Adding a broker
@@ -245,7 +245,7 @@ Metrics on the control plane:
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `stalled`, `reseat`, `restore`, `seat` |
+| `felix_shard_move_steps_total{step}` | steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `stalled`, `reseat`, `restore`, `seat`, `stuck` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_moves_timed_out_total` | fenced moves given up at `FELIX_SHARD_FENCE_TIMEOUT_MS`, moves and follower replacements given up at `FELIX_SHARD_MOVE_TIMEOUT_MS`, pending replica sets dropped at `FELIX_SHARD_PENDING_SET_TIMEOUT_MS`, and restores dropped at `FELIX_SHARD_RESTORE_STALL_MS` |
@@ -351,6 +351,7 @@ fence and its tests are in `services/felix-broker-service/src/shards/lifecycle/f
 | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | `600000` | Under `replica_election`, how long a cut-over's new replica set may wait for the leader to report it on both sets before the change is dropped and the old set stays, at a new generation. `0` waits forever. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone before placement copies the shard to another broker. Set it above your longest broker restart, or a rolling restart copies every shard once per broker. `0` never replaces a lost follower; a replica set short of its factor is still topped up. Also how long a down or departed broker holds balancing (five minutes when `0`). |
 | `FELIX_PLACEMENT_SETTLE_MS` | `10000` | How long after a cluster's first broker registered a new shard waits for as many live brokers as its replication factor before it is placed on fewer. Placement runs when a broker registers, so the shards go out as soon as enough brokers are live. Only a cluster younger than this waits. `0` places new shards on whatever is live. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | `70000` | How long a `Quorum` shard's leader may show no progress at its generation on a live broker before placement names it again one generation up, on the same set. Idle and slow shards count as progressing. Never under two report TTLs; at most four renames per shard an hour. `0` never renames. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long a restore's new copy may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its slot goes to the next short shard. Without it, one restore that cannot finish holds every other one back for the move timeout. `0` waits for the move timeout. |
 | `FELIX_SHARD_MOVE_BYTES_PER_SEC` (broker) | `0` | Bytes per second a broker ships to move destinations, across every shard it leads. Applied only to a destination the quorum does not need (one still copying is left out of it), so `Quorum` publishes never wait on it, and not to the remainder after the fence. `0` is unlimited. |
 | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | `5000` | How often placement runs on its own. A report a move is waiting for (the successor caught up, the leader drained) runs a pass straight away when the control-plane instance that receives it is the one running placement. |
@@ -370,6 +371,6 @@ interval.
 | A drain never finishes; no successor is ever staged | No live broker under its share has capacity (`max_shards`), or `FELIX_SHARD_MOVES_MAX_CONCURRENT` is `0`. |
 | Shards moved, then moved back | The drained broker was put back to `live`, or restarted (which registers it `live`), while under its share. Drain it again. |
 | A removed broker is still listed in a shard's `replicas` | It was stopped before the drain reseated that follower. Placement replaces it once `FELIX_SHARD_RESTORE_AFTER_MS` has passed; to do it sooner, start it again, drain it, and wait for the check above to reach 0. |
-| `felix_shards_under_replicated` stays above 0 | A broker is down but not yet past the restore delay, no live broker outside the set has room (`max_shards`, region), placement is paused, or the restore is waiting for a move slot. `felix-controlplane admin replication` shows each short shard and any copy being added. |
+| `felix_shards_under_replicated` stays above 0 | A broker is down but not yet past the restore delay, no live broker outside the set has room (`max_shards`, region), placement is paused, or the restore is waiting for a move slot. `felixctl placement replication` shows each short shard and any copy being added. |
 | `POST /v1/nodes/{id}/drain` returns 409 | The broker is `down` or `left`, so there is nothing to drain. |
 | `DELETE /v1/nodes/{id}` returns 409 | The broker is still running, or a shard still names it. The message says which. |

@@ -67,6 +67,44 @@ impl Cluster {
             .await
     }
 
+    /// Wait until the control plane counts every replica of shard `shard` of
+    /// a stream or cache as caught up at the shard's current generation.
+    ///
+    /// Broker-side counters can settle before the leader's report reaches the
+    /// control plane, and a leader killed in between leaves placement with no
+    /// replica it may promote. Fails naming the report that never arrived.
+    pub async fn wait_for_replica_report(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        name: &str,
+        shard: u32,
+    ) -> Result<()> {
+        let last = std::sync::Mutex::new(String::new());
+        let waited = crate::wait::until(
+            std::time::Duration::from_secs(30),
+            &format!("the control plane's replica report for {kind:?} {name}/{shard}"),
+            || async {
+                match self
+                    .control_plane()
+                    .missing_replica_report(kind, &self.tenant_id, &self.namespace, name, shard)
+                    .await
+                {
+                    Ok(None) => true,
+                    Ok(Some(missing)) => {
+                        *last.lock().expect("last") = missing;
+                        false
+                    }
+                    Err(err) => {
+                        *last.lock().expect("last") = format!("{err:#}");
+                        false
+                    }
+                }
+            },
+        )
+        .await;
+        waited.map_err(|err| anyhow!("{err}: {}", last.lock().expect("last")))
+    }
+
     /// The node record the control plane holds for `node_id`: its lifecycle,
     /// incarnation and the storage identity it registered with.
     pub async fn registered_node(
@@ -85,7 +123,7 @@ impl Cluster {
     /// How long placement believes a report past when it was made, under the
     /// harness's liveness settings.
     pub fn report_ttl_millis(&self) -> u64 {
-        crate::controlplane::report_ttl_millis()
+        self.control_plane().report_ttl_millis()
     }
 
     /// [`Self::replica_report`] for shard `shard` of cache `cache`.

@@ -13,7 +13,8 @@
 //! look up again. It cannot put a stale index where a later segment with the
 //! same id would find it.
 
-use std::collections::{BTreeMap, HashMap};
+use felix_common::random::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +41,9 @@ pub(crate) struct SealedEntry {
     /// A v7 segment, which may hold trim records. An older one cannot, so a
     /// rebuild of the head floor never has to read it.
     pub(crate) holds_trims: bool,
+    /// The generation of its last record, `None` before v9: the floor for
+    /// the segment after it when a truncation empties that one.
+    pub(crate) last_generation: Option<u64>,
     key: u64,
 }
 
@@ -49,8 +53,14 @@ impl SealedEntry {
             descriptor,
             holds_marks,
             holds_trims,
+            last_generation: None,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn with_last_generation(mut self, generation: Option<u64>) -> Self {
+        self.last_generation = generation;
+        self
     }
 
     /// Offset one past the last record, matching `SegmentWriter::next_offset`.
@@ -152,6 +162,15 @@ impl SealedLocator {
                 )?;
                 if let Err(err) = outcome.index.persist(&index_path) {
                     tracing::warn!(shard = label, segment = id, error = %err, "could not rewrite a sealed segment's index");
+                }
+                if outcome.header.holds_generations()
+                    && let Err(err) = outcome.known.persist(
+                        &self.dir.join(crate::segment::known::known_file_name(id)),
+                        base_offset,
+                        outcome.valid_bytes,
+                    )
+                {
+                    tracing::warn!(shard = label, segment = id, error = %err, "could not rewrite a sealed segment's known generations");
                 }
                 outcome.index
             }

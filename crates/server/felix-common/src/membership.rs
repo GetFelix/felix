@@ -165,7 +165,9 @@ pub struct ShardReplicaStatus {
     pub given_up: bool,
     /// For a follower the leader has not reached yet at this generation, and
     /// so names no identity for in `replica_storage_ids`, the identity the
-    /// assignment that promoted the leader named for it, keyed by node id.
+    /// assignment that promoted the leader named for it, or after a set
+    /// change that kept the leader, the one it named the follower by at its
+    /// previous generation, keyed by node id.
     /// Placement names the follower by it in the next failover instead of by
     /// none. Omitted when empty, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -191,8 +193,11 @@ pub struct ShardReplicaStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub elected: Option<ElectedLeadership>,
     /// Set by a leader the control plane names whose open was refused because
-    /// it had already promised the generation to another node. The shard is
-    /// not served and nothing else in the report is measured. Placement
+    /// it had already promised the generation to another node, or whose
+    /// joint fence cannot learn the set it leaves there, or that is open
+    /// and can no longer acknowledge at its generation. The first report of
+    /// it measures nothing; an open leader repeats it on its later reports
+    /// at that generation, which are measured as usual. Placement
     /// answers by naming the leader again at a generation above the refused
     /// one. Omitted otherwise, and by brokers that predate it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,15 +206,59 @@ pub struct ShardReplicaStatus {
 
 /// A generation a broker refused to lead because it had promised it to
 /// another node (`docs/replication-design.md`, "Electing without the control
-/// plane", rule 10).
+/// plane", rule 10), or because its joint fence cannot learn the set it
+/// leaves there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 pub struct RefusedGeneration {
     /// The generation the control plane named this broker at, which it had
-    /// already promised away.
+    /// already promised away or cannot fence.
     pub generation: u64,
-    /// The node it promised the generation to.
+    /// The node it promised the generation to. Empty when nothing was
+    /// promised and the broker refused because its fence cannot learn the
+    /// set it leaves at that generation, or because it or a replica of its
+    /// set already accepted a newer generation ([`Self::set_unknown`]).
     pub promised_to: String,
+    /// A newer generation the broker's own copy accepted for another node,
+    /// or the newest ballot or routing view its followers refused it for
+    /// (which may be the generation itself, promised to another node).
+    /// Placement names the broker again above it rather than one up, since a
+    /// fence at the ballot's own generation finds that generation promised
+    /// away and waits. 0, and omitted, when there is none, and from brokers
+    /// that predate it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub ballot: u64,
+}
+
+impl RefusedGeneration {
+    /// A refusal of `generation` by a leader whose joint fence cannot learn
+    /// the set it leaves there, as for a shard learned from a snapshot, or
+    /// that can never be fenced because a newer ballot holds it.
+    /// Placement answers it as it answers a promise: one generation up,
+    /// whose set before is the set this broker is named on now.
+    pub fn set_unknown(generation: u64) -> Self {
+        Self {
+            generation,
+            promised_to: String::new(),
+            ballot: 0,
+        }
+    }
+
+    /// [`Self::set_unknown`], lost to `ballot`, a newer generation in the
+    /// broker's own copy that names another node, or the ballot a follower
+    /// fenced this leader for.
+    pub fn above(generation: u64, ballot: u64) -> Self {
+        Self {
+            ballot,
+            ..Self::set_unknown(generation)
+        }
+    }
+
+    /// Whether the generation was promised to another node, rather than
+    /// refused for want of the set before it.
+    pub fn is_promise(&self) -> bool {
+        !self.promised_to.is_empty()
+    }
 }
 
 /// How far past the control plane's generation an election may stand and

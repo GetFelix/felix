@@ -138,6 +138,8 @@ fn shard_assignment(
         member_storage_ids: Default::default(),
         learners: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -271,6 +273,7 @@ fn script() -> Vec<MetaCommand> {
     commands.push(MetaCommand::RecordReplicaReport {
         report: replica_report("t-a", "ns-1", "orders", 1_000),
         leader: None,
+        readmit: false,
     });
     commands.push(MetaCommand::UpsertIdpIssuer {
         tenant_id: "t-a".to_string(),

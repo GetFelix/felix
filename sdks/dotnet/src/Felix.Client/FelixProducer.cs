@@ -183,6 +183,117 @@ public sealed class FelixProducer : IAsyncDisposable, IDisposable
     }
 
     /// <summary>
+    /// Hands a batch to the producer without waiting for the leader: the task completes once the producer's
+    /// task has the batch, with a <see cref="Handed"/> whose <see cref="Handed.OffsetAsync"/> is the leader's
+    /// answer.
+    /// </summary>
+    /// <param name="key">Routes the batch to its key's shard; null means shard 0.</param>
+    /// <remarks>
+    /// For a caller that must keep calls in order but not wait for each answer: calls handed off one after
+    /// another are sent in that order, which concurrent <see cref="PublishBatchAsync"/> calls do not promise.
+    /// The batch is sent whether or not the answer is read. A cancel before the producer's task has it stops
+    /// it; after, the batch is still sent and the call fails with <see cref="FelixStatus.OutcomeUnknown"/>.
+    /// Settle a failure that leaves the batch in doubt as the class remarks describe.
+    /// </remarks>
+    public unsafe Task<Handed> HandOffBatchAsync(
+        string tenant,
+        string ns,
+        string stream,
+        IReadOnlyList<ReadOnlyMemory<byte>> payloads,
+        ReadOnlyMemory<byte>? key = null,
+        CancellationToken cancellationToken = default)
+    {
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        ArgumentNullException.ThrowIfNull(payloads);
+        if (payloads.Count == 0)
+        {
+            throw new ArgumentException("a batch needs at least one record", nameof(payloads));
+        }
+
+        var (data, lengths) = Payloads.Flatten(payloads);
+        return Handoff(NativeCall.Start<FelixHandedHandle>(handle, cancellationToken, (producer, cancel, userData) =>
+        {
+            byte empty = 0;
+            fixed (byte* dataPointer = data)
+            fixed (nuint* lengthPointer = lengths)
+            fixed (byte* keyBytes = (key ?? default).Span)
+            {
+                var keyPointer = key is null ? null : key.Value.IsEmpty ? &empty : keyBytes;
+                return NativeMethods.felix_producer_hand_off_batch(
+                    producer, tenant, ns, stream, dataPointer, lengthPointer, (nuint)lengths.Length,
+                    keyPointer, key is null ? 0 : (nuint)key.Value.Length, cancel, &Callbacks.OnHanded, userData);
+            }
+        }));
+    }
+
+    /// <summary>
+    /// <see cref="PublishBatchesAsync"/> up to the hand-off; see <see cref="HandOffBatchAsync"/>. The answer
+    /// is <see cref="Handed.DoneAsync"/>.
+    /// </summary>
+    public unsafe Task<Handed> HandOffBatchesAsync(
+        string tenant,
+        string ns,
+        string stream,
+        IReadOnlyList<IReadOnlyList<ReadOnlyMemory<byte>>> batches,
+        CancellationToken cancellationToken = default)
+    {
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        ArgumentNullException.ThrowIfNull(batches);
+        if (batches.Count == 0)
+        {
+            throw new ArgumentException("at least one batch is required", nameof(batches));
+        }
+
+        var all = new List<ReadOnlyMemory<byte>>();
+        var sizes = new nuint[batches.Count];
+        for (var i = 0; i < sizes.Length; i++)
+        {
+            var batch = batches[i];
+            ArgumentNullException.ThrowIfNull(batch, nameof(batches));
+            if (batch.Count == 0)
+            {
+                throw new ArgumentException("a batch needs at least one record", nameof(batches));
+            }
+
+            sizes[i] = (nuint)batch.Count;
+            all.AddRange(batch);
+        }
+
+        var (data, lengths) = Payloads.Flatten(all);
+        return Handoff(NativeCall.Start<FelixHandedHandle>(handle, cancellationToken, (producer, cancel, userData) =>
+        {
+            fixed (byte* dataPointer = data)
+            fixed (nuint* lengthPointer = lengths)
+            fixed (nuint* sizePointer = sizes)
+            {
+                return NativeMethods.felix_producer_hand_off_batches(
+                    producer, tenant, ns, stream, dataPointer, lengthPointer, (nuint)lengths.Length,
+                    sizePointer, (nuint)sizes.Length, cancel, &Callbacks.OnHanded, userData);
+            }
+        }));
+    }
+
+    /// <summary>
+    /// <see cref="AbandonInDoubtAsync"/> up to the hand-off; see <see cref="HandOffBatchAsync"/>. The answer
+    /// is <see cref="Handed.DoneAsync"/>. A batch given up may land twice.
+    /// </summary>
+    public unsafe Task<Handed> HandOffAbandonAsync(string tenant, string ns, string stream, CancellationToken cancellationToken = default)
+    {
+        Arg.Text(tenant);
+        Arg.Text(ns);
+        Arg.Text(stream);
+        return Handoff(NativeCall.Start<FelixHandedHandle>(handle, cancellationToken, (producer, cancel, userData) =>
+            NativeMethods.felix_producer_hand_off_abandon(producer, tenant, ns, stream, cancel, &Callbacks.OnHanded, userData)));
+    }
+
+    private static async Task<Handed> Handoff(Task<FelixHandedHandle> call) =>
+        new(await call.ConfigureAwait(false));
+
+    /// <summary>
     /// Waits for every publish already handed to the producer to be answered, then stops it. The
     /// producer is closed as soon as this succeeds: later calls fail with <see cref="FelixStatus.Closed"/>,
     /// a second close included.

@@ -189,6 +189,13 @@ fn assignment() -> ShardAssignment {
             replicas: vec![s("d")],
             generation: 1,
         }),
+        previous_generation: Some(1),
+        readmitted: vec![crate::model::Readmitted {
+            node: s("c"),
+            storage_id: s("0123456789abcdef0123456789abcdef"),
+            generation: 1,
+            offset: 1,
+        }],
     }
 }
 
@@ -219,6 +226,7 @@ fn report() -> ReplicaReport {
         refused: Some(felix_common::membership::RefusedGeneration {
             generation: 1,
             promised_to: s("b"),
+            ballot: 2,
         }),
         holds_start: BTreeSet::from([s("c")]),
     }
@@ -482,6 +490,8 @@ fn commands() -> Vec<MetaCommand> {
             assignment: assignment(),
             expected_generation: Some(1),
             fence: 1,
+            at_least: 3,
+            record_previous: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),
@@ -493,12 +503,14 @@ fn commands() -> Vec<MetaCommand> {
                 set_generation: 1,
             },
             elected_set: true,
+            own_leader_set: true,
         },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },
         MetaCommand::RecordReplicaReport {
             report: report(),
             leader: Some(s("b")),
+            readmit: true,
         },
         MetaCommand::SetMovesPaused { paused: true },
         MetaCommand::UpsertIdpIssuer {

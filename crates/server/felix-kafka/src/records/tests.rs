@@ -2,10 +2,11 @@ use bytes::Bytes;
 use felix_storage::log::{LogRecord, RecordMark};
 use kafka_protocol::records::RecordBatchDecoder;
 
-use super::encode_batch;
+use super::{encode_batch, encode_page};
 
 fn record(offset: u64, value: &'static str) -> LogRecord {
     LogRecord {
+        generation: None,
         offset,
         timestamp_micros: 1_700_000_000_000_000 + offset * 1_000,
         checksum: 0,
@@ -85,4 +86,40 @@ fn a_block_that_does_not_parse_fails_the_page_rather_than_the_record_being_sent_
     let mut broken = record(0, "a");
     broken.headers = Some(Box::new(Bytes::from_static(&[0xff])));
     assert!(encode_batch(&[broken]).is_err());
+}
+
+/// A page never encodes a membership or counter record. The client records
+/// keep their offsets, and the trailing run of other kinds becomes an empty
+/// batch, so the consumer fetches next from the tail.
+#[test]
+fn a_page_leaves_out_membership_and_counter_records() {
+    let marked = |offset, mark| LogRecord {
+        mark,
+        ..record(offset, "not an event")
+    };
+    let page = [
+        record(0, "a"),
+        marked(1, RecordMark::Membership),
+        marked(2, RecordMark::CounterDelta),
+        record(3, "b"),
+        marked(4, RecordMark::CounterCheckpoint),
+    ];
+    let (encoded, visible) = encode_page(&page, 0, 5).expect("encode");
+    assert_eq!(visible, 2);
+    let batches = RecordBatchDecoder::decode_batch_info(&mut encoded.clone()).expect("info");
+    assert_eq!(batches.len(), 2);
+    assert_eq!((batches[1].min_offset, batches[1].record_count), (4, 0));
+    let decoded = RecordBatchDecoder::decode(&mut encoded.clone()).expect("decode");
+    let seen: Vec<(i64, Option<Bytes>)> = decoded
+        .records
+        .into_iter()
+        .map(|record| (record.offset, record.value))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            (0, Some(Bytes::from_static(b"a"))),
+            (3, Some(Bytes::from_static(b"b"))),
+        ]
+    );
 }

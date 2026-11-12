@@ -22,11 +22,11 @@ mod message;
 mod replicate;
 
 pub use election::{
-    FenceElection, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, PreVote, PreVoteAnswer, PreVoteRefusal,
-    ReplicaSetView, SetMember,
+    FenceElection, MAX_EARLIER_SETS, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, PreVote, PreVoteAnswer,
+    PreVoteRefusal, ReplicaSetView, SetMember,
 };
 pub use error_code::ErrorCode;
-pub use fence::{Fence, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
+pub use fence::{Fence, FenceAttestation, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
     ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError,
@@ -39,8 +39,8 @@ pub use header::{
 };
 pub use message::{InternalMessage, ShardRef};
 pub use replicate::{
-    GenerationStart, ProducerMark, ReplicaLog, ReplicateBootstrap, ReplicateError, ReplicateOk,
-    ReplicateRebuild, ReplicateRecords, batch_checksum,
+    GenerationStart, ProducerMark, RefusalReason, ReplicaLog, ReplicateBootstrap, ReplicateError,
+    ReplicateOk, ReplicateRebuild, ReplicateRecords, batch_checksum,
 };
 
 /// Longest identifier (tenant, namespace, stream, node id) accepted.

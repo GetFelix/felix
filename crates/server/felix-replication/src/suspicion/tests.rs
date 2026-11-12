@@ -50,7 +50,7 @@ fn a_leader_silent_for_the_window_is_suspected_until_it_answers() {
 fn a_newly_watched_leader_gets_a_whole_window() {
     let start = Instant::now();
     let mut silence = Silence::new(WINDOW);
-    let none = HashSet::new();
+    let none = HashSet::default();
     assert!(silence.round(&set(&["broker-b"]), &none, start).is_empty());
     let later = start + WINDOW * 3;
     assert_eq!(
@@ -66,11 +66,11 @@ fn a_newly_watched_leader_gets_a_whole_window() {
 fn a_leader_no_longer_followed_is_forgotten() {
     let start = Instant::now();
     let mut silence = Silence::new(WINDOW);
-    let none = HashSet::new();
+    let none = HashSet::default();
     silence.round(&set(&["broker-b"]), &none, start);
     assert!(
         silence
-            .round(&HashSet::new(), &none, start + WINDOW)
+            .round(&HashSet::default(), &none, start + WINDOW)
             .is_empty()
     );
     assert!(
@@ -229,4 +229,19 @@ async fn a_ping_is_answered_only_by_a_pong_in_time() {
         let peer = Peer { offered, answer };
         assert_eq!(ping(&peer, "broker-b", addr(), within).await, expected);
     }
+}
+
+/// **The shard bound stays off at zero and is at least a second otherwise**,
+/// so a value meant in seconds does not make every quiet moment a suspicion.
+#[test]
+fn the_shard_bound_is_off_or_at_least_a_second() {
+    assert_eq!(shard_bound(Duration::ZERO), Duration::ZERO);
+    assert_eq!(
+        shard_bound(Duration::from_millis(5)),
+        MIN_SHARD_SUSPECT_AFTER
+    );
+    assert_eq!(
+        shard_bound(DEFAULT_SHARD_SUSPECT_AFTER),
+        DEFAULT_SHARD_SUSPECT_AFTER
+    );
 }

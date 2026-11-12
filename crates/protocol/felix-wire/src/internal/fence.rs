@@ -105,6 +105,16 @@ impl PeerCapabilities {
     ///
     /// [`ReplicateOk::learner`]: super::ReplicateOk::learner
     pub const LEARNER_ACKS: Self = Self(1 << 15);
+    /// Keeps every set an election fence names, not only the set being
+    /// left, and every set its own log kept from generations that never
+    /// opened, and reads a fence that carries the older sets
+    /// ([`FenceElection::earlier`]). A joint fence counts only replicas
+    /// that offer it: one that keeps a single set would let a later
+    /// failover from its log skip a set that still holds acknowledged
+    /// writes.
+    ///
+    /// [`FenceElection::earlier`]: super::FenceElection::earlier
+    pub const KEPT_SETS: Self = Self(1 << 16);
     /// Reads batches that carry each record's key-and-headers block
     /// ([`ReplicateRecords::headers`]) and stores the blocks with the
     /// records, answers a headered [`ReplicateFetch`] with them, and reads a
@@ -122,6 +132,28 @@ impl PeerCapabilities {
     ///
     /// [`ForwardPublish::producer`]: super::ForwardPublish::producer
     pub const SEQUENCED_FORWARDS: Self = Self(1 << 18);
+    /// Offered by a caller that reads [`ReplicateError::reason`], so a
+    /// refusal to it carries the reason as fields after its detail. To any
+    /// other caller the refusal goes without them.
+    ///
+    /// [`ReplicateError::reason`]: super::ReplicateError::reason
+    pub const REFUSAL_REASONS: Self = Self(1 << 19);
+
+    /// Offered by a caller that reads [`FenceOk::kept_ballot`], so a fence
+    /// answer that attests to a kept ballot travels to it as `FenceKeptOk`.
+    /// To any other caller the answer goes without the attestation.
+    pub const KEPT_BALLOTS: Self = Self(1 << 20);
+    /// Offered by a caller that reads [`FenceOk::attestation`], so a fence
+    /// answer carrying one travels to it as `FenceAttestedOk`. To any other
+    /// caller the answer goes without it.
+    pub const UNIFIED_FENCE: Self = Self(1 << 21);
+    /// Reads a batch that names the generation that wrote each record
+    /// (`ReplicateRecords::writers`), stores those as the records'
+    /// generations, and answers a fetch asking for them
+    /// (`ReplicateFetch::writers`). A peer offering it also offers
+    /// `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`, since a
+    /// stamped batch travels on the headered layout.
+    pub const WRITER_GENERATIONS: Self = Self(1 << 22);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -178,6 +210,37 @@ pub struct FenceOk {
     /// The generation its last record was written at, zero for an empty log.
     /// With `log_end` it orders two replicas' logs the way promotion does.
     pub last_generation: u64,
+    /// The replica's ballot before this fence named the sender at the
+    /// generation right before this one, and its data directory has kept
+    /// every ballot it took. `true` travels as `FenceKeptOk` (or inside
+    /// `FenceAttestedOk`), sent only to a caller that offered
+    /// [`PeerCapabilities::KEPT_BALLOTS`]; `false` is the original `FenceOk`,
+    /// byte for byte.
+    pub kept_ballot: bool,
+    /// What the replica attests about its copy, for a leader that counts
+    /// promises and coverage separately. `Some` travels as
+    /// `FenceAttestedOk`, sent only to a caller that offered
+    /// [`PeerCapabilities::UNIFIED_FENCE`]; `None` leaves the answer as it
+    /// was.
+    pub attestation: Option<FenceAttestation>,
+}
+
+/// A replica's account of its copy in a fence answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FenceAttestation {
+    /// The set generation from which the copy's promises count. Zero when its
+    /// data directory never lost a ballot; after a wipe or a restore, the
+    /// generation of the set that readmitted it.
+    pub kept_from: u64,
+    /// The copy holds every record its seat acknowledged: it started clean,
+    /// or a leader has since shipped it a batch that left it level through
+    /// that leader's acknowledged mark.
+    pub trusted: bool,
+    /// `trusted` rests on the control plane's `readmitted` record alone, in
+    /// place of a vouch the copy's directory lost. A leader that does not
+    /// count readmissions reads the copy as untrusted. Means nothing without
+    /// `trusted`.
+    pub by_record: bool,
 }
 
 /// The leader that fenced a replica reads the replica's copy of the shard's
@@ -210,6 +273,11 @@ pub struct ReplicateFetch {
     /// fetch can ask: it travels as `ReplicateHeaderedFetch`, sent only to a
     /// peer that advertised [`PeerCapabilities::RECORD_HEADERS`].
     pub headers: bool,
+    /// Answer with the generation that wrote each record. Only a headered
+    /// fetch can ask, and the encoder refuses one that is not: it travels as
+    /// `ReplicateStampedFetch`, sent only to a peer that advertised
+    /// [`PeerCapabilities::WRITER_GENERATIONS`].
+    pub writers: bool,
 }
 
 /// A follower checking that the leader of a shard it follows is reachable.

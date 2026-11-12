@@ -13,11 +13,12 @@
 //!
 //! The file holds one node id per line. Empty or missing means no partition,
 //! so healing is a delete and injecting is a write.
-use std::collections::HashSet;
+use felix_common::random::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use parking_lot::Mutex;
+use tokio::time::Instant;
 
 /// How long a reading of the file is reused.
 ///
@@ -27,7 +28,7 @@ use parking_lot::Mutex;
 const REREAD_AFTER: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
-pub struct PartitionInjector {
+pub(crate) struct PartitionInjector {
     path: PathBuf,
     cached: Mutex<Cached>,
 }
@@ -39,7 +40,7 @@ struct Cached {
 }
 
 impl PartitionInjector {
-    pub fn new(path: PathBuf) -> Self {
+    pub(crate) fn new(path: PathBuf) -> Self {
         tracing::warn!(
             path = %path.display(),
             "peer partition injection is ENABLED; this is a test-only facility",
@@ -47,14 +48,14 @@ impl PartitionInjector {
         Self {
             path,
             cached: Mutex::new(Cached {
-                nodes: HashSet::new(),
+                nodes: HashSet::default(),
                 read_at: None,
             }),
         }
     }
 
     /// Whether this broker is currently cut off from `node_id`.
-    pub fn blocks(&self, node_id: &str) -> bool {
+    pub(crate) fn blocks(&self, node_id: &str) -> bool {
         let mut cached = self.cached.lock();
         let stale = cached
             .read_at

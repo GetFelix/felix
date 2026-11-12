@@ -77,7 +77,9 @@ pub enum InternalMessage {
 /// `ReplicateCommittedRecords` once they carry a commit offset.
 fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
     let timed = records.generations.is_some() && records.times.is_some();
-    if timed
+    if records.writers.is_some() {
+        Kind::ReplicateStampedRecords
+    } else if timed
         && records
             .headers
             .as_deref()
@@ -146,9 +148,15 @@ impl InternalMessage {
             Self::ReplicateCounterBootstrap(_) => Kind::ReplicateCounterBootstrap,
             Self::ReplicateRebuild(_) => Kind::ReplicateRebuild,
             Self::ReplicateMarkedRecords(m) => records_kind(m, Kind::ReplicateMarkedRecords),
+            Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
+                Kind::ElectionKeptFence
+            }
             Self::Fence(m) if m.election.is_some() => Kind::ElectionFence,
             Self::Fence(_) => Kind::Fence,
+            Self::FenceOk(m) if m.attestation.is_some() => Kind::FenceAttestedOk,
+            Self::FenceOk(m) if m.kept_ballot => Kind::FenceKeptOk,
             Self::FenceOk(_) => Kind::FenceOk,
+            Self::ReplicateFetch(m) if m.writers => Kind::ReplicateStampedFetch,
             Self::ReplicateFetch(m) if m.labelled && m.timed && m.headers => {
                 Kind::ReplicateHeaderedFetch
             }
@@ -168,6 +176,9 @@ impl InternalMessage {
     /// any. The pool refuses to send one the peer did not offer.
     pub fn required_capability(&self) -> Option<PeerCapabilities> {
         let election = match self {
+            Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
+                Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+            }
             Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
             Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
             _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
@@ -180,7 +191,12 @@ impl InternalMessage {
                 | Kind::HeaderedForwardPublish
         )
         .then_some(PeerCapabilities::RECORD_HEADERS);
-        let headers = if self.kind() == Kind::SequencedForwardPublish {
+        let headers = if matches!(
+            self.kind(),
+            Kind::ReplicateStampedRecords | Kind::ReplicateStampedFetch
+        ) {
+            Some(PeerCapabilities::WRITER_GENERATIONS)
+        } else if self.kind() == Kind::SequencedForwardPublish {
             Some(PeerCapabilities::RECORD_HEADERS.union(PeerCapabilities::SEQUENCED_FORWARDS))
         } else {
             headers

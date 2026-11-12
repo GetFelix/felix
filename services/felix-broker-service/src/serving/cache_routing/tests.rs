@@ -1,5 +1,5 @@
 //! Which broker a cache key resolves to, and what happens when it is not this one.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -47,6 +47,8 @@ fn assignment(key: ShardKey, leader: &str, generation: u64) -> ShardAssignment {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -277,7 +279,10 @@ mod fence {
     ) -> Result<Option<Bytes>, ClientError> {
         apply_cache_op(
             &leader.broker,
-            (None, std::time::Duration::from_secs(1)),
+            (
+                &crate::shards::routing::StreamEngine::default(),
+                std::time::Duration::from_secs(1),
+            ),
             Some(&leader.ingress),
             None,
             "",
@@ -297,7 +302,10 @@ mod fence {
     ) -> Result<Option<i64>, ClientError> {
         apply_counter_op(
             &leader.broker,
-            (None, std::time::Duration::from_secs(1)),
+            (
+                &crate::shards::routing::StreamEngine::default(),
+                std::time::Duration::from_secs(1),
+            ),
             Some(&leader.ingress),
             None,
             "",
@@ -482,7 +490,10 @@ mod store_failure {
     ) -> Result<Option<Bytes>, ClientError> {
         apply_cache_op(
             broker,
-            (None, std::time::Duration::from_secs(1)),
+            (
+                &crate::shards::routing::StreamEngine::default(),
+                std::time::Duration::from_secs(1),
+            ),
             None,
             None,
             "",
@@ -510,5 +521,219 @@ mod store_failure {
             ));
             assert_eq!(refused.code(), &felix_wire::ErrorCode::Storage, "{what}");
         }
+    }
+}
+
+/// The cache and counter waits take their marks and timeout from the engine
+/// the caller holds. An engine without marks answers each of these at once.
+mod quorum_waits {
+    use std::time::{Duration, Instant};
+
+    use bytes::Bytes;
+    use felix_replication::engine::Hybrid;
+    use felix_replication::quorum::QuorumMarks;
+
+    use super::*;
+    use crate::serving::forward::CacheRequest;
+    use crate::serving::quic::client_error::ClientError;
+    use crate::shards::routing::StreamEngine;
+    use crate::test_support::leader::{self, GENERATION, Leader};
+
+    const TIMEOUT: Duration = Duration::from_millis(300);
+
+    fn engine(leader: &Leader, marks: &Arc<QuorumMarks>) -> StreamEngine {
+        Hybrid::new(Some(Arc::clone(marks)), Some(Arc::clone(&leader.ingress)))
+    }
+
+    async fn cache_op(
+        leader: &Leader,
+        engine: &StreamEngine,
+        request: CacheRequest,
+    ) -> Result<Option<Bytes>, ClientError> {
+        apply_cache_op(
+            &leader.broker,
+            (engine, TIMEOUT),
+            Some(&leader.ingress),
+            None,
+            "",
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::QUORUM_CACHE,
+            "k",
+            request,
+        )
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))
+    }
+
+    async fn counter_op(
+        leader: &Leader,
+        engine: &StreamEngine,
+        request: CacheRequest,
+    ) -> Result<Option<i64>, ClientError> {
+        apply_counter_op(
+            &leader.broker,
+            (engine, TIMEOUT),
+            Some(&leader.ingress),
+            None,
+            "",
+            leader::TENANT,
+            leader::NAMESPACE,
+            leader::QUORUM_CACHE,
+            "hits",
+            request,
+        )
+        .await
+        .map_err(|err| ClientError::from_anyhow(&err))
+    }
+
+    /// Runs `op` and says how long it took.
+    async fn timed<T>(op: impl std::future::Future<Output = T>) -> (T, Duration) {
+        let started = Instant::now();
+        let out = op.await;
+        (out, started.elapsed())
+    }
+
+    fn waited_the_timeout(waited: Duration, what: &str) {
+        assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
+        assert!(waited < TIMEOUT * 6, "{what} ended late after {waited:?}");
+    }
+
+    #[tokio::test]
+    async fn a_quorum_cache_write_and_read_wait_their_timeout_for_the_mark() {
+        let leader = Leader::start().await;
+        let _lease = leader.hold_lease();
+        let marks = Arc::new(QuorumMarks::new());
+        let engine = engine(&leader, &marks);
+        let put = || CacheRequest::Put {
+            value: Bytes::from_static(b"v"),
+            ttl_ms: 0,
+        };
+
+        let conditional = || {
+            [
+                (
+                    "put if",
+                    CacheRequest::PutIf {
+                        value: Bytes::from_static(b"v"),
+                        ttl_ms: 0,
+                        condition: felix_storage::CacheCondition::Absent,
+                    },
+                ),
+                ("delete if", CacheRequest::DeleteIf { version: 1 }),
+                ("get versioned", CacheRequest::GetVersioned),
+            ]
+        };
+
+        for (what, request) in [
+            ("put", put()),
+            ("delete", CacheRequest::Delete),
+            ("get", CacheRequest::Get),
+        ]
+        .into_iter()
+        .chain(conditional())
+        {
+            let (result, waited) = timed(cache_op(&leader, &engine, request)).await;
+            result.expect_err(what);
+            waited_the_timeout(waited, what);
+        }
+
+        marks.publish(&leader::quorum_cache_key(), GENERATION, 1 << 20);
+        for (what, request) in [
+            ("put", put()),
+            ("get", CacheRequest::Get),
+            ("delete", CacheRequest::Delete),
+        ]
+        .into_iter()
+        .chain(conditional())
+        {
+            let (result, waited) = timed(cache_op(&leader, &engine, request)).await;
+            result.unwrap_or_else(|err| panic!("{what}: {err:?}"));
+            assert!(waited < TIMEOUT, "{what} waited though the mark passed");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_quorum_counter_add_and_read_wait_their_timeout_for_the_mark() {
+        let leader = Leader::start().await;
+        let _lease = leader.hold_lease();
+        let marks = Arc::new(QuorumMarks::new());
+        let engine = engine(&leader, &marks);
+
+        let (result, waited) = timed(counter_op(
+            &leader,
+            &engine,
+            CacheRequest::CounterAdd { delta: 2 },
+        ))
+        .await;
+        result.expect_err("add");
+        waited_the_timeout(waited, "add");
+        let (result, waited) = timed(counter_op(&leader, &engine, CacheRequest::CounterGet)).await;
+        result.expect_err("get");
+        waited_the_timeout(waited, "get");
+
+        marks
+            .counters()
+            .publish(&leader::quorum_cache_key(), GENERATION, 1 << 20);
+        let (result, waited) = timed(counter_op(
+            &leader,
+            &engine,
+            CacheRequest::CounterAdd { delta: 2 },
+        ))
+        .await;
+        assert_eq!(result, Ok(Some(4)));
+        assert!(waited < TIMEOUT, "add waited though the mark passed");
+        let (result, waited) = timed(counter_op(&leader, &engine, CacheRequest::CounterGet)).await;
+        assert_eq!(result, Ok(Some(4)));
+        assert!(waited < TIMEOUT, "get waited though the mark passed");
+    }
+
+    /// A read in a fleet that reads by round skips the lease check before its
+    /// value, so a lapsed lease does not refuse it. An engine without marks
+    /// would refuse each of these.
+    #[tokio::test]
+    async fn a_quorum_read_by_round_is_not_refused_for_a_lapsed_lease() {
+        use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+        struct Confirms;
+        #[async_trait::async_trait]
+        impl felix_replication::quorum::LeadershipCheck for Confirms {
+            async fn confirm(
+                &self,
+                _key: &ShardKey,
+                _generation: u64,
+            ) -> Result<(), felix_replication::quorum::QuorumError> {
+                Ok(())
+            }
+        }
+
+        let leader = Leader::start().await;
+        let lease = leader.hold_lease();
+        let names = [
+            GENERATION_START.name(),
+            MAJORITY_ACK.name(),
+            LEASE_FREE_READS.name(),
+        ];
+        let fleet = Arc::new(FleetGate::new(names));
+        let marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
+        marks.set_read_check(Arc::new(Confirms), false);
+        fleet.observe(names);
+        marks.publish(&leader::quorum_cache_key(), GENERATION, 1 << 20);
+        marks
+            .counters()
+            .publish(&leader::quorum_cache_key(), GENERATION, 1 << 20);
+        let engine = engine(&leader, &marks);
+
+        lease.surrender();
+        for (what, request) in [
+            ("get", CacheRequest::Get),
+            ("get versioned", CacheRequest::GetVersioned),
+        ] {
+            cache_op(&leader, &engine, request)
+                .await
+                .unwrap_or_else(|err| panic!("{what}: {err:?}"));
+        }
+        counter_op(&leader, &engine, CacheRequest::CounterGet)
+            .await
+            .expect("counter get");
     }
 }

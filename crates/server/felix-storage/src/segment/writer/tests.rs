@@ -187,7 +187,9 @@ fn reopen_resumes_appending_where_recovery_left_off() {
             next_offset: outcome.next_offset,
             record_count: outcome.record_count,
             index: outcome.index,
-            version: crate::segment::format::FORMAT_VERSION,
+            version: outcome.header.version,
+            generation_floor: outcome.last_generation,
+            known: None,
         },
         0,
         4096,
@@ -231,7 +233,9 @@ fn reopen_truncates_a_torn_tail_off_the_file() {
             next_offset: outcome.next_offset,
             record_count: outcome.record_count,
             index: outcome.index,
-            version: crate::segment::format::FORMAT_VERSION,
+            version: outcome.header.version,
+            generation_floor: outcome.last_generation,
+            known: None,
         },
         0,
         4096,
@@ -281,7 +285,7 @@ fn a_partially_written_batch_is_rewound_and_leaves_no_debris() {
         let mut handle = OpenOptions::new().write(true).open(&path).expect("open");
         handle.seek(_SeekFrom::End(0)).expect("seek");
         handle.write_all(&[0xAB; 11]).expect("write debris");
-        handle.sync_all().expect("sync");
+        crate::io::sync_all(&handle).expect("sync");
     }
     assert_eq!(
         std::fs::metadata(dir.path().join(segment_file_name(0)))
@@ -650,4 +654,149 @@ fn headers_on_a_full_size_body_are_refused() {
         ..full
     };
     writer.append(&[fits]).expect("one byte short fits");
+}
+
+fn v9_writer(dir: &TempDir) -> SegmentWriter {
+    SegmentWriter::create_at_version(
+        dir.path(),
+        0,
+        0,
+        1,
+        0,
+        64,
+        crate::segment::format::GENERATION_VERSION,
+    )
+    .expect("create")
+}
+
+/// A v9 writer stamps every record of a batch with the batch's generation,
+/// and the scan and the projected size agree with what it wrote.
+#[test]
+fn a_v9_writer_stamps_each_record_with_its_generation() {
+    let dir = tempdir().expect("dir");
+    let mut writer = v9_writer(&dir);
+    assert!(writer.holds_generations());
+    let batch = [record("a"), record("bb")];
+    let projected = writer.projected_size(&batch);
+    writer.append_at(&batch, Some(3)).expect("append");
+    assert_eq!(writer.size_bytes(), projected);
+    writer.append_at(&[record("c")], Some(3)).expect("same");
+    writer.append_at(&[record("d")], Some(7)).expect("higher");
+    writer.sync().expect("sync");
+
+    let outcome = scan(&dir);
+    assert_eq!(outcome.record_count, 4);
+    assert_eq!(outcome.valid_bytes, writer.size_bytes());
+    assert_eq!(outcome.last_generation, Some(7));
+}
+
+/// A batch at a lower generation than the last is refused before anything
+/// is written, naming the floor: the scan would call the segment corrupt.
+#[test]
+fn a_v9_writer_refuses_a_falling_generation() {
+    let dir = tempdir().expect("dir");
+    let mut writer = v9_writer(&dir);
+    writer.append_at(&[record("a")], Some(5)).expect("append");
+    let before = writer.size_bytes();
+    assert!(matches!(
+        writer.append_at(&[record("b")], Some(4)),
+        Err(StorageError::GenerationBelowFloor {
+            offset: 1,
+            generation: 4,
+            floor: 5
+        })
+    ));
+    assert_eq!(writer.size_bytes(), before);
+    assert_eq!(writer.next_offset(), 1);
+    writer.sync().expect("sync");
+    assert_eq!(scan(&dir).last_generation, Some(5));
+}
+
+/// Unknown records are exempt from the floor, so a batch that opens with
+/// them is checked at its first known run: storing 5, 0, 4 would read as a
+/// falling generation on the next start.
+#[test]
+fn a_v9_writer_checks_the_first_known_run_against_the_floor() {
+    let dir = tempdir().expect("dir");
+    let mut writer = v9_writer(&dir);
+    writer.append_at(&[record("a")], Some(5)).expect("append");
+    let before = writer.size_bytes();
+    let runs = [
+        crate::log::Epoch {
+            generation: crate::log::UNKNOWN_WRITER,
+            start_offset: 1,
+        },
+        crate::log::Epoch {
+            generation: 4,
+            start_offset: 2,
+        },
+    ];
+    assert!(matches!(
+        writer.stage_at(&[record("b"), record("c")], Some(Stamps::Runs(&runs))),
+        Err(StorageError::GenerationBelowFloor {
+            offset: 2,
+            generation: 4,
+            floor: 5
+        })
+    ));
+    assert_eq!(writer.size_bytes(), before);
+    assert_eq!(writer.next_offset(), 1);
+}
+
+/// A v9 segment needs a generation on every record, and an older one has
+/// nowhere to keep it, so either mismatch is refused.
+#[test]
+fn a_generation_goes_only_into_a_v9_segment() {
+    let dir = tempdir().expect("dir");
+    let mut writer = v9_writer(&dir);
+    assert!(matches!(
+        writer.append(&[record("a")]),
+        Err(StorageError::Unsupported(_))
+    ));
+
+    let dir = tempdir().expect("dir");
+    let mut writer = new_writer(&dir, 0);
+    assert!(!writer.holds_generations());
+    assert!(matches!(
+        writer.append_at(&[record("a")], Some(1)),
+        Err(StorageError::Unsupported(_))
+    ));
+    assert_eq!(writer.size_bytes(), SEGMENT_HEADER_LEN);
+}
+
+/// Nothing this build does on its own moves a log onto v9: the successor of
+/// any segment, for any record, stays below it.
+#[test]
+fn no_record_moves_a_log_onto_v9() {
+    let dir = tempdir().expect("dir");
+    let writer = SegmentWriter::create_at_version(
+        dir.path(),
+        0,
+        0,
+        1,
+        0,
+        64,
+        crate::segment::format::HEADERS_VERSION,
+    )
+    .expect("create");
+    let every_kind = [
+        AppendRecord {
+            headers: Some(Box::new(Bytes::from_static(b"h"))),
+            publisher: Some(Bytes::from_static(b"p")),
+            ..record("a")
+        },
+        AppendRecord {
+            mark: RecordMark::Trim { floor: 0 },
+            ..record("t")
+        },
+        AppendRecord {
+            mark: RecordMark::GenerationStart,
+            ..record("g")
+        },
+        AppendRecord {
+            mark: RecordMark::Commit,
+            ..record("c")
+        },
+    ];
+    assert!(writer.successor_version(&every_kind) < crate::segment::format::GENERATION_VERSION);
 }

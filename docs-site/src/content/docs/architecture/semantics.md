@@ -210,16 +210,17 @@ follower had yet. Those were never acknowledged, and an idempotent producer
 sends them again to the new leader.
 
 `Leader` is one round trip instead of two, and it moves the moment you find out.
-If the leader dies holding a record nothing else has, the control plane will not
-promote a replica, because promoting one would open the shard **without** that
-record and no reader could tell. The shard is left unavailable until the old
-leader returns with its disk.
+When the leader dies, the control plane promotes a follower only if the
+leader's last replica report showed it caught up. Records the leader
+acknowledged after that report may be lost: the promoted follower keeps
+whatever had reached it by then, and the shard opens without the rest. With no follower reported caught up, the shard stays unavailable until
+the old leader returns with its disk.
 
-So the trade is mostly about timing, not safety. Both refuse to lose a
-record acknowledged after it was written (for `Leader`, the default on a
-durable stream); they differ in **when you learn there is a problem**:
-`Quorum` at publish time, while you still hold the record, or `Leader` at
-failover time, when the only copy is on a broker that is gone.
+So the trade is more than timing. `Quorum` never loses an acknowledged record
+to a failover, and it tells you about a problem at publish time, while you
+still hold the record. `Leader` can lose records acknowledged since the
+last report, and it tells you at failover time, when the only copy may be on a
+broker that is gone.
 
 [`task cluster:consistency`](/demos/cluster-consistency/) runs
 this: the same fault put to both, on a real three-node cluster.
@@ -488,7 +489,10 @@ brokers' clocks. Once an operator finalizes `lease_free_reads` (with
 `majority_ack` and `generation_start`), a read of a replicated `Quorum` cache
 confirms instead with one round of fences at the owner's generation, answered
 by a majority after the read began. That makes the read linearizable without
-relying on clocks. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
+relying on clocks. A broker that stands for election
+(`FELIX_INTERNAL_ELECTION=true`) checks both the lease and the round until it
+hears of that finalize, because its replicas could elect a successor without
+waiting out its lease. Setting `FELIX_QUORUM_READS=lease` on a broker keeps its
 reads on the lease. Cache writes keep the lease in every mode: `majority_ack`
 applies to `Quorum` streams only. Cache watches on a replicated `Quorum` cache
 keep going through a lapsed lease once `lease_free_reads` is finalized, since
@@ -690,7 +694,7 @@ In a clustered deployment:
   under `majority_ack` acknowledges on its followers' answers instead, and a
   `Quorum` cache read under `lease_free_reads` confirms with a round (see
   [How `Quorum` is enforced](#how-quorum-is-enforced))
-- **Metadata consistency**: strongly consistent, because it lives in one Postgres that every control-plane instance reads and writes, or in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
+- **Metadata consistency**: strongly consistent, because it lives in an embedded Raft group. A Raft member that comes back with a wiped volume withholds its vote until it has caught up, so it cannot help elect a leader missing an acknowledged write (see [Raft metadata](/architecture/metadata-raft/))
 - **Cross-shard ordering**: Not guaranteed. Ordering is per key, because a key
   always resolves to the same shard and a shard is one log on one leader
 - **Cache consistency**: One owner per key, with `Leader` or `Quorum`

@@ -10,29 +10,30 @@
 //! never offered `ELECTION` behaves as it did. Under `joint_fence` a learner
 //! still refuses such a fence.
 
-use std::time::Instant;
-
 use felix_storage::disk_log::{Membership, ReplicaSet, SetCheck};
 use felix_wire::internal::{
     ErrorCode, Fence, FenceElection, InternalMessage, PreVote, PreVoteAnswer, PreVoteRefusal,
-    ReplicaSetView,
+    RefusalReason, ReplicaSetView,
 };
+use tokio::time::Instant;
 
-use super::{ReplicaHandler, refused};
+use super::{ReplicaHandler, refused, refused_for};
 use crate::peer::metrics;
 
 impl ReplicaHandler {
     /// Checks a fence's set before its ballot is taken: an older set is
     /// refused naming the newer one, a broker that does not vote in the set
     /// refuses, and so does one that still hears its leader when a candidate
-    /// asks. Writes nothing.
+    /// asks. Writes nothing. With `attested`, a learner the set lists answers:
+    /// its attestation counts it for nothing.
     pub(super) fn check_fence_set(
         &self,
         correlation_id: u64,
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         election: &FenceElection,
-        generation: u64,
+        (generation, sender): (u64, Option<&str>),
+        attested: bool,
     ) -> Option<InternalMessage> {
         // A set is stamped with a route generation no newer than the fence's
         // own. One ahead is a sender running ahead of itself; taking it would
@@ -58,7 +59,7 @@ impl ReplicaHandler {
         let votes_in = |set: &ReplicaSetView| {
             set.members
                 .iter()
-                .any(|member| member.node_id == local && !member.learner)
+                .any(|member| member.node_id == local && (attested || !member.learner))
         };
         // Learners never vote (#1331), and a broker outside the set has no
         // say in it. Unauthorized rather than FencedEpoch: the sender is not
@@ -78,7 +79,14 @@ impl ReplicaHandler {
         // A candidate replaces a leader only when the leader has gone quiet.
         // Refusing while it still ships keeps a replica that merely lost
         // touch with it from deposing a working leader.
-        if election.candidate && self.heard_leader_within(key) {
+        // Except from the broker holding this copy's newest ballot: the
+        // leader it hears, fencing itself one generation up, or a candidate
+        // it already voted for. Neither deposes anyone this copy follows.
+        let from_heard = sender.is_some_and(|sender| {
+            log.accepted_leader()
+                .is_some_and(|leader| *leader == *sender)
+        });
+        if election.candidate && !from_heard && self.heard_leader_within(key) {
             metrics::record_replicated(metrics::OUTCOME_REFUSED);
             return Some(refused(
                 correlation_id,
@@ -98,15 +106,18 @@ impl ReplicaHandler {
         key: &felix_router::ShardKey,
         log: &felix_broker::StreamLog,
         election: &FenceElection,
+        from: (u64, Option<&str>),
     ) -> Option<InternalMessage> {
-        let set = ReplicaSet {
-            current: crate::replica_set::membership(&election.set),
-            leaving: election
-                .leaving
-                .as_ref()
-                .map(crate::replica_set::membership),
-        };
-        keep(correlation_id, key, log, self.mark_local(log, set)).await
+        let joint = self.keeps_earlier_sets();
+        keep(
+            correlation_id,
+            key,
+            log,
+            self.mark_local(log, kept_from(election)),
+            joint,
+            from,
+        )
+        .await
     }
 
     /// Check a batch stamped with the generation of the sender's set, after
@@ -120,6 +131,7 @@ impl ReplicaHandler {
         log: &felix_broker::StreamLog,
         stamped: u64,
         generation: u64,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         if let Some(refusal) = stale_set(correlation_id, key, log, stamped) {
             return Some(refusal);
@@ -203,12 +215,32 @@ impl ReplicaHandler {
             return Some(refusal);
         }
         let was_learner = self.is_learner(log);
-        if let Some(refusal) = keep(correlation_id, key, log, self.mark_local(log, set)).await {
+        // The kept sets are carried even though the batch's leader opened:
+        // they are dropped only once this log holds the batch's records.
+        let joint = self.keeps_earlier_sets();
+        if let Some(refusal) = keep(
+            correlation_id,
+            key,
+            log,
+            self.mark_local(log, set),
+            joint,
+            (generation, sender),
+        )
+        .await
+        {
             return Some(refusal);
         }
         // Marked by this batch: it was checked as a voter's, so it is refused
         // and comes again to be checked as a learner's.
         (!was_learner && self.is_learner(log)).then(|| undecided(correlation_id, key))
+    }
+
+    /// Whether a set kept here keeps earlier sets: once `joint_fence` is
+    /// finalized, and while the gate is unread, since dropping sets a
+    /// finalized fleet needs is unsafe and writing them only costs a
+    /// rollback in that window.
+    fn keeps_earlier_sets(&self) -> bool {
+        self.joint_gate() != Some(false)
     }
 
     /// Whether this copy's log lists it as a learner: a set named another
@@ -230,7 +262,9 @@ impl ReplicaHandler {
     /// the evidence of a wipe (#1331). A set naming none, or no set at all, is
     /// no evidence, so a new shard's copies and copies written before sets
     /// existed vote (`Creates` and `CreateCountsEmpty` in
-    /// `docs/formal/FelixShard.tla`).
+    /// `docs/formal/FelixShard.tla`). Nor is an id a crash rotated away on
+    /// this directory while it kept every ballot: that copy's promises still
+    /// count (`UncleanCrash` in `docs/formal/FelixShardUnified.tla`).
     fn names_other_copy<'a>(
         &self,
         mut members: impl Iterator<Item = (&'a str, Option<felix_storage::StorageId>)>,
@@ -239,7 +273,14 @@ impl ReplicaHandler {
         let Some(own) = self.local_storage else {
             return false;
         };
-        members.any(|(node, storage)| node == local && storage.is_some_and(|named| named != own))
+        let rotated = |named| {
+            self.fleet
+                .as_ref()
+                .is_some_and(|fleet| fleet.rotated_own_copy(named))
+        };
+        members.any(|(node, storage)| {
+            node == local && storage.is_some_and(|named| named != own && !rotated(named))
+        })
     }
 
     /// Whether `set` names this broker under the storage id it holds now.
@@ -346,6 +387,50 @@ impl ReplicaHandler {
             .then(|| undecided(correlation_id, key))
     }
 
+    /// Whether [`Self::refuse_non_voter_fence`] counts this copy, the shard's
+    /// own log, as no voter: a learner, a copy the fence's set lists only as
+    /// one, or one with evidence of a wipe under `joint_fence`. Its answer to
+    /// a caller that counts by attestation keeps no promise. With the gate
+    /// unread, evidence is refused retryably as for any caller: whether it
+    /// makes the copy a learner, and so what the kept set marks, is the
+    /// gate's answer.
+    pub(super) fn fences_as_non_voter(
+        &self,
+        correlation_id: u64,
+        key: &felix_router::ShardKey,
+        own: &felix_broker::StreamLog,
+        request: &Fence,
+    ) -> Result<bool, Box<InternalMessage>> {
+        let local = self.router.local_node_id();
+        let listed_as_learner = request.election.as_ref().is_some_and(|election| {
+            let mut listed = std::iter::once(&election.set)
+                .chain(&election.leaving)
+                .flat_map(|set| &set.members)
+                .filter(|member| member.node_id == local)
+                .peekable();
+            listed.peek().is_some() && listed.all(|member| member.learner)
+        });
+        if self.is_learner(own) || listed_as_learner {
+            return Ok(true);
+        }
+        let gate = self.joint_gate();
+        let evidence = gate != Some(false) && self.fence_evidence(own, request);
+        if evidence && gate.is_none() {
+            return Err(Box::new(undecided(correlation_id, key)));
+        }
+        Ok(evidence)
+    }
+
+    /// Whether `own` holds evidence of a wipe for `request`'s fence: its set
+    /// names another storage id for this copy, or, with no set, this copy may
+    /// be a replaced one ([`Self::replaced_copy_of`]).
+    fn fence_evidence(&self, own: &felix_broker::StreamLog, request: &Fence) -> bool {
+        match &request.election {
+            Some(election) => self.names_other_in_view(own, &election.set),
+            None => self.replaced_copy_of(own, request.shard.generation, false),
+        }
+    }
+
     /// Refuse a fence from a learner, after learning the set the fence
     /// carries. It promises nothing: its answer would count toward a
     /// majority it may hold none of the acknowledged records for. That
@@ -365,6 +450,7 @@ impl ReplicaHandler {
         log_kind: felix_broker::LogKind,
         log: &felix_broker::StreamLog,
         request: &Fence,
+        sender: Option<&str>,
     ) -> Option<InternalMessage> {
         let opened;
         let own = match super::own_kind(log_kind) {
@@ -372,7 +458,7 @@ impl ReplicaHandler {
             Some(kind) => {
                 opened = self
                     .broker
-                    .shard_log_for(
+                    .shard_log_off_runtime(
                         kind,
                         &key.tenant_id,
                         &key.namespace,
@@ -390,11 +476,14 @@ impl ReplicaHandler {
             log_kind,
             felix_broker::LogKind::GroupCursors | felix_broker::LogKind::GroupDeadLetters
         );
+        // A learner's promise to the leader its ballot names at the
+        // generation before is no vote for records it lacks: that leader
+        // holds them. Group logs stay refused while wiped.
+        if !group && self.continues_from(key, own, request.shard.generation, sender) {
+            return None;
+        }
         let learner = self.is_learner(own) || (group && self.is_wiped(own));
-        let evidence = match &request.election {
-            Some(election) => self.names_other_in_view(own, &election.set),
-            None => self.replaced_copy_of(own, request.shard.generation, false),
-        };
+        let evidence = self.fence_evidence(own, request);
         match self.joint_gate() {
             _ if !learner && !evidence => return None,
             None if !learner => return Some(undecided(correlation_id, key)),
@@ -402,20 +491,21 @@ impl ReplicaHandler {
             _ => {}
         }
         // A set from a sender running ahead of itself is refused by the set
-        // check; learning it would mask that.
+        // check; learning it would mask that. No ballot is taken here, but a
+        // sender this copy has promised past is not learned from: a
+        // candidate's own copy must keep the set it stood on.
         if let Some(election) = &request.election
             && election.set.generation <= request.shard.generation
+            && let Err(err) = log
+                .accept_set_from(
+                    self.mark_local(log, kept_from(election)),
+                    self.keeps_earlier_sets(),
+                    request.shard.generation,
+                    sender,
+                )
+                .await
         {
-            let set = ReplicaSet {
-                current: crate::replica_set::membership(&election.set),
-                leaving: election
-                    .leaving
-                    .as_ref()
-                    .map(crate::replica_set::membership),
-            };
-            if let Err(err) = log.accept_set(self.mark_local(log, set)).await {
-                tracing::warn!(error = %err, "could not keep the set a fence carried");
-            }
+            tracing::warn!(error = %err, "could not keep the set a fence carried");
         }
         tracing::warn!(
             stream = %key.stream,
@@ -424,11 +514,10 @@ impl ReplicaHandler {
             "refusing a fence: this copy is not a voter until it catches up with a set naming it",
         );
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
-        Some(refused(
+        Some(refused_for(
             correlation_id,
             ErrorCode::Unauthorized,
-            0,
-            "this broker does not vote until a set change re-admits it".to_string(),
+            RefusalReason::NotVoter,
         ))
     }
 
@@ -470,7 +559,15 @@ impl ReplicaHandler {
             Some(kind) => {
                 opened = self
                     .broker
-                    .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                    .shard_log_off_runtime(
+                        kind,
+                        &key.tenant_id,
+                        &key.namespace,
+                        &key.stream,
+                        key.shard,
+                        None,
+                        None,
+                    )
                     .await;
                 // Unread, the copy may be a learner, and a learner counted as
                 // a voter is the unsafe mistake.
@@ -526,6 +623,37 @@ impl ReplicaHandler {
         }
     }
 
+    /// Whether `own`, a copy unkept since generation `since`, is readmitted:
+    /// its log counts a set newer than `since` that names this broker under
+    /// its own storage id as a voter, not wiped, and it holds that set's
+    /// generation start, shipped by that set's leader or a later one
+    /// (`sent_at`). Neither a batch alone nor a set that names no copy here
+    /// is one. The generation of that set when it is.
+    pub(super) async fn readmitted_since(
+        &self,
+        own: &felix_broker::StreamLog,
+        since: u64,
+        sent_at: u64,
+    ) -> Option<u64> {
+        let own_id = self.local_storage?;
+        let set = own.replica_set()?;
+        let generation = set.current.generation;
+        let local = self.router.local_node_id();
+        let voter = set.current.members.iter().any(|member| {
+            member.node == local
+                && member.storage == Some(own_id)
+                && !member.learner
+                && !member.wiped
+        });
+        (generation > since
+            && sent_at >= generation
+            && voter
+            && !self.is_learner(own)
+            && !self.is_wiped(own)
+            && holds_start(own, generation).await)
+            .then_some(generation)
+    }
+
     /// Whether a cache shard's counter log holds the start record of
     /// `generation`. A counter log that cannot be opened has not.
     async fn counters_caught_up(&self, key: &felix_router::ShardKey, generation: u64) -> bool {
@@ -534,12 +662,14 @@ impl ReplicaHandler {
         }
         match self
             .broker
-            .shard_log(
+            .shard_log_off_runtime(
                 felix_broker::LogKind::Counters,
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
+                None,
+                None,
             )
             .await
         {
@@ -560,7 +690,15 @@ impl ReplicaHandler {
         ] {
             let Some(group) = self
                 .broker
-                .shard_log(kind, &key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .shard_log_off_runtime(
+                    kind,
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    None,
+                    None,
+                )
                 .await
             else {
                 return false;
@@ -574,7 +712,7 @@ impl ReplicaHandler {
 
     /// Answer a pre-vote. Writes nothing, so it is safe for a copy that does
     /// not vote: that one answers `NotVoting`, which no asker counts.
-    pub async fn pre_vote(&self, request: PreVote) -> InternalMessage {
+    pub(crate) async fn pre_vote(&self, request: PreVote) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let log_kind = super::log_kind(request.log);
         let key = super::shard_key(&request.shard, log_kind);
@@ -586,7 +724,7 @@ impl ReplicaHandler {
         };
         let Some(log) = self
             .broker
-            .shard_log_for(
+            .shard_log_off_runtime(
                 log_kind,
                 &key.tenant_id,
                 &key.namespace,
@@ -611,7 +749,7 @@ impl ReplicaHandler {
         // The leader itself refuses: it hears its own leadership, and a yes
         // from it lets one follower whose detector misfired win a majority
         // against it (#1815, `NoStandAgainstHeardLeader`).
-        if self.heard_leader_within(&key) || self.leads(&key, &log) {
+        if self.heard_leader_within(&key) || self.leads(&key, &log) || self.fencing(&key, &log) {
             return answer(Some(PreVoteRefusal::LeaderReachable));
         }
         let Ok(end) = log.tail_offset().await else {
@@ -628,7 +766,18 @@ impl ReplicaHandler {
     /// check. Called only for fences and batches that carry a set, so a
     /// broker without `ELECTION` takes no lock here.
     pub(super) fn heard_leader(&self, key: &felix_router::ShardKey) {
-        self.heard.lock().insert(key.clone(), Instant::now());
+        let now = Instant::now();
+        let mut heard = self.heard.lock();
+        match heard.get_mut(key) {
+            Some(at) => *at = now,
+            None => {
+                heard.insert(key.clone(), now);
+            }
+        }
+        drop(heard);
+        if let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) {
+            elections.heard_leader(key);
+        }
     }
 
     /// Whether this broker's route names it leader of `key`, its log has
@@ -644,6 +793,30 @@ impl ReplicaHandler {
                     .generations()
                     .last()
                     .is_some_and(|epoch| epoch.generation == route.generation)
+        })
+    }
+
+    /// Whether this broker won `key` by election at its route's generation
+    /// and stands there, before its fence or during it, or has opened it. [`Self::leads`] needs a
+    /// start record, which an open writes only once `generation_start` is
+    /// finalized, and a yes before it lets a follower this broker just fenced
+    /// take the next generation (#1914). Bounded by the standing, unlike a
+    /// route alone, and by [`Elections::defer_for`] from its first fence: a
+    /// standing that never starts its generation must not hold off its
+    /// followers for good.
+    ///
+    /// [`Elections::defer_for`]: crate::election::Elections::with_defer_for
+    fn fencing(&self, key: &felix_router::ShardKey, log: &felix_broker::StreamLog) -> bool {
+        let Some(elections) = self.fleet.as_ref().and_then(|marks| marks.elections()) else {
+            return false;
+        };
+        self.router.snapshot().get(key).is_some_and(|route| {
+            route.leader.node_id == self.router.local_node_id()
+                && route.generation >= log.accepted_generation()
+                && (elections.stands_at(key, route.generation)
+                    || elections.is_fencing(key, route.generation)
+                    || elections.opened_at(key, route.generation))
+                && elections.fenced_within_defer(key, route.generation)
         })
     }
 
@@ -727,17 +900,41 @@ fn refuse_stale(
     )
 }
 
-async fn keep(
+/// The sets a fence names, as a replica keeps them: every older set it needs
+/// a majority of, so a failover from this log fences them too (#1881).
+fn kept_from(election: &FenceElection) -> ReplicaSet {
+    ReplicaSet {
+        current: crate::replica_set::membership(&election.set),
+        leaving: election
+            .leaving
+            .as_ref()
+            .map(crate::replica_set::membership),
+        earlier: election
+            .earlier
+            .iter()
+            .map(crate::replica_set::membership)
+            .collect(),
+    }
+}
+
+/// `joint`: the fleet finalized `joint_fence`, so earlier sets are kept.
+/// `from` is the generation and sender whose ballot this copy took. The set is
+/// refused if a newer ballot landed since, a candidate's included: it stood on
+/// the set it kept then, and must not be left counting a set it never fenced.
+pub(super) async fn keep(
     correlation_id: u64,
     key: &felix_router::ShardKey,
     log: &felix_broker::StreamLog,
     set: ReplicaSet,
+    joint: bool,
+    (generation, sender): (u64, Option<&str>),
 ) -> Option<InternalMessage> {
     let sent = set.current.generation;
-    match log.accept_set(set).await {
-        Ok(SetCheck::Current | SetCheck::Raised) => None,
+    match log.accept_set_from(set, joint, generation, sender).await {
+        Ok(Ok(SetCheck::Current | SetCheck::Raised)) => None,
         // Raised by another request since the check above.
-        Ok(SetCheck::Stale { known }) => Some(refuse_stale(correlation_id, key, sent, known)),
+        Ok(Ok(SetCheck::Stale { known })) => Some(refuse_stale(correlation_id, key, sent, known)),
+        Ok(Err(ballot)) => super::ballot_refusal(ballot, correlation_id, key, generation, sender),
         Err(err) => {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             Some(refused(

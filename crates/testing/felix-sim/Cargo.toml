@@ -1,0 +1,42 @@
+[package]
+name = "felix-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Deterministic simulation of a Felix cluster on virtual time"
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+# A test harness, not a library anyone consumes from a registry.
+publish = false
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+axum = { workspace = true }
+bytes = { workspace = true }
+felix-broker = { path = "../../server/felix-broker" }
+felix-broker-service = { path = "../../../services/felix-broker-service", features = ["sim"] }
+felix-cluster = { path = "../felix-cluster" }
+felix-common = { path = "../../server/felix-common", features = ["sim"] }
+felix-controlplane-service = { path = "../../../services/felix-controlplane-service" }
+felix-replication = { path = "../../server/felix-replication" }
+felix-router = { path = "../../server/felix-router" }
+felix-storage = { path = "../../server/felix-storage", features = ["sim"] }
+felix-wire = { path = "../../protocol/felix-wire" }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# `test-util` for the paused clock a run is built on.
+tokio = { workspace = true, features = ["test-util"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

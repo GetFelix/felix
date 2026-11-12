@@ -60,6 +60,7 @@ fn every_node_route_is_described() {
         ("/v1/shard-assignments/snapshot", "get"),
         ("/v1/shard-assignments/changes", "get"),
         ("/v1/shard-assignments/confirmed", "get"),
+        ("/v1/shard-assignments/confirmed", "post"),
     ] {
         let described = paths
             .get(path)

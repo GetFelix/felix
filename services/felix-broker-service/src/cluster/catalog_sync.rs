@@ -23,13 +23,14 @@
 //!   and bubble up, because they indicate an invariant mismatch or corrupted input.
 //!
 //! NOTE: This file is a *client* of the control-plane. Persisting control-plane data
-//! (e.g., in Postgres) is implemented on the **control-plane service**, not here.
+//! is implemented on the **control-plane service**, not here.
 
 mod apply;
 mod fetch;
 mod pass;
-mod wire;
+pub(crate) mod wire;
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -39,6 +40,8 @@ use felix_broker::Broker;
 use crate::cluster::credential::NodeCredential;
 use crate::cluster::feed_cursor::BehindCursor;
 use pass::sync_into;
+
+pub(crate) use fetch::{CatalogFetch, HttpSource};
 
 /// Polls the control plane forever, applying changes as they arrive.
 ///
@@ -54,7 +57,15 @@ pub async fn start_sync(
     interval: Duration,
     credential: Option<NodeCredential>,
 ) -> Result<()> {
-    start_sync_with_signal(broker, base_url, interval, None, credential).await
+    start_sync_with_signal(
+        broker,
+        base_url,
+        interval,
+        None,
+        credential,
+        Provisional::default(),
+    )
+    .await
 }
 
 /// The least time between catalog polls asked for by
@@ -88,16 +99,42 @@ const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
 /// `credential` is what the feeds are read with. They require
 /// `node.view:cluster:*`, so without one every poll is refused; the holder is
 /// read on each iteration, so a refresh is picked up without a restart.
+///
+/// `provisional` names the entries registered before the first snapshot from
+/// somewhere other than the control plane; see [`Provisional`].
 pub(crate) async fn start_sync_with_signal(
     broker: Arc<Broker>,
     base_url: String,
     interval: Duration,
-    mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
+    seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
+    provisional: Provisional,
 ) -> Result<()> {
     let client = crate::cluster::controlplane_client::build()?;
+    sync_loop(
+        broker,
+        &HttpSource::new(client, base_url),
+        interval,
+        seeded,
+        credential,
+        provisional,
+    )
+    .await
+}
+
+/// [`start_sync_with_signal`] over any [`CatalogFetch`], so the simulator
+/// runs this loop, cadence and seeding rule included, over its own link.
+pub(crate) async fn sync_loop(
+    broker: Arc<Broker>,
+    source: &impl CatalogFetch,
+    interval: Duration,
+    mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
+    credential: Option<NodeCredential>,
+    provisional: Provisional,
+) -> Result<()> {
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
+    state.provisional = provisional;
     let mut asked_gap = MIN_ASKED_GAP;
     let mut asked = false;
     loop {
@@ -109,8 +146,7 @@ pub(crate) async fn start_sync_with_signal(
         // ones before it.
         match sync_into(
             &broker,
-            &client,
-            &base_url,
+            source,
             bearer.as_deref().map(String::as_str),
             &mut state,
         )
@@ -191,6 +227,8 @@ struct SyncState {
     ///
     /// [`feed_cursor`]: crate::cluster::feed_cursor
     behind: BehindFeeds,
+    /// Entries the first snapshot must confirm or unregister.
+    provisional: Provisional,
 }
 
 impl SyncState {
@@ -224,8 +262,127 @@ impl SyncState {
             next_stream_seq: 0,
             seeded: SeededSnapshots::default(),
             behind: BehindFeeds::default(),
+            provisional: Provisional::default(),
         }
     }
+}
+
+/// Streams and caches registered before the first snapshot from a copy of
+/// the catalog, not from the control plane: the view a broker starts from
+/// while the control plane is down. The first snapshot unregisters the ones
+/// it lacks and keeps their data, since absence is no evidence of a delete
+/// (`Broker::unregister_stream`). Only a delete change or a tombstone
+/// deletes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Provisional {
+    /// Tenants and namespaces the entries below created on their way in.
+    pub(crate) tenants: BTreeSet<String>,
+    pub(crate) namespaces: BTreeSet<(String, String)>,
+    pub(crate) streams: BTreeSet<(String, String, String)>,
+    pub(crate) caches: BTreeSet<(String, String, String)>,
+}
+
+impl Provisional {
+    /// Note the parents of an entry registered from the view, if seeding it
+    /// created them: `had` says whether the tenant and namespace were there
+    /// before.
+    fn note_parents(&mut self, tenant_id: &str, namespace: &str, had: (bool, bool)) {
+        let (had_tenant, had_namespace) = had;
+        if !had_tenant {
+            self.tenants.insert(tenant_id.to_owned());
+        }
+        if !had_namespace {
+            self.namespaces
+                .insert((tenant_id.to_owned(), namespace.to_owned()));
+        }
+    }
+}
+
+/// Whether `tenant_id` and its `namespace` are registered on `broker` yet.
+async fn parents(broker: &Broker, tenant_id: &str, namespace: &str) -> (bool, bool) {
+    (
+        broker.tenant_exists(tenant_id).await,
+        broker.namespace_exists(tenant_id, namespace).await,
+    )
+}
+
+/// Register `catalog`'s streams and caches as [`Provisional`] entries, so
+/// their logs open at the incarnation they had. An entry that fails is
+/// logged and left out: its shard then waits for the control plane.
+pub(crate) async fn seed_provisional(
+    broker: &Arc<Broker>,
+    catalog: &crate::cluster::controlplane_view::Catalog,
+) -> Provisional {
+    let mut provisional = Provisional::default();
+    for cache in &catalog.caches {
+        let had = parents(broker, &cache.tenant_id, &cache.namespace).await;
+        let applied = match cache.metadata() {
+            Ok(metadata) => {
+                apply::apply_cache_upsert(
+                    broker,
+                    cache.tenant_id.clone(),
+                    cache.namespace.clone(),
+                    cache.cache.clone(),
+                    metadata,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        match applied {
+            Ok(()) => {
+                provisional.note_parents(&cache.tenant_id, &cache.namespace, had);
+                provisional.caches.insert((
+                    cache.tenant_id.clone(),
+                    cache.namespace.clone(),
+                    cache.cache.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!(
+                tenant_id = %cache.tenant_id,
+                namespace = %cache.namespace,
+                cache = %cache.cache,
+                error = %err,
+                "could not register a cache from the control-plane view; it waits for the \
+                 control plane"
+            ),
+        }
+    }
+    for stream in &catalog.streams {
+        let had = parents(broker, &stream.tenant_id, &stream.namespace).await;
+        let applied = match stream.metadata() {
+            Ok(metadata) => {
+                apply::apply_stream_upsert(
+                    broker,
+                    stream.tenant_id.clone(),
+                    stream.namespace.clone(),
+                    stream.stream.clone(),
+                    metadata,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+        match applied {
+            Ok(()) => {
+                provisional.note_parents(&stream.tenant_id, &stream.namespace, had);
+                provisional.streams.insert((
+                    stream.tenant_id.clone(),
+                    stream.namespace.clone(),
+                    stream.stream.clone(),
+                ));
+            }
+            Err(err) => tracing::warn!(
+                tenant_id = %stream.tenant_id,
+                namespace = %stream.namespace,
+                stream = %stream.stream,
+                error = %err,
+                "could not register a stream from the control-plane view; it waits for the \
+                 control plane"
+            ),
+        }
+    }
+    provisional
 }
 
 /// Per-resource record of a completed cold-start snapshot.

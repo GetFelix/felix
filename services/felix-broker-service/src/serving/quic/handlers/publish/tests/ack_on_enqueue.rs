@@ -18,7 +18,10 @@ fn queue_and_worker(leader: &Leader) -> (PublishContext, TestReceiver, PublishCo
         Arc::clone(&leader.broker),
         &BrokerConfig::default(),
         ClusterContext {
-            ingress: Some(Arc::clone(&leader.ingress)),
+            engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                None,
+                Some(Arc::clone(&leader.ingress)),
+            )),
             ..ClusterContext::default()
         },
     );
@@ -52,7 +55,7 @@ async fn a_publish_acked_on_enqueue_is_written_across_a_move() {
     handle_publish_message(
         &leader.broker,
         &queued,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         // Acked on enqueue: the default.
@@ -104,7 +107,7 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
         &leader.broker,
         &queued,
         None,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         false,

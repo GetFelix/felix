@@ -364,6 +364,7 @@ async fn log_with_trim() -> (StreamLog, TempDir) {
             &[],
             &[],
             None,
+            felix_storage::log::WrittenBy::Leader,
         )
         .await
         .expect("append")
@@ -445,6 +446,69 @@ async fn a_follower_without_head_trim_is_held_at_the_trim() {
     let rendered = handle.render();
     assert!(
         rendered.contains(r#"outcome="trim_unsupported"} 1"#),
+        "{rendered}"
+    );
+}
+
+/// **A follower is held before a membership or counter record**, which the
+/// replication wire cannot carry yet. What precedes it ships; the record is
+/// never sent under another mark.
+#[tokio::test]
+async fn a_follower_is_held_before_a_kind_replication_does_not_carry() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let (log, _dir) = leader_log(&["a", "b"]).await;
+    let records: Vec<_> = [
+        felix_storage::log::RecordMark::Membership,
+        felix_storage::log::RecordMark::None,
+    ]
+    .into_iter()
+    .map(|mark| felix_storage::log::AppendRecord {
+        payload: Bytes::from_static(b"x"),
+        timestamp_micros: 1,
+        mark,
+        publisher: None,
+        headers: None,
+    })
+    .collect();
+    log.append_v9_for_tests(&records, GENERATION)
+        .await
+        .expect("v9 append");
+    let follower = ScriptedFollower::new([Ok(stored(2))]);
+    let mut cursor = cursor(0);
+
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(progress, Progress::Stored { durable_offset: 2 });
+    let sent = follower.sent.lock().expect("lock")[0].clone();
+    assert_eq!(sent.payloads.len(), 2);
+
+    cursor.next_offset = 2;
+    let progress = ship_once(
+        &follower,
+        &log,
+        &shard(),
+        felix_broker::LogKind::Stream,
+        &mut cursor,
+        BATCH_BYTES,
+        &Rebuilds::disabled(),
+    )
+    .await;
+    assert_eq!(progress, Progress::Retry);
+    assert!(cursor.stalled);
+    assert_eq!(follower.sent.lock().expect("lock").len(), 1);
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(r#"outcome="kind_unsupported"} 1"#),
         "{rendered}"
     );
 }

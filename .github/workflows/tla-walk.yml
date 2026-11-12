@@ -6,8 +6,9 @@ name: TLA+ walks
 # behaviours hundreds of steps long instead (the inherited-name families keep
 # their exhaustive bounds, which are too big to check exhaustively), which is
 # sampling, not proof: a
-# pass means nothing was found. Each family's negative twin must still find
+# pass means nothing was found. Each walked negative twin must still find
 # its violation within the budget, the same expectation model as ci.yml.
+# The election and spares twins are fixed-trace replays in ci.yml instead.
 # A pull request that changes the walks runs them too. See
 # docs/formal/README.md, "Long random walks".
 #
@@ -43,6 +44,7 @@ on:
       - docs/formal/FelixShardFenced*NamesByInheritance.cfg
       - docs/formal/FelixShardFenced*InheritedCounts.cfg
       - docs/formal/FelixShardShortCopy*.cfg
+      - docs/formal/FelixShardElectUncleanContinuingDoubtedFull.cfg
       - docs/formal/FelixShard.tla
 
 permissions:
@@ -50,7 +52,8 @@ permissions:
 
 concurrency:
   group: tla-walk-${{ github.ref }}
-  cancel-in-progress: false
+  # A superseded pull request run is dropped; nightly and dispatch runs finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   walk:
@@ -65,13 +68,13 @@ jobs:
       matrix:
         include:
           - family: spares
-            configs: FelixShardWalkSpares FelixShardWalkSparesSeatEarly
+            configs: FelixShardWalkSpares
           - family: moves
             configs: FelixShardWalkMoves FelixShardWalkMovesDestination
           - family: handoff
             configs: FelixShardWalkHandoff FelixShardWalkHandoffNoWait
           - family: election
-            configs: FelixShardWalkElect FelixShardWalkElectStaleSet
+            configs: FelixShardWalkElect
           - family: swap
             configs: FelixShardWalkElectSwap FelixShardWalkElectSwapNoJoint
           - family: rename
@@ -86,6 +89,10 @@ jobs:
           # A crashed leader's refusal and its set-of-two exception: past 30M
           # distinct states exhaustively.
           # Split so each job's pass configurations fit its hour.
+          # The registered Doubted with one client write: past six hours
+          # exhaustively, so sampled.
+          - family: unclean-continuing
+            configs: FelixShardElectUncleanContinuingDoubtedFull
           - family: short-copy-seat
             configs: FelixShardShortCopySeat FelixShardShortCopySeatAnySet
           - family: short-copy-keys
@@ -190,6 +197,9 @@ jobs:
           - FelixShardFencedAckMove
           - FelixShardFencedAckStagedMove
           - FelixShardFencedAckMoveCancel
+          - FelixShardCpLiveSkippedGeneration
+          - FelixShardUnifiedReadmitFull
+          - FelixShardUnifiedDropEvidencedFull
     steps:
       - name: Checkout
         uses: actions/checkout@v7

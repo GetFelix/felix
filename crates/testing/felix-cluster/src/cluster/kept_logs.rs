@@ -5,7 +5,7 @@
 //! request, so with [`LOG_DIR_VAR`] set each cluster copies its logs out first,
 //! and CI uploads the ones belonging to tests that failed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, Once};
 
@@ -13,6 +13,9 @@ use super::Cluster;
 
 /// Where to keep the logs. Unset or empty keeps nothing.
 const LOG_DIR_VAR: &str = "FELIX_TEST_CLUSTER_LOG_DIR";
+
+/// Every run of a broker before the current one, oldest first.
+const EARLIER_RUNS: &str = "broker.log.earlier";
 
 fn log_dir() -> Option<PathBuf> {
     std::env::var_os(LOG_DIR_VAR)
@@ -44,13 +47,47 @@ impl Cluster {
             return;
         }
         for node in &self.nodes {
-            // A broker started with inherited output has no file to copy.
-            let _ = std::fs::copy(
-                node.data_dir.join("broker.log"),
-                dir.join(format!("{}.log", node.node_id)),
-            );
+            copy_broker_logs(&node.data_dir, &dir, &node.node_id);
         }
     }
+}
+
+/// Move a stopped broker's log aside before it restarts.
+///
+/// The last run stays in `broker.log.previous`, where the history checker reads
+/// it. Every run is also appended to [`EARLIER_RUNS`] and kept with the cluster
+/// logs: a campaign restarts each broker many times, and the run that set up a
+/// failure is often several restarts back.
+pub(super) fn set_aside_log(data_dir: &Path) {
+    let log = data_dir.join("broker.log");
+    if let (Ok(mut from), Ok(mut to)) = (
+        std::fs::File::open(&log),
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(data_dir.join(EARLIER_RUNS)),
+    ) {
+        let _ = std::io::copy(&mut from, &mut to);
+    }
+    let _ = std::fs::rename(&log, log.with_extension("log.previous"));
+}
+
+/// A restart moves the old run to `broker.log.previous`, and the run before
+/// the kill is usually the one a failure is about, so both are kept.
+fn copy_broker_logs(data_dir: &Path, dest: &Path, node_id: &str) {
+    // A broker started with inherited output has no file to copy.
+    let _ = std::fs::copy(
+        data_dir.join("broker.log"),
+        dest.join(format!("{node_id}.log")),
+    );
+    let _ = std::fs::copy(
+        data_dir.join("broker.log.previous"),
+        dest.join(format!("{node_id}.log.previous")),
+    );
+    let _ = std::fs::copy(
+        data_dir.join(EARLIER_RUNS),
+        dest.join(format!("{node_id}.earlier.log")),
+    );
 }
 
 /// Send this process's tracing to `<dir>/controlplane-<test binary>.log`.
@@ -94,4 +131,26 @@ pub(crate) fn capture_control_plane() {
             .with_writer(Mutex::new(file))
             .try_init();
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_restarted_brokers_previous_log_is_kept_beside_its_current_one() {
+        let data = tempfile::tempdir().unwrap();
+        let dest = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join("broker.log"), "after").unwrap();
+        std::fs::write(data.path().join("broker.log.previous"), "before").unwrap();
+        copy_broker_logs(data.path(), dest.path(), "node-1");
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("node-1.log")).unwrap(),
+            "after"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.path().join("node-1.log.previous")).unwrap(),
+            "before"
+        );
+    }
 }

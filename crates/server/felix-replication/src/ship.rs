@@ -17,7 +17,7 @@ use crate::peer::{PeerError, PeerRequester};
 ///
 /// Returns what the exchange concluded. The cursor is advanced, rewound, or
 /// halted here, so a caller only has to decide whether to go round again.
-pub async fn ship_once<R: PeerRequester>(
+pub(crate) async fn ship_once<R: PeerRequester>(
     requester: &R,
     log: &StreamLog,
     shard: &ShardRef,
@@ -42,7 +42,7 @@ pub async fn ship_once<R: PeerRequester>(
 /// [`ship_once`], telling the follower that everything below `commit_offset`
 /// is committed, so it refuses to discard any of it later.
 #[allow(clippy::too_many_arguments)]
-pub async fn ship_once_with<R: PeerRequester>(
+pub(crate) async fn ship_once_with<R: PeerRequester>(
     requester: &R,
     log: &StreamLog,
     shard: &ShardRef,
@@ -91,6 +91,44 @@ pub(crate) async fn ship_once_stamped<R: PeerRequester>(
         commit_offset,
         None,
         set_stamp,
+        false,
+    )
+    .await
+}
+
+/// Send a follower of a log that has never held a record one empty batch,
+/// labelled with this leader's start at offset 0 and carrying `commit_offset`
+/// (0). With no record the mark never rises above 0, so no other batch can
+/// vouch for a copy back from an unclean restart (replica.rs, the vouch).
+/// Records written since are shipped as [`ship_once_stamped`] would.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn vouch_empty<R: PeerRequester>(
+    requester: &R,
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    cursor: &mut FollowerCursor,
+    max_batch_bytes: usize,
+    rebuilds: &Rebuilds,
+    commit_offset: Option<u64>,
+    set_stamp: Option<u64>,
+) -> Progress {
+    // Neither is level, and a halted cursor would be offered a rebuild.
+    if cursor.halted.is_some() || cursor.rebuilding {
+        return Progress::Retry;
+    }
+    ship_batch(
+        requester,
+        log,
+        shard,
+        log_kind,
+        cursor,
+        max_batch_bytes,
+        rebuilds,
+        commit_offset,
+        None,
+        set_stamp,
+        true,
     )
     .await
 }
@@ -119,6 +157,7 @@ pub(crate) async fn ship_once_until<R: PeerRequester>(
         None,
         Some(end),
         None,
+        false,
     )
     .await
 }
@@ -135,7 +174,10 @@ async fn ship_batch<R: PeerRequester>(
     commit_offset: Option<u64>,
     end: Option<u64>,
     set_stamp: Option<u64>,
+    empty_vouch: bool,
 ) -> Progress {
+    // Set again only by the follower's answer to this batch.
+    cursor.refused = false;
     if let Some(halt) = cursor.halted {
         let backing_off = cursor
             .rebuild_refused
@@ -257,10 +299,36 @@ async fn ship_batch<R: PeerRequester>(
         if cursor.next_offset == 0 {
             cursor.stalled = false;
         }
-        return Progress::UpToDate;
+        if !empty_vouch || cursor.next_offset != 0 || log.physical_base() != 0 {
+            return Progress::UpToDate;
+        }
     }
 
-    let offered = requester.recorded_capabilities(&cursor.node_id);
+    // On first contact nothing is recorded until the connection's handshake,
+    // so dial first: an unlabelled batch cannot vouch for an unclean copy,
+    // and an idle shard would never send another (#2029).
+    let offered = match requester.recorded_capabilities(&cursor.node_id) {
+        None if !cursor.legacy_frames => requester
+            .capabilities(&cursor.node_id, cursor.addr)
+            .await
+            .ok(),
+        recorded => recorded,
+    };
+    let history = log.generations();
+    if records.is_empty() {
+        // Only a batch the follower reads as labelled, carrying a mark, with
+        // this leader's start at 0 can vouch. A follower that will never be
+        // sent one is not owed it.
+        let labelled = !cursor.legacy_frames
+            && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind)));
+        let starts_empty = history
+            .iter()
+            .any(|epoch| epoch.generation == shard.generation && epoch.start_offset == 0);
+        if !labelled || commit_offset.is_none() || !starts_empty {
+            cursor.mark_carried |= offered.is_some() || cursor.legacy_frames;
+            return Progress::UpToDate;
+        }
+    }
     // Headers ride the timed layout, so a follower that refused the committed
     // kinds cannot be sent them either.
     let carries_headers = !cursor.legacy_frames
@@ -295,13 +363,58 @@ async fn ship_batch<R: PeerRequester>(
         }
     }
 
-    let first_offset = records[0].offset;
+    // A kind the wire does not carry yet is never sent under another mark.
+    // The follower is held before it; what precedes it still goes.
+    if let Some(at) = records
+        .iter()
+        .position(|record| felix_broker::replication::mark_to_wire(record.mark).is_none())
+    {
+        records.truncate(at);
+        if records.is_empty() {
+            if KIND_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            )) {
+                tracing::error!(
+                    node_id = %cursor.node_id,
+                    stream = %shard.stream,
+                    shard = shard.shard,
+                    offset = cursor.next_offset,
+                    "the next record is a membership or counter record, which this build cannot \
+                     replicate; the follower stays behind it",
+                );
+            }
+            metrics::record_shipped(metrics::OUTCOME_KIND_UNSUPPORTED);
+            cursor.stalled = true;
+            return Progress::Retry;
+        }
+    }
+
+    // The generation that wrote each record goes along, so a follower that
+    // stamps records keeps it. Rebuild and catch-up ship through here too.
+    // Only once this log stamps records, or its gate says it may, or the
+    // follower asked by refusing a batch without them (it heard the finalize
+    // first): until then no follower stamps either, and the batch goes as it
+    // always did. The batch is cut before any fall in the generations (see
+    // `writers_to_wire`); the rest goes in the next one.
+    let writers = (carries_headers
+        && offered.is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS))
+        && (cursor.wants_writers || log.stamps_generations()))
+    .then(|| {
+        let (runs, covered) = felix_broker::replication::writers_to_wire(&records);
+        records.truncate(covered);
+        runs
+    });
+
+    let first_offset = records
+        .first()
+        .map_or(cursor.next_offset, |record| record.offset);
     // Marks go only when there are any: an unmarked batch is byte for byte
     // what a follower that predates them reads.
     let marks: Vec<ProducerMark> = if records.iter().any(|r| r.mark != RecordMark::None) {
         records
             .iter()
-            .map(|record| felix_broker::replication::mark_to_wire(record.mark))
+            .filter_map(|record| felix_broker::replication::mark_to_wire(record.mark))
             .collect()
     } else {
         Vec::new()
@@ -341,11 +454,12 @@ async fn ship_batch<R: PeerRequester>(
         // the labels of every log a shard has.
         generations: (!cursor.legacy_frames
             && offered.is_some_and(|offered| offered.contains(labels_needed(log_kind))))
-        .then(|| crate::replica::generations_over(&log.generations(), first_offset, batch_end)),
+        .then(|| crate::replica::generations_over(&history, first_offset, batch_end)),
         publishers,
         // Sent only on a labelled batch; see `ReplicateRecords::times`.
         times,
         headers,
+        writers,
         set_generation: stamp_set(
             requester,
             offered,
@@ -354,6 +468,27 @@ async fn ship_batch<R: PeerRequester>(
         ),
     };
     carry_marks(&mut batch, log_kind, cursor.legacy_frames);
+    // What the follower checks before it trusts its copy again (replica.rs,
+    // the vouch). A follower that does not take labels, or a leader with no
+    // start recorded for its own generation, can never send a batch that
+    // vouches, so such a follower is not owed another one.
+    let carries_mark = match batch.generations.as_deref() {
+        Some(starts) => {
+            let own_start = starts
+                .iter()
+                .find(|start| start.generation == shard.generation)
+                .map(|start| start.start_offset);
+            let through_mark = batch
+                .commit_offset
+                .is_some_and(|mark| mark > 0 && mark <= batch_end)
+                && own_start.is_some_and(|start| start <= batch_end);
+            let empty = batch_end == 0 && batch.commit_offset == Some(0) && own_start == Some(0);
+            through_mark || empty
+        }
+        None => offered.is_some_and(|offered| !offered.contains(labels_needed(log_kind))),
+    } || !history
+        .iter()
+        .any(|epoch| epoch.generation == shard.generation);
     // Which log this is belongs in the message kind, not in the shard
     // reference: the bodies are identical, and a follower that guessed wrong
     // would append one of a shard's logs into another.
@@ -396,6 +531,33 @@ async fn ship_batch<R: PeerRequester>(
             .request(&cursor.node_id, cursor.addr, without_commit(request))
             .await;
     }
+    // A follower that stamps writers refuses a batch that names none. If it
+    // offers the capability, the next pass sends them; otherwise it stays
+    // behind. Said once a minute, not each pass.
+    if let Ok(InternalMessage::ReplicateError(refusal)) = &answer
+        && refusal.code == ErrorCode::UnsupportedKind
+        && refusal.detail.contains("writer_generations")
+    {
+        cursor.wants_writers |= carries_headers
+            && offered
+                .is_some_and(|offered| offered.contains(PeerCapabilities::WRITER_GENERATIONS));
+        if !cursor.wants_writers
+            && WRITER_REFUSALS_LOGGED.due(&format!(
+                "{}/{}/{}/{}/{}",
+                cursor.node_id, shard.tenant_id, shard.namespace, shard.stream, shard.shard
+            ))
+        {
+            tracing::error!(
+                node_id = %cursor.node_id,
+                stream = %shard.stream,
+                shard = shard.shard,
+                detail = %refusal.detail,
+                "the follower stamps records with their writer's generation and was sent a \
+                 batch that names none; it stays behind until the capability is negotiated",
+            );
+        }
+        metrics::record_shipped(metrics::OUTCOME_WRITERS_UNKNOWN);
+    }
     let answer = match answer {
         Ok(answer) => answer,
         Err(PeerError::Unsupported { .. }) if holds_trim => {
@@ -421,6 +583,9 @@ async fn ship_batch<R: PeerRequester>(
         Err(err) => {
             metrics::record_shipped(unreachable_outcome(&err));
             cursor.stalled = true;
+            // Silence is no refusal. `route_behind` stays: the refence it
+            // drives is only an attempt and fails by itself while unreachable.
+            cursor.refuses_leader = false;
             return Progress::Retry;
         }
     };
@@ -431,6 +596,14 @@ async fn ship_batch<R: PeerRequester>(
         &answer,
         InternalMessage::ReplicateError(err) if err.code == ErrorCode::StaleRoute
     );
+    cursor.refuses_leader = matches!(
+        &answer,
+        InternalMessage::ReplicateError(err)
+            if crate::replica::refuses_leader(err, shard.generation)
+    );
+    // Not a refusal such as a full disk or a credential: passes on every
+    // append could not move those, and would take slots from other shards.
+    cursor.refused = cursor.route_behind;
     match progress {
         Progress::Stored { durable_offset } => {
             // From the same answer as `confirmed`, so the two always agree.
@@ -442,6 +615,13 @@ async fn ship_batch<R: PeerRequester>(
             // means resuming past records neither side has checked.
             cursor.next_offset = durable_offset.min(batch_end);
             cursor.confirmed = cursor.next_offset;
+            // An empty batch goes once: a follower that answered past it
+            // holds records this leader never had, which it cannot vouch for.
+            if (durable_offset == batch_end || batch_end == 0)
+                && (carries_mark || cursor.legacy_frames)
+            {
+                cursor.mark_carried = true;
+            }
             cursor.shipped_bytes += batch_bytes as u64;
             metrics::record_shipped(metrics::OUTCOME_OK);
             // A rebuild is a full transfer, and the policy may say how fast.
@@ -461,6 +641,20 @@ async fn ship_batch<R: PeerRequester>(
         }
         Progress::Halted(halt) => {
             cursor.halted = Some(halt);
+            // Fixed at the halt, since nothing more is shipped to it. A
+            // candidate that stands again higher is met by the rename's fence.
+            cursor.fenced_by = fenced_by(&answer, shard.generation);
+            cursor.superseded_by = match &answer {
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+                    crate::replica::superseded_by(err, shard.generation)
+                }
+                _ => None,
+            };
+            cursor.assigned_newer = matches!(
+                &answer,
+                InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch
+                    && crate::replica::assigned_newer(err, shard.generation)
+            );
             tracing::error!(
                 node_id = %cursor.node_id,
                 stream = %shard.stream,
@@ -483,7 +677,7 @@ async fn ship_batch<R: PeerRequester>(
 
 /// What one exchange with a follower concluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Progress {
+pub(crate) enum Progress {
     /// The follower stored the batch and is now at this offset.
     Stored { durable_offset: u64 },
     /// The follower wants a different offset. Not an error: it is how a
@@ -501,7 +695,7 @@ pub enum Progress {
 ///
 /// Separate from the exchange so the table in this module's documentation is
 /// testable without a follower on the other end.
-pub fn read_answer(answer: &InternalMessage) -> Progress {
+pub(crate) fn read_answer(answer: &InternalMessage) -> Progress {
     match answer {
         InternalMessage::ReplicateOk(ok) => Progress::Stored {
             durable_offset: ok.durable_offset,
@@ -522,6 +716,19 @@ pub fn read_answer(answer: &InternalMessage) -> Progress {
         // is harmless and the alternative -- treating it as divergence -- would
         // stop replication over a protocol confusion.
         _ => Progress::Retry,
+    }
+}
+
+/// The ballot a follower's `FencedEpoch` refusal names: the newer
+/// generation it accepted, or `generation` when it promised that to another
+/// node.
+fn fenced_by(answer: &InternalMessage, generation: u64) -> Option<u64> {
+    match answer {
+        InternalMessage::ReplicateError(err) if err.code == ErrorCode::FencedEpoch => {
+            crate::replica::superseded_by(err, generation)
+                .or_else(|| crate::replica::promised_to(err, generation).map(|_| generation))
+        }
+        _ => None,
     }
 }
 
@@ -658,6 +865,9 @@ static TRIM_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_
 
 /// The same for the refusal to ship a record with headers.
 static HEADER_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+static KIND_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
+/// The same for a follower that wants the writers of the records it is sent.
+static WRITER_REFUSALS_LOGGED: LogLimit = LogLimit::new(std::time::Duration::from_secs(60));
 
 /// Most keys a [`LogLimit`] remembers.
 const LOG_LIMIT_KEYS: usize = 1024;
@@ -666,7 +876,7 @@ const LOG_LIMIT_KEYS: usize = 1024;
 /// follower does not hide another. Remembers at most `LOG_LIMIT_KEYS` keys.
 pub(crate) struct LogLimit {
     every: std::time::Duration,
-    last: std::sync::Mutex<Option<std::collections::HashMap<String, std::time::Instant>>>,
+    last: std::sync::Mutex<Option<felix_common::random::HashMap<String, std::time::Instant>>>,
 }
 
 impl LogLimit {

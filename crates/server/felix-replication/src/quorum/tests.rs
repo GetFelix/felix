@@ -396,6 +396,76 @@ fn cache_follower_acks_need_fenced_caches_too() {
     assert!(!marks.caches_ack_by_followers());
 }
 
+/// **A pass decides on a seeded gate only when it holds every feature the
+/// pass reads.** Before registration answers, a feature missing from the
+/// gate may be on: a stream pass reads `replica_election` and its
+/// prerequisites (`joint_fence` among them), a cache pass also `fenced_caches`.
+#[test]
+fn a_seeded_gate_decides_a_pass_only_with_every_feature_it_reads() {
+    use felix_common::fleet::{
+        FENCED_CACHES, FleetGate, JOINT_FENCE, REPLICA_ELECTION, prerequisites,
+    };
+    let election: Vec<&str> = prerequisites(REPLICA_ELECTION.name())
+        .iter()
+        .map(|feature| feature.name())
+        .chain([REPLICA_ELECTION.name()])
+        .collect();
+    let reported: Vec<&str> = election
+        .iter()
+        .copied()
+        .chain([FENCED_CACHES.name()])
+        .collect();
+    let serving = |persisted: &[&str]| {
+        QuorumMarks::with_fleet(Arc::new(FleetGate::seeded(
+            reported.iter().copied(),
+            persisted,
+        )))
+        .serving()
+    };
+
+    let all = serving(&reported);
+    assert!(all.decided(felix_router::ShardKind::Stream));
+    assert!(all.decided(felix_router::ShardKind::Cache));
+
+    let streams_only = serving(&election);
+    assert!(streams_only.decided(felix_router::ShardKind::Stream));
+    assert!(!streams_only.decided(felix_router::ShardKind::Cache));
+
+    // Follower acks are on, but `joint_fence` might be too.
+    let without_joint: Vec<&str> = reported
+        .iter()
+        .copied()
+        .filter(|name| *name != JOINT_FENCE.name())
+        .collect();
+    let partial = serving(&without_joint);
+    assert!(partial.streams_by_followers);
+    assert!(!partial.decided(felix_router::ShardKind::Stream));
+    assert!(!partial.decided(felix_router::ShardKind::Cache));
+
+    // Every prerequisite, but `replica_election` itself might be on too.
+    let without_election: Vec<&str> = reported
+        .iter()
+        .copied()
+        .filter(|name| *name != REPLICA_ELECTION.name())
+        .collect();
+    assert!(!serving(&without_election).decided(felix_router::ShardKind::Stream));
+
+    // Adopted, every pass decides, whatever is enabled.
+    let fleet = Arc::new(FleetGate::new(reported.iter().copied()));
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    assert!(!marks.serving().decided(felix_router::ShardKind::Stream));
+    fleet.restart(std::iter::empty());
+    assert!(marks.serving().decided(felix_router::ShardKind::Stream));
+    assert!(marks.serving().decided(felix_router::ShardKind::Cache));
+
+    // No fleet at all (no control plane) decides too.
+    assert!(
+        QuorumMarks::new()
+            .serving()
+            .decided(felix_router::ShardKind::Cache)
+    );
+}
+
 struct AlwaysConfirms;
 
 #[async_trait::async_trait]
@@ -429,6 +499,111 @@ fn reads_by_round_need_the_fleet_and_no_lease_opt_in() {
     assert!(
         QuorumMarks::with_fleet(fleet).reads_by_round().is_none(),
         "no round to confirm with"
+    );
+}
+
+struct NeverConfirms;
+
+#[async_trait::async_trait]
+impl LeadershipCheck for NeverConfirms {
+    async fn confirm(&self, _key: &ShardKey, _generation: u64) -> Result<(), QuorumError> {
+        Err(QuorumError::LeadershipLost {
+            what: "read",
+            detail: "a newer leader fenced the majority",
+        })
+    }
+}
+
+/// A leader that stands for election, cut off before it heard the fleet
+/// enable `lease_free_reads`, may have been replaced by an election that did
+/// not wait out its lease, so a read there needs the round as well as the
+/// lease. Its replicas refuse the round here for a newer leader, and the read
+/// with them. GetFelix/felix#2161.
+#[tokio::test]
+async fn a_read_on_a_leader_that_has_not_heard_the_fleet_needs_the_round_too() {
+    use felix_common::fleet::{
+        FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK, REPLICA_ELECTION,
+    };
+    let enabled = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let stream = key("orders");
+    let leased = Replicated { generation: 3 };
+
+    let fleet = Arc::new(FleetGate::new(
+        enabled.into_iter().chain([REPLICA_ELECTION.name()]),
+    ));
+    fleet.restart(std::iter::empty());
+    let unheard = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    unheard.set_read_check(Arc::new(NeverConfirms), false);
+    let read = confirm_state_read(&stream, Some(&unheard), Some(&leased)).await;
+    assert!(read.is_err(), "a valid lease alone confirmed the read");
+    let read = confirm_state_read(&stream, Some(&unheard), Some(&Unleased)).await;
+    assert!(
+        format!("{:#}", read.expect_err("a lapsed lease")).contains("lease"),
+        "the lease is checked first"
+    );
+
+    // Its replicas still answer it: the read stands.
+    let answered = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    answered.set_read_check(Arc::new(AlwaysConfirms), false);
+    confirm_state_read(&stream, Some(&answered), Some(&leased))
+        .await
+        .expect("lease and round both hold");
+
+    // Kept on the lease, it never reads by round, and no peer is elected
+    // past its lease: the lease decides.
+    let kept = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    kept.set_read_check(Arc::new(NeverConfirms), true);
+    confirm_state_read(&stream, Some(&kept), Some(&leased))
+        .await
+        .expect("the operator kept reads on the lease");
+
+    // Once heard, the round alone decides.
+    fleet.observe(enabled);
+    confirm_state_read(&stream, Some(&answered), Some(&Unleased))
+        .await
+        .expect("by round, the lease is not asked");
+    assert!(
+        confirm_state_read(&stream, Some(&unheard), Some(&leased))
+            .await
+            .is_err()
+    );
+}
+
+/// A broker that does not stand for election cannot be elected past while it
+/// holds its lease: the control plane refuses `replica_election` while it is
+/// live. Until it hears `lease_free_reads`, the lease alone decides.
+#[tokio::test]
+async fn a_leader_that_does_not_stand_for_election_reads_on_its_lease_until_it_hears() {
+    use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
+    let names = [
+        GENERATION_START.name(),
+        MAJORITY_ACK.name(),
+        LEASE_FREE_READS.name(),
+    ];
+    let stream = key("orders");
+    let fleet = Arc::new(FleetGate::new(names));
+    fleet.restart(std::iter::empty());
+    let marks = QuorumMarks::with_fleet(Arc::clone(&fleet));
+    marks.set_read_check(Arc::new(NeverConfirms), false);
+    confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
+        .await
+        .expect("the lease decides; no round is asked");
+    assert!(
+        confirm_state_read(&stream, Some(&marks), Some(&Unleased))
+            .await
+            .is_err()
+    );
+
+    fleet.observe(names);
+    assert!(
+        confirm_state_read(&stream, Some(&marks), Some(&Replicated { generation: 3 }))
+            .await
+            .is_err(),
+        "once heard, the round decides"
     );
 }
 
@@ -691,6 +866,10 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
             Some(&Unleased),
             QUICK,
             Access::Write,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
         )
         .await;
         let add = await_counter_quorum(
@@ -700,12 +879,257 @@ async fn cache_and_counter_acks_skip_the_lease_where_followers_decide_the_mark()
             Some(&Unleased),
             QUICK,
             Some(1),
+            3,
             "counter add",
         )
         .await;
         assert_eq!(write.is_ok(), by_followers, "put: {write:?}");
         assert_eq!(add.is_ok(), by_followers, "add: {add:?}");
     }
+}
+
+/// A shard this broker leads at a set generation, with the lease.
+struct LeadsAt(u64);
+
+impl ShardServing for LeadsAt {
+    fn replicated(&self, _key: &ShardKey) -> bool {
+        true
+    }
+
+    fn generation(&self, _key: &ShardKey) -> Option<u64> {
+        Some(self.0)
+    }
+
+    fn lease_valid(&self) -> bool {
+        true
+    }
+
+    fn record_ack_refusal(&self) {}
+}
+
+/// **A cache put and a counter add written at one generation and waited out
+/// at a newer one are acknowledged only while the log still holds them at
+/// theirs** (#2048). Once another leader's records replace them, as a
+/// promotion's catch-up does, the newer mark passing their offset says
+/// nothing about them.
+#[tokio::test]
+async fn cache_and_counter_waits_at_a_newer_generation_check_the_log_still_holds_the_write() {
+    use felix_broker::LogKind;
+    use felix_storage::log::Epoch;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    broker
+        .cache()
+        .put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            "k",
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+        .await
+        .expect("put");
+    let (_, offset) = broker
+        .counters()
+        .expect("counters")
+        .add("t1", "ns", "sessions", 0, "n", 1)
+        .await
+        .expect("add");
+    let mut logs = Vec::new();
+    for kind in [LogKind::Cache, LogKind::Counters] {
+        let log = broker
+            .shard_log(kind, "t1", "ns", "sessions", 0)
+            .await
+            .expect("log");
+        log.record_generation(3, 0).expect("generation");
+        logs.push(log);
+    }
+    let marks = QuorumMarks::new();
+    marks.publish(&cache, 5, 1 << 20);
+    marks.counters().publish(&cache, 5, 1 << 20);
+    let waits = || async {
+        let put = await_cache_quorum(
+            &broker,
+            &cache,
+            Some(&marks),
+            Some(&LeadsAt(5)),
+            QUICK,
+            Access::Write,
+            Some(CacheWrite {
+                generation: 3,
+                from: 0,
+            }),
+        )
+        .await;
+        let add = await_counter_quorum(
+            &broker,
+            &cache,
+            Some(&marks),
+            Some(&LeadsAt(5)),
+            QUICK,
+            Some(offset + 1),
+            3,
+            "counter add",
+        )
+        .await;
+        (put, add)
+    };
+
+    let (put, add) = waits().await;
+    put.expect("the cache log still holds the put at 3");
+    add.expect("the counter log still holds the add at 3");
+
+    for log in &logs {
+        log.truncate(0).await.expect("truncate");
+        log.append(&[bytes::Bytes::from_static(b"other")])
+            .await
+            .expect("append");
+        log.label_generations(
+            0,
+            &[Epoch {
+                generation: 4,
+                start_offset: 0,
+            }],
+        )
+        .expect("label");
+    }
+    let (put, add) = waits().await;
+    for (what, result) in [("put", put), ("add", add)] {
+        let err = result.expect_err(what);
+        assert!(
+            matches!(
+                err.downcast_ref::<QuorumError>(),
+                Some(QuorumError::LeadershipLost { .. })
+            ),
+            "{what}: {err:?}"
+        );
+    }
+}
+
+/// **A cache put cut before the wait reads the tail is not acknowledged.**
+/// A promotion's catch-up can truncate the put between its write and the
+/// tail the wait reads, which then ends below it. The tail read before the
+/// put is where the put starts, so a tail that never got past it means the
+/// put is gone, however the record below is labelled.
+#[tokio::test]
+async fn a_cache_put_cut_before_its_wait_reads_the_tail_is_not_acknowledged() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    let cache = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let put = |key: &'static str| {
+        broker.cache().put(
+            "t1",
+            "ns",
+            "sessions",
+            0,
+            key,
+            bytes::Bytes::from_static(b"v"),
+            None,
+        )
+    };
+    put("before").await.expect("put");
+    let log = broker
+        .shard_log(felix_broker::LogKind::Cache, "t1", "ns", "sessions", 0)
+        .await
+        .expect("log");
+    log.record_generation(3, 0).expect("generation");
+    let marks = QuorumMarks::new();
+    let at = cache_write_at(&broker, &cache, 3, Some(&marks), Some(&LeadsAt(5)))
+        .await
+        .expect("a quorum write");
+    put("k").await.expect("put");
+    assert!(log.tail_offset().await.expect("tail") > at.from);
+    log.truncate(at.from).await.expect("truncate");
+
+    marks.publish(&cache, 5, 1 << 20);
+    let err = await_cache_quorum(
+        &broker,
+        &cache,
+        Some(&marks),
+        Some(&LeadsAt(5)),
+        QUICK,
+        Access::Write,
+        Some(at),
+    )
+    .await
+    .expect_err("the put was cut");
+    assert!(
+        matches!(
+            err.downcast_ref::<QuorumError>(),
+            Some(QuorumError::LeadershipLost { .. })
+        ),
+        "{err:?}"
+    );
+}
+
+/// A cache write that waits for no replicated quorum reads no tail: a broker
+/// with no replica set, a shard placed with none, or a `Leader` cache.
+#[tokio::test]
+async fn a_cache_write_with_no_quorum_to_wait_for_reads_no_tail() {
+    struct Unreplicated;
+    impl ShardServing for Unreplicated {
+        fn replicated(&self, _key: &ShardKey) -> bool {
+            false
+        }
+        fn generation(&self, _key: &ShardKey) -> Option<u64> {
+            Some(3)
+        }
+        fn lease_valid(&self) -> bool {
+            true
+        }
+        fn record_ack_refusal(&self) {}
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = quorum_cache_broker(dir.path()).await;
+    broker
+        .register_cache(
+            "t1",
+            "ns",
+            "plain",
+            felix_broker::CacheMetadata {
+                consistency: felix_broker::ConsistencyLevel::Leader,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("cache");
+    let quorum = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("sessions")
+    };
+    let leader = ShardKey {
+        kind: crate::ShardKind::Cache,
+        ..key("plain")
+    };
+    let marks = QuorumMarks::new();
+    assert_eq!(
+        cache_write_at::<LeadsAt>(&broker, &quorum, 3, None, None).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&Unreplicated)).await,
+        None
+    );
+    assert_eq!(
+        cache_write_at(&broker, &leader, 3, Some(&marks), Some(&LeadsAt(3))).await,
+        None
+    );
+    assert!(
+        cache_write_at(&broker, &quorum, 3, Some(&marks), Some(&LeadsAt(3)))
+            .await
+            .is_some()
+    );
 }
 
 /// **A stall logs once per shard per window, not once per publish.** Every
@@ -804,4 +1228,57 @@ fn an_unreported_feature_is_decided_off_before_registration() {
     assert_eq!(with.fleet_decides(JOINT_FENCE), None);
     fleet.restart([JOINT_FENCE.name()]);
     assert_eq!(with.fleet_decides(JOINT_FENCE), Some(true));
+}
+
+/// **A readmission counts only on a broker that knows the fleet has not
+/// finalized `replica_election`**: not before a registration answers, and not
+/// once it is finalized.
+#[test]
+fn a_readmission_counts_only_while_the_fleet_rules_out_elections() {
+    use felix_common::fleet::{FleetGate, REPLICA_ELECTION};
+    assert!(QuorumMarks::new().readmission_counts(), "no fleet");
+    let unregistered = FleetGate::new([REPLICA_ELECTION.name()]);
+    let unregistered = QuorumMarks::with_fleet(Arc::new(unregistered));
+    assert!(
+        !unregistered.readmission_counts(),
+        "no registration answer yet"
+    );
+    let off = FleetGate::new([REPLICA_ELECTION.name()]);
+    off.restart([]);
+    assert!(
+        QuorumMarks::with_fleet(Arc::new(off)).readmission_counts(),
+        "not finalized"
+    );
+    let on = FleetGate::new([REPLICA_ELECTION.name()]);
+    on.restart([REPLICA_ELECTION.name()]);
+    assert!(
+        !QuorumMarks::with_fleet(Arc::new(on)).readmission_counts(),
+        "finalized"
+    );
+}
+
+fn routed(stream: &str) -> felix_router::ShardKey {
+    felix_router::ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: stream.to_string(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    }
+}
+
+/// A copy a leader shipped level this run is not untrusted for being
+/// unclean-started, even once its log is closed and only the set remembers.
+#[test]
+fn a_copy_shipped_level_after_an_unclean_start_is_not_surely_untrusted() {
+    let marks = QuorumMarks::new();
+    assert!(!marks.surely_untrusted(&routed("orders")), "clean start");
+
+    let unclean = Arc::new(crate::unclean::UncleanStart::new("n1"));
+    marks.set_unclean_start(Arc::clone(&unclean));
+    assert!(marks.surely_untrusted(&routed("orders")), "not shipped yet");
+
+    unclean.trust(&crate::driver::watch_key(&routed("orders")));
+    assert!(!marks.surely_untrusted(&routed("orders")), "shipped level");
+    assert!(marks.surely_untrusted(&routed("other")), "another shard");
 }

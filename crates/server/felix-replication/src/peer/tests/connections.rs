@@ -206,6 +206,25 @@ fn reconnect_backoff_grows_and_is_jittered() {
     );
 }
 
+/// **A simulated redial backoff repeats for one seed.** The jitter comes from
+/// the simulator's generator, so a replay waits the same times.
+#[test]
+fn a_seeded_backoff_repeats() {
+    let delays = |seed| {
+        std::thread::spawn(move || {
+            felix_common::jitter::sim::seed(seed);
+            let config = PeerTransportConfig::default();
+            (0..16)
+                .map(|n| config.reconnect_delay(n % 6))
+                .collect::<Vec<_>>()
+        })
+        .join()
+        .unwrap()
+    };
+    assert_eq!(delays(5), delays(5));
+    assert_ne!(delays(5), delays(6));
+}
+
 /// **A peer connection gives up before a request on it does.** A broker that
 /// was killed leaves its peers holding connections nothing will tear down; if
 /// QUIC outlasts the request timeout, every forwarded publish and every

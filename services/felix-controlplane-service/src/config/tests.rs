@@ -6,29 +6,16 @@ use tempfile::TempDir;
 
 use super::*;
 
-/// Names the pg-test harness uses to find its database.
-///
-/// `FELIX_CONTROLPLANE_POSTGRES_URL` and `DATABASE_URL` are also real
-/// configuration, so they are cleared like anything else and restored on
-/// drop. `FELIX_TEST_DATABASE_URL` is only ever harness plumbing, so
-/// clearing it would be wrong even momentarily.
-const HARNESS_ONLY_ENV: &str = "FELIX_TEST_DATABASE_URL";
-
 /// Clears the config environment for the life of the returned guard.
 ///
-/// Restoring matters beyond tidiness: these tests share a process with the
-/// pg-test helpers, which read `FELIX_TEST_DATABASE_URL` and friends to find
-/// their database. Clearing without restoring left every pg test that
-/// happened to run afterwards silently falling back to spawning a Docker
-/// container -- flaky, and it leaked the container.
+/// Restoring matters beyond tidiness: other tests in the process read
+/// `FELIX_*` variables, and clearing without restoring would change what they
+/// see.
 #[must_use]
 fn clear_felix_env() -> EnvRestore {
     let mut cleared = Vec::new();
     for (key, value) in env::vars() {
-        if key == HARNESS_ONLY_ENV {
-            continue;
-        }
-        if key.starts_with("FELIX_") || key == "DATABASE_URL" {
+        if key.starts_with("FELIX_") {
             unsafe {
                 env::remove_var(&key);
             }
@@ -47,7 +34,7 @@ struct EnvRestore {
 impl Drop for EnvRestore {
     fn drop(&mut self) {
         for (key, _) in env::vars() {
-            if key != HARNESS_ONLY_ENV && (key.starts_with("FELIX_") || key == "DATABASE_URL") {
+            if key.starts_with("FELIX_") {
                 unsafe {
                     env::remove_var(&key);
                 }
@@ -437,6 +424,7 @@ fn shard_move_pacing_comes_from_the_environment() {
         env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
+        env::set_var("FELIX_SHARD_STUCK_LEADER_MS", "0");
         env::set_var("FELIX_SHARD_PENDING_SET_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_ELECTION_HOLD_MS", "0");
         env::set_var("FELIX_PLACEMENT_SETTLE_MS", "0");
@@ -450,6 +438,7 @@ fn shard_move_pacing_comes_from_the_environment() {
     assert_eq!(config.fence_max_lag_records, 0);
     assert_eq!(config.timeout_millis, None);
     assert_eq!(config.restore_stall_millis, None);
+    assert_eq!(config.stuck_leader_millis, None);
     assert_eq!(config.pending_set_timeout_millis, None);
     assert_eq!(config.election_hold_millis, None);
 
@@ -483,20 +472,25 @@ fn from_env_rejects_invalid_socket_addr() {
     let _env = clear_felix_env();
 }
 
+/// A leftover Postgres setting must stop startup, not fall back to an empty
+/// in-memory store.
 #[serial]
 #[test]
-fn from_env_activates_postgres_when_url_present() {
-    let _env = clear_felix_env();
-    unsafe {
-        env::set_var(
+fn from_env_refuses_the_removed_postgres_settings() {
+    for (key, value) in [
+        (
             "FELIX_CONTROLPLANE_POSTGRES_URL",
             "postgres://localhost/test",
-        );
+        ),
+        ("FELIX_CONTROLPLANE_STORAGE_BACKEND", "postgres"),
+    ] {
+        let _env = clear_felix_env();
+        unsafe {
+            env::set_var(key, value);
+        }
+        let err = ControlPlaneConfig::from_env().expect_err(key);
+        assert!(err.to_string().contains("Postgres"), "{key}: {err}");
     }
-    let config = ControlPlaneConfig::from_env().expect("from_env");
-    assert!(matches!(config.storage, StorageBackend::Postgres));
-    assert!(config.postgres.is_some());
-    let _env = clear_felix_env();
 }
 
 #[serial]
@@ -674,6 +668,7 @@ shard_move_fence_max_lag_records: 500
 shard_move_timeout_ms: 60000
 shard_restore_after_ms: 90000
 shard_restore_stall_ms: 45000
+shard_stuck_leader_ms: 90000
 oidc_allowed_algorithms: ["ES256", "RS256"]
 node_liveness:
   heartbeat_interval_ms: 1100
@@ -718,6 +713,7 @@ bootstrap:
                 timeout_millis: Some(60_000),
                 restore_after_millis: Some(90_000),
                 restore_stall_millis: Some(45_000),
+                stuck_leader_millis: Some(90_000),
                 paused: false,
                 ..Default::default()
             }
@@ -739,53 +735,26 @@ bootstrap:
         assert_eq!(config.changes_limit, changes_limit);
     }
 
-    /// **Naming a postgres block selects postgres.** Writing a database URL
-    /// and still running against memory would look like a control plane
-    /// that had lost every registration on restart.
-    #[serial]
+    /// A `postgres:` block is an unknown key, so a config written for the
+    /// removed backend is refused rather than starting an empty store.
     #[test]
-    fn a_postgres_block_selects_the_postgres_backend() {
-        let (mut config, _restore) = base();
-        assert!(matches!(config.storage, StorageBackend::Memory));
-
-        config
-            .apply(parse(
-                r#"
-postgres:
-  url: "postgres://localhost/felix"
-  max_connections: 12
-  connect_timeout_ms: 3000
-  acquire_timeout_ms: 4000
-"#,
-            ))
-            .expect("apply");
-
-        assert!(matches!(config.storage, StorageBackend::Postgres));
-        let pg = config.postgres.expect("postgres config");
-        assert_eq!(pg.url, "postgres://localhost/felix");
-        assert_eq!(pg.max_connections, 12);
-        assert_eq!(pg.connect_timeout_ms, 3000);
-        assert_eq!(pg.acquire_timeout_ms, 4000);
+    fn a_postgres_block_is_refused() {
+        assert!(
+            felix_common::yaml::from_str::<ControlPlaneConfigOverride>(
+                "postgres:\n  url: \"postgres://localhost/felix\"\n"
+            )
+            .is_err()
+        );
     }
 
-    /// An explicit backend is not overridden by supplying connection
-    /// details. Only an unset (memory) backend is inferred from them.
     #[serial]
     #[test]
-    fn an_explicitly_chosen_backend_survives_a_postgres_block() {
+    fn the_postgres_backend_name_is_refused() {
         let (mut config, _restore) = base();
-        config
-            .apply(parse(
-                r#"
-storage:
-  backend: "postgres"
-postgres:
-  url: "postgres://localhost/felix"
-"#,
-            ))
-            .expect("apply");
-
-        assert!(matches!(config.storage, StorageBackend::Postgres));
+        let err = config
+            .apply(parse("storage:\n  backend: \"postgres\"\n"))
+            .expect_err("removed backend");
+        assert!(err.to_string().contains("Postgres"), "{err}");
     }
 
     /// A zero drain budget means "cancel everything immediately", which is
@@ -866,79 +835,23 @@ postgres:
 }
 
 /// `Debug` on the config is what ends up in a startup log or a panic message,
-/// so it must not carry the database password or the bootstrap tokens.
-mod debug_redaction {
-    use super::storage::redact_postgres_url;
-    use super::*;
+/// so it must not carry the bootstrap tokens.
+#[serial]
+#[test]
+fn debug_hides_the_bootstrap_tokens() {
+    let restore = clear_felix_env();
+    let mut config = ControlPlaneConfig::from_env().expect("config");
+    drop(restore);
+    config.bootstrap.token = Some("boot-current-token".into());
+    config.bootstrap.previous_token = Some("boot-previous-token".into());
 
-    #[serial]
-    #[test]
-    fn debug_hides_the_postgres_password_and_bootstrap_tokens() {
-        let restore = clear_felix_env();
-        let mut config = ControlPlaneConfig::from_env().expect("config");
-        drop(restore);
-        config.postgres = Some(PostgresConfig {
-            url: "postgres://felix:pg-s3cret@db.internal:5432/felix?password=pg-other".into(),
-            ..PostgresConfig::default()
-        });
-        config.bootstrap.token = Some("boot-current-token".into());
-        config.bootstrap.previous_token = Some("boot-previous-token".into());
-
-        let printed = format!("{config:?}");
-        for (what, secret) in [
-            ("the URL password", "pg-s3cret"),
-            ("the password= parameter", "pg-other"),
-            ("the bootstrap token", "boot-current-token"),
-            ("the previous bootstrap token", "boot-previous-token"),
-        ] {
-            // Name the field, not the value: a failure message is a log too.
-            assert!(!printed.contains(secret), "{what} leaked into Debug");
-        }
-        // Still useful for debugging: where it connects, and as whom.
-        assert!(
-            printed.contains("felix:<redacted>@db.internal:5432/felix"),
-            "the redacted URL should keep the user, host and database"
-        );
-    }
-
-    #[test]
-    fn a_postgres_url_keeps_everything_but_the_password() {
-        for (url, want) in [
-            (
-                "postgres://felix:secret@db:5432/felix",
-                "postgres://felix:<redacted>@db:5432/felix",
-            ),
-            (
-                "postgresql://felix@db/felix?sslmode=require",
-                "postgresql://felix@db/felix?sslmode=require",
-            ),
-            (
-                "postgres://db/felix?sslmode=require&PASSWORD=secret&user=felix",
-                "postgres://db/felix?sslmode=require&PASSWORD=<redacted>&user=felix",
-            ),
-            ("postgres://db/felix", "postgres://db/felix"),
-            ("", ""),
-        ] {
-            assert_eq!(redact_postgres_url(url), want, "{url}");
-        }
-    }
-
-    /// Unencoded `@` and `/` in a password are invalid, but an operator can
-    /// still write them, and the redaction must not stop short of the host.
-    #[test]
-    fn a_password_with_reserved_characters_is_still_hidden() {
-        let redacted = redact_postgres_url("postgres://felix:se/cr@t@db:5432/felix");
-        assert_eq!(redacted, "postgres://felix:<redacted>@db:5432/felix");
-    }
-
-    /// A key/value connection string can put the password anywhere, so it is
-    /// withheld whole.
-    #[test]
-    fn a_non_url_connection_string_is_withheld() {
-        assert_eq!(
-            redact_postgres_url("host=db user=felix password=secret"),
-            "<redacted>"
-        );
+    let printed = format!("{config:?}");
+    for (what, secret) in [
+        ("the bootstrap token", "boot-current-token"),
+        ("the previous bootstrap token", "boot-previous-token"),
+    ] {
+        // Name the field, not the value: a failure message is a log too.
+        assert!(!printed.contains(secret), "{what} leaked into Debug");
     }
 }
 
@@ -986,7 +899,6 @@ fn yaml_1_1_spellings_merge_keys_and_null_paths_are_refused() {
         "bootstrap:\n  enabled: on\n",
         "bootstrap:\n  dev_tokens: yes\n",
         "<<: {changes_limit: 5}\n",
-        "postgres:\n  max_connections: 010\n",
         "tls:\n  cert_path: ~\n  key_path: k\n",
         "tls:\n  cert_path:\n  key_path: k\n",
         "storage:\n  backend: memory\n  backend: postgres\n",

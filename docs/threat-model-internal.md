@@ -1,7 +1,7 @@
 # Threat model: the broker-internal surface
 
-For [#128](https://github.com/GetFelix/felix/issues/128). Covers the M4 forwarding
-and M5 replication paths as they exist today, and says which controls are
+For [#128](https://github.com/GetFelix/felix/issues/128). Covers the forwarding
+and replication paths as they exist today, and says which controls are
 **present**, which are **absent**, and which are **absent by design pending a
 named issue**.
 
@@ -23,8 +23,8 @@ It accepts four families of request:
 
 ## Trust boundary
 
-**There is none yet.** This is the single most important fact in this document
-and everything below follows from it.
+**mTLS is optional, and without it the network is the boundary.** This is the
+single most important fact in this document and everything below follows from it.
 
 The listener applies three defences, and `server.rs` is explicit that none of
 them is authentication:
@@ -160,14 +160,17 @@ than pulls. There is no amplification vector of note.
 
 Nothing in the protocol is nonce-protected. What limits replay is that the
 operations are close to idempotent: a replayed `ReplicateRecords` is compared
-against stored bytes and answered as a retry; a replayed `ForwardPublish`
-**is not**. It appends again, because publishes are not deduplicated.
+against stored bytes and answered as a retry; a replayed plain
+`ForwardPublish` **is not**. It appends again.
 
-Idempotent producers (#422) shipped, but on the client-to-broker path only:
-`ForwardPublish` carries no producer id or sequence, so the owner has nothing to
-deduplicate against and a replayed forwarded publish still duplicates records.
-That is within the delivery guarantee Felix documents (`AtLeastOnce`) but is a
-capability an attacker has for free.
+Idempotent producers (#422) cover forwarding too. A forward that carries a
+producer id and sequence travels as `SequencedForwardPublish` to an owner that
+advertised `SEQUENCED_FORWARDS`, and the owner deduplicates it exactly as it
+does a direct publish, so a replay of one is recognised and not written again.
+What stays open is a plain, non-idempotent forward: it has nothing to
+deduplicate against, so a replay still duplicates records. That is within the
+delivery guarantee Felix documents (`AtLeastOnce`) but is a capability an
+attacker has for free.
 
 ### 8. Stream exhaustion and malformed payloads: **mitigated**
 
@@ -185,7 +188,7 @@ the connection. Neither leaves the reader mid-frame.
 | 4 | Memory exhaustion via lengths | Mitigated | None |
 | 5 | Connection exhaustion | Mitigated: accept-side caps, total and per source (#504) | None |
 | 6 | Amplification | Low | None |
-| 7 | Replay of a forwarded publish | **Unmitigated**: #422 covers the client-to-broker path only | Producer identity on `ForwardPublish` |
+| 7 | Replay of a forwarded publish | Mitigated for idempotent producers (`SequencedForwardPublish`, deduplicated by the owner); **unmitigated** for plain forwards | None |
 | 8 | Malformed frames | Mitigated | None |
 
 ## Residual risk and operating assumptions
@@ -211,4 +214,5 @@ unencrypted cluster-internal link"*. Both halves are satisfied for a cluster tha
 configures certificates: QUIC requires TLS, so the link was never unencrypted,
 and #125 closed authentication. It is **not** satisfied by default. Without the
 three variables the peer link is still encrypted but unauthenticated, which is
-why startup warns and why every case above is written against both modes.
+why a broker refuses to start without
+`FELIX_INTERNAL_ALLOW_UNAUTHENTICATED=true` and why every case above is written against both modes.

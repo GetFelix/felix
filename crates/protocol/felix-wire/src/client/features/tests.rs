@@ -487,6 +487,7 @@ fn publish_width_is_the_third_extended_bit() {
             & !(crate::FEATURE_EXPLICIT_SHARD
                 | crate::FEATURE_HEAD_TRIM
                 | crate::FEATURE_LEASE_TOKEN
+                | crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION
                 | crate::FEATURE_SUBSCRIBE_END),
         crate::FEATURE_INSPECT | crate::FEATURE_STREAM_DELETED | crate::FEATURE_PUBLISH_WIDTH
     );
@@ -521,6 +522,7 @@ fn head_trim_is_the_fifth_extended_bit() {
             | crate::FEATURE_EXPLICIT_SHARD
             | crate::FEATURE_HEAD_TRIM
             | crate::FEATURE_LEASE_TOKEN
+            | crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION
             | crate::FEATURE_SUBSCRIBE_END
     );
     assert_eq!(
@@ -541,11 +543,30 @@ fn lease_token_is_the_sixth_extended_bit() {
     );
 }
 
-/// A bounded subscription is the seventh extended bit, in the second word
+/// Answers on completion are the seventh extended bit, in the second word
+/// only, so a client that offered none is never told about them.
+#[test]
+fn publish_answer_on_completion_is_the_seventh_extended_bit() {
+    assert_eq!(crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION, 0x0000_0040);
+    assert_ne!(
+        crate::KNOWN_FEATURES_HI & crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+        0
+    );
+    assert_eq!(
+        crate::answer_features(
+            crate::KNOWN_FEATURES,
+            crate::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+            0
+        ),
+        (crate::KNOWN_FEATURES, None)
+    );
+}
+
+/// A bounded subscription is the eighth extended bit, in the second word
 /// only, so a client that offered none is never told about it.
 #[test]
-fn subscribe_end_is_the_seventh_extended_bit() {
-    assert_eq!(crate::FEATURE_SUBSCRIBE_END, 0x0000_0040);
+fn subscribe_end_is_the_eighth_extended_bit() {
+    assert_eq!(crate::FEATURE_SUBSCRIBE_END, 0x0000_0080);
     assert_ne!(crate::KNOWN_FEATURES_HI & crate::FEATURE_SUBSCRIBE_END, 0);
     assert_eq!(
         crate::answer_features(crate::KNOWN_FEATURES, crate::FEATURE_SUBSCRIBE_END, 0),

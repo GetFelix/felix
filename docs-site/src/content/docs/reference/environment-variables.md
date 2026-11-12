@@ -258,7 +258,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 ```
 
 **Usage**:
-- Also where `felix-controlplane admin` sends its requests, unless `--url` is given (default `http://127.0.0.1:8443`)
+- Also where `felixctl` sends its control-plane commands, unless `--controlplane-url` or a context sets it
 - Include scheme (`http://` or `https://`). Over `http://`, node credentials,
   token exchange and tenant JWKS cross the network in clear text. Use
   `https://` anywhere the network is not trusted.
@@ -267,7 +267,7 @@ export FELIX_CONTROLPLANE_URL="https://cp.example.com:8443"
 
 **Description**: PEM CA bundle trusted, in addition to the system trust store, when
 `FELIX_CONTROLPLANE_URL` is `https://`. Read by brokers and by
-`felix-controlplane admin`.
+`felixctl`.
 
 **Type**: File path
 
@@ -298,6 +298,46 @@ interval.
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="2000"
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="500"   # Fast polling
 export FELIX_CONTROLPLANE_SYNC_INTERVAL_MS="10000" # Slow polling
+```
+
+### `FELIX_START_WITHOUT_CONTROLPLANE`
+
+**Description**: Lets a cluster member with durable storage start while the
+control plane is down, from the control-plane view kept in its data
+directory, so it rejoins its shards' elections during the outage. It votes
+and follows its shards' leaders, but stands for election and serves clients
+only once it registers. Used
+only when the startup lookup found the control plane down (no answer or a
+5xx, never a 401 or another 4xx) and the directory qualifies; otherwise the
+broker waits for the control plane as it does with the switch off. The
+directory qualifies only after a restart on the same machine in the same
+boot (Linux only): a reboot, a new machine or pod, or a directory restored
+from a copy waits. See
+[Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down).
+
+**Type**: Boolean (`true`, `1`, `yes` or `on`)
+
+**Default**: `false`
+
+**Example**:
+```bash
+export FELIX_START_WITHOUT_CONTROLPLANE="true"
+```
+
+### `FELIX_CONTROLPLANE_STARTUP_WAIT_MS`
+
+**Description**: How long the startup lookup asks the control plane before a
+broker with `FELIX_START_WITHOUT_CONTROLPLANE` on starts from its view. Each
+attempt gets at least one second. Has no effect with the switch off, where
+the broker asks until the control plane answers.
+
+**Type**: Unsigned integer (milliseconds)
+
+**Default**: `10000`
+
+**Example**:
+```bash
+export FELIX_CONTROLPLANE_STARTUP_WAIT_MS="10000"
 ```
 
 ## Lease Tokens
@@ -1166,8 +1206,8 @@ export FELIX_PUB_STREAMS_PER_CONN="4"  # More concurrency
 
 **Description**: Most publish streams a client opens per broker for one shard
 each, beside the pooled ones (client). Each publish goes on its shard's own
-stream, so a stalled shard holds up only itself and one stream's shards
-spread over the client's connections. Shards past the cap share the pool.
+stream, so a stalled shard uses up only its own publish window and one
+stream's shards spread over the client's connections. Shards past the cap share the pool.
 `0` turns them off, which puts every publish to a stream on one pooled
 stream.
 
@@ -1175,7 +1215,11 @@ stream.
 
 **Default**: `4`. The first four shards the client publishes to on a broker
 (first come, across all streams) get their own stream; later shards use the
-pool, where a stalled shard can hold up the other pooled shards. To isolate
+pool, where a stalled shard takes slots from the pooled stream's publish
+window. When the broker also grants `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, it
+answers plain acked publishes as they complete, so the stalled shard's answers
+do not hold back the others'. An older broker that grants a window keeps
+request order, and there they do. To isolate
 every shard, set it to the total number of shards the client publishes to on a
 broker, at some throughput cost when keys spread over many shards.
 
@@ -1357,7 +1401,7 @@ export FELIX_BROKER_PUB_STREAM_RECV_WINDOW="4194304"
 
 ### `FELIX_BROKER_PUBLISH_WINDOW`
 
-**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them, and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
+**Description**: The most acknowledged publishes one stream may have unanswered when its client pipelines them (`FEATURE_PUBLISH_PIPELINE`). The broker grants this number in `AuthOk.publish_window`, answers a pipelining stream's publishes in the order it sent them (only its idempotent ones, for a client that offered `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`, which the Rust client does), and stops reading that stream's publishes while this many are outstanding on it. Each stream has its own window, so one stuck behind a stalled shard does not stall the others on its connection. A connection's outstanding publishes therefore scale with its streams (up to QUIC's 1024) times this window; the payload bytes the broker holds for one connection stay under `FELIX_BROKER_PUBLISH_CONN_INFLIGHT_BYTES`. `0` turns pipelining off: no client is granted a window, and acks come back in completion order.
 
 **Type**: Non-negative integer
 
@@ -1573,7 +1617,7 @@ tasks it creates. A sweep of listener counts or broker settings from one
 generator process comes back flat whether or not the change works.
 
 To measure transport scaling, generate load from several processes (on
-Linux, from separate machines), as `scripts/perf/azure` does. Linux defaults
+Linux, from separate machines), as `scripts/perf/cloud` does. Linux defaults
 this pool to `0`, so the cap does not apply there.
 :::
 
@@ -2249,13 +2293,9 @@ absent. They are listed in that script rather than here.
 | `FELIX_CONTROLPLANE_API_UI_PATH` | `/api` | Where the reference page is served. A plain path that is not under `/v1`. Read only when the page is on. Config file key: `api_ui_path`. |
 | `FELIX_CONTROLPLANE_METRICS_BIND` | `0.0.0.0:8080` | Separate address for the metrics endpoint. |
 | `FELIX_CONTROLPLANE_CONFIG` | unset | Path to a YAML config file. Values in the file override the environment. |
-| `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory`, `postgres` or `raft`. Unset, it is `postgres` when `FELIX_CONTROLPLANE_POSTGRES_URL` is set, `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. An unrecognised value is treated as unset. |
-| `FELIX_CONTROLPLANE_POSTGRES_URL` | unset | Connection string. Required when the backend is `postgres`. |
-| `FELIX_CONTROLPLANE_POSTGRES_MAX_CONNECTIONS` | `10` | Pool size. Caps concurrent database work. |
-| `FELIX_CONTROLPLANE_POSTGRES_CONNECT_TIMEOUT_MS` | `5000` | Bounds establishing a new physical connection. |
-| `FELIX_CONTROLPLANE_POSTGRES_ACQUIRE_TIMEOUT_MS` | `5000` | Bounds waiting for a pooled connection before failing fast. |
+| `FELIX_CONTROLPLANE_STORAGE_BACKEND` | inferred | `memory` or `raft`. Unset, it is `raft` when `FELIX_RAFT_NODE_ID`, `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_PEERS` are set, and `memory` otherwise. `memory` loses everything on restart. The removed `postgres` value, like `FELIX_CONTROLPLANE_POSTGRES_URL` being set at all, stops startup with an error; any other unrecognised value is treated as unset. |
 | `FELIX_CONTROLPLANE_CHANGES_LIMIT` | `1000` | Maximum changes returned by one changefeed page. |
-| `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the append-only change tables. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
+| `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` | `10000` | Bounds the retained change feeds. Smaller means a watcher can fall behind sooner and need a fresh snapshot. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` | `ES256,RS256` | Comma-separated JWS algorithms accepted from an upstream IdP: any of `ES256`, `RS256`, `RS384`, `RS512`, `PS256`, `PS384`, `PS512`. Setting it replaces the default, so it can narrow it. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP` | `false` | Allow plain-HTTP IdP discovery and JWKS URLs on any host. Without it only `https` is accepted, plus `http` on a loopback host. For development: a JWKS fetched over plain HTTP can be replaced in transit, and whoever replaces it can mint tokens for the tenant. Also implies `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP`. |
 | `FELIX_CONTROLPLANE_OIDC_ALLOW_PRIVATE_IDP` | `false` | Allow IdP discovery and JWKS URLs that are, or resolve to, private, link-local or unique-local addresses. Without it those are refused (loopback is always allowed), so an issuer config cannot make the control plane fetch from internal services or a cloud metadata endpoint. |
@@ -2349,6 +2389,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | `600000` | Under `replica_election`, a cut-over's new replica set that the leader has not reported on both sets this long after placement saw it is dropped, and the old set stays at a new generation. `0` waits forever. |
 | `FELIX_SHARD_FENCE_TIMEOUT_MS` | `120000` | A fenced leader that has not reported drained this long after placement saw the fence gets the shard back at a new generation, holding every write it accepted, and the move is given up. Without it a leader that never drains keeps its shard without writes. The shard's next move waits this long, doubling with each give-up in a row up to an hour. `0` waits forever. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone, or its copy reported halted by its leader, before placement replaces the copy on another live broker, bringing the shard back to its replication factor. Keep it above the longest broker restart. `0` never replaces a lost or halted follower; a replica set left short of its factor by a failover is still topped up. |
+| `FELIX_SHARD_STUCK_LEADER_MS` | `70000` | How long the leader of a `Quorum` shard with followers may show no progress at its generation while its broker is live, before placement names it again one generation up on the same set: a new fenced term that ends whatever held the old one. Progress is a first report at the generation, a report with nothing waiting on a majority, or a majority's position moving, so an idle or slow shard is never renamed. Never shorter than two report TTLs. Renames of one shard back off and stop at four an hour. `0` never renames. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long the copy a restore is adding may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its move slot goes to the next shard. The shard retries after the shards that have not had a slot. `0` waits for `FELIX_SHARD_MOVE_TIMEOUT_MS`. |
 | `FELIX_CP_URL`, `FELIX_CP_SYNC_INTERVAL_MS` | unset | Short aliases used by the demos and cluster harness. |
 
@@ -2368,8 +2409,11 @@ absent. They are listed in that script rather than here.
 | `FELIX_INTERNAL_REQUEST_TIMEOUT_MS` | `5000` | Bounds one peer request. A forwarded publish or cache operation waits the larger of this and `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` + 1 s, so the owner's quorum wait ends first. |
 | `FELIX_INTERNAL_HANDSHAKE_TIMEOUT_MS` | `2000` | Bounds dialling a peer that is gone. |
 | `FELIX_INTERNAL_FENCE` | `true` | Offer, answer and use the promotion fence (`docs/replication-design.md`, "Fencing a promotion"). `false` makes this broker look to its peers like one that predates the fence: it fences no shard it takes, by promotion, cut-over or hand-back, and a shard it replicates opens on the lease alone wherever it is taken. It also stops the broker keeping ballots ("Ballots" in the same document), so it checks only the generation of what a leader sends it, and stops it reporting the `majority_ack` and `lease_free_reads` fleet features, so neither can be finalized while it serves, and is refused at registration once it has been. A switch for backing the fence out, not a tuning knob. |
-| `FELIX_INTERNAL_ELECTION` | `false` | `true`, with the fence on, makes this broker offer `ELECTION` to its peers, check the replica set a fence or batch carries, and report the `joint_fence` and `replica_election` fleet features; a leader sends set fields only to followers that offered it too. Every broker needs it before either feature can be finalized, and a broker without it is refused at registration once `joint_fence` is. See [Failover without the control plane](/deployment/failover-without-control-plane/). <!-- TODO(0.7.0 release day): opt-in vs default; revisit the name and default here. --> |
+| `FELIX_UNIFIED_FENCE` | `1` | Count a promotion fence by what each replica attests: promises only from copies that kept their ballots, and enough answers from copies that hold every record they acknowledged to cover every majority (`docs/replication-design.md`, "Fencing a promotion"). Needs `FELIX_INTERNAL_FENCE` and a durable data directory; a memory-only broker counts as before. `0` makes this broker neither offer nor answer with attestations, so it counts and answers fences by the older rules, with copy pins and refusals. A switch for backing the rule out, not a tuning knob. |
+| `FELIX_INTERNAL_ELECTION` | `false` | `true`, with the fence on, makes this broker offer `ELECTION` to its peers, check the replica set a fence or batch carries, and report the `joint_fence` and `replica_election` fleet features; a leader sends set fields only to followers that offered it too. Every broker needs it before either feature can be finalized, and a broker without it is refused at registration once `joint_fence` is. See [Failover without the control plane](/deployment/failover-without-control-plane/). |
 | `FELIX_LEADER_SUSPECT_AFTER_MS` | `5000` | How long a leader of a shard this broker follows may go without answering its pings before the broker names it in its heartbeat. Pinged four times per window. Once a majority of a `Quorum` stream shard's set names its leader, the fleet has finalized `generation_start`, `majority_ack` and `lease_free_reads`, and the leader's own replica report says it serves without the lease, the control plane promotes a follower without waiting for the leader to be marked down (`docs/replication-design.md`, "Failover on the followers' word"). `0` turns the pings off, and with them replica elections. |
+| `FELIX_ELECTION_DEFER_FOR_MS` | `60000` | Under `replica_election`, how long a leader elected by the replicas may go without starting its generation before its followers stop deferring to it: it stops refusing their pre-votes, and a follower that took its fence may stand over it. A fence or catch-up still running after this long may be replaced by a follower's newer generation. At least `1000`; lower values are raised to it. |
+| `FELIX_SHARD_SUSPECT_AFTER_MS` | `120000` | Under `replica_election`, how long a follower may go without a batch or fence from a shard's leader, while its copy holds a generation that has not started, before it may stand for that shard even though the leader's broker answers pings. Idle shards are not suspected unless this copy was left holding a newer ballot from a candidate that gave up. Keep it above the control plane's stuck-leader bound so the control plane renames first while it is up. `0` turns it off; other values below `1000` are raised to it. |
 | `FELIX_INTERNAL_IDLE_TIMEOUT_MS` | `60000` | Idle timeout on a peer connection. |
 | `FELIX_INTERNAL_RECONNECT_BASE_MS` | `50` | First reconnect backoff after losing a peer. |
 | `FELIX_INTERNAL_RECONNECT_MAX_MS` | `5000` | Backoff ceiling. |
@@ -2405,7 +2449,7 @@ absent. They are listed in that script rather than here.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FELIX_CLIENT_CONFIG` | unset | Path to a client config file. |
-| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. `FELIX_TOKEN` is also the token `felix-controlplane admin` sends, unless `--token` is given. |
+| `FELIX_AUTH_TENANT`, `FELIX_AUTH_TOKEN`, `FELIX_TOKEN` | unset | Credentials a client presents. |
 | `FELIX_KEEPALIVE_MS` | `2000` | QUIC keep-alive interval. Keep it well under the idle timeout, on both client and broker, or quiet connections are dropped. |
 | `FELIX_MAX_IDLE_TIMEOUT_MS` | `6000` | QUIC idle timeout before a connection is dropped. Also how long a broker that died without closing (killed, unplugged) takes to be noticed, and so how long a publish in flight to it waits before a `Client` retries elsewhere. |
 | `FELIX_EVENT_ROUTER_MAX_PENDING` | `16384` | Events buffered by the client's router before it applies backpressure. |
@@ -2437,3 +2481,4 @@ variable, and the variable overrides the context. See
 | `FELIX_CLIENT_CERT_FILE`, `FELIX_CLIENT_KEY_FILE` | unset | Client certificate and key to present to brokers. |
 | `FELIX_CONTROLPLANE_CA` | platform trust store | PEM bundle an `https://` control plane is checked against, as for brokers. |
 | `FELIX_SERVER_NAME` | the first broker's host name, or `localhost` | TLS server name sent to brokers. |
+| `FELIX_BROKER_BIN` | `felix-broker` on `PATH` | The `felix-broker` binary that `felixctl data inspect` and `felixctl data restore-point` run. `--broker-bin` overrides it. |

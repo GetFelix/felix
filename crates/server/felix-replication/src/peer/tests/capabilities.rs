@@ -164,11 +164,13 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::PING)
         .union(PeerCapabilities::HEAD_TRIM)
         .union(PeerCapabilities::RECORD_HEADERS)
-        .union(PeerCapabilities::SEQUENCED_FORWARDS);
+        .union(PeerCapabilities::SEQUENCED_FORWARDS)
+        .union(PeerCapabilities::WRITER_GENERATIONS);
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
-    // streams it gets no answer on, and reads a learner's answer.
+    // streams it gets no answer on, and reads a learner's answer, a
+    // refusal's reason and a kept ballot.
     assert_eq!(
         noted.get("broker-a"),
         Some(
@@ -177,6 +179,9 @@ async fn two_current_brokers_learn_each_others_capabilities() {
                 .union(PeerCapabilities::NODE_INCARNATION)
                 .union(PeerCapabilities::LANE_RENEWAL)
                 .union(PeerCapabilities::LEARNER_ACKS)
+                .union(PeerCapabilities::REFUSAL_REASONS)
+                .union(PeerCapabilities::KEPT_BALLOTS)
+                .union(PeerCapabilities::UNIFIED_FENCE)
         )
     );
 
@@ -486,7 +491,7 @@ async fn an_older_broker_dialling_in_is_answered_the_old_way() {
 /// **A broker with the fence turned off is an older broker to whoever sends
 /// one**: it offers nothing of the fence, the pool will not send it, and one
 /// sent by hand is refused as an unknown kind. Labels, forwarded offsets,
-/// record times, head trims and record headers are not the fence's, so they are still offered.
+/// record times, head trims, record headers and writer generations are not the fence's, so they are still offered.
 #[tokio::test]
 async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
     let (listener, _noted) = listener_noting(false).await;
@@ -504,6 +509,7 @@ async fn a_broker_with_the_fence_off_neither_offers_nor_answers_it() {
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
             .union(PeerCapabilities::SEQUENCED_FORWARDS)
+            .union(PeerCapabilities::WRITER_GENERATIONS)
     );
     let err = pool
         .request(PEER, listener.addr, fence())
@@ -549,6 +555,8 @@ impl PeerRequestHandler for SlowForwards {
                     log_end: 0,
                     commit_offset: 0,
                     last_generation: 0,
+                    kept_ballot: false,
+                    attestation: None,
                 })
             }
             other => {
@@ -633,6 +641,8 @@ impl PeerRequestHandler for SlowPromotions {
             log_end: fence.shard.shard.into(),
             commit_offset: 0,
             last_generation: 0,
+            kept_ballot: false,
+            attestation: None,
         })
     }
 }
@@ -852,6 +862,39 @@ async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
     old.stop();
 }
 
+/// **A broker that cannot serve clients yet is silent to a pinger.** Its
+/// followers keep suspecting it, so they stand for the shards it leads
+/// instead of leaving them with a leader nobody can reach. Once it serves,
+/// the same connection answers.
+#[tokio::test]
+async fn a_broker_not_yet_serving_does_not_answer_a_ping() {
+    let serving = CancellationToken::new();
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_serving(serving.clone());
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let listener = Listener {
+        addr,
+        shutdown: shutdown.clone(),
+        task: tokio::spawn(server.serve(shutdown)),
+    };
+    let pool = pool(config());
+    let within = Duration::from_secs(2);
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Silent
+    );
+
+    serving.cancel();
+    assert_eq!(
+        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
+        crate::suspicion::Answer::Pong
+    );
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
 /// **A broker that never offered `ELECTION` refuses what needs it**, as a
 /// build that predates the kinds would, instead of reading a candidate fence
 /// as a plain one or dropping a batch's set stamp.
@@ -871,9 +914,11 @@ async fn a_broker_without_election_refuses_the_election_kinds() {
                 members: Vec::new(),
             },
             leaving: None,
+            earlier: Vec::new(),
         }),
     });
     let stamped = InternalMessage::ReplicateRecords(ReplicateRecords {
+        writers: None,
         correlation_id: 2,
         shard: shard(),
         first_offset: 0,
@@ -962,5 +1007,36 @@ fn record_headers_are_offered_with_the_labels_and_times_they_ride_on() {
         assert!(offered.contains(PeerCapabilities::SEQUENCED_FORWARDS));
         assert!(offered.contains(PeerCapabilities::GENERATION_LABELS));
         assert!(offered.contains(PeerCapabilities::RECORD_TIMES));
+    }
+}
+
+/// **A dialler offers `UNIFIED_FENCE` when the fence is on and
+/// `FELIX_UNIFIED_FENCE` is not `0`.** A listener never offers it, and the
+/// kill switch or no fence turns the dialler's offer off.
+#[test]
+fn only_a_fenced_dialler_with_the_switch_on_offers_the_unified_fence() {
+    for fence in [false, true] {
+        for election in [false, true] {
+            for unified_fence in [false, true] {
+                let config = PeerTransportConfig {
+                    fence,
+                    election,
+                    unified_fence,
+                    ..PeerTransportConfig::default()
+                };
+                assert!(
+                    !config
+                        .capabilities()
+                        .contains(PeerCapabilities::UNIFIED_FENCE)
+                );
+                assert_eq!(
+                    config
+                        .outgoing_capabilities()
+                        .contains(PeerCapabilities::UNIFIED_FENCE),
+                    fence && unified_fence,
+                    "fence {fence} election {election} unified_fence {unified_fence}"
+                );
+            }
+        }
     }
 }

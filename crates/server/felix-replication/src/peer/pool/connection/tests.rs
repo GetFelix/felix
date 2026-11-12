@@ -131,6 +131,7 @@ mod correlation {
                 incarnation: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
+                writers: None,
                 times: None,
                 correlation_id: 7,
                 shard: shard(),
@@ -154,6 +155,7 @@ mod correlation {
                 code: ErrorCode::LogGap,
                 expected_offset: 9,
                 detail: "behind".to_string(),
+                reason: None,
             }),
             InternalMessage::ReplicateBootstrap(ReplicateBootstrap {
                 correlation_id: 7,
@@ -177,8 +179,11 @@ mod correlation {
                 log_end: 1,
                 commit_offset: 1,
                 last_generation: 1,
+                kept_ballot: false,
+                attestation: None,
             }),
             InternalMessage::ReplicateFetch(ReplicateFetch {
+                writers: false,
                 timed: false,
                 headers: false,
                 correlation_id: 7,
@@ -189,6 +194,7 @@ mod correlation {
                 labelled: false,
             }),
             InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+                writers: None,
                 times: None,
                 correlation_id: 7,
                 shard: shard(),

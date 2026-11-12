@@ -2,6 +2,8 @@
 //! holds.
 use std::collections::BTreeMap;
 
+use felix_common::membership::RefusedGeneration;
+
 use crate::model::{HaltedCopy, ShardKey};
 
 /// Which replicas hold enough of a shard's log to lead it.
@@ -56,13 +58,19 @@ pub trait CaughtUp {
         false
     }
 
-    /// Whether `leader` reported at `generation` that it refused to open the
-    /// shard there because it had promised that generation to another node,
-    /// which the control plane recorded as elected without adopting. Only a
-    /// fresh report of exactly `generation` says so; a refusal of an older
-    /// one is not evidence about this one.
-    fn leader_refused(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
-        false
+    /// The refusal `leader` reported at `generation`, if it refused to open
+    /// the shard there: because it had promised that generation to another
+    /// node, which the control plane recorded as elected without adopting,
+    /// or because its joint fence cannot learn the set the generation leaves.
+    /// Only a fresh report of exactly `generation` says so; a refusal of an
+    /// older one is not evidence about this one.
+    fn leader_refusal(
+        &self,
+        _key: &ShardKey,
+        _generation: u64,
+        _leader: &str,
+    ) -> Option<RefusedGeneration> {
+        None
     }
 
     /// Whether `leader`, which gave the shard up, may lead it again from its
@@ -221,6 +229,15 @@ pub trait CaughtUp {
         false
     }
 
+    /// Whether `leader` reported serving `key` at `generation`: a report it
+    /// made there with its tail, no refusal and nothing given up. A leader
+    /// reports at a generation only once its fence there has settled, so this
+    /// is the open a failover's copy pins wait for. Not held to freshness: an
+    /// open once made stays made.
+    fn leader_opened(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> bool {
+        false
+    }
+
     /// A member of `key`'s set at `generation` whose storage was replaced
     /// since the assignment named it, and that `leader`'s fresh report shows
     /// caught up under its new identity. Its name is a write away from being
@@ -229,9 +246,56 @@ pub trait CaughtUp {
         None
     }
 
+    /// How long `key`'s live leader has gone without progress at
+    /// `generation`, as this instance watched it, and how many times it has
+    /// been named again for that recently. `None` when it has not watched it
+    /// or saw it progress last pass; nothing is then renamed.
+    fn stuck_leader(&self, _key: &ShardKey, _generation: u64) -> Option<StuckLeader> {
+        None
+    }
+
     fn halted_member(&self, key: &ShardKey, node_id: &str, generation: u64) -> Option<&HaltedCopy> {
         self.halted(key, node_id)
             .filter(|halt| halt.holds_at(generation))
+    }
+}
+
+/// A leader on a live broker that has shown no progress at its generation:
+/// see [`CaughtUp::stuck_leader`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StuckLeader {
+    /// When this instance last saw the leader progress, or first watched it
+    /// at this generation, on the reports' clock.
+    pub since_millis: u64,
+    /// What the leader has not done.
+    pub reason: StuckReason,
+    /// How many times this instance has named the shard again for being
+    /// stuck within the last hour.
+    pub recent_renames: u32,
+    /// Too many leaders were overdue at once this pass: the pass renames
+    /// one of them at most.
+    pub fleet_stalled: bool,
+}
+
+/// What a stuck leader has not done at its generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StuckReason {
+    /// It has made no report at all: it never opened.
+    NeverOpened,
+    /// It reported, then stopped, while its broker reports other shards.
+    StoppedReporting,
+    /// Its reports show records past what a majority holds, and that
+    /// majority's position is not moving.
+    NotCommitting,
+}
+
+impl StuckReason {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::NeverOpened => "never_opened",
+            Self::StoppedReporting => "stopped_reporting",
+            Self::NotCommitting => "not_committing",
+        }
     }
 }
 

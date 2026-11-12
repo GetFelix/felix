@@ -275,9 +275,47 @@ pub(super) fn heal_order(faults: &[Fault]) -> Vec<&Fault> {
     order
 }
 
+/// How long a broker started while the control plane is down runs before the
+/// control plane returns: long enough to open its storage and talk to its
+/// peers, if it were going to.
+const RESTARTED_WHILE_DOWN: Duration = Duration::from_secs(3);
+
+/// Heal [`Fault::ElectWithoutControlPlane`]: start the killed leader first if
+/// `restart_while_down`, give it a while with the control plane still down,
+/// then bring the control plane back and wait for the broker to be ready.
+pub(super) async fn return_control_plane(
+    cluster: &mut Cluster,
+    node: &str,
+    restart_while_down: bool,
+) -> Result<()> {
+    let down = !cluster.control_plane_running();
+    let not_running = !cluster
+        .node(node)
+        .is_some_and(crate::BrokerNode::is_running);
+    let started_early = down && restart_while_down && not_running;
+    if started_early {
+        cluster.start_node_unready(node)?;
+        tokio::time::sleep(RESTARTED_WHILE_DOWN).await;
+    }
+    cluster.recover_control_plane().await?;
+    if started_early {
+        match cluster.await_node_ready(node).await {
+            Ok(()) => return Ok(()),
+            // An early start that lost a port race has exited, and only
+            // `restart_node` retries that.
+            Err(_)
+                if !cluster
+                    .node(node)
+                    .is_some_and(crate::BrokerNode::is_running) => {}
+            Err(err) => return Err(err),
+        }
+    }
+    restart_if_down(cluster, node).await
+}
+
 /// `node` if it leads a shard, or else a broker that does: faulting a
 /// follower forces no failover.
-fn a_leader(rng: &mut Rng, view: &ClusterView, node: String) -> String {
+pub(super) fn a_leader(rng: &mut Rng, view: &ClusterView, node: String) -> String {
     if view.leaders.is_empty() || view.leaders.contains(&node) {
         node
     } else {

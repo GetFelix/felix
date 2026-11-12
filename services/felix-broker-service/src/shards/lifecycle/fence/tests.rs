@@ -66,6 +66,28 @@ fn reopening_at_a_new_generation_admits_again() {
     assert!(fence.enter(&stream, 1).is_none());
 }
 
+/// A shard ended for silence and reopened at the same generation serves
+/// readers again: silence is not a newer leader. A deposal still holds.
+#[test]
+fn reopening_clears_silence_but_not_a_deposal() {
+    let fence = ShardFence::default();
+    let stream = key(ShardKind::Stream);
+    fence.open(&stream, 4);
+    fence.unheard(&stream, 4);
+    assert!(fence.is_deposed(&stream, 4));
+    fence.close(&stream);
+    fence.open(&stream, 4);
+    assert!(
+        !fence.is_deposed(&stream, 4),
+        "still unheard after reopening"
+    );
+
+    fence.depose(&stream, 4);
+    fence.close(&stream);
+    fence.open(&stream, 4);
+    assert!(fence.is_deposed(&stream, 4));
+}
+
 /// What tells the replication driver a route naming this broker is one it
 /// opened, rather than one it led only before a restart.
 #[test]

@@ -26,7 +26,14 @@ fn listener_config(max_connections_per_ip: usize) -> KafkaListenerConfig {
 
 fn cluster() -> BrokerCluster {
     let auth = Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string()));
-    BrokerCluster::new(auth, None, None, STANDALONE_NODE_ID, "127.0.0.1:9092").expect("cluster")
+    BrokerCluster::new(
+        auth,
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        None,
+        STANDALONE_NODE_ID,
+        "127.0.0.1:9092",
+    )
+    .expect("cluster")
 }
 
 /// True when the server closed `socket` within a second.
@@ -112,8 +119,14 @@ async fn a_produce_is_charged_to_the_tenants_quota() {
 async fn sasl_binds_the_token_to_the_client_certificate() {
     let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
     let auth = Arc::new((*demo.auth).clone().with_subject_binding(true));
-    let cluster = BrokerCluster::new(auth, None, None, STANDALONE_NODE_ID, "127.0.0.1:9092")
-        .expect("cluster");
+    let cluster = BrokerCluster::new(
+        auth,
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        None,
+        STANDALONE_NODE_ID,
+        "127.0.0.1:9092",
+    )
+    .expect("cluster");
     let leaf = |params: rcgen::CertificateParams| {
         let key = rcgen::KeyPair::generate().expect("key");
         params.self_signed(&key).expect("cert").der().to_vec()
@@ -150,8 +163,14 @@ async fn sasl_binds_a_delegated_token_to_its_actors_certificate() {
     use crate::serving::auth::demo::demo_token_with_actor;
     let demo = crate::serving::auth::demo::demo_auth_for_tenant("t1").expect("demo auth");
     let auth = Arc::new((*demo.auth).clone().with_subject_binding(true));
-    let cluster = BrokerCluster::new(auth, None, None, STANDALONE_NODE_ID, "127.0.0.1:9092")
-        .expect("cluster");
+    let cluster = BrokerCluster::new(
+        auth,
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        None,
+        STANDALONE_NODE_ID,
+        "127.0.0.1:9092",
+    )
+    .expect("cluster");
     let issued_to = |principal: &str| {
         let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
         params.subject_alt_names.push(rcgen::SanType::URI(

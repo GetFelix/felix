@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use felix_common::fleet::{FleetGate, JOINT_FENCE};
 use felix_storage::StorageId;
+use felix_storage::disk_log::{Member, Membership, ReplicaSet};
 use felix_wire::internal::{
     Fence, FenceElection, GenerationStart, PreVote, PreVoteRefusal, ReplicaLog, ReplicaSetView,
     SetMember,
@@ -94,6 +95,7 @@ fn fence_with(
             candidate,
             set,
             leaving,
+            earlier: Vec::new(),
         }),
     }
 }
@@ -175,6 +177,7 @@ async fn a_voting_copy_still_answers_a_candidate() {
     log.accept_set(felix_storage::disk_log::ReplicaSet {
         current: crate::replica_set::membership(&set(5, OWN)),
         leaving: None,
+        earlier: Vec::new(),
     })
     .await
     .expect("set");
@@ -775,6 +778,9 @@ async fn a_wiped_copy_refuses_before_the_gate_is_adopted() {
 
     let answer = settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, false))).await;
     assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
+    // A caller that counts by attestation waits for the gate too.
+    let answer = settled(|| unified(&handler, fence_with(6, set(5, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unavailable);
     let log = log_of(&broker).await;
     assert_eq!(log.set_generation(), 0, "wrote before the gate was read");
     assert_eq!(log.accepted_generation(), 0);
@@ -826,6 +832,7 @@ async fn a_route_naming_member_ids_makes_a_wiped_copy_a_learner() {
             ]
             .into(),
             pending: None,
+            readmitted: Default::default(),
         }],
         &nodes,
     );
@@ -1328,4 +1335,1025 @@ async fn learner_batch_cost() {
     }
     let apply = started.elapsed() / BATCHES as u32;
     eprintln!("learner batch apply (no promise, 1 record) {apply:?}");
+}
+
+fn kept_set(generation: u64, nodes: &[&str]) -> Membership {
+    Membership {
+        generation,
+        members: nodes
+            .iter()
+            .map(|node| Member {
+                node: (*node).to_string(),
+                storage: None,
+                learner: false,
+                wiped: false,
+            })
+            .collect(),
+    }
+}
+
+/// **A batch that raises the set keeps the sets of unopened fences** until
+/// its records are on disk. One whose records never land (here a gap) must
+/// not leave the log with neither those records nor the sets a failover
+/// from it needs to fence.
+#[tokio::test]
+async fn a_batch_that_is_not_stored_keeps_the_earlier_sets() {
+    let (broker, _dir) = broker_with_storage().await;
+    let fleet = felix_common::fleet::FleetGate::new([felix_common::fleet::JOINT_FENCE.name()]);
+    fleet.restart([felix_common::fleet::JOINT_FENCE.name()]);
+    // The control plane's set before generation 5 is what the batch's set
+    // leaves; without it the batch is refused before it raises the set.
+    let router = super::election::router_after(5, Some(&["broker-a", LOCAL, "broker-c"]));
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router).with_fleet(Arc::new(
+        crate::quorum::QuorumMarks::with_fleet(Arc::new(fleet)),
+    ));
+    let unopened = kept_set(4, &[LOCAL, "broker-x", "broker-y"]);
+    let left = kept_set(3, &[LOCAL, "broker-c", "broker-d"]);
+    let log = log_of(&broker).await;
+    log.accept_generation(4, Some("broker-x"))
+        .await
+        .expect("ballot");
+    log.accept_set_keeping_earlier(ReplicaSet {
+        current: unopened.clone(),
+        leaving: Some(left.clone()),
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("set");
+
+    let answer = handler
+        .apply(SENDER, stamped(5, 3, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::LogGap, "{answer:?}");
+    let set = log_of(&broker).await.replica_set().expect("set");
+    assert_eq!(set.current.generation, 5, "the batch raised the set");
+    assert_eq!(set.earlier, vec![unopened, left]);
+}
+
+/// A learner marked on evidence of a lost copy, whose ballot is `ballot`,
+/// answering the fence of broker-a moving on to generation 6. With
+/// `kept_promises` it restarted after an unclean crash that kept every ballot;
+/// without, its directory was wiped or restored.
+async fn continuing_fence(
+    ballot: Option<(u64, &str)>,
+    kept_promises: bool,
+) -> (InternalMessage, felix_broker::StreamLog) {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_unclean_start(Arc::new(
+        crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(kept_promises),
+    ));
+    wiped_at_5(&handler).await;
+    let log = log_of(&broker).await;
+    if let Some((generation, leader)) = ballot {
+        log.accept_generation(generation, Some(leader))
+            .await
+            .expect("ballot");
+    }
+    let answer = settled(|| handler.fence(SENDER, readmission(6, OWN))).await;
+    (answer, log)
+}
+
+/// **A doubted copy whose ballot names the leader at the generation before
+/// promises that leader its next one.** Its storage id rotated after an
+/// unclean crash, so it is a learner until a leader vouches for it, but the
+/// crash kept its ballot: it promised broker-a generation 5, and broker-a,
+/// moving on to 6, holds every record it might have lost. It promises, says
+/// its ballot was kept, and stays marked: the promise is no vote for what it
+/// holds (#2047).
+#[tokio::test]
+async fn a_learner_whose_ballot_names_the_leader_promises_its_next_generation() {
+    let (answer, log) = continuing_fence(Some((5, "broker-a")), true).await;
+
+    assert!(
+        matches!(answer, InternalMessage::FenceOk(ok) if ok.kept_ballot),
+        "{answer:?}"
+    );
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    assert!(
+        log.member_is_wiped(LOCAL),
+        "the promise vouched for the copy"
+    );
+}
+
+/// **A learner's ballot taken while its promises counted for nothing stays
+/// no promise after a crash that keeps it.** A unified fence hands a learner
+/// a ballot, and once the broker restarts that ballot looks like the kept one
+/// above: an older caller continuing from it would count the copy, which may
+/// have promised the same generation to another leader before its wipe. The
+/// directory's copy-trust record keeps it unkept until readmission, for the
+/// older caller's refusal and the attestation alike.
+#[tokio::test]
+async fn a_ballot_taken_as_a_learner_is_no_promise_after_a_crash() {
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let on = |unclean: Option<Arc<crate::unclean::UncleanStart>>| {
+        let marks = marks(true);
+        marks.set_kept_ballots(true);
+        marks.set_copy_trust(Arc::new(
+            felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open"),
+        ));
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+            .with_fleet(marks)
+            .with_local_storage(StorageId::from_bytes(OWN))
+            .with_stickiness(Duration::ZERO)
+            .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+                generation: 6,
+                leader: "broker-a".to_string(),
+            }) as _);
+        match unclean {
+            Some(unclean) => handler.with_unclean_start(unclean),
+            None => handler,
+        }
+    };
+
+    // As a unified fence from broker-a at 5 would leave the learner.
+    let learner = on(None);
+    wiped_at_5(&learner).await;
+    learner.unkeep(&key(), 5).await.expect("unkeep");
+    let log = log_of(&broker).await;
+    log.accept_generation(5, Some("broker-a"))
+        .await
+        .expect("ballot");
+    drop(learner);
+
+    // An unclean crash that kept every ballot.
+    let restarted = on(Some(Arc::new(
+        crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(true),
+    )));
+    let answer = settled(|| restarted.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    assert_ne!(log.accepted_generation(), 6);
+    assert_eq!(
+        restarted.attestation(&key(), true, false, false).kept_from,
+        u64::MAX
+    );
+}
+
+/// **A learner that took a unified fence's ballot does not count for an
+/// older caller after a crash that keeps it**: the answer to the unified
+/// fence recorded the ballot as no promise before writing it.
+#[tokio::test]
+async fn a_learners_unified_ballot_does_not_count_after_a_crash() {
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let on = |unclean: Option<Arc<crate::unclean::UncleanStart>>| {
+        let marks = kept_marks();
+        marks.set_copy_trust(Arc::new(
+            felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open"),
+        ));
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 6))
+            .with_fleet(marks)
+            .with_local_storage(StorageId::from_bytes(OWN))
+            .with_stickiness(Duration::ZERO)
+            .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+                generation: 6,
+                leader: "broker-a".to_string(),
+            }) as _);
+        match unclean {
+            Some(unclean) => handler.with_unclean_start(unclean),
+            None => handler,
+        }
+    };
+
+    let learner = on(None);
+    wiped_at_5(&learner).await;
+    let answer = settled(|| unified(&learner, fence_with(6, set(5, OLD), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(ok.attestation, no_promise());
+    let log = log_of(&broker).await;
+    assert_eq!(log.accepted_leader().as_deref(), Some("broker-a"));
+    drop(learner);
+
+    // An unclean crash that kept every ballot.
+    let restarted = on(Some(Arc::new(
+        crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(true),
+    )));
+    let answer = settled(|| restarted.fence(SENDER, readmission(7, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized, "{answer:?}");
+    assert_eq!(log.accepted_generation(), 6);
+}
+
+/// [`handler`], with the copy-trust record under `trust_dir`.
+fn handler_with_trust(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust_dir: &std::path::Path,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    let trust =
+        Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
+    let marks = marks(true);
+    marks.set_kept_ballots(false);
+    handler_with_trust_on(broker, generation, trust, marks)
+}
+
+fn handler_with_trust_on(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+    marks: Arc<QuorumMarks>,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    marks.set_copy_trust(Arc::clone(&trust));
+    let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], generation))
+        .with_fleet(marks)
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation,
+            leader: "broker-a".to_string(),
+        }) as _);
+    (handler, trust)
+}
+
+/// **Only a readmission into a set newer than its unkept ballot makes a
+/// copy's promises count again.** A batch to a copy that holds no set, or a
+/// readmission at the generation it took that ballot at, does not: a wiped
+/// copy's promises count for nothing until a set introduced after the loss
+/// readmits it (the design's "Wipe" row).
+#[tokio::test]
+async fn only_a_newer_sets_readmission_ends_an_unkept_ballot() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+
+    // No set at all: a batch is no readmission.
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = handler_with_trust(&broker, 6, trust_dir.path());
+    copy.unkeep(&key(), 5).await.expect("unkeep");
+    let unstamped = || ReplicateRecords {
+        set_generation: None,
+        ..stamped(6, 0, &["a"])
+    };
+    let answer = settled(|| copy.apply(SENDER, unstamped(), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(
+        trust.unkept(&name),
+        Some(felix_storage::run_state::copy_trust::Since::At(5)),
+        "a batch alone"
+    );
+
+    // Readmitted into the set of 6.
+    for (since, cleared) in [(6, false), (5, true)] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (copy, trust) = handler_with_trust(&broker, 6, trust_dir.path());
+        wiped_at_5(&copy).await;
+        copy.unkeep(&key(), since).await.expect("unkeep");
+        let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+        let answer =
+            settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+                .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+        assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(false));
+        assert_eq!(
+            trust.unkept(&name).is_none(),
+            cleared,
+            "unkept since {since}"
+        );
+    }
+}
+
+/// **A readmission waits for the start to say what it kept.** A start from
+/// the control-plane view says nothing until its restore check passes; a
+/// batch before then must leave the copy's floor for the readmission after.
+#[tokio::test]
+async fn a_readmission_waits_until_the_start_says_what_it_kept() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    felix_storage::storage_identity::replace(trust_dir.path(), OWN).expect("storage id");
+    let trust = Arc::new(
+        felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path()).expect("open"),
+    );
+    let marks = marks(true);
+    let (copy, trust) = handler_with_trust_on(&broker, 6, trust, Arc::clone(&marks));
+    wiped_at_5(&copy).await;
+    copy.unkeep(&key(), 5).await.expect("unkeep");
+    let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let first = || copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream);
+    let answer = settled(first).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(
+        trust.unkept(&name),
+        Some(felix_storage::run_state::copy_trust::Since::At(5)),
+        "before the start says what it kept"
+    );
+
+    marks.set_readmits(true);
+    marks.set_kept_ballots(false);
+    let answer = settled(|| {
+        copy.apply(
+            SENDER,
+            ReplicateRecords {
+                set_generation: Some(6),
+                ..batch(6, 1, &["b"])
+            },
+            felix_broker::LogKind::Stream,
+        )
+    })
+    .await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert!(trust.unkept(&name).is_none(), "cleared once it has");
+    assert!(trust.readmitted(&name).is_some(), "readmitted once it has");
+}
+
+/// **A copy unkept since a generation the record lost is unkept since at
+/// least the ballot it holds.** The record did not decode; the copy holds
+/// broker-a's ballot at 6, maybe an unkept one, so a readmission into the set
+/// of 6 does not end it.
+#[tokio::test]
+async fn an_unknown_unkept_generation_is_floored_at_the_ballot() {
+    use felix_storage::run_state::copy_trust::Since;
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(
+        trust_dir
+            .path()
+            .join(felix_storage::run_state::copy_trust::FILE_NAME),
+        b"junk",
+    )
+    .expect("write");
+    let (copy, trust) = handler_with_trust(&broker, 6, trust_dir.path());
+    wiped_at_5(&copy).await;
+    log_of(&broker)
+        .await
+        .accept_generation(6, Some("broker-a"))
+        .await
+        .expect("ballot");
+    assert_eq!(trust.unkept(&name), Some(Since::Unknown));
+
+    let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer =
+        settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(false));
+    assert_eq!(trust.unkept(&name), Some(Since::At(6)));
+}
+
+/// **A copy whose ballot did not survive still refuses.** Wiped, it names no
+/// leader; one whose ballot names another leader, or broker-a at an older
+/// generation, may have promised generation 6 to someone else. So may a
+/// wiped or restored copy whose ballot names broker-a at 5: it may have taken
+/// that ballot after losing a promise of 6 to a candidate, and its promise
+/// now could make a second leader there (#1331).
+#[tokio::test]
+async fn a_learner_without_the_leaders_ballot_still_refuses_its_next_generation() {
+    for (ballot, kept) in [
+        (None, true),
+        (Some((5, "broker-c")), true),
+        (Some((4, "broker-a")), true),
+        (Some((5, "broker-a")), false),
+    ] {
+        let (answer, log) = continuing_fence(ballot, kept).await;
+
+        assert_eq!(
+            refusal(&answer).code,
+            ErrorCode::Unauthorized,
+            "{ballot:?} {kept}"
+        );
+        assert_ne!(log.accepted_generation(), 6, "{ballot:?} {kept}");
+    }
+}
+
+/// Marks under `joint_fence` for a directory that kept every ballot.
+fn kept_marks() -> Arc<QuorumMarks> {
+    let marks = marks(true);
+    marks.set_kept_ballots(true);
+    marks
+}
+
+fn unified(
+    handler: &ReplicaHandler,
+    fence: Fence,
+) -> impl std::future::Future<Output = InternalMessage> + '_ {
+    handler.fence_from(SENDER, PeerCapabilities::UNIFIED_FENCE, fence)
+}
+
+fn no_promise() -> Option<felix_wire::internal::FenceAttestation> {
+    Some(felix_wire::internal::FenceAttestation {
+        kept_from: u64::MAX,
+        trusted: false,
+        by_record: false,
+    })
+}
+
+/// **To a caller that counts by attestation a wiped copy answers, and its
+/// promise counts for nothing.** It takes the ballot, which only refuses
+/// more, and stays a learner. Without the bit it refuses as before. The set
+/// check still refuses an older set, and the ballot an older generation.
+#[tokio::test]
+async fn a_wiped_copy_answers_a_unified_fence_with_no_promise() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_fleet(kept_marks());
+    for candidate in [false, true] {
+        let answer =
+            settled(|| handler.fence(SENDER, fence_with(6, set(5, OLD), None, candidate))).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    }
+
+    let answer = settled(|| unified(&handler, fence_with(6, set(5, OLD), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(ok.attestation, no_promise());
+    let log = log_of(&broker).await;
+    assert_eq!(log.accepted_generation(), 6);
+    assert_eq!(log.member_is_learner(LOCAL), Some(true));
+
+    let answer = settled(|| unified(&handler, fence_with(6, set(4, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleSet);
+    let answer = settled(|| unified(&handler, fence_with(5, set(5, OLD), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::FencedEpoch);
+}
+
+/// A copy that took a move's fence at 5 as a voter under `OLD`, and kept the
+/// set naming it so, then restarted under `OWN` with `marks`: the copy-trust
+/// record rotated with the id, so every copy is untrusted.
+async fn restarted_under_own(
+    broker: &Arc<Broker>,
+    trust_dir: &std::path::Path,
+    marks: Arc<QuorumMarks>,
+) -> ReplicaHandler {
+    let before = handler(broker, 5, OLD).with_fleet(kept_marks());
+    let answer = settled(|| unified(&before, fence_with(5, set(5, OLD), None, false))).await;
+    assert!(
+        matches!(&answer, InternalMessage::FenceOk(ok) if ok.attestation.is_some_and(|a| a.kept_from == 0)),
+        "{answer:?}"
+    );
+    drop(before);
+    felix_storage::run_state::copy_trust::rotate_storage_id(trust_dir, OWN).expect("rotate");
+    let trust =
+        Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
+    handler_with_trust_on(broker, 6, trust, marks).0
+}
+
+/// **A copy whose id an unclean crash rotated answers a fence leaving its
+/// old set as a voter there.** Its sets still name the id it had before the
+/// crash, but the crash kept every ballot and the start recorded that id as
+/// the directory's own, so its promise counts, untrusted until a leader
+/// vouches for it. Taking that set for a wipe left a two-voter set being left
+/// one promise short for good (`FelixShardUnifiedCpLiveMoveRotated.cfg`).
+#[tokio::test]
+async fn a_copy_rotated_by_a_crash_answers_a_fence_leaving_its_old_set() {
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let marks = kept_marks();
+    marks.set_rotated_storage(vec![StorageId::from_bytes(OLD)]);
+    let copy = restarted_under_own(&broker, trust_dir.path(), marks).await;
+
+    let cut_over = fence_with(6, set(6, OLD), Some(set(5, OLD)), false);
+    let answer = settled(|| unified(&copy, cut_over.clone())).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(
+        ok.attestation,
+        Some(felix_wire::internal::FenceAttestation {
+            kept_from: 0,
+            trusted: false,
+            by_record: false,
+        })
+    );
+    let log = log_of(&broker).await;
+    assert_eq!(log.accepted_generation(), 6);
+    assert_ne!(log.member_is_learner(LOCAL), Some(true));
+}
+
+/// **A restored or wiped copy still answers with no promise**, and so does
+/// one whose sets name an id the directory never recorded as its own: their
+/// ballots may be gone, so the same set names a lost copy.
+#[tokio::test]
+async fn a_rotated_copy_that_lost_its_ballots_still_promises_nothing() {
+    for (kept, rotated) in [(false, true), (true, false)] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = marks(true);
+        marks.set_kept_ballots(kept);
+        if rotated {
+            marks.set_rotated_storage(vec![StorageId::from_bytes(OLD)]);
+        }
+        let copy = restarted_under_own(&broker, trust_dir.path(), marks).await;
+
+        let cut_over = fence_with(6, set(6, OLD), Some(set(5, OLD)), false);
+        let answer = settled(|| unified(&copy, cut_over.clone())).await;
+        let InternalMessage::FenceOk(ok) = answer else {
+            panic!("expected the fence to be taken, got {answer:?}");
+        };
+        assert_eq!(
+            ok.attestation,
+            no_promise(),
+            "kept {kept} rotated {rotated}"
+        );
+        assert_eq!(log_of(&broker).await.member_is_learner(LOCAL), Some(true));
+    }
+}
+
+/// **A copy the fence's set lists only as a learner answers a unified
+/// fence with no promise**, where it refuses an older caller as no voter in
+/// that set. A broker the set does not list refuses either way.
+#[tokio::test]
+async fn a_copy_listed_as_a_learner_answers_a_unified_fence_with_no_promise() {
+    let (broker, _dir) = broker_with_storage().await;
+    let handler = handler(&broker, 6, OWN).with_fleet(kept_marks());
+    let mut listed = set(5, OWN);
+    for member in &mut listed.members {
+        member.learner = member.node_id == LOCAL;
+    }
+    let answer =
+        settled(|| handler.fence(SENDER, fence_with(6, listed.clone(), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+
+    let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    assert_eq!(ok.attestation, no_promise());
+
+    listed.members.retain(|member| member.node_id != LOCAL);
+    let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, false))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+}
+
+/// **A learner continuing from its leader keeps no promise to a unified
+/// caller**, though it promises an older one
+/// (`a_learner_whose_ballot_names_the_leader_promises_its_next_generation`).
+/// A unified fence hands a
+/// learner a ballot, so the ballot it holds may be one it took while its
+/// promises counted for nothing: a crash that kept that ballot does not make
+/// it a kept promise.
+#[tokio::test]
+async fn a_continuing_learner_keeps_no_promise_to_a_unified_fence() {
+    for ballot in ["broker-a", "broker-c"] {
+        let (broker, _dir) = broker_with_storage().await;
+        let handler = handler(&broker, 6, OWN)
+            .with_fleet(kept_marks())
+            .with_unclean_start(Arc::new(
+                crate::unclean::UncleanStart::new(LOCAL).with_kept_promises(true),
+            ));
+        wiped_at_5(&handler).await;
+        log_of(&broker)
+            .await
+            .accept_generation(5, Some(ballot))
+            .await
+            .expect("ballot");
+
+        let answer = settled(|| unified(&handler, readmission(6, OWN))).await;
+        let InternalMessage::FenceOk(ok) = answer else {
+            panic!("expected the fence to be taken, got {answer:?}");
+        };
+        assert_eq!(ok.attestation, no_promise(), "{ballot}");
+    }
+}
+
+/// **A unified answer that keeps no promise routes nothing to the
+/// candidate**, as the refusal an older caller gets routes nothing. A
+/// voter's answer still does.
+#[tokio::test]
+async fn a_learners_unified_answer_does_not_record_the_candidate() {
+    let key = felix_router::ShardKey {
+        tenant_id: TENANT.into(),
+        namespace: NAMESPACE.into(),
+        stream: STREAM.into(),
+        shard: 0,
+        kind: felix_router::ShardKind::Stream,
+    };
+    for learner in [true, false] {
+        let (broker, _dir) = broker_with_storage().await;
+        let marks = kept_marks();
+        let elections = Arc::new(crate::election::Elections::new(
+            LOCAL,
+            Arc::new(tokio::sync::Notify::new()),
+        ));
+        marks.set_elections(Arc::clone(&elections));
+        let handler = handler(&broker, 6, OWN).with_fleet(marks);
+        let mut listed = set(5, OWN);
+        for member in &mut listed.members {
+            member.learner = learner && member.node_id == LOCAL;
+        }
+
+        let answer = settled(|| unified(&handler, fence_with(6, listed.clone(), None, true))).await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+        assert_eq!(elections.get(&key).is_some(), !learner, "learner {learner}");
+    }
+}
+
+/// A handler on `broker` whose directory lost its ballots: no copy here
+/// keeps a promise until a set readmits it, and only when `readmits` (the
+/// start was checked against a registration with a storage id).
+fn lost_handler(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust_dir: &std::path::Path,
+    readmits: bool,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    lost_handler_on(broker, generation, trust_dir, readmits, marks(true))
+}
+
+/// [`lost_handler`] with the fleet as `marks` says.
+fn lost_handler_on(
+    broker: &Arc<Broker>,
+    generation: u64,
+    trust_dir: &std::path::Path,
+    readmits: bool,
+    marks: Arc<QuorumMarks>,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    felix_storage::storage_identity::replace(trust_dir, OWN).expect("storage id");
+    let trust =
+        Arc::new(felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir).expect("open"));
+    marks.set_kept_ballots(false);
+    marks.set_readmits(readmits);
+    // As a wipe or a rotation does, unless the caller set it first.
+    marks.set_minted_storage(true);
+    marks.set_copy_trust(Arc::clone(&trust));
+    let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], generation))
+        .with_fleet(marks)
+        .with_local_storage(StorageId::from_bytes(OWN))
+        .with_stickiness(Duration::ZERO)
+        .with_confirmed_routes(ConfirmedAs::new(Confirmed::Assigned {
+            generation,
+            leader: "broker-a".to_string(),
+        }) as _);
+    (handler, trust)
+}
+
+/// What a copy attests to a unified fence at 7 over the set of 6.
+async fn kept_from_at_7(handler: &ReplicaHandler) -> u64 {
+    let answer = settled(|| unified(handler, fence_with(7, set(6, OWN), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    ok.attestation.expect("attested").kept_from
+}
+
+/// **A copy on a directory that once lost its ballots counts again from the
+/// set that readmitted it**, and that survives a restart. The directory's
+/// lost-copy marker never clears, so without the record the copy would
+/// attest no kept promise forever. A set naming it by another id, or a start
+/// whose restore check has not run, readmits nothing.
+#[tokio::test]
+async fn a_once_lost_copy_counts_from_the_set_that_readmitted_it() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    for (named, readmits, readmitted) in
+        [(OWN, true, Some(6)), (OLD, true, None), (OWN, false, None)]
+    {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (copy, trust) = lost_handler(&broker, 6, trust_dir.path(), readmits);
+        wiped_at_5(&copy).await;
+        let answer = settled(|| copy.fence(SENDER, readmission(6, named))).await;
+        assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+        let answer =
+            settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+                .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+        assert_eq!(trust.readmitted(&name), readmitted, "named {named:?}");
+        if readmitted.is_some() {
+            assert!(!trust.trusted(&name), "a vouch from before the readmission");
+            assert_eq!(kept_from_at_7(&copy).await, 6);
+            let reopened = felix_storage::run_state::copy_trust::CopyTrust::open(trust_dir.path())
+                .expect("open");
+            assert_eq!(reopened.readmitted(&name), Some(6), "after a restart");
+            // A start from the view reads the record too, but has not checked
+            // the directory for a restore, which would have brought it back.
+            let (unchecked, _) = lost_handler(&broker, 7, trust_dir.path(), false);
+            assert_eq!(
+                kept_from_at_7(&unchecked).await,
+                u64::MAX,
+                "a start from the view"
+            );
+        }
+    }
+}
+
+/// **A directory that lost its copies without a new storage id is not
+/// readmitted by a set naming that id**, as a directory swapped back after
+/// the node ran under another id: sets from before the loss name the id too,
+/// so nothing says this one came after it.
+#[tokio::test]
+async fn a_lost_copy_under_an_old_id_is_not_readmitted() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    for minted in [true, false] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = marks(true);
+        marks.set_minted_storage(minted);
+        let (copy, trust) = lost_handler_on(&broker, 6, trust_dir.path(), true, marks);
+        let answer = settled(|| copy.fence(SENDER, fence_with(6, set(6, OWN), None, false))).await;
+        assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+        let answer =
+            settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream))
+                .await;
+        assert!(
+            matches!(answer, InternalMessage::ReplicateOk(_)),
+            "{answer:?}"
+        );
+        assert_eq!(
+            trust.readmitted(&name),
+            minted.then_some(6),
+            "minted {minted}"
+        );
+    }
+}
+
+/// **A leader of the set from before the loss readmits nothing**, even at
+/// a newer ballot, as a deposed leader re-shipping a wiped copy would: that
+/// set names the copy by the id it lost, so its leader may lack what the old
+/// copy acknowledged since (a TLC counterexample in the design).
+#[tokio::test]
+async fn a_deposed_leaders_batch_does_not_readmit_a_once_lost_copy() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = lost_handler(&broker, 6, trust_dir.path(), true);
+    wiped_at_5(&copy).await;
+    let deposed = ReplicateRecords {
+        set_generation: Some(5),
+        ..stamped(6, 0, &["a"])
+    };
+    let answer =
+        settled(|| copy.apply(SENDER, deposed.clone(), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(trust.readmitted(&name), None);
+}
+
+/// The gate of a broker that knows the fleet finalized `replica_election`.
+fn electing_marks() -> Arc<QuorumMarks> {
+    use felix_common::fleet::REPLICA_ELECTION;
+    let fleet = FleetGate::new([JOINT_FENCE.name(), REPLICA_ELECTION.name()]);
+    fleet.restart([JOINT_FENCE.name(), REPLICA_ELECTION.name()]);
+    Arc::new(QuorumMarks::with_fleet(Arc::new(fleet)))
+}
+
+/// Publish `key()`'s route at 6, led by broker-a, with the control plane's
+/// `readmitted` record `entries`.
+fn publish_readmitted(router: &ShardRouter, entries: Vec<felix_router::Readmitted>) {
+    let nodes: HashMap<String, NodeRef> = ["broker-a", LOCAL]
+        .into_iter()
+        .zip(7001..)
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let table = RoutingTable::build_with(
+        [felix_router::Placed {
+            key: key(),
+            leader: "broker-a".to_string(),
+            replicas: vec![LOCAL.to_string()],
+            generation: 6,
+            draining: false,
+            successor: None,
+            routing: Default::default(),
+            incarnation: 0,
+            fence_storage_ids: Default::default(),
+            member_storage_ids: Default::default(),
+            pending: None,
+            readmitted: entries,
+        }],
+        &nodes,
+    );
+    router.publish(table, &nodes);
+}
+
+/// What a copy attests to a unified fence at 7 over the set of 6, in full.
+async fn attested_at_7(handler: &ReplicaHandler) -> felix_wire::internal::FenceAttestation {
+    let answer = settled(|| unified(handler, fence_with(7, set(6, OWN), None, false))).await;
+    let InternalMessage::FenceOk(ok) = answer else {
+        panic!("expected the fence to be taken, got {answer:?}");
+    };
+    ok.attestation.expect("attested")
+}
+
+/// A once-lost copy on `trust_dir` readmitted by the set of 6 and holding
+/// one record at 6, which the readmission left untrusted.
+async fn readmitted_at_6(
+    broker: &Arc<Broker>,
+    trust_dir: &std::path::Path,
+    marks: Arc<QuorumMarks>,
+) -> (
+    ReplicaHandler,
+    Arc<felix_storage::run_state::copy_trust::CopyTrust>,
+) {
+    let (copy, trust) = lost_handler_on(broker, 6, trust_dir, true, marks);
+    wiped_at_5(&copy).await;
+    let answer = settled(|| copy.fence(SENDER, readmission(6, OWN))).await;
+    assert_eq!(refusal(&answer).code, ErrorCode::Unauthorized);
+    let answer =
+        settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    assert_eq!(trust.readmitted(&name), Some(6));
+    assert!(!trust.trusted(&name));
+    (copy, trust)
+}
+
+fn entry_for(storage: [u8; 16]) -> felix_router::Readmitted {
+    felix_router::Readmitted {
+        node: LOCAL.to_string(),
+        storage_id: StorageId::from_bytes(storage).to_hex(),
+        generation: 6,
+        offset: 1,
+    }
+}
+
+/// **A record vouches only for the copy it names, caught up as far as it
+/// says.** The copy holds one record at 6. An entry from a later generation
+/// (the copy could be missing what that generation acknowledged), past the
+/// copy's end, or for another node vouches for nothing.
+#[tokio::test]
+async fn a_record_vouches_only_for_a_copy_that_holds_what_it_says() {
+    let cases = [
+        (entry_for(OWN), true),
+        (
+            felix_router::Readmitted {
+                generation: 7,
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+        (
+            felix_router::Readmitted {
+                offset: 2,
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+        (
+            felix_router::Readmitted {
+                node: "broker-a".to_string(),
+                ..entry_for(OWN)
+            },
+            false,
+        ),
+    ];
+    for (entry, trusted) in cases {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (copy, _trust) = readmitted_at_6(&broker, trust_dir.path(), marks(true)).await;
+        publish_readmitted(&copy.router, vec![entry.clone()]);
+
+        assert_eq!(attested_at_7(&copy).await.trusted, trusted, "{entry:?}");
+    }
+}
+
+/// **The control plane's `readmitted` record vouches for a copy only in
+/// place of the copy-trust vouch a clean restart loses.** A readmitted copy
+/// the record names, by its current storage id and caught up to what it
+/// holds, attests trusted. The same copy on a poisoned process, after an
+/// unclean start no leader has vouched for, or named by the id it lost,
+/// stays untrusted: the record says nothing about those.
+#[tokio::test]
+async fn a_record_vouches_only_for_a_copy_nothing_else_distrusts() {
+    for case in ["none", "poisoned", "unclean", "other id"] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let (mut copy, _trust) = readmitted_at_6(&broker, trust_dir.path(), marks(true)).await;
+        let named = if case == "other id" { OLD } else { OWN };
+        publish_readmitted(&copy.router, vec![entry_for(named)]);
+        match case {
+            "poisoned" => copy.poisoned = || true,
+            "unclean" => {
+                copy.unclean = Some(Arc::new(crate::unclean::UncleanStart::new(LOCAL)));
+            }
+            _ => {}
+        }
+
+        let attested = attested_at_7(&copy).await;
+
+        assert_eq!(attested.kept_from, 6, "{case}");
+        assert_eq!(attested.trusted, case == "none", "{case}");
+        assert_eq!(attested.by_record, case == "none", "{case}");
+    }
+}
+
+/// **Nor for a copy given up on disk or doubted as one this broker led
+/// before a crash.** A fence from a newer leader refuses or replaces those
+/// marks first, so this asks the attestation directly.
+#[tokio::test]
+async fn a_record_does_not_vouch_for_a_given_up_or_doubted_copy() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = readmitted_at_6(&broker, trust_dir.path(), marks(true)).await;
+    assert!(copy.attestation(&key(), true, false, true).trusted);
+    assert!(
+        !copy.attestation(&key(), true, true, true).trusted,
+        "given up"
+    );
+    trust.doubt(&name).expect("doubt");
+    assert!(
+        !copy.attestation(&key(), true, false, true).trusted,
+        "doubted"
+    );
+}
+
+/// **Once the fleet finalized `replica_election`, a readmission counts for
+/// nothing**: neither the readmitting set's promises nor the control plane's
+/// record. An adopted elected leader may have opened that set's generation
+/// before the loss, which neither can tell. The copy counts as one never
+/// readmitted.
+#[tokio::test]
+async fn a_readmission_counts_only_while_elections_are_off() {
+    for electing in [false, true] {
+        let (broker, _dir) = broker_with_storage().await;
+        let trust_dir = tempfile::tempdir().expect("tempdir");
+        let marks = if electing {
+            electing_marks()
+        } else {
+            marks(true)
+        };
+        let (copy, _trust) = readmitted_at_6(&broker, trust_dir.path(), marks).await;
+        publish_readmitted(&copy.router, vec![entry_for(OWN)]);
+
+        let attested = attested_at_7(&copy).await;
+
+        if electing {
+            assert_eq!(attested, no_promise().expect("some"), "electing");
+        } else {
+            assert_eq!(attested.kept_from, 6);
+            assert!(attested.trusted);
+        }
+    }
+}
+
+/// **A readmitted copy refuses a batch stamped with a set older than its
+/// own**, as a deposed leader of the set from before the loss would send, and
+/// its readmission stays the set that readmitted it.
+#[tokio::test]
+async fn a_readmitted_copy_refuses_a_batch_from_an_older_set() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = readmitted_at_6(&broker, trust_dir.path(), marks(true)).await;
+    let deposed = ReplicateRecords {
+        set_generation: Some(5),
+        ..stamped(6, 1, &["b"])
+    };
+
+    let answer =
+        settled(|| copy.apply(SENDER, deposed.clone(), felix_broker::LogKind::Stream)).await;
+
+    assert_eq!(refusal(&answer).code, ErrorCode::StaleSet, "{answer:?}");
+    assert_eq!(trust.readmitted(&name), Some(6));
+    assert_eq!(log_of(&broker).await.tail_offset().await.expect("tail"), 1);
+}
+
+/// **A set that names no storage ids readmits nothing**, though it marks
+/// nothing wiped either: a control plane that sends no ids could have
+/// written it before the loss, so its leader may lack what the old copy
+/// acknowledged.
+#[tokio::test]
+async fn a_set_without_storage_ids_does_not_readmit_a_once_lost_copy() {
+    let name = crate::unclean::copy_key(&crate::driver::watch_key(&key()));
+    let (broker, _dir) = broker_with_storage().await;
+    let trust_dir = tempfile::tempdir().expect("tempdir");
+    let (copy, trust) = lost_handler(&broker, 6, trust_dir.path(), true);
+    let answer = settled(|| copy.fence(SENDER, fence_with(6, named(6, None), None, false))).await;
+    assert!(matches!(answer, InternalMessage::FenceOk(_)), "{answer:?}");
+    let answer =
+        settled(|| copy.apply(SENDER, stamped(6, 0, &["a"]), felix_broker::LogKind::Stream)).await;
+    assert!(
+        matches!(answer, InternalMessage::ReplicateOk(_)),
+        "{answer:?}"
+    );
+    assert_eq!(trust.readmitted(&name), None);
 }

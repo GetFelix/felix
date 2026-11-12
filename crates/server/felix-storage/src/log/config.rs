@@ -141,7 +141,107 @@ pub struct LogConfig {
     /// opens, before retention first runs. The default keeps what the log's
     /// replica state recorded. See `DiskLog::hold_retention_at_commit`.
     pub retention_hold: RetentionHold,
+    /// Whether a new segment may be started in format v9, whose records
+    /// carry a generation. Off unless a [`crate::DiskLogProvider`] is told
+    /// otherwise; see [`GenerationGate`].
+    pub generations: GenerationGate,
+    /// Every record is a Raft entry (`crate::raft_log`), so each needs a
+    /// generation: the log writes format v9 from its first segment, moves an
+    /// older active segment onto v9 at the next append, and takes membership
+    /// records. Retention bounds are refused, since only a purge may drop
+    /// entries.
+    ///
+    /// The [`GenerationGate`] is not asked. Set this only where every build
+    /// that may open the directory reads v9.
+    pub raft_log: bool,
 }
+
+/// Whether logs may start new segments in format v9, shared by every log a
+/// provider opens.
+///
+/// Off until [`Self::open_when`] is given a check, and then only while it
+/// says yes. A broker in a cluster asks whether the fleet has finalized
+/// `record_generations`, since a build that predates v9 refuses the segment.
+/// Once it has said yes it stays yes, as a finalize is never undone, and a
+/// log already on v9 stays there whatever it says. With a root, the first
+/// yes writes the `record-generations` marker there before any v9 segment
+/// exists (`crate::run_state::record_generations_written`).
+#[derive(Clone, Default)]
+pub struct GenerationGate(std::sync::Arc<GateState>);
+
+#[derive(Default)]
+struct GateState {
+    check: std::sync::OnceLock<Box<dyn Fn() -> bool + Send + Sync>>,
+    root: Option<std::path::PathBuf>,
+    open: std::sync::atomic::AtomicBool,
+    marking: parking_lot::Mutex<()>,
+}
+
+impl GenerationGate {
+    /// A gate whose first yes marks the data directory at `root`.
+    pub fn under(root: impl Into<std::path::PathBuf>) -> Self {
+        Self(std::sync::Arc::new(GateState {
+            root: Some(root.into()),
+            ..GateState::default()
+        }))
+    }
+
+    /// Ask `check` from now on. Only the first call counts.
+    pub fn open_when(&self, check: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.0.check.set(Box::new(check));
+    }
+
+    /// Whether the gate has said yes, or its check would now. Unlike
+    /// [`Self::allows`] it writes nothing.
+    pub(crate) fn heard(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.0.open.load(Ordering::Acquire) || self.0.check.get().is_some_and(|check| check())
+    }
+
+    /// Whether a new segment may be v9. Asked only when a log rolls onto a
+    /// segment that would otherwise be older, so the marker's write, once,
+    /// lands on a roll rather than on an append. A marker that cannot be
+    /// written keeps the log where it is.
+    pub(crate) fn allows(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.0.open.load(Ordering::Acquire) {
+            return true;
+        }
+        if !self.0.check.get().is_some_and(|check| check()) {
+            return false;
+        }
+        let _first = self.0.marking.lock();
+        if self.0.open.load(Ordering::Acquire) {
+            return true;
+        }
+        if let Some(root) = &self.0.root
+            && let Err(err) = crate::run_state::record_generations_written(root)
+        {
+            tracing::warn!(error = %err, "could not mark the data directory for segment format v9; staying on the older format");
+            return false;
+        }
+        self.0.open.store(true, Ordering::Release);
+        true
+    }
+}
+
+impl std::fmt::Debug for GenerationGate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GenerationGate")
+            .field("open", &self.0.open)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Wiring rather than a setting, so two configs that differ only in their
+/// gate compare equal.
+impl PartialEq for GenerationGate {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for GenerationGate {}
 
 /// What a log does at open with the retention hold its replica state recorded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -214,6 +314,15 @@ impl Retention {
 }
 
 impl LogConfig {
+    /// The format a segment that starts a log is written at.
+    pub(crate) fn first_segment_version(&self) -> u16 {
+        if self.raft_log {
+            crate::segment::format::GENERATION_VERSION
+        } else {
+            crate::segment::format::BASELINE_VERSION
+        }
+    }
+
     /// The retention bounds this configuration sets.
     pub fn retention(&self) -> Retention {
         Retention {
@@ -224,6 +333,13 @@ impl LogConfig {
 
     /// Whether `retention` can be enforced under this configuration.
     pub(crate) fn check_retention(&self, retention: Retention) -> Result<()> {
+        // Retention deletes head segments on its own schedule, which a Raft
+        // log would read as entries purged that nothing purged.
+        if self.raft_log && retention.is_set() {
+            return Err(StorageError::InvalidConfig(
+                "a Raft log takes no retention bounds; its entries go only by a purge",
+            ));
+        }
         // Zero is not "retain nothing" — the active segment is never deleted, so
         // it would be a bound the log can never satisfy, re-evaluated forever.
         if retention.bytes == Some(0) {
@@ -252,7 +368,12 @@ impl LogConfig {
     pub fn validate(&self) -> Result<()> {
         // A segment must have room for its header plus at least one record, or
         // rollover would loop without ever making progress.
-        let minimum = crate::segment::SEGMENT_HEADER_LEN + crate::segment::RECORD_HEADER_LEN;
+        let minimum = crate::segment::SEGMENT_HEADER_LEN
+            + crate::segment::format::record_len_in(
+                1,
+                &crate::log::RecordMark::None,
+                crate::segment::format::GENERATION_VERSION,
+            );
         if self.segment_size_bytes < minimum {
             return Err(StorageError::InvalidConfig(
                 "segment_size_bytes is too small to hold a single record",
@@ -337,6 +458,8 @@ impl Default for LogConfig {
             max_open_sealed_segments: 256,
             offload: None,
             retention_hold: RetentionHold::AsSaved,
+            generations: GenerationGate::default(),
+            raft_log: false,
         }
     }
 }

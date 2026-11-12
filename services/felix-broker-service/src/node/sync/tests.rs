@@ -76,6 +76,12 @@ async fn a_seeded_broker_holds_every_tenants_keys_before_the_control_plane_goes(
         seeded_tx,
         &catalog_seeded,
         &key_store,
+        &{
+            let checked = CancellationToken::new();
+            checked.cancel();
+            checked
+        },
+        crate::cluster::catalog_sync::Provisional::default(),
     )
     .expect("a control plane is configured");
 
@@ -92,4 +98,124 @@ async fn a_seeded_broker_holds_every_tenants_keys_before_the_control_plane_goes(
     sync_shutdown.cancel();
     let _ = sync.await;
     Ok(())
+}
+
+/// **A broker that started from its view serves no client before it
+/// registers.** The catalog seeding releases `seeded`, which registration
+/// waits on, but the client listeners and `/ready` wait for the
+/// registration itself.
+#[tokio::test]
+async fn after_a_start_from_the_view_clients_wait_for_registration() {
+    let readiness = Readiness::starting();
+    let draining = CancellationToken::new();
+    let seeded = CancellationToken::new();
+    let clients = CancellationToken::new();
+    let listening = CancellationToken::new();
+    listening.cancel();
+    let (registered, registered_watch) = watch::channel(None);
+    let (seeded_tx, seeded_rx) = oneshot::channel();
+    spawn_readiness_flip(
+        true,
+        &readiness,
+        &draining,
+        &seeded,
+        seeded_rx,
+        &listening,
+        Some((clients.clone(), registered_watch)),
+    );
+
+    seeded_tx.send(()).expect("send");
+    tokio::time::timeout(Duration::from_secs(5), seeded.cancelled())
+        .await
+        .expect("registration may go ahead");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!clients.is_cancelled(), "no client before registration");
+    assert!(!readiness.is_ready(), "not ready before registration");
+
+    registered.send_replace(Some(3));
+    tokio::time::timeout(Duration::from_secs(5), clients.cancelled())
+        .await
+        .expect("clients are served once registered");
+    assert!(readiness.is_ready());
+}
+
+/// Without a view nothing more is waited for: the catalog seeds and the
+/// broker is ready, as it always was.
+#[tokio::test]
+async fn without_a_view_readiness_follows_the_catalog() {
+    let readiness = Readiness::starting();
+    let draining = CancellationToken::new();
+    let seeded = CancellationToken::new();
+    let listening = CancellationToken::new();
+    listening.cancel();
+    let (seeded_tx, seeded_rx) = oneshot::channel();
+    spawn_readiness_flip(
+        true, &readiness, &draining, &seeded, seeded_rx, &listening, None,
+    );
+    seeded_tx.send(()).expect("send");
+    tokio::time::timeout(Duration::from_secs(5), seeded.cancelled())
+        .await
+        .expect("seeded");
+    for _ in 0..100 {
+        if readiness.is_ready() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("never reported ready");
+}
+
+/// A catalog that seeds before startup binds its last listener must not flip
+/// readiness: the bind can still fail, and a broker that said ready and then
+/// exited is not retried as a failed start.
+#[tokio::test(start_paused = true)]
+async fn readiness_waits_for_every_listener_after_the_seed() {
+    let readiness = Readiness::starting();
+    let draining = CancellationToken::new();
+    let seeded = CancellationToken::new();
+    let listening = CancellationToken::new();
+    let (seeded_tx, seeded_rx) = oneshot::channel();
+    spawn_readiness_flip(
+        true, &readiness, &draining, &seeded, seeded_rx, &listening, None,
+    );
+
+    seeded_tx.send(()).expect("the flip is waiting");
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        !readiness.is_ready(),
+        "ready before the listeners were bound"
+    );
+    assert!(
+        !seeded.is_cancelled(),
+        "accept and registration released before the listeners were bound"
+    );
+
+    listening.cancel();
+    tokio::time::timeout(Duration::from_secs(5), seeded.cancelled())
+        .await
+        .expect("the flip fires once every listener is bound");
+    assert!(readiness.is_ready());
+}
+
+/// A start-up that fails between the seed and the last bind drains without
+/// ever having reported ready.
+#[tokio::test(start_paused = true)]
+async fn a_drain_before_the_listeners_are_bound_stays_unready() {
+    let readiness = Readiness::starting();
+    let draining = CancellationToken::new();
+    let seeded = CancellationToken::new();
+    let listening = CancellationToken::new();
+    let (seeded_tx, seeded_rx) = oneshot::channel();
+    spawn_readiness_flip(
+        true, &readiness, &draining, &seeded, seeded_rx, &listening, None,
+    );
+
+    seeded_tx.send(()).expect("the flip is waiting");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    draining.cancel();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    listening.cancel();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!readiness.is_ready());
+    assert!(!seeded.is_cancelled());
 }

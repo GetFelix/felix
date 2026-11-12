@@ -79,16 +79,6 @@ an old broker against a new control plane simply does not use what it cannot
 see. Neither direction fails, so the order is a preference rather than a
 requirement.
 
-**Catalog feeds on Postgres during a control-plane roll.** A control plane
-hands out each tenant, namespace, stream and cache change's `seq` in commit
-order only when every instance writing to the database takes the feed's lock.
-While older and newer control-plane instances share one database, a write
-through an older instance can still commit out of order, and a broker can skip
-that change until it restarts. The guarantee holds once
-every control-plane instance runs a release that has it, so finish the roll
-before relying on it, and keep catalog writes to a minimum while it is under
-way.
-
 **Storage identities during a roll.** A broker now registers the identity of
 its data directory, and its replica reports name the identity each follower
 was counted under. Placement never promotes a follower whose two identities
@@ -96,8 +86,7 @@ differ, and keeps a dead leader's last report believed past the usual window
 for one whose identities match. The control plane also stamps each report
 with the leader that made it and the incarnation of every node it names, and
 counts a follower without an identity only from a fresh report taken since it
-last registered. A Postgres control plane runs migrations `0030` and `0031` on
-start. Until every instance runs this release, a registration or report
+last registered. Until every instance runs this release, a registration or report
 written through an older instance carries neither identity nor stamp: that
 follower is judged by the report's age alone, as on the previous release,
 until a current instance takes the broker's next registration or the leader's
@@ -156,7 +145,8 @@ was down during the finalize too.
 older release has nothing to roll back to, so its first broker registration
 finalizes every feature its brokers report, in order, except
 `publisher_principal`, which stays an opt-in because it grows every record by
-its publisher's id, and `joint_fence` and `replica_election`, which an operator
+its publisher's id, `record_generations`, the one-way move to a new storage
+format (see [`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
 finalizes (see [Failover without the control
 plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
 or cache was ever created and no broker has registered twice, and, under the
@@ -167,7 +157,7 @@ control-plane member is still starting when the brokers register, the
 control plane retries the finalize in the background until every member
 answers, for up to ten minutes. If it gives up, it logs a warning, and the
 features are finalized as on an upgraded cluster, with the runbook below. Everything below applies to a cluster upgraded from an older
-release, and to `publisher_principal`.
+release, and to `publisher_principal` and `record_generations`.
 
 #### A new cluster: the first broker's configuration wins
 
@@ -189,8 +179,11 @@ lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) and
 restart the broker
 ```
 
-With `FELIX_INTERNAL_FENCE=false` the message names `majority_ack` and says
-to unset `FELIX_INTERNAL_FENCE` instead. To recover, remove the setting from
+With `FELIX_INTERNAL_FENCE=false` the message lists every finalized feature the
+broker lacks (`majority_ack`, `lease_free_reads` and `fenced_caches`) and
+carries both hints: unset `FELIX_QUORUM_READS` and unset
+`FELIX_INTERNAL_FENCE`. If only the fence is off, the reads hint still shows,
+because `lease_free_reads` is among the missing features. To recover, remove the setting from
 that broker and restart it; it registers normally. If you meant the whole
 cluster to run with the setting, the features cannot be turned off again:
 create the cluster afresh (a new control-plane store and empty broker data
@@ -205,8 +198,8 @@ directories) with the setting on every broker from the start.
    missing it:
 
    ```bash
-   felix-controlplane admin features
-   felix-controlplane admin features finalize jump_hash_routing --dry-run
+   felixctl features ls
+   felixctl features finalize jump_hash_routing --dry-run
    ```
 
    The dry run names any live or draining broker that lacks the feature. A
@@ -215,7 +208,7 @@ directories) with the setting on every broker from the start.
 3. **Finalize.** This is the point of no return for the feature:
 
    ```bash
-   felix-controlplane admin features finalize jump_hash_routing
+   felixctl features finalize jump_hash_routing --yes
    ```
 
    Every broker turns it on within a heartbeat. Watch
@@ -324,14 +317,12 @@ by the same round before it is acknowledged.
 - **Change a stream's consistency with every control-plane member
   upgraded.** A pass that read a stream as `Quorum` must not replace its
   leader on its followers' word after the stream became `Leader`, so the
-  change fences placement. On Postgres migration 0036 does that for every
-  instance. Under Raft it takes every member at metadata level 19; until
+  change fences placement. It takes every member at metadata level 19; until
   then a change of consistency fences nothing, as before.
 - **A second failover in a row needs every control-plane member upgraded.**
   A leader promoted by a failover reports the identity that failover named
   each follower by until it reaches the follower, so the next failover can
-  count that follower's fence answer. On Postgres migration 0037 adds the
-  column. Under Raft the report keeps it only once every member is at
+  count that follower's fence answer. The report keeps it only once every member is at
   metadata level 20; until then such a follower's answer does not count, as
   before, and a shard that needs it waits.
 - **Finalize with every control-plane member upgraded.** The order is checked
@@ -350,6 +341,16 @@ by the same round before it is acknowledged.
   subscribers, watches and group consumers. A group operation on a broker
   whose replicas no longer answer it fails with `leadership_lost` instead of
   `shard_unavailable`, and each group write waits for one round.
+- **Before the finalize reaches a broker.** A broker that stands for election
+  (`FELIX_INTERNAL_ELECTION=true`) confirms each `Quorum` read with both the
+  lease and the round until it hears the feature was finalized. Cut off from
+  the control plane when you finalize, it never hears, and its replicas may
+  elect a successor without waiting out its lease. Other brokers stay on the
+  lease until they hear: no election can pass them while they hold it. A
+  replica running with `FELIX_INTERNAL_FENCE=false` never answers the round,
+  so if most of a shard's replicas run that way, reads on an election broker
+  fail with `leadership_lost` until the finalize. Turn election on across the
+  whole fleet rather than mixing it with the fence off.
 - **What clients see.** A read costs a round trip to the nearest majority
   (concurrent reads of a shard share rounds). A leader that loses the control
   plane keeps serving reads its replicas confirm. One cut off from its
@@ -365,6 +366,20 @@ by the same round before it is acknowledged.
   fleet that already finalized `lease_free_reads`, remove
   `FELIX_QUORUM_READS=lease` from every broker, or each upgraded broker is
   refused.
+
+#### `atomic_commit`
+
+Once finalized, a cluster member accepts atomic commits: an event and its state
+updates written as one record. Until then a commit over QUIC is refused with
+`invalid_request` ("atomic commits are not enabled for this fleet"). The
+record needs storage format v5 and a replication mark an older build refuses.
+
+- **Replication carries it.** A replica that predates the record would refuse
+  the batch and stop replicating, so the cluster waits for the whole fleet.
+- **A single broker** accepts commits from the start: it has no replicas.
+- **A new cluster** starts with it finalized.
+- **What clients see.** Nothing until a client commits. See
+  [Atomic commits](/clients/rust/groups-and-commits/#atomic-commits).
 
 #### `publisher_principal`
 
@@ -458,13 +473,6 @@ is deleted again after the finalize.
   every member. A cluster that ran an unreleased build between versions 10
   and 13 may need members rebuilt from a snapshot; see
   `docs/metadata-raft-design.md`.
-  With Postgres, the first upgraded instance runs migration 0028 for the whole
-  database. An instance from before this release that is still running after
-  the finalize cannot create streams (the database refuses a stream without an
-  incarnation), its deletes still record tombstones, and the database stamps
-  its shard assignments with the incarnation. Its catalog answers leave
-  incarnations out, which brokers refuse rather than misread, so upgrade every
-  instance before finalizing.
 - **Under Raft, deletes keep shard state until every member is at metadata
   version 10.** Before that, deleting a namespace or tenant keeps its streams'
   and caches' shard assignments and replica reports, and deleting a stream or
@@ -504,10 +512,7 @@ was down for the delete.
   every entry alike. Until every member is at version 14, caches are created
   at incarnation 0 and no cache delete records a tombstone; a cache create
   through an upgraded member is refused with 409 meanwhile. Finalize through
-  an upgraded member anyway. With Postgres, the first upgraded instance runs migration 0032. An older
-  instance still running after the finalize cannot create caches, its deletes
-  still record tombstones, and the database stamps its cache shard
-  assignments with the incarnation.
+  an upgraded member anyway.
 - **Every broker must report it.** A broker that predates it would open a new
   cache in the directories a deleted cache of that name used.
 - **Nothing moves on disk.** Existing caches keep incarnation 0, their
@@ -595,6 +600,41 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 - **What clients see.** Nothing changes for a client that never sends headers.
   One that does learns at connect time whether the cluster accepts them.
 
+#### `record_generations`
+
+Groundwork for running each shard on Raft, which needs the term of every
+entry in the log itself. Once it is finalized, each durable stream log starts
+its next segment in storage format v9, with an 8-byte generation in every
+record header: the generation of the leader that wrote the record, carried to
+every follower with it. Clients see nothing: reads, offsets and payloads are
+unchanged. Finalize `generation_start` first; the control plane refuses this
+one until it is.
+
+```sh
+felixctl features finalize record_generations --dry-run
+felixctl features finalize record_generations --yes
+```
+
+- **It is the one-way step.** A broker older than this release refuses to
+  open a v9 segment, so after the finalize no broker can be rolled back to
+  one. Take a backup first. Nothing changes on disk until you finalize: the
+  feature turns nothing on by being supported.
+- **Only new segments move.** The segment a log is writing when the broker
+  hears of the finalize is never rewritten. The log moves at its next roll,
+  so a quiet stream can stay on the older format for a while.
+- **Committed votes.** The same gate lets a shard save a committed vote,
+  which the previous release also refuses. Nothing commits a vote yet.
+- **A data directory that has a v9 segment** joins a cluster only once that
+  cluster has finalized `record_generations`. The broker writes a
+  `record-generations` marker in the data directory before the first v9
+  segment, and a broker holding it that registers with a fleet that has not
+  finalized the feature deregisters and stops with an error saying so.
+- **A new cluster** does not finalize it; it stays the operator's step until
+  replicated clusters are measured with it on. A single broker has no fleet
+  and stays on the older format.
+- **Records written before the finalize** keep no generation. A follower on
+  v9 stores them as written by an unknown generation (0) rather than guess.
+
 A control plane older than fleet features sends none, so brokers keep them
 all off. Under the Raft backend a broker's features are kept, and a feature
 can be finalized, only once every control-plane member is at metadata
@@ -661,7 +701,7 @@ accepted.
 **So before an upgrade that changes `FORMAT_VERSION`: take a backup, and treat
 the rollout as one-way.**
 
-The current build reads format 8 but writes 3, which the previous release
+The current build reads format 9 but writes 3, which the previous release
 reads, so upgrading to it is still reversible. It moves a log to a newer
 version only to hold a record that needs it, and writes each such record only
 once something enables it: a v4 segment for a generation-start record, once
@@ -673,7 +713,10 @@ with its publisher, once `publisher_principal` is, or on a single broker with
 `head_trim` is, or from the start on a single broker (see
 [`head_trim`](#head_trim)); and v8 for a record with a key or headers, once
 `record_headers` is, or from the start on a single broker (see
-[`record_headers`](#record_headers)). Every MQTT message carries headers, so an
+[`record_headers`](#record_headers)); and v9 for every new segment of a
+stream log, once `record_generations` is (see
+[`record_generations`](#record_generations)), and never on a single
+broker. Every MQTT message carries headers, so an
 MQTT publish to a mounted stream is what moves that stream's logs to v8;
 mounting the stream is the explicit step that opts in, and a broker that
 refuses headers refuses the MQTT publish too. Each of those is the one-way
@@ -718,6 +761,24 @@ finalize it. See the runbook above.
 | Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
+
+A broker rolled back from 0.7 can refuse a shard's replica set file. In the
+short window before a 0.7 broker reads whether `joint_fence` is finalized, it
+keeps older replica sets in that file, and an older build fails to open a log
+whose file has them. Start the broker on 0.7 again and roll it back once the
+shard's next replica set is written; a broker that knows `joint_fence` is off
+drops the older sets at that write.
+
+Rolling a broker back below 0.7 and forward again can leave it doubting every
+copy it holds. 0.7 keeps `copy-trust` in the data directory, stamped with the
+directory's storage id. If the older build gave the directory a new id while
+it ran (after a machine crash, for example), the next 0.7 start finds a stamp
+that does not match and treats every copy as untrusted, possibly short, and
+led here before a crash. Each copy clears once its shard's leader ships to it.
+Until then an older broker's failover fence to that copy is refused, so a
+shard whose leader is down at that moment fails over only on its other
+copies. Roll forward while the shards' leaders are up, and let each broker
+catch up on its shards before you move to the next one.
 
 ## What this does not cover
 

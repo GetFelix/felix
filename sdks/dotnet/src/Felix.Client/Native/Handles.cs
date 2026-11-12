@@ -178,6 +178,23 @@ internal sealed class FelixProducerHandle : TokenHeldHandle
     }
 }
 
+internal sealed class FelixHandedHandle : SafeHandle
+{
+    internal FelixHandedHandle(nint handle)
+        : base(0, true)
+    {
+        SetHandle(handle);
+    }
+
+    public override bool IsInvalid => handle == 0;
+
+    protected override bool ReleaseHandle()
+    {
+        NativeMethods.felix_handed_free(handle);
+        return true;
+    }
+}
+
 /// <summary>Holds a SafeHandle's reference for the span of one native call.</summary>
 internal readonly struct HandleLease : IDisposable
 {

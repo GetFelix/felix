@@ -15,7 +15,7 @@
 //! reads of a shard share rounds: a read waits for one that started after it
 //! arrived, so at most one round per shard is in flight and one more queued.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -31,7 +31,7 @@ use crate::quorum::{LeadershipCheck, QuorumError};
 use crate::{ShardKey, ShardKind};
 
 /// Confirms leadership for reads over the peer transport.
-pub struct ReadIndex<R> {
+pub(crate) struct ReadIndex<R> {
     inner: Arc<Inner<R>>,
 }
 
@@ -68,7 +68,7 @@ struct Finished {
 }
 
 impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
-    pub fn new(
+    pub(crate) fn new(
         requester: R,
         broker: Arc<Broker>,
         router: Arc<ShardRouter>,
@@ -80,7 +80,7 @@ impl<R: PeerRequester + Send + Sync + 'static> ReadIndex<R> {
                 broker,
                 router,
                 timeout,
-                rounds: Mutex::new(HashMap::new()),
+                rounds: Mutex::new(HashMap::default()),
             }),
         }
     }

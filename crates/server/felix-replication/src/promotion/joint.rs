@@ -11,8 +11,9 @@
 //! before the route's, as the model's `Swap` takes it (`oldSet' = CpSet`).
 //! A cut-over the control plane holds as pending names it on the route.
 //! Otherwise it comes from the assignment this broker's watch saw at that
-//! generation, from the set the leader before shipped with at it, or from
-//! what this leader kept beside its own set. When none of those knows it, the fence
+//! generation (also after a rename past a ballot, which names the generation
+//! it replaced, #2024), from the set the leader before shipped with at it, or
+//! from what this leader kept beside its own set. When none of those knows it, the fence
 //! stays pending: fencing the new set alone could leave a majority of the old
 //! one that never heard of the change.
 //!
@@ -21,10 +22,12 @@
 //! plane recorded without taking, a failover leaves both the recorded set and
 //! the elected leader's (#1806). A majority of each is needed.
 //!
-//! So is the set kept beside the log's own when this log holds no record of
-//! its own set's generation: that fence may never have opened, and
-//! then a majority of the set it was leaving may still hold what was
-//! acknowledged before it (#1878).
+//! So are the sets kept beside the log's own when this log holds no record
+//! of its own set's generation: that fence may never have opened, and then a
+//! majority of any set it was leaving may still hold what was acknowledged
+//! before it (#1878). The log keeps every such set across fences that never
+//! opened, not only the newest (#1881), and the fence carries all of them to
+//! every member, so whichever replica fails over next fences them too.
 
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
@@ -47,10 +50,11 @@ pub struct Joint<'a> {
     prior: Option<PriorSet>,
     local_storage: Option<StorageId>,
     replaced: bool,
+    continuing: bool,
 }
 
 impl<'a> Joint<'a> {
-    pub fn new(
+    pub(crate) fn new(
         addr_of: &'a (dyn Fn(&str) -> Option<SocketAddr> + Sync),
         prior: Option<PriorSet>,
     ) -> Self {
@@ -59,19 +63,40 @@ impl<'a> Joint<'a> {
             prior,
             local_storage: None,
             replaced: false,
+            continuing: false,
         }
+    }
+
+    /// Whether the generation fenced continues one this process served
+    /// itself ([`crate::promotion::PromotionGate::continuing`]). Its fence
+    /// then also counts a promise from a copy the sets do not name, when the
+    /// answer attests a kept ballot naming this broker at the generation
+    /// before: nothing it acknowledged can be missing here, and that copy
+    /// promised this generation to no one else.
+    pub(crate) fn with_continuing(mut self, continuing: bool) -> Self {
+        self.continuing = continuing;
+        self
+    }
+
+    pub(super) fn continuing(&self) -> bool {
+        self.continuing
+    }
+
+    /// Where to reach `node_id`, which the route may not name.
+    pub(super) fn addr_of(&self, node_id: &str) -> Option<SocketAddr> {
+        (self.addr_of)(node_id)
     }
 
     /// This broker's storage identity, so a promotion can tell a copy a set
     /// named another id for (a wipe) from one staged as a learner.
-    pub fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
+    pub(crate) fn with_local_storage(mut self, storage: Option<StorageId>) -> Self {
         self.local_storage = storage;
         self
     }
 
     /// Whether the control plane last registered this node under another
     /// storage id, so a copy here with no set may be one it lost.
-    pub fn with_replaced_storage(mut self, replaced: bool) -> Self {
+    pub(crate) fn with_replaced_storage(mut self, replaced: bool) -> Self {
         self.replaced = replaced;
         self
     }
@@ -132,14 +157,33 @@ pub(super) struct JointSets {
     pub(super) leaving: ReplicaSetView,
     /// The log's sets from before the route that are left besides
     /// `leaving`. A member voting only in one is sent it instead of
-    /// `leaving`, or it would refuse a fence naming no set it votes in.
+    /// `leaving`, or it would refuse a fence naming no set it votes in. Every
+    /// member is sent the rest as the fence's earlier sets, to keep.
     besides: Vec<ReplicaSetView>,
     /// Each set being left counted with its learners and without: replicas
-    /// keep it either way, and a majority of each is needed.
+    /// keep it either way, and a majority of each is needed, or half of the
+    /// one with learners for a leader that counts by attestation.
     old_voters: Vec<OldVoters>,
     new_voters: BTreeSet<String>,
+    /// The generation of the set this leader fences on, which an attested
+    /// promise must count from.
+    new_generation: u64,
     local: String,
+    /// The leader counts by attestation, so a set being left counted with
+    /// its learners needs only half its members (see [`OldVoters::learners`]).
+    attested: bool,
 }
+
+/// A fence answer: the node, the copy its handshake named, whether it
+/// attested a kept ballot to a continuing leader, which then counts it from
+/// any copy, and the attestation it carried, if any. An attested answer
+/// counts by that alone ([`super::Counted`]).
+pub(super) type Answered<'n> = (
+    &'n str,
+    Option<StorageId>,
+    bool,
+    Option<felix_wire::internal::FenceAttestation>,
+);
 
 /// The voters of one set being left, with the copy it names for each
 /// member, where it names one. An answer counts toward this set only from
@@ -149,6 +193,16 @@ pub(super) struct JointSets {
 struct OldVoters {
     voters: BTreeSet<String>,
     copies: std::collections::BTreeMap<String, StorageId>,
+    generation: u64,
+    /// These voters are a set's members with its learners, which differ from
+    /// its voters alone. A leader that counts the learners as voters
+    /// acknowledges on a majority of them, and half of them meets every such
+    /// majority. Two fences that both know the learners meet in the set
+    /// without them, which needs a majority anyway. A learner the route does
+    /// not name refuses every fence, so asking a majority here can stall the
+    /// fence for good.
+    /// `LearnerBlocking` in `docs/formal/FelixShardUnified.tla`.
+    learners: bool,
 }
 
 impl OldVoters {
@@ -186,26 +240,44 @@ impl JointSets {
             .unwrap_or(&self.leaving)
     }
 
+    /// The sets being left that the fence to `node_id` carries besides
+    /// [`Self::leaving_for`], so a replica keeps every one of them.
+    pub(super) fn earlier_for(&self, node_id: &str) -> Vec<ReplicaSetView> {
+        let sent = self.leaving_for(node_id);
+        std::iter::once(&self.leaving)
+            .chain(&self.besides)
+            .filter(|set| *set != sent)
+            .cloned()
+            .collect()
+    }
+
     /// Whether any member of the set being left is named by its copy, so
     /// answers must say which copy they come from.
     pub(super) fn names_copies(&self) -> bool {
         self.old_voters.iter().any(|old| !old.copies.is_empty())
     }
 
-    /// Whether `answered`, each with the copy its handshake named, is with
-    /// this broker a majority of the voters of every set. A learner is never
-    /// a voter, so it never counts.
+    /// Whether `answered` with this broker's `own` copy holds every set: a
+    /// majority of each set's voters promised (exclusion) and, unless
+    /// `continuing`, the answers that hold what they acknowledged meet every
+    /// majority of it (coverage). A learner is never a voter, so it never
+    /// counts. Without attestations both come to a majority that answered
+    /// from the copy each set names.
     pub(super) fn has_majorities<'n>(
         &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
+        answered: impl Iterator<Item = Answered<'n>>,
+        own: super::OwnCopy,
+        continuing: bool,
     ) -> bool {
         let answered: Vec<_> = answered.collect();
-        self.old_voters
-            .iter()
-            .all(|old| self.majority(&old.voters, |v| self.answered_for(old, &answered, v)))
-            && self.majority(&self.new_voters, |v| {
-                answered.iter().any(|(node, _)| *node == v)
-            })
+        self.tallies(&answered, own).iter().all(|tally| {
+            tally.excludes(tally.promised) && (continuing || 2 * tally.covered >= tally.voters)
+        })
+    }
+
+    /// Whether `old` needs only half its voters' promises.
+    fn blocking(&self, old: &OldVoters) -> bool {
+        self.attested && old.learners
     }
 
     /// Whether `nodes` could still make every majority, whichever copies
@@ -214,56 +286,181 @@ impl JointSets {
         let nodes: BTreeSet<&str> = nodes.collect();
         self.old_voters
             .iter()
-            .map(|old| &old.voters)
-            .chain(std::iter::once(&self.new_voters))
-            .all(|voters| self.majority(voters, |v| nodes.contains(v)))
+            .map(|old| (&old.voters, self.blocking(old)))
+            .chain(std::iter::once((&self.new_voters, false)))
+            .all(|(voters, blocking)| {
+                let left = voters
+                    .iter()
+                    .filter(|v| **v == self.local || nodes.contains(v.as_str()))
+                    .count();
+                Tally::needs(left, voters.len(), blocking)
+            })
     }
 
-    fn answered_for(
-        &self,
-        old: &OldVoters,
-        answered: &[(&str, Option<StorageId>)],
-        voter: &str,
-    ) -> bool {
-        answered
+    /// Each set being left, then the new set: its voters, how many of them
+    /// promised, and how many hold what they acknowledged.
+    fn tallies(&self, answered: &[Answered<'_>], own: super::OwnCopy) -> Vec<Tally> {
+        let tally = |voters: &BTreeSet<String>,
+                     generation: u64,
+                     blocking: bool,
+                     legacy: &dyn Fn(&str, Option<StorageId>, bool) -> bool| {
+            let mut promised = 0;
+            let mut covered = 0;
+            for voter in voters {
+                if *voter == self.local {
+                    promised += usize::from(own.promises(generation));
+                    covered += usize::from(own.trusted);
+                    continue;
+                }
+                let from = answered.iter().filter(|(node, ..)| *node == voter.as_str());
+                let mut promises = false;
+                let mut covers = false;
+                for (node, identity, kept, attested) in from {
+                    let counted = super::Counted::of(*attested);
+                    let legacy = attested.is_some() || legacy(node, *identity, *kept);
+                    promises |= legacy && counted.promises(generation);
+                    covers |= legacy && counted.covers();
+                }
+                promised += usize::from(promises);
+                covered += usize::from(covers);
+            }
+            Tally {
+                voters: voters.len(),
+                promised,
+                covered,
+                blocking,
+            }
+        };
+        self.old_voters
             .iter()
-            .any(|(node, identity)| *node == voter && old.counts(node, *identity))
-    }
-
-    fn count(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> usize {
-        voters
-            .iter()
-            .filter(|v| *v == &self.local || answered(v))
-            .count()
-    }
-
-    fn majority(&self, voters: &BTreeSet<String>, answered: impl Fn(&str) -> bool) -> bool {
-        self.count(voters, answered) * 2 > voters.len()
+            .map(|old| {
+                tally(
+                    &old.voters,
+                    old.generation,
+                    self.blocking(old),
+                    &|node, identity, kept| kept || old.counts(node, identity),
+                )
+            })
+            .chain(std::iter::once(tally(
+                &self.new_voters,
+                self.new_generation,
+                false,
+                &|_, _, _| true,
+            )))
+            .collect()
     }
 
     /// How far the answers got, for a fence that stays pending.
     pub(super) fn shortfall<'n>(
         &self,
-        answered: impl Iterator<Item = (&'n str, Option<StorageId>)>,
+        answered: impl Iterator<Item = Answered<'n>>,
+        own: super::OwnCopy,
     ) -> String {
         let answered: Vec<_> = answered.collect();
-        let old = self
-            .old_voters
+        let tallies = self.tallies(&answered, own);
+        let (new, old) = tallies.split_last().expect("the new set is always tallied");
+        let old = old
             .iter()
-            .map(|old| {
-                let took = self.count(&old.voters, |v| self.answered_for(old, &answered, v));
-                format!("{took} of {}", old.voters.len())
+            .map(|tally| {
+                let half = if tally.blocking {
+                    " (with its learners, half needed)"
+                } else {
+                    ""
+                };
+                format!("{} of {}{half}", tally.promised, tally.voters)
             })
             .collect::<Vec<_>>()
             .join(" and ");
-        format!(
+        let mut why = format!(
             "{old} voters of the set being left and {} of {} of the new set took the fence, \
              a majority of each needed",
-            self.count(&self.new_voters, |v| answered
+            new.promised, new.voters,
+        );
+        if own.attested {
+            let covered = tallies
                 .iter()
-                .any(|(node, _)| *node == v)),
-            self.new_voters.len(),
-        )
+                .map(|tally| format!("{} of {}", tally.covered, tally.voters))
+                .collect::<Vec<_>>()
+                .join(" and ");
+            why.push_str(&format!(
+                "; {covered} attest they hold what they acknowledged, half of each needed"
+            ));
+        }
+        why
+    }
+}
+
+/// One set's count in a fence.
+struct Tally {
+    voters: usize,
+    promised: usize,
+    covered: usize,
+    /// Half its voters' promises exclude, rather than a majority.
+    blocking: bool,
+}
+
+impl Tally {
+    fn excludes(&self, promised: usize) -> bool {
+        Self::needs(promised, self.voters, self.blocking)
+    }
+
+    fn needs(count: usize, voters: usize, blocking: bool) -> bool {
+        if blocking {
+            2 * count >= voters
+        } else {
+            2 * count > voters
+        }
+    }
+}
+
+/// Why [`set_before`] has no set for a route.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NoSetBefore {
+    /// This broker counts the set of this newer generation.
+    Newer(u64),
+    /// Nothing here names the set at the generation before this one, and
+    /// this log keeps this generation's own set. Only a later generation can
+    /// tell, and renaming to it leaves the set this log keeps. [`sets`]
+    /// returns it only when this broker also opened the generation as its
+    /// leader, before `joint_fence` was on: that open already fenced the
+    /// set before, so the rename skips nothing. Also generation 0 with no
+    /// kept set: no log keeps one there, and no generation precedes it.
+    Unknown(u64),
+    /// As [`Self::Unknown`], but this log keeps the set of an older
+    /// generation than the one before: this broker may never have opened
+    /// the generation in between, whose set a rename would leave unfenced.
+    /// [`sets`] returns [`Self::Unknown`] instead when this broker's own
+    /// ballot and start record at this generation show its election opened
+    /// it.
+    Skipped(u64),
+    /// As [`Self::Unknown`], but this log keeps no set and nothing says the
+    /// route is the shard's first assignment. An earlier set may hold
+    /// acknowledged records that a rename would leave unfenced.
+    Unseen(u64),
+    /// As [`Self::Unknown`], but this broker's ballot is not its own at this
+    /// generation: the set was kept from another node's fence or election
+    /// request, which proves nothing was fenced from here.
+    NotOpened(u64),
+}
+
+impl std::fmt::Display for NoSetBefore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Newer(generation) => write!(
+                f,
+                "this broker counts the set of generation {generation}, newer than this one"
+            ),
+            Self::Unknown(generation)
+            | Self::Skipped(generation)
+            | Self::Unseen(generation)
+            | Self::NotOpened(generation) => {
+                write!(
+                    f,
+                    "the set before generation {generation} is not known here, so the set being \
+                     left cannot be fenced"
+                )
+            }
+        }
     }
 }
 
@@ -275,15 +472,12 @@ pub(crate) fn set_before(
     stored: Option<&ReplicaSet>,
     route: &Route,
     prior: Option<&PriorSet>,
-) -> Result<Option<Membership>, String> {
+) -> Result<Option<Membership>, NoSetBefore> {
     let before = route.generation.checked_sub(1);
     if let Some(stored) = stored
         && stored.current.generation > route.generation
     {
-        return Err(format!(
-            "this broker counts the set of generation {}, newer than this one",
-            stored.current.generation
-        ));
+        return Err(NoSetBefore::Newer(stored.current.generation));
     }
     // A cut-over the control plane holds as pending names the set it leaves:
     // the control plane's own, as the model's `Swap` takes it, and the set
@@ -318,8 +512,9 @@ pub(crate) fn set_before(
                 return Ok(Some(crate::replica_set::placed(set, before)));
             }
         }
-        // A first assignment has nothing before it, and a log that already
-        // keeps a set is not one a first assignment would find.
+        // A first assignment, as the watch saw it or a snapshot marked it,
+        // has nothing before it, and a log that already keeps a set is not
+        // one a first assignment would find.
         Some(PriorSet { before: None, .. }) if stored.is_none() => return Ok(None),
         _ => {}
     }
@@ -329,11 +524,20 @@ pub(crate) fn set_before(
     {
         return Ok(Some(stored.current.clone()));
     }
-    Err(format!(
-        "the set before generation {} is not known here, so the set being left cannot be \
-         fenced",
-        route.generation
-    ))
+    // Only this generation's own kept set is evidence that no earlier set
+    // still holds records this broker would leave behind. A log never keeps
+    // a set at generation 0 (`accept_set` takes it as the one it has), but
+    // no generation precedes it: only a deleted stream recreated at
+    // incarnation 0 can have written before, as without `joint_fence`. The
+    // rename's fence at 1 still needs a majority of the set at 0.
+    match stored {
+        Some(stored) if stored.current.generation == route.generation => {
+            Err(NoSetBefore::Unknown(route.generation))
+        }
+        Some(_) => Err(NoSetBefore::Skipped(route.generation)),
+        None if route.generation == 0 => Err(NoSetBefore::Unknown(0)),
+        None => Err(NoSetBefore::Unseen(route.generation)),
+    }
 }
 
 /// The set `stored` keeps from before `route`, when it names other members
@@ -381,37 +585,44 @@ pub(super) fn logged_besides(
         .cloned()
 }
 
-/// The set `stored` keeps as left by its own set's fence, when `opened` is
-/// false: this log holds no record of that generation, so the fence
-/// may never have opened, and a majority of the set it was leaving may still
-/// hold what was acknowledged before it while no later set does. A failover
-/// fences it too, unless `fenced` already holds it (#1878).
-pub(super) fn unopened_leaving(
+/// The sets `stored` keeps from before its own set, when `opened` is false:
+/// this log holds no record of its set's generation, so that fence may never
+/// have opened, and a majority of a set it was leaving may still hold what
+/// was acknowledged before it while no later set does. That is the set kept
+/// as leaving (#1878) and every earlier set the log carried across fences
+/// that never opened (#1881). A failover fences each that `fenced` does not
+/// already hold.
+pub(super) fn unopened_sets(
     stored: Option<&ReplicaSet>,
     route: &Route,
     opened: bool,
     fenced: &[&Membership],
-) -> Option<Membership> {
-    let stored = stored?;
-    let leaving = stored.leaving.as_ref()?;
-    (!opened
-        && stored.current.generation < route.generation
-        && !leaving.members.is_empty()
-        && !fenced.iter().any(|set| same_set(set, leaving)))
-    .then(|| leaving.clone())
+) -> Vec<Membership> {
+    let Some(stored) =
+        stored.filter(|stored| !opened && stored.current.generation <= route.generation)
+    else {
+        return Vec::new();
+    };
+    let mut sets: Vec<Membership> = Vec::new();
+    for set in stored.leaving.iter().chain(&stored.earlier) {
+        if !set.members.is_empty()
+            && !fenced
+                .iter()
+                .copied()
+                .chain(&sets)
+                .any(|kept| same_set(kept, set))
+        {
+            sets.push(set.clone());
+        }
+    }
+    sets
 }
 
 /// Whether two sets name the same members. Learner flags and copies count:
 /// the same names voting differently, or from other copies, are another set,
 /// whose majorities the other may miss.
 fn same_set(one: &Membership, other: &Membership) -> bool {
-    let nodes = |set: &Membership| {
-        set.members
-            .iter()
-            .map(|m| (m.node.clone(), m.learner, m.storage.map(|id| id.to_bytes())))
-            .collect::<BTreeSet<_>>()
-    };
-    nodes(one) == nodes(other)
+    one.same_members(other)
 }
 
 /// A pending change's set being left, at generation `before`. The other
@@ -468,7 +679,8 @@ fn recorded_leaving(
 
 /// The fence for `route` under `joint_fence`: the set it leaves, and the
 /// joint fence when that set's voters differ from the route's. `Err` is a
-/// fence that cannot open yet, because the set being left is not known.
+/// fence that cannot open at this generation, because the set being left is
+/// not known.
 ///
 /// A member whose capabilities cannot be learned, whose address is unknown,
 /// or that does not check sets, is not asked: it is a member that has not
@@ -481,9 +693,53 @@ pub(super) async fn sets<R: PeerRequester>(
     route: &Route,
     set: &ReplicaSetView,
     joint: &Joint<'_>,
-) -> Result<Fenced, String> {
+    attested: bool,
+) -> Result<Fenced, NoSetBefore> {
     let stored = log.replica_set();
-    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref())? {
+    let before = match set_before(stored.as_ref(), route, joint.prior.as_ref()) {
+        // A rename is safe only past a generation this broker opened as
+        // leader: its own ballot there, as `keep_own_set` records it.
+        Err(NoSetBefore::Unknown(generation))
+            if log.accepted_generation() != generation
+                || log.accepted_leader().as_deref() != Some(local_node_id) =>
+        {
+            return Err(NoSetBefore::NotOpened(generation));
+        }
+        // A leader elected at a generation the control plane then adopted
+        // keeps the set it stood on, from an older generation, and after a
+        // restart nothing here names the set at the one before. A candidate
+        // stands only on the set the control plane records, and adoption
+        // keeps it, so that kept set is the one before, and the rename fences
+        // it beside the control plane's. The evidence: its own ballot and
+        // start record here (a ballot alone may be a withdrawn standing), and
+        // the kept set naming exactly the route's set on the same copies with
+        // nothing pending and nothing else kept beside it. These do not prove
+        // the open was fenced; the unfenced opens that also leave them are
+        // covered in docs/replication-design.md, "Planned handoff".
+        Err(NoSetBefore::Skipped(generation))
+            if log.accepted_generation() == generation
+                && log.accepted_leader().as_deref() == Some(local_node_id)
+                && log
+                    .generations()
+                    .iter()
+                    .any(|epoch| epoch.generation == generation)
+                && route.pending.is_none()
+                && stored.as_ref().is_some_and(|stored| {
+                    // A set left on the same copies is the one a plain bump
+                    // leaves, which the candidate stands on too.
+                    stored
+                        .leaving
+                        .as_ref()
+                        .is_none_or(|leaving| same_set(leaving, &stored.current))
+                        && stored.earlier.is_empty()
+                        && names_the_route_set(&stored.current, route)
+                }) =>
+        {
+            return Err(NoSetBefore::Unknown(generation));
+        }
+        before => before?,
+    };
+    let before = match before {
         Some(before) => before,
         // Nothing before a first assignment: kept as an empty set, which
         // is no change to fence across, as in the model.
@@ -499,17 +755,45 @@ pub(super) async fn sets<R: PeerRequester>(
     if !before.members.is_empty()
         && let Some(stored) = stored.as_ref()
     {
-        let opened = holds_records_of(log, stored.current.generation).await;
+        let opened = log.holds_records_of(stored.current.generation);
         let fenced: Vec<&Membership> = std::iter::once(&before).chain(&besides).collect();
-        if let Some(unopened) = unopened_leaving(Some(stored), route, opened, &fenced) {
-            besides.push(unopened);
-        }
+        let unopened = unopened_sets(Some(stored), route, opened, &fenced);
+        besides.extend(unopened);
     }
-    Ok(across(requester, local_node_id, route, set, before, besides, joint).await)
+    Ok(across(
+        requester,
+        local_node_id,
+        route,
+        set,
+        before,
+        besides,
+        joint,
+        attested,
+    )
+    .await)
+}
+
+/// Whether `kept` names exactly `route`'s set: the same voters, none a learner
+/// or wiped, each on the copy the route names. A copy either side leaves
+/// unnamed may be another one, so it does not match.
+fn names_the_route_set(kept: &Membership, route: &Route) -> bool {
+    let routed = crate::replica_set::kept(route, None).current;
+    kept.members.len() == routed.members.len()
+        && kept.members.iter().all(|member| {
+            !member.learner
+                && !member.wiped
+                && member.storage.is_some()
+                && routed
+                    .members
+                    .iter()
+                    .any(|named| named.node == member.node && named.storage == member.storage)
+        })
 }
 
 /// The fence for `route` leaving `before`, and each of `besides` when more
-/// sets are being left: jointly when the voters differ.
+/// sets are being left: jointly when the voters differ. `attested` when the
+/// leader counts its answers by attestation.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn across<R: PeerRequester>(
     requester: &R,
     local_node_id: &str,
@@ -518,6 +802,7 @@ pub(super) async fn across<R: PeerRequester>(
     before: Membership,
     besides: Vec<Membership>,
     joint: &Joint<'_>,
+    attested: bool,
 ) -> Fenced {
     let olds = || std::iter::once(&before).chain(&besides);
     let new_voters: BTreeSet<String> = set
@@ -541,10 +826,13 @@ pub(super) async fn across<R: PeerRequester>(
             .iter()
             .filter_map(|m| Some((m.node.clone(), m.storage?)))
             .collect();
-        for voters in [all, counted] {
+        let learners = all != counted;
+        for (voters, learners) in [(all, learners), (counted, false)] {
             let voters = OldVoters {
                 voters,
                 copies: copies.clone(),
+                generation: old.generation,
+                learners,
             };
             if !old_voters.contains(&voters) {
                 old_voters.push(voters);
@@ -582,9 +870,20 @@ pub(super) async fn across<R: PeerRequester>(
             members.push((member.node.clone(), (joint.addr_of)(&member.node)));
         }
     }
+    // A member that is only a learner of the sets being left is not a
+    // replica the route names, so it refuses: its answer is never needed
+    // where half of the set with learners is enough.
+    let learner_only = |node_id: &str| {
+        olds()
+            .flat_map(|old| &old.members)
+            .filter(|member| member.node == node_id)
+            .all(|member| member.learner)
+    };
     let mut asked = Vec::new();
     for (node_id, addr) in members {
-        if node_id == local_node_id {
+        if node_id == local_node_id
+            || (attested && !route_names(route, &node_id) && learner_only(&node_id))
+        {
             continue;
         }
         let Some(advertise_addr) = addr else {
@@ -595,8 +894,12 @@ pub(super) async fn across<R: PeerRequester>(
             None => requester.capabilities(&node_id, advertise_addr).await.ok(),
         };
         // A member that does not check sets would take the fence without
-        // the set being left; it cannot count toward either majority.
-        if offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)) {
+        // the set being left, and one that keeps a single set being left
+        // would let a failover from its log skip the others; neither counts
+        // toward any majority.
+        if offered.is_some_and(|offered| {
+            offered.contains(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
+        }) {
             asked.push(NodeRef {
                 node_id,
                 advertise_addr,
@@ -611,7 +914,9 @@ pub(super) async fn across<R: PeerRequester>(
         besides: besides.iter().map(view).collect(),
         old_voters,
         new_voters,
+        new_generation: set.generation,
         local: local_node_id.to_string(),
+        attested,
     };
     Fenced {
         before,
@@ -619,17 +924,11 @@ pub(super) async fn across<R: PeerRequester>(
     }
 }
 
-/// Whether `log` holds a record written at `generation`: a leader writes one
-/// only once its fence opened. The generation's epoch outlives a trim of its
-/// start record, which a retention pass may take. A tail that cannot be read
-/// is no evidence.
-async fn holds_records_of(log: &felix_broker::StreamLog, generation: u64) -> bool {
-    let Ok(tail) = log.tail_offset().await else {
-        return false;
-    };
-    log.generations()
-        .iter()
-        .any(|epoch| epoch.generation == generation && epoch.start_offset < tail)
+/// Whether `route` names `node_id` as its leader or a replica.
+fn route_names(route: &Route, node_id: &str) -> bool {
+    std::iter::once(&route.leader)
+        .chain(&route.replicas)
+        .any(|node| node.node_id == node_id)
 }
 
 pub(crate) fn view(set: &Membership) -> ReplicaSetView {

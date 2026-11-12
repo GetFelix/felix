@@ -7,7 +7,7 @@
 //! a token minted for the tenant in the path; the feeds require
 //! `node.view:cluster:*`. The credential is checked before existence, so an
 //! unauthenticated caller cannot learn what exists by asking.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -89,7 +89,7 @@ pub(crate) async fn list_streams(
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix or is set on a stream that is not durable", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, a stream of this name was deleted before the fleet finalized `stream_incarnations`, `mount` overlaps the mount of another stream of the tenant, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_stream(
@@ -334,7 +334,7 @@ pub(crate) async fn get_stream(
         (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix", body = crate::api::types::ErrorResponse),
         (status = 404, description = "Stream or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 409, description = "`mount` overlaps the mount of another stream of the tenant, the stream would be mounted without being durable, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn patch_stream(
@@ -383,7 +383,7 @@ pub(crate) async fn patch_stream(
     responses(
         (status = 204, description = "Stream deleted"),
         (status = 404, description = "Stream or namespace not found", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`busy`: on Postgres, other writes to the same feed held it for more than 5 s and nothing was written, so retry. `unavailable`: on Raft, no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn delete_stream(

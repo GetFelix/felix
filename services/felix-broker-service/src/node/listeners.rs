@@ -20,9 +20,7 @@ use crate::serving::limits::{ListenerLimits, TenantRates};
 use crate::serving::mqtt::{BrokerMounts, BrokerMqttAuth, BrokerWrites, MqttListener};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
-use crate::shards::routing::IngressRouter;
 use felix_replication::peer::PeerPool;
-use felix_replication::quorum::QuorumMarks;
 
 /// Bind one QUIC listener per configured address.
 pub(super) fn bind(config: &BrokerConfig, tls: &ClientTls) -> Result<Vec<Arc<QuicServer>>> {
@@ -61,10 +59,9 @@ pub(super) struct AcceptLoops<'a> {
     pub(super) connections: &'a TaskTracker,
     pub(super) seeded: &'a CancellationToken,
     pub(super) gate_readiness_on_sync: bool,
-    pub(super) ingress_router: &'a Option<Arc<IngressRouter>>,
+    pub(super) engine: &'a Arc<crate::shards::routing::StreamEngine>,
     pub(super) peers: &'a Option<Arc<PeerPool>>,
     pub(super) lease: &'a Option<Arc<LeaseState>>,
-    pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) shard_status: &'a Arc<felix_replication::status::ShardStatusBoard>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
     pub(super) limits: &'a Arc<ListenerLimits>,
@@ -89,10 +86,9 @@ pub(super) fn spawn_accept_loops(
         connections,
         seeded,
         gate_readiness_on_sync,
-        ingress_router,
+        engine,
         peers,
         lease,
-        quorum_marks,
         shard_status,
         client_endpoints,
         limits,
@@ -109,10 +105,9 @@ pub(super) fn spawn_accept_loops(
             let accept_shutdown = accept_shutdown.clone();
             let connections = connections.clone();
             let seeded = seeded.clone();
-            let ingress_router = ingress_router.clone();
+            let engine = Arc::clone(engine);
             let peers_for_accept = peers.clone();
             let lease_for_accept = lease.clone();
-            let marks_for_accept = Arc::clone(quorum_marks);
             let status_for_accept = Arc::clone(shard_status);
             let endpoints_for_accept = Arc::clone(client_endpoints);
             let limits = Arc::clone(limits);
@@ -143,10 +138,9 @@ pub(super) fn spawn_accept_loops(
                     accept_shutdown,
                     connections,
                     quic::ClusterContext {
-                        ingress: ingress_router,
+                        engine,
                         peers: peers_for_accept,
                         lease: lease_for_accept,
-                        marks: Some(Arc::clone(&marks_for_accept)),
                         client_endpoints: Some(Arc::clone(&endpoints_for_accept)),
                         shard_status: Some(Arc::clone(&status_for_accept)),
                     },
@@ -165,9 +159,8 @@ pub(super) fn spawn_accept_loops(
 /// What the Kafka listener needs of the cluster: where shards are and who
 /// may be sent where, and what a write checks and waits on.
 pub(super) struct KafkaClusterView<'a> {
-    pub(super) ingress: &'a Option<Arc<IngressRouter>>,
+    pub(super) engine: &'a Arc<crate::shards::routing::StreamEngine>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
-    pub(super) quorum_marks: &'a Arc<QuorumMarks>,
     pub(super) quotas: &'a Arc<TenantRates>,
 }
 
@@ -183,9 +176,8 @@ pub(super) async fn bind_kafka(
     view: KafkaClusterView<'_>,
 ) -> Result<Option<KafkaListener>> {
     let KafkaClusterView {
-        ingress,
+        engine,
         client_endpoints,
-        quorum_marks,
         quotas,
     } = view;
     let Some(kafka) = KafkaListenerConfig::from_env()? else {
@@ -197,7 +189,7 @@ pub(super) async fn bind_kafka(
         .map_or(STANDALONE_NODE_ID, |membership| membership.node_id.as_str());
     let cluster = BrokerCluster::new(
         Arc::clone(auth),
-        ingress.clone(),
+        Arc::clone(engine),
         config
             .membership
             .as_ref()
@@ -205,10 +197,9 @@ pub(super) async fn bind_kafka(
         node_id,
         &kafka.advertise,
     )?
-    .with_writes(
-        Some(Arc::clone(quorum_marks)),
-        std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-    )
+    .with_writes(std::time::Duration::from_millis(
+        config.publish_quorum_timeout_ms.max(1),
+    ))
     .with_quotas(Arc::clone(quotas));
     let kafka_tls = kafka.tls.then(|| tls.kafka_server_config()).transpose()?;
     if kafka.tls {

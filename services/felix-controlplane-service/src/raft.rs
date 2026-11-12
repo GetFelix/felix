@@ -25,9 +25,12 @@
 //!   optional mTLS.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
+//! - `wire` — the JSON this member sends and stores, kept in the form
+//!   openraft 0.9 wrote so a group can be upgraded one member at a time.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
+mod chunks;
 mod handle;
 mod health;
 mod hold;
@@ -40,6 +43,7 @@ mod proposal;
 mod store;
 mod types;
 mod version;
+mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
@@ -195,8 +199,8 @@ pub struct RaftStatus {
 /// Whether a background task that must run on exactly one instance should
 /// run here, now.
 ///
-/// `Always` is the non-Raft deployments' answer — the Postgres and in-memory
-/// stores make duplicate sweeps safe, so every instance runs them. Under Raft the gate is a
+/// `Always` is the non-Raft answer: the in-memory store makes duplicate
+/// sweeps safe, so every instance runs them. Under Raft the gate is a
 /// **linearizable leadership check** (openraft's read-index), which answers
 /// two questions at once: this instance is the leader, *and* its applied
 /// state is current enough to decide from — a deposed leader that has not

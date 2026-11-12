@@ -14,6 +14,8 @@ use crate::error::{Error, Result};
 pub const MAX_SET_MEMBERS: usize = 64;
 /// Longest node id in a set, as the replica-set file allows.
 pub const MAX_SET_NODE_BYTES: usize = 1024;
+/// Most older sets a fence carries, as the replica-set file allows.
+pub const MAX_EARLIER_SETS: usize = 16;
 
 /// One replica in a set: its node id and the storage identity the fence
 /// counts it under, when placement named one.
@@ -72,6 +74,13 @@ pub struct FenceElection {
     pub set: ReplicaSetView,
     /// While a change is pending, the set being left. Older than `set`.
     pub leaving: Option<ReplicaSetView>,
+    /// The other sets this fence needs a majority of, each older than
+    /// `set`: sets kept from generations that never opened. A replica keeps
+    /// them beside `leaving`, so a failover from its log fences them too.
+    /// Empty for a fence that needs none, which then travels as it always
+    /// did; non-empty only to a peer that offered
+    /// [`PeerCapabilities::KEPT_SETS`](super::PeerCapabilities::KEPT_SETS).
+    pub earlier: Vec<ReplicaSetView>,
 }
 
 impl FenceElection {
@@ -80,6 +89,15 @@ impl FenceElection {
         if let Some(leaving) = &self.leaving {
             leaving.check()?;
             if leaving.generation >= self.set.generation {
+                return Err(Error::Incomplete);
+            }
+        }
+        if self.earlier.len() > MAX_EARLIER_SETS {
+            return Err(Error::FrameTooLarge);
+        }
+        for earlier in &self.earlier {
+            earlier.check()?;
+            if earlier.generation >= self.set.generation {
                 return Err(Error::Incomplete);
             }
         }

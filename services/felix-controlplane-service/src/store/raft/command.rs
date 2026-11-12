@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 26;
+pub const METADATA_VERSION: u16 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -65,7 +65,7 @@ pub enum MetaCommand {
         tenant: Tenant,
     },
     /// `take_shards`: also take the tenant's streams' and caches' shard
-    /// assignments and replica reports, as Postgres's cascade does. Level 10,
+    /// assignments and replica reports, Level 10,
     /// and set only once every member is there: a member that ignored it
     /// would keep what the others dropped, so the field decides the delete on
     /// every member, and an older member refuses an entry carrying it.
@@ -244,6 +244,15 @@ pub enum MetaCommand {
         /// generation at any incarnation (`model::first_generation`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         seq_generation: bool,
+        /// Level 28: written at this generation when it is above the next
+        /// (`ControlPlaneStore::put_shard_assignment_at_least`). 0, and
+        /// omitted, for the next.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        at_least: u64,
+        /// Level 29: a write past the next generation records the one it
+        /// replaced (`ShardAssignment::previous_generation`, #2024).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        record_previous: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
@@ -256,6 +265,10 @@ pub enum MetaCommand {
         /// generation alone being taken.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         elected_set: bool,
+        /// Level 27: so is this set's own leader elected on another set,
+        /// instead of only its generation being taken (#1929).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        own_leader_set: bool,
     },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
@@ -277,6 +290,10 @@ pub enum MetaCommand {
         /// that predate the check, which apply unchecked as they did then.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         leader: Option<String>,
+        /// Level 30: also record the replaced copies the report shows caught
+        /// up (`ShardAssignment::readmitted`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        readmit: bool,
     },
     SetMovesPaused {
         paused: bool,
@@ -349,8 +366,8 @@ pub enum MetaCommand {
         tenant_id: String,
         seed: TenantAuthSeed,
     },
-    /// Replace the entire store with an exported state — the migration
-    /// cutover from Postgres, and the beyond-quorum-loss restore.
+    /// Replace the entire store with an exported state — the beyond-quorum-loss
+    /// restore.
     ///
     /// One command, so the whole import is one log entry applied atomically
     /// on every member; sequence high-water marks inside the state are what
@@ -505,11 +522,13 @@ impl MetaCommand {
                 26
             }
             // Finalizing joint fences lets placement write learners and read
-            // start holders, which members before level 23 would drop.
+            // start holders, which members before level 23 would drop, and
+            // relies on a leader's refusal to rename a shard whose fence
+            // cannot learn the set it leaves, which is dropped before 25.
             Self::FinalizeFleetFeature { feature }
                 if feature == felix_common::fleet::JOINT_FENCE.name() =>
             {
-                23
+                25
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member
@@ -626,6 +645,16 @@ pub enum MetaResponse {
     Assignment {
         assignment: ShardAssignment,
     },
+    /// Each requested shard's assignment, or none, in order, for
+    /// `LeaderRequest::ShardAssignments`. Never the answer to a command.
+    Assignments {
+        assignments: Vec<Option<ShardAssignment>>,
+    },
+    /// The leader's shard-assignment feed `next_seq`, for
+    /// `LeaderRequest::ShardAssignmentHead`. Never the answer to a command.
+    AssignmentHead {
+        next_seq: u64,
+    },
     /// `PutShardAssignmentIf` found another generation and wrote nothing.
     StaleAssignment {
         current_generation: Option<u64>,
@@ -730,6 +759,10 @@ struct Envelope {
     rid: Option<String>,
     #[serde(flatten)]
     command: MetaCommand,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 /// Serialize a command for proposal.

@@ -1,4 +1,4 @@
-# Felix Durable Segment Format (v8)
+# Felix Durable Segment Format (v9)
 
 This document defines the on-disk representation of a durable Felix stream. It is
 the source of truth for anyone reading, writing, repairing, or replicating
@@ -42,6 +42,8 @@ Both file kinds start with a four-byte ASCII magic sharing the prefix `FLS`
 The small state files have magics of their own, listed with each file below.
 The storage id's is `0x464C4944` (`FLID`), chosen apart from `FLSI`, and the
 run state's `0x464C524E` (`FLRN`), apart from the replica state's `FLRS`.
+The control-plane view's is `0x464C4356` (`FLCV`), and the known-generations
+file's `0x464C4B47` (`FLKG`).
 
 They are deliberately distinct from `felix-wire`'s frame magic `0x464C5831`
 (`FLX1`): storage bytes and network bytes are separate formats with separate
@@ -55,17 +57,29 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   storage-id                                 ← this data directory's identity
   run-state                                  ← whether the last run stopped cleanly
   registration                               ← the node incarnation of the last registration
+  controlplane.view                          ← what the control plane last said about this node's shards
+  record-generations                         ← a log here may hold a v9 segment
+  replaced-storage                           ← the node was once registered under another storage id
+  lost-copy                                  ← whether this directory ever replaced a copy the node lost
+  rotated-ids                                ← ids a crash rotated away while every ballot was kept
+  copy-trust                                 ← which copies a leader vouched for since the id last rotated
+  copy-trust-kept                            ← a release that keeps copy-trust ran here
+  run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
     00000000000000000000.log                 ← segment data
     00000000000000000000.index               ← sparse offset index
+    00000000000000000000.gen                 ← a sealed v9 segment's known generations
     00000000000000000001.log
     00000000000000000001.index
     epochs                                   ← where each generation began
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
+    raft-purged                              ← a Raft log's last purged id
+    raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
+    poisoned                                 ← only after a failed fsync: the mark as of the failure
     producers                                ← producer snapshot, when any producer wrote here
     head                                     ← trim records' head entries, once the log holds a v7 segment
     offload.manifest                         ← segments copied to the object store, once offload has run
@@ -174,7 +188,7 @@ file:
 | Offset | Size | Field | Value |
 | --- | --- | --- | --- |
 | 0 | 4 | `magic` | `0x464C5347` (`"FLSG"`) |
-| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, or `8` for one that holds a record with a key and headers; `2` is still read |
+| 4 | 2 | `version` | `3` when written, `4` for a segment that holds a generation-start record, `5` for one that holds a commit record, `6` for one that holds a record with its publisher, `7` for one that holds a trim record, `8` for one that holds a record with a key and headers, or `9` for one whose records carry a generation (see [Generations](#generations)); `2` is still read |
 | 6 | 2 | `flags` | `0`; any other value is rejected |
 | 8 | 8 | `base_offset` | logical offset of this segment's first record |
 | 16 | 8 | `created_at_micros` | wall clock at creation, informational |
@@ -217,6 +231,102 @@ proportional to record *count* rather than to bytes decoded.
 
 The checksum covers the header prefix as well as the payload, so a corrupted
 offset or timestamp is caught by the same check as a corrupted payload.
+
+### Generations
+
+From v9 every record header carries the generation of the leader that wrote
+the record: its Raft term. The 8-byte field sits between the timestamp and
+`header_crc`, so the header grows from 28 to 36 bytes and every later field
+moves up 8:
+
+| Offset | Size | Field | Notes |
+| --- | --- | --- | --- |
+| 0 | 20 | `payload_len`, `offset`, `timestamp_micros` | as above |
+| 20 | 8 | `generation` | `u64` |
+| 28 | 4 | `header_crc` | CRC-32 over bytes `0..28` |
+| 32 | 4 | `checksum` | CRC-32 over bytes `0..32`, the tag and the body |
+| 36 | | tag and body | as above |
+
+The generation is inside `header_crc`, so it is checked before any field is
+used and it is cut off with its record on a torn tail. A segment's version
+says which layout its records have; a v8 record and a v9 record never decode
+as each other, because the header checksum sits at a different place.
+
+Generations never fall along a log. The startup scan checks this inside each
+segment, and the open checks it across segments: a segment's first known
+generation must not be below the last known one before it. A record whose
+generation is below the one before it is `GenerationFell` corruption: every
+checksum held, so it was written that way.
+
+**When a log moves onto v9.** A broker in a cluster writes v9 only once its
+fleet has finalized `record_generations`, which an operator does; a new
+cluster does not. Every broker that reports the feature offers
+`WRITER_GENERATIONS` to its peers, and it needs `generation_start`. Once it
+is finalized, each stream log starts its next segment at v9 and stays there;
+the segment that was active is never rewritten. A lone broker has no fleet
+and stays on the older formats. Cache and counter logs stay on them too.
+A Raft log does not wait for the gate: it is v9 from its first segment (see
+[Records as Raft entries](#records-as-raft-entries)).
+
+**What goes in the field.** Every record in a v9 segment carries one: events,
+generation-start, commit and trim records alike. It is the generation of the
+leader that wrote the record, the same on every replica:
+
+- A leader stamps its own records with the generation it leads at, which the
+  broker notes when it opens the shard to lead it. That must also be the
+  generation the log accepted. A newer accepted generation means a fence from
+  another leader landed, so the append is refused (`WriterUnknown`), never
+  stamped with the newer generation. That holds even after the log's history
+  takes the new leader's labels, since following a leader labels the history
+  too. The generation must also be the newest in the log's history, starting
+  at or before the append; an append that lands before the broker recorded
+  where its leadership starts is refused the same way. The check runs when
+  the append is staged, and the history's start for a new generation is the
+  tail at the time, which an append still in flight has not moved yet. So a
+  record stamped with the previous generation can sit at or past where the
+  history says the next one starts. The stamp is still the true writer.
+- A record the sender holds in an older segment has no stamp to send. It
+  goes as generation 0, "writer unknown", and is stored that way, never with
+  the generation the sender's history gives it: histories label copied
+  records with the generation they were copied under, so two replicas'
+  histories can disagree about one record. Generation 0 is also a shard's
+  first generation, so a generation-0 leader's records read as unknown.
+  That loses nothing for the floor, since nothing comes before them, and the
+  switch to Raft puts every unknown record below the snapshot base (see
+  "Unknown writers and the switch to Raft" in `docs/replication-engine.md`).
+- A follower stamps a replicated record with the generation the leader sent
+  for it (`writer_generations` on the peer wire, see
+  `docs/internal-protocol.md`), never its own. The same holds for a promoted
+  leader taking a replica's tail, and for a follower being rebuilt or caught
+  up, since all of them copy through the same batches.
+- A follower on v9 refuses a batch that does not name its writers
+  (`WriterUnknown`, answered as `UnsupportedKind`) and stores nothing.
+
+Membership and counter records are still not written.
+
+**The floor.** Known generations along a log never fall; generation 0 is
+skipped by the floor and by the startup scan's check. The writer refuses a
+record below the newest known generation (`GenerationBelowFloor`) instead
+of raising it, because a raised stamp would name a generation that did not
+write the record. On a follower that refusal means its record before the
+batch disagrees with the leader's, so it answers `LogConflict` and the
+leader stops shipping to it, as for any divergence; the rebuild policy may
+then rebuild it. It is not truncated automatically, since the stamps do not
+say where the disagreement starts. The log keeps the floor across a roll, a
+reopen and a truncation. A reopen takes it from the active segment's full
+scan, or from the sealed segments before it when the active one holds no
+known generation. A sealed segment's first and last known generations come
+from its [known-generations file](#known-generations-file), so the open
+does not walk the segment for them; a segment with none keeps the floor
+before it. A cut takes the floor from the header of the record just below
+the cut.
+
+**Rollback.** A build that reads only up to v8 refuses a v9 segment with
+`SegmentVersion`, so a broker cannot roll back past the release that wrote
+one. Before the first v9 segment, a broker writes a `record-generations`
+marker under the durable root and syncs it. A broker holding the marker
+refuses to register with a fleet that has not finalized `record_generations`,
+as the `record-headers` marker does for `record_headers`.
 
 ### Producer marks
 
@@ -332,8 +442,9 @@ The four kind bits were all taken, so this kind is the one code that uses two
 of them. Before v7 that pair was `RecordFlags` in every segment, so a segment
 older than v7 that holds it is still `RecordFlags`: recovery's scan refuses
 it at the same point an older build did, and the reader refuses it in a sealed
-segment the scan did not visit. Any other pair or triple of kind bits is
-`RecordFlags` in every version.
+segment the scan did not visit. Before v9, any other pair or triple of kind
+bits is `RecordFlags`; v9 gives three of them meaning (see "Membership and
+counter records" below).
 
 Recovery treats a trim like any other record. One cut short is a torn tail
 and is repaired. One whose floor or headers fail the checksum is fatal unless
@@ -355,6 +466,132 @@ byte for byte as before. As with commit and generation-start records, the
 roll happens before the record is written, so a crash or a failed append in
 between leaves an empty v7 active segment. An older build then refuses the
 log even though it holds no trim.
+
+### Membership and counter records
+
+v9 adds three kinds, each a code of two or three kind bits:
+
+| Bits | Kind | Body |
+| --- | --- | --- |
+| 30 and 29 | membership | a change to the shard's replica set, in the replication engine's layout |
+| 30 and 28 | counter delta | a signed add to one counter, in the counter store's layout |
+| 30, 29 and 28 | counter checkpoint | every counter's running sum, written when deltas are compacted |
+
+None of them has a tag, so the step to the next record is still
+`36 + payload_len`. Bit 30 alone means "continues a producer batch", so every
+build before v9 refuses these codes as `RecordFlags`, and so does a v9 reader
+in a segment older than v9. The pairs that include bit 31 (bits 31 and 30,
+31 and 29, 31 and 28) and the triples that include it stay `RecordFlags` in
+every version.
+
+Only a v9 segment holds them, and nothing writes them yet. An append that
+holds one is refused (`Unsupported`) before it can roll the log onto v9. They
+exist so the replication engine and the cache shard's single log (see
+`docs/replication-engine.md`, decisions 1 and 4) have kinds to write once the
+fleet reads v9. Recovery treats them like any other record: one cut short is a
+torn tail, and a damaged one in the middle of a log stops the open.
+
+Replication does not carry them yet either. A leader holds a follower before
+the first such record (`kind_unsupported` in
+`felix_broker_replication_shipped_total`) rather than send it under another
+mark.
+
+### Record kinds
+
+Every kind takes an offset, and offsets stay contiguous whatever the kind.
+Only **data** records reach a client: plain records, producer batch records
+and commit records (returned as their event). Generation-start, trim,
+membership and counter records are skipped by every client read:
+subscriptions and replay, `StreamRead`, Kafka fetch and offset lookups,
+consumer groups, cache watches, and the cache and counter projections. One
+predicate, `RecordMark::is_data`, makes that call at each of those sites, so
+a new kind must be decided once and cannot be missed at one site.
+
+A skipped record still holds its offset, so a reader sees a gap there. A
+subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
+"Event batch offsets") is told how many offsets before a batch held no event,
+so a jump it covers is not a drop and any other jump is. A consumer group's
+record reports the same count. A Kafka consumer is moved past a trailing run
+by an empty batch. Replication reads every kind (`read_replicated_from`),
+but cannot yet ship membership and counter records (see above).
+
+### Records as Raft entries
+
+The `raft_log` module of `felix-storage` (cargo feature `raft`) reads a log
+as an openraft log. It adds no bytes to the format. It reads what version 9
+already stores:
+
+| Raft | Record |
+| --- | --- |
+| Index | The record's offset. |
+| Term | The generation in the record header, minus one. |
+| Blank entry (a new leader's no-op) | A generation-start record. Its payload is the header's generation. |
+| Membership entry | A membership record. The payload is the engine's. |
+| Normal entry | Any other record, decoded by the log's user. |
+| Vote | The `ballot` file: the term is its generation minus one, the node voted for is its leader, and the committed flag is the vote's. |
+
+The term is stored plus one because openraft writes its first entry at term
+0, and generation 0 in a record header means "writer unknown". With the
+shift, no term is ever stored as 0. Reading a record stamped 0, a record in
+a segment older than version 9, or a record below the log's first index as
+an entry is an error. It is never read as a term-0 entry.
+
+A blank or membership entry takes an offset, because the offset is the Raft
+index. Both are kinds every client read skips (above), so the offsets a
+consumer sees stay dense apart from the gaps it is told about, and a jump
+still means a drop.
+
+The adapter writes the same way. An append stores one record per entry at
+the entry's index and stamps each with its own term plus one, so one append
+can hold several terms. Truncation is the log's suffix truncation, and a
+vote is saved to the `ballot` file.
+
+A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
+in six ways:
+
+- **Version 9 from its first segment.** Every entry needs a term, so no
+  segment is written in an older format, whatever the fleet gate says. If
+  the directory already holds older segments, the first append starts a
+  version 9 segment; the old ones are left as they are and their records
+  are not entries.
+- **It takes membership records.** A stream log still refuses them.
+- **No retention bounds.** Retention deletes head segments on a timer, which
+  would look like a purge nothing asked for. Bounds are refused at open and
+  when set later.
+- **An empty log can start at any index.** The first append to an empty log
+  restarts it at that entry's index. After that an append must start at the
+  tail.
+- **The commit offset is lowered to the log's end at open.** openraft can
+  save a committed id before its entry is flushed, so a crash can leave the
+  offset in `replica` past the recovered log. The open writes the lower
+  value back before anything is appended, in the same write as the
+  generation of the entry it now names.
+- **The commit offset is saved with a generation.** `replica` holds the
+  generation of the committed entry beside the offset (version 2 of the
+  file, below). An open compares it with the record just below the offset.
+  If that record is another generation's, the offset is lowered to the
+  log's first offset and written back: the log holds a different entry
+  there, and nothing in it is known committed. The offset moves only
+  through the adapter's `save_committed`: `advance_commit_offset` is
+  refused on a Raft log and `note_commit_offset` does nothing. An offline
+  `restore_to` saves the generation of the entry it lowers the offset to.
+
+A Raft log's directory also holds `raft-purged` and, when its state machine
+keeps a snapshot there, `raft-snapshot`. Both are described below. The log
+starts right after the purged id, whatever records remain below it, and a
+command stored as a trim record is refused.
+
+| Kind | Bits | From | Data |
+| --- | --- | --- | --- |
+| plain | none | v2 | yes |
+| opens a producer batch | 31 | v3 | yes |
+| continues a producer batch | 30 | v3 | yes |
+| generation start | 29 | v4 | no |
+| commit | 28 | v5 | yes |
+| trim | 29 and 28 | v7 | no |
+| membership | 30 and 29 | v9 | no |
+| counter delta | 30 and 28 | v9 | no |
+| counter checkpoint | 30, 29 and 28 | v9 | no |
 
 ### Keys and headers
 
@@ -456,6 +693,41 @@ scans the active segment in full and rewrites its index, so that costs nothing.
 A torn final entry, the signature of a crash mid-append, is tolerated on load:
 the file is read up to the last whole entry.
 
+## Known-generations file
+
+`<id>.gen` names where a sealed v9 segment's first and last known
+generations sit (the first and last records not stamped 0). The open uses
+the first for the cross-segment check and the last for the floor. Without
+the file the open would have to walk every sealed segment whose ends hold
+unknown records, on every start: a log copied from pre-v9 segments is all
+unknown.
+
+It is written when a segment is sealed, once its records are durable and
+off the lock appends take, and whenever recovery or a read rebuilds the
+segment's index. It is not synced. Like the index it is
+**never trusted**: the open uses it only when its checksum holds, its
+`base_offset` and `segment_len` match the segment, and the record at each
+position decodes with its header checksum intact and carries the
+generation named. The resume scan's last known generation, when it sees
+one, must also match. Otherwise the open walks the segment once, rebuilds
+its index and rewrites this file, so the verdict never depends on whether
+it was there. A truncation that reopens a sealed segment for appends,
+and recovery cutting the torn tail of a segment whose seal never finished,
+delete the file and sync the directory first.
+
+| Offset | Size | Field | Value |
+| --- | --- | --- | --- |
+| 0 | 4 | `magic` | `0x464C4B47` (`"FLKG"`) |
+| 4 | 2 | `version` | `1` |
+| 6 | 2 | `reserved` | `0` |
+| 8 | 8 | `base_offset` | the segment's |
+| 16 | 8 | `segment_len` | the segment's length in bytes |
+| 24 | 8 | `first_position` | `0` when no record is known |
+| 32 | 8 | `first_generation` | |
+| 40 | 8 | `last_position` | `0` when no record is known |
+| 48 | 8 | `last_generation` | |
+| 56 | 4 | `checksum` | CRC-32 (IEEE) over bytes `0..56` |
+
 ## Compatibility and corruption behaviour
 
 | Condition | Behaviour |
@@ -467,10 +739,11 @@ the file is read up to the last whole entry.
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one kind bit set, other than bits 29 and 28 together in a v7 segment | `RecordFlags` |
+| More than one kind bit set, other than bits 29 and 28 together from v7, or the membership and counter codes from v9 | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
+| A v9 record whose generation is below the record before it, in its segment or the one before | `GenerationFell` |
 
 Every error carries a `CorruptionSite` naming the shard, segment id and byte
 position, because "corruption detected" is not enough to act on at 3am.
@@ -491,6 +764,11 @@ because only there can a record have been mid-write when the process died:
 - A `RecordChecksum` or `OffsetOutOfOrder` failure is likewise opt-in: the header
   verified, so the record is complete on disk and the damage is rot rather than a
   torn write.
+- A `GenerationFell` failure is never repaired, except past the durable mark
+  (below). Both checksums held, so no crash produced it.
+- In a v9 segment the header is 36 bytes, generation included. A file that
+  ends inside it is `Truncated`, and the zero-fill rule below measures the
+  damaged header at 36 bytes too.
 - A `RecordTooLarge` failure is opt-in for the same reason: the writer rejects
   oversized records, so a verified header carrying an impossible length is damage
   the checksums did not catch.
@@ -558,7 +836,7 @@ The full rules live in `is_repairable_tail` and `is_zero_filled_tail` in
 
 `format.rs` pins exact bytes for a segment header and a record. Changing either
 is a format change: bump `FORMAT_VERSION`, update this document, and state the
-migration path. It also pins the header CRC of every version from 2 to 8 and
+migration path. It also pins the header CRC of every version from 2 to 9 and
 every older record kind, and `writer.rs` pins the checksums of a segment and
 its index at each of v3 to v6 holding every kind that version allows, so a
 new kind cannot change what an older one writes.
@@ -599,6 +877,16 @@ encode_record(offset = 7, timestamp = 9, payload = "hi", key and headers = "k"):
   7B A6 A5 A2
   00 00 00 01  6B  68 69
 
+encode_record_at(generation = 5, offset = 7, timestamp = 9, payload = "hi"),
+in a v9 segment (header crc D0 FE 7E 9D):
+  00 00 00 02
+  00 00 00 00 00 00 00 07
+  00 00 00 00 00 00 00 09
+  00 00 00 00 00 00 00 05
+  EC 4D 6F 2B
+  01 BF 2C E8
+  68 69
+
 encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
   30 00 00 02
   00 00 00 00 00 00 00 07
@@ -621,6 +909,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -720,6 +1009,18 @@ records committed since are unguarded until the leader's next batch carries the
 offset again. It is never read back ahead. Why that is acceptable is in
 `docs/replication-design.md`, "Divergence and truncation".
 
+A Raft log writes version 2 once a committed id has been saved. It adds the
+generation of the committed record before the checksum:
+
+```text
+24   8  committed    u64  generation of the record at commit - 1, never zero
+32   4  crc          u32  crc32 over bytes 0..32
+```
+
+Every other log, and a Raft log with no committed id yet, writes version 1,
+so those files are unchanged for older builds.
+See "Records as Raft entries" above for how an open uses the generation.
+
 The flags were a reserved zero before the hold was recorded, and no build
 checked them, so a file without the flag reads as not held and an older build
 reads a file with it unchanged. The hold is written when replication turns it
@@ -742,6 +1043,237 @@ The one thing that lowers the commit offset is a restore to a backup point
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
 
+## `raft-purged`: a Raft log's last purged id
+
+A Raft log (`LogConfig::raft_log`) that has purged entries holds a
+`raft-purged` file: the index of the last purged entry and the generation
+that stands for its term (the term plus one).
+
+```text
+ 0   4  magic        u32  "FLPG"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  index of the last purged entry
+16   8  generation   u64  that entry's term plus one, never zero
+24   4  crc          u32  crc32 over bytes 0..24
+```
+
+Written through a temporary, an fsync, a rename and a directory sync, before
+the purge deletes any segment. The log's first index is one past `index`,
+or the oldest segment's base when that is higher. Records at or below
+`index` that remain in a segment are not entries. When `index` is at or
+past the log's last record the log is empty, and the next append restarts
+the segments at `index + 1`.
+
+Nothing can rebuild this file, so one that is present and does not decode
+fails the open of the Raft log. Absent means nothing was purged.
+
+### Purging past the snapshot
+
+A group whose state machine is rebuilt from its snapshot must never restart
+on a log that begins after that snapshot: the entries in between would be
+gone. The metadata store's log keeps that from happening
+(`RaftLog::purge_hides_past`):
+
+- A purge up to the stored snapshot writes `raft-purged` and removes the
+  entries, as above.
+- A purge past the stored snapshot removes entries up to the snapshot and
+  *hides* the rest. The hidden id is kept in memory only. The log state,
+  reads, truncation and the committed id all see it as the purged id, and
+  the entries stay on disk. A crash forgets the hidden id and brings the
+  entries back.
+- The next purge or append removes a hidden id's entries for real once a
+  stored snapshot covers it.
+- An append must continue the entries on disk, or start right after the id
+  in `raft-purged` or right after the stored snapshot when no entry is above
+  them. Any other append is a storage error, and it is decided before
+  anything is removed, so a refused append leaves the log as it was. A purge
+  past the log's end with no snapshot, then an append, is the case this
+  refuses: on disk it would leave a hole nothing covers.
+
+A log that holds no entry, no purged id (on disk or hidden) and no snapshot
+starts where its first append begins. There is nothing before it to leave a
+hole after.
+
+A shard group's log refuses a purge past its snapshot instead
+(`RaftLog::purge_within`).
+
+## `raft-snapshot`: a Raft group's snapshot
+
+One snapshot: the last entry it covers, the caller's metadata and the data.
+
+```text
+ 0   4  magic        u32  "FLSS"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  index of the last entry covered
+16   8  generation   u64  that entry's term plus one; zero when the
+                          snapshot covers nothing (index is then zero)
+24   4  meta length  u32
+28   8  data length  u64
+36   4  crc          u32  crc32 over bytes 0..36, the metadata and the data
+40      metadata, then data
+```
+
+Written through a temporary, an fsync, a rename and a directory sync. The
+id, the metadata and the data change in that one rename, so a reader never
+sees one snapshot's data under another's id. A snapshot that covers less
+than the stored one is not written. A file that does not decode, or whose
+lengths do not add up to the file's, fails the open: the log below the
+snapshot may be purged, so it cannot be read as "no snapshot". The same
+goes for a file of another format version or with its reserved bytes set,
+even with a correct checksum. A
+`raft-snapshot.tmp` left by a crash is never read, and the next open deletes
+it.
+
+## `member`: a metadata store's member file
+
+The control plane's metadata store keeps one small file beside its Raft log
+and its snapshot. It says which cluster the store belongs to, whether the
+member's vote is withheld, and carries two marks the upgrade from redb
+uses. The control plane does not run on this store yet. The files and their
+rules are in place for the step that switches it over; the design is in
+[metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
+
+A member's data directory (`FELIX_RAFT_DATA_DIR`) will look like this:
+
+```text
+raft.redb          ← an older release's store, or the stub a conversion leaves
+store/
+  member           ← this file
+  raft-snapshot    ← the snapshot, in the format above
+  log/             ← the Raft log, a segment log with a raft-purged file
+```
+
+```text
+ 0   4  magic              u32  "FLMB"
+ 4   2  version            u16  1
+ 6   2  flags              u16  bit 0  vote withheld
+                                bit 1  converted
+                                bit 2  started
+ 8   2  cluster id length  u16  never zero
+10   4  crc                u32  crc32 over bytes 0..10 and the cluster id
+14      cluster id, UTF-8
+```
+
+What the fields mean:
+
+- **Cluster id.** The store belongs to one cluster for good. The store is
+  opened with its cluster id, and an open with another id is refused and
+  writes nothing. A file with no id fails the open.
+- **Vote withheld.** The member rejoined with an empty store and may have
+  forgotten a vote, so it must not vote or campaign until it has caught up.
+- **Converted.** The conversion tool built this store from a redb store.
+- **Started.** The member has started on this store at least once, so it
+  may have voted or acknowledged in the new group. The mark is on disk
+  before the Raft node exists.
+
+Every change replaces the file: a temporary, an fsync, a rename and a
+directory sync, all before the change returns. A crash leaves the old file
+or the new one. If a write fails, the file may be either, so every later
+change fails too and the member has to stop.
+
+Nothing can rebuild this file. One that fails its checksum, has another
+length than its header says, is another format version, or sets a flag bit
+this build does not know fails the open. It is never read as "no file",
+which would give a withheld vote back and forget that the member started.
+
+A store is created whole. The open builds it under a temporary name,
+`store.tmp`, with the member file and an empty `log/` inside, renames it to
+`store`, and syncs the data directory, all before the open returns. So the
+member file names the cluster before anything can open the log, and a crash
+leaves no store or a whole one. A `store.tmp` left by a crash is not the
+store, and the next open builds it again.
+
+A `store/` without a member file, or without `log/`, lost something after it
+was created, maybe the member's vote, which lives in the log. The open and
+the start decision both refuse it. A `member.tmp` left by a crash is never
+read, and the next open deletes it.
+
+### `lock`: one holder at a time
+
+Each open writes the member file from its own copy, so a second one would
+undo the first's changes, and two writers on one log would corrupt it. The
+open takes an exclusive, non-blocking `flock` on `store/lock` before it
+reads the member file, and unlocks it when the store is dropped. A second
+open fails with "resource busy", whether it comes from the same process,
+another process, or through a symlink. The kernel releases the lock when the
+holder exits, so a crash leaves nothing to clean up.
+
+The file is empty and is not part of the store's state. One that is missing
+is created. On a platform without `flock`, and on the simulator's in-memory
+filesystem, the claim is kept in the process instead.
+
+The lock lives as long as the log and the snapshot store do: both hold it
+too, so a clone that outlives the store (after an error, a failed shutdown,
+or a snapshot build openraft did not wait for) keeps the store locked while
+it can still write. A clean shutdown closes both before it lets the lock go,
+so an append or a snapshot install through a clone left over fails instead
+of writing into a store another process may have opened.
+
+A first start also takes an exclusive `flock` on the data directory while it
+builds the store, so two first starts do not share `store.tmp`. The one that
+comes second finds the store built and opens it, or is refused as busy.
+
+`flock` is only as strong as the filesystem. On Linux NFS it is emulated with
+byte-range locks, which belong to the process: two opens in one process do
+not exclude each other, and closing any descriptor of the file drops the
+lock. Keep the data directory on a local disk.
+
+Per-shard log directories are not locked yet
+([#2344](https://github.com/GetFelix/felix/issues/2344)).
+
+### Opening the store
+
+`MetadataStore::open` is the one way to open a member's store. In order:
+
+1. It decides the start (below). A refusal writes nothing, not even an
+   empty `store/`.
+2. It opens the member file, creating the store if there is none, and takes
+   the lock.
+3. It opens `log/` as a Raft log that is fsynced on commit. Neither is a
+   setting. A saved committed id whose index holds another term's entry
+   refuses the open: the id was saved for some other log, and a restart
+   must not apply entries up to it. The id is left on disk, so the next
+   open refuses too. The exception is an id past the recovered log: it is
+   lowered to the log's end first (see "The commit offset is lowered"
+   above), so it names no entry and refuses nothing. (A shard group's log takes nothing as committed
+   instead and opens.)
+4. It opens the snapshot and refuses a log whose `raft-purged` id is past
+   it: that log has lost entries.
+5. If the log holds no vote, no record and no purged id (a *blank* log) and
+   a snapshot is stored, the log was lost and the vote with it. The open
+   sets the vote-withheld flag before it returns. A blank log with no
+   snapshot is reported to the caller as "no Raft state". A member that
+   crashed right after its started mark looks like that too, so the started
+   mark alone never means the log holds a vote.
+6. If the snapshot covers the log's last entry, it empties the log so that
+   it starts right after the snapshot. A snapshot install ends with that
+   purge, and a crash before it leaves it for the open.
+
+### Whether a member may start
+
+The service decides from the names in the data directory and this file. It
+never opens `raft.redb`, and it decides before it writes anything, so a
+refusal leaves the directory as it was.
+
+| `raft.redb` | `store/` | The service |
+| --- | --- | --- |
+| either | present, without a member file that decodes or without `log/` | Refuses to start. |
+| absent | absent | Starts as a new member. |
+| absent | whole | Starts on the store. |
+| present | whole, with the converted mark | Starts on the store. The file is the conversion's stub. |
+| present | absent, or whole without the mark | Refuses to start and names the conversion tool. |
+
+A new member has nothing on disk that says it ever ran, which is also what a
+member that lost its whole data directory looks like. Such a member may have
+voted in a term it no longer knows, so one that joins a running cluster
+starts with its vote withheld. A member that starts on its store reads its
+started mark from the member file.
+
+A name that cannot be examined, for example for lack of permission, is a
+refusal too. It is not read as absent.
+
 ## `ballot`: whom the generation was accepted from
 
 Beside `replica`, once a broker that keeps ballots has accepted a generation
@@ -749,12 +1281,36 @@ from a named leader: that generation and the leader's node id.
 
 ```text
  0   4  magic        u32  "FLBL"
- 4   2  version      u16
+ 4   2  version      u16  1 or 2
  6   2  leader_len   u16  at most 1024
  8   8  generation   u64  the generation the leader was accepted at
-16   n  leader       utf-8 node id, leader_len bytes
-16+n 4  crc          u32  crc32 over bytes 0..16+n
+16   1  flags        u8   version 2 only; bit 0 = committed, other bits 0
+16+f n  leader       utf-8 node id, leader_len bytes (f = 1 in version 2, else 0)
+...  4  crc          u32  crc32 over every byte before it
 ```
+
+Version 2 adds `flags`. Its one bit says the vote is committed: a majority
+granted it, which is what openraft's `Vote::committed` records. A ballot
+without that bit is written as version 1, so only a committed vote produces a
+version 2 file. A broker's own logs can save a committed vote only past the
+same fleet gate as segment format v9 (see [Generations](#generations)), and
+nothing in a broker commits a vote yet. A Raft log saves one whenever
+openraft hands it one (see [Records as Raft entries](#records-as-raft-entries)).
+A
+build that predates version 2 reads only version 1, so it refuses a version 2
+file at open (the file "does not decode") and never ignores or rewrites it.
+The refusal comes after the open's first repairs (torn-tail recovery, the
+durable mark, a retention-hold change to `replica`), which are in formats both
+builds read, so the newer build still opens the shard afterwards.
+A version newer than the build reads fails the open with a message naming a
+newer build. The crc is checked first, so a damaged version field reads as
+damage, not as a newer format. An unknown flag bit, or the committed bit with
+an empty leader, does not decode.
+
+The mark belongs to the vote in the same file, so it is on disk exactly when
+that vote is. The open reads it only when it takes the ballot's leader: a
+ballot behind `replica`, or behind a newer `replica-set`, belongs to an older
+generation, and the shard opens with no leader and no mark.
 
 Written the same way as `replica`, and before it when a generation is raised,
 so the ballot is on disk before anything from that leader is stored or
@@ -782,13 +1338,16 @@ set is pending the set being left.
  0   4  magic        u32  "FLRS"
  4   2  version      u16  1
  6   2  flags        u16  bit 0: a set being left follows;
-                          bit 1: a wiped mark follows; other bits must be 0
+                          bit 1: a wiped mark follows;
+                          bit 2: earlier sets follow; other bits must be 0
  8   .  set          the current set
  .   .  leaving      the set being left, only when flags bit 0 is set
  .   .  wiped        this copy's wiped mark, only when flags bit 1 is set:
                        2  node_len   u16  at most 1024
                        n  node       utf-8 node id the copy answers as
                        1  learner    u8   1 while still a learner, else 0
+ .   .  earlier      only when flags bit 2 is set: a count (u16, 1 to 16),
+                     then that many sets, newest first
  .   4  crc          u32  crc32 over everything before it
 ```
 
@@ -819,6 +1378,22 @@ section survives all of those, and each newer set that lists the copy gets the
 mark copied onto its entry. Only re-admission ends it. A build that predates
 the mark refuses the file, as it would any unknown flag; brokers set it only
 once `joint_fence` is finalized and the build allows it.
+
+The earlier sets are older sets a fence may still need a majority of: sets
+of generations this log holds no record of, and the sets their fences were
+leaving. Accepting a newer set carries the kept ones forward until the log
+durably holds a record of the set being replaced, so they are dropped only on
+evidence that a later generation opened. They are newest first, each is older
+than the current set, and none names the same members as another kept set;
+a file breaking any of that is refused. A raise that adds a set is refused
+once the file would hold more than 17 distinct sets, counting the current set
+and the set being left, so a raise naming only kept sets always fits. A file without them is byte for byte what an older
+build writes; a build that predates them refuses a file that has them, which
+fails the open. Brokers write them only once `joint_fence` is finalized, so
+a fleet that can still roll back has none. The one exception is a replica
+that restarted and has not yet learned whether it is: it keeps them, since
+dropping sets a finalized fleet needs is unsafe, and drops them at its next
+set once it learns the feature is off.
 
 A set is refused, on write and on read, when it lists a node id twice or a
 storage id twice, or when the set being left is not older than the current one.
@@ -1038,7 +1613,8 @@ A 32-byte file, rewritten in place whenever a flush, roll or seal moves it forwa
 ```text
  0   4  magic         u32  "FLSM"
  4   2  version       u16
- 6   2  reserved      u16
+ 6   1  mode          u8   0 here; the failed run's fsync mode in `poisoned`
+ 7   1  reserved      u8
  8   8  segment       u64  segment id the mark refers to
 16   8  synced_bytes  u64  bytes of that segment known to be on the device
 24   4  crc           u32  crc32 over bytes 0..24
@@ -1059,6 +1635,19 @@ after a power loss it can lag by the filesystem's writeback delay; it is
 synced at open (with its directory entry, so a fresh shard's first segment has
 a mark), at clean shutdown and close, and after a truncation or reset. A
 missing or corrupt mark reads as absent.
+
+A log that a failed fsync poisons also writes a `poisoned` file of the same
+32 bytes and layout, holding the last point a sync reached and, in the mode
+byte, the fsync mode of the run that failed: 1 for `None`, 2 for `Periodic`,
+3 for `OnCommit`. Any other value reads as a relaxed mode, which keeps the
+records. The crc covers the byte. The file is not synced.
+
+The next open of the log reads it before recovery. Under mode 3 it cuts the
+log back to that mark and rewrites `durable.mark` to it. Under any other mode
+it reads every byte past the mark back and writes it again, then syncs. Either
+way it writes the state files again and removes `poisoned` last. A file that
+does not decode cuts and rewrites nothing, logs a warning, and still triggers
+the rewrite of the state files.
 
 ## `storage-id`: the data directory's identity
 
@@ -1144,6 +1733,223 @@ ahead of this one. No file means no evidence either way. A file that does not
 decode reads as older than any registration. An older release neither reads
 nor writes it, so a downgrade leaves it as it was. See
 `docs/durable-storage.md`, "Storage identity".
+
+## `controlplane.view`: what the control plane last said
+
+One file at the durable root, beside `registration`. It holds the control
+plane's answers about the shards this node is in, so a later start can run
+from them while the control plane is down. The envelope:
+
+```text
+ 0   4  magic    u32  "FLCV"
+ 4   2  version  u16  1
+ 6   4  len      u32  body length
+10 len  body     JSON, below
+ ..  4  crc      u32  crc32 over every byte before it
+```
+
+The body is a JSON object. A reader ignores a field it does not know, so a
+later version can add one with a default, as on the wire.
+
+| Field | Contents |
+| --- | --- |
+| `node_id` | The node this view belongs to |
+| `storage_id` | The storage id, in hex, that the node registered with when the view was written |
+| `incarnation` | The node incarnation that registration answered |
+| `fleet` | The fleet features the control plane had finalized, by name |
+| `routes` | Every shard assignment that names this node as leader, replica, member of a pending set or successor, in the shape the assignment feed sends |
+| `nodes` | `node_id`, `advertise_addr` and `region` of each node those routes name, where the node catalog had an address |
+| `catalog` | `streams` and `caches`: the catalog entries of the streams and caches those routes belong to, in the shape the catalog feed sends |
+
+The broker writes the file only once it has registered in this process and
+taken the registration's features, a routes snapshot and a catalog snapshot.
+After that it rewrites the file when the view changes, at most once a second,
+and once more at a clean stop. Each write goes to `controlplane.tmp`, which
+is synced and renamed over `controlplane.view`, and then the directory is
+synced, like `registration`.
+
+The file reads as absent when it is missing, shorter or longer than its
+length says, fails its CRC, has another magic or version, has a body that
+does not parse, or names another node. A file that reads as absent is
+ignored with a warning. It never stops a start. `controlplane.tmp` is never
+read. An older release neither reads nor writes the file. See
+`docs/durable-storage.md`, "The control-plane view".
+
+## `replaced-storage`: the node was registered under another id
+
+One text file at the durable root, written when the control plane last
+registered the node under a storage id other than this directory's, and never
+removed:
+
+```text
+replaced
+storage_id=<hex>
+after=<incarnation>
+```
+
+`storage_id` is the id the directory runs under from then on, and `after` the
+node incarnation the control plane held when the broker found the
+replacement. A later replacement rewrites both. Before writing it the broker
+removes `controlplane.view` durably, so a view beside the marker was written
+after it. The incarnation alone could not tell: the control plane counts a
+deleted node's incarnations from 0 again, and a restored control plane
+rewinds them. The file's presence is what the replica code reads. A start
+without the control plane also checks the fields: it may use a
+`controlplane.view` only if the view names that storage id and an
+incarnation above `after`. A file holding only `replaced`, as older releases
+write it, or one that does not parse, refuses every view.
+
+## `lost-copy`: the directory replaced a copy the node lost
+
+One text file at the durable root, written at a start before the node
+registers, holding `kept` or `lost` and a newline. It says `lost` once the
+directory was found to replace a copy the node lost: a directory the control
+plane last registered under another id than the one it had before this start
+rotated it (a wipe, or a copy from elsewhere), or one older than the node's
+last registration (a restore). Unlike `replaced-storage` it is not written
+when a crash rotated the directory's own id. It never goes back to `kept`
+and is never removed. Anything other than `kept` reads as `lost`. A directory
+without it that has `replaced-storage` counts as `lost`, since older releases
+also wrote that marker after their own crashes.
+
+After an unclean crash, a broker attests a kept ballot to a continuing
+leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
+`kept` and the control plane's record names the id from before the crash.
+An older release neither reads nor writes the file.
+
+## `rotated-ids`: ids a crash rotated away on this directory
+
+One text file at the durable root, written at a start before the node
+registers, through `rotated-ids.tmp`, synced, renamed and the directory
+synced.
+
+```text
+rotated_ids
+<storage id, 32 hex digits>
+```
+
+The first line is fixed. Each later line names an id this directory had until
+an unclean crash rotated it, at a start that found every ballot kept: the
+lost-copy marker says `kept`, and the control plane's record names that id.
+Newest first, at most 16. A restore or a replacement for a lost copy adds
+nothing. A set that names this node under one of these ids names this
+directory's own copy, so it is no evidence of a wipe, while the directory
+still keeps every ballot (`docs/replication-design.md`, "One fence rule for
+every change of leader"). A missing file, or one that does not decode, names
+no id, so such a set reads as naming a lost copy, which only costs a
+readmission. So does a crash after the id rotated but before the old id was
+recorded. An older release neither reads nor writes the file.
+
+## `copy-trust`: which copies hold what they acknowledged
+
+One text file at the durable root, kept apart from every copy's ballot so
+that taking a ballot never changes it. Every start writes it if it is
+missing, before anything reads it. Every write goes through `copy-trust.tmp`,
+synced, renamed and the directory synced.
+
+```text
+copy_trust
+storage_id <the directory's storage id, 32 hex digits>
+untrusted all
+untrusted except <key>
+doubted <key>
+unkept <key>
+unkept_since <key> <generation>
+readmitted <key> <generation> <storage id, 32 hex digits>
+```
+
+The first line is fixed. `storage_id` names the id the file was written
+under. A file that names another id than `storage-id` holds, or none, reads
+as every mark on every copy: an older release may have rotated the id after
+a crash without touching this file, so after a downgrade and an upgrade its
+vouches say nothing. A rotation writes the file under the id it is about to
+take, before it takes it. Each later line names one of three marks and either
+`all`, or a key. After `<mark> all`, `<mark> except <key>` names a copy
+without the mark. Without `all`, `<mark> <key>` names a copy with it. A key
+is the shard's replication key (tenant, namespace, stream, shard and kind) as
+JSON, in lowercase hex. Lines are sorted.
+
+- **untrusted**: the copy may lack records its seat acknowledged. A start
+  that rotates the storage id (`run-state`) writes `untrusted all` before it
+  writes the new id, so a crash in between still distrusts every copy. A copy
+  loses the mark when a leader ships it a batch that leaves it level through
+  the leader's generation start and the batch's commit offset, above zero,
+  or, on a shard that never held a record, when an empty batch from a leader
+  whose generation starts at 0 finds the copy empty
+  (`docs/replication-design.md`, "One fence rule for every change of
+  leader"). The next rotation marks every copy again.
+- **doubted**: a copy this broker led before such a crash. Written before the
+  copy takes a newer leader's ballot, and a batch that cannot write it is
+  refused. Cleared when a newer leader ships the copy level with its
+  generation start.
+- **unkept**: a copy that took a ballot while its promises counted for
+  nothing, as a learner answering a unified fence does. Written before that
+  ballot, with `unkept_since` naming the newest generation such a ballot was
+  taken at (absent reads as 0). Cleared only by a readmission: the copy's log
+  counts a set newer than that generation naming it, under its own storage
+  id, as a voter, and holds that set's generation start, shipped by that
+  set's leader or a later one. A batch alone does not clear it. Such a ballot is no
+  kept promise, even after a crash that keeps it.
+
+A `readmitted` line is for a directory that lost its ballots (a wipe, a
+restore, or a replacement for a lost copy). Its lost-copy marker never
+clears, so on its own no copy there would keep a promise again. The line
+names a copy the same kind of readmission brought back, the generation of
+the set that did, and the storage id the copy had then. From then on the
+copy's promises count for that set and later ones. It counts only while the
+directory still has that storage id, so any rotation since, a restore among
+them, ends it. The first readmission under an id stands. Writing the line
+also marks the copy untrusted, so only a vouch from after the readmission
+trusts it. The line counts only while the broker knows the fleet has not
+finalized `replica_election` (`docs/replication-design.md`, "Readmission and
+elections").
+
+A rotation keeps `doubted`, `unkept` and the `readmitted` lines, which then
+no longer match the id. A file that does not decode reads as every mark on
+every copy, and the next write keeps that, so each copy clears only by the
+rules above. A directory that ran before without the file, such
+as one an older release ran on, starts with `untrusted all` only, and only
+when `copy-trust-kept` is absent too. It doubts
+nothing, since nothing says which copy it led and doubting all of them would
+refuse an older caller's fence on every idle shard, and it marks nothing
+unkept, since an older release never gave a learner a ballot. When the file
+does not say since when a copy is unkept, the broker writes its current
+ballot's generation as `unkept_since` before the copy takes a newer ballot. An older release
+neither reads nor writes the file. A release from before `readmitted` lines
+reads a file holding one as one that does not decode.
+
+## `copy-trust-kept`: a release that keeps `copy-trust` ran here
+
+One text file at the durable root holding `copy_trust` and a newline,
+written, synced, the first time a start writes `copy-trust`, before it does,
+and never removed. It is what tells a directory an older release ran on
+from one whose `copy-trust` was lost: with it, a missing `copy-trust` reads
+as every mark on every copy. It is a file of its own because `run-state` and
+`storage-id` decode strictly, and an older release would take a changed one
+for a crash or a new directory. An older release neither reads nor writes it.
+
+## `run-token`: the run the witness names
+
+One text file at the durable root: 32 lowercase hex digits, a random token
+each start writes, through `run-token.tmp`, synced, renamed and the directory
+synced, before any store opens. No newline.
+
+The token pairs the directory with the **run witness**, a file outside the
+directory in `/dev/shm` named `felix-run-<effective uid>-<crc32 of the
+directory's absolute path, 8 hex digits>`:
+
+```text
+felix-run
+boot=<the boot id, 32 hex digits>
+token=<the token>
+root=<the directory's absolute path>
+```
+
+The start removes the old witness before it writes the token and the new
+witness after, so a crash at any step leaves no witness or one naming the new
+token. A start from the control-plane view uses the directory only when the
+witness matches byte for byte. See `docs/durable-storage.md`, "The run
+witness". An older release neither reads nor writes either file.
 
 ## Consumer-group cursor values
 

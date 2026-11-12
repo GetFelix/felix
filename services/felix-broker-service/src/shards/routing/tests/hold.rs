@@ -28,7 +28,7 @@ impl Broker {
         Self {
             lifecycle,
             ingress,
-            assignments: HashMap::new(),
+            assignments: HashMap::default(),
             nodes: catalog(),
         }
     }

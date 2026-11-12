@@ -99,3 +99,44 @@ fn an_encoded_id_round_trips_and_trailing_bytes_are_refused() {
     longer.push(0);
     assert_eq!(StorageId::decode(&longer), None);
 }
+
+/// Reading the id creates none, so a start that only asks what the directory
+/// holds leaves it as it was.
+#[test]
+fn loading_reads_the_id_and_creates_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    assert_eq!(load(dir.path()).expect("load"), None);
+    assert!(!dir.path().join(FILE_NAME).exists());
+    let (id, _) = load_or_create(dir.path(), counter(0)).expect("create");
+    assert_eq!(load(dir.path()).expect("load"), Some(id));
+    std::fs::write(dir.path().join(FILE_NAME), b"not an id").expect("damage");
+    assert_eq!(load(dir.path()).expect("load"), None);
+}
+
+/// `load` must read through the filesystem seam, or a simulated data
+/// directory always looks like it has no id.
+#[cfg(feature = "sim")]
+#[test]
+fn load_reads_a_directory_the_simulator_holds_in_memory() {
+    let root = std::env::temp_dir().join(format!("felix-storage-id-load-{}", std::process::id()));
+    crate::sim_fs::register_root(&root);
+    let (id, _) = load_or_create(&root, || [7; 16]).expect("create");
+    let loaded = load(&root).expect("load");
+    crate::sim_fs::unregister_root(&root);
+    assert_eq!(loaded, Some(id));
+}
+
+#[cfg(feature = "sim")]
+#[test]
+fn the_replaced_marker_bytes_are_read_from_a_simulated_directory() {
+    let root = std::env::temp_dir().join(format!("felix-storage-replaced-{}", std::process::id()));
+    crate::sim_fs::register_root(&root);
+    assert_eq!(
+        crate::run_state::read_replaced_bytes(&root).expect("read"),
+        None
+    );
+    crate::fs::write(root.join(crate::run_state::REPLACED_FILE_NAME), b"x").expect("write");
+    let bytes = crate::run_state::read_replaced_bytes(&root).expect("read");
+    crate::sim_fs::unregister_root(&root);
+    assert_eq!(bytes, Some(b"x".to_vec()));
+}

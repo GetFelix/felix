@@ -8,6 +8,8 @@
 //! Unless `FELIX_HISTORY_MODE` says otherwise, the main campaign runs
 //! lease-free and the every-family one on the lease, so each PR covers both.
 //! The adversarial one runs lease-free on four brokers.
+//! `FELIX_HISTORY_NEMESIS=election` runs the main campaign with only leader
+//! kills while the control plane is down.
 //!
 //! ```text
 //! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 FELIX_HISTORY_MODE=lease-free \
@@ -69,10 +71,24 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
             campaign = campaign.with_spare_broker();
             (RandomNemesis::adversarial(), "adversarial faults")
         }
+        Some("metadata") => {
+            campaign.mode = Mode::LeaseFree;
+            (
+                RandomNemesis::metadata(),
+                "faults on a three-member metadata group",
+            )
+        }
+        Some("election") => {
+            campaign.mode = Mode::LeaseFree;
+            (
+                RandomNemesis::election(),
+                "leader kills with the control plane down",
+            )
+        }
         Some("all") | None if long => (RandomNemesis::all_faults(), "every fault family"),
         None => (RandomNemesis::process_faults(), "process faults"),
         Some(other) => panic!(
-            "{}={other:?} is not `all` or `adversarial`",
+            "{}={other:?} is not `all`, `adversarial`, `election` or `metadata`",
             history::campaign::NEMESIS_VAR
         ),
     };
@@ -246,6 +262,71 @@ async fn a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged() {
     }
 }
 
+/// Long enough for two or three rounds of a leader kill with the control plane
+/// down: the election, the hold, the control plane's return and the recovery
+/// check after it.
+const ELECTION_DURATION: Duration = Duration::from_secs(90);
+
+/// **Replicas elect a leader while the control plane is down, and the history
+/// stays valid.** With `replica_election` finalized, each fault crashes the
+/// control plane, then kills a leader while the clients and subscribers keep
+/// going. Within a bound, with the control plane still down, some other broker
+/// opens each of the killed leader's shards at a later generation and takes a
+/// probe. Half the time the killed broker is started again before the control
+/// plane returns; nothing waits for it to rejoin then. Afterwards no
+/// acknowledged write is lost, delivery is in order, and no two brokers
+/// opened one shard at the same generation (rule 21, from the broker logs).
+#[serial]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
+    let mut campaign =
+        Campaign::from_env(SEED, ELECTION_DURATION, Mode::LeaseFree).expect("campaign settings");
+    campaign.duration = ELECTION_DURATION;
+    // Elections need the lease-free path, whatever mode the nightly runs.
+    campaign.mode = Mode::LeaseFree;
+    let (seed, mode) = (campaign.seed, campaign.mode);
+    println!(
+        "election campaign: seed {seed}, mode {mode}; rerun with \
+         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+    );
+    let mut nemesis = RoundRobin::new(vec![FaultKind::ElectWithoutControlPlane]);
+    let history = run_checked(&campaign, &mut nemesis).await;
+
+    // Counted from the timeline rather than from `picked`: two faults can
+    // print the same, and a skipped one is still picked.
+    let count = |prefix: &str| {
+        history
+            .faults
+            .iter()
+            .filter(|f| f.what.starts_with(prefix))
+            .count()
+    };
+    let healed = count("healed crash the control plane and kill leader");
+    let skipped = count("could not crash the control plane and kill leader");
+    assert!(
+        healed >= 1,
+        "seed {seed}: no leader was killed with the control plane down and healed \
+         ({skipped} skipped); picked {:?}",
+        nemesis.picked,
+    );
+    // Each line is an open at a later generation by a broker other than the
+    // killed leader, read from its log and then probed.
+    let elected = history
+        .faults
+        .iter()
+        .filter(|f| f.what.contains("with the control plane down"))
+        .count();
+    assert!(
+        elected >= healed,
+        "seed {seed}: {healed} kill(s) healed but only {elected} election(s) seen"
+    );
+    assert!(
+        !history.opens.is_empty(),
+        "seed {seed}: no open was read from the broker logs, so rule 21 checked nothing"
+    );
+    println!("{healed} election fault(s) healed, {skipped} skipped, {elected} shard(s) elected");
+}
+
 /// Long enough for [`CacheLeader`] to fault the cache's leader several times.
 const CACHE_PROMOTION_DURATION: Duration = Duration::from_secs(60);
 
@@ -315,7 +396,9 @@ async fn run_checked(campaign: &Campaign, nemesis: &mut impl Nemesis) -> History
             RegisterAction::Put {
                 acknowledged: true, ..
             } => (puts + 1, gets),
-            RegisterAction::Put { .. } => (puts, gets),
+            RegisterAction::Put { .. }
+            | RegisterAction::Delete { .. }
+            | RegisterAction::PutIf { .. } => (puts, gets),
             RegisterAction::Get { .. } => (puts, gets + 1),
         });
     if puts < 10 || gets < 10 {
@@ -411,6 +494,10 @@ impl Nemesis for RoundRobin {
 
     fn needs_power_loss(&self) -> bool {
         self.kinds.iter().any(Nemesis::needs_power_loss)
+    }
+
+    fn needs_election(&self) -> bool {
+        self.kinds.iter().any(Nemesis::needs_election)
     }
 }
 

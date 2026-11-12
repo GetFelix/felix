@@ -110,6 +110,7 @@ fn a_replica_report_is_restamped() {
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report: report.clone(),
         leader: Some("broker-a".to_string()),
+        readmit: false,
     });
 
     let restamped = restamp(&encoded, 222).expect("a report carries a clock");
@@ -117,6 +118,7 @@ fn a_replica_report_is_restamped() {
         MetaCommand::RecordReplicaReport {
             report: stamped,
             leader,
+            ..
         } => {
             assert_eq!(leader.as_deref(), Some("broker-a"));
             assert_eq!(stamped.reported_at_millis, 222);
@@ -169,6 +171,7 @@ fn a_report_without_a_leader_is_the_old_wire_form() {
     let encoded = encode_command(&MetaCommand::RecordReplicaReport {
         report,
         leader: None,
+        readmit: false,
     });
     let json: serde_json::Value = serde_json::from_slice(&encoded).expect("json");
     assert!(json.get("leader").is_none(), "{json}");
@@ -254,4 +257,16 @@ fn restamping_preserves_the_request_id() {
     let stamped = stamp_request_id(&encoded, "rid-9").expect("stamps");
     let restamped = restamp(&stamped, 222).expect("a heartbeat carries a clock");
     assert_eq!(request_id_of(&restamped).as_deref(), Some("rid-9"));
+}
+
+/// **`joint_fence` is finalized only where a refusal report is kept.** A
+/// leader whose fence cannot learn the set it leaves is renamed on its
+/// refusal, which members before level 25 drop, so a group below it would
+/// leave that shard waiting for good (#1872).
+#[test]
+fn joint_fence_waits_for_the_level_that_keeps_refusals() {
+    let finalize = MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
+    };
+    assert_eq!(finalize.version(), 25);
 }

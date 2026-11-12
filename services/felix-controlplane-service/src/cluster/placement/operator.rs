@@ -8,7 +8,7 @@
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
 use super::moves::{
-    AtGeneration, MovePolicy, Moves, retake, spread_if_led_by, start, undo_fenced,
+    AtGeneration, MovePolicy, Moves, keep_copy_pins, retake, spread_if_led_by, start, undo_fenced,
     undo_needs_fence, undo_replacement, undo_staged,
 };
 use super::plan::{assignment_for, owner_of, plan_abandoning, replication_factors};
@@ -256,7 +256,7 @@ pub fn start_move(
         .begin_requested(&existing.leader, destination)
         .map_err(Refused::Blocked)?;
     let caught_up = AtGeneration::new(catalog.caught_up, existing.generation);
-    let (step, assignment) = start(
+    let (step, mut assignment) = start(
         existing,
         destination,
         MoveReason::Operator,
@@ -264,6 +264,7 @@ pub fn start_move(
         catalog.caught_up.as_of_millis(),
         &moves,
     );
+    keep_copy_pins(existing, &mut assignment, catalog.caught_up, None);
     // Reported, never refused: an operator moving a shard by hand may have a
     // reason to accept less spread, and placement repairs it when it can.
     let zones = zone_impact(catalog, existing, destination, replication_factor, home);
@@ -328,21 +329,19 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
     if existing.pending_set.is_some() {
         // Back to the control plane's own set, which a pending change never
         // left.
+        let mut assignment = ShardAssignment {
+            pending_set: None,
+            ..existing.renamed()
+        };
+        keep_copy_pins(existing, &mut assignment, catalog.caught_up, None);
         return Ok(OperatorStep {
             step: MoveStep::PendingSetCancelled,
-            assignment: ShardAssignment {
-                pending_set: None,
-                generation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                ..existing.clone()
-            },
+            assignment,
             expected_generation: existing.generation,
             zones: None,
         });
     }
-    let (step, assignment) = if existing.state == ShardState::Draining {
+    let (step, mut assignment) = if existing.state == ShardState::Draining {
         // A leader that is down cannot take the shard back; failover
         // promotes a replica that holds the log instead.
         if !matches!(
@@ -384,6 +383,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
     } else {
         return Err(Refused::NotMoving);
     };
+    keep_copy_pins(existing, &mut assignment, catalog.caught_up, None);
     Ok(OperatorStep {
         step,
         assignment,

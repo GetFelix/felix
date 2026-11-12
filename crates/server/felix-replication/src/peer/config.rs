@@ -14,7 +14,7 @@ use std::time::Duration;
 /// roles at the TLS layer rather than at the first frame. A connection that
 /// reaches the internal listener without it is refused before any broker state
 /// is touched.
-pub const INTERNAL_ALPN: &[u8] = b"felix-internal/1";
+pub(crate) const INTERNAL_ALPN: &[u8] = b"felix-internal/1";
 
 /// How many connections the pool may hold to one peer.
 ///
@@ -161,9 +161,18 @@ pub struct PeerTransportConfig {
     pub fence: bool,
     /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
     /// checks the replica set on fences and batches that carry one. Off by
-    /// default, and only takes effect with `fence`. A test switch until the
-    /// `replica_election` fleet feature ships.
+    /// default, and only takes effect with `fence`. On, the broker reports
+    /// `peer_election`, `joint_fence` and `replica_election`, so it is the
+    /// operator's opt-in to replica election: turn it on on every broker
+    /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
+    /// `FELIX_UNIFIED_FENCE`: whether this broker offers `UNIFIED_FENCE`
+    /// when it dials, and so counts a promotion fence's answers by what each
+    /// copy attests: promises from copies that kept their ballots, coverage
+    /// from copies that hold what they acknowledged. On unless set to `0`.
+    /// Only takes effect with `fence`, and the broker turns it off without a
+    /// durable directory, which has nothing to attest.
+    pub unified_fence: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -201,6 +210,7 @@ impl Default for PeerTransportConfig {
             partition_file: None,
             fence: true,
             election: false,
+            unified_fence: true,
         }
     }
 }
@@ -264,7 +274,8 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::PING)
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
-            .union(PeerCapabilities::SEQUENCED_FORWARDS);
+            .union(PeerCapabilities::SEQUENCED_FORWARDS)
+            .union(PeerCapabilities::WRITER_GENERATIONS);
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)
@@ -273,13 +284,32 @@ impl PeerTransportConfig {
                 .union(PeerCapabilities::GROUP_FENCE)
                 .union(PeerCapabilities::BALLOTS)
                 .union(if self.election {
-                    PeerCapabilities::ELECTION
+                    PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS)
                 } else {
                     PeerCapabilities::NONE
                 })
         } else {
             labels
         }
+    }
+
+    /// What an outgoing connection offers: [`Self::capabilities`] plus the
+    /// bits this side reads whatever it offers as a listener. The pool and the
+    /// simulated network both use it, so they cannot drift.
+    pub fn outgoing_capabilities(&self) -> felix_wire::internal::PeerCapabilities {
+        use felix_wire::internal::PeerCapabilities;
+        self.capabilities()
+            .union(PeerCapabilities::STORAGE_IDENTITY)
+            .union(PeerCapabilities::NODE_INCARNATION)
+            .union(PeerCapabilities::LANE_RENEWAL)
+            .union(PeerCapabilities::LEARNER_ACKS)
+            .union(PeerCapabilities::REFUSAL_REASONS)
+            .union(PeerCapabilities::KEPT_BALLOTS)
+            .union(if self.fence && self.unified_fence {
+                PeerCapabilities::UNIFIED_FENCE
+            } else {
+                PeerCapabilities::NONE
+            })
     }
 
     /// Read the internal transport settings, validated against the
@@ -342,6 +372,10 @@ impl PeerTransportConfig {
                 ));
             }
         };
+        // A kill switch: anything but `0` keeps it on.
+        config.unified_fence = std::env::var("FELIX_UNIFIED_FENCE")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(true);
         config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
             .ok()
             .filter(|value| !value.trim().is_empty())
@@ -408,7 +442,7 @@ impl PeerTransportConfig {
     /// for seconds, and closing its peer connections on that basis would make
     /// replication churn exactly when the machine can least afford it. Three
     /// quarters still leaves a quarter of the request's patience to spare.
-    pub fn peer_idle_timeout(&self) -> Duration {
+    pub(crate) fn peer_idle_timeout(&self) -> Duration {
         self.request_timeout / 4 * 3
     }
 
@@ -416,7 +450,7 @@ impl PeerTransportConfig {
     /// between rebalances, so they need a keep-alive to survive the idle window
     /// above at all. A fifth of it leaves four chances to be heard from before a
     /// healthy but quiet connection would be closed.
-    pub fn quic_transport(&self) -> felix_transport::TransportConfig {
+    pub(crate) fn quic_transport(&self) -> felix_transport::TransportConfig {
         felix_transport::TransportConfig {
             max_idle_timeout: Some(self.peer_idle_timeout()),
             keep_alive_interval: Some(self.peer_idle_timeout() / 5),
@@ -429,12 +463,12 @@ impl PeerTransportConfig {
     /// Jitter is not decoration here: every broker in a cluster notices the same
     /// peer restart at the same moment, and an unjittered backoff would have all
     /// of them redial it in step.
-    pub fn reconnect_delay(&self, attempt: u32) -> Duration {
+    pub(crate) fn reconnect_delay(&self, attempt: u32) -> Duration {
         let exponential = self
             .reconnect_base
             .saturating_mul(1u32 << attempt.min(16))
             .min(self.reconnect_max);
-        let jitter = fastrand_fraction();
+        let jitter = jitter_fraction();
         // Full jitter: uniform over [0, exponential]. Decorrelates redials even
         // when every broker starts its backoff in the same millisecond.
         exponential.mul_f64(jitter)
@@ -492,16 +526,6 @@ impl PeerTransportConfig {
 }
 
 /// A uniform fraction in [0, 1), without pulling in an RNG dependency.
-fn fastrand_fraction() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.subsec_nanos() as u64)
-        .unwrap_or(0);
-    // Mix so successive calls in the same microsecond do not correlate.
-    let mixed = nanos
-        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-        .rotate_left(31)
-        .wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    (mixed >> 11) as f64 / (1u64 << 53) as f64
+fn jitter_fraction() -> f64 {
+    (felix_common::jitter::up_to(u64::MAX) >> 11) as f64 / (1u64 << 53) as f64
 }

@@ -19,10 +19,10 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 axum = { workspace = true }
-felix-common = { path = "../../crates/server/felix-common", version = "0.7.0-preview.3", features = ["lifecycle", "openapi", "tls", "yaml"] }
-felix-router = { path = "../../crates/server/felix-router", version = "0.7.0-preview.3" }
+felix-common = { path = "../../crates/server/felix-common", version = "0.8.0-preview.0", features = ["hasher", "lifecycle", "openapi", "tls", "yaml"] }
+felix-router = { path = "../../crates/server/felix-router", version = "0.8.0-preview.0" }
 # The name grammar and lease templates, shared with the brokers that expand them.
-felix-authz = { path = "../../crates/server/felix-authz", version = "0.7.0-preview.3" }
+felix-authz = { path = "../../crates/server/felix-authz", version = "0.8.0-preview.0" }
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 opentelemetry = { workspace = true }
@@ -41,7 +41,6 @@ utoipa = { workspace = true, features = ["axum_extras"] }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
-sqlx = { workspace = true }
 casbin = { workspace = true }
 dashmap = { workspace = true }
 base64 = { workspace = true }
@@ -58,19 +57,9 @@ rustls = { workspace = true }
 tokio-rustls = "0.26"
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio", "service"] }
 # The metadata Raft core (`src/raft/`), per docs/metadata-raft-design.md.
-# `storage-v2` unlocks implementing RaftLogStorage/RaftStateMachine directly;
-# openraft types stay inside `src/raft/` — that containment is the seam.
-# `loosen-follower-log-revert` is not optional for us: a member rejoining
-# with a wiped volume reports a log that went backwards, which is a scenario
-# this design explicitly supports — without the feature the *leader* trips a
-# debug assertion in its replication progress when that member returns (the
-# chaos suite caught it), and a release build would carry the inconsistent
-# progress state silently instead.
-openraft = { version = "0.9", features = [
-    "serde",
-    "storage-v2",
-    "loosen-follower-log-revert",
-] }
+# openraft types stay inside `src/raft/`; that containment is the seam.
+openraft = { workspace = true, features = ["serde", "tokio-rt"] }
+futures-util = { version = "0.3", default-features = false }
 # Backs the Raft log, vote, and snapshot store: crash-safe single-file ACID
 # writes so Felix carries no hand-rolled durability code for consensus state.
 redb = "4"
@@ -81,18 +70,12 @@ tokio = { workspace = true, features = ["test-util"] }
 tower = "0.5"
 tempfile = { workspace = true }
 serial_test = { workspace = true }
-sqlx = { workspace = true }
 base64 = { workspace = true }
-testcontainers = "0.15"
-testcontainers-modules = { version = "0.3", features = ["postgres"] }
 # Certificate fixtures for the bootstrap mTLS tests.
 rcgen = { workspace = true }
 
 [lib]
 path = "src/lib.rs"
-
-[features]
-pg-tests = []
 
 [lints]
 workspace = true

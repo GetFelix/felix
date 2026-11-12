@@ -10,7 +10,7 @@
 mod shard;
 mod shards;
 
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,7 +21,9 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use super::halted::{HaltedReplica, HaltedReplicas};
-use super::promotion::{self, NoGate, Outcome, PromotionGate};
+#[cfg(test)]
+use super::promotion::NoGate;
+use super::promotion::{self, Outcome, PromotionGate};
 use super::quorum::QuorumMarks;
 use super::reporter::Reporter;
 use super::reporter::ShardReport;
@@ -92,6 +94,15 @@ fn fence_backoff(failures: u32) -> Duration {
 /// shard's followers behind. Not at once: a follower that is unreachable would
 /// be redialled in a tight loop for the rest of the drain.
 const CATCH_UP_RETRY: Duration = Duration::from_millis(50);
+/// How long a leader's own ballot must stay past the generation it leads
+/// before it reports that generation refused. A promotion takes the new
+/// ballot before the routes name it, so a shorter gap is a route catching up.
+const BALLOT_ABOVE_FOR: Duration = Duration::from_secs(3);
+/// The same for a ballot naming another node, which this leader took by
+/// answering that node's fence. Longer than a candidate's stand timeout plus
+/// the control plane adopting it: a standing that opens moves the route on
+/// first, and one that was withdrawn leaves this leader stopped for good.
+const BALLOT_ELSEWHERE_FOR: Duration = Duration::from_secs(10);
 
 /// The running driver, as a stopping broker needs it.
 pub struct Replication {
@@ -155,7 +166,7 @@ impl Replication {
 /// A pass runs on each tick, after each durable append, and whenever
 /// `routes_changed` is notified.
 #[allow(clippy::too_many_arguments)]
-pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
+pub(crate) fn spawn<R: PeerRequester + Send + Sync + 'static>(
     requester: Arc<R>,
     broker: Arc<Broker>,
     router: Arc<ShardRouter>,
@@ -236,6 +247,9 @@ pub fn spawn<R: PeerRequester + Send + Sync + 'static>(
             };
             match event {
                 Event::Wake(kind) => {
+                    if matches!(kind, WakeKind::Tick) {
+                        shards.note_released().await;
+                    }
                     shards.scan(kind);
                     seen.send_modify(|seen| seen.scan = shards.scan);
                 }
@@ -299,8 +313,17 @@ pub trait WriteFence: Send + Sync {
     /// the two calls above, if they apply, came before this one.
     fn passed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
-    /// A follower refused `key`'s ships at `generation` because it accepted a
-    /// newer leader. Called on every pass while the refusal stands.
+    /// An engine that elects its own leaders opened `key` at `generation`:
+    /// this broker leads it and may take writes. The hybrid never calls it. It
+    /// opens a shard through [`crate::promotion::PromotionGate::open`]. The
+    /// default does nothing, so a shard opened this way stays closed until a
+    /// fence implements it.
+    fn opened(&self, _key: &crate::ShardKey, _generation: u64) {}
+
+    /// `key` has a newer leader than `generation`: a follower refused its
+    /// ships because the control plane assigned a newer generation, or this
+    /// broker itself took a newer generation or set. Called on every pass
+    /// while that holds.
     fn deposed(&self, _key: &crate::ShardKey, _generation: u64) {}
 
     /// This broker does not lead `key` at `generation`, though the route says
@@ -349,8 +372,10 @@ pub trait WriteFence: Send + Sync {
 }
 
 /// A fence that holds nothing back: every shard is quiet.
+#[cfg(test)]
 pub(crate) struct Unfenced;
 
+#[cfg(test)]
 impl WriteFence for Unfenced {
     fn quiesced(&self, _key: &crate::ShardKey) -> bool {
         true
@@ -365,7 +390,8 @@ impl WriteFence for Unfenced {
 // One cursor map per log kind the pass ships, plus the shared context: folding
 // the maps into a struct would move the argument list rather than shorten it.
 #[allow(clippy::too_many_arguments)]
-pub async fn replicate_once<R: PeerRequester + Sync>(
+#[cfg(test)]
+pub(crate) async fn replicate_once<R: PeerRequester + Sync>(
     requester: &R,
     broker: &Arc<Broker>,
     router: &ShardRouter,
@@ -497,7 +523,7 @@ pub async fn replicate_once_with<R: PeerRequester + Sync>(
     // Bounded, because each shard in flight holds a peer request and may hold
     // an HTTP report: a broker leading thousands of shards must not open
     // thousands of those at once.
-    let no_one = HashSet::new();
+    let no_one = HashSet::default();
     let passes: Vec<ShardPass> =
         futures::stream::iter(work.into_iter().map(|(key, route, entry, aux)| {
             let prior = router.prior_set(&key);
@@ -577,11 +603,12 @@ async fn fence_one<'a, R: PeerRequester>(
     key: ShardKey,
     route: felix_router::Route,
     marks: &'a QuorumMarks,
+    continuing: bool,
 ) -> Fenced<'a> {
-    // Before registration answers, the fleet view is empty for want of an
-    // answer and every feature reads as off, so the lease would stand in for
-    // a fence the fleet may already require.
-    if !marks.serving().adopted {
+    // Before registration answers, a feature missing from the fleet view may
+    // still be on, so the lease would stand in for a fence the fleet may
+    // already require. A view seeded with every feature this reads decides.
+    if !marks.serving().decided(key.kind) {
         let why = "this broker has not yet learned which fleet features are enabled";
         return (
             key,
@@ -608,6 +635,7 @@ async fn fence_one<'a, R: PeerRequester>(
             promotion::Joint::new(&addr_of, router.prior_set(&key))
                 .with_local_storage(marks.local_storage())
                 .with_replaced_storage(marks.replaced_storage())
+                .with_continuing(continuing)
         });
     // This broker's own standing for election, if that is what the route is.
     let candidacy = marks
@@ -628,6 +656,7 @@ async fn fence_one<'a, R: PeerRequester>(
         lease_fallback,
         joint.as_ref(),
         candidacy.as_ref(),
+        marks.unified_fence().then_some(marks),
     )
     .await;
     // A fence taken on another incarnation's logs, which a recreate at the
@@ -653,14 +682,14 @@ async fn open_promoted<R: PeerRequester>(
     promoted: Vec<(ShardKey, felix_router::Route)>,
     marks: &QuorumMarks,
 ) -> bool {
-    let outcomes: Vec<Fenced<'_>> = futures::stream::iter(
-        promoted
-            .into_iter()
-            .map(|(key, route)| fence_one(requester, broker, router, key, route, marks)),
-    )
-    .buffer_unordered(FENCE_CONCURRENCY)
-    .collect()
-    .await;
+    let outcomes: Vec<Fenced<'_>> =
+        futures::stream::iter(promoted.into_iter().map(|(key, route)| {
+            let continuing = gate.continuing(&watch_key(&key), route.generation);
+            fence_one(requester, broker, router, key, route, marks, continuing)
+        }))
+        .buffer_unordered(FENCE_CONCURRENCY)
+        .collect()
+        .await;
     let mut pending = false;
     for (key, generation, outcome, fencing) in outcomes {
         let opened = open_fenced(gate, &key, generation, outcome).await;
@@ -715,6 +744,18 @@ async fn open_fenced(
             );
             false
         }
+        Outcome::SetUnknown { why, ballot } => {
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                ballot,
+                why = %why,
+                "the set this generation leaves is not known here; reporting it refused",
+            );
+            metrics::record_fence_set_unknown();
+            false
+        }
         Outcome::Refused {
             promised_to, why, ..
         } => {
@@ -724,7 +765,8 @@ async fn open_fenced(
                 generation,
                 promised_to = %promised_to,
                 why = %why,
-                "a replica promised the generation to another node and no majority took it; reporting the refusal",
+                "replicas promised the generation to another node or took a newer one, and no \
+                 majority took it; reporting the refusal",
             );
             false
         }
@@ -772,6 +814,12 @@ async fn opened(
     let opened = gate.open(&watch_key(key), generation).await;
     if opened {
         metrics::record_promotion_opened(path);
+        tracing::info!(
+            stream = %key.stream,
+            shard = key.shard,
+            generation,
+            "the shard is open for writes",
+        );
     }
     opened
 }
@@ -783,7 +831,7 @@ fn open_caches(broker: &Broker, keys: &[ShardKey]) -> OpenCaches {
     {
         broker.cache().open_shards().into_iter().collect()
     } else {
-        HashSet::new()
+        HashSet::default()
     }
 }
 
@@ -854,7 +902,8 @@ fn take_work(
     let learner = shard::staged_learner(previous.as_ref(), route);
     let mut entry = match previous {
         Some(entry) if entry.generation == route.generation => entry,
-        _ => ShardCursors::at(route.generation),
+        Some(entry) => entry.next(route.generation),
+        None => ShardCursors::at(route.generation),
     };
     entry.learner = learner;
     // A draining shard reports even with nobody to ship to: its move lost

@@ -44,7 +44,10 @@ impl Harness {
             Arc::clone(&leader.broker),
             &BrokerConfig::default(),
             ClusterContext {
-                ingress: Some(Arc::clone(&leader.ingress)),
+                engine: std::sync::Arc::new(crate::shards::routing::StreamEngine::new(
+                    None,
+                    Some(Arc::clone(&leader.ingress)),
+                )),
                 lease: Some(Arc::clone(&lease)),
                 ..ClusterContext::default()
             },
@@ -96,7 +99,7 @@ async fn publish_one(h: &Harness, io: &Io) {
     handle_publish_message(
         &h.leader.broker,
         &h.queued,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         // Acked on enqueue: the default.
@@ -130,7 +133,7 @@ async fn publish_batch(h: &Harness, io: &Io) {
         &h.leader.broker,
         &h.queued,
         None,
-        &mut HashMap::new(),
+        &mut HashMap::default(),
         &mut String::new(),
         false,
         false,

@@ -442,7 +442,7 @@ When the subjects a removal reaches include an IdP group (`group:...`), the
 control plane cannot tell who its members are, so the revocation covers every
 principal of the tenant (`principal_id` `*`). Every broker session in the
 tenant then has to authenticate again. The change and its revocation are one
-store write (one Raft entry, one Postgres transaction), so either both happen
+store write (one Raft entry), so either both happen
 or neither does, and a failed request is safe to retry.
 
 Under Raft, a group with a member below metadata version 9 makes them two
@@ -515,8 +515,7 @@ end the open streams, which are the larger exposure.
 A cutoff and a token's `iat` are both wall-clock seconds, taken by whichever
 control-plane member served the request: the cutoff by the member that took
 the revoke call or the RBAC removal, `iat` by the member that minted the token.
-Under the Raft store, and with several replicas over one Postgres, these can be
-different machines. `/token/exchange`, `/token/delegate` and `/token/refresh`
+Under the Raft store these can be different machines. `/token/exchange`, `/token/delegate` and `/token/refresh`
 read cutoffs on the Raft leader after a read-index, so they see every
 revocation already acknowledged, whatever the asking member has applied. A
 read that fails fails the request, before a refresh token is spent. While the
@@ -1096,6 +1095,15 @@ Bootstrap tokens **never** authorize normal admin endpoints.
 
    After that, requests do not wait on the control plane. See
    [Keeping tenant keys current](#keeping-tenant-keys-current).
+
+   A broker that started from its control-plane view while the control plane
+   was down (`FELIX_START_WITHOUT_CONTROLPLANE`) checks no client token until
+   it registers, because it serves no client until then: its listeners accept
+   nothing, and a client request a peer forwards to it is refused as
+   retryable. Nothing about auth is kept in the view. Its peers still reach
+   it for replication and elections, and they authenticate by their mTLS
+   certificates (`docs/internal-protocol.md`), not by tenant JWKS, so that
+   needs nothing from the control plane.
 3) Broker validates claims:
    - `iss = felix-auth`
    - `aud = felix-broker`
@@ -1165,7 +1173,7 @@ being refused.
 
 ## Data Stored Per Tenant
 
-In the control plane store (memory or Postgres):
+In the control plane store (memory or Raft):
 - Allowed OIDC issuers + audiences + claim mappings
 - Casbin policies and groupings
 - Tenant signing keys: a current key that signs, plus any keys that only
@@ -1256,38 +1264,8 @@ Delete an issuer:
 DELETE /v1/tenants/{tenant_id}/idp-issuers/{issuer}
 ```
 
-### Postgres (control plane store)
-
-Insert or update the issuer in the `idp_issuers` table:
-
-```sql
-INSERT INTO idp_issuers (
-  tenant_id,
-  issuer,
-  audiences,
-  discovery_url,
-  jwks_url,
-  subject_claim,
-  groups_claim
-) VALUES (
-  't1',
-  'https://login.microsoftonline.com/<tenant>/v2.0',
-  '["api://felix-controlplane"]'::jsonb,
-  NULL,
-  NULL,
-  'sub',
-  'groups'
-)
-ON CONFLICT (tenant_id, issuer) DO UPDATE SET
-  audiences = EXCLUDED.audiences,
-  discovery_url = EXCLUDED.discovery_url,
-  jwks_url = EXCLUDED.jwks_url,
-  subject_claim = EXCLUDED.subject_claim,
-  groups_claim = EXCLUDED.groups_claim;
-```
-
 Notes:
-- If `discovery_url` is `NULL`, the control plane uses `{iss}/.well-known/openid-configuration`.
+- If `discovery_url` is `null`, the control plane uses `{iss}/.well-known/openid-configuration`.
 - `jwks_url` can be set directly if your IdP doesn’t support discovery.
 - `subject_claim` defaults to `sub`. `groups_claim` is optional.
 - Discovery and JWKS URLs must be `https`. Plain `http` is accepted only for a

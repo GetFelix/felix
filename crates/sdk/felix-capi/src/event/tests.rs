@@ -2,7 +2,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_client::Event;
+use felix_client::{Event, RecordHeaders};
 
 use super::*;
 use crate::status::FELIX_STATUS_INVALID_ARGUMENT;
@@ -80,4 +80,76 @@ fn an_empty_publisher_reads_as_absent() {
     assert_eq!(status, FELIX_STATUS_OK);
     assert!(data.is_null());
     assert_eq!(len, 0);
+}
+
+fn with_headers(headers: Option<RecordHeaders>) -> FelixEvent {
+    let mut ev = event(None, None);
+    ev.headers = headers;
+    ev
+}
+
+#[test]
+fn a_key_and_headers_reach_c_in_order() {
+    let ev = with_headers(Some(RecordHeaders {
+        key: Some(Bytes::from_static(b"k")),
+        headers: vec![
+            ("a".to_string(), Bytes::from_static(b"1")),
+            ("a".to_string(), Bytes::new()),
+        ],
+    }));
+    let (mut data, mut len) = (ptr::null(), 0usize);
+    // SAFETY: a live event and writable out-pointers.
+    assert_eq!(
+        unsafe { felix_event_key(&ev, &mut data, &mut len) },
+        FELIX_STATUS_OK
+    );
+    // SAFETY: `len` bytes valid while `ev` lives.
+    assert_eq!(unsafe { std::slice::from_raw_parts(data, len) }, b"k");
+
+    let mut count = 0usize;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { felix_event_header_count(&ev, &mut count) },
+        FELIX_STATUS_OK
+    );
+    assert_eq!(count, 2);
+
+    let (mut n, mut nl, mut v, mut vl) = (ptr::null(), 0usize, ptr::null(), 0usize);
+    // SAFETY: as above.
+    let status = unsafe { felix_event_header(&ev, 0, &mut n, &mut nl, &mut v, &mut vl) };
+    assert_eq!(status, FELIX_STATUS_OK);
+    // SAFETY: valid while `ev` lives.
+    unsafe {
+        assert_eq!(std::slice::from_raw_parts(n, nl), b"a");
+        assert_eq!(std::slice::from_raw_parts(v, vl), b"1");
+    }
+    // SAFETY: as above.
+    let status = unsafe { felix_event_header(&ev, 1, &mut n, &mut nl, &mut v, &mut vl) };
+    assert_eq!(status, FELIX_STATUS_OK);
+    assert!(v.is_null());
+    assert_eq!(vl, 0);
+
+    // SAFETY: as above; the index is out of range.
+    let status = unsafe { felix_event_header(&ev, 2, &mut n, &mut nl, &mut v, &mut vl) };
+    assert_eq!(status, FELIX_STATUS_INVALID_ARGUMENT);
+}
+
+#[test]
+fn an_event_without_headers_reads_as_plain() {
+    let ev = with_headers(None);
+    let (mut data, mut len) = (std::ptr::dangling::<u8>(), 5usize);
+    // SAFETY: a live event and writable out-pointers.
+    assert_eq!(
+        unsafe { felix_event_key(&ev, &mut data, &mut len) },
+        FELIX_STATUS_OK
+    );
+    assert!(data.is_null());
+    assert_eq!(len, 0);
+    let mut count = 7usize;
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { felix_event_header_count(&ev, &mut count) },
+        FELIX_STATUS_OK
+    );
+    assert_eq!(count, 0);
 }

@@ -179,7 +179,7 @@ were never acknowledged, and an idempotent producer sends them again.
 is nothing to promote. The shard stays assigned to the lost broker and
 unavailable until that broker comes back, when it serves the shard again with
 every record it held. Only an operator can give the records up:
-`POST /v1/placement/abandon/...` (`felix-controlplane admin abandon`) places
+`POST /v1/placement/abandon/...` (`felixctl placement abandon`) places
 the shard afresh on another broker, which starts from an empty log. An
 in-memory stream has no log to wait for and is placed again straight away.
 
@@ -754,8 +754,7 @@ Stated because a guarantee without its failure model is a slogan.
   > three ways; `racing_re_sends_append_once` in `crates/server/felix-broker` for the
   > two re-sends that arrive at once.
 - **No cross-region ordering or routing guarantees.**
-- **Cluster metadata is as durable as its store.** Over Postgres it is what
-  the database keeps. Over the embedded Raft group, a member that comes back
+- **Cluster metadata is as durable as its store.** Under the embedded Raft group, a member that comes back
   with a wiped volume withholds its vote until it has caught up, so it cannot
   help elect a leader that lacks an acknowledged write
   (`docs/metadata-raft-design.md`, "Rejoining after a lost volume").

@@ -15,6 +15,8 @@ use crate::Result;
 use crate::disk_log::now_micros;
 use crate::disk_log::sealed::{SealedEntry, SealedHandle};
 use crate::log::{AppendRecord, SegmentId};
+use crate::segment::format::GENERATION_VERSION;
+use crate::segment::known::known_file_name;
 use crate::segment::writer::BlankSegment;
 use crate::segment::{SegmentReader, SegmentWriter, index_file_name};
 use crate::{StorageError, metrics_names};
@@ -49,6 +51,7 @@ impl SegmentSet {
         let full = self.active.projected_size(records) > self.size_ceiling(roll_pending)
             && self.active.record_count() > 0;
         full || !self.active.holds(records)
+            || (self.config.raft_log && !self.active.holds_generations())
     }
 
     /// Whether the active segment has crossed the point where a rollover should
@@ -132,11 +135,12 @@ impl SegmentSet {
         }
         let descriptor = self.active.descriptor();
         // One page-cache write, no flush: see `BlankSegment::activate`.
-        let replacement = prepared.blank.activate(
+        let mut replacement = prepared.blank.activate(
             self.active.next_offset(),
             now_micros(),
-            self.active.successor_version(&[]),
+            self.successor_version(&[]),
         )?;
+        replacement.continue_generations(self.active.last_generation());
         self.bump_next_segment_id(replacement.id() + 1);
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(
@@ -150,7 +154,7 @@ impl SegmentSet {
 
         metrics::counter!(metrics_names::SEGMENT_ROLL_TOTAL).increment(1);
         metrics::gauge!(metrics_names::SEGMENT_COUNT).set((self.sealed.len() + 1) as f64);
-        Ok(RollOutcome::Installed(retired))
+        Ok(RollOutcome::Installed(Box::new(retired)))
     }
 
     /// Seal the active segment and start a new one at the current tail.
@@ -165,13 +169,32 @@ impl SegmentSet {
 
     /// [`Self::roll`] to a segment that can hold `records`.
     pub(crate) fn roll_for(&mut self, records: &[AppendRecord]) -> Result<()> {
-        self.check_open()?;
+        self.roll_to(self.successor_version(records))
+    }
+
+    /// The version the segment after the active one is written at so that it
+    /// holds `records`: [`SegmentWriter::successor_version`], or v9 once the
+    /// log's [`crate::log::GenerationGate`] allows it or for a Raft log. Only a new segment
+    /// moves; the active one is never rewritten.
+    fn successor_version(&self, records: &[AppendRecord]) -> u16 {
         let version = self.active.successor_version(records);
+        if version < GENERATION_VERSION
+            && (self.config.raft_log || self.config.generations.allows())
+        {
+            GENERATION_VERSION
+        } else {
+            version
+        }
+    }
+
+    /// [`Self::roll`] to a segment at `version`.
+    pub(crate) fn roll_to(&mut self, version: u16) -> Result<()> {
+        self.check_open()?;
         let descriptor = self.active.seal()?;
         let base_offset = self.active.next_offset();
         let id = self.next_segment_id.fetch_add(1, Ordering::AcqRel);
 
-        let replacement = SegmentWriter::create_at_version(
+        let mut replacement = SegmentWriter::create_at_version(
             &self.dir,
             id,
             base_offset,
@@ -180,6 +203,7 @@ impl SegmentSet {
             self.config.index_spacing_bytes,
             version,
         )?;
+        replacement.continue_generations(self.active.last_generation());
         let retired = std::mem::replace(&mut self.active, replacement);
         self.active_reader = Arc::new(SegmentReader::open(
             self.active.path(),
@@ -197,9 +221,10 @@ impl SegmentSet {
         } else {
             let path = retired.path().to_path_buf();
             let index = self.dir.join(index_file_name(retired.id()));
+            let known = self.dir.join(known_file_name(retired.id()));
             drop(retired);
-            for path in [path, index] {
-                match std::fs::remove_file(&path) {
+            for path in [path, index, known] {
+                match crate::fs::remove_file(&path) {
                     Ok(()) => {}
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                     Err(err) => return Err(StorageError::Io(err)),
@@ -220,7 +245,8 @@ impl SegmentSet {
         descriptor: crate::log::SegmentDescriptor,
         retired: &SegmentWriter,
     ) -> Result<()> {
-        let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims());
+        let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims())
+            .with_last_generation(retired.last_generation());
         self.files.seed(
             entry.key(),
             SealedHandle {
@@ -268,6 +294,7 @@ impl RollPlan {
             self.id,
             self.reserve_limit_bytes,
             self.index_spacing_bytes,
+            crate::segment::writer::DirEntry::Sync,
         )?;
         Ok(PreparedSegment {
             blank,
@@ -300,7 +327,7 @@ impl PreparedSegment {
 #[derive(Debug)]
 pub(crate) enum RollOutcome {
     /// Installed as the active segment. Carries the retired writer to be sealed.
-    Installed(SegmentWriter),
+    Installed(Box<SegmentWriter>),
     /// Rejected: the tail moved past the offset it was built for. Handed back
     /// so the caller can delete its files — dropping it would leave them on
     /// disk for recovery to clean up instead.

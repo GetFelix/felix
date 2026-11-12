@@ -85,12 +85,26 @@ pub(crate) async fn report_health(
         .await
         .map_err(|ref err| api_internal("read the enabled fleet features", err))?;
 
+    // After the heartbeat was recorded, so the seq covers every change
+    // committed before the broker's renewal. A broker that asks is not
+    // serving until it has one, so failing its heartbeat here costs nothing.
+    let assignment_seq = if request.want_assignment_seq {
+        state
+            .store
+            .confirmed_shard_assignment_head()
+            .await
+            .map_err(|ref err| api_internal("read the shard assignment feed's head", err))?
+    } else {
+        None
+    };
+
     Ok(Json(NodeHeartbeatResponse {
         node_id: node.node_id,
         lifecycle: node.status.lifecycle,
         heartbeat_interval_ms: state.node_liveness.heartbeat_interval_ms,
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
         fleet_features,
+        assignment_seq,
     }))
 }
 
@@ -350,7 +364,7 @@ async fn record_one(
         shard,
         state.placement_wakes.fence_max_lag_records(),
     );
-    let report = crate::model::ReplicaReport {
+    let mut report = crate::model::ReplicaReport {
         key,
         generation: shard.generation,
         caught_up: shard.caught_up.iter().cloned().collect(),
@@ -407,9 +421,17 @@ async fn record_one(
         refused: shard.refused.clone(),
         holds_start: shard.holds_start.clone(),
     };
+    inherit_from_held(state, &assignment, node_id, &mut report).await?;
     // The store checks leadership again as it writes: the checks above read
     // an assignment a promotion may have replaced since.
-    match state.store.record_replica_report(report, node_id).await {
+    // An elected leader's report readmits nothing: its generation may be one
+    // it opened before a copy here was replaced (`record_replica_report_with`).
+    let readmits = shard.elected.is_none();
+    match state
+        .store
+        .record_replica_report_with(report, node_id, readmits)
+        .await
+    {
         Ok(ReportWrite::Stored) => {
             // The next step of a move waits on exactly this report, so
             // placement runs now rather than at its next tick.
@@ -425,6 +447,55 @@ async fn record_one(
         Err(StoreError::NotFound(_)) => Ok(ReportOutcome::Unassigned),
         Err(ref err) => Err(api_internal("record replica report", err)),
     }
+}
+
+/// Name each member `report` names no identity for, and inherits none for,
+/// by the one the shard's previous report named it by.
+///
+/// Any leader's report gets this, but it matters for one that stood for
+/// election: its route names no identities, so it inherits none. A member
+/// the reporting leader has not reached yet acknowledged nothing at its
+/// generation, so every acknowledgement it gave went to an earlier leader,
+/// from the copy that leader's report named or one before it. Identities
+/// never repeat, so a copy answering under that identity holds them; one
+/// that lost any answers under another and still does not count. Without
+/// this the next failover names the member by none and no answer from it
+/// counts, which strands a shard whose elected leader crashed.
+async fn inherit_from_held(
+    state: &AppState,
+    assignment: &crate::model::ShardAssignment,
+    node_id: &str,
+    report: &mut crate::model::ReplicaReport,
+) -> Result<(), ApiError> {
+    let unnamed: Vec<&String> = assignment
+        .nodes()
+        .filter(|member| {
+            member.as_str() != node_id
+                && !report.follower_storage.contains_key(*member)
+                && !report.inherited_storage.contains_key(*member)
+        })
+        .collect();
+    if unnamed.is_empty() {
+        return Ok(());
+    }
+    let held = match state.store.get_replica_report(&report.key).await {
+        Ok(held) => held,
+        Err(ref err) => return Err(api_internal("read replica report", err)),
+    };
+    // A newer report is one this cannot replace anyway.
+    let Some(held) = held.filter(|held| held.generation <= report.generation) else {
+        return Ok(());
+    };
+    for member in unnamed {
+        let named = held
+            .follower_storage
+            .get(member)
+            .or_else(|| held.inherited_storage.get(member));
+        if let Some(id) = named {
+            report.inherited_storage.insert(member.clone(), id.clone());
+        }
+    }
+    Ok(())
 }
 
 /// Adopt the reporting broker as the shard's leader if it elected itself
@@ -446,8 +517,15 @@ async fn adopt_if_elected(
     };
     // This control plane named another leader at the very generation the
     // reporter was elected at. Ballots let only one of them open there, and
-    // the reporter is serving, so the named one never will.
-    let collided = shard.generation == assignment.generation && assignment.leader != node_id;
+    // the reporter is serving, so the named one never will. Naming the
+    // reporter on another set collides too: the record is not the set it
+    // opened on. A pending change or joining copy cannot be reissued, so
+    // those are left to the next write rather than looked up on every report.
+    let collided = shard.generation == assignment.generation
+        && (assignment.leader != node_id
+            || (assignment.pending_set.is_none()
+                && assignment.joining.is_none()
+                && !assignment.names_elected_set(&elected.clone().into())));
     if elected.leader != node_id
         || elected.generation != shard.generation
         || (shard.generation <= assignment.generation && !collided)
@@ -473,21 +551,25 @@ async fn adopt_if_elected(
     {
         Ok(crate::store::AssignmentWrite::Written(written)) => {
             let adopted = written.leader == node_id;
+            let named_on_elected_set =
+                adopted && written.names_elected_set(&elected.clone().into());
             tracing::info!(
                 node_id = %node_id,
                 generation = written.generation,
                 stream = %key.stream,
                 shard = key.shard,
                 adopted,
+                named_on_elected_set,
                 "an elected leader reported; the control plane took its generation",
             );
             // Taken as a generation only (below level 26, or an elected set
-            // naming a node the catalog lacks), it now names another leader at
-            // the elected one: move past that at once rather than on the next
-            // report, so a failover planned meanwhile does not leave the
-            // elected set unfenced. Placement wakes only after, so its write
-            // cannot win the generation first.
-            let result = if !adopted && written.generation == elected.generation {
+            // naming a node the catalog lacks), it now names another leader,
+            // or this one on another set, at the elected generation: move past
+            // that at once rather than on the next report, so a failover
+            // planned meanwhile does not leave the elected set unfenced.
+            // Placement wakes only after, so its write cannot win the
+            // generation first.
+            let result = if !named_on_elected_set && written.generation == elected.generation {
                 reissue_past_collision(state, node_id, key, elected, written).await
             } else {
                 Ok(written)
@@ -570,8 +652,8 @@ async fn reissue_past_collision(
                 generation = written.generation,
                 stream = %key.stream,
                 shard = key.shard,
-                "an elected leader reported the generation this control plane named another \
-                 leader at; moved the shard to the next one",
+                "an elected leader reported a generation this control plane named another \
+                 leader or set at; moved the shard to the next one",
             );
             state.placement_wakes.request_pass();
             Ok(written)

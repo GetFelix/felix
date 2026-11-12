@@ -14,7 +14,6 @@ use crate::cluster::placement::PlacementWakes;
 use crate::config::{ControlPlaneConfig, RaftBackendConfig, StorageBackend};
 use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
 use crate::store::memory::InMemoryStore;
-use crate::store::postgres::PostgresStore;
 use crate::store::raft::RaftStore;
 use crate::store::raft::state_machine::MetadataStateMachine;
 use crate::store::{ControlPlaneAuthStore, StoreConfig};
@@ -90,13 +89,6 @@ async fn open_store(
     let mut raft_handle = None;
     let store: Arc<dyn ControlPlaneAuthStore + Send + Sync> = match config.storage {
         StorageBackend::Memory => Arc::new(InMemoryStore::new(store_config)),
-        StorageBackend::Postgres => {
-            let pg = config
-                .postgres
-                .as_ref()
-                .context("postgres configuration missing")?;
-            Arc::new(PostgresStore::connect(pg, store_config).await?)
-        }
         StorageBackend::Raft => {
             let raft_cfg = config.raft.as_ref().context("raft configuration missing")?;
             let inner = Arc::new(InMemoryStore::new(store_config));

@@ -1,6 +1,6 @@
 //! The gate on the publish path itself, not just the decision behind it.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 
 use super::*;
 
@@ -9,7 +9,7 @@ use super::*;
 async fn an_owned_shard_resolves() {
     let broker = broker_with_stream().await;
     let ingress = ingress_for("broker-a", true);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     let route = resolve_route(
@@ -39,7 +39,7 @@ async fn an_owned_shard_resolves() {
 async fn a_shard_owned_elsewhere_is_forwarded_not_served_locally() {
     let broker = broker_with_stream().await;
     let ingress = ingress_for("broker-b", false);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     let route = resolve_route(
@@ -68,7 +68,7 @@ async fn a_shard_owned_elsewhere_is_forwarded_not_served_locally() {
 async fn an_owned_but_unopened_shard_is_refused() {
     let broker = broker_with_stream().await;
     let ingress = ingress_for("broker-a", false);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     let route = resolve_route(
@@ -130,7 +130,7 @@ async fn an_unservable_subscribe_is_shard_unavailable() {
 async fn losing_a_shard_takes_effect_without_waiting_for_the_cache() {
     let broker = broker_with_stream().await;
     let ingress = ingress_for("broker-a", true);
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     assert!(
@@ -183,7 +183,7 @@ async fn losing_a_shard_takes_effect_without_waiting_for_the_cache() {
 #[tokio::test]
 async fn a_single_node_broker_is_unaffected() {
     let broker = broker_with_stream().await;
-    let mut cache = HashMap::new();
+    let mut cache = HashMap::default();
     let mut key = String::new();
 
     let route = resolve_route(

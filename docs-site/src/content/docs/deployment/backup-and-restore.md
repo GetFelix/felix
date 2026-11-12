@@ -66,8 +66,8 @@ any log. See
 
    ```bash
    export FELIX_CONTROLPLANE_URL=http://felix-controlplane:8443
-   export FELIX_TOKEN=<a Felix token>
-   felix-controlplane admin backup-point nightly-2026-09-27
+   export FELIX_CONTROLPLANE_TOKEN=<a Felix token>
+   felixctl backup-point nightly-2026-09-27
    ```
 
    ```text
@@ -113,10 +113,8 @@ any log. See
    be cut back to a committed point.
 
 4. **Back up the control plane's metadata** from a state taken at or after the
-   point, so every stream and assignment the point names exists in it. Over
-   Postgres that is the platform's backup of the whole database (see
-   [Control-plane HA](/deployment/control-plane-ha/)); under the Raft
-   backend, a storage-layer snapshot of the members' volumes (see
+   point, so every stream and assignment the point names exists in it. That is
+   a storage-layer snapshot of the members' volumes (see
    [Metadata Raft](/architecture/metadata-raft/) and the Kubernetes
    [Backups](/deployment/kubernetes/#backups) notes). The manifest's
    `metadata_version` is the assignment change sequence the point was read
@@ -130,10 +128,13 @@ any log. See
 3. **Put each leader's copies back** under that broker's
    `FELIX_DURABLE_STORAGE_DIR`, at the same paths.
 4. **Cut them back to the point**, on each of those brokers, with its normal
-   configuration and the broker still stopped:
+   configuration and the broker still stopped. `felixctl data restore-point`
+   runs the `felix-broker restore-point` installed on that host; on a host or
+   image without `felixctl`, `felix-broker restore-point` takes the same
+   arguments.
 
    ```bash
-   felix-broker restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
+   felixctl data restore-point --point nightly-2026-09-27.backup-point.json --node broker-1
    ```
 
    ```text
@@ -191,6 +192,16 @@ is still required in every other case:
 Deleting the file is always safe. It costs one full copy of each shard the
 broker follows. When in doubt, delete it.
 
+With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
+control plane is down runs from the control-plane view in its data directory
+only if a file the last start on that machine left in `/dev/shm` names the
+directory as that start left it. A copy put back from before that start does
+not match, so a restored broker waits for the control plane and gets the
+check above. A copy taken during the broker's last run and put back before
+its next start does match, just as it passes the control plane's check, so
+delete `storage-id` or use `felix-broker restore-point` in every case. See [Starting while the control plane is down](https://github.com/GetFelix/felix/blob/main/docs/control-plane.md#starting-while-the-control-plane-is-down) for what a start
+from the view does.
+
 Stopping every broker is also what makes generations safe across a restore.
 The restored control plane hands out change sequence numbers, and so first
 generations of new incarnated streams, it had already used before the
@@ -205,5 +216,5 @@ it still serves on its lease.
 - [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)
   for why a live copy is safe to take and what `restore_to` does to a log.
 - [Moving shards by hand](/deployment/moving-shards/) for
-  `felix-controlplane admin pause`, which keeps placement quiet while a point
+  `felixctl placement pause`, which keeps placement quiet while a point
   is taken.

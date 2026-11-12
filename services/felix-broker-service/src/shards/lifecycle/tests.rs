@@ -2,10 +2,13 @@
 use super::*;
 
 mod cache_incarnation;
+mod dropped_hold;
 mod every_change;
+mod off_runtime;
 mod promotion;
 mod refused;
 mod unclean;
+mod unheard;
 
 fn key(shard: u32) -> ShardKey {
     ShardKey {
@@ -30,6 +33,8 @@ fn assigned_to(leader: &str, generation: u64) -> ShardAssignment {
         fence_storage_ids: Default::default(),
         member_storage_ids: Default::default(),
         pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
     }
 }
 
@@ -495,7 +500,7 @@ mod driver {
         reconcile(
             &own,
             &store,
-            &HashMap::from([
+            &HashMap::from_iter([
                 with_roles(1, "broker-b", &["broker-a"], None, 1),
                 with_roles(2, "broker-b", &["broker-c"], None, 1),
             ]),
@@ -503,8 +508,36 @@ mod driver {
         .await;
         assert!(store.take_teardown().is_empty());
 
-        reconcile(&own, &store, &HashMap::new()).await;
+        reconcile(&own, &store, &HashMap::default()).await;
         assert_eq!(store.take_teardown(), [("close", 1)]);
+    }
+
+    /// A pass opens and closes shards in key order, so a simulated run and
+    /// its replay do the same work in the same order.
+    #[tokio::test]
+    async fn a_pass_opens_and_closes_shards_in_key_order() {
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+        let pairs: Vec<_> = (0..40).map(|shard| (shard, "broker-a", 1)).collect();
+
+        reconcile(&own, &store, &assignments(&pairs)).await;
+        let opened: Vec<u32> = store
+            .opened
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|k| k.shard)
+            .collect();
+        assert_eq!(opened, (0..40).collect::<Vec<_>>());
+
+        reconcile(&own, &store, &HashMap::default()).await;
+        let closed: Vec<u32> = store
+            .take_teardown()
+            .into_iter()
+            .filter(|(what, _)| *what == "close")
+            .map(|(_, shard)| shard)
+            .collect();
+        assert_eq!(closed, (0..40).collect::<Vec<_>>());
     }
 
     fn assignments(pairs: &[(u32, &str, u64)]) -> HashMap<ShardKey, ShardAssignment> {
@@ -529,7 +562,7 @@ mod driver {
             let own = &own;
             let store = &store;
             async move {
-                reconcile(own, store, &HashMap::from([(key(0), assignment)])).await;
+                reconcile(own, store, &HashMap::from_iter([(key(0), assignment)])).await;
                 std::mem::take(&mut *store.calls.lock().expect("lock"))
             }
         };
@@ -601,7 +634,7 @@ mod driver {
         reconcile(&own, &store, &assignments(&[(0, "broker-a", 1)])).await;
         assert!(own.lock().await.may_serve(&key(0)));
 
-        reconcile(&own, &store, &HashMap::new()).await;
+        reconcile(&own, &store, &HashMap::default()).await;
 
         assert_eq!(store.released.lock().expect("lock").len(), 1);
         let own = own.lock().await;
@@ -617,10 +650,10 @@ mod driver {
     async fn a_renewed_shard_reopens_at_a_lower_generation() {
         let own = Mutex::new(lifecycle());
         let store = RecordingStore::default();
-        let none = HashMap::new();
+        let none = HashMap::default();
         reconcile_renewed(&own, &store, &assignments(&[(0, "broker-a", 2)]), &none).await;
 
-        let renewed = HashMap::from([(key(0), 1)]);
+        let renewed = HashMap::from_iter([(key(0), 1)]);
         let recreated = assignments(&[(0, "broker-a", 0)]);
         reconcile_renewed(&own, &store, &recreated, &renewed).await;
         assert_eq!(store.opened.lock().expect("lock").len(), 2);
@@ -656,6 +689,38 @@ mod driver {
         let own = own.lock().await;
         assert_eq!(own.phase(&key(0)), Phase::Failed);
         assert!(!own.may_serve(&key(0)));
+    }
+
+    /// **A failed open is reported refused, naming no node, once** (#1914).
+    /// The same assignment never retries it, so unreported the shard stays
+    /// down on a live leader until something else changes the assignment.
+    #[tokio::test]
+    async fn a_failed_open_is_reported_refused() {
+        use felix_replication::driver::WriteFence;
+        let own = Mutex::new(lifecycle());
+        let store = RecordingStore::default();
+        store.fail_open.store(true, Ordering::Release);
+
+        reconcile(&own, &store, &assignments(&[(0, "broker-a", 1)])).await;
+
+        {
+            let own = own.lock().await;
+            assert_eq!(own.phase(&key(0)), Phase::Failed);
+            assert_eq!(
+                own.fence().refused_at(&key(0)),
+                Some(felix_common::membership::RefusedGeneration::set_unknown(1)),
+            );
+        }
+
+        // Named one up and failing again, it is not reported again: a fault
+        // that lasts would otherwise bump the generation every placement pass.
+        reconcile(&own, &store, &assignments(&[(0, "broker-a", 2)])).await;
+        let own = own.lock().await;
+        assert_eq!(own.phase(&key(0)), Phase::Failed);
+        assert_eq!(
+            own.fence().refused_at(&key(0)),
+            Some(felix_common::membership::RefusedGeneration::set_unknown(1)),
+        );
     }
 
     #[tokio::test]
@@ -867,8 +932,9 @@ mod recording_where_a_leadership_begins {
         let (storage, _dir) = storage(3).await;
         let store = DurableShardStore::new(std::sync::Arc::clone(&storage));
         let own = tokio::sync::Mutex::new(lifecycle());
-        let led_by =
-            |leader: &str, generation| HashMap::from([(key(0), assigned_to(leader, generation))]);
+        let led_by = |leader: &str, generation| {
+            HashMap::from_iter([(key(0), assigned_to(leader, generation))])
+        };
         let open = || {
             storage
                 .open_stream(&key(0).tenant_id, &key(0).namespace, &key(0).stream, 0)
@@ -1224,7 +1290,7 @@ fn a_moving_shard_names_where_it_is_headed() {
 #[test]
 fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
     let mut own = lifecycle();
-    let mine = HashMap::from([
+    let mine = HashMap::from_iter([
         (key(0), assigned_to("broker-a", 1)),
         (key(1), {
             let mut assignment = assigned_to("broker-a", 1);
@@ -1234,7 +1300,7 @@ fn a_close_carries_the_handoff_while_the_shard_is_assigned() {
     ]);
     assert!(own.relinquished(&mine).is_empty());
 
-    let elsewhere = HashMap::from([(key(0), assigned_to("broker-b", 4))]);
+    let elsewhere = HashMap::from_iter([(key(0), assigned_to("broker-b", 4))]);
     let mut closes = own.relinquished(&elsewhere);
     closes.sort_by_key(|action| match action {
         Action::Close { key, .. } => key.shard,

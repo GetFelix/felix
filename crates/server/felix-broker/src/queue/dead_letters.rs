@@ -27,7 +27,7 @@
 //! neither state — a leader that dies mid-redrive leaves it either still dead
 //! or owed, and the next leader reads which. The entry is deleted when the
 //! redriven record is finally acknowledged.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -68,7 +68,7 @@ impl DeadLetters {
         Ok(Self {
             entries: LogCache::open(&root, config).map_err(BrokerError::from)?,
             legacy_root: root,
-            locks: SyncMutex::new(HashMap::new()),
+            locks: SyncMutex::new(HashMap::default()),
             #[cfg(test)]
             fail_next_record: std::sync::atomic::AtomicBool::new(false),
         })
@@ -342,6 +342,21 @@ impl DeadLetters {
         })
     }
 
+    /// What [`DeadLetters::shard_log_for`] would return, when the log is open
+    /// already. See `LogCache::opened_shard_log`.
+    pub async fn opened_shard_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: Option<u64>,
+    ) -> Option<felix_storage::disk_log::DiskLog> {
+        self.entries
+            .opened_shard_log(tenant_id, namespace, stream, shard, incarnation)
+            .await
+    }
+
     /// [`DeadLetters::shard_log`], created at `base_offset` if absent and given,
     /// only when `incarnation` is the one set for the stream. See
     /// `LogCache::shard_log_for`.
@@ -575,8 +590,7 @@ impl DeadLetters {
             stream: legacy_scope(key),
             shard: key.shard,
         };
-        felix_storage::disk_log::layout::shard_dir(&self.legacy_root, &shard_key)
-            .exists()
+        felix_storage::disk_log::layout::shard_path_exists(&self.legacy_root, &shard_key)
             .then_some(&self.entries)
     }
 }

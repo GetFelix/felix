@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_common::lifecycle::Readiness;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -23,6 +23,11 @@ const JWKS_WARM_BUDGET: Duration = Duration::from_secs(5);
 /// `seeded_tx` is signalled once the first pass is applied and `key_store`
 /// holds the JWKS of every tenant it named, but only when readiness is gated
 /// on it. `catalog_seeded` is cancelled at the same point either way.
+///
+/// The sync starts once `checked` is cancelled: after a start from the
+/// control-plane view, once the restore check has passed, so nothing the
+/// control plane says is applied to a directory that turns out to be a
+/// restored copy. `provisional` is what that start registered from the view.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_catalog_sync(
     config: &BrokerConfig,
@@ -33,6 +38,8 @@ pub(super) fn spawn_catalog_sync(
     seeded_tx: oneshot::Sender<()>,
     catalog_seeded: &CancellationToken,
     key_store: &Arc<ControlPlaneKeyStore>,
+    checked: &CancellationToken,
+    provisional: crate::cluster::catalog_sync::Provisional,
 ) -> Option<JoinHandle<()>> {
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
@@ -77,6 +84,7 @@ pub(super) fn spawn_catalog_sync(
                  or cache will be learned from it"
             );
         }
+        let checked = checked.clone();
         Some(tokio::spawn(async move {
             // `start_sync` polls forever, so cancellation is what ends it. Dropping
             // it mid-iteration is safe: the sync is a read-only metadata refresh
@@ -86,13 +94,18 @@ pub(super) fn spawn_catalog_sync(
                 _ = sync_shutdown.cancelled() => {
                     tracing::info!("control plane sync stopped");
                 }
-                result = crate::cluster::catalog_sync::start_sync_with_signal(
-                    broker,
-                    base_url,
-                    Duration::from_millis(interval_ms),
-                    Some(applied_tx),
-                    sync_credential,
-                ) => {
+                result = async {
+                    checked.cancelled().await;
+                    crate::cluster::catalog_sync::start_sync_with_signal(
+                        broker,
+                        base_url,
+                        Duration::from_millis(interval_ms),
+                        Some(applied_tx),
+                        sync_credential,
+                        provisional,
+                    )
+                    .await
+                } => {
                     if let Err(err) = result {
                         tracing::warn!(error = %err, "control plane sync exited");
                     }
@@ -105,8 +118,15 @@ pub(super) fn spawn_catalog_sync(
     }
 }
 
-/// Flip to ready once the catalog has been applied and every durable stream
-/// it named has been recovered.
+/// Flip to ready once the catalog has been applied, every durable stream it
+/// named has been recovered, and `listening` is cancelled: every listener
+/// bound.
+///
+/// The catalog can seed before startup binds its last listener, and a bind
+/// can still fail on a taken port. A broker that reported ready and then
+/// exited looks to whatever started it like one that crashed while serving,
+/// not like a start-up to retry. Registration waits on the same flip, so the
+/// control plane never learns a peer address nothing listens on.
 ///
 /// This has to be armed *before* the shutdown await, not after it: a task
 /// spawned below that point would only start listening for the seed signal
@@ -119,17 +139,25 @@ pub(super) fn spawn_catalog_sync(
 ///
 /// The task holds a `Readiness` clone and ends when the signal resolves or
 /// its sender is dropped, so nothing keeps it alive past shutdown.
+///
+/// With `registration`, a broker that started from its control-plane view,
+/// client listeners and readiness also wait for this process to register:
+/// its token is cancelled, and readiness marked, only then. `seeded` is still
+/// cancelled first, because registration waits on it.
 pub(super) fn spawn_readiness_flip(
     gate_readiness_on_sync: bool,
     readiness: &Readiness,
     draining: &CancellationToken,
     seeded: &CancellationToken,
     seeded_rx: oneshot::Receiver<()>,
+    listening: &CancellationToken,
+    registration: Option<(CancellationToken, watch::Receiver<Option<u64>>)>,
 ) {
     if gate_readiness_on_sync {
         let readiness = readiness.clone();
         let draining = draining.clone();
         let seeded = seeded.clone();
+        let listening = listening.clone();
         tokio::spawn(async move {
             // `Readiness` is a single flag, so it cannot distinguish "never
             // ready yet" from "already drained" — both read false. The drain
@@ -139,18 +167,39 @@ pub(super) fn spawn_readiness_flip(
                 biased;
                 _ = draining.cancelled() => {
                     tracing::warn!("shutdown began before the initial sync; staying unready");
+                    return;
                 }
-                result = seeded_rx => {
-                    if result.is_ok() {
-                        // Release the accept loop first, so a connection that
-                        // arrives the instant readiness flips is answered
-                        // rather than dropped.
-                        seeded.cancel();
-                        readiness.mark_ready();
-                        tracing::info!("initial control-plane sync applied; reporting ready");
+                result = async {
+                    let result = seeded_rx.await;
+                    listening.cancelled().await;
+                    result
+                } => {
+                    if result.is_err() {
+                        return;
+                    }
+                    // Release the accept loop first, so a connection that
+                    // arrives the instant readiness flips is answered
+                    // rather than dropped.
+                    seeded.cancel();
+                }
+            }
+            if let Some((clients, mut registered)) = registration {
+                tokio::select! {
+                    biased;
+                    _ = draining.cancelled() => {
+                        tracing::warn!("shutdown began before this broker registered; staying unready");
+                        return;
+                    }
+                    answer = registered.wait_for(Option::is_some) => {
+                        if answer.is_err() {
+                            return;
+                        }
+                        clients.cancel();
                     }
                 }
             }
+            readiness.mark_ready();
+            tracing::info!("initial control-plane sync applied; reporting ready");
         });
     }
 }

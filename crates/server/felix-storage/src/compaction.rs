@@ -15,7 +15,7 @@ use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 use crate::log::SegmentDescriptor;
-use crate::segment::format::{RECORD_HEADER_LEN, SEGMENT_HEADER_LEN};
+use crate::segment::format::{SEGMENT_HEADER_LEN, record_header_len};
 
 /// Environment variable naming the compaction budget, in bytes per second.
 pub(crate) const BYTES_PER_SEC_ENV: &str = "FELIX_STORAGE_COMPACTION_BYTES_PER_SEC";
@@ -153,7 +153,7 @@ pub(crate) fn payload_bytes(segment: &SegmentDescriptor) -> u64 {
     let records = segment.last_offset + 1 - segment.base_offset;
     segment
         .size_bytes
-        .saturating_sub(SEGMENT_HEADER_LEN + records * RECORD_HEADER_LEN)
+        .saturating_sub(SEGMENT_HEADER_LEN + records * record_header_len(segment.version))
 }
 
 fn configured_bytes_per_sec() -> u64 {

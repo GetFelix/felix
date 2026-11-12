@@ -80,6 +80,23 @@ pub enum BrokerError {
     /// so the same request can succeed once space is freed.
     #[error("durable storage is full: {0}")]
     StorageFull(String),
+    /// A copied record names a writer generation below the one of the record
+    /// before it in this log. Nothing was written. [`replication::apply`]
+    /// answers it as a [`Divergence`](crate::replication::Divergence).
+    ///
+    /// [`replication::apply`]: crate::replication::apply
+    #[error(
+        "the record at {offset} was written at generation {generation}, below {floor}, the generation of the record before it"
+    )]
+    GenerationBelowFloor {
+        offset: u64,
+        generation: u64,
+        floor: u64,
+    },
+    /// This log stamps each record with the generation that wrote it and the
+    /// batch cannot say which that was. Nothing was written.
+    #[error("cannot name the generation that wrote the records: {0}")]
+    WriterUnknown(String),
     /// An idempotent batch skipped ahead of the sequence this broker expected.
     /// What was skipped is not here, so continuing past it would leave a hole
     /// the producer believes is filled.
@@ -177,6 +194,11 @@ pub enum BrokerError {
     /// The shard's state cannot be read here yet, for the reason given.
     #[error("the shard's state is not readable here: {0}")]
     StateNotReadable(NotReadable),
+    /// Leading a shard again found a release of its held batches still
+    /// running, most likely a fanout waiting on a slow subscriber. Nothing
+    /// changed; retry.
+    #[error("the shard's held batches are still being released; retry")]
+    ReleaseInFlight,
 }
 
 /// Why [`BrokerError::NotReadable`].
@@ -197,6 +219,18 @@ impl From<felix_storage::StorageError> for BrokerError {
     fn from(err: felix_storage::StorageError) -> Self {
         match err {
             felix_storage::StorageError::Full(_) => BrokerError::StorageFull(err.to_string()),
+            felix_storage::StorageError::GenerationBelowFloor {
+                offset,
+                generation,
+                floor,
+            } => BrokerError::GenerationBelowFloor {
+                offset,
+                generation,
+                floor,
+            },
+            felix_storage::StorageError::WriterUnknown(detail) => {
+                BrokerError::WriterUnknown(detail.to_string())
+            }
             other => BrokerError::Storage(other.to_string()),
         }
     }

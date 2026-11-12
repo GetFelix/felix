@@ -6,7 +6,7 @@
 //! fenced may never have dialled the one that just lost the shard, but that
 //! one has been shipping to it.
 
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 
 use felix_wire::internal::PeerCapabilities;
@@ -21,13 +21,13 @@ pub struct KnownCapabilities {
 impl KnownCapabilities {
     /// Record what `node_id` said in its latest handshake, replacing what it
     /// said before: a peer restarted on an older build has lost what it had.
-    pub fn record(&self, node_id: &str, capabilities: PeerCapabilities) {
+    pub(crate) fn record(&self, node_id: &str, capabilities: PeerCapabilities) {
         self.peers.write().insert(node_id.to_string(), capabilities);
     }
 
     /// What `node_id` last said, or `None` if no handshake with it has
     /// completed since this broker started.
-    pub fn get(&self, node_id: &str) -> Option<PeerCapabilities> {
+    pub(crate) fn get(&self, node_id: &str) -> Option<PeerCapabilities> {
         self.peers.read().get(node_id).copied()
     }
 }

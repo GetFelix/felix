@@ -9,10 +9,14 @@
 //! - [`model`]: what a history is.
 //! - [`checker`]: the rules, and the report of what broke them.
 //! - [`register`]: `Quorum` cache keys as registers, and the stale-read check.
+//! - [`linearizable`]: the search that decides whether a cache key's
+//!   operations have a legal order.
 //! - [`commit`]: atomic commits, and the check that no reader sees part of one.
 //! - [`nemesis`]: which fault next, and how to inject and heal it.
 //! - [`campaign`]: the run itself, configured from the environment, and
 //!   the state dump a failing run prints.
+//! - `leaders`: rule 21, one leader per generation, read from the broker
+//!   logs.
 //! - `liveness`: after every heal, the check that each shard serves again.
 //! - `subscriber`: one live subscriber per list for the whole run, for the
 //!   delivery rules.
@@ -24,6 +28,8 @@ pub mod campaign;
 pub mod checker;
 pub mod commit;
 mod dump;
+mod leaders;
+pub mod linearizable;
 mod liveness;
 pub mod model;
 pub mod nemesis;
@@ -33,6 +39,6 @@ mod subscriber;
 mod workload;
 
 pub use campaign::{Campaign, Mode};
-pub use checker::{Report, Rule, Violation, check};
+pub use checker::{Report, Rule, Violation, check, check_list_append};
 pub use model::History;
 pub use nemesis::{Fault, FaultFamily, FaultKind, Nemesis, RandomNemesis};

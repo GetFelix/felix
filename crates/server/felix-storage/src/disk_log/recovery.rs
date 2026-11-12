@@ -42,6 +42,7 @@ use super::offload::Manifest;
 use super::segments::SealedEntry;
 use crate::io::{create_dir_all_durable, sync_dir};
 use crate::log::{LogConfig, Offset, RecordMark, SegmentId};
+use crate::segment::known::known_file_name;
 use crate::segment::writer::ResumeState;
 use crate::segment::{SegmentWriter, index_file_name, parse_segment_file_name, segment_file_name};
 use crate::{Result, StorageError, metrics_names};
@@ -50,9 +51,8 @@ pub(crate) use self::plan::{
     End, IndexRebuild, RecoveryPlan, Removal, Resume, Step, View, plan_recovery,
 };
 
-// Only the tests reach these through `super::*`.
-#[cfg(test)]
 use self::durable_mark::DurableMark;
+// Only the tests reach these through `super::*`.
 #[cfg(test)]
 use crate::CorruptionKind;
 #[cfg(test)]
@@ -118,13 +118,13 @@ fn apply(dir: &Path, label: &str, config: &LogConfig, plan: RecoveryPlan) -> Res
         End::Refuse(detail) => Err(StorageError::Corruption(detail)),
         End::Fresh => Ok(Recovered {
             sealed: Vec::new(),
-            active: SegmentWriter::create(
+            // `DiskLog::open_shared` syncs the directory before it returns.
+            active: SegmentWriter::create_in_opening_log(
                 dir,
                 0,
-                0,
                 now_micros(),
-                config.reserve_limit_bytes(),
-                config.index_spacing_bytes,
+                (config.reserve_limit_bytes(), config.index_spacing_bytes),
+                config.first_segment_version(),
             )?,
             truncated_bytes: 0,
             index_rebuilds: 0,
@@ -168,10 +168,27 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                     "removing a segment below a gap the offload manifest covers"
                 ),
             }
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
             remove_segment_files(dir, id)
         }
         Step::SyncDir => Ok(sync_dir(dir)?),
-        Step::RebuildIndex { id, index, why } => {
+        Step::RebuildIndex {
+            id,
+            index,
+            known,
+            why,
+        } => {
+            // Derived and checked on every open, so a failed write costs
+            // only another walk.
+            if let Some((known, segment_len)) = known
+                && let Err(err) = known.persist(
+                    &dir.join(known_file_name(id)),
+                    index.base_offset(),
+                    segment_len,
+                )
+            {
+                tracing::warn!(shard = label, segment = id, error = %err, "could not write a sealed segment's known generations");
+            }
             if why == IndexRebuild::Mismatch {
                 tracing::warn!(
                     shard = label,
@@ -193,11 +210,20 @@ fn apply_step(dir: &Path, label: &str, step: Step) -> Result<()> {
                 kept_next_segment = drop_next.is_none(),
                 "repairing the torn tail of a segment whose seal never finished",
             );
+            crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
+            // The segment may be appended to again and sealed at the same
+            // length, so its old file must not survive to describe it.
+            match crate::fs::remove_file(dir.join(known_file_name(id))) {
+                Ok(()) => sync_dir(dir)?,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
             if let Some(next) = drop_next {
+                crate::fs::note_torn_tail(&dir.join(segment_file_name(next)));
                 remove_segment_files(dir, next)?;
                 sync_dir(dir)?;
             }
-            let file = std::fs::OpenOptions::new()
+            let file = crate::fs::OpenOptions::new()
                 .write(true)
                 .open(dir.join(segment_file_name(id)))?;
             file.set_len(valid_bytes)?;
@@ -213,6 +239,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
         active_id,
         active: mut outcome,
         sealed_index_rebuilds,
+        generation_floor,
     } = resume;
     let truncated_bytes = outcome
         .torn_tail
@@ -228,6 +255,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             cause = %tail.cause,
             "repaired a torn tail in the active segment"
         );
+        crate::fs::note_torn_tail(&dir.join(segment_file_name(active_id)));
     }
 
     let active_marks = std::mem::take(&mut outcome.marks);
@@ -243,6 +271,8 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             record_count: outcome.record_count,
             index: outcome.index,
             version: outcome.header.version,
+            generation_floor,
+            known: Some(outcome.known),
         },
         config.reserve_limit_bytes(),
         config.index_spacing_bytes,
@@ -253,6 +283,7 @@ fn resume_active(dir: &Path, label: &str, config: &LogConfig, resume: Resume) ->
             .into_iter()
             .map(|planned| {
                 SealedEntry::new(planned.descriptor, planned.holds_marks, planned.holds_trims)
+                    .with_last_generation(planned.last_generation)
             })
             .collect(),
         active,
@@ -288,15 +319,15 @@ pub(super) fn place_empty_shard(
     if !ids.is_empty() {
         return Ok(false);
     }
-    let mut writer = SegmentWriter::create(
+    let mut writer = SegmentWriter::create_in_opening_log(
         dir,
-        0,
         base_offset,
         now_micros(),
-        config.reserve_limit_bytes(),
-        config.index_spacing_bytes,
+        (config.reserve_limit_bytes(), config.index_spacing_bytes),
+        config.first_segment_version(),
     )?;
-    // Flushed before anything can append to it: a base offset that did not
+    // The header is flushed before anything can append to it, and its name by
+    // `DiskLog::open_shared`'s directory sync: a base offset that did not
     // survive a crash would leave the shard reading back as one starting at
     // zero, which is a hole rather than a shorter log.
     writer.sync()?;
@@ -310,7 +341,7 @@ pub(super) fn place_empty_shard(
 /// make the log look shuffled.
 pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     let mut ids = Vec::new();
-    for entry in std::fs::read_dir(dir)? {
+    for entry in crate::fs::read_dir(dir)? {
         let entry = entry?;
         if !entry.file_type()?.is_file() {
             continue;
@@ -330,13 +361,191 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     Ok(ids)
 }
 
+/// Start after a log was poisoned in the boot still running. The bytes of
+/// the flush that failed can sit in the page cache looking valid, and a sync
+/// of them would succeed without writing anything.
+///
+/// Under `OnCommit` nothing past the last sync was acknowledged, so the log
+/// is cut back to the mark the poison recorded, as a power loss would have
+/// left it. A relaxed run acknowledged those records, so they are kept and
+/// written again for real. The mode is the poisoned run's, from the marker.
+/// The small state files are written again too. The marker goes last, so a
+/// crash part way repeats all of this.
+pub(super) fn after_poison(
+    dir: &Path,
+    label: &str,
+    marker: Option<durable_mark::Poison>,
+) -> Result<()> {
+    match marker {
+        Some(poison) if poison.on_commit => cut_to_mark(dir, label, poison.mark)?,
+        Some(poison) => rewrite_past_mark(dir, label, poison.mark)?,
+        None => tracing::warn!(
+            shard = label,
+            "the last run poisoned this log but its marker cannot be read; the log is kept as \
+             it is, and bytes the failed flush wrote may not be on the device"
+        ),
+    }
+    for name in STATE_FILES {
+        let bytes = match crate::fs::read(dir.join(name)) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
+        crate::run_state::write_atomically(dir, name, &bytes, true)?;
+    }
+    match crate::fs::remove_file(dir.join(durable_mark::poison_file_name())) {
+        Ok(()) => Ok(sync_dir(dir)?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// A step of the cut a test can stop at, as a crash would.
+#[cfg(test)]
+fn crash_point() -> std::io::Result<()> {
+    CUT_STEPS_LEFT.with(|left| match left.get() {
+        Some(0) => Err(std::io::Error::other("injected crash")),
+        Some(n) => {
+            left.set(Some(n - 1));
+            Ok(())
+        }
+        None => Ok(()),
+    })
+}
+
+#[cfg(not(test))]
+#[inline]
+fn crash_point() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many steps of the cut to take before [`crash_point`] fails.
+    pub(super) static CUT_STEPS_LEFT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    /// How many bytes [`rewrite_from`] has written on this thread.
+    pub(super) static REWRITTEN_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Files whose last write may have failed, each read back from the page
+/// cache as if it were durable.
+const STATE_FILES: [&str; 4] = ["ballot", "replica", "replica-set", "epochs"];
+
+/// Drop everything past `mark`: the segments after its own, and its own
+/// bytes past `synced_bytes`. A mark naming a segment that is gone, or a
+/// segment already that short, leaves the log as it is.
+fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
+    let ids = discover_segment_ids(dir)?;
+    if !ids.contains(&mark.segment) {
+        return Ok(());
+    }
+    let path = dir.join(segment_file_name(mark.segment));
+    let len = crate::fs::metadata(&path)?.len();
+    let newer: Vec<SegmentId> = ids.into_iter().filter(|id| *id > mark.segment).collect();
+    if newer.is_empty() && len <= mark.synced_bytes {
+        return Ok(());
+    }
+    tracing::warn!(
+        shard = label,
+        segment = mark.segment,
+        synced_bytes = mark.synced_bytes,
+        later_segments = newer.len(),
+        "the last run poisoned this log; cutting it back to its last synced point"
+    );
+    // Newest first, so a crash part way leaves a longer log and no gap.
+    for id in newer.into_iter().rev() {
+        crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
+        remove_segment_files(dir, id)?;
+        sync_dir(dir)?;
+        crash_point()?;
+    }
+    if len > mark.synced_bytes {
+        crate::fs::note_torn_tail(&path);
+        // Cut and possibly appended to again, so these must not outlive it.
+        for stale in [known_file_name(mark.segment), index_file_name(mark.segment)] {
+            match crate::fs::remove_file(dir.join(stale)) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        crash_point()?;
+        let file = crate::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_len(mark.synced_bytes)?;
+        crate::io::sync_data(&file)?;
+        sync_dir(dir)?;
+        crash_point()?;
+    }
+    // A flush in flight at the poison can have moved the mark past the
+    // marker's. Left there, it would make damage past the cut look like rot.
+    crate::run_state::write_atomically(dir, durable_mark::mark_file_name(), &mark.encode(), true)?;
+    Ok(())
+}
+
+/// Write the bytes past `mark` again and sync them: the segment the mark is
+/// in from its synced point, and every later segment whole. Writing the
+/// same bytes makes their pages dirty again, so the sync really writes them.
+fn rewrite_past_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
+    let mut rewritten = 0;
+    for id in discover_segment_ids(dir)? {
+        if id < mark.segment {
+            continue;
+        }
+        let from = if id == mark.segment {
+            mark.synced_bytes
+        } else {
+            0
+        };
+        rewritten += rewrite_from(&dir.join(segment_file_name(id)), from)?;
+    }
+    if rewritten > 0 {
+        tracing::warn!(
+            shard = label,
+            segment = mark.segment,
+            synced_bytes = mark.synced_bytes,
+            rewritten_bytes = rewritten,
+            "the last run poisoned this log; writing the bytes past its last synced point again"
+        );
+    }
+    Ok(())
+}
+
+/// Read back and write again the bytes of `path` from `from` on, then sync
+/// them. Returns how many bytes it wrote.
+fn rewrite_from(path: &Path, from: u64) -> Result<u64> {
+    let file = crate::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    let mut at = from;
+    let mut buf = vec![0u8; 1 << 20];
+    while at < len {
+        let want = usize::try_from(len - at).map_or(buf.len(), |left| left.min(buf.len()));
+        let read = crate::io::read_at(&file, &mut buf[..want], at)?;
+        if read == 0 {
+            break;
+        }
+        crate::io::write_at(&file, &buf[..read], at)?;
+        at += read as u64;
+    }
+    if at > from {
+        crate::io::sync_data(&file)?;
+    }
+    #[cfg(test)]
+    REWRITTEN_BYTES.with(|total| total.set(total.get() + (at - from.min(at))));
+    Ok(at.saturating_sub(from))
+}
+
 /// Unlink a segment and its index. The caller syncs the directory.
 fn remove_segment_files(dir: &Path, id: SegmentId) -> Result<()> {
     for path in [
         dir.join(segment_file_name(id)),
         dir.join(index_file_name(id)),
+        dir.join(known_file_name(id)),
     ] {
-        match std::fs::remove_file(&path) {
+        match crate::fs::remove_file(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(StorageError::Io(err)),

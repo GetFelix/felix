@@ -17,11 +17,18 @@ publish = false
 # Test-only faults at the I/O seam (see `src/fault.rs`). Debug builds have them
 # regardless; this puts them in an optimised build for a fault-testing run.
 fault-injection = []
+# An in-memory filesystem for paths a simulation registers (`src/fs.rs`).
+# Other paths stay on disk, so turning it on changes nothing for them.
+sim = []
 # Entry points for the libFuzzer targets in `fuzz/`; not an API.
 fuzzing = []
+# `raft_log`: a `DiskLog` as an openraft log. Off for the broker library, so
+# it builds without openraft.
+raft = ["dep:openraft"]
 
 [dependencies]
 bytes = { workspace = true }
+felix-common = { path = "../felix-common", version = "0.8.0-preview.0", features = ["blocking", "hasher"] }
 tokio = { workspace = true }
 tracing = { workspace = true }
 async-trait = "0.1.89"
@@ -30,6 +37,7 @@ crc32fast = { workspace = true }
 metrics = { workspace = true }
 parking_lot = { workspace = true }
 object_store = { workspace = true }
+openraft = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
@@ -42,6 +50,16 @@ io-uring = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
+# Turns `raft` on for this crate's own tests, so `cargo test` runs the
+# adapter's without a feature flag.
+felix-storage = { path = ".", features = ["raft"] }
+# The storage suite needs a runtime to run in.
+openraft = { workspace = true, features = ["tokio-rt", "serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = "0.3"
+# Lets a test see a warning the code logs.
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

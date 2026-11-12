@@ -194,7 +194,7 @@ pub(crate) fn check_prerequisites(
 /// unless `metadata_level_ready` says the control plane keeps the pending
 /// replica set and adopts elected leaders.
 /// Any other feature passes. Under Raft the finalize also needs every member
-/// at metadata level 26 (`replica_election`) or 23 (`joint_fence`), which the
+/// at metadata level 26 (`replica_election`) or 25 (`joint_fence`), which the
 /// store checks as it proposes.
 ///
 /// Checked when the operator asks, like [`check_prerequisites`]: a Raft member
@@ -269,7 +269,9 @@ pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 /// Every implemented feature but `publisher_principal`, which stays the
 /// operator's: it grows every record by its publisher's id and keeps
 /// principal ids in the log, an opt-in a lone broker also leaves off unless
-/// `FELIX_RECORD_PUBLISHERS` asks for it.
+/// `FELIX_RECORD_PUBLISHERS` asks for it, and `record_generations`, the one-way
+/// move onto segment format v9, kept out until replicated clusters are
+/// measured with it on.
 pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
@@ -419,7 +421,7 @@ fn retry(store: &Store, pending: &Arc<NewClusterFinalize>) {
             if tokio::time::Instant::now() >= give_up_at {
                 tracing::warn!(
                     "new cluster: gave up finalizing fleet features; finalize them with \
-                     `felix-controlplane admin features finalize <feature>` \
+                     `felixctl features finalize <feature>` \
                      (POST /v1/fleet/features/{{feature}}/finalize) once every \
                      control-plane member runs this release"
                 );
@@ -456,23 +458,12 @@ async fn finalize_in_order(
     if !store.every_member_current().await {
         return (enabled, true);
     }
-    let Ok(nodes) = store.list_nodes().await else {
-        return (enabled, true);
-    };
     let mut again = false;
     for feature in NEW_CLUSTER {
         let name = feature.name();
+        // `check_election` gates only the election features, which a new
+        // cluster leaves to the operator (a test holds NEW_CLUSTER to that).
         if enabled.contains(name) || check_prerequisites(&enabled, name).is_err() {
-            continue;
-        }
-        // The operator's readiness gates hold here too; the store does not
-        // check them.
-        if let Err(err) = check_election(&nodes, name, ELECTION_METADATA_LEVEL_READY) {
-            tracing::info!(
-                feature = name,
-                error = %err,
-                "not finalizing a fleet feature for a new cluster",
-            );
             continue;
         }
         match store.finalize_fleet_feature(name).await {

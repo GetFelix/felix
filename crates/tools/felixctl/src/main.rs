@@ -14,14 +14,19 @@
 //! - `group`, `counter`: consumer groups and counters, through the brokers.
 //! - `controlplane`: the REST client and the read-only commands.
 //! - `manage`: the control-plane writes, and confirming destructive ones.
+//! - `placement`: the moves, plan and replication views over placement.
+//! - `features`: listing and finalizing fleet features.
+//! - `backup_point`: recording every shard's committed offsets.
 //! - `rbac`: listing, granting and revoking RBAC policies and role
 //!   assignments.
 //! - `inspect`: operators' read-only views of what the brokers hold.
+//! - `delegate`: `data`, which runs the broker binary's own tools.
 //! - `bench`: the load-test front end.
 //! - `reference`: the Markdown command reference rendered from `cli`.
 //! - `output`, `error`, `help`: printing, exit statuses, completions and man
 //!   pages.
 
+mod backup_point;
 mod bench;
 mod cache;
 mod cli;
@@ -29,12 +34,15 @@ mod connect;
 mod context;
 mod controlplane;
 mod counter;
+mod delegate;
 mod error;
+mod features;
 mod group;
 mod help;
 mod inspect;
 mod manage;
 mod output;
+mod placement;
 mod publish;
 mod rbac;
 mod reference;
@@ -85,6 +93,8 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
                 serde_json::json!({ "written": written }),
             );
         }
+        // Run on the host holding the data, so no context is read.
+        Command::Data(command) => return delegate::data(command, cli.broker_bin.clone()),
         _ => {}
     }
     let path = context::config_path(cli.connection.config.as_deref(), &env)?;
@@ -106,11 +116,17 @@ async fn run(cli: Cli, out: &Output) -> anyhow::Result<()> {
         Command::Stream(command) => controlplane::stream(command, &settings, out).await,
         Command::Node(command) => controlplane::node(command, &settings, out).await,
         Command::Shard(command) => controlplane::shard(command, &settings, out).await,
-        Command::Placement(command) => manage::placement(command, &settings, out).await,
+        Command::Placement(command) => placement::run(command, &settings, out).await,
+        Command::Features(command) => features::run(command, &settings, out).await,
+        Command::BackupPoint(args) => backup_point::run(args, &settings, out).await,
         Command::Rbac(command) => rbac::run(command, &settings, out).await,
         Command::Inspect(command) => inspect::run(command, &settings, out).await,
         Command::Bench(command) => bench::run(command, &settings, out).await,
-        Command::Context(_) | Command::Completions(_) | Command::Man(_) | Command::Reference => {
+        Command::Context(_)
+        | Command::Completions(_)
+        | Command::Man(_)
+        | Command::Reference
+        | Command::Data(_) => {
             unreachable!("handled above")
         }
     }

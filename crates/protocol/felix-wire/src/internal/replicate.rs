@@ -70,8 +70,17 @@ pub struct ReplicateRecords {
     /// of which has a block, byte for byte what a peer that predates them
     /// reads. `Some` travels only on a timed batch, as
     /// `ReplicateHeaderedRecords`, sent only to a peer that advertised
-    /// `RECORD_HEADERS`. Covered by the checksum.
+    /// `RECORD_HEADERS`. Covered by the checksum. `Some` holding no block is
+    /// the same message as `None`: it is sent as `None` and decodes as `None`.
     pub headers: Option<Vec<Option<Bytes>>>,
+    /// The generation that wrote each record, as runs: entry `i` covers from
+    /// its `start_offset` to the next entry's, the last to the batch end. The
+    /// first starts at `first_offset`; offsets strictly increase within the
+    /// batch and generations strictly increase. `None` is byte for byte the
+    /// frame without it; `Some` travels as `ReplicateStampedRecords`, sent
+    /// only to a peer that advertised `WRITER_GENERATIONS`. Not covered by the
+    /// checksum, like times; the decoder checks its shape.
+    pub writers: Option<Vec<GenerationStart>>,
     /// The generation of the replica set the sender counts. `None` is a
     /// sender that does not check sets, and the batch travels as it always
     /// did; `Some` wraps it in a `SetStamped` frame, sent only to a peer that
@@ -87,6 +96,26 @@ impl ReplicateRecords {
             .iter()
             .any(|mark| matches!(mark, ProducerMark::Trim { .. }))
     }
+}
+
+/// Whether `writers` is a well-formed set of runs for a batch of `len`
+/// records starting at `first_offset`.
+pub(super) fn writers_well_formed(
+    first_offset: u64,
+    len: usize,
+    writers: &[GenerationStart],
+) -> bool {
+    if len == 0 {
+        return writers.is_empty();
+    }
+    let end = first_offset.saturating_add(len as u64);
+    writers
+        .first()
+        .is_some_and(|w| w.start_offset == first_offset)
+        && writers.iter().all(|w| w.start_offset < end)
+        && writers.windows(2).all(|pair| {
+            pair[0].start_offset < pair[1].start_offset && pair[0].generation < pair[1].generation
+        })
 }
 
 /// One leadership generation, and the offset of its first record.
@@ -159,6 +188,30 @@ pub struct ReplicateError {
     pub code: ErrorCode,
     pub expected_offset: u64,
     pub detail: String,
+    /// What `detail` says, as fields a leader reads instead of the text.
+    /// Sent only to a caller that offered
+    /// [`PeerCapabilities::REFUSAL_REASONS`](super::PeerCapabilities::REFUSAL_REASONS);
+    /// `None` encodes the original body, byte for byte, and a leader then
+    /// reads `detail` as it always has.
+    pub reason: Option<RefusalReason>,
+}
+
+/// Why a replica refused a sender at generation `sender`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefusalReason {
+    /// Its ballot holds `generation`, the sender's, for `leader`.
+    PromisedTo { generation: u64, leader: String },
+    /// Its ballot holds the newer `accepted`.
+    Accepted { accepted: u64, sender: u64 },
+    /// Its routing view is at `have`.
+    View { have: u64, sender: u64 },
+    /// The control plane's confirmed assignment is at `assigned`.
+    Assigned { assigned: u64, sender: u64 },
+    /// Its route does not name it a replica of the shard.
+    NotAReplica,
+    /// It answers a fence but does not vote: a learner, or a copy replaced
+    /// until a set change re-admits it. Its position counts for nothing.
+    NotVoter,
 }
 
 /// The leader has nothing older than `base_offset` left.
@@ -301,7 +354,11 @@ pub(super) fn put_blocks(out: &mut bytes::BytesMut, blocks: &[Option<Bytes>]) {
 /// Read blocks written by [`put_blocks`] for `count` records. A count that
 /// differs, or a section with no block in it, is refused: the encoder writes
 /// neither, so accepting them would give one message two encodings.
-pub(super) fn take_blocks(body: &mut Bytes, count: usize) -> Result<Vec<Option<Bytes>>> {
+pub(super) fn take_blocks(
+    body: &mut Bytes,
+    count: usize,
+    require_block: bool,
+) -> Result<Vec<Option<Bytes>>> {
     use bytes::Buf;
     let declared = take_u32(body)? as usize;
     if declared != count {
@@ -327,7 +384,7 @@ pub(super) fn take_blocks(body: &mut Bytes, count: usize) -> Result<Vec<Option<B
             _ => return Err(Error::Incomplete),
         }
     }
-    if !any_block(&blocks) {
+    if require_block && !any_block(&blocks) {
         return Err(Error::InvalidRecordHeaders(
             "headers section holds no block",
         ));

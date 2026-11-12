@@ -1,0 +1,235 @@
+use std::future::Future;
+
+use felix_controlplane_service::api::types::{NodeHeartbeatRequest, NodeRegistrationResponse};
+use tokio::time::Instant;
+
+use super::*;
+
+async fn control_plane() -> SimControlPlane {
+    crate::clock::install(crate::clock::Clocks::default());
+    SimControlPlane::new(CpConfig::default()).await.unwrap()
+}
+
+async fn register(link: &SimLink, node: &str) -> NodeRegistrationResponse {
+    let body = registration(node, "10.0.0.1:7100");
+    let response = link.register("t", &body).await.unwrap();
+    assert!(response.status.is_success(), "{}", response.text());
+    response.json().unwrap()
+}
+
+fn heartbeat_body(incarnation: u64) -> NodeHeartbeatRequest {
+    NodeHeartbeatRequest {
+        incarnation,
+        suspects: Default::default(),
+        want_assignment_seq: false,
+    }
+}
+
+/// Polls `future` once and reports whether it finished.
+async fn finished_now<T>(future: impl Future<Output = T>) -> bool {
+    tokio::time::timeout(Duration::from_millis(1), future)
+        .await
+        .is_ok()
+}
+
+#[tokio::test(start_paused = true)]
+async fn register_and_heartbeat_round_trip() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    let registered = register(&link, "b1").await;
+    assert_eq!(registered.node.node_id, "b1");
+
+    let response = link
+        .heartbeat(
+            "t",
+            "b1",
+            &heartbeat_body(registered.node.status.incarnation),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert!(response.status.is_success(), "{}", response.text());
+    let node = link.node("t", "b1").await.unwrap();
+    assert!(node.status.is_success());
+    let catalog = link.node_catalog_page(Some("t"), None).await.unwrap();
+    assert!(catalog.text().contains("b1"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn slow_delays_each_call_by_the_set_amount() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    cp.set_fault(CpFault::Slow(Duration::from_millis(700)));
+    let begun = Instant::now();
+    let response = link.node("t", "nobody").await.unwrap();
+    assert_eq!(response.status, axum::http::StatusCode::NOT_FOUND);
+    assert_eq!(begun.elapsed(), Duration::from_millis(700));
+}
+
+#[tokio::test(start_paused = true)]
+async fn paused_parks_calls_until_cleared_and_a_timeout_ends_one_early() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    register(&link, "b1").await;
+    cp.set_fault(CpFault::Paused);
+
+    let parked = tokio::spawn({
+        let link = link.clone();
+        async move { link.node("t", "b1").await }
+    });
+    tokio::time::sleep(Duration::from_secs(3600)).await;
+    assert!(!parked.is_finished());
+
+    let begun = Instant::now();
+    let err = link
+        .heartbeat("t", "b1", &heartbeat_body(1), Duration::from_secs(2))
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert_eq!(begun.elapsed(), Duration::from_secs(2));
+
+    cp.set_fault(CpFault::Healthy);
+    let late = parked.await.unwrap().unwrap();
+    assert!(late.status.is_success());
+}
+
+#[tokio::test(start_paused = true)]
+async fn down_fails_at_once_and_fails_parked_calls() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    cp.set_fault(CpFault::Paused);
+    let parked = tokio::spawn({
+        let link = link.clone();
+        async move { link.node("t", "b1").await }
+    });
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    cp.set_fault(CpFault::Down);
+    let begun = Instant::now();
+    let err = link.node("t", "b1").await.unwrap_err();
+    assert!(err.to_string().contains("refused"), "{err}");
+    assert_eq!(begun.elapsed(), Duration::ZERO);
+    assert!(parked.await.unwrap().is_err());
+    assert!(cp.request(Method::GET, "/v1/nodes", None).await.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn step_does_nothing_while_paused_or_down() {
+    let cp = control_plane().await;
+    assert!(cp.step().await.is_some());
+    cp.set_fault(CpFault::Paused);
+    assert!(cp.step().await.is_none());
+    cp.set_fault(CpFault::Down);
+    assert!(cp.step().await.is_none());
+    cp.set_fault(CpFault::Healthy);
+    assert!(cp.step().await.is_some());
+    assert!(finished_now(cp.step()).await);
+}
+
+/// Placement's memory survives a pause and not a restart.
+#[tokio::test(start_paused = true)]
+async fn placement_memory_survives_a_pause_and_not_a_restart() {
+    let cp = control_plane().await;
+    let seen = || async { cp.inner.placement.lock().await.restarts };
+    cp.reconcile().await.unwrap();
+    cp.set_fault(CpFault::Paused);
+    cp.set_fault(CpFault::Healthy);
+    cp.reconcile().await.unwrap();
+    assert_eq!(seen().await, 0);
+    cp.set_fault(CpFault::Down);
+    cp.set_fault(CpFault::Healthy);
+    cp.reconcile().await.unwrap();
+    assert_eq!(seen().await, 1, "rebuilt after a restart");
+}
+
+#[tokio::test(start_paused = true)]
+async fn silent_node_is_expired_by_stepping_after_the_window() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    register(&link, "b1").await;
+    let sweep = cp.config().sweep_interval();
+    let window = cp.config().silence_before_down();
+    let mut waited = Duration::ZERO;
+    while waited <= window * 3 {
+        tokio::time::sleep(sweep).await;
+        waited += sweep;
+        cp.step().await.unwrap();
+    }
+    let node = link.node("t", "b1").await.unwrap().text();
+    assert!(node.contains("Down") || node.contains("down"), "{node}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn three_brokers_get_replica_sets_and_the_election_features() {
+    let cp = control_plane().await;
+    let link = cp.link();
+    for (i, node) in ["b1", "b2", "b3"].into_iter().enumerate() {
+        let body = registration(node, &format!("10.0.0.{}:7100", i + 1));
+        assert!(link.register("t", &body).await.unwrap().status.is_success());
+    }
+    cp.create_tenant("t1").await.unwrap();
+    cp.create_namespace("t1", "ns").await.unwrap();
+    let stream = cp
+        .create_durable_stream("t1", "ns", "orders", 4, 3)
+        .await
+        .unwrap();
+    assert_eq!(stream.shards, 4);
+
+    cp.step().await.unwrap();
+    let snapshot = cp.assignments().await.unwrap();
+    assert_eq!(snapshot.items.len(), 4);
+    for item in &snapshot.items {
+        let shard = &item.assigned.assignment;
+        assert_eq!(shard.replicas.len(), 2, "leader plus two followers");
+        assert!(!shard.replicas.contains(&shard.leader));
+    }
+
+    cp.finalize_election().await.unwrap();
+    let features = cp.fleet_features().await.unwrap();
+    assert_eq!(features.serving_nodes, 3);
+    for feature in [fleet::JOINT_FENCE, fleet::REPLICA_ELECTION] {
+        assert!(features.enabled.contains(feature.name()), "{feature}");
+    }
+}
+
+/// Steps the control plane every sweep interval until `node` reads down, and
+/// returns how long that took on the shared clock.
+async fn time_to_down(cp: &SimControlPlane, node: &str) -> Duration {
+    let link = cp.link();
+    let started = Instant::now();
+    let limit = cp.config().silence_before_down() * 10;
+    while started.elapsed() < limit {
+        tokio::time::sleep(cp.config().sweep_interval()).await;
+        cp.step().await.unwrap();
+        let text = link.node("t", node).await.unwrap().text();
+        if text.contains("Down") || text.contains("down") {
+            return started.elapsed();
+        }
+    }
+    panic!("{node} never went down");
+}
+
+/// The silence watch reads the control plane's lease clock, so a control
+/// plane whose clock runs at half speed takes about twice as long to mark a
+/// silent broker down.
+#[tokio::test(start_paused = true)]
+async fn the_silence_watch_runs_on_the_control_planes_lease_clock() {
+    let window = CpConfig::default().silence_before_down();
+
+    let cp = control_plane().await;
+    register(&cp.link(), "b1").await;
+    let true_speed = time_to_down(&cp, "b1").await;
+
+    crate::clock::install(crate::clock::Clocks {
+        controlplane: crate::clock::NodeClock::new(0, crate::clock::PPM / 2),
+        brokers: Vec::new(),
+    });
+    let cp = SimControlPlane::new(CpConfig::default()).await.unwrap();
+    register(&cp.link(), "b1").await;
+    let half_speed = time_to_down(&cp, "b1").await;
+
+    assert!(
+        half_speed >= true_speed + window / 2,
+        "true speed {true_speed:?}, half speed {half_speed:?}, window {window:?}"
+    );
+}

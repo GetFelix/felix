@@ -9,7 +9,7 @@
 //! is the only moment the group has genuinely finished a prefix — writing it
 //! per acknowledgement would either lie about progress or need a second
 //! structure on disk to say which of the acknowledged offsets were contiguous.
-use std::collections::{HashMap, HashSet};
+use felix_common::random::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -74,7 +74,7 @@ impl GroupReader {
             trimmed: AtomicU64::new(0),
             max_in_flight: AtomicUsize::new(DEFAULT_MAX_IN_FLIGHT),
             capped: AtomicU64::new(0),
-            normalized: SyncMutex::new(HashSet::new()),
+            normalized: SyncMutex::new(HashSet::default()),
             appended: Arc::default(),
         }
     }
@@ -360,7 +360,7 @@ impl GroupReader {
                 {
                     // Not a client's record, so nothing to deliver. Settled like a
                     // trimmed one; left owed it would stall the group here.
-                    Some(record) if record.mark.is_generation_start() => {
+                    Some(record) if !record.mark.is_data() => {
                         tracker.lock().await.skip(offset);
                         self.settle(key, &held, offset).await?;
                     }
@@ -971,7 +971,7 @@ impl Trackers {
 impl Default for Trackers {
     fn default() -> Self {
         Self {
-            slots: HashMap::new(),
+            slots: HashMap::default(),
             last_sweep: Instant::now(),
         }
     }

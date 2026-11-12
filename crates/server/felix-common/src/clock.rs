@@ -16,26 +16,29 @@
 //! of time. That is off, and costs one atomic load, unless
 //! `FELIX_CLOCK_FAULT_FILE` is set. A plain release build has no such module
 //! and reads the real clocks directly.
+//!
+//! The same builds, and builds with the `sim` feature, can hand both clocks to
+//! a simulator through [`sim`], so leases run on the simulation's virtual
+//! time instead of the host's.
 
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub mod fault;
+#[cfg(any(debug_assertions, test, feature = "sim"))]
+pub mod sim;
 
 use std::time::Duration;
 
 /// The lease clock: monotonic, and counting through suspend where the
 /// platform allows. Readings are comparable only within one process.
 pub fn boottime() -> Duration {
-    skewed(raw_boottime())
+    skewed(source_boottime())
 }
 
 /// Wall-clock milliseconds since the Unix epoch.
 ///
 /// Clamped at zero so a clock behind the epoch cannot panic the caller.
 pub fn wall_millis() -> u64 {
-    let raw = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    skewed(raw).as_millis() as u64
+    skewed(source_wall()).as_millis() as u64
 }
 
 /// `raw` as this process's clock fault has it.
@@ -48,6 +51,46 @@ fn skewed(raw: Duration) -> Duration {
 #[inline]
 fn skewed(raw: Duration) -> Duration {
     raw
+}
+
+/// The lease clock before any fault: the simulator's, when one drives this
+/// process.
+#[cfg(any(debug_assertions, test, feature = "sim"))]
+fn source_boottime() -> Duration {
+    sim::elapsed().unwrap_or_else(raw_boottime)
+}
+
+#[cfg(not(any(debug_assertions, test, feature = "sim")))]
+#[inline]
+fn source_boottime() -> Duration {
+    raw_boottime()
+}
+
+/// Time since the Unix epoch before any fault.
+#[cfg(any(debug_assertions, test, feature = "sim"))]
+fn source_wall() -> Duration {
+    sim::elapsed().map_or_else(raw_wall, sim::wall)
+}
+
+#[cfg(not(any(debug_assertions, test, feature = "sim")))]
+#[inline]
+fn source_wall() -> Duration {
+    raw_wall()
+}
+
+/// The wall clock as a `SystemTime`, for expiry stamps and deadlines.
+///
+/// Under a simulator this is virtual time counted from [`sim::EPOCH`], so
+/// every run of a seed stamps the same dates. It carries no clock fault, so
+/// outside a simulator it is exactly `SystemTime::now()`.
+pub fn system_time() -> std::time::SystemTime {
+    std::time::UNIX_EPOCH + source_wall()
+}
+
+fn raw_wall() -> Duration {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
 }
 
 #[cfg(target_os = "linux")]

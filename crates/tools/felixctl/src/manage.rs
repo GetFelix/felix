@@ -276,6 +276,9 @@ pub(crate) async fn placement(
             let answer = api.post(&path, &query, None).await?;
             return print_move(out, answer);
         }
+        PlacementCommand::Plan | PlacementCommand::Replication => {
+            unreachable!("the read views are in `placement`")
+        }
     };
     let answer = api.post(path, &[], None).await?;
     out.done(done, answer.body.unwrap_or(Value::Null))
@@ -484,6 +487,11 @@ fn print_move(out: &Output, answer: Answer) -> anyhow::Result<()> {
     if out.json {
         return out.json_value(&body);
     }
+    out.text(&move_text(&body))
+}
+
+/// A move or abandon answer as text.
+pub(crate) fn move_text(body: &Value) -> String {
     let field = |pointer: &str| body.pointer(pointer).map(cell).unwrap_or_default();
     let mut text = format!(
         "{}/{} shard {}: {}\nleader {}, replicas {}, generation {}",
@@ -497,11 +505,14 @@ fn print_move(out: &Output, answer: Answer) -> anyhow::Result<()> {
     );
     if let (Some(before), Some(after)) = (body.get("zones_before"), body.get("zones_after")) {
         text.push_str(&format!("\nzones {} -> {}", cell(before), cell(after)));
+        if after.as_u64() < before.as_u64() {
+            text.push_str(" (the shard's copies will span fewer zones)");
+        }
     }
     if body["dry_run"] == true {
         text.push_str("\n(dry run: nothing was written)");
     }
-    out.text(&text)
+    text
 }
 
 fn qualified(settings: &Settings, name: &str) -> anyhow::Result<String> {

@@ -257,12 +257,38 @@ internal static unsafe partial class Callbacks
         byte hasMicros;
         Check(NativeMethods.felix_event_timestamp(ev, &micros, &hasMicros));
 
+        byte* keyData;
+        nuint keyLength;
+        Check(NativeMethods.felix_event_key(ev, &keyData, &keyLength));
+        // An if, not `cond ? null : bytes`: that has type byte[], and a null byte[] converts to an
+        // empty (non-null) ReadOnlyMemory<byte>?, which would turn "no key" into "empty key".
+        ReadOnlyMemory<byte>? key = null;
+        if (keyData is not null && keyLength != 0)
+        {
+            key = CopyBytes(keyData, keyLength);
+        }
+
+        nuint headerCount;
+        Check(NativeMethods.felix_event_header_count(ev, &headerCount));
+        var headers = new Header[checked((int)headerCount)];
+        for (var i = 0; i < headers.Length; i++)
+        {
+            byte* name;
+            nuint nameLength;
+            byte* value;
+            nuint valueLength;
+            Check(NativeMethods.felix_event_header(ev, (nuint)i, &name, &nameLength, &value, &valueLength));
+            headers[i] = new Header(Encoding.UTF8.GetString(name, checked((int)nameLength)), CopyBytes(value, valueLength));
+        }
+
         return new FelixEvent(
             payload,
             hasOffset != 0 ? unchecked((long)offset) : null,
             unchecked((long)skipped),
             publisher,
-            hasMicros != 0 ? unchecked((long)micros) : null);
+            hasMicros != 0 ? unchecked((long)micros) : null,
+            key,
+            headers);
     }
 
     internal static void Check(int status)

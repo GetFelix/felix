@@ -17,7 +17,7 @@
 //! one: the replica set may be different, and the design note is explicit that
 //! an acknowledgement from a replica at an older generation does not count
 //! toward a newer generation's quorum. Resetting is what enforces that here.
-use std::collections::HashMap;
+use felix_common::random::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
@@ -50,6 +50,23 @@ pub struct QuorumMarks {
     status: std::sync::OnceLock<Arc<crate::status::ShardStatusBoard>>,
     /// The storage identity of this broker's directory, set once it is known.
     local_storage: std::sync::OnceLock<(felix_storage::StorageId, bool)>,
+    /// Whether this broker's directory kept every ballot it took, as the
+    /// fence answer attests it. Unset reads as not kept.
+    kept_ballots: std::sync::OnceLock<bool>,
+    /// The ids this directory had before a crash rotated them away while it
+    /// kept every ballot.
+    rotated_storage: std::sync::OnceLock<Vec<felix_storage::StorageId>>,
+    readmits: std::sync::OnceLock<bool>,
+    minted_storage: std::sync::OnceLock<bool>,
+    /// The directory's record of which copies are trusted and doubted
+    /// across restarts. Unset on a broker without a durable directory.
+    copy_trust: std::sync::OnceLock<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
+    /// Whether this broker counts fence answers by attestation and answers
+    /// such a caller with its own ([`Self::set_unified_fence`]).
+    unified_fence: std::sync::OnceLock<bool>,
+    /// What this process knows of the copies a crash may have cut, on an
+    /// unclean start.
+    unclean: std::sync::OnceLock<Arc<crate::unclean::UncleanStart>>,
     /// Leaderships the replicas elected, set where this broker may stand.
     elections: std::sync::OnceLock<Arc<crate::election::Elections>>,
     /// When each shard's timeout was last logged.
@@ -96,13 +113,35 @@ impl std::fmt::Debug for ReadRounds {
 /// the lease, as of one read of the fleet.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Serving {
-    /// The fleet set came from this process's registration. Before that it
-    /// is empty for want of an answer, and a pass cannot say how the shard
-    /// serves.
-    pub(crate) adopted: bool,
+    /// The fleet set came from this process's registration, or holds every
+    /// prerequisite of `replica_election`, which covers every feature a
+    /// stream shard's pass needs on (the rest fail closed when read as off).
+    /// Otherwise a feature it reads as off may be on, and a pass cannot say
+    /// how the shard serves.
+    streams_decided: bool,
+    /// [`Self::streams_decided`] for a cache shard, which also reads
+    /// `fenced_caches`.
+    caches_decided: bool,
     pub(crate) streams_by_followers: bool,
     pub(crate) caches_by_followers: bool,
     pub(crate) reads_by_round: bool,
+}
+
+impl Serving {
+    /// Whether a pass over a shard of `kind` may decide how it serves.
+    pub(crate) fn decided(&self, kind: felix_router::ShardKind) -> bool {
+        match kind {
+            felix_router::ShardKind::Stream => self.streams_decided,
+            felix_router::ShardKind::Cache => self.caches_decided,
+        }
+    }
+}
+
+/// [`QuorumMarks::read_confirm`].
+pub(crate) enum ReadConfirm<'a> {
+    Lease,
+    Round(&'a Arc<dyn LeadershipCheck>),
+    LeaseAndRound(&'a Arc<dyn LeadershipCheck>),
 }
 
 /// What a quorum wait is for: a write is released on the lease, or on its
@@ -132,7 +171,7 @@ impl QuorumMarks {
     /// record of its own generation ([`counted_offset`]). True once the fleet
     /// finalized `generation_start`, which is also when leaders start writing
     /// the record that lets the mark cover what they inherited.
-    pub fn own_generation_only(&self) -> bool {
+    pub(crate) fn own_generation_only(&self) -> bool {
         self.fleet
             .as_ref()
             .is_some_and(|fleet| fleet.supports(felix_common::fleet::GENERATION_START))
@@ -145,20 +184,17 @@ impl QuorumMarks {
             .is_some_and(|fleet| fleet.supports(feature))
     }
 
-    /// Whether the fleet has enabled `feature`, or `None` while this broker
-    /// has not yet taken a registration's answer, when a feature it reports
-    /// may still be enabled. False without a fleet, and for a feature this
-    /// broker does not report: registration refuses a broker without an
-    /// enabled feature, so it never runs with one on.
+    /// Whether the fleet has enabled `feature`, or `None` when it is off here
+    /// and this broker has not yet taken a registration's answer, so it may
+    /// still be enabled ([`felix_common::fleet::FleetView::decides`]). False
+    /// without a fleet, and for a feature this broker does not report:
+    /// registration refuses a broker without an enabled feature, so it never
+    /// runs with one on.
     pub(crate) fn fleet_decides(&self, feature: felix_common::fleet::FleetFeature) -> Option<bool> {
         let Some(fleet) = &self.fleet else {
             return Some(false);
         };
-        let view = fleet.view();
-        if !view.reports(feature) {
-            return Some(false);
-        }
-        view.adopted().then(|| view.supports(feature))
+        fleet.view().decides(feature)
     }
 
     /// Let `Quorum` reads confirm leadership with `check` once the fleet has
@@ -177,23 +213,78 @@ impl QuorumMarks {
         self.serving().reads_by_round.then_some(&reads.check)
     }
 
+    /// How a `Quorum` read confirms that this broker still leads, decided
+    /// from one read of the fleet.
+    ///
+    /// A broker that stands for election and would read by round once told,
+    /// but has not heard the fleet enable `lease_free_reads`, needs both: the
+    /// fleet may have finalized it and `replica_election` while this broker
+    /// was cut off, and a peer may then have been elected without waiting out
+    /// this broker's lease. The round covers that; the lease covers a fleet
+    /// that still waits it out.
+    ///
+    /// Any other broker is safe on the lease. Election is the only promotion
+    /// that skips an unheard leader's lease (placement acts on the followers'
+    /// word only once the leader reported `by_round`), and the control plane
+    /// refuses to finalize `replica_election` while a live broker does not
+    /// report it. One marked down has already lost its lease, which ends
+    /// before the control plane could expire it, and a restart registers
+    /// before it holds a lease again, where it is refused or hears the
+    /// enabled set. A replica that does not take the fence never vouches,
+    /// even beside the lease: it may have restarted that way after a
+    /// successor fenced it. See "Before a broker hears of the finalize" in
+    /// `docs/replication-design.md`.
+    pub(crate) fn read_confirm(&self) -> ReadConfirm<'_> {
+        let Some(reads) = self.reads.get() else {
+            return ReadConfirm::Lease;
+        };
+        if self.serving().reads_by_round {
+            return ReadConfirm::Round(&reads.check);
+        }
+        let may_be_elected_past = !reads.by_lease
+            && self.fleet.as_ref().is_some_and(|fleet| {
+                let view = fleet.view();
+                view.reports(felix_common::fleet::LEASE_FREE_READS)
+                    && view.reports(felix_common::fleet::REPLICA_ELECTION)
+            });
+        if may_be_elected_past {
+            ReadConfirm::LeaseAndRound(&reads.check)
+        } else {
+            ReadConfirm::Lease
+        }
+    }
+
     /// How a pass over a `Quorum` shard serves it, decided from one read of
     /// the fleet so the calls it makes on the fence agree.
     pub(crate) fn serving(&self) -> Serving {
         let Some(fleet) = self.fleet.as_ref() else {
             return Serving {
-                adopted: true,
+                streams_decided: true,
+                caches_decided: true,
                 ..Serving::default()
             };
         };
         let view = fleet.view();
         let streams = view.supports(felix_common::fleet::GENERATION_START)
             && view.supports(felix_common::fleet::MAJORITY_ACK);
+        let caches = streams && view.supports(felix_common::fleet::FENCED_CACHES);
         let by_lease = self.reads.get().is_none_or(|reads| reads.by_lease);
+        // Before registration answers, a pass decides only on a gate seeded
+        // with everything it reads: a feature missing from it may be on.
+        // `replica_election` itself counts, since the pass re-fences kept
+        // sets by it.
+        let election = felix_common::fleet::REPLICA_ELECTION;
+        let election_ready = view.supports(election)
+            && felix_common::fleet::prerequisites(election.name())
+                .iter()
+                .all(|feature| view.supports(*feature));
+        let streams_decided = view.adopted() || election_ready;
         Serving {
-            adopted: view.adopted(),
+            streams_decided,
+            caches_decided: view.adopted()
+                || (election_ready && view.supports(felix_common::fleet::FENCED_CACHES)),
             streams_by_followers: streams,
-            caches_by_followers: streams && view.supports(felix_common::fleet::FENCED_CACHES),
+            caches_by_followers: caches,
             reads_by_round: streams
                 && !by_lease
                 && view.supports(felix_common::fleet::LEASE_FREE_READS),
@@ -236,11 +327,11 @@ impl QuorumMarks {
 
     /// Where this broker records the leaderships the replicas elected. Only
     /// the first call counts.
-    pub fn set_elections(&self, elections: Arc<crate::election::Elections>) {
+    pub(crate) fn set_elections(&self, elections: Arc<crate::election::Elections>) {
         let _ = self.elections.set(elections);
     }
 
-    pub(crate) fn elections(&self) -> Option<&Arc<crate::election::Elections>> {
+    pub fn elections(&self) -> Option<&Arc<crate::election::Elections>> {
         self.elections.get()
     }
 
@@ -248,9 +339,172 @@ impl QuorumMarks {
         self.local_storage.get().map(|(storage, _)| *storage)
     }
 
+    /// Record whether this broker's directory kept every ballot it took:
+    /// never wiped, restored or a replacement for a lost copy, and checked
+    /// against the control plane's record. Only the first call counts.
+    pub fn set_kept_ballots(&self, kept: bool) {
+        let _ = self.kept_ballots.set(kept);
+    }
+
+    pub(crate) fn kept_ballots(&self) -> bool {
+        self.kept_ballots.get().copied().unwrap_or(false)
+    }
+
+    /// Record the ids this directory had before crashes rotated them while
+    /// it kept every ballot (`run_state::record_rotated_id`). Only the first
+    /// call counts.
+    pub fn set_rotated_storage(&self, ids: Vec<felix_storage::StorageId>) {
+        let _ = self.rotated_storage.set(ids);
+    }
+
+    /// Whether a set naming this broker under `id` names this directory's own
+    /// copy from before a crash rotated its id, whose ballots it still holds:
+    /// no evidence of a wipe. Never while the start has not said its
+    /// directory kept every ballot, which a later restore or wipe undoes.
+    pub fn rotated_own_copy(&self, id: felix_storage::StorageId) -> bool {
+        self.kept_ballots()
+            && self
+                .rotated_storage
+                .get()
+                .is_some_and(|ids| ids.contains(&id))
+    }
+
+    /// Whether the start has said what its directory kept yet. A start from
+    /// the control-plane view says nothing until its restore check passes.
+    pub(crate) fn knows_kept_ballots(&self) -> bool {
+        self.kept_ballots.get().is_some()
+    }
+
+    /// Record whether a copy on this broker's directory, when it did not keep
+    /// every ballot, counts again once readmitted: the start checked the
+    /// directory against a control plane record with a storage id. Only the
+    /// first call counts.
+    pub fn set_readmits(&self, readmits: bool) {
+        let _ = self.readmits.set(readmits);
+    }
+
+    pub(crate) fn readmits(&self) -> bool {
+        self.readmits.get().copied().unwrap_or(false)
+    }
+
+    /// Record whether this start minted the directory's storage id, by
+    /// rotating it or creating it. Only the first call counts.
+    pub fn set_minted_storage(&self, minted: bool) {
+        let _ = self.minted_storage.set(minted);
+    }
+
+    pub(crate) fn minted_storage(&self) -> bool {
+        self.minted_storage.get().copied().unwrap_or(false)
+    }
+
+    /// Whether a readmission counts here: a copy's promises from the set
+    /// that readmitted it, and the control plane's `readmitted` record as a
+    /// vouch. Only while this broker knows the fleet has not finalized
+    /// `replica_election`. An adopted elected leader may have opened its
+    /// generation before a copy's loss, which neither rule can tell, so once
+    /// elections can happen (or before a registration says they cannot) a
+    /// readmitted copy counts as it would without a record. See "Readmission
+    /// and elections" in `docs/replication-design.md`.
+    pub(crate) fn readmission_counts(&self) -> bool {
+        self.fleet_decides(felix_common::fleet::REPLICA_ELECTION) == Some(false)
+    }
+
+    /// Bind the durable directory's record of trusted and doubted copies.
+    /// Call before this broker answers anything. Only the first call counts.
+    pub fn set_copy_trust(&self, trust: Arc<felix_storage::run_state::copy_trust::CopyTrust>) {
+        let _ = self.copy_trust.set(trust);
+    }
+
+    pub(crate) fn copy_trust(
+        &self,
+    ) -> Option<&Arc<felix_storage::run_state::copy_trust::CopyTrust>> {
+        self.copy_trust.get()
+    }
+
+    /// Record whether this broker counts promotion fences by attestation
+    /// (`FELIX_UNIFIED_FENCE`, and a durable directory to attest from). Only
+    /// the first call counts.
+    pub fn set_unified_fence(&self, on: bool) {
+        let _ = self.unified_fence.set(on);
+    }
+
+    /// Whether a promotion counts its fence's answers by attestation. Unset
+    /// reads as off: the broker sets it at startup.
+    pub(crate) fn unified_fence(&self) -> bool {
+        self.unified_fence.get().copied().unwrap_or(false)
+    }
+
+    /// Whether this broker answers a caller that counts by attestation with
+    /// its own. Unset reads as on, which is safe: an attestation reads as no
+    /// promise and no coverage until [`Self::set_kept_ballots`] says the
+    /// directory kept its ballots.
+    pub(crate) fn attests(&self) -> bool {
+        self.unified_fence.get().copied().unwrap_or(true)
+    }
+
+    /// Bind what this process knows of its copies after an unclean start, so
+    /// a promotion attests its own copy as a replica would. Only the first
+    /// call counts.
+    pub fn set_unclean_start(&self, unclean: Arc<crate::unclean::UncleanStart>) {
+        let _ = self.unclean.set(unclean);
+    }
+
+    pub(crate) fn unclean_start(&self) -> Option<&Arc<crate::unclean::UncleanStart>> {
+        self.unclean.get()
+    }
+
+    /// Whether a fence would find this broker's copy of `key` untrusted
+    /// whatever its log holds: the process started unclean and no leader has
+    /// shipped the copy level, the copy is doubted, or a log is poisoned.
+    /// Reads in-memory state only, so a copy that is not open can be asked
+    /// about. `false` means the answer depends on the log, not that it is
+    /// trusted.
+    pub fn surely_untrusted(&self, key: &felix_router::ShardKey) -> bool {
+        let shard = crate::driver::watch_key(key);
+        let name = crate::unclean::copy_key(&shard);
+        felix_storage::disk_log::any_log_poisoned()
+            || self
+                .unclean_start()
+                .is_some_and(|unclean| !unclean.trusted(&shard))
+            || self.copy_trust().is_some_and(|trust| trust.doubted(&name))
+    }
+
+    /// What this broker attests of its copy `log` of `key`, as it answers a
+    /// unified fence, before the caller counts it. `readmitted` is the
+    /// route's control-plane readmission record.
+    pub async fn attest(
+        &self,
+        key: &felix_router::ShardKey,
+        log: &felix_broker::StreamLog,
+        local_node_id: &str,
+        readmitted: &[felix_router::Readmitted],
+    ) -> felix_wire::internal::FenceAttestation {
+        let voter = log.member_is_learner(local_node_id) != Some(true);
+        // An unreadable tail vouches for nothing; the fence reads it again.
+        let recorded = match log.tail_offset().await {
+            Ok(log_end) => crate::replica::vouched_by_record(
+                readmitted,
+                local_node_id,
+                self.local_storage(),
+                crate::replica::last_generation(&log.generations(), log_end),
+                log_end,
+            ),
+            Err(_) => false,
+        };
+        crate::replica::attest_copy(
+            Some(self),
+            self.unclean_start().map(|unclean| &**unclean),
+            felix_storage::disk_log::any_log_poisoned(),
+            key,
+            voter,
+            log.gave_up(),
+            recorded,
+        )
+    }
+
     /// Whether the control plane last registered this node under another
     /// storage identity.
-    pub fn replaced_storage(&self) -> bool {
+    pub(crate) fn replaced_storage(&self) -> bool {
         self.local_storage
             .get()
             .is_some_and(|(_, replaced)| *replaced)
@@ -421,7 +675,7 @@ impl QuorumMarks {
     }
 
     /// Keep only the shards named, in both tables.
-    pub fn retain(&self, live: &[ShardKey]) {
+    pub(crate) fn retain(&self, live: &[ShardKey]) {
         self.shards.retain(live);
         self.counters.retain(live);
         self.timeout_logged
@@ -435,8 +689,11 @@ impl QuorumMarks {
         self.offset_at(key, self.incarnation_of(key), generation)
     }
 
-    /// See [`MarkTable::wait_for`].
-    pub async fn wait_for(
+    /// Wait until a majority holds every offset below `offset`.
+    ///
+    /// `offset` is one past the last record of the batch, so this returns when
+    /// the batch itself is on a majority.
+    pub(crate) async fn wait_for(
         &self,
         key: &ShardKey,
         generation: u64,
@@ -455,7 +712,7 @@ impl QuorumMarks {
     }
 
     /// See [`MarkTable::wait_while_leading`].
-    pub async fn wait_while_leading(
+    pub(crate) async fn wait_while_leading(
         &self,
         key: &ShardKey,
         leading: impl Fn() -> Option<u64>,
@@ -564,12 +821,12 @@ impl MarkTable {
     /// Dropping the sender ends every wait on it, which is what turns a
     /// leadership loss into a failed publish rather than one that hangs until
     /// its timeout.
-    pub fn forget(&self, key: &ShardKey) {
+    pub(crate) fn forget(&self, key: &ShardKey) {
         self.shards.lock().remove(key);
     }
 
     /// Keep only the shards named, forgetting the rest.
-    pub fn retain(&self, live: &[ShardKey]) {
+    pub(crate) fn retain(&self, live: &[ShardKey]) {
         self.shards.lock().retain(|key, _| live.contains(key));
     }
 
@@ -592,22 +849,7 @@ impl MarkTable {
             .then(|| *mark.offset.borrow())
     }
 
-    /// Wait until a majority holds every offset below `offset`.
-    ///
-    /// `offset` is one past the last record of the batch, so this returns when
-    /// the batch itself is on a majority.
-    pub async fn wait_for(
-        &self,
-        key: &ShardKey,
-        generation: u64,
-        offset: u64,
-        timeout: std::time::Duration,
-    ) -> QuorumWait {
-        self.wait_for_at(key, || 0, generation, offset, timeout)
-            .await
-    }
-
-    /// [`Self::wait_for`], on the mark of the log of the incarnation
+    /// [`QuorumMarks::wait_for`], on the mark of the log of the incarnation
     /// `incarnation` names.
     async fn wait_for_at(
         &self,
@@ -652,14 +894,18 @@ impl MarkTable {
     /// generation this broker leads `key` at while it waits.
     ///
     /// `leading` is asked for that generation, and `None` from it ends the
-    /// wait as [`QuorumWait::NotLeading`]. Unlike [`MarkTable::wait_for`], a
+    /// wait as [`QuorumWait::NotLeading`]. Unlike [`QuorumMarks::wait_for`], a
     /// generation this broker leads but has no mark for yet is waited out:
     /// a new generation has none until its first replication pass reports,
     /// and a move staging a destination starts one under the same leader.
-    /// Neither is leadership moving. A write taken at an older generation is
-    /// covered by the newer one's mark too, since that counts a majority of
-    /// the newer replica set holding the log up to it.
-    pub async fn wait_while_leading(
+    /// Neither is leadership moving.
+    ///
+    /// Reaching a newer generation's mark says a majority holds this broker's
+    /// log as it is now, up to `offset`. That covers a write taken at an older
+    /// generation only if the log still holds it: a promotion's catch-up can
+    /// replace it with another leader's records at the same offsets. The
+    /// callers check that with `still_holds` before they acknowledge.
+    pub(crate) async fn wait_while_leading(
         &self,
         key: &ShardKey,
         leading: impl Fn() -> Option<u64>,
@@ -743,7 +989,7 @@ impl MarkTable {
 
 /// How a wait for a majority ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuorumWait {
+pub(crate) enum QuorumWait {
     /// A majority holds the batch. The publish may be acknowledged.
     Reached,
     /// No majority within the budget. The record may still be on disk here and
@@ -801,10 +1047,15 @@ pub trait ShardServing: Send + Sync {
 /// cannot say that it succeeded", which is the honest answer and the one a
 /// client can act on. Reporting success instead would make an acknowledgement
 /// mean less than the stream promises.
+///
+/// `generation` is the one the batch was written at: the generation its write
+/// fence was entered at.
+#[allow(clippy::too_many_arguments)]
 pub async fn await_quorum<S: ShardServing + ?Sized>(
     handle: &felix_broker::StreamHandle,
     shard: Option<&crate::ShardKey>,
     outcome: &felix_broker::PublishOutcome,
+    generation: u64,
     marks: Option<&crate::quorum::QuorumMarks>,
     ingress: Option<&S>,
     timeout: std::time::Duration,
@@ -820,7 +1071,7 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
     };
     // An ephemeral stream has no offsets, so there is nothing to replicate and
     // nothing to wait for.
-    let Some((_, last_offset)) = outcome.offsets else {
+    let Some((first_offset, last_offset)) = outcome.offsets else {
         return Ok(());
     };
     if ingress.generation(shard).is_none() {
@@ -851,20 +1102,27 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
         .wait_while_leading(shard, leading, last_offset + 1, timeout)
         .await;
     crate::metrics::record_quorum_wait(started.elapsed());
+    let reached_at = waited_at.load(Ordering::Relaxed);
     match waited {
+        // Reached at a newer generation: its mark counts the log as it is
+        // now, which may no longer hold the batch.
+        crate::quorum::QuorumWait::Reached
+            if reached_at != generation
+                && !still_holds(handle.log(), generation, first_offset, last_offset).await =>
+        {
+            replaced("batch")
+        }
         // A mark the followers decided holds without the lease: any newer
         // leader fenced a majority before it served, and every copy counted
         // either answered for the batch before it took that fence or was
         // not counted.
-        crate::quorum::QuorumWait::Reached
-            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
-        {
+        crate::quorum::QuorumWait::Reached if marks.decided_by_followers(shard, reached_at) => {
             Ok(())
         }
         crate::quorum::QuorumWait::Reached => release(ingress, "batch"),
         crate::quorum::QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
-            let _ = marks.log_timeout(shard, waited_at.load(Ordering::Relaxed), last_offset + 1);
+            let _ = marks.log_timeout(shard, reached_at, last_offset + 1);
             Err(QuorumError::TimedOut {
                 what: "batch",
                 timeout,
@@ -883,7 +1141,7 @@ pub async fn await_quorum<S: ShardServing + ?Sized>(
 }
 
 /// Ask for a pass over `shard`, which just took a write.
-fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
+pub(crate) fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
     broker
         .appended_shards()
         .mark(felix_broker::AppendedShards::slot(
@@ -910,13 +1168,19 @@ fn wake_pass(broker: &felix_broker::Broker, shard: &crate::ShardKey) {
 /// so the answer is never one a failover could take back. It then confirms
 /// this broker still leads ([`confirm_read`]), after the value, so no newer
 /// leader can have acknowledged a write the value lacks.
-pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
+///
+/// `written` is where a write landed ([`cache_write_at`]); a read passes
+/// `None`, and so does a write it answered `None` for, which waits for no
+/// quorum. A write that does wait with `None` is not acknowledged across a
+/// generation change.
+pub(crate) async fn await_cache_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
     timeout: std::time::Duration,
     access: Access,
+    written: Option<CacheWrite>,
 ) -> Result<(), anyhow::Error> {
     let what = match access {
         Access::Write => "write",
@@ -967,19 +1231,28 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
         waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
         generation
     };
-    match marks
+    let waited = marks
         .wait_while_leading(shard, leading, tail, timeout)
-        .await
-    {
+        .await;
+    let reached_at = waited_at.load(Ordering::Relaxed);
+    match waited {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
-        // As for a stream: a mark the followers decided holds without the
-        // lease, since every newer leader fences a majority first.
-        QuorumWait::Reached
-            if marks.decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
-        {
-            Ok(())
+        // As for a stream. The write does not report its offset, but it sits
+        // between the tails read before and after it, so the log must still
+        // hold all of that at the write's generation.
+        QuorumWait::Reached if written.is_none_or(|written| reached_at != written.generation) => {
+            match written {
+                Some(written)
+                    if tail > written.from
+                        && still_holds(Some(&log), written.generation, written.from, tail - 1)
+                            .await =>
+                {
+                    released(shard, marks, ingress, reached_at, what)
+                }
+                _ => replaced(what),
+            }
         }
-        QuorumWait::Reached => release(ingress, what),
+        QuorumWait::Reached => released(shard, marks, ingress, reached_at, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
             Err(QuorumError::TimedOut { what, timeout }.into())
@@ -1010,7 +1283,7 @@ pub async fn await_cache_quorum<S: ShardServing + ?Sized>(
 /// and [`Unreadable::NotServed`] once it does not serve a `Quorum` shard at
 /// all. Either way the caller has no position to answer with: zero would
 /// send a reader asking for the end of the log to its start.
-pub fn read_bound<S: ShardServing + ?Sized>(
+pub(crate) fn read_bound<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1051,14 +1324,18 @@ pub enum Unreadable {
 /// Counters ride the cache shard's replica set in their own log, with their
 /// own mark in [`QuorumMarks::counters`], published only after a report the
 /// control plane stored names no follower missing them as caught up.
+///
+/// `generation` is the one an add was taken at, as for [`await_quorum`]. A
+/// read does not use it.
 #[allow(clippy::too_many_arguments)]
-pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
+pub(crate) async fn await_counter_quorum<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
     timeout: std::time::Duration,
     end: Option<u64>,
+    generation: u64,
     what: &'static str,
 ) -> Result<(), anyhow::Error> {
     let consistency = broker
@@ -1075,19 +1352,19 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
     } else {
         Access::Read
     };
+    let counter_log = || {
+        broker.shard_log(
+            felix_broker::LogKind::Counters,
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+    };
     let end = match end {
         Some(end) => end,
         None => {
-            let Some(log) = broker
-                .shard_log(
-                    felix_broker::LogKind::Counters,
-                    &shard.tenant_id,
-                    &shard.namespace,
-                    &shard.stream,
-                    shard.shard,
-                )
-                .await
-            else {
+            let Some(log) = counter_log().await else {
                 return unreplicated(marks, ingress, access);
             };
             log.tail_offset().await?
@@ -1112,19 +1389,27 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
         waited_at.store(generation.unwrap_or(0), Ordering::Relaxed);
         generation
     };
-    match marks
+    let waited = marks
         .counters()
         .wait_while_leading(shard, leading, end, timeout)
-        .await
-    {
+        .await;
+    let reached_at = waited_at.load(Ordering::Relaxed);
+    match waited {
         QuorumWait::Reached if access == Access::Read => confirm_read(shard, marks, ingress).await,
+        // As for a stream: the add is the record just below `end`.
         QuorumWait::Reached
-            if marks
-                .counters()
-                .decided_by_followers(shard, waited_at.load(Ordering::Relaxed)) =>
+            if reached_at != generation
+                && !still_holds(
+                    counter_log().await.as_ref(),
+                    generation,
+                    end.saturating_sub(1),
+                    end.saturating_sub(1),
+                )
+                .await =>
         {
-            Ok(())
+            replaced(what)
         }
+        QuorumWait::Reached if marks.counters().decided_by_followers(shard, reached_at) => Ok(()),
         QuorumWait::Reached => release(ingress, what),
         QuorumWait::TimedOut => {
             crate::metrics::record_quorum(crate::metrics::QUORUM_TIMED_OUT);
@@ -1152,7 +1437,7 @@ pub async fn await_counter_quorum<S: ShardServing + ?Sized>(
 /// waiting on the mark stops and resumes where the shard is served.
 /// `Unbounded` only for a shard this broker serves with no replicas, whose
 /// majority is the leader alone. Only asked for `Quorum` shards.
-pub fn committed_bound<S: ShardServing + ?Sized>(
+pub(crate) fn committed_bound<S: ShardServing + ?Sized>(
     key: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
@@ -1190,46 +1475,6 @@ fn sessions_skip_lease(key: &crate::ShardKey, generation: u64, marks: &QuorumMar
         && (key.kind == crate::ShardKind::Cache || marks.decided_by_followers(key, generation))
 }
 
-/// [`committed_bound`] for the broker core's stream readers.
-pub struct CommittedReads {
-    marks: std::sync::Arc<QuorumMarks>,
-    ingress: std::sync::Arc<dyn ShardServing>,
-}
-
-impl CommittedReads {
-    pub fn new(
-        marks: std::sync::Arc<QuorumMarks>,
-        ingress: std::sync::Arc<dyn ShardServing>,
-    ) -> Self {
-        Self { marks, ingress }
-    }
-}
-
-impl std::fmt::Debug for CommittedReads {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CommittedReads").finish_non_exhaustive()
-    }
-}
-
-impl felix_broker::ReadBounds for CommittedReads {
-    fn stream_bound(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-    ) -> felix_broker::ReadBound {
-        let key = crate::ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            shard,
-            kind: crate::ShardKind::Stream,
-        };
-        committed_bound(&key, &self.marks, &*self.ingress)
-    }
-}
-
 /// Wait until every offset below `end` of a `Quorum` shard is committed, for
 /// a reader about to hand out something that `end` bounds. Returns at once
 /// when the shard is unbounded.
@@ -1238,7 +1483,7 @@ impl felix_broker::ReadBounds for CommittedReads {
 /// the mark short of `end`: either way the reader has nothing it can stand
 /// behind, and says so rather than answering from records a failover may
 /// replace.
-pub async fn await_readable<S: ShardServing + ?Sized>(
+pub(crate) async fn await_readable<S: ShardServing + ?Sized>(
     consistency: Option<felix_broker::ConsistencyLevel>,
     key: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1293,7 +1538,7 @@ pub async fn await_readable<S: ShardServing + ?Sized>(
 /// check a read makes before it takes its value does not apply: a replicated
 /// `Quorum` cache in a fleet that reads without the lease. The round comes
 /// after the value, in [`await_cache_quorum`] or [`await_counter_quorum`].
-pub async fn read_skips_lease<S: ShardServing + ?Sized>(
+pub(crate) async fn read_skips_lease<S: ShardServing + ?Sized>(
     broker: &felix_broker::Broker,
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
@@ -1312,9 +1557,9 @@ pub async fn read_skips_lease<S: ShardServing + ?Sized>(
 
 /// Confirm, after a read of a stream shard's state took its value, that this
 /// broker still leads the shard, as [`await_cache_quorum`] does for a cache
-/// read: by a round when the fleet reads without the lease and the shard has
-/// replicas to ask, and by the lease otherwise.
-pub async fn confirm_state_read<S: ShardServing + ?Sized>(
+/// read: as [`confirm_read`] says when the shard has replicas to ask, and by
+/// the lease otherwise.
+pub(crate) async fn confirm_state_read<S: ShardServing + ?Sized>(
     shard: &crate::ShardKey,
     marks: Option<&QuorumMarks>,
     ingress: Option<&S>,
@@ -1329,15 +1574,21 @@ pub async fn confirm_state_read<S: ShardServing + ?Sized>(
 }
 
 /// Confirm, after a `Quorum` read took its value, that this broker still
-/// leads the shard: by a round when the fleet reads without the lease, and
-/// by the lease otherwise.
+/// leads the shard: by a round when the fleet reads without the lease, by
+/// the lease when it never will, and by both until this broker hears which
+/// ([`QuorumMarks::read_confirm`]).
 async fn confirm_read<S: ShardServing + ?Sized>(
     shard: &crate::ShardKey,
     marks: &QuorumMarks,
     ingress: &S,
 ) -> Result<(), anyhow::Error> {
-    let Some(check) = marks.reads_by_round() else {
-        return release(ingress, "read");
+    let check = match marks.read_confirm() {
+        ReadConfirm::Lease => return release(ingress, "read"),
+        ReadConfirm::Round(check) => check,
+        ReadConfirm::LeaseAndRound(check) => {
+            release(ingress, "read")?;
+            check
+        }
     };
     let Some(generation) = ingress.generation(shard) else {
         return Err(QuorumError::LeadershipLost {
@@ -1370,6 +1621,118 @@ fn unreplicated<S: ShardServing + ?Sized>(
 /// acknowledgement from a broker that may no longer lead is the one the model
 /// (`AckQuorum` requires `LeaseValid`) forbids. The write is on a majority or
 /// may yet be, so the answer is "unknown", never "failed".
+/// Whether `log` still holds `first..=last` as written at `generation`.
+///
+/// One generation has one leader, so a record at the same offset and
+/// generation is the same record. Records at those offsets labelled with any
+/// other generation are another leader's, copied in by a promotion's catch-up
+/// after it dropped this broker's own. A log with no generation history,
+/// or records taken unlabelled after a cut, cannot say, and answers no.
+async fn still_holds(
+    log: Option<&felix_broker::StreamLog>,
+    generation: u64,
+    first: u64,
+    last: u64,
+) -> bool {
+    let Some(log) = log else {
+        return false;
+    };
+    let Ok(tail) = log.tail_offset().await else {
+        return false;
+    };
+    let history = log.generations();
+    let label = |offset: u64| {
+        history
+            .iter()
+            .rev()
+            .find(|epoch| epoch.start_offset <= offset)
+            .map(|epoch| epoch.generation)
+    };
+    // Labels only rise with the offset, so both ends at `generation` puts
+    // everything between there too. A record taken with no label after a cut
+    // would wear the label of the entry before the cut, so those refuse.
+    last < tail
+        && log.labels_known(first, last)
+        && label(first) == Some(generation)
+        && label(last) == Some(generation)
+}
+
+/// Where a cache write landed: the generation its fence was entered at, and
+/// the cache log's tail read inside that fence before the write. A cache
+/// write does not report its offset, so the tail stands in for where it
+/// starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheWrite {
+    pub generation: u64,
+    pub from: u64,
+}
+
+/// A [`CacheWrite`] at `generation` for `shard`'s cache log as it stands now,
+/// or `None` when the write will not wait for a replicated quorum: a broker
+/// with no replica set, a shard placed with none, or a cache that is not
+/// `Quorum`. Call it inside the write's fence, right before the write. An
+/// unreadable tail counts as zero, which only asks the wait to check more.
+pub(crate) async fn cache_write_at<S: ShardServing + ?Sized>(
+    broker: &felix_broker::Broker,
+    shard: &crate::ShardKey,
+    generation: u64,
+    marks: Option<&QuorumMarks>,
+    ingress: Option<&S>,
+) -> Option<CacheWrite> {
+    // Cheapest first: this runs on every cache write.
+    let ingress = ingress.filter(|_| marks.is_some())?;
+    if !ingress.replicated(shard) {
+        return None;
+    }
+    let consistency = broker
+        .cache_consistency(&shard.tenant_id, &shard.namespace, &shard.stream)
+        .await;
+    if consistency != Some(felix_broker::ConsistencyLevel::Quorum) {
+        return None;
+    }
+    let log = broker
+        .shard_log(
+            felix_broker::LogKind::Cache,
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+        .await?;
+    Some(CacheWrite {
+        generation,
+        from: log.tail_offset().await.unwrap_or(0),
+    })
+}
+
+/// A cache write's wait that reached its mark: a mark the followers decided
+/// holds without the lease, as for a stream, since every newer leader fences
+/// a majority first.
+fn released<S: ShardServing + ?Sized>(
+    shard: &crate::ShardKey,
+    marks: &QuorumMarks,
+    ingress: &S,
+    reached_at: u64,
+    what: &'static str,
+) -> Result<(), anyhow::Error> {
+    if marks.decided_by_followers(shard, reached_at) {
+        Ok(())
+    } else {
+        release(ingress, what)
+    }
+}
+
+/// A write whose records a newer leader's log replaced while it waited. The
+/// client is told the outcome is unknown, never that it succeeded.
+fn replaced(what: &'static str) -> Result<(), anyhow::Error> {
+    crate::metrics::record_quorum(crate::metrics::QUORUM_NOT_LEADING);
+    Err(QuorumError::LeadershipLost {
+        what,
+        detail: "a newer leader's log replaced its records",
+    }
+    .into())
+}
+
 fn release<S: ShardServing + ?Sized>(ingress: &S, what: &'static str) -> Result<(), anyhow::Error> {
     if ingress.lease_valid() {
         return Ok(());
@@ -1387,7 +1750,7 @@ fn release<S: ShardServing + ?Sized>(ingress: &S, what: &'static str) -> Result<
 /// `replicas` is the follower count, so the replica set is one larger. A set of
 /// three needs two, a set of five needs three — and a set of one needs one,
 /// which is the leader alone and is why `replication_factor: 1` costs nothing.
-pub fn majority_of(replicas: usize) -> usize {
+pub(crate) fn majority_of(replicas: usize) -> usize {
     replicas.div_ceil(2) + 1
 }
 
@@ -1413,7 +1776,8 @@ pub fn majority_of(replicas: usize) -> usize {
 /// Cursors belong to one generation. The caller passes the set for the
 /// generation it is publishing at, which is what stops an older generation's
 /// acknowledgements satisfying a newer generation's quorum.
-pub fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
+#[cfg(test)]
+pub(crate) fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
     quorum_offset_without(leader_tail, followers, None)
 }
 
@@ -1425,7 +1789,7 @@ pub fn quorum_offset(leader_tail: u64, followers: &[FollowerCursor]) -> u64 {
 /// a majority of that set is the promise, and counting a node that is still
 /// copying would make every `Quorum` publish wait for the copy. Its copy is
 /// complete before it can lead, because the cut-over waits for it to be level.
-pub fn quorum_offset_without(
+pub(crate) fn quorum_offset_without(
     leader_tail: u64,
     followers: &[FollowerCursor],
     learner: Option<&str>,
@@ -1595,7 +1959,7 @@ pub(crate) fn held_by_both(
 /// acknowledged. The generation-start record is what reaches a majority
 /// first. With `None` the leader counts as it did before the fleet finalized
 /// `generation_start`.
-pub fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
+pub(crate) fn counted_offset(majority: u64, own_start: Option<u64>) -> u64 {
     match own_start {
         Some(start) if majority <= start => 0,
         _ => majority,

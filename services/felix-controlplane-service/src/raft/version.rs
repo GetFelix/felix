@@ -15,6 +15,7 @@
 //! member has heard the leader's. A leader that dies is then not an unknown
 //! to the one elected after it, which would otherwise hold back every newer
 //! command, the leader's soft state included, for as long as it stays down.
+use openraft::async_runtime::WatchReceiver;
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
@@ -251,7 +252,7 @@ impl RaftHandle {
     async fn probe_members(&self) -> Vec<NodeId> {
         let members: Vec<(NodeId, String)> = {
             let metrics = self.raft.metrics();
-            let metrics = metrics.borrow();
+            let metrics = metrics.borrow_watched();
             metrics
                 .membership_config
                 .membership()
