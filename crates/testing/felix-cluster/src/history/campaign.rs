@@ -454,8 +454,15 @@ impl Campaign {
                 // A pause that timed out waiting for the stop may still take
                 // effect, so heal anyway rather than leave it behind.
                 workload.fault(format!("could not {fault}: {err:#}"));
-                let _ = fault.heal(cluster).await;
+                let healed = fault.heal(cluster).await;
                 workload.set_addrs(cluster.broker_addrs());
+                if fault.kind().needs_metadata_group() {
+                    // The group refusing a write with a quorum up, or failing
+                    // to converge after the heal, is a metadata bug, not a
+                    // fault that could not be injected.
+                    healed.with_context(|| format!("heal {fault} after: {err:#}"))?;
+                    return Err(err.context(format!("{fault}")));
+                }
             } else {
                 if let Fault::ElectWithoutControlPlane { node, .. } = &fault {
                     let elected =

@@ -541,9 +541,18 @@ impl Group {
                         return Ok(());
                     }
                     // A retry after a timeout may find the first attempt landed.
-                    Ok(Err(StoreError::Conflict(_))) => {
-                        self.acked.lock().expect("acked lock").push(id);
-                        return Ok(());
+                    // A Conflict also comes from the metadata-version gate,
+                    // so it counts only if the tenant is there.
+                    Ok(Err(StoreError::Conflict(reason))) => {
+                        let landed = store
+                            .list_tenants()
+                            .await
+                            .is_ok_and(|t| t.iter().any(|t| t.tenant_id == id));
+                        if landed {
+                            self.acked.lock().expect("acked lock").push(id);
+                            return Ok(());
+                        }
+                        last = format!("conflict: {reason}");
                     }
                     Ok(Err(err)) => last = format!("{err}"),
                     Err(_) => last = "no answer within 5s".to_string(),
