@@ -11,7 +11,7 @@ use openraft::{Config, Raft, ServerState};
 
 use super::codec::ShardCodec;
 use super::machine::Machine;
-use super::network::{Network, Refused, Reply, Request, Router};
+use super::network::{Addressee, Network, Refused, Reply, Request, Router};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 
@@ -181,10 +181,12 @@ impl Group {
     }
 
     async fn dispatch(&self, body: Request) -> Result<Reply, Refused> {
-        let stopped = |reason: String| Refused::Stopped {
-            group: self.id.clone(),
-            to: self.member.clone(),
-            reason,
+        let stopped = |reason: String| {
+            let member = Addressee {
+                group: self.id.clone(),
+                to: self.member.clone(),
+            };
+            Refused::Stopped(Box::new(member), reason)
         };
         match body {
             Request::Append(rpc) => self

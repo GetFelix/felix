@@ -25,7 +25,7 @@ mod tests;
 mod ticker;
 mod types;
 
-pub use network::{AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
+pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, Role, RuntimeConfig,
 };

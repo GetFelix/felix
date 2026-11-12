@@ -11,7 +11,7 @@ use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::network::{RaftReply, RaftRequest, RaftTransport, Refused, Router};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Router};
 use super::ticker;
 use super::types::{GroupId, MemberId};
 use crate::ShardKey;
@@ -386,7 +386,7 @@ impl GroupRuntime {
             Some(member) if member.id == group && member.member == to => {
                 member.handle(body).await.map(RaftReply)
             }
-            _ => Err(Refused::NoSuchMember { group, to }),
+            _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }
     }
 

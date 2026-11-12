@@ -552,7 +552,7 @@ async fn a_snapshot_keeps_the_log() {
         loop {
             member.raft().trigger().snapshot().await.expect("snapshot");
             tokio::time::sleep(Duration::from_millis(50)).await;
-            let covered = member.raft().metrics().borrow_watched().snapshot.clone();
+            let covered = member.raft().metrics().borrow_watched().snapshot;
             if covered.is_some_and(|covered| covered.index >= last) {
                 break;
             }
@@ -661,10 +661,7 @@ async fn a_message_for_another_member_is_refused() {
     for other in [wiped, reformed, unopened] {
         let what = format!("{other:?}");
         assert!(
-            matches!(
-                runtime.handle(other).await,
-                Err(Refused::NoSuchMember { .. })
-            ),
+            matches!(runtime.handle(other).await, Err(Refused::NoSuchMember(_))),
             "{what}"
         );
     }

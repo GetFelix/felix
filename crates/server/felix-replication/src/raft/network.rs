@@ -83,15 +83,25 @@ pub enum Refused {
     Unreachable(String),
     /// The broker holds no such member: another copy, another epoch, or a
     /// group it has not opened.
-    #[error("{to} of {group} is not on this broker")]
-    NoSuchMember { group: GroupId, to: MemberId },
+    #[error("{0} is not on this broker")]
+    NoSuchMember(Box<Addressee>),
     /// The member is there and has stopped.
-    #[error("{to} of {group} has stopped: {reason}")]
-    Stopped {
-        group: GroupId,
-        to: MemberId,
-        reason: String,
-    },
+    #[error("{0} has stopped: {1}")]
+    Stopped(Box<Addressee>, String),
+}
+
+/// The member a message was for. Boxed in [`Refused`] to keep the error
+/// small.
+#[derive(Debug)]
+pub struct Addressee {
+    pub group: GroupId,
+    pub to: MemberId,
+}
+
+impl fmt::Display for Addressee {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} of {}", self.to, self.group)
+    }
 }
 
 /// Carries Raft messages to peer brokers.

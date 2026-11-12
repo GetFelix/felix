@@ -96,7 +96,7 @@ async fn store(snapshots: &SnapshotStore, meta: &SnapshotMetaOf<ShardTypes>) -> 
 
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
     SnapshotMetaOf::<ShardTypes> {
-        last_log_id: state.last_applied.clone(),
+        last_log_id: state.last_applied,
         last_membership: state.membership.clone(),
     }
 }
@@ -126,10 +126,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
     async fn applied_state(
         &mut self,
     ) -> io::Result<(Option<LogIdOf<ShardTypes>>, StoredMembershipOf<ShardTypes>)> {
-        Ok((
-            self.state.last_applied.clone(),
-            self.state.membership.clone(),
-        ))
+        Ok((self.state.last_applied, self.state.membership.clone()))
     }
 
     async fn apply<Strm>(&mut self, mut entries: Strm) -> io::Result<()>
@@ -140,7 +137,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
             let (entry, responder) = next?;
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
-                    StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id.clone()), membership);
+                    StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
             self.state.last_applied = Some(entry.log_id);
             if let Some(responder) = responder {
@@ -164,7 +161,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
     ) -> io::Result<()> {
         store(&self.snapshots, meta).await?;
         self.state = State {
-            last_applied: meta.last_log_id.clone(),
+            last_applied: meta.last_log_id,
             membership: meta.last_membership.clone(),
         };
         Ok(())
