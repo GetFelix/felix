@@ -121,8 +121,10 @@ const HOLDING_CHILD: &str = "FELIX_SIM_TEST_HOLDING_CHILD";
 #[test]
 fn a_run_that_holds_its_thread_ends_the_process_with_its_seed() {
     if std::env::var_os(HOLDING_CHILD).is_some() {
+        // Long enough that a slow start (coverage, a loaded runner) reaches
+        // the checker before the stall watch would end the run normally.
         let config = SimConfig {
-            real_time_limit: Duration::from_secs(8),
+            real_time_limit: Duration::from_secs(40),
             ..small()
         };
         run_seed_with(7, config, vec![Box::new(HoldsTheThread)]);
@@ -151,7 +153,7 @@ fn a_run_that_holds_its_thread_ends_the_process_with_its_seed() {
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if begun.elapsed() > Duration::from_secs(120) {
+        if begun.elapsed() > Duration::from_secs(240) {
             let _ = child.kill();
             let _ = child.wait();
             panic!("the run held its thread and the process did not end");
