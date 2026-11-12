@@ -625,6 +625,11 @@ used by every shard group and by the control plane, tested once.
   `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the 13
   cases that need only reads, appends, truncation and the vote, all through
   the adapter.
+- **One model.** What the adapter must guarantee to openraft is model-checked
+  in `docs/formal/FelixRaft.tla`: when the flush callback may fire, what a
+  crash may leave of the log, the vote and the snapshot, and what the
+  committed index read back may be. See "One engine: Raft on the segment
+  log" in [`docs/formal/README.md`](formal/README.md).
 - **Truncation is allowed.** `store.rs` says the segment store forbids
   truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported

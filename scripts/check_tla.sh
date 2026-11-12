@@ -104,6 +104,7 @@ tlc() {
     FelixAtomicCommit*) module="FelixAtomicCommit" ;;
     FelixHeadTrim*) module="FelixHeadTrim" ;;
     FelixGroups*) module="FelixGroups" ;;
+    FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
     FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
   esac
@@ -481,6 +482,39 @@ expectations=(
   "FelixShardUnifiedTwoRotatedForgets violates OneLeaderPerGeneration"
   "FelixShardUnifiedCpLiveMoveRotated pass"
   "FelixShardUnifiedCpLiveMoveRotatedLegacy violates liveness"
+  "FelixRaft pass"
+  "FelixRaftCrashes pass"
+  "FelixRaftTerms pass"
+  "FelixRaftTermsFull pass"
+  "FelixRaftFourTerms pass"
+  "FelixRaftSnapshot pass"
+  "FelixRaftSnapshotReplace pass"
+  "FelixRaftSnapshotCrashes pass"
+  "FelixRaftOffsets pass"
+  "FelixRaftOffsetsFailover pass"
+  "FelixRaftOffsetsFailoverCrash pass"
+  "FelixRaftOffsetsFull pass"
+  "FelixRaftAckBeforeFlush violates AckedSurvive"
+  "FelixRaftVoteNotDurable violates OneLeaderPerTerm"
+  "FelixRaftLeaderResumes violates LogMatching"
+  "FelixRaftTornTailKept violates LogMatching"
+  "FelixRaftTruncateNotDurable violates StateMachineSafety"
+  "FelixRaftRecoveredTailUnsynced violates AckedSurvive"
+  "FelixRaftSaveCommittedUnflushed violates AckedDelivered"
+  "FelixRaftPurgeBeforeSnapshot violates AckedSurvive"
+  "FelixRaftSnapshotTwoRenames violates StateMachineSafety"
+  "FelixRaftCommitPriorTerm violates LeaderCompleteness"
+  "FelixRaftDeliverUncommitted violates OffsetNeverReused"
+  "FelixRaftDeliverUncommittedDense violates OffsetsDense"
+  "FelixRaftSkipsNotCounted violates OffsetsDense"
+  "FelixRaftReachFailover violates NeverFailover"
+  "FelixRaftReachTruncate violates NeverTruncates"
+  "FelixRaftReachLostTail violates NeverLosesTail"
+  "FelixRaftReachSkips violates NeverSkipsBetweenRecords"
+  "FelixRaftReachInstall violates NeverInstallsSnapshot"
+  "FelixRaftReachInstallCrash violates NeverCrashesMidInstall"
+  "FelixRaftReachSnapshotReplace violates NeverReplacesSnapshot"
+  "FelixRaftReachDeliverFailover violates NeverDeliversAcrossFailover"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -779,6 +813,63 @@ weights=(
   "FelixShardElectRefusals 6"
   "FelixShardCpLiveSkippedGenerationUnknownPrior 32"
   "FelixShardCpDownNoSelfSuspicion 15"
+  "FelixRaft 3"
+  "FelixRaftCrashes 2"
+  "FelixRaftSnapshot 6"
+  "FelixRaftSnapshotReplace 6"
+  "FelixRaftOffsetsFailover 7"
+  "FelixRaftFourTerms 45"
+  "FelixRaftTermsFull 59"
+  "FelixRaftOffsetsFull 20"
+  "FelixRaftSnapshotCrashes 21"
+  "FelixRaftOffsetsFailoverCrash 41"
+  "FelixRaftCommitPriorTerm 1"
+  "FelixRaftSaveCommittedUnflushed 2"
+)
+
+# Minutes a configuration took on a pull request's runner, from the `Finished
+# in` lines of a CI run, where that differs from `weights` (main's runners)
+# by two or more. Only shard balancing reads this; which configurations a
+# pull request runs still goes by `weights`.
+pr_minutes=(
+  "FelixHeadTrimCrashTwoPromotions 1"
+  "FelixRaftCrashes 4"
+  "FelixRaftOffsetsFailover 14"
+  "FelixRaftSnapshotCrashes 26"
+  "FelixRaftSnapshotReplace 10"
+  "FelixShard 7"
+  "FelixShardCpLiveNoHaltReported 7"
+  "FelixShardCpLiveNoOverlayRefused 4"
+  "FelixShardCpLiveRefusalsPinsForever 4"
+  "FelixShardElectAdoptFailoverApart1Gen2 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 3"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 3"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 5"
+  "FelixShardElectHandoffLeaders 16"
+  "FelixShardElectLiveReissue 14"
+  "FelixShardElectRenameDrop0 13"
+  "FelixShardElectRenameDrop1 9"
+  "FelixShardElectRenameDrop1StoodOneOther 1"
+  "FelixShardElectRenameKeep1 12"
+  "FelixShardElectSwapDrop0 2"
+  "FelixShardElectSwapDrop0StoodOneDest 4"
+  "FelixShardElectSwapDrop1StoodOneOther 1"
+  "FelixShardElectSwapDrop2 1"
+  "FelixShardElectSwapDrop2DropsChange 9"
+  "FelixShardElectSwapKeep2DropsChange 5"
+  "FelixShardElectUncleanNoStartRecord 13"
+  "FelixShardElectWipeNonVoterCountersUnchecked 10"
+  "FelixShardElectWipeNonVoterReclaimLive 7"
+  "FelixShardFencedAckTrim 8"
+  "FelixShardFencedCrashInheritedCounts 1"
+  "FelixShardFigure8FollowerAcks 6"
+  "FelixShardLeaderCrashGivesUp 1"
+  "FelixShardLeaderCrashReclaim 1"
+  "FelixShardRealMargins 4"
+  "FelixShardReportFloor 8"
+  "FelixShardSessionsSubscriber 2"
+  "FelixShardStagedMove 5"
+  "FelixShardSuspicionWipeRoutes 1"
 )
 
 weight_of() {
@@ -801,6 +892,15 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
     f="${f##*/}"
     changed_cfgs="$changed_cfgs${f%.cfg} "
   done <<<"$changed_files"
+  # FelixRaft.tla is behind few configurations, so a change to it counts as a
+  # change to each: FelixRaftFourTerms is the only passing check of the
+  # commit rule for earlier terms and is over ten minutes.
+  if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
+    for f in "$SPEC_DIR"/FelixRaft*.cfg; do
+      f="${f##*/}"
+      changed_cfgs="$changed_cfgs${f%.cfg} "
+    done
+  fi
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
@@ -829,7 +929,7 @@ fi
 # ten minutes, except changed ones of 30 minutes or less. A changed one over
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
-# them. Pull requests check that tier; the rest run when the spec changes on
+# them. FelixRaft.tla is the exception (see `changed_cfgs`). Pull requests check that tier; the rest run when the spec changes on
 # main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.
@@ -850,11 +950,20 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   selected=(${quick[@]+"${quick[@]}"})
 fi
 
+# Minutes to balance shards by: a pull request's measured time when listed.
+plan_weight_of() {
+  local w
+  for w in "${pr_minutes[@]}"; do
+    if [ "${w%% *}" = "$1" ]; then echo "${w#* }"; return; fi
+  done
+  weight_of "$1"
+}
+
 # Print the shard for each selected configuration, in order.
 assign_shards() {
   local entry position=0
   for entry in "${selected[@]}"; do
-    echo "$(weight_of "${entry%% *}") $position"
+    echo "$(plan_weight_of "${entry%% *}") $position"
     position=$((position + 1))
   done | sort -k1,1nr -k2,2n | awk -v n="$shard_count" '
     { best = 0
