@@ -739,7 +739,15 @@ the control plane tell its broker to delete it, and it never places that
 member id again. A copy deleted when the target drops it may still be a
 voter, and the deletion is then a lost disk the group did not have to lose:
 one real loss on top of it loses an acknowledged record
-(`FelixRaftPlacementDeleteOnTarget.cfg`).
+(`FelixRaftPlacementDeleteOnTarget.cfg`). An id told to delete that is placed
+again has the same end (`FelixRaftPlacementPlaceDoomed.cfg`); the broker
+comes back under its next copy id.
+
+**Known gap (#2385).** The check is made once and the deletion happens
+later. A leader acting on a target the control plane has replaced can give
+the id its vote back in between, and the deletion is then a lost disk again
+(`FelixRaftPlacementStaleWipe.cfg`, pinned). The driver needs a rule that
+stops a leader going back to an older target before it is built.
 
 Only the leader acts, one change at a time, and the steps can be repeated
 safely. A leader that acts on a target the control plane has since replaced
@@ -1057,7 +1065,10 @@ off and stays registered as an expected violation.
 plane in front of the membership model: it moves a seat, removes one, and
 swaps a seat's id when a broker reports a new copy, and the leader follows
 the target it read, which may be an old one. One disk may be lost at any
-step. It adds the two rules above (a request names its member id, a removed
+step of a move in one term, and across a leader change for a seat swap.
+A move with a lost disk and a leader change has no result yet: those
+configurations have not finished. A lost disk together with a leader on an old target is the gap above
+(#2385). It adds the two rules above (a request names its member id, a removed
 copy is deleted only after it has no vote) and checks the offsets
 subscribers were given. The same module has the metadata group's rejoin,
 where a wiped member keeps its id, and found that a leader must not count

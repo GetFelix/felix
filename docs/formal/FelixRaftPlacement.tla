@@ -46,6 +46,10 @@
 (* A removed copy. The control plane tells a broker to delete a copy that  *)
 (* left the target. The rule: only once a committed membership that is not *)
 (* joint has no vote for that id. The deletion is not counted as a fault.  *)
+(* An id told to delete is never placed again. The rule has a gap (issue   *)
+(* 2385): a leader on a replaced target can give the id its vote back      *)
+(* between the control plane's check and the deletion                      *)
+(* (FelixRaftPlacementStaleWipe.cfg).                                      *)
 (*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
@@ -65,6 +69,13 @@
 (*                         committed at those offsets. A broker's          *)
 (*                         subscribers get a record when the broker learns *)
 (*                         it is committed.                                *)
+(*   CommitNeverLowers  -- no step lowers a broker's commit index, except  *)
+(*                         one that empties its directory.                 *)
+(*                                                                         *)
+(* What a configuration's bounds leave unchecked: with no client write     *)
+(* the Acked, Offset and Delivered checks have nothing to hold, and        *)
+(* with one term LeaderCompleteness has no earlier term.                   *)
+(* OffsetNeverReused needs two writes.                                     *)
 (*                                                                         *)
 (* An offset is the entry's index. Blank and membership entries hold an    *)
 (* index that readers skip, so a jump is not checked here.                 *)
@@ -83,6 +94,8 @@
 (*   AnswerAnyId    -- Rotate = TRUE only: a copy answers a request that   *)
 (*                     names an older copy id of its broker.               *)
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
+(*   PlaceDoomed    -- the control plane may place a member id it told to  *)
+(*                     delete.                                             *)
 (*                                                                         *)
 (* FelixRaftMembership.tla has the twins for a change before the last one  *)
 (* is committed and for a learner that counts.                             *)
@@ -112,7 +125,8 @@ CONSTANTS
     NoWithhold,
     WithheldCounts,
     AnswerAnyId,
-    DeleteOnTarget
+    DeleteOnTarget,
+    PlaceDoomed
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -401,11 +415,11 @@ Retarget(T) ==
     /\ UNCHANGED <<election, raft, ident, known, doomed, delivered>>
 
 \* A move, a drain or a replaced node: seat x goes to broker y. An id the
-\* control plane told to delete is never placed again.
+\* control plane told to delete is never placed again: `doomed` only grows.
 CpMove(x, y) ==
     /\ x \in target
     /\ y \notin BrokersOf(target)
-    /\ <<y, known[y]>> \notin doomed
+    /\ PlaceDoomed \/ <<y, known[y]>> \notin doomed
     /\ Retarget((target \ {x}) \cup {<<y, known[y]>>})
 
 \* A node removed with nowhere to put its seat.
@@ -460,10 +474,10 @@ Wipe(s) ==
 
 Delete(s) ==
     /\ Me(s) \in doomed
+    /\ LastIdx(s) > 0 \/ term[s] > 0
     /\ Emptied(s)
-    /\ doomed' = doomed \ {Me(s)}
     /\ used' = [used EXCEPT !.deleted = TRUE]
-    /\ UNCHANGED <<target, known, past>>
+    /\ UNCHANGED plane
 
 \* The leader confirmed its leadership with a quorum in its term.
 Confirmed(i) ==
@@ -560,6 +574,10 @@ DeliveredAgree ==
         /\ a[1] <= Len(committed)
         /\ committed[a[1]].e.kind = "record"
         /\ committed[a[1]].e.val = a[2]
+
+\* Only an emptied directory lowers a commit index.
+CommitNeverLowers ==
+    [][\A s \in Brokers : commitIdx'[s] >= commitIdx[s] \/ log'[s] = <<>>]_vars
 
 ----------------------------------------------------------------------------
 \* Witnesses. Each says something never happens, and TLC must find it does.
