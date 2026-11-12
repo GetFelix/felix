@@ -1110,7 +1110,7 @@ jobs:
   formal:
     needs: changes
     if: needs.changes.outputs.formal == 'true'
-    name: TLA+ model (${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 20 }})
+    name: TLA+ model (${{ matrix.shard }}/20)
     # Only main's full set is heavy (a shard can run for hours). One run per
     # shard at a time on main; a newer pending one replaces an older one.
     # Pull requests and manual runs get a group of their own.
@@ -1122,13 +1122,14 @@ jobs:
     # A full run on main takes up to about 200 min per shard, and the longest
     # single configurations run 2-3 h, so main gets the hosted-runner maximum.
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '360')) }}
-    # Twelve shards on a pull request, twenty for main's full set (about 3200
-    # minutes of weight; the two longest configurations get a job each), filled by each configuration's measured time
-    # (scripts/check_tla.sh).
+    # Twenty shards, on a pull request (about 730 minutes, none planned past 40
+    # of the hour) and for main's full set (about 3200 minutes of weight; the two
+    # longest configurations get a job each), filled by each configuration's
+    # measured time (scripts/check_tla.sh).
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[0,1,2,3,4,5,6,7,8,9,10,11]' || '[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]') }}
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1159,7 +1160,7 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 12 || 20 }}
+          TLA_SHARD: ${{ matrix.shard }}/20
           TLA_CONFIGS: ${{ inputs.tla_configs }}
           TLA_COVERAGE: ${{ inputs.tla_coverage }}
           TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}
