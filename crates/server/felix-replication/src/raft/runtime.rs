@@ -159,7 +159,7 @@ enum Slot {
 /// placed, by a failed or abandoned open, it frees the slot.
 struct Reserved<'a> {
     registry: &'a Registry,
-    shard: Option<ShardKey>,
+    shard: Option<Arc<ShardKey>>,
 }
 
 impl Drop for Reserved<'_> {
@@ -182,7 +182,7 @@ pub(crate) struct Registry {
 
 #[derive(Default)]
 struct Slots {
-    by_shard: HashMap<ShardKey, Slot>,
+    by_shard: HashMap<Arc<ShardKey>, Slot>,
     closed: bool,
 }
 

@@ -2,6 +2,7 @@
 //! shard group shares.
 
 use std::fmt;
+use std::sync::Arc;
 
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -12,10 +13,22 @@ use crate::ShardKey;
 ///
 /// The epoch starts at 0. Messages carry it, so members of two epochs of
 /// one shard never hear each other.
+///
+/// openraft's router clones the id for every message, so the shard key is
+/// shared and a clone allocates nothing.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GroupId {
-    pub shard: ShardKey,
+    pub shard: Arc<ShardKey>,
     pub epoch: u64,
+}
+
+impl GroupId {
+    pub fn new(shard: ShardKey, epoch: u64) -> Self {
+        Self {
+            shard: Arc::new(shard),
+            epoch,
+        }
+    }
 }
 
 impl fmt::Display for GroupId {
@@ -26,7 +39,7 @@ impl fmt::Display for GroupId {
             stream,
             shard,
             kind,
-        } = &self.shard;
+        } = &*self.shard;
         write!(
             f,
             "{tenant_id}/{namespace}/{stream}/{shard} ({kind:?}, epoch {})",
@@ -40,14 +53,18 @@ impl fmt::Display for GroupId {
 /// The copy id is minted in the shard's directory when a member is first
 /// made there, so a copy that lost its directory comes back as a member Raft
 /// has never seen. Minting it is not this module's job; the caller passes it.
+///
+/// openraft clones member ids many times per heartbeat (its metrics hold
+/// several maps keyed by them), so the broker name is shared: a clone
+/// allocates nothing.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MemberId {
-    pub broker: String,
+    pub broker: Arc<str>,
     pub copy: u64,
 }
 
 impl MemberId {
-    pub fn new(broker: impl Into<String>, copy: u64) -> Self {
+    pub fn new(broker: impl Into<Arc<str>>, copy: u64) -> Self {
         Self {
             broker: broker.into(),
             copy,

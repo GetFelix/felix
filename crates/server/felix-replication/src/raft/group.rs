@@ -252,6 +252,13 @@ impl Group {
     /// calls this with the same set. A member that has already voted or
     /// holds an entry is past this step, and the call does nothing.
     pub(crate) async fn initialize(&self, members: BTreeSet<MemberId>) -> Result<(), String> {
+        // Each group gets its own copy of the names. A caller forming many
+        // groups from one set would otherwise have every group's clones
+        // count on the same three allocations, from every thread.
+        let members: BTreeSet<MemberId> = members
+            .iter()
+            .map(|member| MemberId::new(&*member.broker, member.copy))
+            .collect();
         match self.raft.initialize(members).await {
             Ok(()) | Err(RaftError::APIError(InitializeError::NotAllowed(_))) => Ok(()),
             Err(err) => Err(err.to_string()),
@@ -277,9 +284,9 @@ impl Group {
         }
     }
 
-    /// Whether a timer check now could find something to do.
-    pub(crate) fn due(&self, now: u64) -> bool {
-        now >= self.pace.due.load(Ordering::Relaxed)
+    /// When a timer check could next find something to do.
+    pub(crate) fn due_at(&self) -> u64 {
+        self.pace.due.load(Ordering::Relaxed)
     }
 
     /// When the next timer check can matter, after one was just sent.

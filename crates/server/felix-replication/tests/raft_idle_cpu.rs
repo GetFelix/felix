@@ -15,7 +15,13 @@
 //!     -p felix-replication --test raft_idle_cpu -- --ignored --nocapture
 //! ```
 //!
-//! `RAFT_IDLE_HEARTBEAT_MS` sets the idle heartbeat.
+//! `RAFT_IDLE_HEARTBEAT_MS` sets the idle heartbeat and
+//! `RAFT_IDLE_WINDOW_SECS` how long the measurement runs (30 s).
+//!
+//! On Linux each run also prints the process's resident memory, divided by
+//! three. `RAFT_IDLE_PEERS=none` opens the same logs with no Raft member on
+//! them and writes two records to each, as a new member does, which is the
+//! figure to take off: what is left is what Raft adds.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -28,7 +34,7 @@ use felix_replication::raft::{
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::DiskLog;
-use felix_storage::log::{FsyncMode, LogConfig};
+use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, RecordMark};
 
 fn shard(n: u32) -> ShardKey {
     ShardKey {
@@ -52,7 +58,47 @@ fn cpu() -> Duration {
     time(usage.ru_utime) + time(usage.ru_stime)
 }
 
+/// Resident memory of this process in megabytes, where `/proc` says.
+fn resident_mb() -> Option<f64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kb: f64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024.0)
+}
+
 const BROKERS: [&str; 3] = ["a", "b", "c"];
+
+/// The logs of `groups` shards on three brokers, written to and left open
+/// with no Raft member on them.
+async fn logs_alone(groups: u32, config: LogConfig) {
+    let root = tempfile::tempdir().expect("dir");
+    let mut logs = Vec::new();
+    for n in 0..groups {
+        for broker in BROKERS {
+            let dir = root.path().join(broker).join(n.to_string());
+            std::fs::create_dir_all(&dir).expect("dir");
+            let log = DiskLog::open(dir, format!("t/ns/orders/{n}"), config.clone()).expect("log");
+            for _ in 0..2 {
+                let record = AppendRecord {
+                    payload: bytes::Bytes::from_static(b"record"),
+                    timestamp_micros: 1_700_000_000,
+                    mark: RecordMark::None,
+                    publisher: None,
+                    headers: None,
+                };
+                log.append(&[record]).await.expect("append");
+            }
+            logs.push(log);
+        }
+    }
+    tokio::time::sleep(Duration::from_secs(15)).await;
+    if let Some(resident) = resident_mb() {
+        println!(
+            "{groups} shards, logs alone: {:.0} MB resident per broker",
+            resident / BROKERS.len() as f64
+        );
+    }
+}
 
 /// Hands a message to the runtime of the broker it names.
 #[derive(Default)]
@@ -63,7 +109,7 @@ struct Net {
 #[async_trait]
 impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        let runtime = self.brokers.lock().get(&request.to().broker).cloned();
+        let runtime = self.brokers.lock().get(&*request.to().broker).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable("no such broker".into())),
@@ -85,6 +131,14 @@ async fn idle_groups_cost_little_cpu() {
     let mut timers = RuntimeConfig::default();
     if let Some(millis) = env("RAFT_IDLE_HEARTBEAT_MS") {
         timers.idle_heartbeat = Duration::from_millis(millis);
+    }
+    if std::env::var("RAFT_IDLE_PEERS").as_deref() == Ok("none") {
+        let plain = LogConfig {
+            fsync_mode: FsyncMode::OnCommit,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        };
+        return logs_alone(groups, plain).await;
     }
     let root = tempfile::tempdir().expect("dir");
     let net = Arc::new(Net::default());
@@ -119,10 +173,7 @@ async fn idle_groups_cost_little_cpu() {
             let dir = root.path().join(broker).join(n.to_string());
             std::fs::create_dir_all(&dir).expect("dir");
             let log = DiskLog::open(dir, format!("t/ns/orders/{n}"), config.clone()).expect("log");
-            let group = GroupId {
-                shard: shard(n),
-                epoch: 0,
-            };
+            let group = GroupId::new(shard(n), 0);
             runtime.open(group, 1, log).await.expect("open");
         }
         // The member told first stands at once and wins, so leaders spread
@@ -151,7 +202,7 @@ async fn idle_groups_cost_little_cpu() {
     // Let the first entries commit and every group go idle.
     tokio::time::sleep(timers.idle_after + Duration::from_secs(10)).await;
 
-    let window = Duration::from_secs(30);
+    let window = Duration::from_secs(env("RAFT_IDLE_WINDOW_SECS").unwrap_or(30));
     let ticks = || -> u64 {
         runtimes
             .iter()
@@ -167,6 +218,7 @@ async fn idle_groups_cost_little_cpu() {
     };
     let before = leading();
     let (cpu_before, ticks_before, terms_before) = (cpu(), ticks(), terms());
+    let resident_before = resident_mb();
     tokio::time::sleep(window).await;
     let used = cpu() - cpu_before;
     let sent = ticks() - ticks_before;
@@ -179,6 +231,13 @@ async fn idle_groups_cost_little_cpu() {
         100.0 * used.as_secs_f64() / window.as_secs_f64() / each,
         sent as f64 / window.as_secs_f64() / each,
     );
+    if let (Some(start), Some(end)) = (resident_before, resident_mb()) {
+        println!(
+            "{groups} idle groups: {:.0} MB resident per broker, {:.0} MB {window:?} earlier",
+            end / each,
+            start / each
+        );
+    }
     assert_eq!(leading(), before, "a group changed leader while idle");
     assert_eq!(terms(), terms_before, "an election ran while idle");
     assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");

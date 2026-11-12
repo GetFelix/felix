@@ -157,7 +157,7 @@ struct Net {
 #[async_trait]
 impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        let runtime = self.brokers.lock().get(&request.to().broker).cloned();
+        let runtime = self.brokers.lock().get(&*request.to().broker).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable("no such broker".into())),
@@ -244,10 +244,7 @@ async fn an_idle_member_stays_within_the_designs_memory() {
 
     let members: BTreeSet<_> = BROKERS.iter().map(|b| MemberId::new(*b, 1)).collect();
     for (broker, n, log) in &logs {
-        let group = GroupId {
-            shard: shard(*n),
-            epoch: 0,
-        };
+        let group = GroupId::new(shard(*n), 0);
         runtime(broker)
             .open(group, 1, log.clone())
             .await

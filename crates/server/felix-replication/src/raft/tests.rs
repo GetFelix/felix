@@ -42,10 +42,7 @@ fn shard(n: u32) -> ShardKey {
 }
 
 fn group(n: u32) -> GroupId {
-    GroupId {
-        shard: shard(n),
-        epoch: 0,
-    }
+    GroupId::new(shard(n), 0)
 }
 
 fn members() -> BTreeSet<MemberId> {
@@ -85,7 +82,7 @@ struct Net {
 impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
-        let broker = &request.to().broker;
+        let broker: &str = &request.to().broker;
         if request.beat > timers().heartbeat.as_millis() as u64
             && self
                 .lose_idle
@@ -191,7 +188,7 @@ impl Cluster {
         let statuses: Vec<_> = self
             .statuses(n)
             .into_iter()
-            .filter(|status| !cut.contains(&status.member.broker))
+            .filter(|status| !cut.contains(&*status.member.broker))
             .collect();
         let leader = statuses
             .iter()
@@ -531,9 +528,20 @@ async fn an_idle_group_heartbeats_slowly_until_it_is_written_to() {
     // One a second, where the short interval makes 20.
     assert!((2..=7).contains(&slow), "{slow} checks while idle");
 
-    cluster.write(0, b"record").await;
+    // Write a little after a slow check, once the ticker has seen that the
+    // next is a whole idle interval away and has stopped looking at the
+    // group. The write has to bring the next check forward all the same.
+    let seen = checks(&cluster);
+    while checks(&cluster) == seen {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(3 * timers().tick).await;
     let before = checks(&cluster);
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    cluster.write(0, b"record").await;
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let soon = checks(&cluster) - before;
+    assert!(soon >= 1, "no check within 600 ms of a write");
+    tokio::time::sleep(Duration::from_millis(600)).await;
     let fast = checks(&cluster) - before;
     assert!(fast >= 3, "{fast} checks after a write");
 
@@ -884,13 +892,7 @@ async fn a_message_for_another_member_is_refused() {
     };
 
     let wiped = request(group(0), MemberId::new("a", 2));
-    let reformed = request(
-        GroupId {
-            shard: shard(0),
-            epoch: 1,
-        },
-        MemberId::new("a", 1),
-    );
+    let reformed = request(GroupId::new(shard(0), 1), MemberId::new("a", 1));
     let unopened = request(group(3), MemberId::new("a", 1));
     for other in [wiped, reformed, unopened] {
         let what = format!("{other:?}");

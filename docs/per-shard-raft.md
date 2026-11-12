@@ -548,7 +548,9 @@ Rules for the ticker:
   message openraft accepted from the current leader, not from any
   heartbeat, so a stale leader's heartbeats cannot keep a follower
   unticked. A follower that keeps hearing its leader is not ticked at all. A group with no leader is due
-  every interval.
+  every interval. The ticker does not read every group's due time every
+  interval either: anything but a tick moves a due time at least one
+  heartbeat ahead, so a group found not due is left alone for that long.
 - **Slower idle timers.** Decided (issue #2167), and built. A leader that
   has sent no entry for the idle time heartbeats at the idle interval, and
   its followers wait longer before they may stand. Any entry brings the
@@ -1260,6 +1262,17 @@ and wake"). `release-gate.md` still asks for every group asleep and no
 ticks to sleeping groups. Those two conditions go with the gate follow-up
 (issue #2298).
 
+Measured on the group runtime (Linux, release build, three runtimes in one
+process as three brokers, RF 3, real peers and no network, 1 s idle
+heartbeat): 1,500 members cost 2.1% to 2.3% of a core per broker and 2,000
+cost 2.8%, so the limit is still missed. A profile puts about nine tenths
+of that inside openraft: a heartbeat round wakes the leader's core task
+three times and each follower's once, and every wake rebuilds and
+republishes the member's metrics. Felix's ticker and message envelope are
+the other tenth. A 2 s idle heartbeat measures 1.2%, at the price of
+noticing a dead leader of an idle group later ("Idle groups"). The
+upstream asks are on issue #2215.
+
 10,000 members is a stress run. Its numbers go upstream and nothing passes
 or fails on it.
 
@@ -1274,8 +1287,11 @@ The two numbers are not the same measure. The design's figures were
 resident memory, and the test counts allocated bytes. A channel block
 becomes resident as its slots are used, which takes about 32 messages, so
 on a broker that has run for a minute the allocated figure is the one to
-plan with. Resident memory at 1,500 and 5,000 members is still to be
-measured on real brokers (#2314).
+plan with. The same three-runtime run shows it: 1,500 members per broker
+are 245 MB resident per broker a minute after forming and 481 MB after
+17 idle minutes, still rising by about 15 MB a minute, against 16 MB for
+the same logs with no Raft member on them. Resident memory on real brokers, against the hybrid, is still to
+be measured (#2314).
 
 Almost none of it is Felix's: the runtime's own state is under 1 KB per
 member. Where the 436 KB goes:
@@ -1865,6 +1881,8 @@ ones settled by the decisions of issue #2167 say so.
     tick only due groups with slower idle timers, and measure now on the
     group runtime with stub groups. By the estimate, 5,000 members at a
     500 ms idle heartbeat is about 3,300 ticks a second, or 3% of a core,
-    before the cost of sending and answering the heartbeats. Recommended
-    if the run misses: first a longer idle heartbeat and coalescing, then
-    a new budget for the cell, and sleep only after that.
+    before the cost of sending and answering the heartbeats. Measured: it
+    misses, at 2.8% for 2,000 members with a 1 s idle heartbeat ("The
+    groups-per-broker gate"). Recommended: first a longer idle heartbeat
+    and coalescing, then a new budget for the cell, and sleep only after
+    that.

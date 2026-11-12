@@ -2,8 +2,8 @@
 //!
 //! openraft notices an election timeout or a due heartbeat only when its
 //! timer check runs. Each group is built with its own tick off, and this
-//! task looks at every group each interval and asks for a check from the
-//! ones whose timer can have run out. A follower that hears its leader is
+//! task asks for a check, each interval, from the groups whose timer can
+//! have run out. A follower that hears its leader is
 //! never asked, and a leader is asked once per heartbeat. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
@@ -26,37 +26,75 @@ pub(crate) async fn run(
 ) {
     let mut interval = tokio::time::interval(every);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut looks = Looks::default();
     loop {
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
             _ = interval.tick() => {}
         }
-        let groups = registry.ticked();
+        let due = looks.due(registry.ticked(), &timers);
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
-            () = tick_all(&groups, timers.now(), Instant::now() + every) => {}
+            () = tick_all(&due, Instant::now() + every) => {}
         }
     }
 }
 
-/// One timer check on every group that is due at `now`, until `deadline`.
+/// When the ticker next has to read each group's due time.
+///
+/// Reading it means touching the group, and with thousands of groups that
+/// is most of what an interval costs. Anything other than a timer check
+/// that moves a group's due time moves it at least a heartbeat ahead of the
+/// moment it runs (`Pace::sending`, `Pace::followed`), so a group read now
+/// and found not due cannot become due sooner than that.
+#[derive(Default)]
+struct Looks {
+    groups: Arc<Vec<Arc<Group>>>,
+    /// By position in `groups`, on the runtime's clock.
+    at: Vec<u64>,
+}
+
+impl Looks {
+    /// The groups whose timer check is due now.
+    fn due(&mut self, groups: Arc<Vec<Arc<Group>>>, timers: &Timers) -> Vec<Arc<Group>> {
+        if !Arc::ptr_eq(&self.groups, &groups) {
+            // A group was opened or closed, and positions moved.
+            self.at.clear();
+            self.at.resize(groups.len(), 0);
+            self.groups = groups;
+        }
+        let now = timers.now();
+        let mut due = Vec::new();
+        for (group, look) in self.groups.iter().zip(&mut self.at) {
+            if now < *look {
+                continue;
+            }
+            let at = group.due_at();
+            if now >= at {
+                // The check sets a new due time: read it next interval.
+                due.push(Arc::clone(group));
+            } else {
+                *look = at.min(now + timers.heartbeat);
+            }
+        }
+        due
+    }
+}
+
+/// One timer check on each of `groups`, until `deadline`.
 ///
 /// The checks are polled together in this task. A check waits while its
 /// group's queue is full, so asking the groups in turn would let one busy
 /// group hold up the rest. A check still waiting at the deadline is dropped,
 /// never queued behind the next interval's: openraft reads the clock when it
 /// runs a check, so the next one does the same work.
-async fn tick_all(groups: &[Arc<Group>], now: u64, deadline: Instant) {
-    let mut waiting: FuturesUnordered<_> = groups
-        .iter()
-        .filter(|group| group.due(now))
-        .map(|group| group.tick())
-        .collect();
-    if waiting.is_empty() {
+async fn tick_all(groups: &[Arc<Group>], deadline: Instant) {
+    if groups.is_empty() {
         return;
     }
+    let mut waiting: FuturesUnordered<_> = groups.iter().map(|group| group.tick()).collect();
     let all = async { while waiting.next().await.is_some() {} };
     let _ = tokio::time::timeout_at(deadline, all).await;
 }

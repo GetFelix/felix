@@ -17,7 +17,7 @@ publish = false
 # The per-shard Raft runtime (`src/raft.rs`): many openraft groups on one
 # broker, driven by one ticker. No release enables it, and nothing in the
 # broker calls it yet. See docs/per-shard-raft.md.
-raft = ["dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde"]
+raft = ["dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde", "serde/rc"]
 
 [dependencies]
 ahash = { workspace = true }
