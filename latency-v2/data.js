@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794523126565,
+  "lastUpdate": 1794524968476,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -67716,6 +67716,72 @@ window.BENCHMARK_DATA = {
             "range": "442.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 380.00\nmean: 585.80\nstdev: 442.62\ncv: 75.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac63b7381037c5ee9db796b919da1f817c92059f",
+          "message": "fix(sim): torn-tail-repaired no longer fails on a clean log (#2195) (#2383)\n\nfelix-sim's torn-tail-repaired check had two false positives: the nemesis's own disk reads (since #2327) were recorded as a broker reopening a torn segment, and a cut that left whole records with nothing lost before it was treated as torn. Recovery was correct in every seed. The check still holds the broker to a repair whenever any byte before the cut was lost, and a real torn open without a repair is still a finding. Refs #2195.",
+          "timestamp": "2026-11-12T23:04:41Z",
+          "tree_id": "bbdb43eeddfed26a6bab5bfadaf712ad1b955ff5",
+          "url": "https://github.com/GetFelix/felix/commit/ac63b7381037c5ee9db796b919da1f817c92059f"
+        },
+        "date": 1794524958594,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 148,
+            "range": "6.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 149.60\nstdev: 6.50\ncv: 4.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 195,
+            "range": "299.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 328.60\nstdev: 299.87\ncv: 91.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 393,
+            "range": "408.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 496.00\nstdev: 408.64\ncv: 82.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 188,
+            "range": "5.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 190.00\nstdev: 5.87\ncv: 3.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 370,
+            "range": "157.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 370.00\nmean: 436.80\nstdev: 157.71\ncv: 36.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 516,
+            "range": "933.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 516.00\nmean: 1010.40\nstdev: 933.54\ncv: 92.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
