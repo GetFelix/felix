@@ -3,6 +3,11 @@
 (* Sleep and wake for one Raft group, as docs/per-shard-raft.md describes  *)
 (* them ("Store liveness", "Sleep and wake", "One timer for every group"). *)
 (*                                                                         *)
+(* Sleep and wake are deferred to v0.9.0 (decided in issue 2167), and so   *)
+(* is the store liveness they rest on. Nothing here gates 0.8. The         *)
+(* configurations stay registered so the design keeps its checks until it  *)
+(* is built.                                                               *)
+(*                                                                         *)
 (* A member is awake or asleep. The state is held by the node ticker,      *)
 (* outside Raft: an asleep member gets no ticks, so it starts no election, *)
 (* and an asleep leader sends no heartbeat. Votes, appends and commits     *)
@@ -29,7 +34,9 @@
 (*     arrives first.                                                      *)
 (*   - A hold ends only while no live leader the member would accept       *)
 (*     exists: a healthy leader answers the ask, or notices the new epoch, *)
-(*     inside the hold.                                                    *)
+(*     inside the hold. This is an assumption about timing, not a result.  *)
+(*     HoldTooShort drops it, and MaxAsksLost loses the ask so that        *)
+(*     nothing answers.                                                    *)
 (*   - A sleeping follower's two audit periods pass only while the leader  *)
 (*     it follows is not live: a live sleeping leader audits every period. *)
 (*                                                                         *)
@@ -54,10 +61,22 @@
 (*                      committed, and every live member holds it.         *)
 (*   AsleepIsLevel   -- if every live member is asleep they share the last *)
 (*                      log id and the commit index.                       *)
-(*   NoNeedlessDeposal -- no election happens unless a leader's broker     *)
-(*                      died or restarted. A violation costs availability  *)
-(*                      (a healthy leader deposed, writes stalled for an   *)
-(*                      election), never safety.                           *)
+(*   NoNeedlessDeposal -- unless a leader's broker died or restarted, no   *)
+(*                      election is won and the first leader never stops   *)
+(*                      leading. A leader that steps down for a campaign   *)
+(*                      that never wins counts. A violation costs          *)
+(*                      availability (a healthy leader deposed, writes     *)
+(*                      stalled for an election), never safety.            *)
+(*                                                                         *)
+(* What NoNeedlessDeposal does not test. With the two timing assumptions   *)
+(* above, a held or awake follower cannot campaign while a live leader it  *)
+(* accepts can still answer, so the configurations that pass it show that  *)
+(* the rules leave no other path to a deposal. They do not show that the   *)
+(* hold is long enough. Two faults on the wake path are modelled, a lost   *)
+(* ask (MaxAsksLost) and a hold shorter than the ask's round trip          *)
+(* (HoldTooShort), and each deposes a healthy leader. A lost wake          *)
+(* heartbeat is not modelled: with no clock it cannot be told from a late  *)
+(* one, and the woken leader's next heartbeat follows it.                  *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -70,6 +89,10 @@
 (*   LeaderSleepsFirst -- the leader sleeps as soon as it has sent the     *)
 (*                        requests.                                        *)
 (*   RestartNoHold     -- a restarted member ticks at once.                *)
+(*   HoldTooShort      -- a hold ends before the leader could answer: the  *)
+(*                        hold is shorter than the ask's round trip, or    *)
+(*                        than the time a leader takes to notice a         *)
+(*                        restarted broker's new epoch.                    *)
 (*                                                                         *)
 (* Two more knobs drop rules the design page does not state. The model     *)
 (* needs both to pass, and TLC finds the trace without each:               *)
@@ -81,6 +104,8 @@
 (*   SleepUnsupported  -- a follower accepts a sleep request from a leader *)
 (*                        whose broker it does not support, or while it is *)
 (*                        held.                                            *)
+(*                                                                         *)
+(* The passing configurations run with both rules on (issue 2310).         *)
 (*                                                                         *)
 (* One gap is left as the design has it: a leader leaves out a member      *)
 (* whose broker it does not support. After a false alarm that member is    *)
@@ -112,6 +137,7 @@ CONSTANTS
     MaxRestarts,
     MaxAlarms,          \* support withdrawn for a healthy broker
     MaxLost,            \* sleep requests and answers lost
+    MaxAsksLost,        \* wake messages (the ask before campaigning) lost
     MaxDozes,           \* members falling asleep with no handshake
     LivenessMisses,     \* liveness never reports a dead broker
     AlarmsOnFollowers,  \* a false alarm can name any broker, not only a leader's
@@ -121,6 +147,7 @@ CONSTANTS
     CampaignOnWake,
     LeaderSleepsFirst,
     RestartNoHold,
+    HoldTooShort,
     HeartbeatKeepsProposal,
     SleepUnsupported
 
@@ -198,7 +225,7 @@ Init ==
         /\ sup = [p \in Servers |-> [q \in Servers |-> TRUE]]
         /\ unseen = {}
         /\ used = [writes |-> 0, sleeps |-> 0, audits |-> 0, deaths |-> 0,
-                   restarts |-> 0, alarms |-> 0, lost |-> 0, dozes |-> 0]
+                   restarts |-> 0, alarms |-> 0, lost |-> 0, asks |-> 0, dozes |-> 0]
         /\ hist = [excuse |-> FALSE, diedAsleep |-> FALSE, wroteAsleep |-> FALSE]
 
 ----------------------------------------------------------------------------
@@ -453,9 +480,20 @@ AskWakes(f, l) ==
 HoldExpires(f) ==
     /\ f \in up
     /\ hold[f] # "none"
-    /\ ~ \E l \in Servers \ {f} : Leads(l) /\ VoteGE(vote[l], vote[f])
+    /\ HoldTooShort \/ ~ \E l \in Servers \ {f} : Leads(l) /\ VoteGE(vote[l], vote[f])
     /\ hold' = [hold EXCEPT ![f] = "none"]
     /\ UNCHANGED <<raft, awake, prop, reqs, liveness, used, hist>>
+
+\* The ask is lost. The sleeping leader never hears it, the hold runs out
+\* with nothing heard, and ticks start.
+AskLost(f) ==
+    /\ f \in up
+    /\ hold[f] = "ask"
+    /\ used.asks < MaxAsksLost
+    /\ \E l \in Servers \ {f} : Leads(l) /\ ~awake[l] /\ vote[l] = vote[f]
+    /\ hold' = [hold EXCEPT ![f] = "none"]
+    /\ used' = [used EXCEPT !.asks = @ + 1]
+    /\ UNCHANGED <<raft, awake, prop, reqs, liveness, hist>>
 
 ----------------------------------------------------------------------------
 \* Store liveness.
@@ -528,7 +566,7 @@ Next ==
     \/ \E s \in Servers :
         \/ Campaign(s) \/ BecomeLeader(s) \/ AdvanceCommit(s) \/ AppendRecord(s)
         \/ ProposeSleep(s) \/ LeaderSleep(s) \/ Doze(s)
-        \/ LeaderAudit(s) \/ FollowerAudit(s) \/ HoldExpires(s)
+        \/ LeaderAudit(s) \/ FollowerAudit(s) \/ HoldExpires(s) \/ AskLost(s)
         \/ Die(s) \/ Restart(s)
     \/ \E i, j \in Servers :
         \/ GrantVote(i, j) \/ Heartbeat(i, j) \/ Replicate(i, j)
@@ -579,7 +617,10 @@ AsleepIsLevel ==
     (up # {} /\ \A s \in up : ~awake[s]) =>
         \A s, t \in up : Last(s) = Last(t) /\ commit[s] = commit[t]
 
-NoNeedlessDeposal == ~hist.excuse => \A e \in elected : e[1] = 1
+\* The first leader is deposed by an election another member wins, or by
+\* stepping down for a campaign that never wins.
+NoNeedlessDeposal ==
+    ~hist.excuse => \A e \in elected : e[1] = 1 /\ role[e[2]] = "leader"
 
 TopLeader(l) == Leads(l) /\ \A s \in up : vote[s].term <= vote[l].term
 

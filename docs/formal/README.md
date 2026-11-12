@@ -586,7 +586,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
 | `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
 | `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
-| `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change; not registered, run by dispatch | pass the same |
+| `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change | pass the same (91.4M distinct states, 109 min in CI) |
 | `FelixRaftMembershipSkipJoint.cfg` | a move swaps one voter for the learner in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftMembershipChangeBeforeCommit.cfg` | the leader leaves the joint configuration before the joint entry is committed | violate `StateMachineSafety` |
 | `FelixRaftMembershipLearnerCounts.cfg` | a learner counts toward a majority | violate `AckedSurvive` |
@@ -616,19 +616,23 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
 | `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
-| `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (9.2M distinct states, 2 min) |
-| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes; not registered, run by dispatch | pass the same (107M distinct states, 28 min locally) |
+| `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (9.2M distinct states) |
+| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same, on two rules the design does not have yet (issue #2304) (107M distinct states, 112 min in CI) |
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
 | `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned (issue #2305) |
-| `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg` (0.7M distinct states) |
-| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass the same (33.9M distinct states, 34 min in CI) |
+| `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg`, on two rules the design does not have yet (issue #2304) (0.73M distinct states) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass the same, on two rules the design does not have yet (issue #2304) (33.9M distinct states, 34 min in CI) |
 | `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
 | `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, the control plane's record possibly stale, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.7M distinct states) |
-| `FelixRaftReformStaleMembership.cfg` | the same with one copy rotating with a short log | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (23.2M distinct states, 40 min in CI) |
-| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the design as written: the same with two copies rotating with empty logs, so no report names d and d's disk holds the entry | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one directory lost or restored to any prefix, which covers a relaxed fsync crash | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304) (23.2M distinct states, 40 min in CI) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the design as written: the same with two directories lost or restored to before the change, so both copies rotate with empty logs, no report names d and d's disk holds the entry | violate `AckedSurvive` (issue #2311) |
 | `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write; not registered | violate `AckedSurvive` in a dispatch run, as the row above |
+| `FelixRaftReformStaleMembershipRelaxed.cfg` | two copies rotate on relaxed fsync, which keeps the synced membership entries, so their reports name d; no client write; not registered, run by dispatch | expected to pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304). Not shown yet: no violation in the first 20M distinct states of a ten minute local run |
+| `FelixRaftReformStaleMembershipPlaced.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with the rule issue #2311 proposes: the control plane waits for every broker placed in the epoch; not registered, run by dispatch | expected to pass the same on that rule and the two of issue #2304, none of them in the design yet. Not shown yet |
+| `FelixRaftReformLearnerHolds.cfg` | the design as written: three voters and a learner d that no membership names; d holds a record that a and b lose on relaxed fsync, and d is not waited for | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformLearnerWaited.cfg` | the same with the rule issue #2311 proposes | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on that rule and the two of issue #2304, none of them in the design yet (6.2M distinct states) |
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
-| `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` (7.5M distinct states) |
+| `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (7.5M distinct states) |
 | `FelixRaftReformOneReplicaCommits.cfg` | a witness: the re-formed single voter commits | violate `NeverCommitsAfterReform` |
 | `FelixRaftReformBeforeAll.cfg` | the control plane re-forms before every voter has reported | violate `AckedSurvive` |
 | `FelixRaftReformEpochNotChecked.cfg` | a late append from the old epoch is taken by a new-epoch voter and cuts the base out of its log | violate `AckedSurvive` |
@@ -637,15 +641,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformRetireNotDurable.cfg` | two retired voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
 | `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter report | violate `AckedSurvive` |
 | `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
-| `FelixRaftReformRotatedNotWaited.cfg` | a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformRotatedNotWaited.cfg` | the design as written: a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |
 | `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (56 distinct states) |
 | `FelixRaftSwitchGenZero.cfg` | any copy may carry generation 0 on a prefix of its records | pass the same (10.6M distinct states, 4 min) |
-| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 28 min in CI) |
-| `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 3 min) |
+| `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 37 min in CI) |
+| `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 11 min in CI) |
 | `FelixRaftSwitchDiffers.cfg` | a follower may hold a different record below `N`; it fails its digest and starts as a learner | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.1M distinct states, 2.5 min) |
 | `FelixRaftSwitchAllVoters.cfg` | the whole set recorded as voters, b lagging and c wiped | violate `LeaderCompleteness`: b and the new c elect b without a record a and the old c acknowledged |
@@ -664,12 +668,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchReachGenZero.cfg` | `FelixRaftSwitchDigestCoversGeneration.cfg`'s copies with the rule on | violate `NeverElects`: the switch completes and a leader is elected |
 | `FelixRaftSwitchReachWipedSwitch.cfg` | a witness for `FelixRaftSwitchWiped.cfg` | violate `NeverSwitches`: the control plane records the switch with c wiped |
 | `FelixRaftSwitchReachReseal.cfg` | a witness for `FelixRaftSwitchReseal.cfg` | violate `NeverSwitchesAfterReseal`: the switch completes from the second seal |
-| `FelixRaftLease.cfg` | `FelixRaftLease.tla`: the first version's lease, three brokers, two terms, clocks gaining 1 or 2 units a tick, lease 2 against an election timeout of 4, no write, no bound on time | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.57M distinct states) |
+| `FelixRaftLease.cfg` | `FelixRaftLease.tla`: the first version's lease, three brokers, two terms, clocks gaining 1 or 2 units a tick, lease 2 against an election timeout of 4, no write, no restart, no bound on time | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.57M distinct states). With no restart it does not yet gate the lease pull request (issue #2307) |
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) |
-| `FelixRaftLeaseRestartForgets.cfg` | the design as written: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule the design and openraft 0.10.0 lack (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestartForgets.cfg` | the design as written and the engine as it is: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
 | `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
@@ -679,9 +683,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseReachLocalAck.cfg` | witness: a write acknowledged on local durability under the lease | violate `NeverLocalAck` |
 | `FelixRaftLeaseReachRenewed.cfg` | witness: a lapsed lease makes a write wait for commit and that commit renews it | violate `NeverLapsedThenRenewed` |
 | `FelixRaftLeaseReachFailover.cfg` | witness: a failover after the old lease ran out, the new leader passing the check | violate `NeverFailoverAfterLease` |
-| `FelixRaftLeaseStore.cfg` | later design: store-liveness leases with the group asleep, three liveness heartbeats, one restart, epochs to 3, lease 1 against support of 2 | pass `LeaseExclusive`, `NoAckBehindNewLeader`, `OneLeaderPerTerm` (1.6M distinct states) |
-| `FelixRaftLeaseStoreWide.cfg` | four liveness heartbeats; not registered, run by dispatch | pass the same |
-| `FelixRaftLeaseStoreStall.cfg` | one broker's disk stalls, no restart | pass the same and `StalledLeaseLapses` (1.2M distinct states) |
+| `FelixRaftLeaseStore.cfg` | later design: store-liveness leases with the group asleep, three liveness heartbeats, one restart, epochs to 3, lease 1 against support of 2 | pass `LeaseExclusive`, `NoAckBehindNewLeader`, `OneLeaderPerTerm` (1.6M distinct states) on rules the design page does not state (issue #2307) |
+| `FelixRaftLeaseStoreWide.cfg` | four liveness heartbeats | pass the same on the same rules (16.3M distinct states, 36 min in CI) |
+| `FelixRaftLeaseStoreStall.cfg` | one broker's disk stalls, no restart | pass the same and `StalledLeaseLapses` on the same rules (1.2M distinct states) |
 | `FelixRaftLeaseStoreNotDurable.cfg` | support is lost at a restart | violate `LeaseExclusive` |
 | `FelixRaftLeaseStoreVote.cfg` | a vote is granted while support for the leader's store stands | violate `LeaseExclusive` |
 | `FelixRaftLeaseStoreKept.cfg` | a restarted leader leads on and its lease check does not compare epochs | violate `LeaseExclusive` |
@@ -691,23 +695,25 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseStoreStalledAsks.cfg` | a broker with a stalled disk keeps sending liveness heartbeats | violate `StalledLeaseLapses` |
 | `FelixRaftLeaseStoreReachLocalAck.cfg` | witness: the first write after sleep acknowledged locally with no group message | violate `NeverLocalAck` |
 | `FelixRaftLeaseStoreReachFailover.cfg` | witness: a failover after support was withdrawn, the new leader passing the check | violate `NeverFailoverAfterLease` |
-| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass |
-| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass |
-| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass |
-| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass |
-| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody | pass |
-| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader | pass |
+| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
 | `FelixRaftSleepAnyState.cfg` | Members fall asleep in any state with no handshake; safety only | pass |
-| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass |
+| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design does not state yet (issue #2310) |
 | `FelixRaftSleepNoWake.cfg` | Neither wake path: the group never elects | violate `QuiescentLed` |
 | `FelixRaftSleepCampaignOnWake.cfg` | A woken follower campaigns without asking | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepRestartNoHold.cfg` | A restarted member ticks at once | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepLeaderSleepsFirst.cfg` | The leader sleeps before the followers answer | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepAcceptUnchecked.cfg` | A sleep request accepted without comparing the log position | violate `AsleepIsLevel` |
 | `FelixRaftSleepHeartbeatKeepsProposal.cfg` | A heartbeat during the handshake leaves the proposal open | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepHoldTooShort.cfg` | A hold shorter than the ask's round trip | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepSleepUnsupported.cfg` | A follower sleeps for a leader it no longer supports | violate `QuiescentLed` |
 | `FelixRaftSleepFalseAlarmFollower.cfg` | Design as written: a false alarm about a follower lets the leader sleep without it | violate `NoNeedlessDeposal` (issue #2310) |
 | `FelixRaftSleepFalseAlarmFollowerBehind.cfg` | Design as written: the same alarm leaves the whole group asleep with a member behind | violate `AsleepIsLevel` (issue #2310) |
+| `FelixRaftSleepAskLost.cfg` | Design as written: the ask after a false alarm is lost, the hold runs out and the follower deposes a healthy leader | violate `NoNeedlessDeposal` (issue #2320) |
 | `FelixRaftSleepReachWakeOnWrite.cfg` | Witness: a group sleeps, wakes on a write and sleeps again | violate `NeverWakesOnWrite` |
 | `FelixRaftSleepReachAuditElection.cfg` | Witness: an election through the audit alone | violate `NeverElectsAfterDyingAsleep` |
 
@@ -2498,7 +2504,18 @@ that syncs the mark between the two must not read a cut as a restore.
 
 `FelixRaftReform.tla` models the path in
 [per-shard-raft.md](../per-shard-raft.md#re-forming-a-group) that gives a
-Raft group a new epoch when it can no longer elect. A group id carries an
+Raft group a new epoch when it can no longer elect.
+
+In 0.8 a re-form starts only from an operator's command, one bulk command
+with a dry run, and nothing starts one automatically (decided in issue
+#2167). The model's first two steps are the automatic trigger, so they
+describe a design that is not shipping. So do `SlowGroupLeftAlone` and
+`FelixRaftReformSlow.cfg`, which are about when step 2 fires. Steps 3 to 5
+are what the command still has to do. It stands where `AskRetire` does, and
+it must list every placed broker, a move's target included, which is
+`WaitPlaced` below (issue #2311).
+
+A group id carries an
 epoch that starts at 0. A member id is a broker and a copy id. A copy that
 rotates has a new id that never voted and keeps what is left of its log as
 plain records. Membership changes inside an epoch go through a joint
@@ -2519,9 +2536,8 @@ What is checked:
 
 - `AckedSurvive`: an acknowledged record is in the base of every later
   epoch and in the log of every later leader. One loss is allowed, the one
-  relaxed fsync documents: at the re-form no disk of any voter's broker
-  held the record. The model records those in `lost` and excuses nothing
-  else.
+  the design documents: at the re-form no disk held the record, a voter's
+  or not. The model records those in `lost` and excuses nothing else.
 - `StateMachineSafety`: no index is committed with two different entries,
   in one epoch or across epochs, except over a documented loss.
 - `OneLeaderPerTerm`, per epoch.
@@ -2548,22 +2564,55 @@ collected, and `FelixRaftReformRotatedNotWaited.cfg` loses a record its
 disk holds. The page also lets a retired copy rotate and rejoin as a
 learner. Its old report stays with the control plane, the learner takes
 newer records, and `FelixRaftReformJoinKeepsReport.cfg` loses one of them.
-The passing configs run with the rule that closes it: a new copy tells the
-control plane its id before it joins, and the control plane drops the
-report of the copy it replaces.
+The passing configs run with both knobs off, which is two rules the design
+does not have yet: a rotated voter still sends a retire report, and a new
+copy tells the control plane its id before it joins, so that the control
+plane drops the report of the copy it replaces. Every configuration that
+passes with a rotation or a rejoin passes on those rules, and its row and
+header say so. They show the rules are enough, not that the design as
+written is safe (issue #2304).
+
+Two constants are not knobs. `DirLost` says what a rotation leaves. Off, it
+is a relaxed fsync run that lost power: the tail may be gone, but membership
+entries are synced in every fsync mode, so the log keeps everything up to
+its newest membership entry. On, it is a directory that was lost or restored
+from an older copy, and any prefix is left. `WaitPlaced` is the rule issue
+#2311 proposes: the control plane records the target of a membership change
+before the leader proposes it, and step 4 waits for a retire report from
+every broker placed in the epoch, voter or not. Every broker of the model
+counts as placed. Off is the design as written.
+
+The stale-membership case of the design page, {a, b, c} changing to
+{a, b, d}, splits on those two constants. With a and b rotating on relaxed
+fsync and no client write, their reports still name d;
+`FelixRaftReformStaleMembershipRelaxed.cfg` checks that and is run by
+dispatch. With the two directories lost, no report names d and
+`FelixRaftReformStaleMembershipTwoRotated.cfg` loses an entry d's disk
+holds. The same gap needs no change and no lost directory:
+`FelixRaftReformLearnerHolds.cfg` has three voters and a learner d, and
+loses a record that a and b lose on relaxed fsync and only d still holds,
+because no membership names d. A voter that a change removed is in the same
+position. Both are the design as written and are pinned as expected
+violations (issue #2311). `FelixRaftReformLearnerWaited.cfg` passes with
+`WaitPlaced` on.
 
 After a relaxed fsync loss the offsets of the lost records are above the
 base and the new epoch gives them out again.
 `FelixRaftReformTwoRotatedOffsets.cfg` pins that.
 
-Abstracted: storage is a log and a rotation that may cut it to any prefix
-(`FelixRaft.tla` has the fsync rules). An election is one step over a
+Abstracted: storage is a log and a rotation that cuts it to a prefix
+(`FelixRaft.tla` has the fsync rules). A membership entry is synced when
+it is appended. An election is one step over a
 quorum. An append is one step between two brokers, plus a bounded set of
 in-flight appends that can arrive late and more than once. A report
 carries the whole log where the design sends its last log id. A leader
-does not propose its own removal. A learner that no membership ever named
-is not a voter's broker, so a record only it holds counts as a documented
-loss. The operator's forced re-form is not modelled.
+does not propose its own removal. A leader replicates to any broker of the
+model: one that no membership names is a learner.
+
+Not modelled: the operator's command itself. Step 2 fires only under the
+automatic conditions, so a command given to a group that can still elect is
+not covered. Neither is its refusal while a placed broker is unreachable
+and not declared dead, nor a re-form that goes on without a dead broker.
 
 ### The switch from the hybrid to Raft
 
@@ -2640,7 +2689,10 @@ acknowledged on local durability, as
 [Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
-`admit_local_ack`. The module has two parts. The first is the lease the first
+`admit_local_ack`, but their passing does not open the gate yet: the passing
+ones either have no restart or pass on a rule that openraft 0.10.0 and the
+design page lack (issue #2307, under "A restarted follower" below). The
+module has two parts. The first is the lease the first
 version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
 later design in "Leases that survive sleep" and is not in the first version.
 
@@ -2682,8 +2734,10 @@ lease check when the new one is elected. The design's hold on a restarted
 member stops it campaigning, and the model keeps that hold; it does not stop
 it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
 rule that closes it: a restarted broker refuses votes for one election
-timeout from its start. The design page does not state this rule yet
-(issue #2307).
+timeout from its start. Neither the design page nor openraft 0.10.0 has
+this rule yet (issue #2307). Until it is built, `FelixRaftLeaseRestart.cfg`
+passing says only that the rule would be enough, and
+`FelixRaftLeaseRestartForgets.cfg` is what the engine does.
 
 **Store-liveness leases (later design).** The group sends nothing of its own.
 Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's
@@ -2725,6 +2779,10 @@ membership changes, snapshots, pre-vote or leadership transfer.
 
 ### Raft sleep and wake
 
+Sleep and wake are deferred to v0.9.0, with the store liveness they rest on
+(decided in issue #2167). Nothing in this section gates 0.8. The configurations stay
+registered so the design keeps its checks until it is built.
+
 `FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
 [Per-shard Raft](../per-shard-raft.md) describes ("Store liveness", "Sleep and wake"). A member that is asleep gets no ticks: it starts no
 election, and a sleeping leader sends no heartbeat. Votes, appends and commits still work
@@ -2737,7 +2795,8 @@ on a restarted member, and store liveness with false alarms and missed failures.
 
 Time is abstract. A timeout is a step that is enabled only when the event that would have
 beaten it cannot happen. For example, a hold ends only while no live leader exists that
-would have answered.
+would have answered. That is an assumption about timing, not a result, and it decides what
+`NoNeedlessDeposal` can show (below).
 
 Liveness is checked on states where nothing more can happen (`QuiescentLed`,
 `QuiescentLevel`), as `FelixRaft.tla` does. Every budget is bounded, so every behaviour
@@ -2751,14 +2810,28 @@ What is checked:
 - `QuiescentLed`: with a majority alive the group ends with a live leader.
 - `QuiescentLevel`: under that leader every write is committed and every live member has it.
 - `AsleepIsLevel`: if every live member is asleep, they share last log id and commit index.
-- `NoNeedlessDeposal`: no election unless a leader's broker died or restarted. A violation
-  costs availability, not safety.
+- `NoNeedlessDeposal`: unless a leader's broker died or restarted, no election is won and
+  the first leader never stops leading. A leader that steps down for a campaign that never
+  wins counts as deposed. A violation costs availability, not safety.
+
+What `NoNeedlessDeposal` does not test. Under the timing assumption a held or awake
+follower cannot campaign while a live leader it accepts can still answer. So
+`FelixRaftSleepFalseAlarm.cfg` and `FelixRaftSleepRestart.cfg` show that the rules leave
+no other path to a deposal. They do not show that the hold is long enough, or that one
+election timeout covers the ask and the heartbeat that answers it. Two faults on the wake
+path are modelled and each deposes a healthy leader: a lost ask
+(`FelixRaftSleepAskLost.cfg`, the design as written, issue #2320) and a hold shorter than
+the ask's round trip (`FelixRaftSleepHoldTooShort.cfg`). A lost wake heartbeat is not
+modelled: with no clock it cannot be told from a late one, and the woken leader's next
+heartbeat follows it.
 
 Knobs, each dropping one rule: `NoLivenessWake`, `NoAudit`, `AcceptUnchecked`,
-`CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`. Two more drop rules the design page
-does not state yet and the model needs: `HeartbeatKeepsProposal` (a heartbeat during the
-handshake does not close the proposal) and `SleepUnsupported` (a follower accepts a sleep
-request from a leader whose broker it does not support). Issue #2310 has both.
+`CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`, `HoldTooShort`. Two more drop rules
+the design page does not state yet and the model needs: `HeartbeatKeepsProposal` (a
+heartbeat during the handshake does not close the proposal) and `SleepUnsupported` (a
+follower accepts a sleep request from a leader whose broker it does not support). Issue
+#2310 has both. Every passing configuration with a handshake runs with both rules on, and
+its row and header say so.
 
 A third gap has no rule yet. The design leaves out of the handshake a member whose broker
 store liveness says is down. When that alarm is false the member is healthy and awake: it

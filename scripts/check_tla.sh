@@ -596,14 +596,19 @@ expectations=(
   "FelixRaftReformStaleMembership pass"
   "FelixRaftReformRejoinFull pass"
   "FelixRaftSwitchGenZeroFull pass"
+  "FelixRaftMembershipTerms pass"
+  "FelixRaftReformTwoRotatedFull pass"
   "FelixRaftReformStaleMembershipHappens violates NeverReformsAfterChange"
   "FelixRaftReformStaleMembershipTwoRotated violates AckedSurvive"
+  "FelixRaftReformLearnerHolds violates AckedSurvive"
+  "FelixRaftReformLearnerWaited pass"
   "FelixRaftLease pass"
   "FelixRaftLeaseAck pass"
   "FelixRaftLeaseDeliver pass"
   "FelixRaftLeaseRestart pass"
   "FelixRaftLeaseStore pass"
   "FelixRaftLeaseStoreStall pass"
+  "FelixRaftLeaseStoreWide pass"
   "FelixRaftLeaseRestartForgets violates LeaseExclusive"
   "FelixRaftLeaseLong violates LeaseExclusive"
   "FelixRaftLeaseDrift violates LeaseExclusive"
@@ -638,6 +643,8 @@ expectations=(
   "FelixRaftSleepLeaderSleepsFirst violates NoNeedlessDeposal"
   "FelixRaftSleepHeartbeatKeepsProposal violates NoNeedlessDeposal"
   "FelixRaftSleepFalseAlarmFollower violates NoNeedlessDeposal"
+  "FelixRaftSleepAskLost violates NoNeedlessDeposal"
+  "FelixRaftSleepHoldTooShort violates NoNeedlessDeposal"
   "FelixRaftSleepAcceptUnchecked violates AsleepIsLevel"
   "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
   "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
@@ -763,9 +770,9 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
-# FelixRaftMembershipTerms, FelixRaftReformTwoRotatedFull and
-# FelixRaftLease{AckWide,StoreWide} are not registered: each is registered
-# once a dispatch run gives its declared outcome.
+# FelixRaftReformStaleMembership{Relaxed,Placed} and FelixRaftLeaseAckWide are
+# not registered: each is registered once a dispatch run gives its declared
+# outcome.
 # FelixRaftReformStaleMembershipFull is not registered either: it gives the
 # violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
 
@@ -960,19 +967,29 @@ weights=(
   "FelixRaftMembership 4"
   "FelixRaftMembershipFailover 8"
   "FelixRaftIdentityDirRestore 2"
+  "FelixRaftIdentityWipeThenRestore 2"
   "FelixRaftSwitchGenZero 6"
-  "FelixRaftSwitchStarts 5"
+  "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
-  "FelixRaftReform 4"
-  "FelixRaftReformTwoRotated 4"
-  "FelixRaftReformOwnMembershipOnly 2"
+  "FelixRaftReform 7"
+  "FelixRaftReformTwoRotated 6"
+  "FelixRaftReformOneReplica 2"
+  "FelixRaftReformOwnMembershipOnly 4"
+  "FelixRaftReformStaleMembershipTwoRotated 2"
   "FelixRaftReformStaleMembership 40"
   "FelixRaftReformRejoinFull 34"
-  "FelixRaftSwitchGenZeroFull 28"
+  "FelixRaftSwitchGenZeroFull 37"
+  "FelixRaftMembershipTerms 109"
+  "FelixRaftReformTwoRotatedFull 112"
+  "FelixRaftReformLearnerWaited 8"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
-  "FelixRaftLeaseRestart 5"
+  "FelixRaftLeaseRestart 6"
   "FelixRaftLeaseStore 2"
+  "FelixRaftLeaseStoreStall 2"
+  "FelixRaftLeaseStoreWide 36"
+  "FelixRaftSleep 2"
+  "FelixRaftSleepEnds 2"
 )
 
 weight_of() {
@@ -1046,8 +1063,10 @@ fi
 # ten minutes, except changed ones of 30 minutes or less. A changed one over
 # 30 minutes is left to a job of its own (`--plan-heavy`). A changed .tla
 # does not pull in its heavy configurations: FelixShard.tla is behind most of
-# them. FelixRaft.tla is the exception (see `changed_cfgs`). Pull requests check that tier; the rest run when the spec changes on
-# main. Configurations named on the command line always run. FelixShard,
+# them. FelixRaft.tla and the track 4 modules beside it are the exceptions:
+# a change to one counts as a change to each of its configurations (see
+# `changed_cfgs`). Pull requests check that tier; the rest run when the spec
+# changes on main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.
 if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then

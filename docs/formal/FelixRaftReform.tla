@@ -34,7 +34,7 @@
 (*   AckedSurvive       -- an acknowledged record is in the base of every  *)
 (*                         later epoch and in the log of every later       *)
 (*                         leader, unless it is a documented loss: at the  *)
-(*                         re-form no disk of any voter's broker held it.  *)
+(*                         re-form no disk held it, a voter's or not.      *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -68,14 +68,51 @@
 (*                         announces itself first and the control plane    *)
 (*                         drops the report.                               *)
 (*                                                                         *)
-(* Abstracted: storage is a log and a rotation that may cut it to any      *)
-(* prefix (FelixRaft.tla has the fsync rules). An election is one step     *)
+(* The design page does not have the rules the last two knobs remove.     *)
+(* Step 4 as written is RotatedNotWaited, and nothing drops an old report, *)
+(* which is JoinKeepsReport (issue 2304). A configuration that passes with *)
+(* a rotation or a rejoin passes on those two rules and says so.           *)
+(*                                                                         *)
+(* Two constants are not knobs:                                            *)
+(*                                                                         *)
+(*   DirLost     -- what a rotation leaves. FALSE is a relaxed fsync run   *)
+(*                  that lost power: the tail may be gone, but membership  *)
+(*                  entries are synced in every fsync mode, so the log     *)
+(*                  keeps everything up to its newest membership entry.    *)
+(*                  TRUE is a directory that was lost or restored from an  *)
+(*                  older copy: any prefix is left. It covers FALSE. With  *)
+(*                  no membership change the two are the same.             *)
+(*   WaitPlaced  -- the rule issue 2311 proposes. The control plane        *)
+(*                  places a broker, and records the target of a           *)
+(*                  membership change, before the leader sends or proposes *)
+(*                  anything, and step 4 waits for a retire report from    *)
+(*                  every broker placed in the epoch, voter or not. FALSE  *)
+(*                  is the design as written.                              *)
+(*                                                                         *)
+(* Abstracted: storage is a log and a rotation that cuts it to a prefix    *)
+(* (FelixRaft.tla has the fsync rules). A membership entry is synced when  *)
+(* it is appended. An election is one step                                 *)
 (* over a quorum. An append is one step between two brokers, plus a        *)
 (* bounded set of in-flight appends that can arrive late and more than     *)
 (* once. A report carries the whole log where the design sends its last    *)
 (* log id. A leader commits only entries of its own term. A leader does    *)
-(* not propose its own removal. The operator's forced re-form is not       *)
-(* modelled.                                                               *)
+(* not propose its own removal. A leader replicates to any broker of the   *)
+(* model: one that no membership names is a learner.                       *)
+(*                                                                         *)
+(* What 0.8 ships. Decided (issue 2167): in 0.8 a re-form starts only from *)
+(* an operator's command, one bulk command with a dry run, and nothing     *)
+(* starts one automatically. Steps 1 and 2 are the automatic trigger, so   *)
+(* they describe a design that is not shipping, and so do                  *)
+(* SlowGroupLeftAlone and the configurations about when AskRetire fires    *)
+(* (FelixRaftReformSlow). Steps 3 to 5 are what the command still has to   *)
+(* do. It stands where AskRetire does, and it must list every placed       *)
+(* broker, a move's target included, which is WaitPlaced (issue 2311).     *)
+(*                                                                         *)
+(* Not modelled: the command itself. Here step 2 fires only under the      *)
+(* automatic conditions, so a command given to a group that can still      *)
+(* elect is not covered. Neither is its refusal while a placed broker is   *)
+(* unreachable and not declared dead, nor a re-form that goes on without a *)
+(* dead broker.                                                            *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -90,6 +127,7 @@ CONSTANTS
     ChangeOut,          \* broker the change removes
     ChangeIn,           \* broker the change adds
     MaxRotations,
+    DirLost,
     MaxRejoins,
     MaxRestarts,
     MaxMsgs,
@@ -101,7 +139,8 @@ CONSTANTS
     BaseNotHighest,
     NoCas,
     RotatedNotWaited,
-    JoinKeepsReport
+    JoinKeepsReport,
+    WaitPlaced
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -121,7 +160,7 @@ VARIABLES
     rep,        \* retire reports
     forms,      \* epochs written: epoch, base, voters
     acked,      \* history: entries committed, by epoch, term and index
-    lost,       \* history: acknowledged entries no voter's disk held at a re-form
+    lost,       \* history: acknowledged entries no disk held at a re-form
     elected,    \* history: epoch, term, broker
     writes, steps, rotations, rejoins, restarts
 
@@ -171,6 +210,12 @@ Config(b) == ConfigIn(log[b], ep[b], boot[b])
 
 LastCfgIndex(b) ==
     LET idx == {j \in 1..Len(log[b]) : log[b][j].k = "cfg" /\ log[b][j].e = ep[b]}
+    IN IF idx = {} THEN 0 ELSE CHOOSE j \in idx : \A h \in idx : h <= j
+
+\* How much of a log a relaxed fsync run cannot lose: a membership entry is
+\* synced in every fsync mode, and a sync covers everything before it.
+SyncedLen(l) ==
+    LET idx == {j \in 1..Len(l) : l[j].k = "cfg"}
     IN IF idx = {} THEN 0 ELSE CHOOSE j \in idx : \A h \in idx : h <= j
 
 \* Q is a set of brokers whose current copies answered.
@@ -346,12 +391,14 @@ NewCopy(b, kept) ==
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
-\* The copy id rotates: a relaxed fsync run lost power, the directory was
-\* lost, or it failed the restore check. Any prefix of the log is left.
+\* The copy id rotates. A relaxed fsync run that lost power keeps its synced
+\* membership entries. A directory that was lost, or that failed the restore
+\* check, keeps any prefix.
 Rotate(b, n) ==
     /\ rotations < MaxRotations
     /\ rotations' = rotations + 1
     /\ n \in 0..Len(log[b])
+    /\ DirLost \/ n >= SyncedLen(log[b])
     /\ NewCopy(b, SubSeq(log[b], 1, n))
     /\ UNCHANGED <<cpVars, writes, steps, rejoins, restarts>>
 
@@ -427,11 +474,10 @@ Announce(b) ==
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
     /\ UNCHANGED <<cpEpoch, cpMem, firstRep, asked, forms, acked, lost, elected, counters>>
 
-\* Brokers that hold or held a voter: named by the control plane's record
-\* or by the newest membership on any disk. Not affected by any knob.
-VoterBrokers(e) ==
-    {m[1] : m \in Voters(cpMem) \cup
-                  UNION {Voters(Config(b)) : b \in {x \in Brokers : ep[x] = e}}}
+\* Brokers placed in the epoch: every broker of the model. A broker that no
+\* membership names holds its copy as a learner, and the control plane
+\* placed it before the leader sent it anything.
+Placed == Brokers
 
 Reform(e, pick) ==
     LET R == {b \in Brokers : At(rep[b], e)}
@@ -450,6 +496,7 @@ Reform(e, pick) ==
        /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
        /\ pick \in R
        /\ ReformBeforeAll \/ \A m \in named : done(m)
+       /\ ReformBeforeAll \/ ~WaitPlaced \/ Placed \subseteq R
        /\ BaseNotHighest \/ \A b \in R : UpToDate(base, rep[b].log)
        /\ [e |-> e + 1, base |-> base, voters |-> voters] \notin forms
        /\ forms' = forms \cup {[e |-> e + 1, base |-> base, voters |-> voters]}
@@ -459,7 +506,7 @@ Reform(e, pick) ==
        /\ acked' = acked \cup
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
        /\ lost' = lost \cup
-            {x \in acked : x.e <= e /\ \A b \in VoterBrokers(e) : ~Has(log[b], x)}
+            {x \in acked : x.e <= e /\ \A b \in Brokers : ~Has(log[b], x)}
        /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
        /\ UNCHANGED <<firstRep, asked, rep, elected, counters>>
 
@@ -512,7 +559,7 @@ OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
 
 \* An acknowledged record outlives its epoch. The only loss allowed is the
-\* one relaxed fsync documents: no voter's disk held the record any more.
+\* one the design documents: no surviving disk held the record any more.
 AckedSurvive ==
     \A x \in acked \ lost :
         /\ \A f \in forms : f.e > x.e => Has(f.base, x)

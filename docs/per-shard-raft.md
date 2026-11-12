@@ -273,12 +273,12 @@ which is the loss relaxed fsync already documents for a majority losing
 power. With fsync on commit a crash does not rotate ids, and a re-form then
 loses nothing.
 
-Step 4 closes the stale-membership case: the group went from {A, B, C} to
-{A, B, D}, the control plane still has {A, B, C}, and A and B rotate with
-short logs. A's or B's report names {A, B, D} if the change reached their
-disk, and D is waited for. If the change reached neither, it was never
-acknowledged by a majority that still holds it, which is the relaxed-fsync
-loss again.
+Step 4 closes the stale-membership case under relaxed fsync: the group went
+from {A, B, C} to {A, B, D}, the control plane still has {A, B, C}, and A
+and B lose power and rotate with short logs. Membership entries are synced
+in every fsync mode, so a copy that took the change still holds it after
+the crash. Its report names {A, B, D}, and D is waited for. If the change
+reached neither A nor B, it was never committed.
 
 A retired copy whose group goes on without a re-form, because a voter that
 was asked never retired and a leader was elected after all, cannot take its
@@ -302,12 +302,27 @@ with a configuration that pins it:
   promised below for a forced RF 1 re-form is not applied here (issue
   #2305).
 
-A fourth, in the stale-membership case above. If A and B both rotate with
-empty logs after the change to {A, B, D} was committed, no report names D
-and the control plane re-forms {A, B, C} from an empty base. D's disk
-survived and still holds the acknowledged entry, so "only a record that no
-surviving disk holds" is not true here.
-`FelixRaftReformStaleMembershipTwoRotated.cfg` pins it (issue #2311).
+A fourth, in the stale-membership case above (issue #2311). It is not the
+relaxed-fsync loss: it needs two shard directories lost, or restored to
+before the change. A and B then rotate with empty logs after the change to
+{A, B, D} was committed, no report names D, and the control plane re-forms
+{A, B, C} from an empty base. D's disk survived and still holds the
+acknowledged entry, so "only a record that no surviving disk holds" is not
+true here. `FelixRaftReformStaleMembershipTwoRotated.cfg` pins it.
+
+The same gap needs no lost directory and no membership change when the
+record is on a broker that no membership names: a learner the leader is
+catching up, or a voter a change removed. With voters {A, B, C} and a
+learner D, a record is committed by A and B and reaches D. A and B lose
+power on relaxed fsync and lose it. Every report names {A, B, C}, D is not
+waited for, and the base lacks a record D's disk holds.
+`FelixRaftReformLearnerHolds.cfg` pins it.
+
+The rule proposed in the issue closes both. The control plane records the
+target set of a membership change before the leader proposes it. Step 4
+waits for a retire report from every broker placed in the epoch, voter or
+not. A rotated copy reports the newest synced membership in the log it
+kept. `FelixRaftReformLearnerWaited.cfg` passes with it.
 
 If a voter's broker cannot be reached, the control plane waits. An operator
 can force the re-form without it. The command names the missing copies and
@@ -708,7 +723,9 @@ to the left side.
 If the check fails, the write waits on `await_commit` like a `Quorum`
 write. Its commit renews the lease, and later writes are local again. The
 shard stays open. The check is turned on by its own pull request, after the
-model's lease configs pass. Until then it always refuses and every `Leader`
+model's lease configs pass and the restart rule of issue #2307 is built.
+The configs that pass today assume that rule, so their passing alone does
+not open the gate. Until then the check always refuses and every `Leader`
 write waits for commit, which is safe and slower.
 
 ### Reads
@@ -1208,7 +1225,8 @@ Each has a recommendation, judged on safety and performance only.
 9. **Do Raft lease reads replace read-index rounds for `Quorum` reads in
    0.8?** Recommended: not at first. Read index is safe without any clock
    assumption. Turn lease reads on only if the `Quorum` read p99 cell misses
-   the gate, and only after the model's lease configs pass.
+   the gate, and only after the model's lease configs pass and the restart
+   rule they assume is built (issue #2307).
 
 10. **Is re-forming a group automatic?** Recommended: automatic only when
     every voter of every membership the reports name has retired at the
