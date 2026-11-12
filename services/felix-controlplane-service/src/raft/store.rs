@@ -119,6 +119,19 @@ pub(super) fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
     }
 }
 
+/// Refuse if this data dir already belongs to a cluster other than
+/// `cluster_id`. Records nothing.
+pub(super) fn check_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
+    let recorded = read_meta::<String>(db, KEY_CLUSTER_ID)
+        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
+    match recorded {
+        Some(recorded) if recorded != cluster_id => {
+            anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'")
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Open (or create) the store file and make sure both tables exist, so
 /// every later read can assume them.
 pub(super) fn open(path: &Path) -> Result<Arc<Database>> {

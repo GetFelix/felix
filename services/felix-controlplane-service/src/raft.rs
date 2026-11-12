@@ -15,6 +15,8 @@
 //!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
+//! - `waiver` — the operator's `form-without` file, which lets a first
+//!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
 //! - `store` — the Raft log, vote, and current snapshot, in one crash-safe
 //!   redb file per instance. Consensus state is the one thing here that must
@@ -43,12 +45,14 @@ mod proposal;
 mod store;
 mod types;
 mod version;
+mod waiver;
 mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
 pub use proposal::NoQuorum;
+pub use waiver::form_without;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

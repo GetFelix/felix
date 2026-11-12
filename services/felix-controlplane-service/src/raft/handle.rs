@@ -32,6 +32,8 @@ pub struct RaftHandle {
     /// Weak so that a stopped node releases its store even while clones of
     /// the handle live on, and a restart in the same process can reopen it.
     pub(super) db: std::sync::Weak<redb::Database>,
+    /// Where the store lives, and the `form-without` waiver beside it.
+    pub(super) data_dir: Arc<std::path::PathBuf>,
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
@@ -160,6 +162,7 @@ impl RaftHandle {
             peer_addrs: Arc::new(settings.peer_addrs),
             app,
             db: Arc::downgrade(&db),
+            data_dir: Arc::new(settings.data_dir),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
