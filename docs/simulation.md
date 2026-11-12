@@ -505,7 +505,7 @@ A failing seed is sorted by its log:
 | Real bug | A history violation, an undecided cache key, a safety finding (`at-most-one-serving`, `one-leader-per-generation`, `acked-held-by-leader`, ...) or a crash. | Fails the shard. A scheduled run opens an issue labelled `dst-nightly`, which a green night closes. |
 | Tracked stall | Only the liveness findings `stalled`, `election-settles` and `final-reads`, listed above under known failing seeds. | Listed apart in the summary. Fails nothing. |
 
-One stall is tracked inside a test. `seed_3_replicas_agree_on_who_wrote_each_record` prints `tracked stall #2206` and passes when the only failing finding is `election-settles` with every stuck shard in the #2206 shape: the leader's phase is `failed`, the control plane is `Assigning`, and no other copy is ready to take over. Any history violation, other finding or other shape still fails it.
+One stall is tracked inside a test. `seed_3_replicas_agree_on_who_wrote_each_record` prints `tracked stall #2206` and passes when the only failing finding is `election-settles` with every stuck shard in the #2206 shape: the leader's phase is `failed`, the control plane is `Assigning`, and no other copy is ready to take over. The stuck shards must be named in the census, which the checker prints for at most three, so four or more never match. Any history violation, other finding or other shape still fails it.
 
 Each line in the run summary gives the seed, its categories and the exact
 command that replays it, for example

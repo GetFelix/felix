@@ -327,9 +327,11 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
     else {
         return false;
     };
-    if stuck.len() != count || stuck.iter().any(|s| !s.ends_with("(0 serving)")) {
+    // The checker prints a census for at most 3 stuck shards.
+    if stuck.len() != count || count > 3 || stuck.iter().any(|s| !s.ends_with("(0 serving)")) {
         return false;
     }
+    let mut named: Vec<String> = Vec::new();
     let mut censuses = 0;
     let mut leader = None;
     let mut given_up = false;
@@ -361,6 +363,13 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
                 return false;
             }
             leader = Some(name.to_string());
+            named.push(
+                line["shard ".len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .to_string(),
+            );
         } else if let Some(lead) = &leader {
             let cols: Vec<&str> = line.split_whitespace().collect();
             if cols.first().is_none_or(|c| *c == "node") {
@@ -372,14 +381,18 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
             } else {
                 match phase {
                     "unassigned" => unassigned = true,
-                    "closed" | "" => {}
+                    "closed" => {}
                     _ => return false,
                 }
             }
         }
     }
     end_shard(&mut leader, &mut given_up, &mut unassigned, &mut ok);
-    ok && censuses == count
+    let listed: Vec<&str> = stuck
+        .iter()
+        .map(|s| s.split_whitespace().next().unwrap_or(""))
+        .collect();
+    ok && censuses == count && named == listed
 }
 
 /// Whether the run found nothing but the stall #2206 tracks: no history
@@ -606,6 +619,50 @@ fn another_election_settles_failure_is_not_the_tracked_stall() {
     let mut other = stall_finding(SUMMARY, ASSIGNING, &GIVEN_UP);
     other.checker = "final-reads";
     assert!(!is_given_up_leader_stall(&other));
+}
+
+const CI_SUMMARY: &str = "2 of 178 shards are not served by exactly one broker 60s after the faults healed: stream/6 (0 serving), stream/20 (0 serving)";
+const CI_HEADER: &str = "  node  state     cut   seeded inc  lease    routed(leader,g) phase      fence    tail     quorum  ";
+const CI_ROWS: [&str; 3] = [
+    "  b1    up        no    yes    0    6.9s     b2,10          closed     -        3        -       ",
+    "  b2    up        no    yes    2    7.3s     b2,10          failed     -        4        -       ",
+    "  b3    up        no    yes    1    8.0s     b2,10          unassigned -        4        -       ",
+];
+
+fn ci_census(shard: &str, generation: u32, rows: &[&str]) -> String {
+    format!(
+        "shard {shard}  control plane: leader b2 replicas [\"b1\", \"b3\"] generation {generation} state Assigning\n{CI_HEADER}\n{}\n",
+        rows.join("\n")
+    )
+}
+
+fn ci_finding(summary: &str, rows: &[&str]) -> Finding {
+    Finding::new("election-settles", summary)
+        .with(ci_census("stream/6", 10, rows))
+        .with(ci_census("stream/20", 24, rows))
+}
+
+#[test]
+fn the_text_ci_printed_for_two_shards_is_the_tracked_stall() {
+    assert!(is_given_up_leader_stall(&ci_finding(CI_SUMMARY, &CI_ROWS)));
+}
+
+#[test]
+fn the_tracked_stall_needs_matching_names_a_cap_and_whole_rows() {
+    // Census names differ from the stuck list.
+    let renamed = CI_SUMMARY.replace("stream/20", "stream/21");
+    assert!(!is_given_up_leader_stall(&ci_finding(&renamed, &CI_ROWS)));
+    // Four stuck shards: more than the checker prints censuses for.
+    let four = "4 of 178 shards are not served by exactly one broker 60s after the faults healed: stream/6 (0 serving), stream/20 (0 serving), stream/7 (0 serving), stream/8 (0 serving)";
+    let mut finding = ci_finding(four, &CI_ROWS);
+    finding = finding
+        .with(ci_census("stream/7", 3, &CI_ROWS))
+        .with(ci_census("stream/8", 4, &CI_ROWS));
+    assert!(!is_given_up_leader_stall(&finding));
+    // A node row with no phase (a node that is down).
+    let mut short = CI_ROWS;
+    short[0] = "  b1    down      no    no     -    -        ";
+    assert!(!is_given_up_leader_stall(&ci_finding(CI_SUMMARY, &short)));
 }
 
 /// A history violation beside the tracked stall still fails the run.
