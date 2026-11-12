@@ -239,6 +239,16 @@ the broker drains, which is intended, and it fails if
 `FELIX_BROKER_METRICS_BIND` moves the metrics port. For orchestrator probes,
 use `/ready` for readiness and `/live` for liveness.
 
+### A shard directory was deleted, emptied or restored on its own
+
+Do not do this. Stop the broker and replace or wipe its whole data directory
+instead, so the broker gets a new storage id and rejoins through the readmission
+rules. The broker keeps its storage id, copy trust and kept ballots at the data
+directory root, so after a single shard directory changes it still reports that
+copy as kept and trusted, and a promotion can count the empty copy and lose an
+acknowledged write. Version 0.8 removes the hazard
+([#2376](https://github.com/GetFelix/felix/issues/2376)).
+
 ### Permission denied on the data directory
 
 The image runs as uid and gid 65532, and `/var/lib/felix` is its volume. Point
