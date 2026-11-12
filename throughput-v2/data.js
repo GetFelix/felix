@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794452766532,
+  "lastUpdate": 1794455238668,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52572,6 +52572,58 @@ window.BENCHMARK_DATA = {
             "range": "51982.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1133342.19\nmean: 1115082.64\nstdev: 51982.45\ncv: 4.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb2e93eaffec7038c0b9d0518516b62adab16110",
+          "message": "feat(storage): the metadata store's member file and start decision (#2228) (#2325)\n\n* feat(storage): the metadata store's member file and start decision (#2228)\n\nThe member file (store/member) holds the cluster id, the vote-withheld\nflag and the converted and started marks under one checksum, replaced by\none rename that is on disk before a change returns. decide_start reads\nnames and that file only: it never opens raft.redb and never writes.\n\nThe snapshot file is the raft_log adapter's SnapshotStore, unchanged in\nformat. A temporary a crash left is now deleted at open, and the format\nhas a byte fixture and a test that another version is refused.\n\nNothing calls the new code yet; the control plane switches over in #2230.\n\nSpec-Unaffected: no running code uses these files, and no protocol or\nreplication behaviour changes.\n\n* fix(storage): a metadata store is created whole and opened once (#2228)\n\nMemberFile::open takes the cluster id and builds a new store under\nstore.tmp (member file and empty log/), renames it into place and syncs\nthe data directory before it returns, so the log can never be opened in\na store without a member file and a Started proves a durable store.\ndecide_start and open both refuse a store missing its member file or\nlog/, and an undecodable member file with or without raft.redb.\nStart::Existing carries the member. A second open of a store in one\nprocess is refused. Started carries its store dir. A snapshot with its\nreserved bytes set is refused.\n\nSpec-Unaffected: storage file layout and open rules only; no protocol, fencing or Raft rule changes.",
+          "timestamp": "2026-11-12T03:42:12Z",
+          "tree_id": "f69b13043f0e5d6bc6ed9f395964e3d8c37f3240",
+          "url": "https://github.com/GetFelix/felix/commit/eb2e93eaffec7038c0b9d0518516b62adab16110"
+        },
+        "date": 1794455238108,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 624392.22,
+            "range": "48138.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624392.22\nmean: 629933.94\nstdev: 48138.41\ncv: 7.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 624392.22,
+            "range": "48138.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 624392.22\nmean: 629933.94\nstdev: 48138.41\ncv: 7.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 159222.7,
+            "range": "4143.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 159222.70\nmean: 161592.13\nstdev: 4143.62\ncv: 2.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1592226.96,
+            "range": "41436.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1592226.96\nmean: 1615921.33\nstdev: 41436.23\ncv: 2.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
