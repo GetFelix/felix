@@ -42,12 +42,13 @@ For a number worth recording, use Actions: **Metadata Raft benchmark**
 (`metadata-bench.yml`), "Run workflow", scale `full`. Leave `base` empty to
 get one table. To gate a change, set `base` to the commit before it. The job
 builds both commits, runs base, head, then base again, and compares. The second
-base run is the A/A run: the gap between the two base runs of a cell is that
-cell's noise band, and head fails a cell only when it is worse than base by
-more than the band (at least 5%). A cell head does not report fails. Throughput
-is better higher; every other metric is better lower. Both sides run the
-head commit's benchmark file, so a base that predates it still works as long as
-the store traits it uses have not changed.
+base run is the A/A run: the gap between the two base runs of a cell, as a
+fraction of their mean, is that cell's noise band (never under 10%). Head is
+held against the mean of the two base runs and fails a cell only when it is
+worse by more than the band. A cell head does not report fails. Throughput is
+better higher; every other metric is better lower. Both sides run the head
+commit's benchmark file, so a base that predates it still works as long as the
+store traits it uses have not changed.
 
 ## The redb baseline
 

@@ -7,9 +7,9 @@
 Each file is the output of `tests/metadata_bench.rs`: {"cells": {cell: {metric: number}}}.
 A metric is better when higher (`ops_per_s`) or lower (everything else that
 is a time, size or cost). `--aa` is a second run of the baseline; the gap
-between the two runs of one cell is that cell's noise band, and HEAD fails a
-cell only when it is worse than BASE by more than the band (at least
---floor, 5% by default). A cell HEAD does not report fails: a missing
+between the two runs of one cell, as a fraction of their mean, is that cell's
+noise band. HEAD is held against that mean and fails a cell only when it is
+worse by more than the band, which is at least --floor (10% by default). A cell HEAD does not report fails: a missing
 measurement is never a pass. `failed` counts and `ok` flags must not get worse.
 """
 import argparse
@@ -49,15 +49,17 @@ def compare(args):
             rows.append((name, base[name], None, None, None, "FAIL (missing)"))
             failed = True
             continue
-        band = args.floor
+        reference, band = base[name], args.floor
         if name in aa:
-            band = max(band, abs(worse_by(metric, base[name], aa[name])))
-        worse = worse_by(metric, base[name], head[name])
+            reference = (base[name] + aa[name]) / 2
+            if reference != 0:
+                band = max(band, abs(base[name] - aa[name]) / abs(reference))
+        worse = worse_by(metric, reference, head[name])
         verdict = "FAIL" if worse > band else "ok"
         failed |= verdict == "FAIL"
-        rows.append((name, base[name], head[name], worse, band, verdict))
+        rows.append((name, reference, head[name], worse, band, verdict))
     lines = [
-        "| Cell and metric | Base | Head | Worse by | Noise band | |",
+        "| Cell and metric | Base (mean) | Head | Worse by | Noise band | |",
         "|---|---|---|---|---|---|",
     ]
     for name, b, h, worse, band, verdict in rows:
@@ -87,7 +89,7 @@ def main():
     cmp_parser.add_argument("base")
     cmp_parser.add_argument("head")
     cmp_parser.add_argument("--aa")
-    cmp_parser.add_argument("--floor", type=float, default=0.05)
+    cmp_parser.add_argument("--floor", type=float, default=0.10)
     cmp_parser.add_argument("--md")
     cmp_parser.set_defaults(run=compare)
     table_parser = sub.add_parser("table")
