@@ -1201,6 +1201,17 @@ empty (configuration rejects an empty `FELIX_RAFT_CLUSTER_ID`). The write
 changes nothing the check reads. Without a stub the older binary would find
 no store and come up as a new, empty member.
 
+**What a build without the switch does with `store/`.** It refuses to
+start, before it creates `raft.redb` or writes anything, and the error names
+`--cfg felix_segment_store`. `felix-controlplane raft form-without` refuses
+the directory too. A directory made by a build with the switch has `store/`
+and no `raft.redb`. Without the check, a build without the switch would
+create an empty `raft.redb` there and start as a new member. Restart every
+member that way and the group forms again with no metadata. No mark says
+that a store was rolled back, because `rollback` and `restore` move
+`store/` aside. So any `store/` is refused, and the way back to redb goes
+through those commands.
+
 **How the service decides, without reading redb.** It looks at names and at
 its own member file only:
 
