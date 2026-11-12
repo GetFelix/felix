@@ -83,6 +83,53 @@ async fn a_log_clone_keeps_the_store_locked_after_the_store_is_dropped() {
     open(dir.path()).await.expect("released");
 }
 
+/// A shutdown closes the log for every clone: an append through one left
+/// over fails, so it cannot write once the lock is free for another opener.
+#[tokio::test]
+async fn a_log_clone_cannot_append_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    append_flushed(&mut log, &entries(0, 3)).await;
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+
+    append(&mut log, &entries(3, 4))
+        .await
+        .err()
+        .expect("refused");
+    assert!(log.disk_log().is_closed());
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// openraft builds a snapshot on a task it does not wait for, so a clone of
+/// the snapshot store can outlive the store. It keeps the store locked
+/// while the store is dropped, and after a shutdown it cannot install.
+#[tokio::test]
+async fn a_snapshot_store_clone_cannot_install_into_a_released_store() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let snapshots = store.snapshots().clone();
+    let log = store.log();
+    log.disk_log().shutdown().await.expect("shutdown");
+    drop(log);
+    drop(store);
+    let err = open(dir.path()).await.err().expect("second open");
+    assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
+    drop(snapshots);
+
+    let store = open(dir.path()).await.expect("released");
+    let snapshots = store.snapshots().clone();
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released after shutdown");
+    snapshots
+        .install(snapshot(3))
+        .await
+        .expect_err("refused after shutdown");
+    assert_eq!(reopened.snapshots().covers(), None);
+    reopened.shutdown().await.expect("shutdown");
+}
+
 /// Several first starts of one data directory at once, over and over: each
 /// either opens or is refused as busy, and the store they leave is whole.
 #[test]

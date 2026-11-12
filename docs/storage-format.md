@@ -1204,9 +1204,12 @@ The file is empty and is not part of the store's state. One that is missing
 is created. On a platform without `flock`, and on the simulator's in-memory
 filesystem, the claim is kept in the process instead.
 
-The lock lives as long as the log does: the log holds it too, so a clone of
-the log that outlives the store (after an error, or a failed shutdown) keeps
-the store locked while its flusher can still write.
+The lock lives as long as the log and the snapshot store do: both hold it
+too, so a clone that outlives the store (after an error, a failed shutdown,
+or a snapshot build openraft did not wait for) keeps the store locked while
+it can still write. A clean shutdown closes both before it lets the lock go,
+so an append or a snapshot install through a clone left over fails instead
+of writing into a store another process may have opened.
 
 A first start also takes an exclusive `flock` on the data directory while it
 builds the store, so two first starts do not share `store.tmp`. The one that
