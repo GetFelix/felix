@@ -520,6 +520,7 @@ With the disk faults on, built with the flag, as of #2327:
 | Mode | Seeds | What fails | Issue |
 | --- | --- | --- | --- |
 | `wipe` | 1, 2 | Stream shards served by nobody after one-broker wipes, the leader stuck in `fencing` (`election-settles`, `final-reads`). | #2336 |
+| `wipe` | 3 | Shards served by nobody after both data directories of a group's majority are wiped. The group needs the operator re-form, which the mode does not run. | |
 | `majority-cut-relaxed` | 2 | cache/3 served by nobody: the named leader has an empty log and phase `failed`, the replicas hold the records. | #2336 |
 
 With power loss on, seed 3 cuts the power during an append, and
