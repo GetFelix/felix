@@ -3,10 +3,9 @@
 //! Each one runs under the nemesis's disk lock. It reads every broker's
 //! stream shards before and after, so [`judge`](crate::cluster::disks::judge)
 //! can say which acknowledged records no disk holds, and whether this fault
-//! may lose them. A loss it may cause is not held against the cluster: the
-//! shard's earlier acknowledgements are forgotten the way an operator's
-//! abandon forgets them, and the run reports the loss. Anything else is a
-//! finding.
+//! may lose them. A loss it may cause is not held against the cluster: those
+//! records become unknown in the history, and the run reports the loss.
+//! Anything else is a finding.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,7 +14,8 @@ use felix_cluster::history::rng::Rng;
 use felix_storage::log::FsyncMode;
 
 use super::{Fault, Nemesis, Plan, Step};
-use crate::cluster::disks::{Observed, acked_values, judge};
+use crate::client::Recorder;
+use crate::cluster::disks::{Observed, acked_values, judge, thin};
 use crate::cluster::{DiskEvent, WipeScope};
 
 impl Plan {
@@ -134,7 +134,14 @@ impl Nemesis {
                     .await;
             }
             Fault::Wipe { scope, .. } => {
-                let wiped = self.cluster.wipe(&nodes, *scope);
+                // Stopped first, so nothing is acknowledged between reading
+                // the disks and wiping them.
+                for &node in &nodes {
+                    self.cluster.crash(node).await;
+                }
+                let scope = *scope;
+                let cluster = &self.cluster;
+                let wiped = async { cluster.wipe_stopped(&nodes, scope) };
                 self.disk_fault(format!("{fault}"), &nodes, true, wiped)
                     .await;
             }
@@ -148,7 +155,9 @@ impl Nemesis {
     }
 
     /// Run `act`, which changes the devices of `nodes`, and account for what
-    /// it cost.
+    /// it cost. A multi-broker `act` must change the devices before its first
+    /// await: a record acknowledged after the disks were read is not judged
+    /// here, only at the end of the run.
     pub(super) async fn disk_fault<R>(
         &self,
         what: String,
@@ -157,11 +166,20 @@ impl Nemesis {
         act: impl std::future::Future<Output = R>,
     ) -> R {
         let _guard = self.disks.lock().await;
+        // Which copies a leader could vouch, for the hold rule.
+        self.cluster.note_state().await;
         let at = self.cluster.elapsed();
-        let before = self.cluster.disk_values();
+        // Acknowledged before the disks are read, so a quorum's disks hold it.
         let acked = acked_values(&self.recorder.history());
+        let before = self.cluster.disk_values();
         let out = act.await;
         let after = self.cluster.disk_values();
+        let judged: std::collections::BTreeSet<u64> = acked.values().flatten().copied().collect();
+        let late: Vec<u64> = acked_values(&self.recorder.history())
+            .into_values()
+            .flatten()
+            .filter(|value| !judged.contains(value))
+            .collect();
         let event = judge(Observed {
             at,
             what,
@@ -173,16 +191,14 @@ impl Nemesis {
             gone: &self.gone.lock(),
             thinned: &self.thinned.lock(),
         });
-        {
-            let mut thinned = self.thinned.lock();
-            for values in acked.values() {
-                for value in values {
-                    if nodes.iter().any(|&node| before[node].contains(value)) {
-                        thinned.insert(*value);
-                    }
-                }
-            }
-        }
+        thin(
+            &mut self.thinned.lock(),
+            nodes,
+            &acked,
+            &late,
+            &before,
+            &after,
+        );
         self.gone.lock().extend(
             event
                 .excused
@@ -191,32 +207,37 @@ impl Nemesis {
                 .copied()
                 .chain(event.unexcused.iter().map(|(_, value, _)| *value)),
         );
-        self.settle(&event, nodes.len());
+        settle(&self.recorder, &event, nodes.len(), loses_synced);
         self.cluster.record_disk_event(event);
         out
     }
+}
 
-    /// Forget what a fault was allowed to lose, and say so in the timeline.
-    fn settle(&self, event: &DiskEvent, faulted: usize) {
-        for (shard, values) in &event.excused {
-            self.recorder.fault(format!(
-                "{} acknowledged records of stream shard {shard} are on no disk, which this fault may lose",
-                values.len()
-            ));
-            self.recorder.abandoned(*shard);
-        }
-        if !event.excused.is_empty() && faulted >= 2 {
-            self.recorder.fault(
-                "acknowledged cache writes may be on no disk either; the cache is not judged from here"
-                    .to_string(),
-            );
-            self.recorder.cache_lost();
-        }
-        if !event.unexcused.is_empty() {
-            self.recorder.fault(format!(
-                "{} acknowledged records are on no disk and this fault may not lose them",
-                event.unexcused.len()
-            ));
-        }
+/// Forget what a fault was allowed to lose, and say so in the timeline.
+fn settle(recorder: &Recorder, event: &DiskEvent, faulted: usize, loses_synced: bool) {
+    for (shard, values) in &event.excused {
+        recorder.fault(format!(
+            "{} acknowledged records of stream shard {shard} are on no disk, which this fault may lose",
+            values.len()
+        ));
+        recorder.lost(values.iter().copied());
+    }
+    // The cache's disks are not read, so a fault that may have taken the last
+    // copy of a cache write is assumed to have.
+    if loses_synced && (faulted >= 2 || !event.excused.is_empty()) {
+        recorder.fault(
+            "acknowledged cache writes may be on no disk either; cache writes before now are not judged"
+                .to_string(),
+        );
+        recorder.cache_lost();
+    }
+    if !event.unexcused.is_empty() {
+        recorder.fault(format!(
+            "{} acknowledged records are on no disk and this fault may not lose them",
+            event.unexcused.len()
+        ));
     }
 }
+
+#[cfg(test)]
+mod tests;

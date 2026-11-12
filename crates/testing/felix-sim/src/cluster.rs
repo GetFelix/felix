@@ -505,7 +505,8 @@ impl SimCluster {
 
     /// Cut the power under every running broker in `nodes` in the same
     /// instant, with no append waited for, and leave them down with what
-    /// their devices held. Returns the brokers it cut.
+    /// their devices held. Returns the brokers it cut. Nothing awaits before
+    /// the cut, so the caller can read the disks just before it.
     pub async fn power_loss_together(self: &Arc<Self>, nodes: &[usize]) -> Vec<usize> {
         let running: Vec<usize> = nodes
             .iter()
@@ -515,7 +516,6 @@ impl SimCluster {
         if running.is_empty() {
             return running;
         }
-        self.note_state().await;
         let at = self.elapsed();
         // No await until every device is fixed: it is one instant.
         for &index in &running {
@@ -541,15 +541,26 @@ impl SimCluster {
 
     /// Stop the brokers in `nodes` as an operator would, then empty what
     /// `scope` names on each. A shard wipe picks the directory from the first
-    /// running broker and empties it on every broker in `nodes` that has it.
+    /// broker in `nodes` and empties it on every one of them that has it.
     /// The brokers stay down until [`Self::restart`]. Returns the brokers
     /// wiped.
     pub async fn wipe(&self, nodes: &[usize], scope: WipeScope) -> Vec<usize> {
+        for &index in nodes {
+            self.crash(index).await;
+        }
+        self.wipe_stopped(nodes, scope)
+    }
+
+    /// [`Self::wipe`] on brokers already stopped, with no await: the disks
+    /// change in one instant. A broker still running is left alone.
+    pub fn wipe_stopped(&self, nodes: &[usize], scope: WipeScope) -> Vec<usize> {
         let mut wiped = Vec::new();
         let mut target: Option<std::path::PathBuf> = None;
         for &index in nodes {
-            self.crash(index).await;
             let node = &self.nodes[index];
+            if !node.is_down() {
+                continue;
+            }
             let below = match scope {
                 WipeScope::Root => std::path::PathBuf::new(),
                 WipeScope::Shard { pick } => {

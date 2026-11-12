@@ -205,8 +205,9 @@ brokers that do not sync first, so acknowledged bytes are really lost and the
 restart takes a new storage id; `FELIX_SIM_MAJORITY_CUT=1` cuts several
 brokers at once and `FELIX_SIM_WIPE=1` empties shard or data directories. A
 checker holds each to what it may lose: nothing acknowledged under
-sync-on-commit, and under a relaxed mode or a wipe only records that every
-disk holding them lost. With placement
+sync-on-commit, and under a relaxed mode or a wipe only records that no disk
+holds any more and that at least two disks lost. At the end of the run every
+acknowledged record no fault took must still be on some disk. With placement
 faults on (`FELIX_SIM_PLACEMENT=1`), the nemesis also acts as an operator
 through the control plane's API: it moves shards, drains and removes brokers so
 follower seats are replaced, abandons held shards' logs, and stops a broker

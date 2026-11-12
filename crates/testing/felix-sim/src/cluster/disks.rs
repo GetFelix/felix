@@ -98,13 +98,19 @@ pub(crate) fn acked_values(history: &History) -> BTreeMap<u32, Vec<u64>> {
     acked
 }
 
+/// Acknowledged records a fault took a copy of, each with the brokers whose
+/// disks lost it, until two disks hold the record again.
+pub(crate) type Thinned = BTreeMap<u64, BTreeSet<usize>>;
+
 /// One fault that changed devices, and what it cost.
 #[derive(Debug, Clone)]
 pub struct DiskEvent {
     pub at: Duration,
     pub what: String,
     /// Acknowledged records that no disk holds now, by shard, that this fault
-    /// may lose: every disk that held one was changed, and at least two did.
+    /// may lose: it changed every disk that held one, and at least two disks
+    /// lost it, counting a copy an earlier fault took that was not copied
+    /// back.
     pub excused: BTreeMap<u32, Vec<u64>>,
     /// Acknowledged records that no disk holds now and this fault may not
     /// lose, with why.
@@ -129,9 +135,9 @@ pub(crate) struct Observed<'a> {
     pub(crate) acked: &'a BTreeMap<u32, Vec<u64>>,
     /// Every record an earlier fault took, so one loss is judged once.
     pub(crate) gone: &'a BTreeSet<u64>,
-    /// Every record an earlier fault took a copy of, which may be on one disk
-    /// now without anything having been acknowledged short of a quorum.
-    pub(crate) thinned: &'a BTreeSet<u64>,
+    /// Copies earlier faults took, which is how a record acknowledged by a
+    /// quorum may be on one disk now.
+    pub(crate) thinned: &'a Thinned,
 }
 
 /// What the fault cost.
@@ -164,11 +170,14 @@ pub(crate) fn judge(seen: Observed<'_>) -> DiskEvent {
             let holders: Vec<usize> = (0..before.len())
                 .filter(|&i| before[i].contains(&value))
                 .collect();
+            let taken_earlier = thinned.get(&value).map_or(0, |disks| {
+                disks.iter().filter(|disk| !holders.contains(disk)).count()
+            });
             if holders.is_empty() {
                 event
                     .unexcused
                     .push((shard, value, "no disk held it before the fault"));
-            } else if holders.len() < 2 && !thinned.contains(&value) {
+            } else if holders.len() + taken_earlier < 2 {
                 event
                     .unexcused
                     .push((shard, value, "acknowledged with one copy on disk"));
@@ -186,6 +195,54 @@ pub(crate) fn judge(seen: Observed<'_>) -> DiskEvent {
         }
     }
     event
+}
+
+/// Note which copies of acknowledged records a fault took. A faulted disk
+/// that held a record before and not after lost a copy. A record no fault
+/// judged (acknowledged while the fault ran, in `late`) counts as lost by
+/// every faulted disk that does not hold it after, since what those disks
+/// held is not known. A record two disks hold again is dropped.
+pub(crate) fn thin(
+    thinned: &mut Thinned,
+    faulted: &[usize],
+    acked: &BTreeMap<u32, Vec<u64>>,
+    late: &[u64],
+    before: &[BTreeSet<u64>],
+    after: &[BTreeSet<u64>],
+) {
+    let held = |disks: &[BTreeSet<u64>], value: u64| {
+        disks.iter().filter(|disk| disk.contains(&value)).count()
+    };
+    thinned.retain(|&value, _| held(before, value) < 2);
+    for &value in acked.values().flatten() {
+        for &node in faulted {
+            if before[node].contains(&value) && !after[node].contains(&value) {
+                thinned.entry(value).or_default().insert(node);
+            }
+        }
+    }
+    for &value in late {
+        for &node in faulted {
+            if !after[node].contains(&value) {
+                thinned.entry(value).or_default().insert(node);
+            }
+        }
+    }
+    thinned.retain(|&value, _| held(after, value) < 2);
+}
+
+/// Acknowledged records, by shard, that no disk in `disks` holds and no
+/// fault took (`gone`).
+pub(crate) fn missing(
+    acked: &BTreeMap<u32, Vec<u64>>,
+    disks: &[BTreeSet<u64>],
+    gone: &BTreeSet<u64>,
+) -> Vec<(u32, u64)> {
+    acked
+        .iter()
+        .flat_map(|(&shard, values)| values.iter().map(move |&value| (shard, value)))
+        .filter(|(_, value)| !gone.contains(value) && !disks.iter().any(|d| d.contains(value)))
+        .collect()
 }
 
 #[cfg(test)]

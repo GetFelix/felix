@@ -9,9 +9,16 @@
 //! fsync-on-commit a cut takes nothing that was acknowledged, however many
 //! brokers it cuts.
 //!
+//! At the end of the run every broker's disk is read once more, and every
+//! acknowledged record that no fault took must be on one of them. This also
+//! covers shards that could not be read back through a broker.
+//!
 //! `docs/release-gate.md`, rows 3, 4, 5, 8 and 23.
 
+use std::collections::BTreeSet;
+
 use super::{CheckContext, Checker, Finding, Point};
+use crate::cluster::disks::{acked_values, missing};
 
 /// Every fault that changed devices lost only what it was allowed to.
 #[derive(Debug, Default)]
@@ -32,7 +39,10 @@ impl Checker for AckedOnSomeDisk {
         }
         let mut findings = Vec::new();
         let mut allowed = 0;
+        let mut gone = BTreeSet::new();
         for event in ctx.cluster.disk_events() {
+            gone.extend(event.excused.values().flatten().copied());
+            gone.extend(event.unexcused.iter().map(|(_, value, _)| *value));
             allowed += event.excused.values().map(Vec::len).sum::<usize>();
             if event.unexcused.is_empty() {
                 continue;
@@ -56,12 +66,33 @@ impl Checker for AckedOnSomeDisk {
                 ),
             ));
         }
+        let lost = missing(
+            &acked_values(&ctx.history),
+            &ctx.cluster.disk_values(),
+            &gone,
+        );
+        if !lost.is_empty() {
+            let shown: Vec<String> = lost
+                .iter()
+                .take(SHOW)
+                .map(|(shard, value)| format!("value {value} of shard {shard}"))
+                .collect();
+            findings.push(Finding::new(
+                self.name(),
+                format!(
+                    "at the end of the run {} acknowledged records are on no disk and no fault \
+                     took them, such as {}",
+                    lost.len(),
+                    shown.join(", ")
+                ),
+            ));
+        }
         if allowed > 0 {
             findings.push(Finding::warning(
                 self.name(),
                 format!(
                     "{allowed} acknowledged records were on no disk after a fault that may lose \
-                     them; their shards are judged only from the fault on"
+                     them; they are unknown in the history"
                 ),
             ));
         }

@@ -924,4 +924,5 @@ fn seed_3_wipes_lose_only_what_every_disk_holding_it_lost() {
         .count();
     assert!(wipes > 0, "no wipe ran:\n{outcome}");
     assert!(!lost_acked(&outcome), "{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
 }

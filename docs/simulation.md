@@ -282,26 +282,38 @@ crashes and changes when a cut is rebooted, so the restart of a broker whose
 power went out reads its run state as a crash in an earlier boot and takes a new
 storage id, as a real broker does (`run_state::begin`).
 
-Each of these faults runs alone (a lock in the nemesis), and reads every
-broker's stream shards before and after. The `acked-on-some-disk` checker then
-holds it to this:
+Each of these faults runs alone (a lock in the nemesis). It reads every
+broker's stream shards just before it changes the disks and again after. A
+fault of several brokers changes all their disks in one instant, so nothing is
+acknowledged between the read and the change. The `acked-on-some-disk` checker
+then holds it to this:
 
 - A record acknowledged to a client is held by a quorum, so one fault that
   changes one broker's disk never takes it off every disk.
 - A power cut under sync-on-commit never takes an acknowledged record off any
   disk, however many brokers it cuts.
-- A relaxed power cut or a wipe that changes at least two brokers' disks may
-  take a record only they held. The run names the loss, and the shard's
-  history is checked from the fault on, the way an operator's abandon is
-  (`forget_abandoned`). The cache is not checked from then on, because its
-  disks are not read.
+- A relaxed power cut or a wipe may take a record off every disk only when
+  it changed every disk that held the record and at least two disks lost it.
+  A copy an earlier fault took counts toward the two until the record is on
+  two disks again. The run names the loss, and only those records become
+  unknown in the history (`forget_lost`). A read that saw one is dropped.
+  Every other append and read of the shard is still checked.
+- The cache's disks are not read. When a fault may have taken the last copy
+  of a cache write, every cache write that finished before it becomes
+  unknown, and cache reads from before it are dropped. Cache operations after
+  the fault are checked as usual.
 - A record acknowledged while only one disk held it, or that no disk held
   before the fault, is a finding.
+- At the end of the run every broker's disk is read once more. An
+  acknowledged record that no fault took must be on one of them, whether or
+  not its shard could be read back through a broker.
 
 A wiped broker comes back as a broker with no copy, or with a new storage id
-when its whole directory went. A group whose copies were all untrusted is held
-until an operator abandons it, as after kills, so these modes show the same
-tracked stalls (`election-settles`, `final-reads`) as kills do.
+when its whole directory went. On the hybrid, one-broker wipes can leave
+stream shards that nothing holds on purpose with no leader: the named leader
+stays in `fencing` while a replica with as long a log is up (#2336). These
+are not exempt, so they fail `election-settles` and `final-reads`. See the
+known failing seeds below.
 
 ### Placement faults
 
@@ -502,6 +514,13 @@ Seeds 1 to 20, built with the flag, as of the change that made replay exact:
 | 7, 8, 10, 12, 15, 16, 17, 18, 20 | After the heal some shards are served by nobody (`ElectionSettles`), so they cannot be read (`final-reads`). The census shows the control plane still naming the old leader while the brokers route to an elected one. | not filed yet |
 | 2, 11 | A shard cannot be read to its tail after the heal (`final-reads`). | not filed yet |
 | 9 | The history checker finds a read that misses an append acknowledged before it began (rule 16, G-single-realtime). | not filed yet |
+
+With the disk faults on, built with the flag, as of #2327:
+
+| Mode | Seeds | What fails | Issue |
+| --- | --- | --- | --- |
+| `wipe` | 1, 2 | Stream shards served by nobody after one-broker wipes, the leader stuck in `fencing` (`election-settles`, `final-reads`). | #2336 |
+| `majority-cut-relaxed` | 2 | cache/3 served by nobody: the named leader has an empty log and phase `failed`, the replicas hold the records. | #2336 |
 
 With power loss on, seed 3 cuts the power during an append, and
 `seed_3_power_cuts_run_the_same_twice_and_are_repaired` checks that it replays

@@ -452,8 +452,8 @@ pub struct Nemesis {
     disks: tokio::sync::Mutex<()>,
     /// Acknowledged records a disk fault took off every disk.
     gone: Mutex<BTreeSet<u64>>,
-    /// Acknowledged records a disk fault took a copy of.
-    thinned: Mutex<BTreeSet<u64>>,
+    /// Copies of acknowledged records disk faults took.
+    thinned: Mutex<crate::cluster::disks::Thinned>,
     /// Cancelled by [`Nemesis::heal`]: pending ends of faults stand down.
     stopped: CancellationToken,
 }
@@ -466,7 +466,7 @@ impl Nemesis {
             holds: Mutex::new(Holds::default()),
             disks: tokio::sync::Mutex::new(()),
             gone: Mutex::new(BTreeSet::new()),
-            thinned: Mutex::new(BTreeSet::new()),
+            thinned: Mutex::new(Default::default()),
             stopped: CancellationToken::new(),
         })
     }

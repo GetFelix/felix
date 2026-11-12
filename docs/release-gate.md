@@ -93,9 +93,13 @@ liveness check of the history campaign is today
 | 22 | Re-form races | Sim aimed schedules (gap 3) | A pinned seed each, and 2000 seeds with the schedules on | A voter of a newer membership that the control plane does not know is waited for. A voter missing from a forced re-form that comes back under its old id stops, and nothing it sends is accepted. A retired copy whose group elected anyway rotates its copy id and rejoins as a learner |
 | 23 | Power loss under relaxed fsync, one broker and a majority | Sim modes `relaxed-power-loss` and `majority-cut-relaxed` (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. A cut majority re-forms and is served. Only records no surviving disk holds are lost |
 
-Rows 1, 2, 10 and 12 run today on the hybrid, and so do the sim modes of rows 3, 4, 5 and 23 (the history wipe fault is not built yet). The others wait for the code
-or the harness they name. Row 23 applies only to logs that accept a relaxed
-fsync mode (#2248).
+Rows 1, 2, 10 and 12 run today on the hybrid. The sim modes of rows 3, 4, 5
+and 23 run too, but they check only part of each row. The modes have no
+operator re-form step. A shard left unserved is a tracked stall in the sweep,
+which fails nothing (#2336). Nothing counts the seeds that cut or wiped a
+majority, so the "at least 200" quotas are not checked. The history wipe fault
+is not built yet. The others wait for the code or the harness they name. Row
+23 applies only to logs that accept a relaxed fsync mode (#2248).
 
 **Row 13, term limits.** Deferred with sleep (#2167). A count of terms per fault says little: one real
 failure may cost several terms and a harmless event must cost none. The

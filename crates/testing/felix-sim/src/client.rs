@@ -33,7 +33,7 @@
 //! fleet reads by lease) confirms the broker still leads the shard at the
 //! generation it read at, as a state read is.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -81,8 +81,10 @@ pub struct Recorder {
     values: AtomicU64,
     /// When an operator abandoned each list's log, on the history's clock.
     abandoned: Mutex<BTreeMap<String, u64>>,
-    /// A fault lost acknowledged cache writes it was allowed to lose.
-    cache_lost: std::sync::atomic::AtomicBool,
+    /// Acknowledged appends a fault took off every disk, which it may do.
+    lost: Mutex<BTreeSet<u64>>,
+    /// When a fault last lost cache writes it was allowed to lose.
+    cache_lost: Mutex<Option<u64>>,
 }
 
 impl Recorder {
@@ -109,7 +111,8 @@ impl Recorder {
             }),
             values: AtomicU64::new(0),
             abandoned: Mutex::new(BTreeMap::new()),
-            cache_lost: std::sync::atomic::AtomicBool::new(false),
+            lost: Mutex::new(BTreeSet::new()),
+            cache_lost: Mutex::new(None),
         })
     }
 
@@ -131,11 +134,11 @@ impl Recorder {
         });
     }
 
-    fn push(&self, op: Op) {
+    pub(crate) fn push(&self, op: Op) {
         self.history.lock().ops.push(op);
     }
 
-    fn push_register(&self, op: RegisterOp) {
+    pub(crate) fn push_register(&self, op: RegisterOp) {
         self.history.lock().registers.push(op);
     }
 
@@ -153,12 +156,18 @@ impl Recorder {
         self.abandoned.lock().insert(list_name(shard), at);
     }
 
-    /// A fault just cost the cache writes it was allowed to lose. The cache
-    /// is not judged from here on: its disks are not read, so which keys lost
-    /// a write is not known.
+    /// A fault took these acknowledged appends off every disk, which it may
+    /// do (see [`forget_lost`]).
+    pub fn lost(&self, values: impl IntoIterator<Item = u64>) {
+        self.lost.lock().extend(values);
+    }
+
+    /// A fault just cost cache writes it was allowed to lose. Its disks are
+    /// not read, so which keys lost a write is not known, and every write
+    /// that finished before now becomes unknown (see [`forget_cache_writes`]).
     pub fn cache_lost(&self) {
-        self.cache_lost
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let at = self.now();
+        *self.cache_lost.lock() = Some(at);
     }
 
     /// The lists whose log an operator abandoned, with when.
@@ -172,8 +181,9 @@ impl Recorder {
     pub fn history(&self) -> History {
         let mut history = self.history.lock().clone();
         forget_abandoned(&mut history, &self.abandoned.lock());
-        if self.cache_lost.load(std::sync::atomic::Ordering::SeqCst) {
-            history.registers.clear();
+        forget_lost(&mut history, &self.lost.lock());
+        if let Some(at) = *self.cache_lost.lock() {
+            forget_cache_writes(&mut history, at);
         }
         history
     }
@@ -200,6 +210,53 @@ pub fn forget_abandoned(history: &mut History, abandoned: &BTreeMap<String, u64>
             }
             Action::Read { list, .. } => abandoned.get(list).is_none_or(|at| invoke >= *at),
         }
+    });
+}
+
+/// A disk fault took the acknowledged appends in `lost` off every disk, and
+/// was allowed to. Each becomes unknown, and a read that saw one is dropped,
+/// since it read a log that is gone. Every other append and read of the same
+/// list is still checked.
+pub fn forget_lost(history: &mut History, lost: &BTreeSet<u64>) {
+    if lost.is_empty() {
+        return;
+    }
+    history.ops.retain_mut(|op| match &mut op.action {
+        Action::Append { value, outcome, .. } => {
+            if lost.contains(value) && matches!(outcome, AppendOutcome::Ok { .. }) {
+                *outcome = AppendOutcome::Info;
+            }
+            true
+        }
+        Action::Read { observed, .. } => !observed.iter().any(|e| lost.contains(&e.value)),
+    });
+}
+
+/// A fault at `at` may have lost cache writes that finished before it, and
+/// which keys lost one is not known. Each such write becomes unknown, and
+/// what an operation saw before the fault is dropped, since a lost write can
+/// make a later read look older. Everything that finished after the fault is
+/// checked as usual.
+pub fn forget_cache_writes(history: &mut History, at: u64) {
+    history.registers.retain_mut(|op| {
+        if op.complete >= at {
+            return true;
+        }
+        match &mut op.action {
+            RegisterAction::Put { acknowledged, .. } => *acknowledged = false,
+            RegisterAction::Delete { removed } => match removed {
+                Some(Some(_)) => *removed = None,
+                Some(None) => return false,
+                None => {}
+            },
+            RegisterAction::PutIf { applied, .. } => match applied {
+                Some(true) => *applied = None,
+                Some(false) => return false,
+                None => {}
+            },
+            RegisterAction::Get { .. } => return false,
+        }
+        true
     });
 }
 
