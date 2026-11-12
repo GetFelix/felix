@@ -274,13 +274,16 @@ impl Campaign {
             .as_ref()
             .ok_or_else(|| anyhow!("control plane is not running"))?;
         let mut placed = Vec::new();
-        for assignment in control_plane.store.list_shard_assignments().await? {
+        for assignment in control_plane.live_store().list_shard_assignments().await? {
             if self
                 .shard_names()
                 .any(|(_, name)| name == assignment.key.stream)
             {
                 placed.push((assignment.key.stream.clone(), assignment.generation));
-                control_plane.store.put_shard_assignment(assignment).await?;
+                control_plane
+                    .live_store()
+                    .put_shard_assignment(assignment)
+                    .await?;
             }
         }
         wait::until(SETTLE_TIMEOUT, "each set to be written again", || async {

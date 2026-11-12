@@ -191,6 +191,15 @@ impl ControlPlane {
         Ok(control_plane)
     }
 
+    /// The store to read and write through now. In group mode that is a
+    /// running member's, and which one changes as members are killed.
+    pub(crate) fn live_store(&self) -> Arc<dyn ControlPlaneAuthStore + Send + Sync> {
+        match self.group.as_ref().and_then(|group| group.live_store()) {
+            Some(store) => store as Arc<dyn ControlPlaneAuthStore + Send + Sync>,
+            None => Arc::clone(&self.store),
+        }
+    }
+
     /// The metadata group, when the control plane is one.
     pub(crate) fn group(&self) -> Option<&Arc<group::Group>> {
         self.group.as_ref()
@@ -397,7 +406,7 @@ impl ControlPlane {
             Ok(_) | Err(felix_controlplane_service::store::StoreError::Conflict(_)) => {}
             Err(err) => return Err(err).context("seed tenant"),
         }
-        self.store
+        self.live_store()
             .set_tenant_signing_keys(tenant_id, self.keys.clone())
             .await
             .context("seed tenant signing keys")
@@ -438,7 +447,8 @@ impl ControlPlane {
         use felix_controlplane_service::cluster::placement::{MovePolicy, PlacementRead};
         use felix_controlplane_service::model::NodeLifecycle;
 
-        let mut read = PlacementRead::load(self.store.as_ref(), &self.liveness)
+        let store = self.live_store();
+        let mut read = PlacementRead::load(store.as_ref(), &self.liveness)
             .await
             .context("read placement")?;
         for node in read.nodes.iter_mut().filter(|node| node.node_id == down) {
@@ -453,7 +463,7 @@ impl ControlPlane {
         policy: felix_controlplane_service::cluster::placement::MovePolicy,
     ) -> felix_controlplane_service::cluster::placement::ReconcileOutcome {
         felix_controlplane_service::cluster::placement::reconcile_once(
-            self.store.as_ref(),
+            self.live_store().as_ref(),
             &self.liveness,
             unsettled(policy),
         )
@@ -541,12 +551,12 @@ impl ControlPlane {
         &self,
         node_id: &str,
     ) -> Result<felix_controlplane_service::model::Node> {
-        Ok(self.store.get_node(node_id).await?)
+        Ok(self.live_store().get_node(node_id).await?)
     }
 
     /// The store's clock.
     pub async fn now_millis(&self) -> Result<u64> {
-        Ok(self.store.now_millis().await?)
+        Ok(self.live_store().now_millis().await?)
     }
 
     /// The last replica report placement holds for a stream's shard, if any.

@@ -339,7 +339,7 @@ impl Cluster {
     /// reported a caught-up replica at the current generation.
     pub(crate) async fn shard_statuses(&self) -> Result<Vec<ShardStatus>> {
         use felix_controlplane_service::model::ShardState;
-        let store = &self.control_plane().store;
+        let store = self.control_plane().live_store();
         let assignments = store
             .list_shard_assignments()
             .await

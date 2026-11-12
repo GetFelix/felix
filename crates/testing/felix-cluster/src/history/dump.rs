@@ -40,7 +40,8 @@ pub(super) async fn state(cluster: &Cluster, campaign: &Campaign) -> String {
         out.push_str("  the control plane is gone\n");
         return out;
     };
-    let store = &control_plane.store;
+    let store = control_plane.live_store();
+    let store = &store;
 
     let lifecycles: Vec<(String, String)> = match store.list_nodes().await {
         Ok(nodes) => nodes

@@ -33,9 +33,9 @@ use crate::ports;
 /// How many members the group has.
 pub(crate) const MEMBERS: usize = 3;
 
-/// The live members' API addresses, by member, with the token that cuts
-/// their connections.
-type Live = Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken)>>>>;
+/// The live members, by member: API address, the token that cuts its
+/// connections, and its store.
+type Live = Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken, Arc<RaftStore>)>>>>;
 
 /// A forwarded address that can be cut: while closed it takes no traffic,
 /// and closing it drops the connections already through.
@@ -198,7 +198,7 @@ impl Group {
                 .expect("live lock")
                 .iter()
                 .flatten()
-                .cloned()
+                .map(|(addr, cut, _)| (*addr, cut.clone()))
                 .collect();
             if !live.is_empty() {
                 let turn = rotation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -253,6 +253,19 @@ impl Group {
             .running
             .as_ref()
             .map(|r| Arc::clone(&r.store))
+    }
+
+    /// The store of a running member, for the harness's own reads and writes.
+    /// It changes as members are killed and restarted, so a caller asks again
+    /// each time rather than holding one.
+    pub(super) fn live_store(&self) -> Option<Arc<RaftStore>> {
+        self.live
+            .lock()
+            .expect("live lock")
+            .iter()
+            .flatten()
+            .next()
+            .map(|(_, _, store)| Arc::clone(store))
     }
 
     /// Start member `index` on its directory: a new member on an empty one,
@@ -358,8 +371,11 @@ impl Group {
             })
             .await
             .context("start metadata member")??;
-        self.live.lock().expect("live lock")[index] =
-            Some((members[index].api, started.stop.clone()));
+        self.live.lock().expect("live lock")[index] = Some((
+            members[index].api,
+            started.stop.clone(),
+            Arc::clone(&started.store),
+        ));
         members[index].running = Some(started);
         Ok(())
     }
