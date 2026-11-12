@@ -30,3 +30,5 @@ pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, Role, RuntimeConfig,
 };
 pub use types::{GroupId, MemberId};
+
+pub use felix_storage::raft_log::{LogPoint, LogPositions};

@@ -17,7 +17,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use super::codec::record_from_entry;
 use super::purged::{self, Purged};
 use super::{
-    EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
+    EntryCodec, LogPoint, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
     term_of_generation,
 };
 #[cfg(doc)]
@@ -125,8 +125,13 @@ where
         let record_header = record_header_len(GENERATION_VERSION);
         let mut batches: Vec<Batch> = Vec::new();
         let mut next = None;
+        let mut last = None;
         for entry in entries {
             let index = entry.index();
+            last = Some(LogPoint {
+                term: **entry.log_id().committed_leader_id(),
+                index,
+            });
             if next.is_some_and(|next| next != index) {
                 return Err(invalid(format!(
                     "{}: an append skips to index {index}",
@@ -201,6 +206,9 @@ where
                 })?;
             written.push(pending);
         }
+        // Written, not yet on disk: the signal an acknowledgement that does
+        // not wait for the fsync goes by.
+        shared.positions.send_modify(|at| at.written = last);
 
         let shared = Arc::clone(shared);
         tokio::spawn(async move {
@@ -210,6 +218,17 @@ where
                 if flushed.is_err() {
                     break;
                 }
+            }
+            if flushed.is_ok() {
+                // An append behind this one may have flushed first.
+                shared.positions.send_modify(|at| {
+                    if at
+                        .flushed
+                        .is_none_or(|flushed| last.is_some_and(|last| last.index > flushed.index))
+                    {
+                        at.flushed = last;
+                    }
+                });
             }
             callback.io_completed(flushed);
             drop(flushing);
@@ -229,6 +248,10 @@ where
         // and would report the append failed. Each one finishes first.
         let _flushed = self.shared.flushing.write().await;
         let first = self.shared.first_index();
+        let kept = last_log_id.as_ref().map(|id| LogPoint {
+            term: **id.committed_leader_id(),
+            index: id.index(),
+        });
         let keep = match last_log_id {
             None => first,
             Some(id) => {
@@ -268,7 +291,9 @@ where
         if keep >= log.tail_offset().await.map_err(io_error)? {
             return Ok(());
         }
-        log.truncate(keep).await.map_err(io_error)
+        log.truncate(keep).await.map_err(io_error)?;
+        self.shared.positions.send_modify(|at| at.cut_to(kept));
+        Ok(())
     }
 
     /// Drop every entry up to and including `log_id`. The id is on disk

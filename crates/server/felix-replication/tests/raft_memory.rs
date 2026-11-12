@@ -18,26 +18,41 @@ use felix_replication::{ShardKey, ShardKind};
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, RecordMark};
 
-/// Bytes allocated and not yet freed.
+/// Bytes allocated and not yet freed, in allocations under [`RESERVATION`].
 static LIVE: AtomicUsize = AtomicUsize::new(0);
+/// The same in allocations of [`RESERVATION`] or more.
+static RESERVED: AtomicUsize = AtomicUsize::new(0);
+/// An allocation this large is a buffer set aside ahead of use: openraft
+/// reserves room for 4,096 commands per member when it starts. The pages
+/// of one are not resident until they are written, and an idle member does
+/// not write them, so they are counted apart from what the gate measures.
+const RESERVATION: usize = 128 * 1024;
+
+fn counter(size: usize) -> &'static AtomicUsize {
+    if size >= RESERVATION {
+        &RESERVED
+    } else {
+        &LIVE
+    }
+}
 
 struct Counting;
 
 // SAFETY: every call goes to `System` unchanged; this only counts.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+        counter(layout.size()).fetch_add(layout.size(), Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        counter(layout.size()).fetch_sub(layout.size(), Ordering::Relaxed);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        LIVE.fetch_add(new_size, Ordering::Relaxed);
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        counter(new_size).fetch_add(new_size, Ordering::Relaxed);
+        counter(layout.size()).fetch_sub(layout.size(), Ordering::Relaxed);
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }
@@ -137,6 +152,7 @@ async fn an_idle_member_stays_within_the_designs_memory() {
     let a_written_log = (LIVE.load(Ordering::Relaxed) - unwritten) / written.len();
 
     let before = LIVE.load(Ordering::Relaxed);
+    let reserved_before = RESERVED.load(Ordering::Relaxed);
 
     let members: BTreeSet<_> = BROKERS.iter().map(|b| MemberId::new(*b, 1)).collect();
     for (broker, n, log) in &logs {
@@ -203,10 +219,16 @@ async fn an_idle_member_stays_within_the_designs_memory() {
     let members = BROKERS.len() * GROUPS as usize;
     let with_log = after.saturating_sub(before) / members;
     let each = with_log.saturating_sub(a_written_log);
+    let reserved = RESERVED
+        .load(Ordering::Relaxed)
+        .saturating_sub(reserved_before)
+        / members;
     println!(
-        "{members} idle members, leaders per broker {leaders:?}: {} KB each, after {} KB for a written log",
+        "{members} idle members, leaders per broker {leaders:?}: {} KB each, after {} KB for a \
+         written log, and {} KB each reserved in large buffers that are not counted",
         each / 1024,
-        a_written_log / 1024
+        a_written_log / 1024,
+        reserved / 1024
     );
     assert!(
         each <= MEMBER_BUDGET,

@@ -20,7 +20,6 @@
 use std::path::{Path, PathBuf};
 
 use super::crash_point;
-use crate::io::sync_dir;
 use crate::log::Offset;
 use crate::{Result, StorageError};
 
@@ -144,6 +143,14 @@ pub(super) fn load(dir: &Path) -> Result<ReplicaState> {
 /// the old file, and the directory synced, so a crash leaves the old state or
 /// the new one and never neither.
 pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
+    store_with(dir, state, super::ballot::Flush::Own)
+}
+
+pub(super) fn store_with(
+    dir: &Path,
+    state: &ReplicaState,
+    flush: super::ballot::Flush,
+) -> Result<()> {
     use std::io::Write;
 
     let started = std::time::Instant::now();
@@ -155,12 +162,12 @@ pub(super) fn store(dir: &Path, state: &ReplicaState) -> Result<()> {
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&state.encode()).map_err(StorageError::Io)?;
         step()?;
-        crate::io::sync_all(&file)?;
+        flush.file(&file)?;
     }
     step()?;
     crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     step()?;
-    sync_dir(dir)?;
+    flush.dir(dir)?;
     metrics::counter!(crate::metrics_names::REPLICA_STATE_WRITES_TOTAL).increment(1);
     metrics::histogram!(crate::metrics_names::REPLICA_STATE_WRITE_DURATION_SECONDS)
         .record(started.elapsed().as_secs_f64());

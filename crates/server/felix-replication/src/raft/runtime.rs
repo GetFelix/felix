@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 use felix_storage::DiskLog;
+use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Router};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::ticker;
 use super::types::{GroupId, MemberId};
 use crate::ShardKey;
@@ -24,6 +25,13 @@ pub struct RuntimeConfig {
     pub tick: Duration,
     /// How often a leader with nothing to send sends a heartbeat.
     pub heartbeat: Duration,
+    /// How often it sends one once the group is idle: no entry sent for
+    /// [`Self::idle_after`]. A follower of an idle leader waits three of
+    /// these before it may stand, so a dead leader of an idle group is
+    /// noticed that much later. Equal to `heartbeat`, groups never slow
+    /// down.
+    pub idle_heartbeat: Duration,
+    pub idle_after: Duration,
     /// A follower that has heard no leader for a time picked between these
     /// two starts an election.
     pub election_min: Duration,
@@ -35,6 +43,8 @@ impl Default for RuntimeConfig {
         Self {
             tick: Duration::from_millis(50),
             heartbeat: Duration::from_millis(200),
+            idle_heartbeat: Duration::from_secs(1),
+            idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
         }
@@ -45,6 +55,11 @@ impl RuntimeConfig {
     pub(crate) fn raft(&self) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
+        }
+        if self.idle_heartbeat < self.heartbeat {
+            return Err(InvalidTimers(
+                "the idle heartbeat is shorter than the heartbeat".into(),
+            ));
         }
         let millis = |duration: Duration| duration.as_millis() as u64;
         Config {
@@ -116,6 +131,12 @@ pub struct GroupStatus {
     /// The leader this member follows, itself included.
     pub leader: Option<MemberId>,
     pub last_index: Option<u64>,
+    /// The last entry this member's log has written since it was opened,
+    /// fsynced or not. A power cut can still take it.
+    pub written: Option<LogPoint>,
+    /// The last entry on disk. Votes, a follower's answer and the commit
+    /// index count this one.
+    pub flushed: Option<LogPoint>,
     pub committed: Option<u64>,
     /// Timer checks the ticker sent this member.
     pub ticks: u64,
@@ -199,7 +220,7 @@ struct Inner {
     tick: Duration,
     timers: Timers,
     raft: Arc<Config>,
-    router: Router,
+    transport: Arc<dyn RaftTransport>,
     registry: Arc<Registry>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -231,10 +252,13 @@ impl GroupRuntime {
                     started: tokio::time::Instant::now(),
                     tick: config.tick.as_millis() as u64,
                     heartbeat: config.heartbeat.as_millis() as u64,
+                    idle_heartbeat: config.idle_heartbeat.as_millis() as u64,
+                    idle_after: config.idle_after.as_millis() as u64,
                     election_min: config.election_min.as_millis() as u64,
+                    election_max: config.election_max.as_millis() as u64,
                 },
                 raft: Arc::new(config.raft()?),
-                router: Router::new(transport),
+                transport,
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
@@ -288,7 +312,7 @@ impl GroupRuntime {
             member,
             log,
             Arc::clone(&inner.raft),
-            inner.router.clone(),
+            Arc::clone(&inner.transport),
             inner.timers,
         )
         .await?;
@@ -380,11 +404,16 @@ impl GroupRuntime {
 
     /// Hand a peer's message to the member it names.
     pub async fn handle(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        let RaftRequest { group, to, body } = request;
+        let RaftRequest {
+            group,
+            to,
+            beat,
+            body,
+        } = request;
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
-                member.handle(body).await.map(RaftReply)
+                member.handle(body, beat).await.map(RaftReply)
             }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }
@@ -393,6 +422,22 @@ impl GroupRuntime {
     /// This broker's member of `shard`'s group, if it has one.
     pub fn status(&self, shard: &ShardKey) -> Option<GroupStatus> {
         self.inner.registry.get(shard).map(|group| group.status())
+    }
+
+    /// What `shard`'s log holds, as it changes: written as soon as an
+    /// append has handed its entries to the log, flushed once they are
+    /// fsynced. A publisher's acknowledgement on a stream that does not
+    /// fsync on commit waits on the first; everything Raft counts waits on
+    /// the second. See `docs/per-shard-raft.md`, "Two signals from one
+    /// append".
+    pub fn log_positions(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<tokio::sync::watch::Receiver<LogPositions>> {
+        self.inner
+            .registry
+            .get(shard)
+            .map(|group| group.positions())
     }
 
     /// How many groups are open here.

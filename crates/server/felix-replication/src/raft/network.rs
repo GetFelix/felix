@@ -17,6 +17,7 @@ use openraft::raft::{
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
+use super::group::Pace;
 use super::types::{GroupId, MemberId, ShardTypes};
 
 /// One Raft message for one member of one group. What is in it is this
@@ -24,6 +25,9 @@ use super::types::{GroupId, MemberId, ShardTypes};
 pub struct RaftRequest {
     pub(crate) group: GroupId,
     pub(crate) to: MemberId,
+    /// On a leader's append: the longest the leader may now stay silent,
+    /// in milliseconds. Zero on every other message.
+    pub(crate) beat: u64,
     pub(crate) body: Request,
 }
 
@@ -145,11 +149,12 @@ impl RaftTransport for AgreeingPeers {
     }
 }
 
-/// openraft's view of the transport: every group's calls, tagged with the
+/// openraft's view of the transport: one group's calls, tagged with the
 /// group. This is the seam heartbeat coalescing wraps.
 #[derive(Clone)]
 pub(crate) struct Router {
     transport: Arc<dyn RaftTransport>,
+    pace: Arc<Pace>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -157,8 +162,8 @@ pub(crate) struct Router {
 struct WrongReply;
 
 impl Router {
-    pub(crate) fn new(transport: Arc<dyn RaftTransport>) -> Self {
-        Self { transport }
+    pub(crate) fn new(transport: Arc<dyn RaftTransport>, pace: Arc<Pace>) -> Self {
+        Self { transport, pace }
     }
 
     async fn call(
@@ -168,9 +173,23 @@ impl Router {
         body: Request,
         option: &RPCOption,
     ) -> Result<Reply, Unreachable<ShardTypes>> {
-        let request = RaftRequest { group, to, body };
+        let sent = match &body {
+            Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
+            _ => None,
+        };
+        let request = RaftRequest {
+            group,
+            to: to.clone(),
+            beat: sent.as_ref().map_or(0, |sent| sent.gap),
+            body,
+        };
         match tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await {
-            Ok(Ok(reply)) => Ok(reply.0),
+            Ok(Ok(reply)) => {
+                if let (Some(sent), Reply::Append(Ok(_))) = (&sent, &reply.0) {
+                    self.pace.answered(&to, sent);
+                }
+                Ok(reply.0)
+            }
             Ok(Err(refused)) => Err(Unreachable::new(&refused)),
             Err(elapsed) => Err(Unreachable::new(&elapsed)),
         }

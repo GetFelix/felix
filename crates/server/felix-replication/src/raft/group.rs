@@ -1,17 +1,18 @@
 //! One member of one group: its openraft instance over the shard's log.
 
 use std::collections::BTreeSet;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use felix_storage::DiskLog;
-use felix_storage::raft_log::{RaftLog, SnapshotStore};
+use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{InitializeError, RaftError};
 use openraft::{Config, Raft, ServerState};
 
 use super::codec::ShardCodec;
 use super::machine::Machine;
-use super::network::{Addressee, Network, Refused, Reply, Request, Router};
+use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 
@@ -19,13 +20,9 @@ pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
-    timers: Timers,
-    /// When the next timer check can matter, in milliseconds on the
-    /// runtime's clock. The ticker skips the group until then.
-    due: AtomicU64,
-    /// When this member last took an append from its leader or granted a
-    /// vote. Either restarts its election timer.
-    heard: AtomicU64,
+    pace: Arc<Pace>,
+    /// What the log holds written and flushed, as the adapter reports it.
+    positions: tokio::sync::watch::Receiver<LogPositions>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -42,12 +39,163 @@ pub(crate) struct Timers {
     pub(crate) started: tokio::time::Instant,
     pub(crate) tick: u64,
     pub(crate) heartbeat: u64,
+    pub(crate) idle_heartbeat: u64,
+    pub(crate) idle_after: u64,
     pub(crate) election_min: u64,
+    pub(crate) election_max: u64,
 }
 
 impl Timers {
     pub(crate) fn now(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
+    }
+}
+
+/// How fast a group's timers run: a leader that has sent no entry for
+/// `idle_after` heartbeats at the idle interval, and its followers wait
+/// longer for it. Shared by the member and its side of the router, which
+/// sees what the leader sends and what comes back.
+///
+/// The rule that keeps a slow leader from being deposed: a follower waits
+/// by the gap its leader last told it, and a leader slows down only once
+/// every follower has answered a message that named the idle gap. A lost
+/// message leaves the leader fast or the follower patient, never a patient
+/// leader with an impatient follower. See `docs/per-shard-raft.md`, "Idle
+/// groups".
+pub(crate) struct Pace {
+    timers: Timers,
+    /// When the next timer check can matter, in milliseconds on the
+    /// runtime's clock. The ticker skips the group until then.
+    due: AtomicU64,
+    /// When this member last took an append from its leader or granted a
+    /// vote. Either restarts its election timer.
+    heard: AtomicU64,
+    /// As a follower: the longest its leader said it may stay silent.
+    promised: AtomicU64,
+    /// As a leader: when it last sent an entry to anyone.
+    wrote: AtomicU64,
+    peers: parking_lot::Mutex<Vec<Peer>>,
+    /// Spreads the members of a group over the idle wait, so they do not
+    /// all stand in the same tick.
+    jitter: u64,
+}
+
+struct Peer {
+    id: MemberId,
+    /// The `wrote` this peer answered an idle heartbeat under. It counts
+    /// only while `wrote` is still that, so any later entry voids it.
+    idle_under: Option<u64>,
+    answered: u64,
+}
+
+/// An append on its way to a peer, for [`Pace::answered`].
+pub(crate) struct Sent {
+    pub(crate) gap: u64,
+    wrote: u64,
+}
+
+impl Pace {
+    pub(super) fn new(timers: Timers, group: &GroupId, member: &MemberId) -> Self {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        (group, member).hash(&mut hasher);
+        let now = timers.now();
+        Self {
+            timers,
+            due: AtomicU64::new(0),
+            heard: AtomicU64::new(0),
+            promised: AtomicU64::new(timers.heartbeat),
+            wrote: AtomicU64::new(now),
+            peers: parking_lot::Mutex::new(Vec::new()),
+            jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
+        }
+    }
+
+    /// The leader is sending `to` an append. The gap it names is the idle
+    /// one once no entry has gone out for `idle_after`.
+    pub(crate) fn sending(&self, to: &MemberId, entries: bool) -> Sent {
+        let timers = &self.timers;
+        let now = timers.now();
+        if entries {
+            self.wrote.store(now, Ordering::Relaxed);
+            // The followers hear the short gap in this message.
+            self.due
+                .fetch_min(now + timers.heartbeat, Ordering::Relaxed);
+        }
+        let wrote = self.wrote.load(Ordering::Relaxed);
+        let mut peers = self.peers.lock();
+        if !peers.iter().any(|peer| &peer.id == to) {
+            peers.push(Peer {
+                id: to.clone(),
+                idle_under: None,
+                answered: now,
+            });
+        }
+        let gap = match now >= wrote + timers.idle_after {
+            true => timers.idle_heartbeat,
+            false => timers.heartbeat,
+        };
+        Sent { gap, wrote }
+    }
+
+    /// `to` took the append: it now waits by the gap the append named.
+    pub(crate) fn answered(&self, to: &MemberId, sent: &Sent) {
+        let now = self.timers.now();
+        if let Some(peer) = self.peers.lock().iter_mut().find(|peer| &peer.id == to) {
+            peer.answered = now;
+            if sent.gap > self.timers.heartbeat {
+                peer.idle_under = Some(sent.wrote);
+            }
+        }
+    }
+
+    /// How long a leader waits until its next heartbeat.
+    pub(super) fn leader_gap(&self, now: u64) -> u64 {
+        let timers = &self.timers;
+        let wrote = self.wrote.load(Ordering::Relaxed);
+        if timers.idle_heartbeat <= timers.heartbeat || now < wrote + timers.idle_after {
+            return timers.heartbeat;
+        }
+        // A peer silent this long has timed out whatever it was told, so it
+        // no longer holds the leader to the short gap.
+        let silent = timers.election_min + 2 * timers.election_max;
+        let patient = |peer: &Peer| peer.idle_under == Some(wrote) || now >= peer.answered + silent;
+        match self.peers.lock().iter().all(patient) {
+            true => timers.idle_heartbeat,
+            false => timers.heartbeat,
+        }
+    }
+
+    /// How long a follower goes unchecked after it hears its leader. At the
+    /// short gap that is the shortest election timeout. At the idle gap it
+    /// is three of them, so two heartbeats can be lost.
+    pub(super) fn follower_wait(&self) -> u64 {
+        let timers = &self.timers;
+        let promised = self.promised.load(Ordering::Relaxed);
+        if promised <= timers.heartbeat {
+            return timers.election_min;
+        }
+        timers.election_min.max(3 * promised) + self.jitter
+    }
+
+    /// This member took an append from its leader, which named `gap`.
+    pub(super) fn followed(&self, gap: Option<u64>) {
+        let timers = &self.timers;
+        let now = timers.now();
+        if let Some(gap) = gap {
+            // An unknown gap is the short one: checked early is safe.
+            let gap = if gap == 0 { timers.heartbeat } else { gap };
+            self.promised.store(gap, Ordering::Relaxed);
+        }
+        self.heard.store(now, Ordering::Relaxed);
+        self.due
+            .store(now + self.follower_wait(), Ordering::Relaxed);
+    }
+
+    /// This member granted a vote. Whoever wins starts at the short gap.
+    pub(super) fn voted(&self) {
+        self.promised
+            .store(self.timers.heartbeat, Ordering::Relaxed);
+        self.followed(None);
     }
 }
 
@@ -70,7 +218,7 @@ impl Group {
         member: MemberId,
         log: DiskLog,
         config: Arc<Config>,
-        router: Router,
+        transport: Arc<dyn RaftTransport>,
         timers: Timers,
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
@@ -78,9 +226,11 @@ impl Group {
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        let positions = log.positions();
         let machine = Machine::open(snapshots).await?;
+        let pace = Arc::new(Pace::new(timers, &id, &member));
         let network = Network {
-            router,
+            router: Router::new(transport, Arc::clone(&pace)),
             group: id.clone(),
         };
         let raft = Raft::new(member.clone(), config, network, log, machine)
@@ -90,9 +240,8 @@ impl Group {
             id,
             member,
             raft,
-            timers,
-            due: AtomicU64::new(0),
-            heard: AtomicU64::new(0),
+            pace,
+            positions,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -120,7 +269,7 @@ impl Group {
         let mut dropped = Dropped(Some(&self.dropped_ticks));
         let ticked = self.raft.trigger().tick().await;
         dropped.0 = None;
-        self.due.store(self.next_due(), Ordering::Relaxed);
+        self.pace.due.store(self.next_due(), Ordering::Relaxed);
         if let Err(err) = ticked
             && !self.stopped.swap(true, Ordering::Relaxed)
         {
@@ -130,51 +279,45 @@ impl Group {
 
     /// Whether a timer check now could find something to do.
     pub(crate) fn due(&self, now: u64) -> bool {
-        now >= self.due.load(Ordering::Relaxed)
+        now >= self.pace.due.load(Ordering::Relaxed)
     }
 
     /// When the next timer check can matter, after one was just sent.
     ///
-    /// A leader's only timer is its heartbeat. A voter's is its election
-    /// timeout, which cannot pass until `election_min` after it last heard
-    /// its leader, so a follower that keeps hearing one is never checked.
+    /// A leader's only timer is its heartbeat, at the short gap or the idle
+    /// one. A voter's is its election timeout, which cannot pass until
+    /// `election_min` after it last heard its leader, so a follower that
+    /// keeps hearing one is never checked. A follower of an idle leader
+    /// waits longer ([`Pace::follower_wait`]).
     /// Once that time has passed it is checked every interval, since the
     /// timeout openraft picked for it is not visible from here. A learner
     /// never stands, and is checked only so a change of role is seen.
     fn next_due(&self) -> u64 {
         use openraft::async_runtime::watch::WatchReceiver;
+        let pace = &self.pace;
         let Timers {
-            tick,
-            heartbeat,
-            election_min,
-            ..
-        } = self.timers;
-        let now = self.timers.now();
+            tick, election_min, ..
+        } = pace.timers;
+        let now = pace.timers.now();
         match self.raft.metrics().borrow_watched().state {
             // One past the interval, so the check lands after the heartbeat
             // is due and not just before it.
-            ServerState::Leader => now + heartbeat + 1,
+            ServerState::Leader => now + pace.leader_gap(now) + 1,
             ServerState::Follower | ServerState::Candidate => {
-                (self.heard.load(Ordering::Relaxed) + election_min).max(now + tick)
+                (pace.heard.load(Ordering::Relaxed) + pace.follower_wait()).max(now + tick)
             }
             ServerState::Learner | ServerState::Shutdown => now + election_min,
         }
     }
 
-    /// This member took an append from its leader or granted a vote, which
-    /// restarts its election timer.
-    fn heard(&self) {
-        let now = self.timers.now();
-        self.heard.store(now, Ordering::Relaxed);
-        self.due
-            .store(now + self.timers.election_min, Ordering::Relaxed);
-    }
-
-    pub(crate) async fn handle(&self, body: Request) -> Result<Reply, Refused> {
+    /// `beat` is the gap a leader's append named. Taking the append or
+    /// granting a vote restarts this member's election timer.
+    pub(crate) async fn handle(&self, body: Request, beat: u64) -> Result<Reply, Refused> {
         let reply = self.dispatch(body).await?;
         match &reply {
-            Reply::Append(Ok(_)) | Reply::Snapshot(_) => self.heard(),
-            Reply::Vote(vote) if vote.vote_granted => self.heard(),
+            Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
+            Reply::Snapshot(_) => self.pace.followed(None),
+            Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
             _ => {}
         }
         Ok(reply)
@@ -255,10 +398,16 @@ impl Group {
             term: metrics.current_term,
             leader: metrics.current_leader,
             last_index: metrics.last_log_index,
+            written: self.positions.borrow().written,
+            flushed: self.positions.borrow().flushed,
             committed: metrics.local_committed.map(|id| id.index),
             ticks: self.ticks.load(Ordering::Relaxed),
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
+        self.positions.clone()
     }
 
     #[cfg(test)]

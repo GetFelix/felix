@@ -100,9 +100,41 @@ pub struct RaftLog<C, K> {
     types: std::marker::PhantomData<fn() -> C>,
 }
 
+/// One entry of a log: its index and the term that wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogPoint {
+    pub term: u64,
+    pub index: u64,
+}
+
+/// How far a Raft log has got since it was opened, by the last entry of
+/// each kind. `None` until this adapter's first append.
+///
+/// `written` moves as soon as an append has handed its entries to the log,
+/// before the fsync, so a power cut can take what it names. `flushed` moves
+/// once they are on disk, and is the only one Raft is told about. A
+/// truncation moves both back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogPositions {
+    pub written: Option<LogPoint>,
+    pub flushed: Option<LogPoint>,
+}
+
+impl LogPositions {
+    /// Drop what a truncation to `kept` cut.
+    fn cut_to(&mut self, kept: Option<LogPoint>) {
+        for point in [&mut self.written, &mut self.flushed] {
+            if point.is_some_and(|at| kept.is_none_or(|kept| at.index > kept.index)) {
+                *point = kept;
+            }
+        }
+    }
+}
+
 struct Shared<K> {
     log: DiskLog,
     codec: K,
+    positions: tokio::sync::watch::Sender<LogPositions>,
     /// The last purged entry, as `raft-purged` holds it.
     purged: parking_lot::Mutex<Option<Purged>>,
     /// Set by [`RaftLog::purge_within`]: a purge stops at this snapshot.
@@ -159,6 +191,7 @@ where
             shared: Arc::new(Shared {
                 log,
                 codec,
+                positions: tokio::sync::watch::Sender::default(),
                 purged: parking_lot::Mutex::new(purged),
                 covering: std::sync::OnceLock::new(),
                 flushing: Arc::default(),
@@ -167,6 +200,11 @@ where
             }),
             types: std::marker::PhantomData,
         })
+    }
+
+    /// The log's written and flushed positions, as they change.
+    pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
+        self.shared.positions.subscribe()
     }
 
     /// The log underneath.

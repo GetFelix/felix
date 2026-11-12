@@ -76,12 +76,25 @@ fn open_log(root: &Path, broker: &str, n: u32, config: LogConfig) -> DiskLog {
 struct Net {
     brokers: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
     cut: parking_lot::Mutex<HashSet<String>>,
+    /// How many more appends that name the idle gap are lost on the way.
+    lose_idle: std::sync::atomic::AtomicU32,
+    lost_idle: std::sync::atomic::AtomicU32,
 }
 
 #[async_trait]
 impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        use std::sync::atomic::Ordering::Relaxed;
         let broker = &request.to().broker;
+        if request.beat > timers().heartbeat.as_millis() as u64
+            && self
+                .lose_idle
+                .try_update(Relaxed, Relaxed, |left| left.checked_sub(1))
+                .is_ok()
+        {
+            self.lost_idle.fetch_add(1, Relaxed);
+            return Err(Refused::Unreachable("lost".into()));
+        }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
@@ -96,15 +109,21 @@ impl RaftTransport for Net {
 struct Cluster {
     root: TempDir,
     net: Arc<Net>,
+    timers: RuntimeConfig,
     logs: HashMap<(String, u32), DiskLog>,
 }
 
 impl Cluster {
     /// Three brokers with their tickers running, or not.
     fn new(ticking: bool) -> Self {
+        Self::with(timers(), ticking)
+    }
+
+    fn with(timers: RuntimeConfig, ticking: bool) -> Self {
         let cluster = Self {
             root: tempdir().expect("dir"),
             net: Arc::default(),
+            timers,
             logs: HashMap::new(),
         };
         cluster.start(ticking);
@@ -114,8 +133,8 @@ impl Cluster {
     fn start(&self, ticking: bool) {
         for broker in BROKERS {
             let transport: Arc<dyn RaftTransport> = self.net.clone();
-            let runtime =
-                GroupRuntime::without_ticker(broker, timers(), transport).expect("timers");
+            let runtime = GroupRuntime::without_ticker(broker, self.timers.clone(), transport)
+                .expect("timers");
             if ticking {
                 runtime.start_ticker();
             }
@@ -366,6 +385,8 @@ async fn only_a_group_whose_timer_is_due_is_ticked() {
             .collect()
     };
 
+    // A group just written to is not idle.
+    cluster.write(0, b"record").await;
     let window = Duration::from_secs(3);
     let before = ticks(&cluster);
     tokio::time::sleep(window).await;
@@ -385,6 +406,212 @@ async fn only_a_group_whose_timer_is_due_is_ticked() {
         } else {
             assert!(sent <= 3, "{member}: {sent} checks of {every_interval}");
         }
+    }
+    cluster.stop().await;
+}
+
+fn pace() -> (super::group::Pace, super::group::Timers) {
+    let millis = |duration: Duration| duration.as_millis() as u64;
+    let config = timers();
+    let timers = super::group::Timers {
+        started: tokio::time::Instant::now(),
+        tick: millis(config.tick),
+        heartbeat: millis(config.heartbeat),
+        idle_heartbeat: millis(config.idle_heartbeat),
+        idle_after: millis(config.idle_after),
+        election_min: millis(config.election_min),
+        election_max: millis(config.election_max),
+    };
+    let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
+    (pace, timers)
+}
+
+/// The leader's side of the idle rule: it slows down only once every
+/// follower has answered a heartbeat that named the idle gap, an entry
+/// voids those answers, and a follower long silent no longer counts.
+#[tokio::test(start_paused = true)]
+async fn a_leader_slows_down_only_once_its_followers_know() {
+    let (pace, timers) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let (short, idle) = (timers.heartbeat, timers.idle_heartbeat);
+    let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
+
+    // A new leader's first entry.
+    let entry = pace.sending(&b, true);
+    assert_eq!(entry.gap, short);
+    pace.answered(&b, &entry);
+    pace.answered(&c, &pace.sending(&c, true));
+    assert_eq!(pace.leader_gap(timers.now()), short);
+
+    // Idle: the heartbeats name the idle gap, at the short interval until
+    // both followers have answered one.
+    later(timers.idle_after - short).await;
+    pace.answered(&b, &pace.sending(&b, false));
+    pace.answered(&c, &pace.sending(&c, false));
+    later(short).await;
+    let to_b = pace.sending(&b, false);
+    let to_c = pace.sending(&c, false);
+    assert_eq!((to_b.gap, to_c.gap), (idle, idle));
+    assert_eq!(pace.leader_gap(timers.now()), short);
+    pace.answered(&b, &to_b);
+    assert_eq!(pace.leader_gap(timers.now()), short, "c has not heard");
+    pace.answered(&c, &to_c);
+    assert_eq!(pace.leader_gap(timers.now()), idle);
+
+    // An entry: short again at once, and the old answers count for nothing
+    // when the group next goes idle.
+    later(10_000).await;
+    let entry = pace.sending(&b, true);
+    assert_eq!(entry.gap, short);
+    pace.answered(&b, &entry);
+    pace.answered(&c, &pace.sending(&c, true));
+    assert_eq!(pace.leader_gap(timers.now()), short);
+    // Heartbeats at the short gap, answered, until the group is idle again.
+    later(timers.idle_after - short).await;
+    pace.answered(&b, &pace.sending(&b, false));
+    pace.answered(&c, &pace.sending(&c, false));
+    later(short).await;
+    assert_eq!(pace.leader_gap(timers.now()), short, "nobody has heard yet");
+    pace.answered(&b, &pace.sending(&b, false));
+
+    // c never answers. Once it has been silent past any election timeout
+    // it has stood or is gone, and it stops holding the leader back.
+    later(timers.election_min + 2 * timers.election_max).await;
+    pace.answered(&b, &pace.sending(&b, false));
+    assert_eq!(pace.leader_gap(timers.now()), idle);
+}
+
+/// The follower's side: it waits by the gap its leader last named, three
+/// idle heartbeats at least, and a vote or a short gap ends the long wait.
+#[tokio::test(start_paused = true)]
+async fn a_follower_waits_by_the_gap_its_leader_named() {
+    let (pace, timers) = pace();
+    assert_eq!(pace.follower_wait(), timers.election_min);
+    pace.followed(Some(timers.idle_heartbeat));
+    let patient = pace.follower_wait();
+    assert!(patient >= 3 * timers.idle_heartbeat, "{patient}");
+    assert!(patient < 3 * timers.idle_heartbeat + timers.election_max);
+    // An append from a build that names no gap is taken as the short one.
+    pace.followed(Some(0));
+    assert_eq!(pace.follower_wait(), timers.election_min);
+    pace.followed(Some(timers.idle_heartbeat));
+    pace.voted();
+    assert_eq!(pace.follower_wait(), timers.election_min);
+}
+
+/// A group with no writes heartbeats at the idle interval, and a write
+/// brings the short one back. The first idle heartbeats are lost on the way:
+/// the leader stays fast until its followers have heard, so nobody stands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_heartbeats_slowly_until_it_is_written_to() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let idle = RuntimeConfig {
+        idle_after: Duration::from_secs(1),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(idle, true);
+    cluster.net.lose_idle.store(6, Relaxed);
+    cluster.form(0).await;
+    cluster.write(0, b"record").await;
+    let leader = cluster.elected(0).await;
+    let term = cluster.statuses(0)[0].term;
+    let checks = |cluster: &Cluster| -> u64 {
+        let status = cluster.runtime(&leader.broker).status(&shard(0));
+        status.expect("group").ticks
+    };
+
+    // Idle after a second, slow once the lost messages have been resent.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    assert_eq!(cluster.net.lost_idle.load(Relaxed), 6);
+    let window = Duration::from_secs(4);
+    let before = checks(&cluster);
+    tokio::time::sleep(window).await;
+    let slow = checks(&cluster) - before;
+    // One a second, where the short interval makes 20.
+    assert!((2..=7).contains(&slow), "{slow} checks while idle");
+
+    cluster.write(0, b"record").await;
+    let before = checks(&cluster);
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let fast = checks(&cluster) - before;
+    assert!(fast >= 3, "{fast} checks after a write");
+
+    assert_eq!(
+        cluster.leader(0),
+        Some(leader.clone()),
+        "the leader changed"
+    );
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, term, "{}: an election ran", status.member);
+    }
+    cluster.stop().await;
+}
+
+/// Many groups formed in the same moment all elect: their votes share
+/// fsyncs, so a round does not outlast the election timeout (#2317).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn many_groups_told_at_once_all_elect() {
+    const GROUPS: u32 = 40;
+    let mut cluster = Cluster::new(true);
+    for n in 0..GROUPS {
+        cluster.open(n).await;
+    }
+    let told = (0..GROUPS).flat_map(|n| {
+        cluster
+            .runtimes()
+            .into_iter()
+            .map(move |runtime| async move {
+                runtime
+                    .initialize(&shard(n), members())
+                    .await
+                    .expect("initialize");
+            })
+    });
+    futures::future::join_all(told).await;
+    let settle = Duration::from_secs(30);
+    let all = async {
+        for n in 0..GROUPS {
+            cluster.elected(n).await;
+            cluster.write(n, b"record").await;
+        }
+    };
+    let started = std::time::Instant::now();
+    let settled = tokio::time::timeout(settle, all).await;
+    let terms: Vec<u64> = (0..GROUPS)
+        .flat_map(|n| cluster.statuses(n))
+        .map(|status| status.term)
+        .collect();
+    let led = (0..GROUPS).filter(|n| cluster.leader(*n).is_some()).count();
+    assert!(
+        settled.is_ok(),
+        "{led} of {GROUPS} groups led after {:?}, highest term {:?}",
+        started.elapsed(),
+        terms.iter().max()
+    );
+    cluster.stop().await;
+}
+
+/// An append is reported written, then flushed, at the entry's index.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_is_reported_written_and_flushed() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let mut positions = runtime.log_positions(&shard(0)).expect("group");
+    let index = cluster.write(0, b"record").await;
+    let flushed = positions
+        .wait_for(|at| at.flushed.is_some_and(|flushed| flushed.index >= index))
+        .await
+        .expect("open")
+        .to_owned();
+    let written = flushed.written.expect("written before it is flushed");
+    assert!(written.index >= index);
+    cluster.committed_everywhere(0, index).await;
+    for status in cluster.statuses(0) {
+        let term = status.term;
+        assert_eq!(status.written, Some(LogPoint { term, index }));
+        assert_eq!(status.flushed, status.written, "{}", status.member);
     }
     cluster.stop().await;
 }
@@ -646,6 +873,7 @@ async fn a_message_for_another_member_is_refused() {
     let request = |group: GroupId, to: MemberId| RaftRequest {
         group,
         to,
+        beat: 0,
         body: vote(),
     };
 
@@ -695,6 +923,11 @@ fn the_default_timers_are_the_designs() {
     let raft = RuntimeConfig::default().raft().expect("timers");
     assert_eq!(RuntimeConfig::default().tick, Duration::from_millis(50));
     assert_eq!(raft.heartbeat_interval, 200);
+    assert_eq!(
+        RuntimeConfig::default().idle_heartbeat,
+        Duration::from_secs(1)
+    );
+    assert_eq!(RuntimeConfig::default().idle_after, Duration::from_secs(5));
     assert_eq!(raft.election_timeout_min, 1000);
     assert_eq!(raft.election_timeout_max, 2000);
     assert!(!raft.enable_tick);
