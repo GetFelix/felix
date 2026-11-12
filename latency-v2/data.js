@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794452762458,
+  "lastUpdate": 1794455236079,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66726,6 +66726,72 @@ window.BENCHMARK_DATA = {
             "range": "31.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 377.00\nmean: 379.60\nstdev: 31.56\ncv: 8.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb2e93eaffec7038c0b9d0518516b62adab16110",
+          "message": "feat(storage): the metadata store's member file and start decision (#2228) (#2325)\n\n* feat(storage): the metadata store's member file and start decision (#2228)\n\nThe member file (store/member) holds the cluster id, the vote-withheld\nflag and the converted and started marks under one checksum, replaced by\none rename that is on disk before a change returns. decide_start reads\nnames and that file only: it never opens raft.redb and never writes.\n\nThe snapshot file is the raft_log adapter's SnapshotStore, unchanged in\nformat. A temporary a crash left is now deleted at open, and the format\nhas a byte fixture and a test that another version is refused.\n\nNothing calls the new code yet; the control plane switches over in #2230.\n\nSpec-Unaffected: no running code uses these files, and no protocol or\nreplication behaviour changes.\n\n* fix(storage): a metadata store is created whole and opened once (#2228)\n\nMemberFile::open takes the cluster id and builds a new store under\nstore.tmp (member file and empty log/), renames it into place and syncs\nthe data directory before it returns, so the log can never be opened in\na store without a member file and a Started proves a durable store.\ndecide_start and open both refuse a store missing its member file or\nlog/, and an undecodable member file with or without raft.redb.\nStart::Existing carries the member. A second open of a store in one\nprocess is refused. Started carries its store dir. A snapshot with its\nreserved bytes set is refused.\n\nSpec-Unaffected: storage file layout and open rules only; no protocol, fencing or Raft rule changes.",
+          "timestamp": "2026-11-12T03:42:12Z",
+          "tree_id": "f69b13043f0e5d6bc6ed9f395964e3d8c37f3240",
+          "url": "https://github.com/GetFelix/felix/commit/eb2e93eaffec7038c0b9d0518516b62adab16110"
+        },
+        "date": 1794455229465,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 64,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 64.00\nmean: 63.60\nstdev: 0.55\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 86,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.80\nstdev: 2.28\ncv: 2.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 115,
+            "range": "221.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 251.20\nstdev: 221.40\ncv: 88.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.40\nstdev: 0.55\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 180,
+            "range": "11.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 178.60\nstdev: 11.91\ncv: 6.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 297,
+            "range": "820.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 297.00\nmean: 647.60\nstdev: 820.55\ncv: 126.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
