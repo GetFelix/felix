@@ -26,14 +26,15 @@ flowchart LR
 
 ## What is checked
 
-**TLA+ models.** `docs/formal/` holds twelve modules. `FelixShard` models one
+**TLA+ models.** `docs/formal/` holds thirteen modules. `FelixShard` models one
 shard on three brokers with a control plane, leases, majority acknowledgement,
 promotion fences, planned and cancelled moves, and replicas electing themselves
 under ballots. Others cover the generation-start record against the "Figure 8"
 loss from the Raft paper (a new leader that counts an older leader's entries as
 committed can lose them), reads and group sessions, atomic commit, head trim,
-consumer groups, placement pacing across shards, and the unified fence used by
-every change of leader. TLC checks every interleaving within the configured
+consumer groups, placement pacing across shards, the unified fence used by
+every change of leader, and the Raft engine planned for 0.8 on the segment log,
+with the crash rules its log storage must keep. TLC checks every interleaving within the configured
 bounds. The invariants include `AckedHeldByLeader` (whoever serves a shard holds
 every record that was acknowledged), `AckedOnMajority`, `AckedSurvive`,
 `AtMostOneServing`, `OneLeaderPerGeneration`, `NoStaleRead`, `NoDuplicate` (a
@@ -83,7 +84,7 @@ paused.
 
 | Layer | What exists | When it runs |
 | --- | --- | --- |
-| TLA+ | 12 modules, 451 configurations. 349 are registered for the per-push check: 169 must pass and 180 must fail, 26 of those for a liveness property. A further 24 are random walks: 14 must pass and 10 must fail. | A pull request that touches the specs runs the quick configurations and any it changes. Main runs all registered ones. Walks and the largest exhaustive configurations run nightly. |
+| TLA+ | 13 modules, 476 configurations. 370 are registered for the per-push check: 174 must pass and 196 must fail, 25 of those for a liveness property. A further 25 are random walks: 15 must pass and 10 must fail. | A pull request that touches the specs runs the quick configurations and any it changes. Main runs all registered ones. Walks and the largest exhaustive configurations run nightly. |
 | Simulator | 120 s of virtual time per seed, in four modes: default, clock skew, placement faults, power loss. | Per pull request: 4 seeds in their own job, and seeds 1 to 20 run twice each to check determinism, which blocks merging. Nightly: 2000 seeds, plus 250 each in the other three modes. Release gate: 2000 seeds in every mode, 8000 runs. |
 | History checker | 21 rules. Campaigns: single faults, compound faults on four brokers, election with the control plane down. | Per pull request, each with a fixed seed: 45 s of single faults, 75 s that injects every fault family, 150 s of compound faults, and 90 s of the election campaign. Nightly: 20 minutes each of the single-fault and the compound campaign, each with a random seed. The election campaign also runs on dispatch, as the gate does. |
 | Scale and failover | Lease canary at 600 streams (debug build) and 1500 streams (release build). Failover variant, two tests (election on and off). felixd at 1000 workloads, about 2010 replicated streams. | Per pull request: the 600-stream canary. Nightly: the 1500-stream canary. Failover and felixd runs are dispatched and are part of the gate. |

@@ -551,6 +551,39 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixShardMoveGiveUpFailoverDrop.cfg` | a set of three whose leader is taken for dead, the failover dropping a follower | pass the invariants: the drop loses no record, it stalls |
 | `FelixShardMoveGiveUpFailoverStall.cfg` | the same for liveness | violate `EventuallyServes`: the promoted follower's fence needs the dead leader's given-up copy |
 | `FelixShardMoveGiveUpFailoverLive.cfg` | the failover keeping the destination in a set of three | pass the invariants and `EventuallyServes` (2.9M distinct states, 4 min) |
+| `FelixRaft.cfg` | `FelixRaft.tla`: one Raft group on the segment log with the `raft_log` adapter's rules, three brokers, two terms, one write, one crash, the subscriber reading | pass every check in [One engine: Raft on the segment log](#one-engine-raft-on-the-segment-log) (1.2M distinct states) |
+| `FelixRaftCrashes.cfg` | the same with two crashes and no subscriber | pass the same (1.6M distinct states) |
+| `FelixRaftTerms.cfg` | three terms, no write, no crash, no subscriber | pass the same (1.1M distinct states) |
+| `FelixRaftFourTerms.cfg` | four terms, no write, no crash, no subscriber | pass the same (40.9M distinct states) |
+| `FelixRaftTermsFull.cfg` | three terms with one write | pass the same (26.0M distinct states, 59 min) |
+| `FelixRaftSnapshot.cfg` | one snapshot, a purge up to it and a follower brought up by snapshot in three writes, one crash | pass the same (5.5M distinct states) |
+| `FelixRaftSnapshotReplace.cfg` | two snapshots, no crash: a broker replaces a snapshot it stored | pass the same (5.8M distinct states) |
+| `FelixRaftSnapshotCrashes.cfg` | `FelixRaftSnapshot.cfg` with two crashes | pass the same (9.4M distinct states, 21 min) |
+| `FelixRaftOffsets.cfg` | one term, two writes and a membership entry, the subscriber reading, no crash | pass the same (0.4M distinct states) |
+| `FelixRaftOffsetsFailover.cfg` | two terms, two writes, the subscriber reading across a change of leader, no crash | pass the same (5.7M distinct states) |
+| `FelixRaftOffsetsFailoverCrash.cfg` | the same with one crash | pass the same (16.1M distinct states, 41 min) |
+| `FelixRaftOffsetsFull.cfg` | two terms, one write and a membership entry, the subscriber reading | pass the same (8.9M distinct states, 20 min) |
+| `FelixRaftAckBeforeFlush.cfg` | the flush callback fires before the fsync | violate `AckedSurvive` |
+| `FelixRaftRecoveredTailUnsynced.cfg` | entries found at the open are reported flushed without an fsync | violate `AckedSurvive` |
+| `FelixRaftVoteNotDurable.cfg` | `save_vote` returns before the vote is on disk | violate `OneLeaderPerTerm` |
+| `FelixRaftLeaderResumes.cfg` | a restarted leader leads again in its stored term | violate `LogMatching` |
+| `FelixRaftTornTailKept.cfg` | recovery reads a torn record as an entry | violate `LogMatching` |
+| `FelixRaftTruncateNotDurable.cfg` | `truncate_after` returns before the cut is on disk; the next flush makes it durable | violate `StateMachineSafety` |
+| `FelixRaftSaveCommittedUnflushed.cfg` | the committed or applied index read back is past the recovered log, the subscriber reading | violate `AckedDelivered` |
+| `FelixRaftPurgeBeforeSnapshot.cfg` | purge runs before the snapshot covering it is stored | violate `AckedSurvive` |
+| `FelixRaftSnapshotTwoRenames.cfg` | the snapshot's data and id are replaced by two renames | violate `StateMachineSafety` |
+| `FelixRaftCommitPriorTerm.cfg` | a leader commits an earlier term's entry by counting copies, four terms | violate `LeaderCompleteness` |
+| `FelixRaftDeliverUncommitted.cfg` | a subscriber is given entries above the commit index | violate `OffsetNeverReused` |
+| `FelixRaftDeliverUncommittedDense.cfg` | the same with two writes: the next leader's skipped count covers an offset the subscriber already holds a record at | violate `OffsetsDense` |
+| `FelixRaftSkipsNotCounted.cfg` | a batch does not report the offsets blank and membership entries hold | violate `OffsetsDense` |
+| `FelixRaftReachFailover.cfg` | witness: an acknowledged record held by a later leader after a crash | violate `NeverFailover` |
+| `FelixRaftReachTruncate.cfg` | witness: a follower cuts off a conflicting tail | violate `NeverTruncates` |
+| `FelixRaftReachLostTail.cfg` | witness: a crash loses an unflushed tail | violate `NeverLosesTail` |
+| `FelixRaftReachSkips.cfg` | witness: a blank entry between two delivered records | violate `NeverSkipsBetweenRecords` |
+| `FelixRaftReachInstall.cfg` | witness: a follower brought up by snapshot | violate `NeverInstallsSnapshot` |
+| `FelixRaftReachInstallCrash.cfg` | witness: a crash between an install's second and third write | violate `NeverCrashesMidInstall` |
+| `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
+| `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -2084,6 +2117,162 @@ carries. The mark is the code's quorum offset, which right after an open can sit
 `FelixShardUnifiedReadmit` and `FelixShardUnifiedDropEvidenced` run without client writes, so coverage is checked
 on start records. Their `Full` twins have one write and run nightly.
 
+### One engine: Raft on the segment log
+
+`FelixRaft.tla` is the first part of the model for the 0.8 engine: one Raft
+group whose log is Felix's segment log, as
+[The replication engine interface](../replication-engine.md) decides it. The
+`raft_log` adapter that puts openraft's log on `DiskLog` is in
+`crates/server/felix-storage/src/raft_log.rs` (#2217, #2222; purge and the
+snapshot file are #2255). The configurations' evidence lines do not cite its
+tests yet (#2297 tracks that). The model states what the adapter has to
+guarantee, and reviews of the adapter are checked against it.
+
+Three brokers run elections and replicate a log of three kinds of entry: a
+leader's blank entry, a membership entry and a client record. The offset is
+the Raft index and the record's generation is its term. Votes are openraft's
+with one leader per term (`leader_id_std`): a term, a broker and a committed
+flag, where a committed vote is above every
+uncommitted vote of its term. A restarted broker is a follower even when its
+stored vote says it led.
+
+Storage is modelled at the level of the adapter's contract. `append` returns
+with the entries readable and not yet on disk, and a flush later moves the
+durable mark and fires the callback. A crash keeps the log up to some point at or
+past the durable mark, and a record cut short there is dropped at the open.
+`truncate_after`, the vote file and the snapshot file each take effect in one
+step: the model treats each as on disk when the call returns, and the files
+are replaced by rename. A purge is one step too. The model does not ask
+whether it survives a crash, since a purge that is lost only leaves more log.
+The state machine is rebuilt at a restart from the snapshot and the log up to
+the committed index read back.
+
+A follower takes a leader's snapshot the way openraft does, as three writes:
+it cuts its log back to the commit index if the log holds another entry at
+the snapshot's index, replaces the snapshot and the state machine, and purges
+the log up to the snapshot's id. A crash can fall between any two. After the
+second write the log is still the old one: it ends below what the broker
+applied and can hold entries the snapshot replaced. The open
+restarts the log at the snapshot, which is the purge past the log's end that
+openraft issues at startup.
+
+One subscriber reads from brokers that believe they lead, up to the commit
+index. Each delivered record reports the blank and membership entries
+directly below it, and the serving broker counts them from its own log. It
+does not know what an earlier leader delivered.
+
+Each check has a configuration that drops one rule and must violate it, and
+the model has witnesses that the behaviour the checks are about is reached.
+
+| Check | What it says | Dropped rule that breaks it |
+| --- | --- | --- |
+| `OneLeaderPerTerm` | No term elects two brokers. | `VoteNotDurable`: `save_vote` returns before the vote is on disk. |
+| `LogMatching` | Two logs that agree on an entry's term agree on everything up to it. | `LeaderResumes`: a restarted leader leads again in its stored term. `TornTailKept`: recovery reads a torn record as an entry. |
+| `TermsMonotone` | Terms never go down along a log. The open-time scan refuses a log that breaks this. | None. It holds whenever the others do. |
+| `LeaderCompleteness` | A leader holds every entry committed in an earlier term. | `CommitPriorTerm`: a leader commits an earlier term's entry by counting copies. |
+| `StateMachineSafety`, `AppliedAgree` | Every broker applies the one committed sequence, so no two differ on an applied entry. | `SnapshotTwoRenames`: the snapshot's data and id are replaced separately. `TruncateNotDurable`: `truncate_after` returns before the cut is on disk. |
+| `AppliedInLog` | No cut reaches below what a broker applied, and the log holds everything applied except between a snapshot's install and its purge. `DiskLog`'s own commit offset is not modelled; kept at or below the applied index, its `BelowCommit` refusal never meets a correct cut. | None. It holds whenever the others do. |
+| `AckedSurvive` | An acknowledged record is on the disks of a majority. | `AckBeforeFlush`: the callback fires before the fsync. `RecoveredTailUnsynced`: entries found at the open are reported flushed without an fsync. `PurgeBeforeSnapshot`: purge runs before the snapshot covering it is stored. |
+| `PurgedCoveredBySnapshot` | No log is purged past its stored snapshot. | None of its own. `PurgeBeforeSnapshot` and `SaveCommittedUnflushed` break it first, and their configurations are held to the harm that follows. |
+| `OffsetsDense` | Delivered offsets, less the skipped ones each serving broker reports from its own log, have no gap. | `SkipsNotCounted`: a batch does not report them. `DeliverUncommitted`: a subscriber is given entries above the commit index. |
+| `OffsetNeverReused`, `DeliveredInOrder` | A delivered offset holds that record in the committed sequence, and the k-th delivery is the k-th committed record. | `DeliverUncommitted`: a subscriber is given entries above the commit index. |
+| `VoteNeverLowers` | The stored vote only rises. | None. |
+| `AckedDelivered` | When nothing more can happen under a leader no broker has outvoted, the subscriber holds every acknowledged record. Checked where there is a subscriber and no snapshot (`FelixRaft.cfg`, `FelixRaftOffsets.cfg`, `FelixRaftOffsetsFailover.cfg`). | `SaveCommittedUnflushed`: the committed or applied index read back is past the recovered log. |
+| `QuiescentServed` | When nothing more can happen and a leader no broker has outvoted stands, it has committed its whole log, acknowledged every record in it, brought every broker level and fed the subscriber. | None. This is the liveness check. |
+
+`OffsetsDense` is the client's own drop check. The subscriber resumes after
+the last offset it received, and whichever broker serves it next counts the
+entries directly below the next record that hold no event, from its own log.
+The check holds because that broker's committed log is the one the earlier
+deliveries came from, also across a change of leader
+(`FelixRaftOffsetsFailover.cfg`). Without `skipped_before` it fires at every
+blank or membership entry. `DeliveredInOrder` is the stronger statement.
+Numbering only the records gives a count with no gaps, and the subscriber
+receives exactly that sequence.
+
+Three dropped rules are held to the harm they cause, not to the check that
+restates them. `TruncateNotDurable` lets a follower learn the commit of the
+entry that replaced a cut tail before the cut is on disk. A crash brings the
+old tail back under the stored commit index and the restart applies an entry
+that was never committed. `SaveCommittedUnflushed` leaves a broker whose log
+starts past entries it lost. The model marks them lost in its state machine,
+so `StateMachineSafety` would fail by construction and is not the check used.
+The harm shown is that the broker is elected and a subscriber resuming below
+the start of its log is never given an acknowledged record
+(`AckedDelivered`). `PurgeBeforeSnapshot` leaves an acknowledged record on
+one disk.
+
+The passing run is split by what it varies, each with three brokers:
+
+- `FelixRaft.cfg`: two terms, one write, one crash and the subscriber.
+- `FelixRaftCrashes.cfg`: two crashes.
+- `FelixRaftTerms.cfg`: three terms, no write and no crash.
+- `FelixRaftFourTerms.cfg`: four terms, no write and no crash. Three terms
+  pass with or without the rule against committing an earlier term's entry by
+  counting copies. Four are the fewest where the rule matters:
+  `FelixRaftCommitPriorTerm.cfg` has the same bounds without it and fails.
+- `FelixRaftSnapshot.cfg`: a snapshot, a purge and a follower brought up by
+  snapshot in three writes, with one crash.
+- `FelixRaftSnapshotReplace.cfg`: two snapshots and no crash, so a broker
+  replaces a snapshot it already stored.
+- `FelixRaftOffsets.cfg`: two writes and a membership entry under one leader,
+  with the subscriber.
+- `FelixRaftOffsetsFailover.cfg`: two writes over two terms with the
+  subscriber, so two deliveries can come from different leaders.
+
+Five take more than ten minutes on a CI runner, so a pull request checks them
+only when it changes `FelixRaft.tla` or the configuration, and main checks
+them on every spec change: `FelixRaftFourTerms.cfg`, `FelixRaftTermsFull.cfg`
+(three terms with a write), `FelixRaftOffsetsFull.cfg` (one write and a
+membership entry across a change of leader),
+`FelixRaftOffsetsFailoverCrash.cfg` (`FelixRaftOffsetsFailover.cfg` with one
+crash) and `FelixRaftSnapshotCrashes.cfg` (`FelixRaftSnapshot.cfg` with two
+crashes).
+
+The eight `FelixRaftReach*.cfg` witnesses each claim something never happens
+and must be violated: a record acknowledged under one leader held by a later
+one after a crash, a follower cutting off a conflicting tail, a crash losing
+an unflushed tail, a blank entry between two delivered records, two
+deliveries in a row from leaders of different terms, a follower brought up by
+snapshot, a crash between an install's second and third write, and a broker
+replacing a snapshot it stored.
+
+#### What the adapter must guarantee
+
+The model passes only with these rules, and each maps to a call the adapter
+implements.
+
+| Model step | openraft call | Rule |
+| --- | --- | --- |
+| `LeaderAppend`, `Replicate`, `Flush` | `append` and its `IOFlushed` callback | Entries are readable when `append` returns. The callback fires only after the fsync that covers them. |
+| `Replicate` with a cut, `InstallCut` | `truncate_after` | The cut is on disk before the call returns. Durable by the next flush is not enough: a follower applies and saves a commit index past the cut before it flushes, and a crash then brings the old tail back under that index. |
+| `Restart` | the open, then `get_log_state` | A torn record is cut off, never read as an entry. Everything reported at the open is on disk, because openraft takes it as flushed. `DiskLog`'s open already syncs the active segment before it returns. |
+| `Restart` | `read_committed`, `applied_state` | Neither index read back is past the recovered log. openraft commits an entry before the local copy is flushed, so the stored index has to be held back or clamped at the open. With `read_committed` past the log, openraft fails to re-apply and the broker does not start. With `applied_state` past it, openraft restarts the log at that index and trusts the state machine to hold what is missing; a shard's state machine is the log, so those records are gone from the replica. That second case is the one the model's knob takes. `DiskLog` loads its stored commit offset as it is, so the adapter has to clamp, and has to lower `DiskLog`'s own offset with it or a later correct cut is refused with `BelowCommit`. |
+| `SaveVote` | `save_vote`, `read_vote` | The vote, with its committed flag, is on disk before the call returns, and the stored vote never goes down. |
+| `BuildSnapshot`, `InstallState` | `build_snapshot`, `install_snapshot` | The snapshot's data and id change together. A crash leaves the old pair or the new pair. |
+| `InstallCut`, `InstallState`, `InstallPurge`, `Restart` | `truncate_after`, `install_snapshot`, `purge`, then the open | A snapshot install is three writes, and the broker opens after a crash between any two. After the second, the log ends below the snapshot, and openraft purges up to the applied index at startup. |
+| `Purge`, `InstallPurge`, `Restart` | `purge` | Only up to the stored snapshot. A purge to an id past the log's end works: it leaves an empty log that starts at that id. |
+| `Deliver` | the broker's read bound | Subscribers read up to the commit index. A batch reports the offsets directly below its first record that hold no event, counted from the serving broker's log. |
+
+A restarted leader must not lead again in its stored term. openraft 0.10
+handles that itself: it lowers the committed flag in memory at startup. It
+then campaigns for a new term when `enable_leader_restore` is on (the
+default) and the broker is a voter, and stays a follower otherwise.
+
+#### What it does not cover yet
+
+Issue #2198 lists the rest, and none of it is in this model: membership
+changes that alter the voter set (a membership entry here only holds an
+index), the leader lease and its clock assumption, disk loss and storage ids,
+placement-driven moves, the switch from the hybrid protocol as a snapshot
+install, and `Leader`-level acknowledgements. A message is one step that reads
+both brokers, so the model has no lost, repeated or reordered messages beyond
+a leader acting on an old answer. A broker in the middle of a snapshot
+install takes no other step until the three writes land or it crashes. The
+`SnapshotTwoRenames` rule is dropped for a snapshot the broker builds, not
+for one it installs. The order of writes inside one adapter call is left to
+the simulator's power-loss crash points.
+
 ## Which configurations run where
 
 TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
@@ -2091,10 +2280,10 @@ runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
 changes. A pull request checks the registered configurations that take ten
 minutes or less (`TLA_QUICK=1`), plus `FelixShard.cfg`, the base
 configuration, whatever its time, and any whose own `.cfg` it changes. A
-changed configuration of 30 minutes or less runs in the twelve shards (sixteen on main) with the
+changed configuration of 30 minutes or less runs in the twenty shards with the
 quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
 `formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
-to main checks every registered configuration. The shards are twelve jobs on a pull request and sixteen on main,
+to main checks every registered configuration. The shards are twenty jobs, on a pull request and on main,
 filled by each configuration's measured time. Main's shards share a
 concurrency group per shard: one run proceeds and only the newest later push
 waits, so a burst of merges does not queue hours of runner time. A slow configuration that a
