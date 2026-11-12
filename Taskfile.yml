@@ -24,6 +24,8 @@ tasks:
       # misplaced `#[cfg]` on felix-common's modules reached main past a lint
       # that only ever ran `--all-features`.
       - "cargo check -p felix-common"
+      # Without `raft`, as every release builds it.
+      - "cargo check -p felix-replication"
 
 
   clippy:

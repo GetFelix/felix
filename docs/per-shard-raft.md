@@ -2,7 +2,9 @@
 
 This page is the design for track 4 of the one-engine plan (issue #2167):
 every shard runs one Raft group, through openraft, behind the engine
-interface. Nothing here is built yet. The decisions it rests on are in
+interface. The group runtime and its ticker are built ("Group runtime"
+below) and no shard runs on them. The rest is not built yet. The decisions
+it rests on are in
 [`replication-engine.md`](replication-engine.md), which this page calls "the
 engine page". Read its "Decisions" first. The protocol being replaced is in
 [`replication-design.md`](replication-design.md) and is called "the hybrid"
@@ -141,16 +143,18 @@ rotate, and the directory's log is kept as plain records, in each of these
 cases:
 
 - The shard directory is missing or empty.
-- The storage id rotated: the data root was lost, or a run with relaxed
-  fsync crashed and the machine restarted since
+- The storage id rotated: the data root was lost
   (`felix-storage/src/run_state.rs`, `begin`), so writes that peers counted
   may be gone.
 - The directory fails the restore check below.
 
-**Votes are always fsynced.** The vote, the copy id and the membership are
-synced in every fsync mode. Votes are rare, so this costs nothing on the
-write path, and it means a relaxed-fsync crash can shorten a log but never
-forget a vote.
+**A Raft log fsyncs on commit.** A member acknowledges an entry to its
+leader only once the entry is on its disk, so a shard's log refuses to open
+as a Raft log under any other fsync mode (`RaftLog::new`, #2248). The vote,
+the copy id and the membership are synced before they are answered too. A
+crash therefore never shortens a member's log below what it acknowledged
+and never forgets a vote. A broker configured for relaxed fsync cannot hold
+a Raft member.
 
 **The restore check.** A directory restored from a backup or a VM rollback
 keeps its copy id with an older log and an older vote. Raft cannot see
@@ -214,9 +218,9 @@ second time on an empty log.
 ### Re-forming a group
 
 Rotating ids keeps one failure safe. It also means that several at once can
-leave a group without a majority of voters: power-cycle two of three
-brokers that run relaxed fsync, and every group they share has one voter
-left. An RF 1 shard has that problem after any rotation. The hybrid
+leave a group without a majority of voters: two of three brokers lose
+their disks, or are restored from older copies, and every group they share
+has one voter left. An RF 1 shard has that problem after any rotation. The hybrid
 readmits such copies. Raft needs an explicit path, and it is the same
 mechanism as the switch from the hybrid: a base recorded once in the
 control plane.
@@ -257,17 +261,16 @@ acts. It does not matter why the group was leaderless. Three intact copies
 that were only partitioned from each other all retire before they report,
 so when the partition heals none of them can commit in the old epoch. Every
 record any reporting disk holds is at or below the chosen base or is cut as
-uncommitted. What is lost is only a record that no surviving disk holds,
-which is the loss relaxed fsync already documents for a majority losing
-power. With fsync on commit a crash does not rotate ids, and a re-form then
-loses nothing.
+uncommitted. What is lost is only a record that no surviving disk holds.
+A crash alone does not rotate ids, because a Raft log fsyncs on commit, so
+a re-form after a power loss loses nothing.
 
 Step 4 closes the stale-membership case: the group went from {A, B, C} to
 {A, B, D}, the control plane still has {A, B, C}, and A and B rotate with
 short logs. A's or B's report names {A, B, D} if the change reached their
 disk, and D is waited for. If the change reached neither, it was never
-acknowledged by a majority that still holds it, which is the relaxed-fsync
-loss again.
+acknowledged by a majority that still holds it, which is the same loss of
+disks again.
 
 A retired copy whose group goes on without a re-form, because a voter that
 was asked never retired and a leader was elected after all, cannot take its
@@ -364,9 +367,11 @@ Every group is built with `enable_tick: false`. Its internal ticker task
 stays parked and costs no CPU (measured: idle CPU 0 at 5,000 groups, against
 86% of a core per 1,000 members with the default tick). One task per broker,
 the node ticker, calls `Raft::trigger().tick()` on every awake group each
-interval. openraft 0.10.1 adds that call (openraft#2305). It runs the same
-check the internal ticker runs: a follower past its election timeout starts
-an election, a leader whose heartbeat is due sends one.
+interval. openraft 0.10.1 adds that call (openraft#2305). Until 0.10.1 is
+released the workspace pins the commit on openraft's main branch that has
+it (engine page, "openraft version"). It runs the same check the internal
+ticker runs: a follower past its election timeout starts an election, a
+leader whose heartbeat is due sends one.
 
 ```mermaid
 flowchart LR
@@ -389,7 +394,18 @@ Rules for the ticker:
 - **Drop, never queue.** A tick still waiting when the next interval starts
   is dropped. openraft reads the clock when it handles a tick, so a late tick
   sends one heartbeat and a dropped tick loses nothing. The ticker counts
-  dropped ticks per group as a metric.
+  dropped ticks per group, in the group's status. A tick waits only when
+  the group's queue is full, and openraft's queue holds 65,536 requests, so
+  a dropped tick means a group that has been stuck for a long time.
+- **Only groups whose timer is due.** The ticker looks at every group each
+  interval and ticks the ones whose timer can have run out. A leader's only
+  timer is its heartbeat, so it is ticked once per heartbeat interval. A
+  follower's is its election timeout, which cannot pass until the shortest
+  election timeout after it last took an append from its leader or granted
+  a vote. The runtime sees both, so a follower that keeps hearing its
+  leader is never ticked. Once that time has passed it is ticked every
+  interval until it hears a leader or one is elected. This is built, and
+  does not need sleep.
 - **Only awake groups.** A sleeping group is not ticked at all. This is what
   makes idle CPU zero, since even a slow tick costs a wakeup per member.
 - **The interval adds to timeouts.** A timeout is noticed at the next tick,
@@ -402,6 +418,81 @@ about a third of a core. With most groups asleep it is close to nothing.
 
 Timer values are in Questions, 4. The hybrid suspects a leader after 5
 seconds, so Raft does not need 50 ms heartbeats to match its failover time.
+
+The first election of a group needs no tick. A member told its group's
+first members stands at once. If several members are told at the same
+moment their votes can split, and the next election waits for a timeout
+like any other.
+
+An election costs each member two to four fsyncs for its vote, and groups
+do not share them. Many groups electing at once are therefore bound by the
+disk, and once a round takes longer than the election timeout the timeouts
+fire again and add more votes. The runtime's tests saw 40 groups fail to
+settle that way on a slow disk. What to do about it is #2317.
+
+## Group runtime
+
+The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
+behind the `raft` cargo feature of `felix-replication`. No release enables
+the feature and nothing in the broker calls the runtime, so a shipping
+broker is unchanged.
+
+A `GroupRuntime` holds one broker's member of every group it is told to
+open:
+
+- `start(broker, timers, transport)` starts the runtime and its one ticker
+  task.
+- `open(group, copy, log)` starts a member on a shard's log. The log must
+  be a Raft log that fsyncs on commit. The member reads its vote, entries
+  and membership back from the log, so opening after a restart needs
+  nothing else.
+- `initialize(shard, members)` forms a new group from its first member
+  set. A member refuses a set that does not name it. Once a member has
+  voted or holds an entry the call does nothing.
+- `handle(request)` takes a Raft message from a peer. A message names the
+  group (shard and epoch) and the member (broker and copy id). The runtime
+  hands it on only if both match the member it holds. A message for an
+  older copy or another epoch is refused.
+- `close(shard)` stops one member and leaves its log to the caller.
+  `shutdown()` stops the ticker and every member. Neither writes anything:
+  what a member acknowledged is already on disk.
+- `status(shard)` reports the member's role, term, leader, last index
+  (written, whether or not it is flushed), committed index, and the ticks
+  it was sent and the ticks dropped.
+
+Messages leave through a `RaftTransport`, one for all groups, so groups
+share connections. The runtime wraps it in an `openraft-multi`
+`GroupRouter`, which is the seam the upstream heartbeat coalescing wraps.
+The tests join three runtimes with a transport that calls `handle`
+directly. The transport over the broker's peer connections, and the
+capability a peer must offer before it is sent a Raft message, are not
+built yet (#2314).
+
+What the runtime sets in openraft: the timers from Questions, 4;
+`enable_tick` off; no snapshot policy, since a shard's records leave by
+retention and never because a snapshot was taken; and `allow_log_reversion`
+off (Questions, 2). Every log is opened with `purge_within`, so a purge
+past the stored snapshot is refused.
+
+Each group has a small state machine that keeps the last applied entry and
+the membership in memory. A shard's state is its log. A membership record's
+payload is JSON: a layout version, the voter sets (two during a joint
+change) and the learners, each member as its broker id and copy id.
+
+Two things are left for the pull request that puts stream shards on Raft
+(#2233):
+
+- An entry carries a record's payload and timestamp only. The publisher,
+  headers and marks come with adoption.
+- The state machine keeps nothing on disk, so a restarted member applies
+  its committed entries again, which reads them. That is fine for the
+  tests here and too slow for a real shard.
+
+Memory per member is measured by a test
+(`crates/server/felix-replication/tests/raft_memory.rs`): 120 idle members
+in one process, a third of them leaders, counting live heap bytes added on
+top of the open logs. It fails above 256 KB per member. The number it
+measures is in "The groups-per-broker gate".
 
 ## Heartbeat coalescing
 
@@ -848,9 +939,12 @@ Acceptance cases carried over from open issues:
   over, writes continue and consumer groups keep working. Passing this in
   the Raft cluster closes both.
 - **#2032.** Seed 4 is rerun under Raft.
-- **Majority power loss.** Two of three brokers on relaxed fsync lose power
-  together. Every shard is served again through a re-form, and the only
-  records lost are ones no disk holds.
+- **Majority power loss.** Two of three brokers lose power together.
+  Every shard is served again with nothing lost and no re-form, because a
+  Raft log fsyncs on commit.
+- **Majority disk loss.** Two of three brokers lose their data roots.
+  Every shard is served again through a re-form, and the only records lost
+  are ones no disk holds.
 - **Restored directory.** A broker restarted on an older copy of its
   directory never votes under its old ids.
 - **Membership under load.** A move while publishers write never stops a
@@ -1051,7 +1145,7 @@ and the hybrid is what ships.
 | --- | --- | --- | --- |
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Reports metrics, drives nothing | | Behind the feature, so a shipping broker gains no fsync. An A/B cell prices the probe before it is on anywhere |
-| 3 (#2231) | Group runtime: type config, member id, group registry, peer messages for Raft behind a negotiated capability, node ticker | track 2 adapter; openraft 0.10.1, which is not released (the lock has 0.9.25, see #2215) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
+| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker. Built. Peer messages for Raft on the broker transport, behind a negotiated capability, follow in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, `opened` and `deposed`. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3 | Behind the feature, fresh clusters only. Starts with the adoption test. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: learner, joint change, transfer, the fence drain around each step, leader reports and routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check before voting, votes always fsynced, re-forming a group. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
@@ -1089,15 +1183,15 @@ Each has a recommendation, judged on safety and performance only.
    before a restarted broker votes. The control plane's group is track 3's
    call.
 
-3. **What is the heartbeat-coalescing interim?** Recommended: none in the
+3. **What is the heartbeat-coalescing interim?** Decided: none in the
    tree. Sleep removes idle heartbeats, which is the gate. Measure the awake
    traffic at the design point, post it upstream, send the pull request. Only
    if an A/B cell fails on heartbeat cost does Felix carry the wrapper, as an
    exact copy of the upstream pull request. The wrapper is safe either way,
    so this is about keeping one copy of the code.
 
-4. **Which timer values?** Recommended to start: tick 50 ms, heartbeat
-   200 ms, election timeout 1 to 2 s, liveness heartbeat 500 ms with support
+4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
+   heartbeat 200 ms, election timeout 1 to 2 s. Recommended for the rest: liveness heartbeat 500 ms with support
    withdrawn after 1.5 s of silence. The disk probe has its own limit: a
    broker stops sending only when no probe has finished for 5 s, so a
    single slow fsync withdraws nothing. A restarted member is held until it

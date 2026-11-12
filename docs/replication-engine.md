@@ -357,10 +357,12 @@ The append checks that the first entry is the next index under the same
 lock that assigns offsets, so a hole is refused with nothing written. The
 callback fires from a task that waits on the log's group commit, once per
 append. A flush covers a prefix of the log, so when the callback fires
-every entry below is durable too. The wait follows the log's fsync policy:
-under `FsyncMode::OnCommit` it is a real flush, and under the other modes
-the callback fires at once, as an acknowledgement does for a stream. A
-flush that fails reaches the callback as an error, which openraft treats as
+every entry below is durable too. The wait is a real flush, because a Raft
+log is always `FsyncMode::OnCommit`: `RaftLog::new` refuses a log opened
+under any other mode (#2248). Under the other modes the callback would fire
+before the fsync, and a follower would acknowledge an entry that a power
+cut can still take, so an entry could commit on fewer than a majority of
+disks. A flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
 
 **Truncation waits for those callbacks.** `truncate_after` first lets every
@@ -375,10 +377,14 @@ The cut is on disk when `truncate_after` returns, so the callback of an
 append after it cannot fire ahead of the cut.
 
 **A vote only moves forward.** `save_vote` writes the ballot and returns
-once it is on disk. It accepts a higher term, or the vote already held
-turning committed, and saving the held vote again writes nothing. A lower
-term, another node in the same term, or a committed vote going back to
-uncommitted is refused with nothing written.
+once it is on disk. It accepts a higher term, or a committed vote over an
+uncommitted one of the same term, and saving the held vote again writes
+nothing. The committed vote may name another node: a member that voted for
+a candidate that lost, itself included, follows the leader the majority
+elected in that term, and openraft saves that leader's vote. A lower term,
+a second uncommitted vote in a term, a second committed leader in a term,
+or a committed vote going back to uncommitted is refused with nothing
+written.
 
 **The committed id is never past the log.** `save_committed` keeps the id
 as the log's commit offset, which is written behind the call, so after a
@@ -600,9 +606,17 @@ used by every shard group and by the control plane, tested once.
 ### openraft version
 
 The adapter targets openraft 0.10, pinned to an exact version in
-`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10), and
-`[workspace.dependencies]` pins `openraft = "=0.10.0"`, which `felix-storage`
-uses behind its `raft` feature. The control plane runs 0.9.25 today
+`Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
+`[workspace.dependencies]` pins one commit of openraft's main branch, two
+changes past the 0.10.0 tag (2026-11-11), because the node ticker needs
+`Trigger::tick()` and that ships in 0.10.1 (`docs/per-shard-raft.md`, "One
+timer for every group"). The two changes are that call and a
+`#[non_exhaustive]` on some name enums. `openraft-multi` is pinned to the
+same commit. The pin goes back to a released version, `=0.10.1`, when that
+is out (#2313), and no release ships on the commit pin: only the `raft`
+features of `felix-storage` and `felix-replication` build it, and no
+release enables them. `deny.toml` allows that one git source. The control
+plane runs 0.9.25 today
 (`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
 pinned version as part of its storage track, so the workspace has one
 openraft. A version change is a reviewed update, never a side effect of
@@ -680,14 +694,17 @@ backwards. Without permission for that, the leader trips over the reverted
 log, which is the error the control plane's chaos test caught
 (`Cargo.toml:63-68`). On 0.9 the `loosen-follower-log-revert` feature allows
 it, and the control plane keeps that feature until it moves. On 0.10 the
-feature is deprecated in favour of `Config::allow_log_reversion`, which the
-adapter sets for every group.
+feature is deprecated in favour of `Config::allow_log_reversion`. The
+control plane's group sets it. Shard groups leave it off: a copy that lost
+records comes back under a new copy id instead (`docs/per-shard-raft.md`,
+"Group and member identity").
 
 Checklist for each openraft version change:
 
 1. Pin the exact version in `Cargo.toml` and `Cargo.lock`.
-2. Allow log reversion: `allow_log_reversion` on 0.10, the
-   `loosen-follower-log-revert` feature on 0.9.
+2. Allow log reversion for the control plane's group: `allow_log_reversion`
+   on 0.10, the `loosen-follower-log-revert` feature on 0.9. Shard groups
+   keep it off.
 3. Check the follower-side leader lease still equals `election_timeout_max`,
    and that a follower still refuses votes for that long, since the lease
    margin depends on both (Decisions, 5).
@@ -790,7 +807,8 @@ followers, a 4-vCPU runner): about 180 KB and 10 tasks per leader member
 and 145 KB and 6 tasks per follower, whatever the timers. Idle CPU comes
 from each member's tick: 86% of a core per 1,000 members with the default
 timers, 0 with `enable_tick=false`. One node timer driving
-`Raft::trigger().tick()` (openraft 0.10.1) removes it. The other upstream
+`Raft::trigger().tick()` (openraft 0.10.1) removes it, and is built
+(`docs/per-shard-raft.md`, "Group runtime"). The other upstream
 asks (heartbeat coalescing per peer, idle groups that sleep, fewer tasks per
 member) are tracked in #2215.
 

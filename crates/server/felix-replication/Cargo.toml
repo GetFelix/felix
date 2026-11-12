@@ -13,6 +13,12 @@ categories = ["network-programming"]
 # Built into the broker service, not consumed from a registry.
 publish = false
 
+[features]
+# The per-shard Raft runtime (`src/raft.rs`): many openraft groups on one
+# broker, driven by one ticker. No release enables it, and nothing in the
+# broker calls it yet. See docs/per-shard-raft.md.
+raft = ["dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde"]
+
 [dependencies]
 ahash = { workspace = true }
 arc-swap = { workspace = true }
@@ -28,6 +34,8 @@ felix-transport = { path = "../../protocol/felix-transport", version = "0.8.0-pr
 felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.0" }
 futures = "0.3"
 metrics = { workspace = true }
+openraft = { workspace = true, optional = true, features = ["tokio-rt", "serde"] }
+openraft-multi = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 quinn = { workspace = true }
 rcgen = { workspace = true }
@@ -41,11 +49,23 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
+[[test]]
+name = "raft_memory"
+required-features = ["raft"]
+
+[[test]]
+name = "raft_idle_cpu"
+required-features = ["raft"]
+
 [dev-dependencies]
+# Turns `raft` on for this crate's own tests, so `cargo test` runs the
+# runtime's without a feature flag.
+felix-replication = { path = ".", features = ["raft"] }
 felix-broker = { path = "../felix-broker", version = "0.8.0-preview.0", features = ["fault-injection"] }
 axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 tempfile = { workspace = true }
+libc = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber = { workspace = true }
 

@@ -145,6 +145,11 @@ async fn a_given_up_generation_takes_no_leader_until_a_newer_one() {
             leader: String::new()
         }
     );
+    // Not even as a committed vote, which may replace a losing one.
+    log.save_vote(5, "broker-b", true)
+        .await
+        .expect_err("a leader at a given-up generation");
+    assert!(log.gave_up());
     assert_eq!(
         log.accept_generation(6, Some("broker-b"))
             .await

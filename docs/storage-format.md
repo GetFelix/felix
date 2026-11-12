@@ -546,8 +546,10 @@ can hold several terms. Truncation is the log's suffix truncation, and a
 vote is saved to the `ballot` file.
 
 A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
-in six ways:
+in seven ways:
 
+- **It fsyncs on commit.** The adapter refuses a log under any other fsync
+  mode: a member acknowledges an entry only once it is on disk.
 - **Version 9 from its first segment.** Every entry needs a term, so no
   segment is written in an older format, whatever the fleet gate says. If
   the directory already holds older segments, the first append starts a

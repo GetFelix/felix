@@ -922,8 +922,10 @@ today.
 
 ### openraft 0.9 to 0.10
 
-The workspace pins `openraft = "=0.10.0"`. The control plane moves to that
-pin first, still on redb and still with its current leader id, so the
+The workspace pins openraft 0.10 exactly: today one commit just past
+0.10.0, and `=0.10.1` once that is released
+([`replication-engine.md`](replication-engine.md), "openraft version"). The
+control plane moves to that pin first, still on redb and still with its current leader id, so the
 library change and the store change are separate steps.
 
 This step must roll one member at a time, and roll back, so nothing a 0.9

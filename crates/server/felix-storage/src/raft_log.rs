@@ -55,7 +55,7 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 use self::purged::Purged;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
-use crate::log::Offset;
+use crate::log::{FsyncMode, Offset};
 #[cfg(doc)]
 use crate::log::{LogConfig, RecordMark, UNKNOWN_WRITER};
 
@@ -136,11 +136,22 @@ where
     /// Refused unless the log was opened with [`LogConfig::raft_log`]: any
     /// other log starts on a format with no generations and may delete
     /// entries by retention.
+    ///
+    /// Refused unless its fsync mode is [`FsyncMode::OnCommit`]. Under any
+    /// other mode an append's callback fires before the fsync, and Raft
+    /// would count toward a quorum an entry that a power cut can still take.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
         if !log.config().raft_log {
             return Err(invalid(format!(
                 "{} was not opened as a Raft log",
                 log.label()
+            )));
+        }
+        if log.config().fsync_mode != FsyncMode::OnCommit {
+            return Err(invalid(format!(
+                "{} is a Raft log and must fsync on commit, not {:?}",
+                log.label(),
+                log.config().fsync_mode
             )));
         }
         let purged = purged::load(log.dir())?;
