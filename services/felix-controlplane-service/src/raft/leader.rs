@@ -6,6 +6,7 @@
 //! seconds later. The application registers a [`LeaderService`]; a request
 //! reaching a follower is forwarded to the leader over the peer listener, the
 //! same way a proposal is. Requests stay opaque bytes here, like commands.
+use openraft::async_runtime::WatchReceiver;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -69,7 +70,7 @@ impl RaftHandle {
             }
             let (leader, recorded) = {
                 let metrics = self.raft.metrics();
-                let metrics = metrics.borrow();
+                let metrics = metrics.borrow_watched();
                 let leader = metrics.current_leader;
                 let recorded = leader.and_then(|id| {
                     metrics
@@ -140,13 +141,13 @@ impl RaftHandle {
 
     /// The current term, as this member knows it.
     pub fn current_term(&self) -> u64 {
-        self.raft.metrics().borrow().current_term
+        self.raft.metrics().borrow_watched().current_term
     }
 
     /// Whether this member believes it leads. Local and unconfirmed; false
     /// once [`RaftHandle::shutdown`] has been called.
     pub fn is_leader(&self) -> bool {
-        !self.is_stopped() && self.raft.metrics().borrow().current_leader == Some(self.id)
+        !self.is_stopped() && self.raft.metrics().borrow_watched().current_leader == Some(self.id)
     }
 
     pub(super) fn is_stopped(&self) -> bool {

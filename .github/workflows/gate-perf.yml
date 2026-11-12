@@ -1,17 +1,19 @@
 name: Gate - performance A/B
 
-# Criteria 2 and 3 of the no-regression gate (docs/replication-engine.md, "The
-# no-regression gate"): RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB payloads, the
-# last v0.7.x release against this commit, on one runner. Throughput must stay
-# within 10% of the baseline and p99 within 20%.
+# Release A/B of docs/release-gate.md, section 3: the last v0.7.x release against
+# this commit, on one runner. Cells 1 and 2: RF 1 on one broker and RF 3 on
+# three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99.
 #
 # Both sides run in this job, alternate trial by trial, and the side that goes
-# first flips each round, so runner drift lands on both. The same felix-cluster
-# harness and felix-loadgen drive both; only felix-broker differs. Medians over
-# the rounds are compared (scripts/ci/gate_perf.py).
+# first flips each round, so runner drift lands on both. A third trial per round
+# runs the baseline again for the A/A validity check. The same felix-cluster
+# harness and felix-loadgen drive all of them; only felix-broker differs.
 #
-# `engine: raft` ends in a skip until the Raft engine exists. The Raft run will
-# compare the Raft build with the hybrid baseline in the same way.
+# Each round gives one candidate/baseline ratio per cell. The paired rule
+# (scripts/ci/gate_perf.py) reads the median ratio's exact interval. A cell it
+# cannot decide gets more rounds, 6 then 12 then 24; decided cells stop.
+#
+# `engine: raft` ends in a skip until the Raft engine exists.
 
 on:
   workflow_dispatch:
@@ -25,10 +27,6 @@ on:
         description: "Baseline tag or commit (the last v0.7.x release)"
         type: string
         default: "v0.7.1"
-      rounds:
-        description: "Rounds; each runs every cell once per side (even, so each side goes first equally often)"
-        type: string
-        default: "6"
       seconds:
         description: "Seconds each trial publishes"
         type: string
@@ -37,7 +35,6 @@ on:
     inputs:
       engine: { type: string, default: hybrid }
       baseline_ref: { type: string, default: "v0.7.1" }
-      rounds: { type: string, default: "6" }
       seconds: { type: string, default: "30" }
 
 permissions:
@@ -60,7 +57,6 @@ jobs:
         env:
           ENGINE: ${{ inputs.engine }}
           BASELINE: ${{ inputs.baseline_ref }}
-          ROUNDS: ${{ inputs.rounds }}
           SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
@@ -72,14 +68,13 @@ jobs:
             *) echo "engine must be hybrid or raft"; exit 1 ;;
           esac
           [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
-          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
           [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
 
   ab:
     needs: plan
     if: needs.plan.outputs.run == 'true'
     runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
-    timeout-minutes: 180
+    timeout-minutes: 350
     steps:
       - name: Checkout head
         uses: actions/checkout@v7
@@ -132,39 +127,56 @@ jobs:
       - name: Run the cells, alternating sides
         id: run
         env:
-          ROUNDS: ${{ inputs.rounds }}
           SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
           results=/tmp/felix-gate/results.jsonl
           : > "$results"
-          # name, replication factor, payload bytes, batch
-          cells="rf1-1k:1:1024:64 rf1-64k:1:65536:4 rf3-1k:3:1024:64 rf3-64k:3:65536:4"
-          for round in $(seq 1 "$ROUNDS"); do
-            echo "::group::Round $round of $ROUNDS"
-            if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
-            for cell in $cells; do
-              IFS=: read -r name rf payload batch <<<"$cell"
-              for side in $sides; do
-                scripts/ci/gate-perf-cell.sh "/tmp/felix-gate/$side" "$side" "$name" "$rf" "$payload" "$batch" \
-                  "$SECONDS_PER_TRIAL" "$round" "$results" \
-                  || echo "::warning::$side $name round $round failed"
+          # name, replication factor, payload bytes, batch. RF 1 is one broker.
+          cells="rf1-1k:1:1024:64 rf1-64k:1:65536:64 rf3-1k:3:1024:64 rf3-64k:3:65536:64
+                 rf1-1k-b1:1:1024:1 rf1-64k-b1:1:65536:1 rf3-1k-b1:3:1024:1 rf3-64k-b1:3:65536:1"
+          active=$cells
+          done_rounds=0
+          for target in 6 12 24; do
+            for round in $(seq $((done_rounds + 1)) "$target"); do
+              echo "::group::Round $round of $target"
+              # Head always runs in the middle slot; the two baseline runs swap
+              # around it, so no side gains from its position. baseline_aa is
+              # the baseline again, with its own side name.
+              if [ $((round % 2)) -eq 1 ]; then sides="baseline head baseline_aa"; else sides="baseline_aa head baseline"; fi
+              for cell in $active; do
+                IFS=: read -r name rf payload batch <<<"$cell"
+                for side in $sides; do
+                  dir=/tmp/felix-gate/${side%_aa}
+                  scripts/ci/gate-perf-cell.sh "$dir" "$side" "$name" "$rf" "$payload" "$batch" \
+                    "$SECONDS_PER_TRIAL" "$round" "$results" \
+                    || echo "::warning::$side $name round $round failed"
+                done
               done
+              echo "::endgroup::"
             done
-            echo "::endgroup::"
+            done_rounds=$target
+            # Exit 2 means some cell is undecided; 1 is a fail, which is final.
+            python3 scripts/ci/gate_perf.py compare "$results" --aa --json /tmp/felix-gate/stage.json >/dev/null || true
+            undecided=$(jq -r '[.verdicts[] | select(.status == "undecided") | .cell] | unique | .[]' /tmp/felix-gate/stage.json)
+            [ -n "$undecided" ] || break
+            next=
+            for cell in $active; do
+              grep -qxF "${cell%%:*}" <<<"$undecided" && next="$next $cell"
+            done
+            active=$next
+            echo "After $target rounds undecided: $(echo $undecided)" | tee -a "$GITHUB_STEP_SUMMARY"
           done
 
       - name: Compare
         id: compare
         if: always() && steps.run.outcome != 'skipped'
-        env:
-          ROUNDS: ${{ inputs.rounds }}
         run: |
           set -o pipefail
-          # A cell with no rows, or fewer than half the rounds completed by both
-          # sides, fails; a lost trial is never a pass.
-          python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl \
-            --expect-cells rf1-1k,rf1-64k,rf3-1k,rf3-64k --min-rounds $(( (ROUNDS + 1) / 2 )) \
+          # Paired rule: a cell with no rows, a missing or partial round, or a
+          # void A/A check fails; a lost trial is never a pass.
+          python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl --aa \
+            --expect-cells rf1-1k,rf1-64k,rf3-1k,rf3-64k,rf1-1k-b1,rf1-64k-b1,rf3-1k-b1,rf3-64k-b1 \
             --md /tmp/felix-gate/table.md --json /tmp/felix-gate/verdict.json
 
       - name: Upload the raw trials
@@ -204,7 +216,6 @@ jobs:
           ENGINE: ${{ inputs.engine }}
           RUN: ${{ needs.plan.outputs.run }}
           BASELINE: ${{ inputs.baseline_ref }}
-          ROUNDS: ${{ inputs.rounds }}
           SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
@@ -216,7 +227,8 @@ jobs:
             exit 0
           fi
           if [ -f verdict/verdict.json ]; then
-            status=$(jq -r .status verdict/verdict.json)
+            # Only "pass" passes: undecided, void and fail all fail the part.
+            status=$(jq -r 'if .status == "pass" then "pass" else "fail" end' verdict/verdict.json)
             bad=$(jq '[.verdicts[] | select(.ok | not)] | length' verdict/verdict.json)
             summary="$bad of $(jq '.verdicts | length' verdict/verdict.json) checks outside the gate"
           else
@@ -227,7 +239,7 @@ jobs:
           {
             echo "### 2, 3. Throughput and p99 ($ENGINE against $BASELINE)"
             echo
-            echo "RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, $ROUNDS rounds of $SECONDS_PER_TRIAL s per trial, medians. Throughput must be at least 0.90 of the baseline and p99 at most 1.20."
+            echo "RF 1 on one broker and RF 3 on three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99, $SECONDS_PER_TRIAL s per trial, 6 rounds and more where a cell is undecided. Paired rule: the median of the per-round candidate/baseline ratios with its exact interval. Throughput passes when the lower end is above 0.97, p99 when the upper end is under 1.10, p50 turned over like throughput at 0.97. A cell with a void A/A check fails."
             echo
             if [ -f verdict/table.md ]; then cat verdict/table.md; else echo "No table."; fi
           } > "$out/section.md"

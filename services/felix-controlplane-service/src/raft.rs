@@ -25,9 +25,12 @@
 //!   optional mTLS.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
+//! - `wire` — the JSON this member sends and stores, kept in the form
+//!   openraft 0.9 wrote so a group can be upgraded one member at a time.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
+mod chunks;
 mod handle;
 mod health;
 mod hold;
@@ -40,6 +43,7 @@ mod proposal;
 mod store;
 mod types;
 mod version;
+mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};

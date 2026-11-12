@@ -27,24 +27,19 @@ on:
         type: string
         default: "v0.7.1"
       rounds:
-        description: "Rounds; each runs both failover variants once per side"
+        description: "Rounds (6, 12 or 24); each runs both failover variants once per side. The cell passes when the lower end of the interval of the median baseline/candidate outage ratio is above 0.95"
         type: string
-        default: "3"
+        default: "6"
       streams:
         description: "RF 3 streams the killed broker leads, spread over three brokers"
         type: string
         default: "300"
-      failover_slack:
-        description: "How much slower than the baseline the failover may be, as a fraction. 0.05 absorbs timer quantization and runner noise; 0 is the gate's literal 'no worse'"
-        type: string
-        default: "0.05"
   workflow_call:
     inputs:
       engine: { type: string, default: hybrid }
       baseline_ref: { type: string, default: "v0.7.1" }
-      rounds: { type: string, default: "3" }
+      rounds: { type: string, default: "6" }
       streams: { type: string, default: "300" }
-      failover_slack: { type: string, default: "0.05" }
 
 permissions:
   contents: read
@@ -70,7 +65,6 @@ jobs:
           BASELINE: ${{ inputs.baseline_ref }}
           ROUNDS: ${{ inputs.rounds }}
           STREAMS: ${{ inputs.streams }}
-          SLACK: ${{ inputs.failover_slack }}
         run: |
           set -euo pipefail
           case "$ENGINE" in
@@ -81,9 +75,8 @@ jobs:
             *) echo "engine must be hybrid or raft"; exit 1 ;;
           esac
           [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
-          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
+          [[ "$ROUNDS" =~ ^(6|12|24)$ ]] || { echo "rounds must be 6, 12 or 24 (the paired rule decides at those counts)"; exit 1; }
           [[ "$STREAMS" =~ ^[1-9][0-9]{0,4}$ ]] || { echo "streams must be a count"; exit 1; }
-          [[ "$SLACK" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "slack must be a number"; exit 1; }
 
   failover:
     needs: plan
@@ -181,7 +174,6 @@ jobs:
         id: judge
         if: always() && steps.ab.outcome != 'skipped'
         env:
-          SLACK: ${{ inputs.failover_slack }}
           ROUNDS: ${{ inputs.rounds }}
         run: |
           set -o pipefail
@@ -193,8 +185,7 @@ jobs:
           done > /tmp/felix-gate/failover-cells.jsonl
           python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/failover-cells.jsonl \
             --expect-cells failover-without_election,failover-with_election \
-            --min-rounds $(( (ROUNDS + 1) / 2 )) \
-            --failover-slack "$SLACK" --md /tmp/felix-gate/failover.md --json /tmp/felix-gate/failover-verdict.json
+            --rounds "$ROUNDS" --md /tmp/felix-gate/failover.md --json /tmp/felix-gate/failover-verdict.json
 
       # Criterion 5. The control plane is stopped or paused while a leader is
       # killed or restarted; the shard must keep serving.
@@ -280,7 +271,7 @@ jobs:
           {
             echo "### 4, 5. Failover and control plane down ($ENGINE against $BASELINE)"
             echo
-            echo "Failover is the longest time a shard of the killed leader took to take a publish again, median over the rounds."
+            echo "Failover is the longest time a shard of the killed leader took to take a publish again, median ratio over the rounds with its exact interval (paired rule, bound 0.95)."
             echo
             if [ -f outputs/failover.md ]; then cat outputs/failover.md; else echo "No failover table."; fi
             echo

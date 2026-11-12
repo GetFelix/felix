@@ -1,0 +1,1 @@
+- `DiskLog::save_vote` now takes a committed vote for another leader in a term the log already voted in uncommitted. A candidate that lost an election follows the winner this way, and the log refused it before, which stopped the member (#2231).

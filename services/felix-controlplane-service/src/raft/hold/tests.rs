@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use openraft::error::RPCError;
-use openraft::network::{RPCOption, RaftNetwork};
+use openraft::errors::RPCError;
+use openraft::network::RPCOption;
+use openraft::network::v2::RaftNetworkV2;
 use openraft::raft::AppendEntriesRequest;
 
 use super::*;
@@ -113,8 +114,12 @@ fn network(addr: &str, hold: Arc<Hold>) -> HttpNetwork {
     HttpNetwork::for_tests(addr, hold)
 }
 
-fn log_id(index: u64) -> openraft::LogId<NodeId> {
-    openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), index)
+fn log_id(index: u64) -> crate::raft::types::LogId {
+    let leader = crate::raft::types::LeaderId {
+        term: 1,
+        node_id: 1,
+    };
+    crate::raft::types::LogId::new(leader, index)
 }
 
 /// An append after `prev`, carrying entries up to `last`, with the leader's
@@ -128,14 +133,14 @@ async fn send_append(
     let entries = match (prev, last) {
         (_, None) => Vec::new(),
         (prev, Some(last)) => (prev.map_or(1, |prev| prev + 1)..=last)
-            .map(|index| openraft::Entry {
+            .map(|index| crate::raft::types::Entry {
                 log_id: log_id(index),
-                payload: openraft::EntryPayload::Blank,
+                payload: crate::raft::types::EntryPayload::Blank,
             })
             .collect(),
     };
     let request = AppendEntriesRequest {
-        vote: openraft::Vote::new(1, 1),
+        vote: crate::raft::types::Vote::new(1, 1),
         prev_log_id: prev.map(log_id),
         entries,
         leader_commit: commit.map(log_id),
