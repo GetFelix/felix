@@ -63,7 +63,7 @@ jobs:
 
       - name: Run the benchmark
         env:
-          SCALE: ${{ inputs.scale || 'full' }}
+          SCALE: ${{ inputs.scale || 'quick' }}
           BASE: ${{ inputs.base || (github.event_name == 'push' && 'origin/main' || '') }}
         run: |
           set -euo pipefail

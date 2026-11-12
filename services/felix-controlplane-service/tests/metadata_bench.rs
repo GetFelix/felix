@@ -126,6 +126,17 @@ fn settings(id: NodeId, dir: &std::path::Path, snapshot_every: u64, kept: u64) -
 
 /// Open a member on `dir`: a new one on an empty directory, a restart on a used one.
 async fn open_member(id: NodeId, dir: tempfile::TempDir, snapshot_every: u64) -> Member {
+    match try_open_member(id, dir, snapshot_every).await {
+        Ok(member) => member,
+        Err((err, _)) => panic!("start member: {err:#}"),
+    }
+}
+
+async fn try_open_member(
+    id: NodeId,
+    dir: tempfile::TempDir,
+    snapshot_every: u64,
+) -> Result<Member, (anyhow::Error, tempfile::TempDir)> {
     let inner = Arc::new(MetadataStateMachine::new(Arc::new(InMemoryStore::new(
         StoreConfig {
             changes_limit: 100,
@@ -137,12 +148,15 @@ async fn open_member(id: NodeId, dir: tempfile::TempDir, snapshot_every: u64) ->
         snapshots: AtomicU64::new(0),
         last_snapshot_nanos: AtomicU64::new(0),
     });
-    let handle = RaftHandle::start(
+    let handle = match RaftHandle::start(
         settings(id, dir.path(), snapshot_every, 0),
         Arc::clone(&probe) as Arc<dyn AppStateMachine>,
     )
     .await
-    .expect("start member");
+    {
+        Ok(handle) => handle,
+        Err(err) => return Err((err, dir)),
+    };
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -151,14 +165,14 @@ async fn open_member(id: NodeId, dir: tempfile::TempDir, snapshot_every: u64) ->
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
-    Member {
+    Ok(Member {
         store: Arc::new(RaftStore::new(handle.clone(), inner)),
         handle,
         probe,
         addr,
         server,
         dir,
-    }
+    })
 }
 
 /// A formed group with a leader and the bench tenant and namespace in it.
@@ -648,13 +662,31 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
 
         // Restart to ready: stop the member and start it on the same directory.
         let mut group = group;
-        let member = group.members.remove(0);
-        let _ = member.handle.shutdown().await;
-        member.server.abort();
-        drop(member.handle);
-        let dir = member.dir;
-        let began = Instant::now();
-        let restarted = open_member(1, dir, 1_000_000).await;
+        let Member {
+            handle,
+            store,
+            server,
+            dir,
+            ..
+        } = group.members.remove(0);
+        let _ = handle.shutdown().await;
+        server.abort();
+        let _ = server.await;
+        drop((handle, store));
+        // The database lock goes when the last clone of the handle does, which
+        // a listener task that is still winding down may hold a moment longer.
+        // That wait is not part of the measurement.
+        let mut dir = dir;
+        let (restarted, began) = loop {
+            let began = Instant::now();
+            match try_open_member(1, dir, 1_000_000).await {
+                Ok(member) => break (member, began),
+                Err((_, back)) => {
+                    dir = back;
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        };
         let deadline = Instant::now() + Duration::from_secs(120);
         while !restarted.handle.confirm_leadership().await {
             assert!(Instant::now() < deadline, "member never became ready");
