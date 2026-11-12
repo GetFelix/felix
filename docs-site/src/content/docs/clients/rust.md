@@ -21,7 +21,7 @@ and for how a new language is gated on a conformance suite.
 ## Installation
 
 ```bash
-cargo add felix-client@0.7.1
+cargo add felix-client@0.7.2
 ```
 
 This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.

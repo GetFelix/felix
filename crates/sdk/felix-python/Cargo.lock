@@ -348,7 +348,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "felix-client"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "felix-python"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -393,7 +393,7 @@ dependencies = [
 
 [[package]]
 name = "felix-transport"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "anyhow",
  "libc",
@@ -407,7 +407,7 @@ dependencies = [
 
 [[package]]
 name = "felix-wire"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "base64",
  "bytes",
