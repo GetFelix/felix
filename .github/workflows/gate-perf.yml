@@ -140,9 +140,10 @@ jobs:
           for target in 6 12 24; do
             for round in $(seq $((done_rounds + 1)) "$target"); do
               echo "::group::Round $round of $target"
-              # The side that goes first flips each round. The A/A run is the
-              # baseline again, with its own side name.
-              if [ $((round % 2)) -eq 1 ]; then sides="baseline head baseline_aa"; else sides="head baseline_aa baseline"; fi
+              # Head always runs in the middle slot; the two baseline runs swap
+              # around it, so no side gains from its position. baseline_aa is
+              # the baseline again, with its own side name.
+              if [ $((round % 2)) -eq 1 ]; then sides="baseline head baseline_aa"; else sides="baseline_aa head baseline"; fi
               for cell in $active; do
                 IFS=: read -r name rf payload batch <<<"$cell"
                 for side in $sides; do
@@ -226,7 +227,8 @@ jobs:
             exit 0
           fi
           if [ -f verdict/verdict.json ]; then
-            status=$(jq -r .status verdict/verdict.json)
+            # Only "pass" passes: undecided, void and fail all fail the part.
+            status=$(jq -r 'if .status == "pass" then "pass" else "fail" end' verdict/verdict.json)
             bad=$(jq '[.verdicts[] | select(.ok | not)] | length' verdict/verdict.json)
             summary="$bad of $(jq '.verdicts | length' verdict/verdict.json) checks outside the gate"
           else

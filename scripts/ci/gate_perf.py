@@ -41,7 +41,7 @@ import sys
 
 # Rounds the paired rule may decide at, and the rank (1-based) of the interval's
 # ends: the k-th smallest and k-th largest ratio. The interval covers the median
-# with probability 1 - 2 * P(Binomial(n, 1/2) <= k - 1): 96.9%, 99.4%, 99.9%.
+# with probability 1 - 2 * P(Binomial(n, 1/2) <= k - 1): 96.9%, 99.37%, 99.34%.
 RANKS = {6: 1, 12: 2, 24: 6}
 MAX_ROUNDS = 24
 

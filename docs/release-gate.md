@@ -233,7 +233,7 @@ candidate passes less often. So:
   fails outright 88 times in 100 and a 6% one nearly always.
 - A candidate equal to the release passes 99.7 times in 100 when that
   noise is 2%, and 86 in 100 when it is 3%. For p99 the same figures hold
-  at a noise of 6% and of 9.5%. A noisier cell needs the dedicated runner.
+  at a noise of 6% and of 9.5%. A noisier cell needs the dedicated runner. On hosted runners the p99 cells are expected to come out void on the A/A check, so a hosted run cannot clear a release.
 
 Each side's own median is printed for reading and decides nothing.
 
@@ -352,7 +352,7 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 | --- | --- | --- |
 | `gate-history.yml` | Matrix 1, 2, 10, 12. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15, 19, 20, 22, 23. The Raft rules |
 | `gate-perf.yml` | Cells 1 and 2 as a release A/B: the paired rule with the A/A check, batch 1 for p50 and p99, batch 64 for throughput, one broker for RF 1 | Cells 3 to 6 and 11 to 14. The engine A/B in the workflow (`gate_perf.py --mode engine` has the rule) |
-| `gate-failover.yml` | Cell 7 under the paired rule at 0.95, six rounds. Control plane down as pass or fail | Adding rounds when undecided. Cell 8 as a time. Cell 9 |
+| `gate-failover.yml` | Cell 7 under the paired rule at 0.95, six rounds. Control plane down as pass or fail | The A/A check. Adding rounds when undecided. Cell 8 as a time. Cell 9 |
 | `gate-groups.yml` | A stub | Cell 10 |
 | `gate.yml` | The report | Matrix 16 to 18 and 21. The stall comparison between engines |
 

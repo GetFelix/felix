@@ -3,6 +3,7 @@ import io
 import json
 import math
 import pathlib
+import re
 import sys
 import tempfile
 import unittest
@@ -215,6 +216,20 @@ class PairedRule(unittest.TestCase):
         self.assertIsNone(gate_perf.failover_max_ms("failover heal: outage: 0 of 1 served, max None"))
 
 
+class Workflow(unittest.TestCase):
+    def test_head_runs_in_the_middle_slot_every_round(self):
+        text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
+        orders = re.findall(r'sides="([a-z_ ]+)"', text)
+        self.assertEqual(len(orders), 2)
+        for order in orders:
+            self.assertEqual(order.split()[1], "head", order)
+        self.assertEqual({o.split()[0] for o in orders}, {"baseline", "baseline_aa"})
+
+    def test_a_non_pass_verdict_fails_the_part(self):
+        text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
+        self.assertIn('if .status == "pass" then "pass" else "fail" end', text)
+
+
 class EngineRule(unittest.TestCase):
     def test_throughput_within_ten_percent_passes(self):
         self.assertTrue(one(cells([100, 100], [91, 95]), mode="engine")["ok"])
@@ -265,6 +280,11 @@ class Report(unittest.TestCase):
 
     def test_a_missing_part_is_incomplete(self):
         self.assertEqual(self.verdict({"history": "pass"}), "INCOMPLETE")
+
+    def test_an_undecided_part_is_a_failure(self):
+        s = {n: "pass" for n, _ in gate_report.PARTS}
+        s["perf"] = "undecided"
+        self.assertEqual(self.verdict(s), "FAIL")
 
     def test_unavailable_engine_is_not_available_not_pass(self):
         self.assertEqual(self.verdict({n: "unavailable" for n, _ in gate_report.PARTS}), "NOT AVAILABLE")

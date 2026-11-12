@@ -1383,27 +1383,34 @@ and writes one report:
 | Workflow | Criterion | What it runs |
 |---|---|---|
 | `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
-| `gate-perf.yml` | 2, 3 | RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
+| `gate-perf.yml` | 2, 3 | RF 1 on one broker and RF 3 on three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99, the baseline tag against this commit on one runner |
 | `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
 Each part also runs alone with its own "Run workflow" button. Small sizes make
 a dry run: for example `seeds: 8`, `shards: 2`, `modes: off`,
-`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `rounds: 2`,
-`seconds: 5` for `gate-perf.yml`.
+`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `seconds: 5`
+for `gate-perf.yml` (it always starts with six rounds).
 
 The perf and failover parts build the baseline (default `v0.7.1`, the last
 v0.7.x release) and this commit, then alternate the two sides trial by trial
-with the side that goes first flipping each round, so runner drift lands on
-both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
-only `felix-broker` differs. The figure for a cell is the median over the
-rounds both sides completed. A cell with no results, or with fewer than half
-the rounds completed by both sides, fails. `scripts/ci/gate_perf.py` applies
-the rules: throughput at least
-0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
-plus the `failover_slack` input, 5% by default: failover is quantized by the
-failure-detection timer, and a half-millisecond difference is not a regression.
-Set it to 0 for the literal rule.
+with the baseline running on both sides of the head in turn, so runner drift
+lands on both. The perf part also runs the baseline a second time each round
+for the A/A validity check. Both sides use this commit's `felix-cluster`
+harness and `felix-loadgen`; only `felix-broker` differs.
+
+`scripts/ci/gate_perf.py` applies the paired rule of
+[`release-gate.md`](release-gate.md), section 3. Each round gives one
+candidate/baseline ratio. The figure for a cell is the median ratio with its
+exact interval over 6, 12 or 24 rounds (undecided cells get more rounds).
+Throughput passes when the interval's lower end is above 0.97, p99 when its
+upper end is under 1.10, and failover when baseline over candidate is above
+0.95. A cell with no results, or a missing or partial round, fails. The
+engine A/B rule (0.90 and 1.20 on medians) is `--mode engine` and is not wired
+into the workflows yet. The `failover_slack` input is gone. On hosted runners
+the p99 cells are expected to come out void on the A/A check, so a hosted run
+cannot clear a release; the gate needs the dedicated runner
+(`vars.FELIX_LARGE_RUNNER`).
 
 The last job, `report`, assembles `gate-report.md` (also in the run summary and
 in the `gate-report-<engine>` artifact): one row per criterion with pass, fail
