@@ -137,14 +137,14 @@ fn report(what: &str, count: u64, started: Instant, allocations: u64) {
     );
 }
 
-/// One entry per append, each callback awaited before the next append. The
-/// log does not fsync, so this is the adapter and the write, not the disk.
+/// One entry per append, each callback awaited before the next append, so
+/// each append pays a flush of its own.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "a measurement"]
-async fn append_one_at_a_time_without_fsync() {
-    const APPENDS: u64 = 50_000;
+async fn append_one_at_a_time() {
+    const APPENDS: u64 = 5_000;
     let dir = tempfile::tempdir().expect("dir");
-    let mut raft = open(&dir, FsyncMode::None);
+    let mut raft = open(&dir, FsyncMode::OnCommit);
     let payload = Bytes::from(vec![7u8; PAYLOAD_BYTES]);
 
     let allocations = ALLOCATIONS.load(Ordering::Relaxed);
@@ -156,7 +156,8 @@ async fn append_one_at_a_time_without_fsync() {
             .expect("append");
         rx.await.expect("callback").expect("flush");
     }
-    report("append, no fsync", APPENDS, started, allocations);
+    report("append, one at a time", APPENDS, started, allocations);
+    println!("  {} flushes", raft.disk_log().flushes());
 }
 
 /// Appends issued back to back on a log that fsyncs on commit, as openraft
@@ -195,7 +196,7 @@ async fn read_the_newest_entries() {
     const READS: u64 = 20_000;
     const PER_READ: u64 = 64;
     let dir = tempfile::tempdir().expect("dir");
-    let mut raft = open(&dir, FsyncMode::None);
+    let mut raft = open(&dir, FsyncMode::OnCommit);
     let payload = Bytes::from(vec![7u8; PAYLOAD_BYTES]);
     for first in (0..HELD).step_by(100) {
         let (tx, rx) = Types::oneshot();
