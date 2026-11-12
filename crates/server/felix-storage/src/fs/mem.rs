@@ -45,6 +45,15 @@ pub(crate) struct Tree {
     /// never shows up here after a power loss was never given the chance
     /// to be repaired.
     opened: Mutex<Opened>,
+    /// How many more flushes succeed before one fails, and how many have
+    /// been asked for. See [`Tree::fail_flush`].
+    flush_fault: Mutex<FlushFault>,
+}
+
+#[derive(Default)]
+struct FlushFault {
+    fail_in: Option<u64>,
+    failed: bool,
 }
 
 #[derive(Default)]
@@ -132,6 +141,7 @@ impl Tree {
             power: Mutex::new(power::Power::On),
             torn_tails: Mutex::new(Vec::new()),
             opened: Mutex::new(Opened::default()),
+            flush_fault: Mutex::new(FlushFault::default()),
         })
     }
 
@@ -347,9 +357,41 @@ impl Tree {
         Ok(())
     }
 
+    /// Fail one flush of a file or directory with `EIO`, after `skip` more
+    /// have succeeded. The failed flush makes nothing durable.
+    pub(crate) fn fail_flush(&self, skip: u64) {
+        *self.flush_fault.lock() = FlushFault {
+            fail_in: Some(skip),
+            failed: false,
+        };
+    }
+
+    /// Disarm [`Self::fail_flush`], and say whether its flush had failed.
+    pub(crate) fn flush_failed(&self) -> bool {
+        std::mem::take(&mut *self.flush_fault.lock()).failed
+    }
+
+    /// The armed failure, if this flush is the one it was waiting for.
+    pub(super) fn before_flush(&self) -> io::Result<()> {
+        let mut fault = self.flush_fault.lock();
+        match fault.fail_in {
+            Some(0) => {
+                fault.fail_in = None;
+                fault.failed = true;
+                Err(kind(io::ErrorKind::Other, "injected flush failure (EIO)"))
+            }
+            Some(left) => {
+                fault.fail_in = Some(left - 1);
+                Ok(())
+            }
+            None => Ok(()),
+        }
+    }
+
     /// Make the entries of the directory at `path` durable, as `fsync` on the
     /// directory does.
     pub(super) fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        self.before_flush()?;
         let mut state = self.structure.lock();
         let Node::Dir(dir) = walk(&state.root, &names(path)?)? else {
             return Err(kind(io::ErrorKind::NotADirectory, "not a directory"));

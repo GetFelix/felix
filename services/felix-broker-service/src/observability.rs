@@ -185,11 +185,10 @@ fn health_router(
         .route(
             "/ready",
             axum::routing::get(move || async move {
-                if readiness.is_ready() {
-                    (axum::http::StatusCode::OK, "ok")
-                } else {
-                    (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
-                }
+                ready_status(
+                    &felix_storage::disk_log::poisoned_logs(),
+                    readiness.is_ready(),
+                )
             }),
         )
         // Read-only, and deliberately so: this listener has no authentication
@@ -200,6 +199,30 @@ fn health_router(
             "/replication/halted",
             axum::routing::get(move || async move { axum::Json(halted.snapshot()) }),
         )
+}
+
+/// What `/ready` answers. A poisoned log refuses writes until it is
+/// reopened, so the body names each one and what stopped it. One poisoned
+/// log fails the whole broker's probe for now: see "A failed fsync poisons
+/// the log" in `docs/durable-storage.md`.
+fn ready_status(
+    poisoned: &[felix_storage::disk_log::PoisonedLog],
+    ready: bool,
+) -> (axum::http::StatusCode, String) {
+    if !poisoned.is_empty() {
+        let logs: Vec<String> = poisoned
+            .iter()
+            .map(|log| format!("log {} is poisoned: {}", log.shard, log.reason))
+            .collect();
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, logs.join("\n"))
+    } else if ready {
+        (axum::http::StatusCode::OK, "ok".to_string())
+    } else {
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "draining".to_string(),
+        )
+    }
 }
 
 /// The probes a broker answers before it is built: `/live` says ok, `/ready`

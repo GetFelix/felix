@@ -363,6 +363,39 @@ the callback fires at once, as an acknowledgement does for a stream. A
 flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
 
+**A failed flush.** A failed fsync or directory sync poisons the log it
+happened on (`docs/durable-storage.md`, "A failed fsync poisons the log"):
+the log refuses every later append, flush and state write with
+`StorageError::Poisoned` until it is reopened. The rule for a replicated
+shard is the same under either engine, and it follows from that one error:
+
+- **A follower does not acknowledge.** Its append or its flush fails, so it
+  answers the leader with an error and its copy stops counting toward a
+  quorum. It cannot save a vote or a set either, so it promises nothing new.
+- **A leader stops leading.** It cannot append, so it acknowledges nothing
+  more. It does not keep the role on the strength of what it holds in
+  memory: the records it acknowledged may no longer be on its disk.
+- **The broker says so.** `/ready` answers 503 and names each poisoned log
+  with what stopped it. That is broker-wide for now. The decided behaviour is
+  per shard ([#2300](https://github.com/GetFelix/felix/issues/2300)): the
+  leader of the poisoned shard steps down, the broker stays ready for its
+  healthy shards, and the poisoned log shows in metrics and status. The log
+  stays poisoned until the broker restarts; `docs/durable-storage.md` says
+  when a restart is safe.
+
+On the hybrid, a poisoned process attests no trusted copy to a fence, and a
+promotion does not let it continue as leader, so another copy takes over
+through the usual fence. Under Raft the adapter passes the error on
+unchanged: the `IOFlushed` callback of the append carries it, and
+`save_vote`, `append` and `truncate_after` return it from then on. openraft
+treats a storage error as fatal and stops that group's node, which stops
+its heartbeats, and the other members elect a leader. Nothing engine
+specific decides when a log is poisoned, so an engine built on the adapter
+inherits the rule.
+
+> `raft_log/tests/writes.rs`, `a_failed_flush_fails_the_callback` and
+> `a_failed_flush_stops_every_later_write`.
+
 **Truncation waits for those callbacks.** `truncate_after` first lets every
 earlier append's callback fire, then cuts. Cutting first would leave a
 flush waiting on entries that no longer exist; it would give up and report

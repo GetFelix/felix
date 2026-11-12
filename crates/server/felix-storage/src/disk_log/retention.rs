@@ -196,7 +196,12 @@ impl LogInner {
         // an older one, and recovery refuses the gap that leaves.
         for descriptor in &removed {
             remove_segment_files(&self.dir, descriptor.id)?;
-            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+            // A removal that may come back after a crash, behind a newer
+            // one that did not, is a gap recovery refuses.
+            self.poison_on_sync_failure(
+                "a segment removal",
+                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
+            )?;
             outcome.segments_deleted += 1;
             outcome.bytes_reclaimed += descriptor.size_bytes;
             #[cfg(test)]
@@ -341,7 +346,12 @@ impl LogInner {
             #[cfg(test)]
             super::segments::stop_point(&self.dir)?;
             remove_segment_files(&self.dir, descriptor.id)?;
-            crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+            // A removal that may come back after a crash, behind a newer
+            // one that did not, is a gap recovery refuses.
+            self.poison_on_sync_failure(
+                "a segment removal",
+                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
+            )?;
         }
         Ok(removed)
     }

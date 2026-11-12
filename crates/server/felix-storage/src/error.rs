@@ -39,6 +39,17 @@ pub enum StorageError {
     /// can tell "the write never happened" from "the write may have happened but
     /// we could not confirm it".
     SyncFailed(String),
+    /// An earlier flush on this log failed, so the log refuses every append,
+    /// commit, flush and state write from then on. The kernel may have
+    /// dropped the pages that flush could not write, and a retry would
+    /// report success for them. Names the shard and the first failure.
+    /// Lasts until the log is reopened. A reopen is only known to read back
+    /// just what reached the disk after a reboot: see "A failed fsync
+    /// poisons the log" in `docs/durable-storage.md`.
+    Poisoned {
+        shard: String,
+        reason: String,
+    },
     /// A truncation or rebuild would discard records below the offset this
     /// log knows is committed. Refused rather than performed: those records
     /// were acknowledged on a majority, and this copy may be the last one.
@@ -103,6 +114,10 @@ impl fmt::Display for StorageError {
             StorageError::NotFound => write!(f, "not found"),
             StorageError::Corruption(detail) => write!(f, "corruption detected: {detail}"),
             StorageError::SyncFailed(detail) => write!(f, "durability sync failed: {detail}"),
+            StorageError::Poisoned { shard, reason } => write!(
+                f,
+                "{shard}: {reason}; the log is poisoned and refuses writes until it is reopened"
+            ),
             StorageError::BelowCommit { offset, commit } => write!(
                 f,
                 "refusing to discard records from offset {offset}: everything below \
@@ -156,8 +171,25 @@ impl From<Corruption> for StorageError {
     }
 }
 
+impl StorageError {
+    /// Whether this is a flush that failed, however it was wrapped. The log
+    /// it happened on must stop: see [`StorageError::Poisoned`].
+    pub(crate) fn is_sync_failure(&self) -> bool {
+        match self {
+            StorageError::SyncFailed(_) => true,
+            StorageError::Io(err) | StorageError::Full(err) => crate::io::SyncFailure::is(err),
+            _ => false,
+        }
+    }
+}
+
 impl From<std::io::Error> for StorageError {
     fn from(err: std::io::Error) -> Self {
+        // Before the full-disk case: a flush that failed for want of space
+        // may have dropped pages like any other.
+        if crate::io::SyncFailure::is(&err) {
+            return StorageError::SyncFailed(err.to_string());
+        }
         if matches!(
             err.kind(),
             std::io::ErrorKind::StorageFull | std::io::ErrorKind::QuotaExceeded

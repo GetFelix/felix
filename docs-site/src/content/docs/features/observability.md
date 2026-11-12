@@ -558,6 +558,26 @@ It turns true once the catalog is applied, every durable stream is recovered,
 and every listener is bound. A broker that cannot bind a port exits without
 ever reporting ready, so whatever started it sees a failed start, not a crash.
 
+`/ready` also turns false when a log is poisoned, which happens when a disk
+flush (an fsync) fails on it. The body has one line per poisoned log, with
+the shard and what stopped it:
+
+```text
+log acme/prod/orders/0 is poisoned: a flush of the replica state failed (...)
+```
+
+A poisoned log refuses writes until the broker restarts, because the
+operating system may have dropped the data the failed flush was meant to
+keep. Check the disk, then reboot the host before starting the broker again:
+after a restart without a reboot the broker can read that data back from
+memory although it never reached the disk
+([#2308](https://github.com/GetFelix/felix/issues/2308)).
+
+For now one poisoned log makes the whole broker not ready, healthy shards
+included. The plan is for only that shard to stop, with its leader handing
+over to another copy and `/ready` staying 200
+([#2300](https://github.com/GetFelix/felix/issues/2300)).
+
 ## Distributed tracing
 
 Tracing export is off unless an OTLP endpoint is set. With
