@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794519412306,
+  "lastUpdate": 1794523133578,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53300,6 +53300,58 @@ window.BENCHMARK_DATA = {
             "range": "88658.91",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1483731.98\nmean: 1446611.44\nstdev: 88658.91\ncv: 6.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "29ce8a30247560756ed97bfe401d6ab8a56d881d",
+          "message": "fix(controlplane): a first start forms the metadata group only when every member answers empty (#2371) (#2375)\n\nA first start forms the metadata group only when every configured peer answers and all are empty; an unreachable peer, a non-2xx answer, an undecodable body or a failed TLS handshake blocks. Adds the single-use `raft form-without --slot` waiver (minority only, refused once the member holds state, never excuses a peer that answers). Peer lists sharing an address are refused. Fixes #2371.\n\nSpec-Unaffected: no model on main has a first-start step.",
+          "timestamp": "2026-11-12T22:32:34Z",
+          "tree_id": "c4f2607c549abf54b3cf290c74004140b069bc44",
+          "url": "https://github.com/GetFelix/felix/commit/29ce8a30247560756ed97bfe401d6ab8a56d881d"
+        },
+        "date": 1794523133050,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 499085,
+            "range": "43608.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499085.00\nmean: 510066.13\nstdev: 43608.04\ncv: 8.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 499085,
+            "range": "43608.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 499085.00\nmean: 510066.13\nstdev: 43608.04\ncv: 8.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118467.06,
+            "range": "2376.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118467.06\nmean: 117616.48\nstdev: 2376.21\ncv: 2.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1184670.56,
+            "range": "23762.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1184670.56\nmean: 1176164.78\nstdev: 23762.12\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
