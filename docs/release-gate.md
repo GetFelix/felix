@@ -332,7 +332,7 @@ it.
 | 1 | A wipe fault in the simulator and the history campaign, for one shard directory and for a data root | #2273 | Matrix 4, 5, 8 |
 | 2 | A restore fault in the simulator: a shard directory or a data root put back to an older copy | #2274 | Matrix 6, 7 |
 | 3 | Simulator faults aimed at a re-form in progress, and the re-form races | #2275 | Matrix 9, 22 |
-| 4 | An idle phase in the history campaign, so groups sleep before the faults | #2276 | Matrix 13 |
+| 4 | An idle phase in the history campaign, so groups sleep before the faults. Deferred with sleep (#2167) | #2276 | Matrix 13 |
 | 5 | A history campaign that switches shards from the hybrid to Raft under faults | #2277 | Matrix 14 |
 | 6 | The upgrade test does not go backwards, and does not check a client history across the path | #2278 | Matrix 16, 17 |
 | 7 | History rules that read the disks: `AckedSurvive`, term agreement, named losses. And a stale-read rule for streams | #2279 | Section 2 |
@@ -345,7 +345,7 @@ it.
 
 Already filed: the metadata group in the history campaign (#2226) and in the
 simulator (#2232), the metadata benchmark (#2224), the conversion tool
-(#2234), the sleep mode (#2239), the switch in the simulator (#2242), the
+(#2234), the sleep mode (#2239, deferred to v0.9.0), the switch in the simulator (#2242), the
 upgrade test (#2257) and the groups-per-broker run (#2243).
 
 ## How this maps to the gate workflows
@@ -381,7 +381,7 @@ Changes the workflows need, in the order the gate needs them:
 6. **Time the failover with the control plane down** on both sides, in
    place of pass or fail. Under Raft the `replica_election::` tests are
    retired, so take the test by a name that both engines have.
-7. **Simulator modes.** Add `sleep`, the metadata group, the switch, and
+7. **Simulator modes.** Add the metadata group, the switch (and `sleep` once it returns), and
    one mode per fault of rows 3 to 9, 19, 22 and 23, so each can be swept
    and can join the nightly window.
 8. **History campaigns.** Three seeds per nemesis. Add the metadata group
