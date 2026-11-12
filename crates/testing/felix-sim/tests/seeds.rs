@@ -347,7 +347,7 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
             *unassigned = false;
         };
     for line in finding.detail.lines() {
-        if line.starts_with("shard ") {
+        if let Some(rest) = line.strip_prefix("shard ") {
             end_shard(&mut leader, &mut given_up, &mut unassigned, &mut ok);
             let Some((_, assignment)) = line.split_once("control plane: ") else {
                 return false;
@@ -363,13 +363,7 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
                 return false;
             }
             leader = Some(name.to_string());
-            named.push(
-                line["shard ".len()..]
-                    .split_whitespace()
-                    .next()
-                    .unwrap_or("")
-                    .to_string(),
-            );
+            named.push(rest.split_whitespace().next().unwrap_or("").to_string());
         } else if let Some(lead) = &leader {
             let cols: Vec<&str> = line.split_whitespace().collect();
             if cols.first().is_none_or(|c| *c == "node") {
