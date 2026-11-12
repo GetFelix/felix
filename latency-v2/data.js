@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794455236079,
+  "lastUpdate": 1794462165768,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66792,6 +66792,72 @@ window.BENCHMARK_DATA = {
             "range": "820.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 297.00\nmean: 647.60\nstdev: 820.55\ncv: 126.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c045edc8029b9559877f9fed7954b6be32a0a0f3",
+          "message": "test(controlplane): metadata Raft benchmark and the redb baseline harness (#2224) (#2319)\n\n* test(controlplane): metadata Raft benchmark and the redb baseline harness (#2224)\n\nReal control-plane members on redb driven through the store traits: proposal\nlatency and throughput, placement writes, the replica-report stream,\nfailover, snapshot build, restart and install, and idle cost. A workflow\ncompares two commits with an A/A run for the noise band.\n\nSpec-Unaffected: test and CI code only, no protocol or state-machine change\n\n* ci: run the metadata benchmark on this branch while it is not on main yet\n\nSpec-Unaffected: CI only\n\n* test(controlplane): wait for the redb lock before restarting a bench member\n\nSpec-Unaffected: test code only\n\n* ci(bench): hold head against the mean of the two baseline runs\n\nSpec-Unaffected: CI and test code only\n\n* test(controlplane): bench warmup, repeated alternating runs with medians, and gates that cannot pass on a failure\n\n* ci(bench): a wider noise floor for tail latencies\n\n* docs(bench): record the redb baseline and drop the temporary push trigger\n\n* docs(bench): the baseline is redb on openraft 0.10",
+          "timestamp": "2026-11-12T05:36:24Z",
+          "tree_id": "13cf5397947e9212bf5abe985c04fbc9ea3b8f32",
+          "url": "https://github.com/GetFelix/felix/commit/c045edc8029b9559877f9fed7954b6be32a0a0f3"
+        },
+        "date": 1794462156308,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.40\nstdev: 0.89\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "11.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 133.00\nstdev: 11.51\ncv: 8.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 511,
+            "range": "703.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 511.00\nmean: 659.60\nstdev: 703.43\ncv: 106.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 114.40\nstdev: 1.34\ncv: 1.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 241,
+            "range": "8.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 241.00\nmean: 241.00\nstdev: 8.77\ncv: 3.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 367,
+            "range": "22.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 367.00\nmean: 368.00\nstdev: 22.17\ncv: 6.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
