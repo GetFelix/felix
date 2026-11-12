@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794451741100,
+  "lastUpdate": 1794452163483,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52468,6 +52468,58 @@ window.BENCHMARK_DATA = {
             "range": "4934.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 813399.53\nmean: 814235.61\nstdev: 4934.01\ncv: 0.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54eff3716469d6b68b624ab60b0fc844d2cc28da",
+          "message": "feat(controlplane): metadata Raft on openraft 0.10, still on redb (#2225) (#2324)\n\nThe control plane moves from openraft 0.9.25 to the workspace pin (=0.10.0),\nso the workspace has one openraft. The store stays redb and the leader id\nstays a term and a node id.\n\nA group must be upgraded one member at a time, and a member must be able to\ngo back, so nothing a 0.9 member reads changes:\n\n- raft/wire.rs: Felix-owned types for every peer request and response and\n  for everything stored. They write the JSON 0.9 wrote, pinned by fixtures\n  printed by openraft 0.9.25.\n- raft/chunks.rs: a snapshot is cut into 0.9's chunk requests and joined on\n  the way in. The snapshot id stays, derived from the last log id.\n- A member whose Raft node has stopped answers 503, since error bodies\n  differ between the two library versions.\n\n0.10 has a restarted leader campaign at once, whatever enable_elect says. A\nmember that withholds its vote starts with enable_leader_restore off.\nPre-vote is set off. Log reversion is allowed through the config.\n\ntests/raft_runtime.rs runs the v0.7.1 binary and this build in one group:\na snapshot each way, and a member rolled back onto a store this build wrote\nsnapshots into. coverage.yml downloads the released binary for it.\n\nSpec-Unaffected: the peer and stored formats and the library version are\nnot modelled; no Raft rule of Felix's own changes.",
+          "timestamp": "2026-11-12T02:49:18Z",
+          "tree_id": "ab55f6d13cb001ccf3b3f188a421655f2e6eaacd",
+          "url": "https://github.com/GetFelix/felix/commit/54eff3716469d6b68b624ab60b0fc844d2cc28da"
+        },
+        "date": 1794452162826,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 493633.14,
+            "range": "35253.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 493633.14\nmean: 500200.14\nstdev: 35253.50\ncv: 7.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 493633.14,
+            "range": "35253.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 493633.14\nmean: 500200.14\nstdev: 35253.50\ncv: 7.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 113581.41,
+            "range": "1022.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 113581.41\nmean: 114147.99\nstdev: 1022.76\ncv: 0.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1135814.07,
+            "range": "10227.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1135814.07\nmean: 1141479.91\nstdev: 10227.61\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
