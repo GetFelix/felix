@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794442663650,
+  "lastUpdate": 1794448705324,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52312,6 +52312,58 @@ window.BENCHMARK_DATA = {
             "range": "24956.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1191502.39\nmean: 1196620.37\nstdev: 24956.96\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc5f6ef62ad0aa30f18f2449083cf757c9836527",
+          "message": "spec: TLA+ model of Raft on the segment log (#2198) (#2220)\n\n* spec: TLA+ model of Raft on the segment log (#2198)\n\nFelixRaft.tla models one Raft group whose log is the segment log, with\nthe crash rules the raft_log adapter (#2167) must keep: append returns\nbefore the fsync, the flush callback, truncate_after, purge, a torn tail\ncut at the open, and vote and snapshot files replaced by rename. Votes\ncarry openraft's committed flag. Blank and membership entries hold an\nindex and no event, and one subscriber checks the offsets it is given.\n\nFive configurations pass, twelve drop one rule each and must violate\nthe check that rule protects, and five witnesses show the behaviour is\nreached. Membership changes, the lease, disk loss and the switch from\nthe hybrid protocol are not modelled yet.\n\n* spec: say which index the open must clamp, and what the model leaves out\n\nReview of the FelixRaft model: the knob for an index read back past the\nlog takes openraft's applied-index path, a snapshot install is one step\nhere, and DiskLog's own commit offset is not modelled.\n\n* spec: snapshot install as three writes, per-broker skipped counts, twins held to the harm\n\nA follower installs a leader's snapshot as openraft does: cut a conflicting\ntail, replace the snapshot and state machine, purge up to it, with a crash\nbetween any two. Each serving broker counts skipped offsets from its own log.\n\nTruncateNotDurable, SaveCommittedUnflushed and PurgeBeforeSnapshot are held\nto StateMachineSafety and AckedSurvive, not to the checks that restate them.\nTruncateNotDurable now makes the cut durable at the next flush, which shows\nthat is too late.\n\nNew: FelixRaftFourTerms, FelixRaftSnapshotReplace, FelixRaftOffsetsFailover,\nFelixRaftDeliverUncommittedDense and three witnesses. Unregistered and run by\ndispatch: FelixRaftSnapshotCrashes, FelixRaftOffsetsFailoverCrash.\n\n* spec: hold SaveCommittedUnflushed to an undelivered record; FourTerms runs when FelixRaft.tla changes\n\nSaveCommittedUnflushed failed StateMachineSafety by construction, through the\nmarker the model writes for lost entries. It is now held to AckedDelivered:\nthe broker is elected and a subscriber resuming below the start of its log is\nnever given an acknowledged record.\n\nA change to FelixRaft.tla counts as a change to every FelixRaft configuration,\nso a pull request that edits only the spec still checks FelixRaftFourTerms,\nthe one passing check of the commit rule for earlier terms.\n\n* spec: register the four long FelixRaft configurations\n\nFelixRaftTermsFull (26.0M distinct states, 59 min), FelixRaftOffsetsFailoverCrash\n(16.1M, 41 min), FelixRaftSnapshotCrashes (9.4M, 21 min) and FelixRaftOffsetsFull\n(8.9M, 20 min) passed in a dispatched run at d060d47bd. The weights are those\ntimes. Only their comments changed since.\n\n* docs(formal): the raft_log adapter is built; evidence lines follow in #2297\n\nSpec-Unaffected: README prose only\n\n* ci(tla): twenty PR shards, balanced by measured PR minutes\n\nA FelixRaft.tla change makes every FelixRaft config count as changed, so\nthe PR shards were planned to a full hour and shards 9 and 10 hit the\ntimeout. Balance by the times a PR runner measured and spread over twenty\nshards, planned at about 37 minutes each.",
+          "timestamp": "2026-11-12T01:50:49Z",
+          "tree_id": "8ae847d032e2514e29b427779e08844bf218e610",
+          "url": "https://github.com/GetFelix/felix/commit/cc5f6ef62ad0aa30f18f2449083cf757c9836527"
+        },
+        "date": 1794448704718,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348751.12,
+            "range": "10832.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348751.12\nmean: 349418.83\nstdev: 10832.68\ncv: 3.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348751.12,
+            "range": "10832.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348751.12\nmean: 349418.83\nstdev: 10832.68\ncv: 3.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80662.92,
+            "range": "211.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80662.92\nmean: 80681.86\nstdev: 211.50\ncv: 0.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806629.22,
+            "range": "2115.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806629.22\nmean: 806818.65\nstdev: 2115.00\ncv: 0.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
