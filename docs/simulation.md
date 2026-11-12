@@ -41,7 +41,9 @@ waits on a timer, which holds the paused clock still; the finding says so and
 prints no census, since the busy task would hold that up too.
 
 `FELIX_SIM_POWER_LOSS=1` turns on power cuts ([Power loss](#power-loss)) the
-same way.
+same way. `FELIX_SIM_POWER_LOSS=relaxed` cuts them under brokers that do not
+sync before they acknowledge. `FELIX_SIM_MAJORITY_CUT=1` and
+`FELIX_SIM_WIPE=1` add the faults in [Faults that change disks](#faults-that-change-disks).
 
 `FELIX_SIM_PLACEMENT=1` turns on placement faults (below) for `seeds`,
 `replay` and `each_seed_runs_the_same_twice`:
@@ -261,6 +263,45 @@ Under a simulator every sync runs on the run's own runtime, so what the
 device holds at the cut does not depend on thread timing and a seed replays
 exactly. The faults list says, for each cut, whether it landed in an
 append.
+
+### Faults that change disks
+
+Three more faults take bytes off a broker's disk, and a checker holds each to
+what it may lose. They are off by default and draw from their own random
+streams, so turning one on keeps every other fault of a seed.
+
+| Mode (`FELIX_SIM_MODE` in `scripts/sim-sweep.sh`) | Environment | What happens |
+| --- | --- | --- |
+| `relaxed-power-loss` | `FELIX_SIM_POWER_LOSS=relaxed` | The power cuts of the section above, on brokers with `FsyncMode::None`. Bytes a broker acknowledged without syncing are lost or torn. |
+| `majority-cut` | `FELIX_SIM_MAJORITY_CUT=1` | One or two times a run, two brokers or a majority of the cluster lose power in the same instant, on brokers that sync on commit. |
+| `majority-cut-relaxed` | `FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1` | The same, without the sync. |
+| `wipe` | `FELIX_SIM_WIPE=1` | Every 20 to 40 seconds one broker, or two, are stopped and one stream shard directory or the whole data directory is emptied on each. |
+
+A relaxed run has a boot id per simulated machine. It stays the same through
+crashes and changes when a cut is rebooted, so the restart of a broker whose
+power went out reads its run state as a crash in an earlier boot and takes a new
+storage id, as a real broker does (`run_state::begin`).
+
+Each of these faults runs alone (a lock in the nemesis), and reads every
+broker's stream shards before and after. The `acked-on-some-disk` checker then
+holds it to this:
+
+- A record acknowledged to a client is held by a quorum, so one fault that
+  changes one broker's disk never takes it off every disk.
+- A power cut under sync-on-commit never takes an acknowledged record off any
+  disk, however many brokers it cuts.
+- A relaxed power cut or a wipe that changes at least two brokers' disks may
+  take a record only they held. The run names the loss, and the shard's
+  history is checked from the fault on, the way an operator's abandon is
+  (`forget_abandoned`). The cache is not checked from then on, because its
+  disks are not read.
+- A record acknowledged while only one disk held it, or that no disk held
+  before the fault, is a finding.
+
+A wiped broker comes back as a broker with no copy, or with a new storage id
+when its whole directory went. A group whose copies were all untrusted is held
+until an operator abandons it, as after kills, so these modes show the same
+tracked stalls (`election-settles`, `final-reads`) as kills do.
 
 ### Placement faults
 

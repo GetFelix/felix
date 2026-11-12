@@ -46,6 +46,7 @@
 //! it did.
 
 mod census;
+pub(crate) mod disks;
 pub(crate) mod kills;
 mod node;
 pub(crate) mod power;
@@ -69,6 +70,7 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 pub use self::census::{Census, NodeView};
+pub use self::disks::{DiskEvent, WipeScope};
 use self::kills::KillLog;
 use self::node::Node;
 use self::power::PowerLog;
@@ -122,11 +124,16 @@ pub struct SimConfig {
     /// [`SimBrokerConfig::fsync_mode`](felix_broker_service::sim::SimBrokerConfig::fsync_mode)
     /// for what a restart does to the storage id under it.
     pub fsync_mode: FsyncMode,
-    /// Crashes that would be kills cut the power instead. Needs
-    /// `FsyncMode::OnCommit`: under the others a broker acknowledges records
-    /// it has not synced, and the simulator cannot make the restart see a new
-    /// boot of the machine, which is how a real broker learns to doubt them.
+    /// Crashes that would be kills cut the power instead. Under a relaxed
+    /// `fsync_mode` a cut loses what the broker acknowledged without syncing,
+    /// and the restart sees a new boot of the machine, so it takes a new
+    /// storage id as a real broker does.
     pub power_loss: bool,
+    /// Also cut the power under several brokers in the same instant.
+    pub majority_cut: bool,
+    /// Also wipe shard directories and whole data directories while their
+    /// broker is down.
+    pub wipes: bool,
     pub controlplane: CpConfig,
     /// Whether each node's clocks are skewed, and how far
     /// ([`crate::nemesis::clocks`]). Anything but `Off` needs a build with
@@ -164,6 +171,8 @@ impl SimConfig {
             real_time_limit: Duration::from_secs(480),
             fsync_mode: FsyncMode::None,
             power_loss: false,
+            majority_cut: false,
+            wipes: false,
             controlplane: CpConfig::default(),
             clocks: ClockSkew::Off,
             clock_plan: None,
@@ -197,6 +206,31 @@ impl SimConfig {
     pub fn with_power_loss(mut self) -> Self {
         self.power_loss = true;
         self.fsync_mode = FsyncMode::OnCommit;
+        self
+    }
+
+    /// Power cuts on brokers that do not sync before they acknowledge, so a
+    /// cut loses bytes a broker had acknowledged.
+    pub fn with_relaxed_power_loss(mut self) -> Self {
+        self.power_loss = true;
+        self.fsync_mode = FsyncMode::None;
+        self
+    }
+
+    /// The same run with several brokers losing power at once (see
+    /// [`SimConfig::majority_cut`]). Turns power loss on, on brokers that
+    /// sync on commit unless a relaxed mode is set already.
+    pub fn with_majority_cut(mut self) -> Self {
+        if !self.power_loss {
+            self = self.with_power_loss();
+        }
+        self.majority_cut = true;
+        self
+    }
+
+    /// The same run with wipes (see [`SimConfig::wipes`]).
+    pub fn with_wipes(mut self) -> Self {
+        self.wipes = true;
         self
     }
 }
@@ -239,6 +273,7 @@ pub struct SimCluster {
     done: Arc<AtomicBool>,
     kills: parking_lot::Mutex<KillLog>,
     power: parking_lot::Mutex<PowerLog>,
+    disk_events: parking_lot::Mutex<Vec<DiskEvent>>,
 }
 
 impl Drop for SimCluster {
@@ -253,12 +288,6 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
-        if config.power_loss && config.fsync_mode != FsyncMode::OnCommit {
-            bail!(
-                "power loss needs FsyncMode::OnCommit, not {:?}",
-                config.fsync_mode
-            );
-        }
         let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
             ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
         });
@@ -289,6 +318,7 @@ impl SimCluster {
             done,
             kills: parking_lot::Mutex::new(KillLog::new(reconcile)),
             power: Default::default(),
+            disk_events: Default::default(),
         });
         cluster.reset_links();
         cluster.create_catalog().await?;
@@ -470,6 +500,96 @@ impl SimCluster {
     /// one. Returns whether it landed in an append. A no-op that returns
     /// `false` on a broker that is down.
     pub async fn power_loss(self: &Arc<Self>, index: usize) -> bool {
+        self.cut_one(index).await
+    }
+
+    /// Cut the power under every running broker in `nodes` in the same
+    /// instant, with no append waited for, and leave them down with what
+    /// their devices held. Returns the brokers it cut.
+    pub async fn power_loss_together(self: &Arc<Self>, nodes: &[usize]) -> Vec<usize> {
+        let running: Vec<usize> = nodes
+            .iter()
+            .copied()
+            .filter(|&index| !self.nodes[index].is_down())
+            .collect();
+        if running.is_empty() {
+            return running;
+        }
+        self.note_state().await;
+        let at = self.elapsed();
+        // No await until every device is fixed: it is one instant.
+        for &index in &running {
+            let seed = self.seed ^ self.power.lock().next_seed();
+            self.nodes[index].cut_power(seed);
+            self.nodes[index].power_off(&self.net);
+        }
+        for &index in &running {
+            let node = &self.nodes[index];
+            node.crash(&self.net, Stop::PowerLoss).await;
+            node.reboot();
+            self.power.lock().record(PowerLoss {
+                node: index,
+                at,
+                torn: None,
+                repaired_before: node.torn_tails_repaired().len(),
+                opened_before: node.segments_opened().len(),
+                restarted_at: None,
+            });
+        }
+        running
+    }
+
+    /// Stop the brokers in `nodes` as an operator would, then empty what
+    /// `scope` names on each. A shard wipe picks the directory from the first
+    /// running broker and empties it on every broker in `nodes` that has it.
+    /// The brokers stay down until [`Self::restart`]. Returns the brokers
+    /// wiped.
+    pub async fn wipe(&self, nodes: &[usize], scope: WipeScope) -> Vec<usize> {
+        let mut wiped = Vec::new();
+        let mut target: Option<std::path::PathBuf> = None;
+        for &index in nodes {
+            self.crash(index).await;
+            let node = &self.nodes[index];
+            let below = match scope {
+                WipeScope::Root => std::path::PathBuf::new(),
+                WipeScope::Shard { pick } => {
+                    let dirs = disks::stream_shard_dirs(node.data_path());
+                    let chosen = target.get_or_insert_with(|| {
+                        dirs.get(pick as usize % dirs.len().max(1))
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                    if !dirs.contains(chosen) {
+                        continue;
+                    }
+                    chosen.clone()
+                }
+            };
+            node.wipe(&below);
+            wiped.push(index);
+        }
+        wiped
+    }
+
+    /// Every client value in each broker's stream shards, as the device holds
+    /// it now.
+    pub fn disk_values(&self) -> Vec<std::collections::BTreeSet<u64>> {
+        self.nodes
+            .iter()
+            .map(|node| disks::stream_values(node.data_path()))
+            .collect()
+    }
+
+    pub(crate) fn record_disk_event(&self, event: DiskEvent) {
+        self.disk_events.lock().push(event);
+    }
+
+    /// Every fault that changed devices, with what it cost.
+    pub fn disk_events(&self) -> Vec<DiskEvent> {
+        self.disk_events.lock().clone()
+    }
+
+    async fn cut_one(self: &Arc<Self>, index: usize) -> bool {
         if self.nodes[index].is_down() {
             return false;
         }

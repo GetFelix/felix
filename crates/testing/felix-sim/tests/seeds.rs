@@ -17,7 +17,9 @@
 //! | `FELIX_SIM_HISTORY` | a file `replay` writes the run's trace to, for diffing two runs | unset |
 //! | `FELIX_SIM_CLOCKS` | clock skew for `replay`, `seeds` and `each_seed_runs_the_same_twice`: `off`, `bounded` or `unbounded`; anything but `off` needs `--cfg tokio_unstable` | `off` |
 //! | `FELIX_SIM_PLACEMENT` | `1` turns placement faults on for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
-//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice` | unset: off |
+//! | `FELIX_SIM_POWER_LOSS` | `1` cuts the power in place of kills for `replay`, `seeds` and `each_seed_runs_the_same_twice`, on brokers that sync on commit. `relaxed` does the same on brokers that do not, so a cut loses acknowledged bytes | unset: off |
+//! | `FELIX_SIM_MAJORITY_CUT` | `1` also cuts the power under several brokers at once (power loss on, `relaxed` if set) | unset: off |
+//! | `FELIX_SIM_WIPE` | `1` also wipes shard directories and whole data directories | unset: off |
 //! | `RUST_LOG` | broker and harness logs | none |
 //!
 //! Built with `RUSTFLAGS="--cfg tokio_unstable"`, as `task sim:replay` does,
@@ -92,8 +94,17 @@ fn config(seed: u64) -> SimConfig {
         Ok("1") => config.with_placement_faults(),
         _ => config,
     };
-    match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
+    let config = match std::env::var("FELIX_SIM_POWER_LOSS").as_deref() {
         Ok("1") => config.with_power_loss(),
+        Ok("relaxed") => config.with_relaxed_power_loss(),
+        _ => config,
+    };
+    let config = match std::env::var("FELIX_SIM_MAJORITY_CUT").as_deref() {
+        Ok("1") => config.with_majority_cut(),
+        _ => config,
+    };
+    match std::env::var("FELIX_SIM_WIPE").as_deref() {
+        Ok("1") => config.with_wipes(),
         _ => config,
     }
 }
@@ -596,4 +607,77 @@ fn seeds_210_and_216_with_power_loss_serve_every_shard_after_a_crash_at_the_heal
         );
         assert!(!found(&outcome, "final-reads"), "seed {seed}:\n{outcome}");
     }
+}
+
+/// Whether a fault took an acknowledged record it may not lose.
+fn lost_acked(outcome: &SimOutcome) -> bool {
+    outcome
+        .failures()
+        .any(|finding| finding.checker == "acked-on-some-disk")
+}
+
+/// A power cut under a relaxed fsync mode loses what the broker acknowledged
+/// without syncing, so its restart sees a new boot, takes a new storage id and
+/// runs the unclean-start handling; no acknowledged record ends up on no disk.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_relaxed_power_cuts_make_the_restart_distrust_its_copies() {
+    log();
+    let config = SimConfig::for_seed(3).with_relaxed_power_loss();
+    let first = run_seed(3, config.clone());
+    let second = run_seed(3, config);
+    if let Some(difference) = first_difference(&first.trace(), &second.trace()) {
+        panic!("seed 3 ran differently the second time: {difference}");
+    }
+    let cut = first
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lost power"));
+    assert!(cut, "no broker lost power:\n{first}");
+    assert!(!lost_acked(&first), "{first}");
+    assert!(first.report.violations.is_empty(), "{first}");
+}
+
+/// Several brokers lose power in the same instant, and nothing acknowledged
+/// is lost when they sync on commit.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_a_majority_cut_under_sync_on_commit_loses_nothing_acknowledged() {
+    log();
+    let outcome = run_seed(3, SimConfig::for_seed(3).with_majority_cut());
+    let cut = outcome
+        .history
+        .faults
+        .iter()
+        .any(|fault| fault.what.contains("lose power together"));
+    assert!(cut, "no majority cut ran:\n{outcome}");
+    assert!(!lost_acked(&outcome), "{outcome}");
+    assert!(outcome.report.violations.is_empty(), "{outcome}");
+}
+
+/// Wipes of a shard directory and of a data directory run, and every record
+/// they take off the disks is one they may lose.
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "replays this seed's run only under --cfg tokio_unstable"
+)]
+fn seed_3_wipes_lose_only_what_every_disk_holding_it_lost() {
+    log();
+    let outcome = run_seed(3, SimConfig::for_seed(3).with_wipes());
+    let wipes = outcome
+        .history
+        .faults
+        .iter()
+        .filter(|fault| fault.what.starts_with("wipe "))
+        .count();
+    assert!(wipes > 0, "no wipe ran:\n{outcome}");
+    assert!(!lost_acked(&outcome), "{outcome}");
 }

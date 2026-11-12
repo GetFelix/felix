@@ -81,6 +81,8 @@ pub struct Recorder {
     values: AtomicU64,
     /// When an operator abandoned each list's log, on the history's clock.
     abandoned: Mutex<BTreeMap<String, u64>>,
+    /// A fault lost acknowledged cache writes it was allowed to lose.
+    cache_lost: std::sync::atomic::AtomicBool,
 }
 
 impl Recorder {
@@ -107,6 +109,7 @@ impl Recorder {
             }),
             values: AtomicU64::new(0),
             abandoned: Mutex::new(BTreeMap::new()),
+            cache_lost: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -150,6 +153,14 @@ impl Recorder {
         self.abandoned.lock().insert(list_name(shard), at);
     }
 
+    /// A fault just cost the cache writes it was allowed to lose. The cache
+    /// is not judged from here on: its disks are not read, so which keys lost
+    /// a write is not known.
+    pub fn cache_lost(&self) {
+        self.cache_lost
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// The lists whose log an operator abandoned, with when.
     pub fn abandoned_lists(&self) -> BTreeMap<String, u64> {
         self.abandoned.lock().clone()
@@ -161,6 +172,9 @@ impl Recorder {
     pub fn history(&self) -> History {
         let mut history = self.history.lock().clone();
         forget_abandoned(&mut history, &self.abandoned.lock());
+        if self.cache_lost.load(std::sync::atomic::Ordering::SeqCst) {
+            history.registers.clear();
+        }
         history
     }
 }
@@ -697,7 +711,7 @@ fn padding(value: u64) -> impl Iterator<Item = u8> {
     (0..len).map(move |i| (mix >> (8 * (i % 8))) as u8 ^ i as u8)
 }
 
-fn decode(payload: &[u8]) -> u64 {
+pub(crate) fn decode(payload: &[u8]) -> u64 {
     let Some(value) = payload
         .get(..8)
         .and_then(|head| head.try_into().ok())

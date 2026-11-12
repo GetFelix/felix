@@ -28,6 +28,8 @@
 //! | `Abandon` | Stops the broker assigned the stream shards the broker holds after unclean kills, abandons their logs (`felixctl placement abandon`), and starts it again. |
 //! | `KillBeforeOpen` | Kills the next broker placement names leader of a shard, before it opens the shard. |
 //! | `SeatRace` | Drains a broker so a follower seat is being replaced, kills that shard's leader, then kills the next leader named for it before it opens: seat replacement plus two promotions. |
+//! | `MajorityCut` | Cuts the power under several brokers in the same instant. Only with [`SimConfig::majority_cut`](crate::cluster::SimConfig::majority_cut). |
+//! | `Wipe` | Stops one or several brokers, empties one stream shard directory or the whole data directory on each, and starts them again. Only with [`SimConfig::wipes`](crate::cluster::SimConfig::wipes). |
 //!
 //! Clock skew has its own schedule ([`clocks::ClockPlan`]), played by
 //! [`Nemesis::run_clocks`]. It is off unless [`SimConfig::clocks`](crate::cluster::SimConfig::clocks)
@@ -58,9 +60,10 @@ use tokio_util::sync::CancellationToken;
 
 use self::clocks::ClockPlan;
 use crate::client::Recorder;
-use crate::cluster::SimCluster;
+use crate::cluster::{SimCluster, WipeScope};
 use crate::controlplane::CpFault;
 use crate::net::Link;
+use felix_storage::log::FsyncMode;
 
 /// How a crash stops a broker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -176,6 +179,18 @@ pub enum Fault {
         down_for: Duration,
         kill: bool,
     },
+    /// The power goes under every broker in `nodes` in the same instant.
+    MajorityCut {
+        nodes: Vec<usize>,
+        down_for: Duration,
+    },
+    /// An operator stops the brokers in `nodes` and empties what `scope`
+    /// names on each.
+    Wipe {
+        nodes: Vec<usize>,
+        scope: WipeScope,
+        down_for: Duration,
+    },
 }
 
 impl Fault {
@@ -196,9 +211,16 @@ impl Fault {
             | Fault::Remove { .. }
             | Fault::Abandon { .. }
             | Fault::KillBeforeOpen { .. }
-            | Fault::SeatRace { .. } => true,
+            | Fault::SeatRace { .. }
+            | Fault::MajorityCut { .. }
+            | Fault::Wipe { .. } => true,
         }
     }
+}
+
+fn names(nodes: &[usize]) -> String {
+    let names: Vec<_> = nodes.iter().map(|n| format!("b{}", n + 1)).collect();
+    names.join(",")
 }
 
 impl fmt::Display for Fault {
@@ -280,6 +302,22 @@ impl fmt::Display for Fault {
                 f,
                 "{} the next promoted leader before it opens (watch {watch_for:?}, down {down_for:?})",
                 if *kill { "kill" } else { "crash" }
+            ),
+            Fault::MajorityCut { nodes, down_for } => {
+                write!(f, "{} lose power together for {down_for:?}", names(nodes))
+            }
+            Fault::Wipe {
+                nodes,
+                scope,
+                down_for,
+            } => write!(
+                f,
+                "wipe {} on {} for {down_for:?}",
+                match scope {
+                    WipeScope::Shard { .. } => "one shard directory",
+                    WipeScope::Root => "the whole data directory",
+                },
+                names(nodes)
             ),
             Fault::SeatRace {
                 node,
@@ -409,6 +447,13 @@ pub struct Nemesis {
     cluster: Arc<SimCluster>,
     recorder: Arc<Recorder>,
     holds: Mutex<Holds>,
+    /// Held across a fault that changes devices, so two never overlap and
+    /// each can say which disks it cost.
+    disks: tokio::sync::Mutex<()>,
+    /// Acknowledged records a disk fault took off every disk.
+    gone: Mutex<BTreeSet<u64>>,
+    /// Acknowledged records a disk fault took a copy of.
+    thinned: Mutex<BTreeSet<u64>>,
     /// Cancelled by [`Nemesis::heal`]: pending ends of faults stand down.
     stopped: CancellationToken,
 }
@@ -419,6 +464,9 @@ impl Nemesis {
             cluster,
             recorder,
             holds: Mutex::new(Holds::default()),
+            disks: tokio::sync::Mutex::new(()),
+            gone: Mutex::new(BTreeSet::new()),
+            thinned: Mutex::new(BTreeSet::new()),
             stopped: CancellationToken::new(),
         })
     }
@@ -589,6 +637,7 @@ impl Nemesis {
             | Fault::Abandon { .. }
             | Fault::KillBeforeOpen { .. }
             | Fault::SeatRace { .. } => self.inject_placement(&fault).await,
+            Fault::MajorityCut { .. } | Fault::Wipe { .. } => self.inject_disks(&fault).await,
         }
     }
 
@@ -604,7 +653,11 @@ impl Nemesis {
             Stop::Clean => self.cluster.crash(node).await,
             Stop::Kill => self.cluster.kill(node).await,
             Stop::PowerLoss => {
-                let mid_append = self.cluster.power_loss(node).await;
+                let relaxed = self.cluster.config.fsync_mode != FsyncMode::OnCommit;
+                let cut = self.cluster.power_loss(node);
+                let mid_append = self
+                    .disk_fault(format!("b{} loses power", node + 1), &[node], relaxed, cut)
+                    .await;
                 self.recorder.fault(format!(
                     "b{} lost power {}",
                     node + 1,
@@ -740,6 +793,7 @@ impl Nemesis {
     }
 }
 
+mod disks;
 mod placement;
 
 #[cfg(test)]
