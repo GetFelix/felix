@@ -827,6 +827,51 @@ weights=(
   "FelixRaftSaveCommittedUnflushed 2"
 )
 
+# Minutes a configuration took on a pull request's runner, from the `Finished
+# in` lines of a CI run, where that differs from `weights` (main's runners)
+# by two or more. Only shard balancing reads this; which configurations a
+# pull request runs still goes by `weights`.
+pr_minutes=(
+  "FelixHeadTrimCrashTwoPromotions 1"
+  "FelixRaftCrashes 4"
+  "FelixRaftOffsetsFailover 14"
+  "FelixRaftSnapshotCrashes 26"
+  "FelixRaftSnapshotReplace 10"
+  "FelixShard 7"
+  "FelixShardCpLiveNoHaltReported 7"
+  "FelixShardCpLiveNoOverlayRefused 4"
+  "FelixShardCpLiveRefusalsPinsForever 4"
+  "FelixShardElectAdoptFailoverApart1Gen2 3"
+  "FelixShardElectAdoptFailoverApart1StoodGen3 3"
+  "FelixShardElectAdoptFailoverSame0StoodGen4 3"
+  "FelixShardElectAdoptFailoverSame1StoodGen3 5"
+  "FelixShardElectHandoffLeaders 16"
+  "FelixShardElectLiveReissue 14"
+  "FelixShardElectRenameDrop0 13"
+  "FelixShardElectRenameDrop1 9"
+  "FelixShardElectRenameDrop1StoodOneOther 1"
+  "FelixShardElectRenameKeep1 12"
+  "FelixShardElectSwapDrop0 2"
+  "FelixShardElectSwapDrop0StoodOneDest 4"
+  "FelixShardElectSwapDrop1StoodOneOther 1"
+  "FelixShardElectSwapDrop2 1"
+  "FelixShardElectSwapDrop2DropsChange 9"
+  "FelixShardElectSwapKeep2DropsChange 5"
+  "FelixShardElectUncleanNoStartRecord 13"
+  "FelixShardElectWipeNonVoterCountersUnchecked 10"
+  "FelixShardElectWipeNonVoterReclaimLive 7"
+  "FelixShardFencedAckTrim 8"
+  "FelixShardFencedCrashInheritedCounts 1"
+  "FelixShardFigure8FollowerAcks 6"
+  "FelixShardLeaderCrashGivesUp 1"
+  "FelixShardLeaderCrashReclaim 1"
+  "FelixShardRealMargins 4"
+  "FelixShardReportFloor 8"
+  "FelixShardSessionsSubscriber 2"
+  "FelixShardStagedMove 5"
+  "FelixShardSuspicionWipeRoutes 1"
+)
+
 weight_of() {
   local w
   for w in "${weights[@]}"; do
@@ -905,11 +950,20 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
   selected=(${quick[@]+"${quick[@]}"})
 fi
 
+# Minutes to balance shards by: a pull request's measured time when listed.
+plan_weight_of() {
+  local w
+  for w in "${pr_minutes[@]}"; do
+    if [ "${w%% *}" = "$1" ]; then echo "${w#* }"; return; fi
+  done
+  weight_of "$1"
+}
+
 # Print the shard for each selected configuration, in order.
 assign_shards() {
   local entry position=0
   for entry in "${selected[@]}"; do
-    echo "$(weight_of "${entry%% *}") $position"
+    echo "$(plan_weight_of "${entry%% *}") $position"
     position=$((position + 1))
   done | sort -k1,1nr -k2,2n | awk -v n="$shard_count" '
     { best = 0
