@@ -91,6 +91,16 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: cargo llvm-cov clean --workspace
 
+      # The mixed-version test (felix-controlplane-service, tests/raft_runtime.rs)
+      # runs this build next to the last release that ran openraft 0.9. It
+      # skips without the binary, so the second variable makes that a failure.
+      - name: Fetch the released control plane
+        run: |
+          set -euo pipefail
+          bin=$(scripts/fetch-released-controlplane.sh "$RUNNER_TEMP/released")
+          echo "RELEASED_CONTROLPLANE_BIN=$bin" >> "$GITHUB_ENV"
+          echo "REQUIRE_RELEASED_CONTROLPLANE_BIN=1" >> "$GITHUB_ENV"
+
       # Larger than the test job's: coverage instrumentation slows everything
       # it measures, and this is the job where the failover suite's replication
       # waits were seen to expire with nothing wrong.

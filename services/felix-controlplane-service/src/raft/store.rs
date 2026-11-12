@@ -8,6 +8,9 @@
 //! durability plumbing is the last place Felix should be inventive
 //! (`docs/metadata-raft-design.md#library`).
 //!
+//! What is written is Felix's own JSON (`super::wire`), the form openraft 0.9
+//! stored, so a member can be rolled back to a release that ran 0.9.
+//!
 //! This log is not `felix-storage` yet. The segment store now has a Raft
 //! log (`felix_storage::raft_log`, which cuts uncommitted suffixes without
 //! rewriting a record), and the control plane moves onto it
@@ -19,26 +22,27 @@
 //! durability obligation, which is what lets #338 plug the in-memory
 //! metadata store in unchanged.
 
-// The error type and its size are openraft's, fixed by the storage traits.
-#![allow(clippy::result_large_err)]
-
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::ops::RangeBounds;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use futures_util::{Stream, TryStreamExt};
+use openraft::OptionalSend;
 use openraft::storage::{
-    LogFlushed, LogState, RaftLogStorage, RaftSnapshotBuilder, RaftStateMachine,
+    EntryResponder, IOFlushed, LogState, RaftLogReader, RaftLogStorage, RaftSnapshotBuilder,
+    RaftStateMachine,
 };
-use openraft::{AnyError, ErrorSubject, ErrorVerb, RaftLogReader, StorageIOError};
 use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use tokio::sync::Mutex;
 
 use super::AppStateMachine;
 use super::types::{
-    Entry, LogId, Snapshot, SnapshotMeta, StorageError, StoredMembership, TypeConfig,
+    Entry, EntryPayload, LogId, Snapshot, SnapshotData, SnapshotMeta, StoredMembership, TypeConfig,
+    Vote,
 };
+use super::wire;
 
 const LOGS: TableDefinition<u64, &[u8]> = TableDefinition::new("raft_logs");
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("raft_meta");
@@ -57,7 +61,7 @@ const KEY_CLUSTER_ID: &str = "cluster_id";
 /// The committed index this store had persisted when it last ran — what a
 /// restarting node must re-apply before it is fit to serve.
 pub(super) fn persisted_committed_index(db: &Database) -> Option<u64> {
-    read_meta::<Option<LogId>>(db, KEY_COMMITTED)
+    read_meta::<Option<wire::LogId>>(db, KEY_COMMITTED)
         .ok()
         .flatten()
         .flatten()
@@ -126,39 +130,31 @@ pub(super) fn open(path: &Path) -> Result<Arc<Database>> {
     Ok(Arc::new(db))
 }
 
-fn read_err(err: impl std::error::Error + 'static) -> StorageError {
-    StorageIOError::new(ErrorSubject::Store, ErrorVerb::Read, AnyError::new(&err)).into()
-}
-
-fn write_err(err: impl std::error::Error + 'static) -> StorageError {
-    StorageIOError::new(ErrorSubject::Store, ErrorVerb::Write, AnyError::new(&err)).into()
+fn io_err(err: impl std::error::Error + Send + Sync + 'static) -> io::Error {
+    io::Error::other(err)
 }
 
 fn read_meta<T: serde::de::DeserializeOwned>(
     db: &Database,
     key: &str,
-) -> Result<Option<T>, StorageError> {
-    let txn = db.begin_read().map_err(read_err)?;
-    let table = txn.open_table(META).map_err(read_err)?;
-    let Some(guard) = table.get(key).map_err(read_err)? else {
+) -> Result<Option<T>, io::Error> {
+    let txn = db.begin_read().map_err(io_err)?;
+    let table = txn.open_table(META).map_err(io_err)?;
+    let Some(guard) = table.get(key).map_err(io_err)? else {
         return Ok(None);
     };
-    let value = serde_json::from_slice(guard.value()).map_err(read_err)?;
+    let value = serde_json::from_slice(guard.value()).map_err(io_err)?;
     Ok(Some(value))
 }
 
-fn write_meta<T: serde::Serialize>(
-    db: &Database,
-    key: &str,
-    value: &T,
-) -> Result<(), StorageError> {
-    let bytes = serde_json::to_vec(value).map_err(write_err)?;
-    let txn = db.begin_write().map_err(write_err)?;
+fn write_meta<T: serde::Serialize>(db: &Database, key: &str, value: &T) -> Result<(), io::Error> {
+    let bytes = serde_json::to_vec(value).map_err(io_err)?;
+    let txn = db.begin_write().map_err(io_err)?;
     {
-        let mut table = txn.open_table(META).map_err(write_err)?;
-        table.insert(key, bytes.as_slice()).map_err(write_err)?;
+        let mut table = txn.open_table(META).map_err(io_err)?;
+        table.insert(key, bytes.as_slice()).map_err(io_err)?;
     }
-    txn.commit().map_err(write_err)?;
+    txn.commit().map_err(io_err)?;
     Ok(())
 }
 
@@ -168,15 +164,15 @@ fn write_meta<T: serde::Serialize>(
 /// worker for the whole flush and stall every task queued on it, heartbeats
 /// and RPC handlers included. Openraft still awaits each call before issuing
 /// the next, so writes keep their order and are durable when this returns.
-async fn blocking_write<T, F>(db: &Arc<Database>, write: F) -> Result<T, StorageError>
+async fn blocking_write<T, F>(db: &Arc<Database>, write: F) -> Result<T, io::Error>
 where
     T: Send + 'static,
-    F: FnOnce(&Database) -> Result<T, StorageError> + Send + 'static,
+    F: FnOnce(&Database) -> Result<T, io::Error> + Send + 'static,
 {
     let db = Arc::clone(db);
     tokio::task::spawn_blocking(move || write(&db))
         .await
-        .map_err(write_err)?
+        .map_err(io_err)?
 }
 
 /// The Raft log and vote. Clones share the database; openraft hands clones
@@ -204,31 +200,37 @@ impl RaftLogReader<TypeConfig> for LogStore {
     async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + std::fmt::Debug + Send>(
         &mut self,
         range: RB,
-    ) -> Result<Vec<Entry>, StorageError> {
-        let txn = self.db.begin_read().map_err(read_err)?;
-        let table = txn.open_table(LOGS).map_err(read_err)?;
+    ) -> Result<Vec<Entry>, io::Error> {
+        let txn = self.db.begin_read().map_err(io_err)?;
+        let table = txn.open_table(LOGS).map_err(io_err)?;
         let start = Self::owned_bound(range.start_bound());
         let end = Self::owned_bound(range.end_bound());
         let mut entries = Vec::new();
-        for item in table.range((start, end)).map_err(read_err)? {
-            let (_, value) = item.map_err(read_err)?;
-            entries.push(serde_json::from_slice(value.value()).map_err(read_err)?);
+        for item in table.range((start, end)).map_err(io_err)? {
+            let (_, value) = item.map_err(io_err)?;
+            let entry: wire::Entry = serde_json::from_slice(value.value()).map_err(io_err)?;
+            entries.push(entry.into());
         }
         Ok(entries)
+    }
+
+    async fn read_vote(&mut self) -> Result<Option<Vote>, io::Error> {
+        Ok(read_meta::<wire::Vote>(&self.db, KEY_VOTE)?.map(Vote::from))
     }
 }
 
 impl RaftLogStorage<TypeConfig> for LogStore {
     type LogReader = Self;
 
-    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, StorageError> {
-        let last_purged: Option<LogId> = read_meta(&self.db, KEY_LAST_PURGED)?;
-        let txn = self.db.begin_read().map_err(read_err)?;
-        let table = txn.open_table(LOGS).map_err(read_err)?;
-        let last = match table.last().map_err(read_err)? {
+    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, io::Error> {
+        let last_purged: Option<LogId> =
+            read_meta::<wire::LogId>(&self.db, KEY_LAST_PURGED)?.map(LogId::from);
+        let txn = self.db.begin_read().map_err(io_err)?;
+        let table = txn.open_table(LOGS).map_err(io_err)?;
+        let last = match table.last().map_err(io_err)? {
             Some((_, value)) => {
-                let entry: Entry = serde_json::from_slice(value.value()).map_err(read_err)?;
-                Some(entry.log_id)
+                let entry: wire::Entry = serde_json::from_slice(value.value()).map_err(io_err)?;
+                Some(entry.log_id.into())
             }
             None => last_purged,
         };
@@ -242,110 +244,108 @@ impl RaftLogStorage<TypeConfig> for LogStore {
         self.clone()
     }
 
-    async fn save_vote(&mut self, vote: &openraft::Vote<u64>) -> Result<(), StorageError> {
+    async fn save_vote(&mut self, vote: &Vote) -> Result<(), io::Error> {
         // The commit fsyncs; a vote that is acknowledged but not durable
         // lets this node vote twice for one term after a crash.
-        let vote = *vote;
+        let vote = wire::Vote::from(vote);
         blocking_write(&self.db, move |db| write_meta(db, KEY_VOTE, &vote)).await
     }
 
-    async fn read_vote(&mut self) -> Result<Option<openraft::Vote<u64>>, StorageError> {
-        read_meta(&self.db, KEY_VOTE)
-    }
-
-    async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), StorageError> {
+    async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), io::Error> {
+        let committed = wire::log_id(&committed);
         blocking_write(&self.db, move |db| {
             write_meta(db, KEY_COMMITTED, &committed)
         })
         .await
     }
 
-    async fn read_committed(&mut self) -> Result<Option<LogId>, StorageError> {
-        Ok(read_meta(&self.db, KEY_COMMITTED)?.flatten())
+    async fn read_committed(&mut self) -> Result<Option<LogId>, io::Error> {
+        let committed = read_meta::<Option<wire::LogId>>(&self.db, KEY_COMMITTED)?;
+        Ok(wire::lib_log_id(committed.flatten()))
     }
 
     async fn append<I>(
         &mut self,
         entries: I,
-        callback: LogFlushed<TypeConfig>,
-    ) -> Result<(), StorageError>
+        callback: IOFlushed<TypeConfig>,
+    ) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = Entry> + Send,
-        I::IntoIter: Send,
+        I: IntoIterator<Item = Entry> + OptionalSend,
+        I::IntoIter: OptionalSend,
     {
         let rows = entries
             .into_iter()
             .map(|entry| {
                 Ok((
                     entry.log_id.index,
-                    serde_json::to_vec(&entry).map_err(write_err)?,
+                    serde_json::to_vec(&wire::Entry::from(&entry)).map_err(io_err)?,
                 ))
             })
-            .collect::<Result<Vec<_>, StorageError>>()?;
+            .collect::<Result<Vec<_>, io::Error>>()?;
         blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(write_err)?;
+            let txn = db.begin_write().map_err(io_err)?;
             {
-                let mut table = txn.open_table(LOGS).map_err(write_err)?;
+                let mut table = txn.open_table(LOGS).map_err(io_err)?;
                 for (index, bytes) in rows {
-                    table.insert(index, bytes.as_slice()).map_err(write_err)?;
+                    table.insert(index, bytes.as_slice()).map_err(io_err)?;
                 }
             }
-            txn.commit().map_err(write_err)
+            txn.commit().map_err(io_err)
         })
         .await?;
         // Only after the durable commit: this callback is openraft's "these
         // entries survive a crash" signal, and everything downstream
         // (commit, apply, acknowledgements) leans on it being true.
-        callback.log_io_completed(Ok(()));
+        callback.io_completed(Ok(()));
         Ok(())
     }
 
-    async fn truncate(&mut self, log_id: LogId) -> Result<(), StorageError> {
+    async fn truncate_after(&mut self, last_log_id: Option<LogId>) -> Result<(), io::Error> {
         // Conflict resolution: a deposed leader's uncommitted suffix goes
-        // away. This is the operation the felix-storage segment log
-        // deliberately cannot do, and why this log is not that log.
+        // away. `last_log_id` is the last entry kept.
+        let start = last_log_id.map_or(0, |id| id.index + 1);
         blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(write_err)?;
+            let txn = db.begin_write().map_err(io_err)?;
             {
-                let mut table = txn.open_table(LOGS).map_err(write_err)?;
+                let mut table = txn.open_table(LOGS).map_err(io_err)?;
                 let doomed: Vec<u64> = table
-                    .range(log_id.index..)
-                    .map_err(write_err)?
+                    .range(start..)
+                    .map_err(io_err)?
                     .map(|item| item.map(|(key, _)| key.value()))
                     .collect::<Result<_, _>>()
-                    .map_err(write_err)?;
+                    .map_err(io_err)?;
                 for index in doomed {
-                    table.remove(index).map_err(write_err)?;
+                    table.remove(index).map_err(io_err)?;
                 }
             }
-            txn.commit().map_err(write_err)
+            txn.commit().map_err(io_err)
         })
         .await
     }
 
-    async fn purge(&mut self, log_id: LogId) -> Result<(), StorageError> {
+    async fn purge(&mut self, log_id: LogId) -> Result<(), io::Error> {
         // Compaction behind a snapshot. The purge marker commits in the same
         // transaction as the deletions so a crash between them cannot leave
         // the log claiming a hole it does not have.
-        let bytes = serde_json::to_vec(&log_id).map_err(write_err)?;
+        let bytes = serde_json::to_vec(&wire::LogId::from(&log_id)).map_err(io_err)?;
         blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(write_err)?;
+            let txn = db.begin_write().map_err(io_err)?;
             {
-                let mut meta = txn.open_table(META).map_err(write_err)?;
+                let mut meta = txn.open_table(META).map_err(io_err)?;
                 meta.insert(KEY_LAST_PURGED, bytes.as_slice())
-                    .map_err(write_err)?;
-                let mut table = txn.open_table(LOGS).map_err(write_err)?;
+                    .map_err(io_err)?;
+                let mut table = txn.open_table(LOGS).map_err(io_err)?;
                 let doomed: Vec<u64> = table
                     .range(..=log_id.index)
-                    .map_err(write_err)?
+                    .map_err(io_err)?
                     .map(|item| item.map(|(key, _)| key.value()))
                     .collect::<Result<_, _>>()
-                    .map_err(write_err)?;
+                    .map_err(io_err)?;
                 for index in doomed {
-                    table.remove(index).map_err(write_err)?;
+                    table.remove(index).map_err(io_err)?;
                 }
             }
-            txn.commit().map_err(write_err)
+            txn.commit().map_err(io_err)
         })
         .await
     }
@@ -382,9 +382,9 @@ impl StateMachineStore {
             last_applied: None,
             membership: StoredMembership::default(),
         };
-        let meta: Option<SnapshotMeta> =
+        let meta: Option<wire::SnapshotMeta> =
             read_meta(&db, KEY_SNAPSHOT_META).map_err(|err| anyhow::anyhow!("{err}"))?;
-        if let Some(meta) = meta {
+        if let Some(meta) = meta.map(SnapshotMeta::from) {
             let data: Option<Vec<u8>> =
                 read_meta(&db, KEY_SNAPSHOT_DATA).map_err(|err| anyhow::anyhow!("{err}"))?;
             let data = data.context("snapshot meta without snapshot data")?;
@@ -410,35 +410,31 @@ impl StateMachineStore {
     /// and the member could not restart. The check reads the stored meta in
     /// the same write transaction, and redb runs one writer at a time, so no
     /// other snapshot can land between the check and the write.
-    async fn persist_snapshot(
-        &self,
-        meta: &SnapshotMeta,
-        data: &[u8],
-    ) -> Result<bool, StorageError> {
+    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: &[u8]) -> Result<bool, io::Error> {
         // Meta and data commit together: a snapshot that exists without its
         // descriptor (or the reverse) reads as no snapshot at all.
         let index = meta.last_log_id.map(|id| id.index);
-        let meta_bytes = serde_json::to_vec(meta).map_err(write_err)?;
-        let data_bytes = serde_json::to_vec(&data).map_err(write_err)?;
+        let meta_bytes = serde_json::to_vec(&wire::SnapshotMeta::from(meta)).map_err(io_err)?;
+        let data_bytes = serde_json::to_vec(&data).map_err(io_err)?;
         blocking_write(&self.inner.db, move |db| {
-            let txn = db.begin_write().map_err(write_err)?;
+            let txn = db.begin_write().map_err(io_err)?;
             {
-                let mut table = txn.open_table(META).map_err(write_err)?;
-                if let Some(stored) = table.get(KEY_SNAPSHOT_META).map_err(write_err)? {
-                    let stored: SnapshotMeta =
-                        serde_json::from_slice(stored.value()).map_err(read_err)?;
+                let mut table = txn.open_table(META).map_err(io_err)?;
+                if let Some(stored) = table.get(KEY_SNAPSHOT_META).map_err(io_err)? {
+                    let stored: wire::SnapshotMeta =
+                        serde_json::from_slice(stored.value()).map_err(io_err)?;
                     if stored.last_log_id.map(|id| id.index) >= index {
                         return Ok(false);
                     }
                 }
                 table
                     .insert(KEY_SNAPSHOT_META, meta_bytes.as_slice())
-                    .map_err(write_err)?;
+                    .map_err(io_err)?;
                 table
                     .insert(KEY_SNAPSHOT_DATA, data_bytes.as_slice())
-                    .map_err(write_err)?;
+                    .map_err(io_err)?;
             }
-            txn.commit().map_err(write_err)?;
+            txn.commit().map_err(io_err)?;
             Ok(true)
         })
         .await
@@ -446,34 +442,38 @@ impl StateMachineStore {
 }
 
 impl RaftStateMachine<TypeConfig> for StateMachineStore {
+    type SnapshotData = SnapshotData;
     type SnapshotBuilder = SnapshotBuilder;
 
-    async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), StorageError> {
+    async fn applied_state(&mut self) -> Result<(Option<LogId>, StoredMembership), io::Error> {
         let applied = self.inner.applied.lock().await;
         Ok((applied.last_applied, applied.membership.clone()))
     }
 
-    async fn apply<I>(&mut self, entries: I) -> Result<Vec<Vec<u8>>, StorageError>
+    async fn apply<Strm>(&mut self, mut entries: Strm) -> Result<(), io::Error>
     where
-        I: IntoIterator<Item = Entry> + Send,
-        I::IntoIter: Send,
+        Strm: Stream<Item = Result<EntryResponder<TypeConfig>, io::Error>> + Unpin + OptionalSend,
     {
-        let mut responses = Vec::new();
-        let mut applied = self.inner.applied.lock().await;
-        for entry in entries {
+        while let Some((entry, responder)) = entries.try_next().await? {
+            // Taken per entry, not across the wait for the next one, so a
+            // snapshot build is never held up by a slow log read.
+            let mut applied = self.inner.applied.lock().await;
             let response = match entry.payload {
-                openraft::EntryPayload::Blank => Vec::new(),
-                openraft::EntryPayload::Normal(ref command) => self.inner.app.apply(command).await,
-                openraft::EntryPayload::Membership(ref membership) => {
+                EntryPayload::Blank => Vec::new(),
+                EntryPayload::Normal(ref command) => self.inner.app.apply(&command.0).await,
+                EntryPayload::Membership(ref membership) => {
                     applied.membership =
                         StoredMembership::new(Some(entry.log_id), membership.clone());
                     Vec::new()
                 }
             };
             applied.last_applied = Some(entry.log_id);
-            responses.push(response);
+            drop(applied);
+            if let Some(responder) = responder {
+                responder.send(response);
+            }
         }
-        Ok(responses)
+        Ok(())
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -482,15 +482,11 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         }
     }
 
-    async fn begin_receiving_snapshot(&mut self) -> Result<Box<Cursor<Vec<u8>>>, StorageError> {
-        Ok(Box::new(Cursor::new(Vec::new())))
-    }
-
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMeta,
-        snapshot: Box<Cursor<Vec<u8>>>,
-    ) -> Result<(), StorageError> {
+        snapshot: SnapshotData,
+    ) -> Result<(), io::Error> {
         let data = snapshot.into_inner();
         // Persist before replacing live state, so open rebuilds from this
         // snapshot after a crash. An older snapshot is not written, so what
@@ -505,16 +501,10 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         // the member instead of letting it diverge.
         let applied_index = applied.last_applied.map(|id| id.index);
         if applied_index > meta.last_log_id.map(|id| id.index) {
-            let err = std::io::Error::other(format!(
+            return Err(io::Error::other(format!(
                 "snapshot at {:?} is behind the applied state at {:?}",
                 meta.last_log_id, applied.last_applied
-            ));
-            return Err(StorageIOError::new(
-                ErrorSubject::Snapshot(Some(meta.signature())),
-                ErrorVerb::Write,
-                AnyError::new(&err),
-            )
-            .into());
+            )));
         }
         self.inner.app.restore(&data).await;
         applied.last_applied = meta.last_log_id;
@@ -522,8 +512,8 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         Ok(())
     }
 
-    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, StorageError> {
-        let meta: Option<SnapshotMeta> = read_meta(&self.inner.db, KEY_SNAPSHOT_META)?;
+    async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, io::Error> {
+        let meta: Option<wire::SnapshotMeta> = read_meta(&self.inner.db, KEY_SNAPSHOT_META)?;
         let Some(meta) = meta else {
             return Ok(None);
         };
@@ -532,8 +522,8 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
             return Ok(None);
         };
         Ok(Some(Snapshot {
-            meta,
-            snapshot: Box::new(Cursor::new(data)),
+            meta: meta.into(),
+            snapshot: Cursor::new(data),
         }))
     }
 }
@@ -543,22 +533,15 @@ pub(super) struct SnapshotBuilder {
 }
 
 impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
-    async fn build_snapshot(&mut self) -> Result<Snapshot, StorageError> {
+    type SnapshotData = SnapshotData;
+
+    async fn build_snapshot(&mut self) -> Result<Snapshot, io::Error> {
         let (data, meta) = {
             let applied = self.inner.applied.lock().await;
             let data = self.inner.app.snapshot().await;
-            let snapshot_id = format!(
-                "{}-{}",
-                applied.last_applied.map(|id| id.index).unwrap_or(0),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            );
             let meta = SnapshotMeta {
                 last_log_id: applied.last_applied,
                 last_membership: applied.membership.clone(),
-                snapshot_id,
             };
             (data, meta)
         };
@@ -572,7 +555,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
 
         Ok(Snapshot {
             meta,
-            snapshot: Box::new(Cursor::new(data)),
+            snapshot: Cursor::new(data),
         })
     }
 }

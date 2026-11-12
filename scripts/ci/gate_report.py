@@ -39,6 +39,9 @@ def read_parts(root, engine):
 def overall(parts):
     statuses = [parts.get(name, {}).get("status", "missing") for name, _ in PARTS]
     statuses = [s for s in statuses if s != "n/a"]
+    # Anything but a known status (an undecided cell, say) is a failure.
+    known = {"pass", "fail", "missing", "unavailable", "skipped"}
+    statuses = [s if s in known else "fail" for s in statuses]
     if any(s in ("fail", "missing") for s in statuses):
         return "FAIL" if "fail" in statuses else "INCOMPLETE"
     if "unavailable" in statuses:

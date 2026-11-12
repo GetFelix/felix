@@ -1,4 +1,5 @@
 //! Whether this member is fit to serve, and the gauges that show it.
+use openraft::async_runtime::WatchReceiver;
 use std::time::Duration;
 
 use super::RaftHandle;
@@ -32,7 +33,7 @@ impl RaftHandle {
         if !self.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("started without raft state; catching up before serving".to_string());
         }
-        let metrics = self.raft.metrics().borrow().clone();
+        let metrics = self.raft.metrics().borrow_watched().clone();
         let Some(leader) = metrics.current_leader else {
             return Err("no raft leader is known to this instance".to_string());
         };
@@ -59,7 +60,8 @@ impl RaftHandle {
             ));
         }
         if leader == self.id
-            && let Some(millis) = metrics.millis_since_quorum_ack
+            && let Some(acked) = metrics.last_quorum_acked
+            && let millis = openraft::Instant::elapsed(&*acked).as_millis() as u64
             && millis > Self::READY_QUORUM_ACK_MAX.as_millis() as u64
         {
             return Err(format!(
@@ -87,7 +89,7 @@ impl RaftHandle {
                 tokio::select! {
                     _ = shutdown.cancelled() => return,
                     _ = ticker.tick() => {
-                        let metrics = raft.metrics().borrow().clone();
+                        let metrics = raft.metrics().borrow_watched().clone();
                         metrics::gauge!("felix_meta_raft_term").set(metrics.current_term as f64);
                         metrics::gauge!("felix_meta_raft_leader_known")
                             .set(if metrics.current_leader.is_some() { 1.0 } else { 0.0 });
