@@ -252,16 +252,6 @@ impl Group {
         Ok(group)
     }
 
-    /// A store that writes through whichever member is up, for the harness's
-    /// own seeding. Member `index`'s, when it is running.
-    pub(super) async fn store_of(&self, index: usize) -> Option<Arc<RaftStore>> {
-        let members = self.members.lock().await;
-        members[index]
-            .running
-            .as_ref()
-            .map(|r| Arc::clone(&r.store))
-    }
-
     /// The store of a running member, for the harness's own reads and writes:
     /// the leader's when one is up, because a follower's copy can lag. It
     /// changes as members are killed and restarted, so a caller asks again
@@ -312,9 +302,27 @@ impl Group {
                             .insert((to + 1) as NodeId, addr.to_string());
                     }
                 }
-                let handle =
-                    RaftHandle::start(settings, Arc::clone(&machine) as Arc<dyn AppStateMachine>)
-                        .await?;
+                // A killed member's database lock goes when its last handle
+                // drops, which a task that is still winding down may hold a
+                // moment longer. Wait for that, bounded.
+                let lock_deadline = Instant::now() + Duration::from_secs(10);
+                let handle = loop {
+                    match RaftHandle::start(
+                        settings.clone(),
+                        Arc::clone(&machine) as Arc<dyn AppStateMachine>,
+                    )
+                    .await
+                    {
+                        Ok(handle) => break handle,
+                        Err(err)
+                            if format!("{err:#}").contains("already open")
+                                && Instant::now() < lock_deadline =>
+                        {
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                };
                 let store = Arc::new(RaftStore::new(handle.clone(), machine));
                 let stop = CancellationToken::new();
                 let mut tasks = Vec::new();

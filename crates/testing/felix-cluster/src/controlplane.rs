@@ -74,8 +74,8 @@ const WORKERS: usize = 2;
 pub struct ControlPlane {
     pub base_url: String,
     /// The store the harness reads and writes through. In metadata group
-    /// mode it is member 0's, so it stops taking writes while that member
-    /// is down.
+    /// mode it is an empty placeholder, not the group: go through
+    /// `live_store`, which follows the members as they are killed and restarted.
     pub store: Arc<dyn ControlPlaneAuthStore + Send + Sync>,
     /// The in-memory store behind `store`, kept for [`Self::stop`]. `None`
     /// when the control plane is a metadata group.
@@ -171,7 +171,12 @@ impl ControlPlane {
             ))
             .await
             .context("start metadata group")??;
-        let store = group.store_of(0).await.context("member 0 is not running")?;
+        // Not a member's store: a clone of one would keep its database open
+        // after the member is killed, and a restart could not take the lock.
+        let store = Arc::new(InMemoryStore::new(StoreConfig {
+            changes_limit: felix_controlplane_service::config::DEFAULT_CHANGES_LIMIT,
+            change_retention_max_rows: None,
+        }));
         let group = Arc::new(group);
         let control_plane = Self {
             base_url: format!("http://{front}"),
