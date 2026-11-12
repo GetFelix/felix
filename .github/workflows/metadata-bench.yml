@@ -1,0 +1,105 @@
+name: Metadata Raft benchmark
+
+# The control plane's metadata group measured on its store: proposal latency
+# and throughput, placement writes, the replica-report stream, failover,
+# snapshot build, restart and install, disk cost and idle cost
+# (docs/metadata-raft-design.md, "Perf gate"; docs/metadata-raft-benchmark.md).
+#
+# One job builds `base` and this commit, runs them alternately `reps` times,
+# takes each metric's median per side, and fails a cell only when head is worse
+# than base by more than that cell's noise band (the spread of the base runs,
+# never under 10%). Run it on the commit that moves the store, with `base` set
+# to the commit before it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Commit or ref to compare against (empty: report this commit alone)"
+        required: false
+        default: ""
+      scale:
+        description: "quick proves the harness, full is the gate"
+        type: choice
+        options: [quick, full]
+        default: full
+      reps:
+        description: "Runs per side, taken alternately"
+        required: false
+        default: "3"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    runs-on: ${{ vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        if: runner.environment == 'github-hosted'
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Check out the base
+        if: inputs.base != ''
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          git worktree add "$RUNNER_TEMP/base" "$BASE"
+          # The base may predate the benchmark; both sides run this commit's.
+          cp services/felix-controlplane-service/tests/metadata_bench.rs \
+            "$RUNNER_TEMP/base/services/felix-controlplane-service/tests/metadata_bench.rs"
+
+      - name: Run the benchmark
+        env:
+          SCALE: ${{ inputs.scale || 'full' }}
+          REPS: ${{ inputs.reps || '3' }}
+          BASE: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/results"
+          mkdir -p "$out"
+          if [ -z "$BASE" ]; then
+            for rep in $(seq 1 "$REPS"); do
+              scripts/ci/metadata_bench.sh "$out/head-$rep.json" "$SCALE"
+            done
+            exit 0
+          fi
+          # Alternate so drift in the runner lands on both sides.
+          for rep in $(seq 1 "$REPS"); do
+            (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$RUNNER_TEMP/base-target" \
+              "$GITHUB_WORKSPACE/scripts/ci/metadata_bench.sh" "$out/base-$rep.json" "$SCALE")
+            scripts/ci/metadata_bench.sh "$out/head-$rep.json" "$SCALE"
+          done
+
+      - name: Compare
+        env:
+          BASE: ${{ inputs.base }}
+        run: |
+          set -o pipefail
+          out="$RUNNER_TEMP/results"
+          if [ -z "$BASE" ]; then
+            python3 scripts/ci/metadata_bench.py table "$out"/head*.json | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            python3 scripts/ci/metadata_bench.py compare --base "$out"/base-*.json \
+              --head "$out"/head-*.json --md "$out/compare.md" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: metadata-bench
+          path: ${{ runner.temp }}/results
