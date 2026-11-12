@@ -356,6 +356,94 @@ async fn a_wiped_member_is_rebuilt_by_snapshot() {
     }
 }
 
+/// A member that falls behind the purged log needs a multi-MB snapshot, and
+/// then the leader goes away. The two members left can only commit once the
+/// lagging one has installed that snapshot (#2345).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lagging_member_installs_a_large_snapshot_and_keeps_quorum() {
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    // The shipped election timing: a debug build takes about a second to
+    // install this snapshot, longer than the shrunk test timeouts allow.
+    let tuned = |id: NodeId, dir: PathBuf| {
+        let mut s = RaftSettings::new(id, dir, peer_security());
+        s.snapshot_logs_since_last = 50;
+        s.logs_kept_behind_snapshot = 0;
+        s.write_timeout = Duration::from_secs(30);
+        s
+    };
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        nodes.push(start_node(dir.path().into(), tuned(id, dir.path().into()), None).await);
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|node| (node.handle.status().id, node.addr.to_string()))
+        .collect();
+    nodes[0]
+        .handle
+        .initialize(members)
+        .await
+        .expect("initialize");
+    let leader = leader_of(&nodes.iter().collect::<Vec<_>>()).await;
+    let leader_id = leader.status().id;
+    let leader_index = nodes
+        .iter()
+        .position(|node| node.handle.status().id == leader_id)
+        .expect("the leader is a member");
+    let lagger_index = (leader_index + 1) % 3;
+    let lagger_addr = nodes[lagger_index].addr;
+    let lagger_dir = nodes[lagger_index].dir.clone();
+    let lagger_id = nodes[lagger_index].handle.status().id;
+    nodes[lagger_index].stop().await;
+
+    // About 5 MB of state, far more than one 200 ms chunk RPC can carry.
+    let value = "x".repeat(16 * 1024);
+    let writes = 300;
+    for i in 0..writes {
+        leader
+            .write(set(&format!("k{i}"), &value))
+            .await
+            .expect("write with two of three");
+    }
+    leader.trigger_snapshot().await.expect("snapshot");
+
+    let restarted = start_node(
+        lagger_dir.clone(),
+        tuned(lagger_id, lagger_dir),
+        Some(lagger_addr),
+    )
+    .await;
+    nodes[leader_index].stop().await;
+
+    let remaining: Vec<&TestNode> = nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != leader_index && *i != lagger_index)
+        .map(|(_, node)| node)
+        .chain(std::iter::once(&restarted))
+        .collect();
+    let new_leader = leader_of(&remaining).await;
+    new_leader
+        .write(set("after", "the leader left"))
+        .await
+        .expect("a write through the two remaining members");
+    let app = Arc::clone(&restarted.app);
+    wait_until(
+        "the lagging member holds every write",
+        Duration::from_secs(30),
+        move || app.len() == writes + 1,
+    )
+    .await;
+
+    restarted.stop().await;
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
 /// Growing the group is learner-first: the newcomer holds the data before
 /// it holds a vote, so a join never costs quorum.
 #[tokio::test]

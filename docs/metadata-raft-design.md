@@ -248,6 +248,14 @@ received snapshot also never moves the applied state backwards. If one ever
 arrived behind what the member has applied, the member stops with an error
 rather than apply the entries in between a second time.
 
+A snapshot goes to a member in chunks of 512 KiB, each one HTTP request with
+up to 10 s to finish. If a chunk misses that deadline, openraft starts the
+whole snapshot again from the first chunk. The chunk size keeps each request
+well inside the deadline, since a chunk travels as JSON at about three times
+its size. Log entries go out in batches of at most 64. Each batch has to
+finish within one heartbeat interval (150 ms), and a batch that does not is
+retried as it was, so the batch has to stay small.
+
 One crash window remains. When a member receives a snapshot from the leader,
 openraft purges the log behind it without waiting for the snapshot to be
 written. A member that crashes between the two restarts with its older
