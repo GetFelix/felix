@@ -70,6 +70,16 @@ impl RaftHandle {
                 settings.snapshot_logs_since_last,
             ),
             max_in_snapshot_log_to_keep: settings.logs_kept_behind_snapshot,
+            // openraft restarts a snapshot from its first chunk when one chunk
+            // RPC passes this deadline; the 200 ms default never let a
+            // multi-MB snapshot through (#2345). Matches the peer client's 10 s.
+            install_snapshot_timeout: 10_000,
+            // Chunks travel as JSON at about 3x their size; small ones finish
+            // well inside the timeout above.
+            snapshot_max_chunk_size: 512 * 1024,
+            // An AppendEntries RPC is cut off at the heartbeat interval and
+            // retried with the same batch, so keep batches small enough to fit.
+            max_payload_entries: 64,
             // Set at construction, not after: a member resuming a half-filled
             // log already knows a membership that lists it as a voter, and
             // its election timer starts with the node.
