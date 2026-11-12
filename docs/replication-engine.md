@@ -282,7 +282,8 @@ or the publish path hands the batch to `client_write` and the adapter calls
 `begin_append` and `commit` from inside it. The first keeps the hot path
 untouched and is what the prototype tries first. If openraft cannot accept
 entries it did not append, the second is the fallback, and its cost shows up
-in the gate's latency cells. Decided: adopt first, see Decisions, 2.
+in the gate's latency cells. Decided since (issue #2167): 0.8 takes the
+second, see Decisions, 2.
 
 ### Raft log on the segment store
 
@@ -364,6 +365,39 @@ before the fsync, and a follower would acknowledge an entry that a power
 cut can still take, so an entry could commit on fewer than a majority of
 disks. A flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
+
+**A failed flush.** A failed fsync or directory sync poisons the log it
+happened on (`docs/durable-storage.md`, "A failed fsync poisons the log"):
+the log refuses every later append, flush and state write with
+`StorageError::Poisoned` until it is reopened. The rule for a replicated
+shard is the same under either engine, and it follows from that one error:
+
+- **A follower does not acknowledge.** Its append or its flush fails, so it
+  answers the leader with an error and its copy stops counting toward a
+  quorum. It cannot save a vote or a set either, so it promises nothing new.
+- **A leader stops leading.** It cannot append, so it acknowledges nothing
+  more. It does not keep the role on the strength of what it holds in
+  memory: the records it acknowledged may no longer be on its disk.
+- **The broker says so.** `/ready` answers 503 and names each poisoned log
+  with what stopped it. That is broker-wide for now. The decided behaviour is
+  per shard ([#2300](https://github.com/GetFelix/felix/issues/2300)): the
+  leader of the poisoned shard steps down, the broker stays ready for its
+  healthy shards, and the poisoned log shows in metrics and status. The log
+  stays poisoned until the broker restarts; `docs/durable-storage.md` says
+  when a restart is safe.
+
+On the hybrid, a poisoned process attests no trusted copy to a fence, and a
+promotion does not let it continue as leader, so another copy takes over
+through the usual fence. Under Raft the adapter passes the error on
+unchanged: the `IOFlushed` callback of the append carries it, and
+`save_vote`, `append` and `truncate_after` return it from then on. openraft
+treats a storage error as fatal and stops that group's node, which stops
+its heartbeats, and the other members elect a leader. Nothing engine
+specific decides when a log is poisoned, so an engine built on the adapter
+inherits the rule.
+
+> `raft_log/tests/writes.rs`, `a_failed_flush_fails_the_callback` and
+> `a_failed_flush_stops_every_later_write`.
 
 **Truncation waits for those callbacks.** `truncate_after` first lets every
 earlier append's callback fire, then cuts. Cutting first would leave a
@@ -968,6 +1002,13 @@ where a version 8 reader refuses the segment.
 
 ### 2. The leader's entries are adopted from disk first
 
+**Decided since (issue #2167).** 0.8 does not adopt. A write goes through
+`client_write` and the adapter appends, which is the fallback named below.
+Adoption comes back only if the gate's latency cells need it, and only
+after it is modelled. See [`per-shard-raft.md`](per-shard-raft.md),
+"Writing through openraft". The rest of this decision is kept as the
+design for that later step.
+
 **Decision.** The broker keeps appending on the leader (`begin_append`, then
 `commit`). openraft adopts entries already durable at their offsets. If
 openraft cannot do that cleanly, the fallback is `client_write`.
@@ -1312,6 +1353,9 @@ dependency, its contract-test runs, its configuration and its docs) is
 removed. The in-memory backend stays, for tests only.
 
 ## The no-regression gate
+
+What each criterion must prove, with the fault matrix, the perf cells and
+where each check runs, is in [`release-gate.md`](release-gate.md).
 
 Written before any numbers exist. Raft is the target, and this gate is what
 it must pass before the bespoke shard protocol and its models are deleted

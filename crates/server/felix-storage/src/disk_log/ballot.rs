@@ -254,6 +254,7 @@ impl DiskLog {
         let leader: Option<Arc<str>> = leader.map(Arc::from);
         felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
             if let Some(kept) = &kept
                 && inner.replica_set.read().as_ref() != Some(kept)
             {
@@ -269,13 +270,16 @@ impl DiskLog {
             // with no leader. The committed mark is in the same file, so it
             // is on disk exactly when its vote is.
             if let Some(leader) = &leader {
-                store(
-                    &inner.dir,
-                    &Ballot {
-                        generation,
-                        leader: leader.to_string(),
-                        committed,
-                    },
+                inner.poison_on_sync_failure(
+                    "the ballot",
+                    store(
+                        &inner.dir,
+                        &Ballot {
+                            generation,
+                            leader: leader.to_string(),
+                            committed,
+                        },
+                    ),
                 )?;
             }
             let raised = generation > inner.accepted_generation.load(Ordering::Acquire);
@@ -284,7 +288,10 @@ impl DiskLog {
                     accepted_generation: generation,
                     ..inner.replica_state()
                 };
-                replica_state::store(&inner.dir, &state)?;
+                inner.poison_on_sync_failure(
+                    "the replica state",
+                    replica_state::store(&inner.dir, &state),
+                )?;
                 inner
                     .commit_persisted
                     .store(state.commit_offset, Ordering::Release);
@@ -322,14 +329,18 @@ impl DiskLog {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();
+            inner.check_not_poisoned()?;
             let generation = inner.accepted_generation.load(Ordering::Acquire);
-            store(
-                &inner.dir,
-                &Ballot {
-                    generation,
-                    leader: String::new(),
-                    committed: false,
-                },
+            inner.poison_on_sync_failure(
+                "the ballot",
+                store(
+                    &inner.dir,
+                    &Ballot {
+                        generation,
+                        leader: String::new(),
+                        committed: false,
+                    },
+                ),
             )?;
             *inner.ballot.write() = Accepted {
                 generation,
@@ -557,12 +568,12 @@ pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&ballot.encode()).map_err(StorageError::Io)?;
         step()?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
+        crate::io::sync_all(&file)?;
     }
     step()?;
     crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     step()?;
-    sync_dir(dir).map_err(StorageError::Io)?;
+    sync_dir(dir)?;
     Ok(())
 }
 

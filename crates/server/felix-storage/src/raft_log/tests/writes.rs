@@ -140,6 +140,44 @@ async fn a_failed_flush_fails_the_callback() {
     flushed.await.expect_err("the flush failed");
 }
 
+/// After a failed flush the log is poisoned: the next flush would work, and
+/// the adapter still refuses every write, which stops the group's node.
+#[tokio::test]
+async fn a_failed_flush_stops_every_later_write() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &[blank(1, 0), normal(1, 1, "a")]).await;
+    raft.disk_log().fail_next_flush();
+    let flushed = append(&mut raft, &[normal(1, 2, "b")])
+        .await
+        .expect("append");
+    flushed.await.expect_err("the flush failed");
+
+    let poisoned = |err: io::Error| {
+        let inner = err.get_ref().and_then(|inner| inner.downcast_ref());
+        assert!(
+            matches!(inner, Some(crate::StorageError::Poisoned { .. })),
+            "{err}"
+        );
+    };
+    poisoned(
+        append(&mut raft, &[normal(1, 3, "c")])
+            .await
+            .err()
+            .expect("an append on a poisoned log"),
+    );
+    poisoned(
+        raft.save_vote(&vote(2, 1, false))
+            .await
+            .expect_err("a vote on a poisoned log"),
+    );
+    poisoned(
+        raft.truncate_after(Some(log_id(1, 0)))
+            .await
+            .expect_err("a cut on a poisoned log"),
+    );
+}
+
 /// A truncation waits for the callbacks of the appends before it. Here the
 /// flush is held and the truncation would otherwise reach the flush lock
 /// first, cut, and leave the append's flush waiting on entries that are
