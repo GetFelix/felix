@@ -42,7 +42,7 @@ confirmed when stream shards on Raft (#2233) lands.
 | --- | --- | --- | --- |
 | `election.rs`, `election/candidate.rs`, `replica/election.rs` | 2,919 | Deleted | The election driver. Raft elects |
 | `promotion.rs`, `promotion/joint.rs` | 2,980 | Deleted | The promote fence and the joint fence. A Raft leader opens when its blank entry commits |
-| `suspicion.rs` | 304 | Deleted | Replaced by store liveness (#2229) |
+| `suspicion.rs` | 304 | Deleted | Replaced by Raft. Its election timeout notices a dead leader, and the lease rests on openraft's `last_quorum_acked` plus the follower's refusal window |
 | `unclean.rs`, `reclaim.rs` | 629 | Deleted | Doubted copies and tail reclaim. Replaced by copy ids and re-forming (#2250) |
 | `confirmed.rs`, `leadership.rs` | 919 | Deleted | Assignment reads through the control plane and the fence read round. Replaced by a read-index round |
 | `replica_set.rs` | 144 | Deleted | Kept sets on the wire and on disk. Membership is a log entry |
