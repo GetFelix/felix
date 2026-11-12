@@ -124,6 +124,17 @@ any log. See
 
 ## Restoring
 
+:::caution[Never touch one shard directory]
+Do not delete, empty, move or restore a single shard directory under a broker's
+data directory. To recover a broker's storage, stop the broker and replace or
+wipe its whole data directory. The broker keeps its storage id, its copy trust
+and its kept ballots in the data directory root, so if only a shard directory
+changes, it still reports that shard's copy as kept and trusted, and a
+promotion can count an empty copy and lose an acknowledged write. A new
+whole data directory gets a new storage id, which the readmission rules handle.
+Version 0.8 removes the hazard ([#2376](https://github.com/GetFelix/felix/issues/2376)).
+:::
+
 1. **Stop every broker.**
 2. **Restore the control plane's metadata** from the backup taken at or after
    the point, and start the control plane.

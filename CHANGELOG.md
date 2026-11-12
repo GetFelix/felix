@@ -11,6 +11,12 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+### Documentation
+- Operations notes warn never to delete, empty or restore a single shard directory
+  (#2376). A broker keeps its storage id and copy trust, so the empty copy can
+  count in a promotion and lose an acknowledged write. Replace or wipe the whole
+  data directory instead. Version 0.8 removes the hazard.
+
 ## [0.7.2] - 2026-11-12
 
 Upgrade the control-plane leader last, or transfer leadership before upgrading it. A member that needs a snapshot recovers only once a 0.7.2 node leads.
