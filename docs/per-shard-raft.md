@@ -1074,7 +1074,10 @@ subscribers were given. The same module has the metadata group's rejoin,
 where a wiped member keeps its id, and found that a leader must not count
 such a member while its vote is withheld, and that with five members even
 that is not enough (#2365). Shard groups do not have the problem, because a
-wiped copy takes a new id.
+wiped copy takes a new id. The module has the metadata group's first start as
+well: an empty member forms only when every other member answers empty
+(#2371), and a volume lost before the group's first log entry is a pinned gap
+(#2374).
 
 **Later, with store-liveness leases:** support with epochs and expiry, a
 lease that holds while a majority supports the leader's store, and a vote

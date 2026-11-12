@@ -39,6 +39,24 @@
 (*                      leader could commit with it after a newer one was  *)
 (*                      elected on its vote.                               *)
 (*                                                                         *)
+(* First start. With Forming the metadata group's first start is a step of *)
+(* the model. A member with an empty directory withholds its vote and asks *)
+(* every other member for its standing. It forms, which is to vote, only   *)
+(* when every one of them answers and none holds a log entry. Silence is   *)
+(* never read as empty, except from a slot the operator waived, and then   *)
+(* only while the members that answer empty, this one included, are a      *)
+(* majority. A member that lost its volume takes the same step, so two     *)
+(* wiped members cannot form a second group over a third that holds the    *)
+(* log, whether or not it answers. With FirstBoot every member starts this *)
+(* way, so no leader exists until members have formed.                     *)
+(*                                                                         *)
+(* An answer shows the log and not the vote. A volume lost after a vote and*)
+(* before the first log entry meets only empty answers, and the member     *)
+(* forms again and votes a second time in the term it forgot (issue 2374,  *)
+(* FelixRaftPlacementFormEarlyWipe.cfg). EarlyWipes = FALSE keeps a wipe   *)
+(* until the group has committed an entry, which is the case the rule      *)
+(* covers.                                                                 *)
+(*                                                                         *)
 (* Under fsync on commit a crash or a power cut loses nothing a peer       *)
 (* counted, so an unclean restart is not a fault here. FelixRaft.tla has   *)
 (* the adapter's fsync rules and FelixRaftIdentity.tla the restores.       *)
@@ -69,6 +87,9 @@
 (*                         committed at those offsets. A broker's          *)
 (*                         subscribers get a record when the broker learns *)
 (*                         it is committed.                                *)
+(*   AckedHeldSurvive   -- AckedSurvive for the records some directory still*)
+(*                         holds. Losing every copy is quorum loss, which no*)
+(*                         first-start rule can see.                       *)
 (*   CommitNeverLowers  -- no step lowers a broker's commit index, except  *)
 (*                         one that empties its directory.                 *)
 (*                                                                         *)
@@ -96,6 +117,10 @@
 (*   DeleteOnTarget -- a copy is deleted as soon as the target drops it.   *)
 (*   PlaceDoomed    -- the control plane may place a member id it told to  *)
 (*                     delete.                                             *)
+(*   FormMajority   -- Forming only: a member forms on a majority of empty *)
+(*                     answers and skips a member that does not answer,    *)
+(*                     which is what the metadata group did before issue   *)
+(*                     2371.                                               *)
 (*                                                                         *)
 (* FelixRaftMembership.tla has the twins for a change before the last one  *)
 (* is committed and for a learner that counts.                             *)
@@ -126,7 +151,17 @@ CONSTANTS
     WithheldCounts,
     AnswerAnyId,
     DeleteOnTarget,
-    PlaceDoomed
+    PlaceDoomed,
+    Forming,        \* a member whose vote is withheld may form from its peers' answers
+    FirstBoot,      \* the group has not formed: every member starts with its vote withheld
+    FormMajority,
+    Waived,         \* brokers a `form-without` waiver names: their silence does not block
+    Absent,         \* brokers that never start
+    EarlyWipes      \* a directory may be lost before the group has committed an entry
+
+ASSUME FirstBoot => Forming
+ASSUME Absent # {} => FirstBoot
+ASSUME Waived \subseteq InitBrokers /\ Absent \subseteq InitBrokers
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -153,8 +188,9 @@ ident == <<copy, hold>>
 plane == <<target, known, past, doomed>>
 vars == <<election, raft, ident, plane, delivered, used>>
 
-\* The spare broker is told apart from the first voters, so only those permute.
-Symm == Permutations(InitBrokers)
+\* The spare broker is told apart from the first voters, so only those
+\* permute, and not the ones a configuration names.
+Symm == Permutations(InitBrokers \ (Waived \cup Absent))
 
 MaxCopy == MaxWipes + MaxTargets
 Ids == Brokers \X (0..MaxCopy)
@@ -213,7 +249,7 @@ Init ==
     /\ match = [s \in Brokers |-> [m \in Ids |-> 0]]
     /\ committed = <<>>
     /\ copy = [s \in Brokers |-> 0]
-    /\ hold = [s \in Brokers |-> 0]
+    /\ hold = [s \in Brokers |-> IF FirstBoot THEN 1 ELSE 0]
     /\ target = InitBrokers \X {0}
     /\ known = [s \in Brokers |-> 0]
     /\ past = {}
@@ -468,6 +504,7 @@ Emptied(s) ==
 
 Wipe(s) ==
     /\ used.wipes < MaxWipes
+    /\ EarlyWipes \/ committed # <<>>
     /\ Emptied(s)
     /\ used' = [used EXCEPT !.wipes = @ + 1, !.wiped = s]
     /\ UNCHANGED plane
@@ -500,14 +537,32 @@ VoteAgain(s) ==
     /\ hold' = [hold EXCEPT ![s] = 0]
     /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
 
+\* First start. A is the set of members that answer, and none of them may
+\* show a log entry. Every other member answers, bar those a waiver names,
+\* and the members that answer empty, this one included, are a majority.
+\* The member decided its own directory was empty before it asked and does
+\* not look again.
+Form(s, A) ==
+    /\ Forming
+    /\ hold[s] = 1
+    /\ A \subseteq (InitBrokers \ Absent) \ {s}
+    /\ \A t \in A : LastIdx(t) = 0
+    /\ Majority({s} \cup A, InitBrokers)
+    /\ FormMajority \/ (InitBrokers \ {s}) \ A \subseteq Waived
+    /\ hold' = [hold EXCEPT ![s] = 0]
+    /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
+
+Up == Brokers \ Absent
+
 Next ==
-    \/ \E s \in Brokers :
+    \/ \E s \in Up : \E A \in SUBSET InitBrokers : Form(s, A)
+    \/ \E s \in Up :
         \/ Campaign(s) \/ BecomeLeader(s) \/ AdvanceCommit(s) \/ AppendRecord(s)
         \/ LeaveJoint(s) \/ StepDown(s)
         \/ CpReport(s) \/ CpDoom(s) \/ Wipe(s) \/ Delete(s) \/ VoteAgain(s)
         \/ \E m \in Ids : AddLearner(s, m)
         \/ \E T \in Targets : Change(s, T)
-    \/ \E i, j \in Brokers :
+    \/ \E i, j \in Up :
         \/ GrantVote(i, j) \/ Heartbeat(i, j) \/ Replicate(i, j) \/ LearnCommit(i, j) \/ Probe(i, j)
         \/ AskTarget(i, j)
     \/ \E x \in target :
@@ -564,6 +619,10 @@ Electable(s) ==
 
 AckedSurvive == \A s \in Brokers : Electable(s) => \A v \in Acked : Holds(s, v)
 
+AckedHeldSurvive ==
+    \A s \in Brokers : Electable(s) =>
+        \A v \in Acked : (\E t \in Brokers : Holds(t, v)) => Holds(s, v)
+
 AckedOnDisk == \A v \in Acked : \E s \in Brokers : Holds(s, v)
 
 OffsetNeverReused ==
@@ -584,9 +643,9 @@ CommitNeverLowers ==
 
 IsMember(e) == e.kind = "member"
 
-\* A first boot: brokers with empty directories elect a leader and
-\* acknowledge a write.
-NeverForms == Acked = {}
+\* A write is acknowledged. With FirstBoot every vote starts withheld, so
+\* this also says members formed.
+NeverAcks == Acked = {}
 
 \* The committed memberships that are not joint.
 FinalCfgs == {committed[k].e.cfg : k \in {n \in CommittedCfgs : ~Joint(committed[n].e.cfg)}}
