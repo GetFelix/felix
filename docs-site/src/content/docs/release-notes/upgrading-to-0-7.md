@@ -273,3 +273,35 @@ and 1. See
 Each GitHub release now carries prebuilt `libfelix` C libraries, shared and
 static, with `felix.h` and a `LINKING.txt`, for Linux, macOS and Windows on x64
 and arm64. See [the C client](/clients/c/).
+
+## Patch releases
+
+Both patches are drop-in upgrades from 0.7.0. Neither changes the wire protocol
+or adds a setting. The full lists are in the
+[changelog](https://github.com/GetFelix/felix/blob/main/CHANGELOG.md).
+
+### 0.7.2
+
+A control-plane member that fell behind the leader's purged log can now catch
+up on a snapshot (#2345). Before, a snapshot of more than a few hundred KB
+never finished, so the member stayed behind. The group kept working on the
+other two members, and losing either of them then stopped every metadata
+write.
+
+**What to do:** upgrade the control-plane leader last, or transfer leadership
+to another member before you upgrade it. A member that needs a snapshot
+recovers only once a 0.7.2 node leads. Brokers need nothing special.
+
+### 0.7.1
+
+- A newly started broker sends its first heartbeat at once. It no longer
+  refuses every publish until its first lease arrives (#2150).
+- A broker no longer holds every histogram sample until its metrics endpoint is
+  scraped, so resident memory stays flat under connection traffic (#2152).
+- A broker that stands for election and was cut off from the control plane
+  before it heard the fleet finalize `lease_free_reads` no longer confirms a
+  `Quorum` read on its lease alone (#2161). Until it hears, such a read needs
+  the lease and a round of fences.
+
+**What to do:** nothing beyond a normal rolling upgrade in the
+[usual order](#upgrade-order).

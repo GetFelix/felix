@@ -11,6 +11,36 @@ for what the current release guarantees.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-12
+
+Upgrade the control-plane leader last, or transfer leadership before upgrading it. A member that needs a snapshot recovers only once a 0.7.2 node leads.
+
+### Fixed
+- A metadata member that falls behind the control plane's purged log can catch up
+  again (#2345). Each snapshot chunk had 200 ms to cross the network, so a snapshot
+  of more than a few hundred KB never finished and the member stayed behind for
+  good. The group kept working on the other two members, and losing either of them
+  then stopped every metadata write. Chunks now get 10 s and are 512 KiB, and log
+  batches are capped at 64 entries so each one fits inside the heartbeat interval.
+
+## [0.7.1] - 2026-11-10
+
+### Fixed
+- A newly started broker sends its first heartbeat at once instead of an interval later (#2150).
+  It no longer refuses every publish until the first lease arrives.
+- A broker no longer holds every histogram sample until its metrics endpoint is
+  scraped (#2152). The recorder kept one value per `felix_sub_conn_queue_depth`
+  record, so resident memory climbed with each connection's traffic and the weekly
+  soak failed its peak-RSS check. The broker now folds samples into summaries every
+  five seconds, scraped or not.
+  The control plane's recorder gets the same timer.
+- A broker that stands for election and was cut off from the control plane
+  before it heard the fleet finalize `lease_free_reads` no longer confirms a
+  `Quorum` read on its lease alone (#2161). Its replicas could elect a
+  successor without waiting out that lease, so the read could miss the
+  successor's writes. Until it hears, a read there needs both the lease and a
+  round of fences. Brokers that do not stand for election keep the lease alone.
+
 ## [0.7.0] - 2026-11-08
 
 0.7.0 makes replicated shards sturdier and widens what a broker accepts. It also
@@ -6125,7 +6155,9 @@ isolation, ephemeral cache, tenant/namespace/stream registries, RBAC and Felix
 token authorization, a control plane with a Postgres-backed store, a Rust client
 SDK, and a protocol conformance runner.
 
-[Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/GetFelix/felix/compare/v0.7.2...HEAD
+[0.7.2]: https://github.com/GetFelix/felix/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/GetFelix/felix/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.2...v0.7.0
 [0.7.0-preview.2]: https://github.com/GetFelix/felix/compare/v0.7.0-preview.1...v0.7.0-preview.2
 [0.7.0-preview.1]: https://github.com/GetFelix/felix/compare/v0.6.2...v0.7.0-preview.1
