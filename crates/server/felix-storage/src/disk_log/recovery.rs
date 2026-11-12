@@ -363,24 +363,27 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
 
 /// Start after a log was poisoned in the boot still running. The bytes of
 /// the flush that failed can sit in the page cache looking valid, and a sync
-/// of them would succeed without writing anything. So the log is cut back to
-/// the mark the poison recorded, as a power loss would have left it, and the
-/// small state files are written again, which is a real write.
+/// of them would succeed without writing anything.
 ///
-/// Only under `OnCommit` is the cut safe: nothing past the last sync was
-/// acknowledged there. A relaxed mode acknowledged those records, and its
-/// run already took a new storage id. The marker goes last, so a crash part
-/// way repeats all of this.
+/// Under `OnCommit` nothing past the last sync was acknowledged, so the log
+/// is cut back to the mark the poison recorded, as a power loss would have
+/// left it. A relaxed run acknowledged those records, so they are kept and
+/// written again for real. The mode is the poisoned run's, from the marker.
+/// The small state files are written again too. The marker goes last, so a
+/// crash part way repeats all of this.
 pub(super) fn after_poison(
     dir: &Path,
     label: &str,
-    config: &LogConfig,
-    marker: Option<DurableMark>,
+    marker: Option<durable_mark::Poison>,
 ) -> Result<()> {
-    if matches!(config.fsync_mode, crate::log::FsyncMode::OnCommit)
-        && let Some(mark) = marker
-    {
-        cut_to_mark(dir, label, mark)?;
+    match marker {
+        Some(poison) if poison.on_commit => cut_to_mark(dir, label, poison.mark)?,
+        Some(poison) => rewrite_past_mark(dir, label, poison.mark)?,
+        None => tracing::warn!(
+            shard = label,
+            "the last run poisoned this log but its marker cannot be read; the log is kept as \
+             it is, and bytes the failed flush wrote may not be on the device"
+        ),
     }
     for name in STATE_FILES {
         let bytes = match crate::fs::read(dir.join(name)) {
@@ -395,6 +398,34 @@ pub(super) fn after_poison(
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err.into()),
     }
+}
+
+/// A step of the cut a test can stop at, as a crash would.
+#[cfg(test)]
+fn crash_point() -> std::io::Result<()> {
+    CUT_STEPS_LEFT.with(|left| match left.get() {
+        Some(0) => Err(std::io::Error::other("injected crash")),
+        Some(n) => {
+            left.set(Some(n - 1));
+            Ok(())
+        }
+        None => Ok(()),
+    })
+}
+
+#[cfg(not(test))]
+#[inline]
+fn crash_point() -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many steps of the cut to take before [`crash_point`] fails.
+    pub(super) static CUT_STEPS_LEFT: std::cell::Cell<Option<usize>> =
+        const { std::cell::Cell::new(None) };
+    /// How many bytes [`rewrite_from`] has written on this thread.
+    pub(super) static REWRITTEN_BYTES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// Files whose last write may have failed, each read back from the page
@@ -427,6 +458,7 @@ fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
         crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
         remove_segment_files(dir, id)?;
         sync_dir(dir)?;
+        crash_point()?;
     }
     if len > mark.synced_bytes {
         crate::fs::note_torn_tail(&path);
@@ -438,12 +470,72 @@ fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
                 Err(err) => return Err(err.into()),
             }
         }
+        crash_point()?;
         let file = crate::fs::OpenOptions::new().write(true).open(&path)?;
         file.set_len(mark.synced_bytes)?;
         crate::io::sync_data(&file)?;
         sync_dir(dir)?;
+        crash_point()?;
+    }
+    // A flush in flight at the poison can have moved the mark past the
+    // marker's. Left there, it would make damage past the cut look like rot.
+    crate::run_state::write_atomically(dir, durable_mark::mark_file_name(), &mark.encode(), true)?;
+    Ok(())
+}
+
+/// Write the bytes past `mark` again and sync them: the segment the mark is
+/// in from its synced point, and every later segment whole. Writing the
+/// same bytes makes their pages dirty again, so the sync really writes them.
+fn rewrite_past_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
+    let mut rewritten = 0;
+    for id in discover_segment_ids(dir)? {
+        if id < mark.segment {
+            continue;
+        }
+        let from = if id == mark.segment {
+            mark.synced_bytes
+        } else {
+            0
+        };
+        rewritten += rewrite_from(&dir.join(segment_file_name(id)), from)?;
+    }
+    if rewritten > 0 {
+        tracing::warn!(
+            shard = label,
+            segment = mark.segment,
+            synced_bytes = mark.synced_bytes,
+            rewritten_bytes = rewritten,
+            "the last run poisoned this log; writing the bytes past its last synced point again"
+        );
     }
     Ok(())
+}
+
+/// Read back and write again the bytes of `path` from `from` on, then sync
+/// them. Returns how many bytes it wrote.
+fn rewrite_from(path: &Path, from: u64) -> Result<u64> {
+    let file = crate::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let len = file.metadata()?.len();
+    let mut at = from;
+    let mut buf = vec![0u8; 1 << 20];
+    while at < len {
+        let want = usize::try_from(len - at).map_or(buf.len(), |left| left.min(buf.len()));
+        let read = crate::io::read_at(&file, &mut buf[..want], at)?;
+        if read == 0 {
+            break;
+        }
+        crate::io::write_at(&file, &buf[..read], at)?;
+        at += read as u64;
+    }
+    if at > from {
+        crate::io::sync_data(&file)?;
+    }
+    #[cfg(test)]
+    REWRITTEN_BYTES.with(|total| total.set(total.get() + (at - from.min(at))));
+    Ok(at.saturating_sub(from))
 }
 
 /// Unlink a segment and its index. The caller syncs the directory.

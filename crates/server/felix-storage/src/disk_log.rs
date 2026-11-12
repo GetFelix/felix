@@ -1031,7 +1031,7 @@ impl DiskLog {
         let manifest = offload::manifest::load(&dir)?;
         // Before the segments are looked at, so recovery sees the cut log.
         if let Some(marker) = durable_mark::load_poison(&dir) {
-            recovery::after_poison(&dir, &label, &config, marker)?;
+            recovery::after_poison(&dir, &label, marker)?;
         }
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
         // Does not touch the archive: an unreachable one must not stop the

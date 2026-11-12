@@ -24,14 +24,15 @@ use parking_lot::Mutex;
 
 use super::LogInner;
 use super::segments::SegmentSet;
-use crate::log::SegmentId;
+use crate::log::{FsyncMode, SegmentId};
 use crate::segment::format::SEGMENT_HEADER_LEN;
 
 /// `"FLSM"`: Felix Segment Mark.
 const MARK_MAGIC: u32 = 0x464C_534D;
 const MARK_VERSION: u16 = 1;
-/// magic(4) + version(2) + reserved(2) + segment(8) + synced(8) + crc(4) +
-/// reserved(4). Well inside one sector, so a torn write is unlikely and a
+/// magic(4) + version(2) + mode(1) + reserved(1) + segment(8) + synced(8) +
+/// crc(4) + reserved(4). The mode byte is zero in `durable.mark` and names
+/// the poisoned run's fsync mode in a poison marker. Well inside one sector, so a torn write is unlikely and a
 /// failed checksum reads as no mark at all.
 pub(super) const MARK_LEN: usize = 32;
 
@@ -75,9 +76,14 @@ impl DurableMark {
     }
 
     pub(super) fn encode(&self) -> [u8; MARK_LEN] {
+        self.encode_with_mode(0)
+    }
+
+    fn encode_with_mode(&self, mode: u8) -> [u8; MARK_LEN] {
         let mut buf = [0u8; MARK_LEN];
         buf[0..4].copy_from_slice(&MARK_MAGIC.to_be_bytes());
         buf[4..6].copy_from_slice(&MARK_VERSION.to_be_bytes());
+        buf[6] = mode;
         buf[8..16].copy_from_slice(&self.segment.to_be_bytes());
         buf[16..24].copy_from_slice(&self.synced_bytes.to_be_bytes());
         let crc = crc32fast::hash(&buf[0..24]);
@@ -121,11 +127,46 @@ pub(crate) fn poison_file_name() -> &'static str {
     "poisoned"
 }
 
+/// The poison marker's mode byte for each fsync mode. Zero is a marker that
+/// does not say, which is read as a relaxed mode.
+const POISON_MODE_NONE: u8 = 1;
+const POISON_MODE_PERIODIC: u8 = 2;
+const POISON_MODE_ON_COMMIT: u8 = 3;
+
+/// What a poison marker says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Poison {
+    /// The last point a sync of the poisoned run is known to have reached.
+    pub(crate) mark: DurableMark,
+    /// Whether the poisoned run acknowledged only synced records. Decided by
+    /// that run, not the one reopening the log: a relaxed run acknowledged
+    /// records past the mark whatever mode comes next.
+    pub(crate) on_commit: bool,
+}
+
+impl Poison {
+    fn encode(mark: DurableMark, mode: &FsyncMode) -> [u8; MARK_LEN] {
+        mark.encode_with_mode(match mode {
+            FsyncMode::None => POISON_MODE_NONE,
+            FsyncMode::Periodic { .. } => POISON_MODE_PERIODIC,
+            FsyncMode::OnCommit => POISON_MODE_ON_COMMIT,
+        })
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let mark = DurableMark::decode(bytes)?;
+        Some(Self {
+            mark,
+            on_commit: bytes[6] == POISON_MODE_ON_COMMIT,
+        })
+    }
+}
+
 /// What the poison marker in `dir` says. `None` when there is no marker;
-/// `Some(None)` when there is one the mark in it cannot be read from.
-pub(crate) fn load_poison(dir: &Path) -> Option<Option<DurableMark>> {
+/// `Some(None)` when there is one that cannot be read.
+pub(crate) fn load_poison(dir: &Path) -> Option<Option<Poison>> {
     match crate::fs::read(dir.join(poison_file_name())) {
-        Ok(bytes) => Some(DurableMark::decode(&bytes)),
+        Ok(bytes) => Some(Poison::decode(&bytes)),
         Err(_) => None,
     }
 }
@@ -137,12 +178,20 @@ pub(super) struct MarkFile {
     dir: std::path::PathBuf,
     /// Held across the write, so two writers cannot land out of order.
     state: Mutex<MarkState>,
+    /// Fails the next write of the mark, after its sync succeeded.
+    #[cfg(test)]
+    pub(super) fail_next_write: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
 struct MarkState {
     /// The furthest mark written since the last rewind.
     last: Option<DurableMark>,
+    /// The furthest point a sync reached since the last rewind, kept even
+    /// when writing it to the file failed. A poison records this, not
+    /// `last`: a cut back to a mark the file lagged at would remove records
+    /// that were synced and acknowledged.
+    synced: Option<DurableMark>,
     /// How many times the mark has been moved back.
     rewinds: u64,
     /// The thread that wrote it.
@@ -165,6 +214,8 @@ impl MarkFile {
             file,
             dir: dir.to_path_buf(),
             state: Mutex::new(MarkState::default()),
+            #[cfg(test)]
+            fail_next_write: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -173,10 +224,10 @@ impl MarkFile {
     /// synced. A process restart finds it in the page cache, which is the
     /// case it exists for; after a power loss the log is recovered as one
     /// anyway. Syncing could also fail on the device that just failed.
-    pub(super) fn record_poison(&self) -> std::io::Result<()> {
+    pub(super) fn record_poison(&self, mode: &FsyncMode) -> std::io::Result<()> {
         use std::io::Write;
-        let last = self.state.lock().last;
-        let bytes = last.map_or([0u8; MARK_LEN], |mark| mark.encode());
+        let synced = self.state.lock().synced;
+        let bytes = synced.map_or([0u8; MARK_LEN], |mark| Poison::encode(mark, mode));
         let mut file = File::create(self.dir.join(poison_file_name()))?;
         file.write_all(&bytes)
     }
@@ -201,8 +252,19 @@ impl MarkFile {
     /// past the cut.
     pub(super) fn record_since(&self, mark: DurableMark, rewinds: u64) -> std::io::Result<()> {
         let mut state = self.state.lock();
-        if state.rewinds != rewinds || state.last >= Some(mark) {
+        if state.rewinds != rewinds {
             return Ok(());
+        }
+        state.synced = state.synced.max(Some(mark));
+        if state.last >= Some(mark) {
+            return Ok(());
+        }
+        #[cfg(test)]
+        if self
+            .fail_next_write
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Err(std::io::Error::other("injected mark write failure"));
         }
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         state.last = Some(mark);
@@ -233,6 +295,8 @@ impl MarkFile {
         let mut state = self.state.lock();
         state.last = None;
         state.rewinds += 1;
+        // The caller synced the log through `mark` before calling.
+        state.synced = Some(mark);
         crate::io::write_at(&self.file, &mark.encode(), 0)?;
         self.sync()?;
         state.last = Some(mark);
@@ -244,8 +308,9 @@ impl LogInner {
     /// Record a flush that synced `segment` through `synced_bytes`.
     ///
     /// Best effort: a mark that failed to move is merely behind, which widens
-    /// what recovery may repair after a power loss but never loses a record
-    /// that the log still has.
+    /// what recovery may repair after a power loss. A poison records the
+    /// synced point held in memory, not the file, so a cut after it never
+    /// removes a record this sync covered.
     pub(super) fn note_synced(&self, segment: SegmentId, synced_bytes: u64) {
         self.note_synced_since(segment, synced_bytes, self.mark.rewinds());
     }

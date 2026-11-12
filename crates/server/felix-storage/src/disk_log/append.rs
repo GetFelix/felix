@@ -708,7 +708,7 @@ impl LogInner {
         // every log's poison, not only the first: this one must not return
         // before the record says so. Forgetting twice writes nothing.
         crate::run_state::forget_watched();
-        if let Err(err) = self.mark.record_poison() {
+        if let Err(err) = self.mark.record_poison(&self.config.fsync_mode) {
             tracing::warn!(
                 shard = %self.label,
                 error = %err,

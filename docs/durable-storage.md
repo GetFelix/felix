@@ -592,19 +592,28 @@ Four properties:
    same boot the bytes of the failed flush can still be in the page cache,
    where recovery would read them as valid and its own fsync of them would
    succeed without writing anything. So a poisoned log leaves a `poisoned`
-   marker beside its durable mark, holding the mark as of the poison. It is
-   written without a sync, because the page cache is enough for a process
-   restart and the disk just failed. The next open of that log:
+   marker beside its durable mark, holding the last point a sync reached and
+   the fsync mode of the run that failed. It is written without a sync,
+   because the page cache is enough for a process restart and the disk just
+   failed. The marked point is the one held in memory, so a sync that
+   succeeded counts even when writing the durable mark after it failed. The
+   next open of that log goes by the mode in the marker, not its own:
 
-   - under `OnCommit`, cuts the log back to the marked point, as a power
-     loss would have left it: the segments after the marked one go, and the
-     marked one is cut to its synced length. Nothing past that point was
-     acknowledged, so nothing acknowledged is lost. Under a relaxed mode
-     those records were acknowledged, so they stay;
+   - if the failed run used `OnCommit`, it cuts the log back to the marked
+     point, as a power loss would have left it: the segments after the marked
+     one go, and the marked one is cut to its synced length. Nothing past that
+     point was acknowledged, so nothing acknowledged is lost. The durable mark
+     is then set to the cut point;
+   - if it used a relaxed mode, those records were acknowledged, so they
+     stay. The open reads every byte past the marked point back and writes it
+     again before syncing, so the sync really reaches the disk;
    - writes the ballot, the replica set, the replica state and the generation
      history again, from the values read. That is a real write, unlike an
      fsync of pages the kernel already calls clean;
    - removes the marker last, so a crash part way repeats all of it.
+
+   A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
+   writes the state files again.
 
    If the marker itself did not survive, the restart is a reboot or a power
    loss and the rules above apply. The run record also stops vouching for the
@@ -645,9 +654,11 @@ Four properties:
    > rollover, a seal, a truncation, a retention removal and each state-file
    > write in turn on the simulator's filesystem, then cuts the power and
    > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
-   > reports. `a_restart_after_a_poisoned_flush_cuts_the_unsynced_bytes` in
-   > `disk_log/tests/durability.rs` covers the same-boot restart on the
-   > real filesystem, where the failed flush's bytes stay readable.
+   > reports. The `a_restart_after_a_*` tests in
+   > `disk_log/tests/durability.rs` cover the same-boot restart on the
+   > real filesystem, where the failed flush's bytes stay readable: the cut,
+   > the rewrite under a relaxed mode, a mode change across the restart, a
+   > crash part way through the cut, and an unreadable marker.
 
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
