@@ -4,12 +4,12 @@
 //! append it holds and then answers every one before it, in order.
 
 use std::io;
-use std::sync::{Arc, OnceLock, Weak};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 
-use super::Shared;
 use super::writer::io_error;
+use crate::DiskLog;
 use crate::disk_log::PendingAppend;
 
 /// What an append's callback is given.
@@ -17,9 +17,9 @@ pub(super) type Flushed = Box<dyn FnOnce(io::Result<()>) + Send>;
 
 pub(super) struct FlushQueue {
     /// Appends whose callback has not fired.
-    waiting: watch::Sender<usize>,
+    waiting: Arc<watch::Sender<usize>>,
     /// To the task, which starts with the first append that has to wait.
-    sender: OnceLock<mpsc::UnboundedSender<Waiting>>,
+    sender: parking_lot::Mutex<Option<mpsc::UnboundedSender<Waiting>>>,
 }
 
 struct Waiting {
@@ -30,8 +30,8 @@ struct Waiting {
 impl Default for FlushQueue {
     fn default() -> Self {
         Self {
-            waiting: watch::channel(0).0,
-            sender: OnceLock::new(),
+            waiting: Arc::new(watch::channel(0).0),
+            sender: parking_lot::Mutex::new(None),
         }
     }
 }
@@ -49,75 +49,79 @@ impl FlushQueue {
         let _ = waiting.wait_for(|waiting| *waiting == 0).await;
     }
 
-    /// Fire `flushed` once the log's fsync policy is met for `pending`,
-    /// after every callback queued before it.
-    pub(super) fn push<K>(shared: &Arc<Shared<K>>, pending: PendingAppend, flushed: Flushed)
-    where
-        K: Send + Sync + 'static,
-    {
-        let queue = &shared.flushes;
-        let sender = queue.sender.get_or_init(|| {
-            let (sender, receiver) = mpsc::unbounded_channel();
-            // Weak, so the task does not keep the log open once its last
-            // user is gone.
-            tokio::spawn(run(Arc::downgrade(shared), receiver));
-            sender
-        });
-        queue.waiting.send_modify(|waiting| *waiting += 1);
-        if let Err(mpsc::error::SendError(unsent)) = sender.send(Waiting { pending, flushed }) {
-            queue.settle(1);
-            (unsent.flushed)(Err(io::Error::other("the log's flush task has stopped")));
-        }
-    }
-
-    fn settle(&self, fired: usize) {
-        self.waiting
-            .send_modify(|waiting| *waiting = waiting.saturating_sub(fired));
-    }
-}
-
-async fn run<K>(shared: Weak<Shared<K>>, receiver: mpsc::UnboundedReceiver<Waiting>)
-where
-    K: Send + Sync + 'static,
-{
-    let mut task = Task {
-        shared,
-        receiver,
-        batch: Vec::new(),
-    };
-    while task.receiver.recv_many(&mut task.batch, usize::MAX).await > 0 {
-        let Some(shared) = task.shared.upgrade() else {
-            return;
+    /// Fire `flushed` once `log`'s fsync policy is met for `pending`, after
+    /// every callback queued before it.
+    pub(super) fn push(&self, log: &DiskLog, pending: PendingAppend, flushed: Flushed) {
+        self.waiting.send_modify(|waiting| *waiting += 1);
+        let mut sender = self.sender.lock();
+        // A task that stopped (a callback panicked, or its runtime shut
+        // down) has failed what it held. Nothing on disk is in doubt, so
+        // the next append starts another task rather than poisoning the
+        // log. Its answers may come before the old task's failures, which
+        // is still true: a flush covers a prefix.
+        let sender = match &mut *sender {
+            Some(sender) if !sender.is_closed() => sender,
+            slot => slot.insert(Task::spawn(log.clone(), Arc::clone(&self.waiting))),
         };
-        // Newest first, so the oldest is popped first.
-        task.batch.reverse();
-        let mut covered = Some(shared.log.commit(&task.batch[0].pending).await);
-        while let Some(waiting) = task.batch.pop() {
-            let flushed = if task.batch.is_empty() {
-                covered.take().expect("taken once, by the newest")
-            } else if matches!(covered, Some(Ok(()))) {
-                Ok(())
-            } else {
-                // A flush that failed for the newest may still have covered
-                // this one.
-                shared.log.commit(&waiting.pending).await
-            };
-            // On drop, so a callback that panics is still counted.
-            let _settle = Settle(&shared.flushes);
-            (waiting.flushed)(flushed.map_err(io_error));
+        if let Err(mpsc::error::SendError(unsent)) = sender.send(Waiting { pending, flushed }) {
+            settle(&self.waiting);
+            (unsent.flushed)(Err(stopped()));
         }
     }
 }
 
-/// The task's state. Dropped when the task ends, however it ends.
-struct Task<K> {
-    shared: Weak<Shared<K>>,
+/// The task's state. Dropped when the task ends, however it ends, including
+/// before its first poll.
+struct Task {
+    /// Held so an append still queued when the last user of the log goes is
+    /// answered with its real flush. The task ends once the queue is gone
+    /// and everything on it is answered.
+    log: DiskLog,
+    waiting: Arc<watch::Sender<usize>>,
     receiver: mpsc::UnboundedReceiver<Waiting>,
     /// Taken off the channel and not yet answered.
     batch: Vec<Waiting>,
 }
 
-impl<K> Drop for Task<K> {
+impl Task {
+    fn spawn(log: DiskLog, waiting: Arc<watch::Sender<usize>>) -> mpsc::UnboundedSender<Waiting> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        // Built before the spawn, so a task dropped unpolled still fails
+        // what was sent to it.
+        let task = Self {
+            log,
+            waiting,
+            receiver,
+            batch: Vec::new(),
+        };
+        tokio::spawn(task.run());
+        sender
+    }
+
+    async fn run(mut self) {
+        while self.receiver.recv_many(&mut self.batch, usize::MAX).await > 0 {
+            // Newest first, so the oldest is popped first.
+            self.batch.reverse();
+            let mut covered = Some(self.log.commit(&self.batch[0].pending).await);
+            while let Some(waiting) = self.batch.pop() {
+                let flushed = if self.batch.is_empty() {
+                    covered.take().expect("taken once, by the newest")
+                } else if matches!(covered, Some(Ok(()))) {
+                    Ok(())
+                } else {
+                    // A flush that failed for the newest may still have
+                    // covered this one.
+                    self.log.commit(&waiting.pending).await
+                };
+                // On drop, so a callback that panics is still counted.
+                let _settle = Settle(&self.waiting);
+                (waiting.flushed)(flushed.map_err(io_error));
+            }
+        }
+    }
+}
+
+impl Drop for Task {
     /// Fail what was never answered: the task panicked, or its runtime shut
     /// down. Otherwise those callbacks would never fire and a truncation
     /// would wait for them for ever.
@@ -127,18 +131,25 @@ impl<K> Drop for Task<K> {
         while let Ok(waiting) = self.receiver.try_recv() {
             unanswered.push(waiting);
         }
-        let shared = self.shared.upgrade();
         for waiting in unanswered {
-            let _settle = shared.as_ref().map(|shared| Settle(&shared.flushes));
-            (waiting.flushed)(Err(io::Error::other("the log's flush task has stopped")));
+            let _settle = Settle(&self.waiting);
+            (waiting.flushed)(Err(stopped()));
         }
     }
 }
 
-struct Settle<'a>(&'a FlushQueue);
+fn stopped() -> io::Error {
+    io::Error::other("the log's flush task has stopped")
+}
+
+fn settle(waiting: &watch::Sender<usize>) {
+    waiting.send_modify(|waiting| *waiting = waiting.saturating_sub(1));
+}
+
+struct Settle<'a>(&'a watch::Sender<usize>);
 
 impl Drop for Settle<'_> {
     fn drop(&mut self) {
-        self.0.settle(1);
+        settle(self.0);
     }
 }

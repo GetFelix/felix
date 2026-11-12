@@ -14,7 +14,6 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
 
 use super::codec::record_from_entry;
-use super::flush_queue::FlushQueue;
 use super::purged::Purged;
 use super::{
     EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
@@ -230,8 +229,8 @@ where
         };
         match flushed {
             Some(flushed) => callback.io_completed(flushed.map_err(io_error)),
-            None => FlushQueue::push(
-                shared,
+            None => shared.flushes.push(
+                log,
                 last,
                 Box::new(move |flushed| callback.io_completed(flushed)),
             ),
