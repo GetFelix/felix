@@ -199,6 +199,24 @@ fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
     }
 }
 
+/// Whether the stopped member in `data_dir` holds consensus state. Refuses
+/// a store that belongs to a cluster other than `cluster_id`. Creates and
+/// records nothing; no store is no state.
+pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str) -> Result<bool> {
+    let path = data_dir.join("raft.redb");
+    if !path.exists() {
+        return Ok(false);
+    }
+    // Fails while the member runs: its process holds the file.
+    let db = open(&path).context("open the raft store; stop the member first")?;
+    let recorded = read_meta::<String>(&db, KEY_CLUSTER_ID)
+        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
+    if let Some(recorded) = recorded.filter(|recorded| recorded != cluster_id) {
+        anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'");
+    }
+    holds_state(&db)
+}
+
 /// Open (or create) the store file and make sure both tables exist, so
 /// every later read can assume them.
 pub(super) fn open(path: &Path) -> Result<Arc<Database>> {

@@ -379,6 +379,27 @@ fn raft_needs_a_cluster_id_and_its_own_listener() {
     assert!(err.to_string().contains("FELIX_RAFT_BIND_ADDR"), "{err}");
 }
 
+/// One address under two ids would answer `standing` for both, and a first
+/// start would form without the member the second id stands for.
+#[serial]
+#[test]
+fn raft_peers_sharing_an_address_are_refused() {
+    let _env = clear_felix_env();
+    set_raft_basics();
+    unsafe { env::set_var("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN) };
+    for peers in [
+        "1=cp-0:9444,2=cp-1:9444,3=cp-1:9444",
+        // This member's own address under another id.
+        "1=cp-0:9444,2=cp-1:9444,3=CP-0:9444",
+    ] {
+        unsafe { env::set_var("FELIX_RAFT_PEERS", peers) };
+        let err = ControlPlaneConfig::from_env().expect_err("a shared address");
+        assert!(err.to_string().contains("the same address"), "{err}");
+    }
+    unsafe { env::set_var("FELIX_RAFT_PEERS", "1=cp-0:9444,2=cp-1:9444,3=cp-2:9444") };
+    ControlPlaneConfig::from_env().expect("distinct addresses");
+}
+
 #[serial]
 #[test]
 fn raft_initial_cluster_state_and_peer_tls_parse_strictly() {
