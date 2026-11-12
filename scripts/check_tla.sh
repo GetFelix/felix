@@ -106,6 +106,7 @@ tlc() {
     FelixGroups*) module="FelixGroups" ;;
     FelixRaftMembership*) module="FelixRaftMembership" ;;
     FelixRaftIdentity*) module="FelixRaftIdentity" ;;
+    FelixRaftPlacement*) module="FelixRaftPlacement" ;;
     FelixRaftReform*) module="FelixRaftReform" ;;
     FelixRaftLease*) module="FelixRaftLease" ;;
     FelixRaftSleep*) module="FelixRaftSleep" ;;
@@ -549,6 +550,25 @@ expectations=(
   "FelixRaftIdentityRejoinLeads violates NeverRotatedLeads"
   "FelixRaftIdentityRestoreCaught violates NeverRotates"
   "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
+  "FelixRaftPlacement pass"
+  "FelixRaftPlacementFailover pass"
+  "FelixRaftPlacementReseat pass"
+  "FelixRaftPlacementShrink pass"
+  "FelixRaftPlacementMoveWipe pass"
+  "FelixRaftPlacementStale pass"
+  "FelixRaftPlacementSameId pass"
+  "FelixRaftPlacementSameIdCounted violates LeaderCompleteness"
+  "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
+  "FelixRaftPlacementNoWithhold violates LeaderCompleteness"
+  "FelixRaftPlacementAnswerAnyId violates LeaderCompleteness"
+  "FelixRaftPlacementDeleteOnTarget violates AckedOnDisk"
+  "FelixRaftPlacementTwoWipes violates AckedOnDisk"
+  "FelixRaftPlacementReachMove violates NeverMoves"
+  "FelixRaftPlacementReachShrink violates NeverShrinks"
+  "FelixRaftPlacementReachDelete violates NeverDeletes"
+  "FelixRaftPlacementReachReseat violates NeverReseats"
+  "FelixRaftPlacementReachWipedLeads violates NeverWipedLeads"
+  "FelixRaftPlacementReachVotesAgain violates NeverVotesAgain"
   "FelixRaftSwitch pass"
   "FelixRaftSwitchLag pass"
   "FelixRaftSwitchLagWipe pass"
@@ -968,6 +988,9 @@ weights=(
   "FelixRaftMembershipFailover 8"
   "FelixRaftIdentityDirRestore 2"
   "FelixRaftIdentityWipeThenRestore 2"
+  "FelixRaftPlacementFailover 6"
+  "FelixRaftPlacementMoveWipe 3"
+  "FelixRaftPlacementSameId 3"
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
