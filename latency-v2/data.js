@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794464365637,
+  "lastUpdate": 1794466201486,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66990,6 +66990,72 @@ window.BENCHMARK_DATA = {
             "range": "245.99",
             "unit": "us",
             "extra": "trials: 5\nmedian: 534.00\nmean: 515.80\nstdev: 245.99\ncv: 47.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9efda9f361aa209a20718e86fe90952fe4e4e35",
+          "message": "test(cluster): history mode with a real three-member metadata Raft group (#2226) (#2323)\n\n* wip: history mode with a real three-member metadata Raft group (#2226)\n\nSpec-Unaffected: test harness only\n\n* test(cluster): history mode with a real three-member metadata Raft group (#2226)\n\nThe control plane runs as three redb-backed members behind one address.\nFaults kill a member, kill the leader and cut the leader off from the other\ntwo; after each heal the members must agree on every shard assignment. The\nnightly history workflow runs it as its own job.\n\nSpec-Unaffected: test harness only, no protocol or state-machine change\n\n* test(cluster): read and write the metadata group through a live member\n\nThe store the harness held was member 0's, which goes stale once that member\nis restarted: a broker's new incarnation never showed in it.\n\nSpec-Unaffected: test harness only\n\n* test(cluster): metadata checker holds acknowledged writes and full state, reads go to the leader\n\n* test(cluster): say why an unacknowledged metadata write failed\n\n* test(cluster): a failed metadata write or heal is a finding, and a Conflict counts only if the tenant landed\n\n* test(cluster): the group's ControlPlane holds no member's store, and a restart waits for the database lock",
+          "timestamp": "2026-11-12T06:46:05Z",
+          "tree_id": "834b559eef4b12c3229eec28695ba6e34bb683c6",
+          "url": "https://github.com/GetFelix/felix/commit/e9efda9f361aa209a20718e86fe90952fe4e4e35"
+        },
+        "date": 1794466193628,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.60\nstdev: 0.89\ncv: 0.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 126.80\nstdev: 0.84\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 167,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 167.00\nmean: 167.40\nstdev: 2.07\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "11.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 264.20\nstdev: 11.86\ncv: 4.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 615,
+            "range": "708.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 615.00\nmean: 831.00\nstdev: 708.53\ncv: 85.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
