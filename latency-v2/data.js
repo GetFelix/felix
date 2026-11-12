@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794462165768,
+  "lastUpdate": 1794464145409,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66858,6 +66858,72 @@ window.BENCHMARK_DATA = {
             "range": "22.17",
             "unit": "us",
             "extra": "trials: 5\nmedian: 367.00\nmean: 368.00\nstdev: 22.17\ncv: 6.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "82063214baf1f43d33b2bc6eb4820bdc32fe1e4a",
+          "message": "sim: relaxed-fsync power loss, majority cut and wipe faults (#2327)\n\n* sim: relaxed-fsync power loss, majority cut and wipe faults, with a checker for what each may lose (#2292, #2273)\n\nSpec-Unaffected: simulator and test harness only\n\n* sim: forget only what a disk fault may lose, and judge every disk at the end\n\nReview fixes for the disk fault checker:\n\n- An allowed loss makes only the lost records unknown (and drops reads\n  that saw them), not every earlier acknowledgement of the shard.\n- A copy counts as taken only when the faulted disk lost it, and stops\n  counting once two disks hold the record again. A loss is excused only\n  when at least two disks lost the record.\n- At the end of the run every disk is read again: an acknowledged record\n  no fault took must be on one, including shards with no final read.\n- A cache loss forgets cache writes (and reads) from before the fault,\n  not the whole run.\n- Disks are read right before a multi-broker fault changes them, with no\n  await in between, so nothing is acknowledged unjudged.\n\nRevert checks: each new unit test fails with its fix reverted\n(an_allowed_loss_forgets_only_the_records_it_took,\na_copy_the_fault_did_not_take_is_not_thinned,\na_record_two_disks_hold_again_is_no_longer_thinned,\na_loss_on_one_disk_is_never_excused,\nan_acknowledged_record_on_no_disk_at_the_end_is_a_finding,\na_cache_loss_forgets_only_writes_before_the_fault).\n\nSpec-Unaffected: simulator checker and docs only; no broker behaviour changes.\n\n* docs(sim): seed 3 wipes stall until the mode runs the re-form step\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-11T22:11:50-08:00",
+          "tree_id": "7bb525bb9c0c67c0a51c0059c511ac9f17218aa8",
+          "url": "https://github.com/GetFelix/felix/commit/82063214baf1f43d33b2bc6eb4820bdc32fe1e4a"
+        },
+        "date": 1794464137560,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "3.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 85.00\nstdev: 3.94\ncv: 4.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 115,
+            "range": "6.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 116.60\nstdev: 6.66\ncv: 5.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 155,
+            "range": "373.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 357.40\nstdev: 373.57\ncv: 104.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 100,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 100.60\nstdev: 1.34\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "6.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 210.60\nstdev: 6.15\ncv: 2.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 537,
+            "range": "286.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 537.00\nmean: 563.20\nstdev: 286.83\ncv: 50.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
