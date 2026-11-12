@@ -789,3 +789,64 @@ fn an_unobserved_open_of_a_segment_is_not_recorded() {
         vec![PathBuf::from(SEGMENT)]
     );
 }
+
+/// The offset a cut reports is where recovery's scan stops finding whole
+/// records, so a segment longer than it has a torn tail and one that is not
+/// has none. An append of several records can come back as some of them,
+/// whole, which is a clean log.
+#[test]
+fn a_cut_reports_where_the_whole_records_end() {
+    use crate::segment::format::{SegmentHeader, encode_record};
+    use crate::segment::{ScanStart, scan_segment};
+
+    let header = SegmentHeader::new(0, 1).encode().to_vec();
+    let mut records = Vec::new();
+    let mut ends = Vec::new();
+    for offset in 0..8 {
+        encode_record(
+            &mut records,
+            offset,
+            100 + offset,
+            b"12345678",
+            None,
+            None,
+            &Default::default(),
+        );
+        ends.push((header.len() + records.len()) as u64);
+    }
+    let (mut clean, mut torn) = (0, 0);
+    for seed in 0..2000 {
+        let sim = Sim::new("whole");
+        let segment = sim.path(SEGMENT);
+        durable_file(&segment, &header);
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&reported);
+        sim_fs::arm_power_cut(&sim.root, seed, move |_, from| {
+            *slot.lock().unwrap() = Some(from);
+        })
+        .expect("arm");
+        io::write_at(&seg, &records, header.len() as u64).expect("append");
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+
+        let reported = reported.lock().unwrap().expect("cut");
+        let len = fs::metadata(&segment).expect("stat").len();
+        assert!(
+            reported == header.len() as u64 || ends.contains(&reported),
+            "seed {seed}: {reported} is between records"
+        );
+        let scan = scan_segment(&segment, 0, "t/ns/s/0", 4096, ScanStart::Full, true);
+        let nothing_to_repair = scan.is_ok_and(|outcome| outcome.torn_tail.is_none());
+        assert_eq!(
+            nothing_to_repair,
+            len <= reported,
+            "seed {seed}: {len} bytes came back, whole records end at {reported}"
+        );
+        if nothing_to_repair {
+            clean += 1;
+        } else {
+            torn += 1;
+        }
+    }
+    assert!(clean > 0 && torn > 0, "{clean} clean, {torn} torn");
+}

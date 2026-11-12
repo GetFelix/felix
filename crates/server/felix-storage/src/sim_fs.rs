@@ -47,13 +47,17 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 }
 
 /// Cut the power under `root` during the next append to a log segment, then
-/// call `on_cut` with that segment's path below `root` and the offset the
-/// append started at.
+/// call `on_cut` with that segment's path below `root` and the offset where
+/// its whole records end.
 ///
 /// Every file and directory keeps what [`crash`] with `seed` would leave,
 /// and the append in flight is then forced to come back short or torn: its
 /// size reached the disk in full or in part, and each sector of its data
-/// arrived or did not, at least one not. Recovery has to repair that tail.
+/// arrived or did not, at least one not. Recovery has to repair that tail,
+/// unless the append held several records and the size stopped between two
+/// of them with nothing missing before it. The offset is where the append
+/// began, moved past each of its records that came back whole, so a segment
+/// no longer than it has no tail to repair.
 /// The device's contents are fixed at the cut; whatever the process writes
 /// after it is lost at [`reboot`].
 ///

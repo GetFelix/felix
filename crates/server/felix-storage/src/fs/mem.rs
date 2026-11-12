@@ -536,13 +536,13 @@ impl Tree {
             }
         };
         let mut rng = crate::io::writeback::SplitMix64::new(seed);
-        let torn = {
+        let (torn, whole) = {
             let data = file.data.lock();
             power::torn_append(&data.durable, &data.current, from, end, &mut rng)
         };
         let rebooted = self.rebooted(&mut rng, Some((file, torn)));
         *self.power.lock() = power::Power::Out(rebooted);
-        on_cut(path, from as u64);
+        on_cut(path, whole as u64);
     }
 
     /// What a power loss now leaves, without touching the live tree, which

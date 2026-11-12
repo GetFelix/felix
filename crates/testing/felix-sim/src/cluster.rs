@@ -639,7 +639,7 @@ impl SimCluster {
         let repaired_before = node.torn_tails_repaired().len();
         let opened_before = node.segments_opened().len();
         // A segment whose name did not survive, or that holds nothing past
-        // where the append began, leaves recovery nothing to repair.
+        // the whole records of the append, leaves recovery nothing to repair.
         let torn =
             torn.filter(|(segment, from)| power::needs_repair(node.file_len(segment), *from));
         let torn = torn.map(|(segment, _)| segment);
