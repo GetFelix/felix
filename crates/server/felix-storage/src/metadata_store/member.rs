@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::LOG_DIR;
-use super::lock::StoreLock;
+use super::lock::{self, StoreLock};
 use crate::disk_log::crash_point;
 use crate::raft_log::state_file;
 
@@ -256,21 +256,29 @@ fn create(dir: &Path, cluster_id: &str) -> io::Result<()> {
     // The data directory's own entry must be on disk too, or the store goes
     // with it.
     crate::io::create_dir_all_durable(parent)?;
-    if super::present(&building)? {
-        crate::fs::remove_dir_all(&building)?;
-    }
-    step()?;
-    crate::fs::create_dir_all(building.join(LOG_DIR))?;
-    let member = Member {
-        cluster_id: cluster_id.to_string(),
-        ..Member::default()
-    };
-    // Syncs `building`, so the log directory's entry is on disk too.
-    state_file::store(&building, FILE_NAME, &[&encode(&member)?])?;
-    step()?;
-    crate::fs::rename(&building, dir)?;
-    step()?;
-    crate::io::sync_dir(parent)
+    // Two first starts would share `building`: one's cleanup could remove
+    // what the other is about to rename. The lock is the data directory's,
+    // so it is taken before the check that a start has already built it.
+    lock::while_building(parent, || {
+        if super::present(dir)? {
+            return Ok(());
+        }
+        if super::present(&building)? {
+            crate::fs::remove_dir_all(&building)?;
+        }
+        step()?;
+        crate::fs::create_dir_all(building.join(LOG_DIR))?;
+        let member = Member {
+            cluster_id: cluster_id.to_string(),
+            ..Member::default()
+        };
+        // Syncs `building`, so the log directory's entry is on disk too.
+        state_file::store(&building, FILE_NAME, &[&encode(&member)?])?;
+        step()?;
+        crate::fs::rename(&building, dir)?;
+        step()?;
+        crate::io::sync_dir(parent)
+    })
 }
 
 /// The member of the store in `dir`, which exists. A store is born with its

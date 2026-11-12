@@ -171,6 +171,61 @@ async fn a_cut_after_the_callback_keeps_the_entries() {
     }
 }
 
+/// Several appends wait on one flush, and the cut lands before it. None of
+/// their callbacks fired, so they may go, but nothing flushed does, and a
+/// reopened log reads only what the disk kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_with_appends_queued_keeps_what_was_flushed() {
+    for seed in 0..SEEDS {
+        let sim = Sim::new("queued", seed);
+        let mut raft = sim.open();
+        let written = entries(0..26);
+        append_flushed(&mut raft, &written[..20]).await;
+
+        let log = raft.disk_log().clone();
+        let held = log.hold_flushes().await;
+        let mut waiting = Vec::new();
+        for batch in written[20..].chunks(2) {
+            waiting.push(append(&mut raft, batch).await.expect("append"));
+        }
+        assert_eq!(all(&raft).await.expect("read"), written);
+        for flushed in &mut waiting {
+            assert!(flushed.as_mut().now_or_never().is_none());
+        }
+        sim_fs::crash(&sim.0, seed).expect("crash");
+        drop(held);
+
+        recover(&sim, 20, &written, &format!("seed {seed}")).await;
+    }
+}
+
+/// Several appends are answered by one flush, then the cut. Each callback
+/// vouched for its entries, so every one is there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_after_a_shared_flush_keeps_every_answered_append() {
+    for seed in 0..SEEDS {
+        let sim = Sim::new("shared-flush", seed);
+        let mut raft = sim.open();
+        let written = entries(0..26);
+        append_flushed(&mut raft, &written[..20]).await;
+
+        let log = raft.disk_log().clone();
+        let held = log.hold_flushes().await;
+        let mut waiting = Vec::new();
+        for batch in written[20..].chunks(2) {
+            waiting.push(append(&mut raft, batch).await.expect("append"));
+        }
+        drop(held);
+        for flushed in waiting {
+            flushed.await.expect("flush");
+        }
+        sim_fs::crash(&sim.0, seed).expect("crash");
+
+        let kept = recover(&sim, 26, &written, &format!("seed {seed}")).await;
+        assert_eq!(kept, 26);
+    }
+}
+
 /// A truncation stopped after each unlink in turn, then the power cut.
 /// What reopens is never shorter than the truncation was asked to keep and
 /// has no gap; once the truncation returned, it is exactly that long.

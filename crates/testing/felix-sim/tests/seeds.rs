@@ -400,15 +400,40 @@ fn is_given_up_leader_stall(finding: &Finding) -> bool {
     ok && censuses == count && named == listed
 }
 
+/// Whether `finding` is a missing final read that only covers shards in
+/// `stalled` (shard numbers). The stalled shard is never served, so its final
+/// read cannot succeed. A read missing on any other shard is a real failure.
+fn is_final_read_of_stalled(finding: &Finding, stalled: &[&str]) -> bool {
+    if finding.checker != "final-reads" {
+        return false;
+    }
+    // "no final read for N shards, left out of the history check: events/20, events/6"
+    let Some((_, lists)) = finding.summary.split_once("history check: ") else {
+        return false;
+    };
+    lists.split(", ").all(|list| {
+        list.rsplit('/')
+            .next()
+            .is_some_and(|n| stalled.contains(&n))
+    })
+}
+
 /// Whether the run found nothing but the stall #2206 tracks: no history
-/// violation, no undecided key, and every failing finding is that stall.
+/// violation, no undecided key, and every failing finding is that stall or
+/// the missing final read of a shard it left unserved.
 fn only_the_2206_stall(report: &Report, findings: &[Finding]) -> bool {
+    let stalled: Vec<&str> = findings
+        .iter()
+        .filter(|f| is_given_up_leader_stall(f))
+        .flat_map(|f| f.summary.split(": ").last().unwrap_or("").split(", "))
+        .filter_map(|s| s.split_whitespace().next()?.rsplit('/').next())
+        .collect();
     report.violations.is_empty()
         && report.undecided.is_empty()
         && findings
             .iter()
             .filter(|f| f.severity == Severity::Failure)
-            .all(is_given_up_leader_stall)
+            .all(|f| is_given_up_leader_stall(f) || is_final_read_of_stalled(f, &stalled))
 }
 
 /// Fail on anything but the stall #2206 tracks, which is printed with its
@@ -693,6 +718,52 @@ fn a_history_violation_still_fails_beside_the_tracked_stall() {
     report.undecided.clear();
     let other = Finding::new("record-generations-agree", "differs");
     assert!(!only_the_2206_stall(&report, &[stall, other]));
+}
+
+fn final_reads(lists: &str) -> Finding {
+    Finding::new(
+        "final-reads",
+        format!("no final read for 2 shards, left out of the history check: {lists}"),
+    )
+}
+
+#[test]
+fn a_missing_final_read_is_exempt_only_on_the_stalled_shards() {
+    let stall = ci_finding(CI_SUMMARY, &CI_ROWS);
+    let report = Report {
+        violations: Vec::new(),
+        faults: Vec::new(),
+        undecided: Vec::new(),
+    };
+    // The stalled shards are stream/6 and stream/20.
+    let same = final_reads("events/20, events/6");
+    assert!(only_the_2206_stall(&report, &[stall.clone(), same]));
+    // One shard the stall does not name.
+    let different = final_reads("events/20, events/7");
+    assert!(!only_the_2206_stall(&report, &[stall.clone(), different]));
+    // No stall in the run: nothing to exempt the read against.
+    assert!(!only_the_2206_stall(&report, &[final_reads("events/6")]));
+    // A history violation beside the exempt read still fails.
+    let mut bad = Report {
+        violations: Vec::new(),
+        faults: Vec::new(),
+        undecided: vec!["key".into()],
+    };
+    assert!(!only_the_2206_stall(
+        &bad,
+        &[stall.clone(), final_reads("events/6")]
+    ));
+    bad.undecided.clear();
+    bad.violations.push(Violation {
+        rule: Rule::LostWrite,
+        list: "stream/6".into(),
+        ops: Vec::new(),
+        explanation: String::new(),
+    });
+    assert!(!only_the_2206_stall(
+        &bad,
+        &[stall, final_reads("events/6")]
+    ));
 }
 
 // Placement faults. Each test pins a seed whose run reaches one shape, checks

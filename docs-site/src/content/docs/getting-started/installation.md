@@ -289,8 +289,8 @@ runs that stack with one command. For a local cluster built from source,
 `felix-cluster up` is quicker. The broker binds up to four client ports from `5000`,
 so publish the whole range, as the compose file does.
 
-Each release publishes the full version (`0.7.0`). A release without a
-pre-release suffix also publishes the minor series (`0.6`) and `latest`. Use a
+Each release publishes the full version (`0.7.2`). A release without a
+pre-release suffix also publishes the minor series (`0.7`) and `latest`. Use a
 full version tag in anything you keep; the other two move. Images are
 signed by digest. See [Kubernetes](/deployment/kubernetes/) for the
 `cosign verify` invocation.
