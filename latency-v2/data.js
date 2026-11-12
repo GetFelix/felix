@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794466201486,
+  "lastUpdate": 1794485702214,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -67056,6 +67056,72 @@ window.BENCHMARK_DATA = {
             "range": "708.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 615.00\nmean: 831.00\nstdev: 708.53\ncv: 85.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9983c6c331118b8a0b890d6f388d56c9a163ebf1",
+          "message": "feat(storage): the metadata store's lock, open rules and purge rule (#2230 part 1, #2341) (#2352)\n\n* wip(storage): the metadata store's lock, open rules and hidden purge (#2230, #2341)\n\nNot compiled yet: the build queue was full. See plans/lanes/cp-2230.md.\n\nSpec-Unaffected: the hidden purge and the append rule implement what\nFelixRaft.tla already states (PurgedCoveredBySnapshot); no spec changes.\n\n* feat(storage): the store's open rules tested under power cuts and a reference model (#2230)\n\nThe append rule is decided before anything is removed, so a refused\nappend leaves the log as it was. The open refuses a saved committed id\nwhose index holds an entry of another term and leaves the id on disk.\nThe lock is unlocked on drop, not only closed. Crash-point tests over the\nstore at every step, a seeded model test, and openraft's suite over the\nstore as it is opened.\n\nSpec-Unaffected: the store implements what FelixRaft.tla already states\n(PurgedCoveredBySnapshot); no spec changes.\n\n* docs(storage): the store's lock is unlocked on drop\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-12T04:10:58-08:00",
+          "tree_id": "3ac141fd616a10a3f2613e5c9af13d1976abd9ac",
+          "url": "https://github.com/GetFelix/felix/commit/9983c6c331118b8a0b890d6f388d56c9a163ebf1"
+        },
+        "date": 1794485694231,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 128.00\nstdev: 0.71\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 172,
+            "range": "3.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 173.00\nstdev: 3.32\ncv: 1.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "24.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 271.20\nstdev: 24.24\ncv: 8.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 429,
+            "range": "820.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 429.00\nmean: 806.60\nstdev: 820.26\ncv: 101.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
