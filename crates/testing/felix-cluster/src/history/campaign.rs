@@ -235,6 +235,7 @@ impl Campaign {
                 .collect(),
             caches: vec![CacheSpec::quorum(&self.cache, 1, 3)],
             proxy_links: nemesis.needs_proxy_links(),
+            metadata_group: nemesis.needs_metadata_group(),
             power_loss: nemesis.needs_power_loss(),
             broker_env,
             ..ClusterConfig::default()

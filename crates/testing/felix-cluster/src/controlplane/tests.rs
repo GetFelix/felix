@@ -69,3 +69,35 @@ fn a_shard_is_reported_only_when_every_replica_is_caught_up_at_its_generation() 
     assert!(gap(3, &replicas, Some(&report(3, &["b"]))).is_some());
     assert!(gap(3, &replicas, Some(&report(3, &["b", "c"]))).is_none());
 }
+
+/// A metadata group keeps answering at its one address while a member is
+/// down, and its members agree again once everything is back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_metadata_group_survives_losing_its_leader_and_converges() {
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+        .await
+        .expect("start the group");
+    let group = control_plane.group().expect("a group").clone();
+    let base_url = control_plane.base_url.clone();
+
+    let killed = group.kill_leader().await.expect("kill the leader");
+    // A survivor leads within the election timeout, and the front reaches it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if group.leader().await.is_some_and(|leader| leader != killed) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "no new leader");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let response = answers(&base_url).join().expect("request thread");
+    assert!(response.expect("answered").starts_with("HTTP/1.1 "));
+
+    let isolated = group.isolate_leader().await.expect("isolate the leader");
+    group.heal_partition();
+    group
+        .converge(Duration::from_secs(60))
+        .await
+        .unwrap_or_else(|err| panic!("members disagree after isolating {isolated}: {err:#}"));
+    control_plane.shutdown().await;
+}

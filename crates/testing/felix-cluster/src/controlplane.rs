@@ -16,6 +16,8 @@
 //! leases are renewed only by heartbeats answered within a few hundred
 //! milliseconds, and a test's runtime (often single-threaded) also drives every
 //! client the test opens, so sharing it lets test load lapse a lease.
+pub(crate) mod group;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +27,9 @@ use felix_controlplane_service::api::{AppState, build_router};
 use felix_controlplane_service::auth::felix_token::TenantSigningKeys;
 use felix_controlplane_service::config::NodeLivenessConfig;
 use felix_controlplane_service::store::memory::InMemoryStore;
-use felix_controlplane_service::store::{AuthStore, ControlPlaneStore, StoreConfig};
+use felix_controlplane_service::store::{
+    AuthStore, ControlPlaneAuthStore, ControlPlaneStore, StoreConfig,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::credentials::{Credentials, TOKEN_TTL};
@@ -69,7 +73,14 @@ const WORKERS: usize = 2;
 /// A running control plane, and the keys to mint credentials against it.
 pub struct ControlPlane {
     pub base_url: String,
-    pub store: Arc<InMemoryStore>,
+    /// The store the harness reads and writes through. In metadata group
+    /// mode it is member 0's, so it stops taking writes while that member
+    /// is down.
+    pub store: Arc<dyn ControlPlaneAuthStore + Send + Sync>,
+    /// The in-memory store behind `store`, kept for [`Self::stop`]. `None`
+    /// when the control plane is a metadata group.
+    memory: Option<Arc<InMemoryStore>>,
+    group: Option<Arc<group::Group>>,
     keys: TenantSigningKeys,
     placement_wakes: Arc<felix_controlplane_service::cluster::placement::PlacementWakes>,
     liveness: NodeLivenessConfig,
@@ -142,6 +153,49 @@ impl ControlPlane {
         Self::serve(store, keys, addr, liveness).await
     }
 
+    /// Start the control plane as a real three-member metadata Raft group,
+    /// each member on its own redb directory, behind one address. Members
+    /// are killed, partitioned and restarted through [`Self::group`].
+    pub(crate) async fn start_group(tenant_id: &str, liveness: NodeLivenessConfig) -> Result<Self> {
+        crate::cluster::capture_control_plane();
+        let keys = felix_controlplane_service::auth::keys::generate_signing_keys()
+            .context("generate tenant signing keys")?;
+        let front = ports::free_tcp()?;
+        let runtime = Runtime::new()?;
+        let group = runtime
+            .handle()
+            .spawn(group::Group::start(
+                runtime.handle().clone(),
+                liveness.clone(),
+                front,
+            ))
+            .await
+            .context("start metadata group")??;
+        let store = group.store_of(0).await.context("member 0 is not running")?;
+        let group = Arc::new(group);
+        let control_plane = Self {
+            base_url: format!("http://{front}"),
+            store: store as Arc<dyn ControlPlaneAuthStore + Send + Sync>,
+            memory: None,
+            group: Some(group),
+            keys,
+            placement_wakes: Default::default(),
+            liveness,
+            placement: std::sync::Mutex::new(None),
+            shutdown: CancellationToken::new(),
+            task: tokio::spawn(async {}),
+            runtime,
+            pause: PauseHandle::default(),
+        };
+        control_plane.seed_tenant(tenant_id).await?;
+        Ok(control_plane)
+    }
+
+    /// The metadata group, when the control plane is one.
+    pub(crate) fn group(&self) -> Option<&Arc<group::Group>> {
+        self.group.as_ref()
+    }
+
     /// How long placement believes a report: twice the expiry plus a heartbeat
     /// (`report_ttl_millis` in the control plane's placement).
     pub(crate) fn report_ttl_millis(&self) -> u64 {
@@ -171,7 +225,10 @@ impl ControlPlane {
     /// Stop serving, keeping what a restart needs.
     pub(crate) async fn stop(self) -> Result<StoppedControlPlane> {
         let stopped = StoppedControlPlane {
-            store: Arc::clone(&self.store),
+            store: self
+                .memory
+                .clone()
+                .context("a metadata group control plane cannot be stopped as a whole")?,
             keys: self.keys.clone(),
             addr: self.addr()?,
             liveness: self.liveness.clone(),
@@ -259,7 +316,9 @@ impl ControlPlane {
 
         Ok(Self {
             base_url: format!("http://{addr}"),
-            store,
+            store: Arc::clone(&store) as Arc<dyn ControlPlaneAuthStore + Send + Sync>,
+            memory: Some(store),
+            group: None,
             keys,
             placement_wakes,
             liveness,
@@ -538,6 +597,13 @@ impl ControlPlane {
     /// [`Self::restart`].
     pub fn run_placement(&self, interval: Duration) {
         *self.placement.lock().expect("placement lock") = Some(interval);
+        if let Some(group) = &self.group {
+            let group = Arc::clone(group);
+            self.runtime
+                .handle()
+                .spawn(async move { group.run_placement(interval).await });
+            return;
+        }
         let _runtime = self.runtime.handle().enter();
         drop(
             felix_controlplane_service::cluster::placement::spawn_reconciler(
@@ -558,6 +624,9 @@ impl ControlPlane {
     pub async fn shutdown(self) {
         // A held worker never sees the runtime stop.
         self.resume();
+        if let Some(group) = &self.group {
+            group.shutdown().await;
+        }
         self.shutdown.cancel();
         // Aborted, not drained. A graceful shutdown keeps serving the keep-alive
         // connections brokers already hold, so their heartbeats would go on
