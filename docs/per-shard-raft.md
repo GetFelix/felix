@@ -625,16 +625,18 @@ Nothing is negotiated. Each side acts only on what it has seen:
 
 So a lost message can leave a leader fast or a follower patient, and
 never a slow leader with an impatient follower. A follower that has
-answered nothing for longer than any election timeout (5 s) has stood or
-is gone, and stops holding the leader at the short interval. A follower
-whose answers are all lost for that long, while it still hears the leader,
-is the one case left: the leader keeps heartbeating at the short interval
-meanwhile, so the follower keeps hearing it and does not stand.
+answered nothing for 5 s stops holding the leader at the short interval,
+so a broker that is down does not keep its groups' leaders fast. That is
+less than the 6 to 7 s an idle follower waits, and that is the safe side:
+a follower that still hears the leader was told the idle gap, so the 2 s
+heartbeats still reach it inside its wait even when all its answers are
+lost.
 
-One window is left open. A follower that was down for longer than those
-5 s no longer holds the leader fast, so if it comes back and the first
-idle heartbeat to it is lost, it can stand before the next one. That costs
-an election in an idle group and no record.
+One window is left open. A follower silent for 5 s since its last answer,
+which can be about 3 s of downtime, no longer holds the leader fast, so if
+it restarts and the first idle heartbeat to it is lost, it can stand
+before the next one. That costs an election in an idle group and no
+record.
 
 openraft has one heartbeat interval and one election timeout per group,
 fixed when the group starts, so none of this changes its configuration.

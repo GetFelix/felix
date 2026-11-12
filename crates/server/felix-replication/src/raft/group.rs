@@ -50,8 +50,12 @@ impl Timers {
         self.started.elapsed().as_millis() as u64
     }
 
-    /// A peer that has answered nothing for this long has timed out
-    /// whatever gap it was told: it has stood or is gone.
+    /// A peer that has answered nothing for this long (5 s by default) no
+    /// longer holds its leader at the short gap. That is less than the 6-7 s
+    /// an idle follower waits, which is the safe side: a follower that still
+    /// hears the leader was told the idle gap, so the slow heartbeats reach
+    /// it inside its wait. Only one that restarts meanwhile and loses its
+    /// first idle heartbeat can stand (docs/per-shard-raft.md, "Idle groups").
     fn silent(&self) -> u64 {
         self.election_min + 2 * self.election_max
     }

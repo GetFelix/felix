@@ -572,8 +572,8 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
     assert_eq!(pace.leader_gap(timers.now()), short, "nobody has heard yet");
     pace.answered(&b, &pace.sending(&b, false));
 
-    // c never answers. Once it has been silent past any election timeout
-    // it has stood or is gone, and it stops holding the leader back.
+    // c never answers. Once it has been silent for 5 s it stops holding
+    // the leader back.
     later(timers.election_min + 2 * timers.election_max).await;
     pace.answered(&b, &pace.sending(&b, false));
     assert_eq!(pace.leader_gap(timers.now()), idle);
@@ -691,12 +691,14 @@ async fn an_idle_group_heartbeats_slowly_until_it_is_written_to() {
     // Idle after a second, slow once the lost messages have been resent.
     tokio::time::sleep(Duration::from_secs(4)).await;
     assert_eq!(cluster.net.lost_idle.load(Relaxed), 6);
-    let window = Duration::from_secs(4);
+    // About 2 s apart (the idle heartbeat plus a tick), so 7 s holds 3 or
+    // 4; the short interval would make about 35. The upper bound leaves room
+    // for a beat or two made fast by a heartbeat that timed out under load.
+    let window = Duration::from_secs(7);
     let before = checks(&cluster);
     tokio::time::sleep(window).await;
     let slow = checks(&cluster) - before;
-    // One a second, where the short interval makes 20.
-    assert!((2..=7).contains(&slow), "{slow} checks while idle");
+    assert!((2..=8).contains(&slow), "{slow} checks while idle");
 
     // Write a little after a slow check, once the ticker has seen that the
     // next is a whole idle interval away and has stopped looking at the
