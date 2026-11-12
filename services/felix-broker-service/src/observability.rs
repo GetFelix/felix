@@ -202,19 +202,35 @@ fn health_router(
 }
 
 /// What `/ready` answers. A poisoned log refuses writes until it is
-/// reopened, so the body names each one and what stopped it. One poisoned
-/// log fails the whole broker's probe for now: see "A failed fsync poisons
-/// the log" in `docs/durable-storage.md`.
+/// reopened, so the body names each one's tenant and what stopped it. One
+/// poisoned log fails the whole broker's probe for now: see "A failed fsync
+/// poisons the log" in `docs/durable-storage.md`.
+///
+/// This listener has no authentication and `/metrics` on it exposes tenant
+/// labels only, so the namespace and stream stay out of the body; the
+/// broker's log has the full shard name. The process does not exit and
+/// `/live` stays ok, so the body tells the operator what to do.
 fn ready_status(
     poisoned: &[felix_storage::disk_log::PoisonedLog],
     ready: bool,
 ) -> (axum::http::StatusCode, String) {
     if !poisoned.is_empty() {
-        let logs: Vec<String> = poisoned
+        let mut lines: Vec<String> = poisoned
             .iter()
-            .map(|log| format!("log {} is poisoned: {}", log.shard, log.reason))
+            .map(|log| {
+                let tenant = log.shard.split('/').next().unwrap_or_default();
+                let reason = log.reason.replace(&log.shard, "<shard>");
+                format!("a log of tenant {tenant} is poisoned: {reason}")
+            })
             .collect();
-        (axum::http::StatusCode::SERVICE_UNAVAILABLE, logs.join("\n"))
+        lines.push(
+            "reboot the host before restarting the broker; the broker log names each shard"
+                .to_string(),
+        );
+        (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            lines.join("\n"),
+        )
     } else if ready {
         (axum::http::StatusCode::OK, "ok".to_string())
     } else {

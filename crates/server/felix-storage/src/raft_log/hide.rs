@@ -12,21 +12,19 @@
 //! entries on disk. One that would start past them is refused: on disk it
 //! would leave a hole that nothing covers.
 //!
-//! Every change here is made under the `flushing` write lock, as a
-//! truncation is.
+//! Every change here waits first for every append's callback, as a
+//! truncation does.
 
 use std::io;
 use std::ops::Deref;
 use std::sync::Arc;
-
-use openraft::type_config::alias::CommittedLeaderIdOf;
-use tokio::sync::OwnedRwLockReadGuard;
 
 use super::purged::{self, Purged};
 use super::snapshot::SnapshotStore;
 use super::writer::io_error;
 use super::{EntryCodec, LogTypes, RaftLog, Shared, generation_of, invalid, term_at, term_of};
 use crate::log::{AppendOnlyLog, Offset};
+use openraft::type_config::alias::CommittedLeaderIdOf;
 
 /// What a purge past the stored snapshot does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +80,7 @@ where
     /// another term.
     pub async fn start_after_snapshot(&self, snapshots: &SnapshotStore) -> io::Result<()> {
         let shared = &self.shared;
-        let _flushed = shared.flushing.write().await;
+        shared.flushes.drained().await;
         let Some(stored) = stored(snapshots)? else {
             return Ok(());
         };
@@ -136,7 +134,7 @@ impl<K> Shared<K> {
     }
 
     /// Purge through `purged` on disk: the id first, then the segments.
-    /// The caller holds the `flushing` write lock.
+    /// The caller has waited for every append's callback.
     pub(super) async fn remove_through(&self, purged: Purged) -> io::Result<()> {
         let log = &self.log;
         let dir = log.dir().to_path_buf();
@@ -164,7 +162,7 @@ impl<K> Shared<K> {
     /// Purge through `asked`: remove what the stored snapshot covers and
     /// hide the rest. An id at or below the purged id asks for nothing new,
     /// and still removes what a snapshot has come to cover since. The caller
-    /// holds the `flushing` write lock.
+    /// has waited for every append's callback.
     pub(super) async fn purge_hiding(
         &self,
         snapshots: &SnapshotStore,
@@ -203,25 +201,22 @@ impl<K> Shared<K> {
     }
 
     /// Let an append that begins at `first` in, or refuse it with the log
-    /// untouched. Returns the `flushing` read lock the append holds until
-    /// its callback has fired. The rule is [`admission`].
+    /// untouched. The rule is [`admission`].
     pub(super) async fn admit(
         self: &Arc<Self>,
         snapshots: &SnapshotStore,
         first: Offset,
-    ) -> io::Result<OwnedRwLockReadGuard<()>> {
+    ) -> io::Result<()> {
         let log = &self.log;
-        let reading = Arc::clone(&self.flushing).read_owned().await;
-        let tail = log.tail_offset().await.map_err(io_error)?;
+        let tail = log.tail_now();
         if self.bounds.lock().hidden.is_none() && first == tail && tail > self.first_on_disk() {
-            return Ok(reading);
+            return Ok(());
         }
-        drop(reading);
 
         // What follows may empty the log, which a flush in flight must not
-        // find gone. openraft sends one write at a time, so nothing else
-        // gets in between the two locks.
-        let writing = Arc::clone(&self.flushing).write_owned().await;
+        // find gone. openraft sends one write at a time, so no append is
+        // queued behind this one.
+        self.flushes.drained().await;
         let tail = log.tail_offset().await.map_err(io_error)?;
         let bounds = *self.bounds.lock();
         let covered = stored(snapshots)?;
@@ -244,7 +239,7 @@ impl<K> Shared<K> {
         if first > log.tail_offset().await.map_err(io_error)? {
             log.reset_to(first).await.map_err(io_error)?;
         }
-        Ok(writing.downgrade())
+        Ok(())
     }
 }
 

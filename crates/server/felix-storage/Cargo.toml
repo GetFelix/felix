@@ -58,6 +58,8 @@ openraft = { workspace = true, features = ["tokio-rt", "serde"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 futures-util = "0.3"
+# Lets a test see a warning the code logs.
+tracing-subscriber = { workspace = true }
 
 [target.'cfg(unix)'.dev-dependencies]
 libc = { workspace = true }

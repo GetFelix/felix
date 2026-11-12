@@ -49,6 +49,10 @@ where
     /// Every entry the log holds in `start..end`, or, with `whole` false,
     /// the first page of them. Entries missing at either end of the range
     /// are left out; a gap between two entries is an error.
+    ///
+    /// The newest entries come from memory when the range starts among
+    /// them, and the rest from the segments. Memory holds no more than a
+    /// page.
     async fn entries(&self, start: Offset, end: Offset, whole: bool) -> io::Result<Vec<C::Entry>> {
         let log = &self.shared.log;
         'read: loop {
@@ -58,7 +62,38 @@ where
             let first = self.shared.first_index();
             let mut next = start.max(first);
             let mut entries = Vec::new();
+            // A closed log refuses a read, and so must this.
+            let cached = if log.is_closed() {
+                None
+            } else {
+                self.shared.tail.lock().range(cuts, next, end)
+            };
+            if let Some(records) = cached {
+                #[cfg(test)]
+                self.pause().await;
+                // A cut since `cuts` was read may have taken some of them.
+                if log.cuts() != cuts {
+                    continue 'read;
+                }
+                for record in records {
+                    entries.push(entry_from_record::<C, K>(
+                        &self.shared.codec,
+                        record,
+                        first,
+                    )?);
+                    next += 1;
+                }
+                // Memory holds the log's newest entries, so past them
+                // there is nothing for the segments to add.
+                if !whole || next >= log.tail_now() {
+                    return Ok(entries);
+                }
+            }
             while next < end {
+                #[cfg(test)]
+                self.shared
+                    .segment_reads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let page = log
                     .read_range_with_trims(ReadRange {
                         start: next,
@@ -97,14 +132,22 @@ where
                     break;
                 }
                 #[cfg(test)]
-                let pause = self.shared.pause_after_page.lock().take();
-                #[cfg(test)]
-                if let Some((reached, resume)) = pause {
-                    let _ = reached.send(());
-                    let _ = resume.await;
-                }
+                self.pause().await;
             }
             return Ok(entries);
+        }
+    }
+}
+
+#[cfg(test)]
+impl<C, K> LogReader<C, K> {
+    /// Stop here if a test asked the next read to: after its first page
+    /// from the segments, or after its records from memory.
+    async fn pause(&self) {
+        let pause = self.shared.pause_after_page.lock().take();
+        if let Some((reached, resume)) = pause {
+            let _ = reached.send(());
+            let _ = resume.await;
         }
     }
 }

@@ -1029,6 +1029,10 @@ impl DiskLog {
         // Before recovery, which needs it to tell a segment that was
         // offloaded from one that was lost.
         let manifest = offload::manifest::load(&dir)?;
+        // Before the segments are looked at, so recovery sees the cut log.
+        if let Some(marker) = durable_mark::load_poison(&dir) {
+            recovery::after_poison(&dir, &label, marker)?;
+        }
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
         // Does not touch the archive: an unreachable one must not stop the
         // log from serving. The first pass opens it.
@@ -1272,6 +1276,23 @@ impl DiskLog {
     #[cfg(feature = "raft")]
     pub(crate) fn cuts(&self) -> u64 {
         self.inner.segments.read().generation()
+    }
+
+    /// The tail as it is now, without a future to poll.
+    #[cfg(feature = "raft")]
+    pub(crate) fn tail_now(&self) -> Offset {
+        self.inner.segments.read().tail_offset()
+    }
+
+    /// What [`Self::commit`] answers when it has nothing to wait for, and
+    /// `None` when a flush must cover the batch first.
+    #[cfg(feature = "raft")]
+    pub(crate) fn commit_now(&self, pending: &PendingAppend) -> Option<Result<()>> {
+        let durability = &self.inner.durability;
+        if durability.acknowledges_before_sync() && !pending.holds_trim {
+            return Some(Ok(()));
+        }
+        (durability.durable_upto() >= pending.durable_target).then(|| self.inner.check_healthy())
     }
 
     /// The read behind both `read_range` methods, and the tail it ran to.

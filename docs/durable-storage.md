@@ -588,19 +588,39 @@ Four properties:
 
    The log stays poisoned until it is reopened, which in a broker means a
    restart. After a reboot or a power loss that is safe: recovery reads only
-   what reached the disk, as it does after any crash. A restart on the same
-   boot is not covered yet
-   ([#2308](https://github.com/GetFelix/felix/issues/2308)). The bytes of the
-   failed flush can still be in the page cache. Recovery reads them as if
-   they were on disk, and its own fsync of them succeeds without writing
-   anything, so records acknowledged after the restart can sit above a range
-   a later power loss takes away. The same goes for a state file whose flush
-   failed. So after a failed flush, find out what is wrong with the disk
-   first, and reboot the host before the broker starts again. Under a
-   relaxed fsync mode a broker that does restart on the same boot takes a
-   new storage id (see "Storage identity"), so a replicated shard does not
-   trust that copy on its own word. Under `OnCommit`, and for a single-copy
-   stream, nothing guards that restart.
+   what reached the disk, as it does after any crash. After a restart on the
+   same boot the bytes of the failed flush can still be in the page cache,
+   where recovery would read them as valid and its own fsync of them would
+   succeed without writing anything. So a poisoned log leaves a `poisoned`
+   marker beside its durable mark, holding the last point a sync reached and
+   the fsync mode of the run that failed. It is written without a sync,
+   because the page cache is enough for a process restart and the disk just
+   failed. The marked point is the one held in memory, so a sync that
+   succeeded counts even when writing the durable mark after it failed. The
+   next open of that log goes by the mode in the marker, not its own:
+
+   - if the failed run used `OnCommit`, it cuts the log back to the marked
+     point, as a power loss would have left it: the segments after the marked
+     one go, and the marked one is cut to its synced length. Nothing past that
+     point was acknowledged, so nothing acknowledged is lost. The durable mark
+     is then set to the cut point;
+   - if it used a relaxed mode, those records were acknowledged, so they
+     stay. The open reads every byte past the marked point back and writes it
+     again before syncing, so the sync really reaches the disk;
+   - writes the ballot, the replica set, the replica state and the generation
+     history again, from the values read. That is a real write, unlike an
+     fsync of pages the kernel already calls clean;
+   - removes the marker last, so a crash part way repeats all of it.
+
+   A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
+   writes the state files again.
+
+   If the marker itself did not survive, the restart is a reboot or a power
+   loss and the rules above apply. The run record also stops vouching for the
+   boot: under every fsync mode the next start takes a new storage id, so a
+   replicated shard does not trust the copy on its own word. Still, find out
+   what is wrong with the disk first, and reboot the host before the broker
+   starts again.
 
    The reason is that Linux may drop the dirty pages a failed writeback
    could not write, so the *next* fsync returns success having flushed nothing
@@ -612,9 +632,12 @@ Four properties:
 
    A broker with a poisoned log answers `/ready` with 503, so a load
    balancer or an orchestrator takes it out of rotation. The body has one
-   line per poisoned log, naming the shard and what stopped it, for example
-   `log acme/prod/orders/0 is poisoned: a flush of the replica state failed
-   (...)`. The broker also attests no trusted copy to a fence from then on.
+   line per poisoned log, naming its tenant and what stopped it, for example
+   `a log of tenant acme is poisoned: a flush of the replica state failed
+   (...)`, then a line telling the operator to reboot the host before
+   restarting the broker. The listener has no authentication and `/metrics`
+   on it carries tenant labels only, so the namespace and stream stay in the
+   broker's log. The process does not exit and `/live` stays ok. The broker also attests no trusted copy to a fence from then on.
    See "A failed flush" in [replication-engine.md](replication-engine.md) for
    what a replicated shard does.
 
@@ -631,7 +654,11 @@ Four properties:
    > rollover, a seal, a truncation, a retention removal and each state-file
    > write in turn on the simulator's filesystem, then cuts the power and
    > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
-   > reports.
+   > reports. The `a_restart_after_a_*` tests in
+   > `disk_log/tests/durability.rs` cover the same-boot restart on the
+   > real filesystem, where the failed flush's bytes stay readable: the cut,
+   > the rewrite under a relaxed mode, a mode change across the restart, a
+   > crash part way through the cut, and an unreadable marker.
 
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
@@ -1295,7 +1322,8 @@ still written back. So on Linux the id stays. `<root>/run-state` (format in
   not write, so from then on the page cache no longer vouches for what the run
   acknowledged. The first failed sync of a segment, and the first log
   poisoned in the process, rewrite the record without its boot, and so does
-  a stop whose flush failed. A crash after that
+  a stop whose flush failed. The record of an `OnCommit` run, which names no
+  boot, is rewritten as a relaxed run without one. A crash after that
   rotates the id in any boot. That rewrite is not synced: only a process crash
   has to find it, and a machine crash rotates anyway.
 

@@ -33,11 +33,13 @@
 //! openraft types stay inside this module and the engine that drives it.
 
 mod codec;
+mod flush_queue;
 mod hide;
 mod purged;
 mod reader;
 pub(crate) mod snapshot;
 pub(crate) mod state_file;
+mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
 mod writer;
@@ -58,7 +60,9 @@ use openraft::entry::{Entry, EntryPayload};
 use openraft::storage::LogState;
 use openraft::type_config::alias::LogIdOf;
 
+use self::flush_queue::FlushQueue;
 use self::hide::{Bounds, Covering, PastSnapshot};
+use self::tail_cache::TailCache;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::{FsyncMode, Offset};
@@ -146,13 +150,18 @@ struct Shared<K> {
     /// Set by [`RaftLog::purge_within`] or [`RaftLog::purge_hides_past`]:
     /// the snapshot that bounds a purge, and what a purge past it does.
     covering: std::sync::OnceLock<Covering>,
-    /// Read-held by each append until its callback has fired, and
-    /// write-held by a truncation.
-    flushing: Arc<tokio::sync::RwLock<()>>,
+    /// Appends whose callback has not fired. A truncation waits for it to
+    /// empty.
+    flushes: FlushQueue,
+    /// The newest entries, so replication reads them without the segments.
+    tail: parking_lot::Mutex<TailCache>,
     /// Holds the next paged read after its first page: the read signals the
     /// sender, then waits for the receiver.
     #[cfg(test)]
     pause_after_page: parking_lot::Mutex<Option<tests::PagePause>>,
+    /// Reads of the segments, as against the tail cache.
+    #[cfg(test)]
+    segment_reads: std::sync::atomic::AtomicU64,
 }
 
 impl<C, K> Clone for RaftLog<C, K> {
@@ -204,9 +213,12 @@ where
                     hidden: None,
                 }),
                 covering: std::sync::OnceLock::new(),
-                flushing: Arc::default(),
+                flushes: FlushQueue::default(),
+                tail: parking_lot::Mutex::default(),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
+                #[cfg(test)]
+                segment_reads: std::sync::atomic::AtomicU64::new(0),
             }),
             types: std::marker::PhantomData,
         })

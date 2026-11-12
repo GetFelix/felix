@@ -24,7 +24,9 @@ use super::{
 use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
-use crate::log::{AppendOnlyLog, AppendRecord, Epoch, Offset, WrittenBy};
+use crate::log::{
+    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, UNKNOWN_WRITER, WrittenBy,
+};
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
@@ -101,10 +103,8 @@ where
     }
 
     /// Returns once the entries are written and a reader sees them.
-    /// `callback` fires from another task, once the log's fsync policy is
-    /// met for everything up to the last of them: under
-    /// `FsyncMode::OnCommit`, once a flush has covered them. A flush covers
-    /// a prefix of the log, so nothing below them is left out.
+    /// `callback` fires once a flush has covered them. A flush covers a
+    /// prefix of the log, so nothing below them is left out.
     ///
     /// The first entry must be the next index. An empty log takes any first
     /// index and starts there.
@@ -123,7 +123,9 @@ where
             .segment_size_bytes
             .saturating_sub(SEGMENT_HEADER_LEN);
         let record_header = record_header_len(GENERATION_VERSION);
-        let mut batches: Vec<Batch> = Vec::new();
+        // Only an append larger than a segment fills `earlier`.
+        let mut earlier: Vec<Batch> = Vec::new();
+        let mut batch = Batch::default();
         let mut next = None;
         let mut last = None;
         for entry in entries {
@@ -146,13 +148,11 @@ where
                     .headers
                     .as_ref()
                     .map_or(0, |headers| headers.len() as u64);
-            if batches
-                .last()
-                .is_none_or(|batch| batch.bytes + bytes > batch_bytes)
-            {
-                batches.push(Batch::starting_at(index));
+            if batch.records.is_empty() {
+                batch.first = index;
+            } else if batch.bytes + bytes > batch_bytes {
+                earlier.push(std::mem::replace(&mut batch, Batch::starting_at(index)));
             }
-            let batch = batches.last_mut().expect("pushed above");
             batch.bytes += bytes;
             // One run per term, as the segment stamps them.
             if batch
@@ -167,21 +167,19 @@ where
             }
             batch.records.push(record);
         }
-        let Some(first) = batches.first().map(|batch| batch.first) else {
+        if batch.records.is_empty() {
             callback.io_completed(Ok(()));
             return Ok(());
-        };
+        }
+        let first = earlier.first().map_or(batch.first, |batch| batch.first);
 
-        // Taken before the entries are written and held until the callback
-        // has fired, so a truncation waits for it.
-        let (flushing, tail) = match shared.hides() {
+        let tail = match shared.hides() {
             Some(snapshots) => {
-                let flushing = shared.admit(snapshots, first).await?;
-                (flushing, log.tail_offset().await.map_err(io_error)?)
+                shared.admit(snapshots, first).await?;
+                log.tail_now()
             }
             None => {
-                let flushing = Arc::clone(&shared.flushing).read_owned().await;
-                let tail = log.tail_offset().await.map_err(io_error)?;
+                let tail = log.tail_now();
                 let purged = shared.bounds.lock().on_disk;
                 // No entry above the purged id: the log restarts where this
                 // append begins. That is right after the purged id when
@@ -197,13 +195,19 @@ where
                         log.reset_to(first).await.map_err(io_error)?;
                     }
                 }
-                (flushing, tail)
+                tail
             }
         };
-        let mut written = Vec::with_capacity(batches.len());
-        for batch in batches {
-            let pending = log
-                .append_pending_at(batch.first, &batch.records, WrittenBy::Writers(batch.writers))
+        // Read before the write: see `TailCache`.
+        let cuts = log.cuts();
+        let mut pending = None;
+        for batch in earlier.into_iter().chain([batch]) {
+            let appended = log
+                .append_pending_at(
+                    batch.first,
+                    &batch.records,
+                    WrittenBy::Writers(batch.writers.clone()),
+                )
                 .await
                 .map_err(io_error)?
                 .ok_or_else(|| {
@@ -213,35 +217,45 @@ where
                         batch.first
                     ))
                 })?;
-            written.push(pending);
+            shared.tail.lock().extend(cuts, batch.into_log_records());
+            pending = Some(appended);
         }
         // Written, not yet on disk: the signal an acknowledgement that does
         // not wait for the fsync goes by.
         shared.positions.send_modify(|at| at.written = last);
 
-        let shared = Arc::clone(shared);
-        tokio::spawn(async move {
-            let mut flushed = Ok(());
-            for pending in &written {
-                flushed = shared.log.commit(pending).await.map_err(io_error);
-                if flushed.is_err() {
-                    break;
+        // A flush covers a prefix of the log, so the last batch's wait
+        // stands for the append.
+        let pending = pending.expect("at least one batch");
+
+        // Fired here only when no earlier callback is still to come, so
+        // callbacks keep the order of their appends.
+        let flushed = if shared.flushes.is_empty() {
+            log.commit_now(&pending)
+        } else {
+            None
+        };
+        let done = {
+            let shared = Arc::clone(shared);
+            move |flushed: io::Result<()>| {
+                if flushed.is_ok() {
+                    // An append behind this one may have flushed first.
+                    shared.positions.send_modify(|at| {
+                        if at
+                            .flushed
+                            .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+                        {
+                            at.flushed = last;
+                        }
+                    });
                 }
+                callback.io_completed(flushed);
             }
-            if flushed.is_ok() {
-                // An append behind this one may have flushed first.
-                shared.positions.send_modify(|at| {
-                    if at
-                        .flushed
-                        .is_none_or(|flushed| last.is_some_and(|last| last.index > flushed.index))
-                    {
-                        at.flushed = last;
-                    }
-                });
-            }
-            callback.io_completed(flushed);
-            drop(flushing);
-        });
+        };
+        match flushed {
+            Some(flushed) => done(flushed.map_err(io_error)),
+            None => shared.flushes.push(log, pending, Box::new(done)),
+        }
         Ok(())
     }
 
@@ -255,7 +269,9 @@ where
         let log = &self.shared.log;
         // A flush still waiting on entries this cuts would never reach them
         // and would report the append failed. Each one finishes first.
-        let _flushed = self.shared.flushing.write().await;
+        self.shared.flushes.drained().await;
+        // Before the cut, so no read finds here an entry the log has lost.
+        self.shared.tail.lock().clear();
         let first = self.shared.first_index();
         let kept = last_log_id.as_ref().map(|id| LogPoint {
             term: **id.committed_leader_id(),
@@ -296,8 +312,9 @@ where
             }
         };
         // After a purge past the log's end the first index is above the
-        // tail, and there is nothing to cut.
-        if keep >= log.tail_offset().await.map_err(io_error)? {
+        // tail, and there is nothing to cut. `SegmentSet::truncate` agrees,
+        // but only after the fence and a blocking hop.
+        if keep >= log.tail_now() {
             return Ok(());
         }
         log.truncate(keep).await.map_err(io_error)?;
@@ -325,7 +342,7 @@ where
         let log = &shared.log;
         // A purge past the end drops entries a flush may still be waiting
         // on, as a truncation does.
-        let _flushed = shared.flushing.write().await;
+        shared.flushes.drained().await;
         let index = log_id.index();
         let term = **log_id.committed_leader_id();
         let purged = Purged {
@@ -352,6 +369,15 @@ where
                 )));
             }
         }
+        // An id more than one below the log's base would record a purge with
+        // missing entries between it and the first one held.
+        if index.saturating_add(1) < log.base_offset() {
+            return Err(invalid(format!(
+                "{}: asked to purge through index {index}, below the log's base {}",
+                log.label(),
+                log.base_offset()
+            )));
+        }
         shared.check_held(purged).await?;
         shared.remove_through(purged).await
     }
@@ -376,6 +402,7 @@ where
 }
 
 /// Entries of one append that go to the log as one batch.
+#[derive(Default)]
 struct Batch {
     first: Offset,
     records: Vec<AppendRecord>,
@@ -387,10 +414,34 @@ impl Batch {
     fn starting_at(first: Offset) -> Self {
         Self {
             first,
-            records: Vec::new(),
-            writers: Vec::new(),
-            bytes: 0,
+            ..Self::default()
         }
+    }
+
+    /// The records as a read of the log returns them, but for the
+    /// checksum, which only the segment holds.
+    fn into_log_records(self) -> impl Iterator<Item = LogRecord> {
+        let Self { first, writers, .. } = self;
+        let mut runs = writers.into_iter().peekable();
+        let mut generation = UNKNOWN_WRITER;
+        self.records
+            .into_iter()
+            .zip(first..)
+            .map(move |(record, offset)| {
+                while let Some(run) = runs.next_if(|run| run.start_offset <= offset) {
+                    generation = run.generation;
+                }
+                LogRecord {
+                    offset,
+                    timestamp_micros: record.timestamp_micros,
+                    checksum: 0,
+                    payload: record.payload,
+                    mark: record.mark,
+                    publisher: record.publisher,
+                    headers: record.headers,
+                    generation: Some(generation),
+                }
+            })
     }
 }
 
