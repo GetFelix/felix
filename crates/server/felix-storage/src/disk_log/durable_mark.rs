@@ -115,10 +115,26 @@ pub(crate) fn mark_file_name() -> &'static str {
     "durable.mark"
 }
 
+/// The file a poisoned log leaves behind. It holds the mark as of the
+/// poison, in the mark's own encoding.
+pub(crate) fn poison_file_name() -> &'static str {
+    "poisoned"
+}
+
+/// What the poison marker in `dir` says. `None` when there is no marker;
+/// `Some(None)` when there is one the mark in it cannot be read from.
+pub(crate) fn load_poison(dir: &Path) -> Option<Option<DurableMark>> {
+    match crate::fs::read(dir.join(poison_file_name())) {
+        Ok(bytes) => Some(DurableMark::decode(&bytes)),
+        Err(_) => None,
+    }
+}
+
 /// The open mark file of one log.
 #[derive(Debug)]
 pub(super) struct MarkFile {
     file: File,
+    dir: std::path::PathBuf,
     /// Held across the write, so two writers cannot land out of order.
     state: Mutex<MarkState>,
 }
@@ -147,8 +163,22 @@ impl MarkFile {
             .open(dir.join(mark_file_name()))?;
         Ok(Self {
             file,
+            dir: dir.to_path_buf(),
             state: Mutex::new(MarkState::default()),
         })
+    }
+
+    /// Leave a marker beside the mark saying the log was poisoned, with the
+    /// mark as of now: the last point a sync is known to have reached. Not
+    /// synced. A process restart finds it in the page cache, which is the
+    /// case it exists for; after a power loss the log is recovered as one
+    /// anyway. Syncing could also fail on the device that just failed.
+    pub(super) fn record_poison(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        let last = self.state.lock().last;
+        let bytes = last.map_or([0u8; MARK_LEN], |mark| mark.encode());
+        let mut file = File::create(self.dir.join(poison_file_name()))?;
+        file.write_all(&bytes)
     }
 
     /// [`MarkFile::record_since`] as of now.

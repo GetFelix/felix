@@ -708,6 +708,14 @@ impl LogInner {
         // every log's poison, not only the first: this one must not return
         // before the record says so. Forgetting twice writes nothing.
         crate::run_state::forget_watched();
+        if let Err(err) = self.mark.record_poison() {
+            tracing::warn!(
+                shard = %self.label,
+                error = %err,
+                "could not record the poison; a restart in this boot may keep bytes the failed \
+                 flush wrote"
+            );
+        }
     }
 
     /// Poison the log if a truncation or reset failed partway. Its segment,

@@ -54,6 +54,9 @@ struct Shared {
     /// Whether a snapshot is stored, and the last entry it covers. Held
     /// across a write, so two installs do not interleave.
     stored: parking_lot::Mutex<Option<Option<SnapshotId>>>,
+    /// The last entry the stored snapshot covers, behind a lock that is never
+    /// held across I/O. A purge reads it on a runtime worker.
+    covered: parking_lot::Mutex<Option<SnapshotId>>,
 }
 
 impl SnapshotStore {
@@ -66,6 +69,7 @@ impl SnapshotStore {
         Ok(Self {
             shared: Arc::new(Shared {
                 dir,
+                covered: parking_lot::Mutex::new(stored.flatten()),
                 stored: parking_lot::Mutex::new(stored),
             }),
         })
@@ -74,7 +78,13 @@ impl SnapshotStore {
     /// The last entry the stored snapshot covers, or `None` when there is
     /// no snapshot or it covers nothing.
     pub fn covers(&self) -> Option<SnapshotId> {
-        self.shared.stored.lock().flatten()
+        *self.shared.covered.lock()
+    }
+
+    /// Take the lock an install or a read holds across its file I/O.
+    #[cfg(test)]
+    pub(crate) fn hold_io(&self) -> parking_lot::MutexGuard<'_, Option<Option<SnapshotId>>> {
+        self.shared.stored.lock()
     }
 
     /// The stored snapshot, read from disk and checked.
@@ -106,6 +116,7 @@ impl SnapshotStore {
                 &[&header, &snapshot.meta, &snapshot.data],
             )?;
             *stored = Some(snapshot.last);
+            *shared.covered.lock() = snapshot.last;
             Ok(true)
         })
         .await

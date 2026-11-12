@@ -79,6 +79,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     raft-purged                              ← a Raft log's last purged id
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
+    poisoned                                 ← only after a failed fsync: the mark as of the failure
     producers                                ← producer snapshot, when any producer wrote here
     head                                     ← trim records' head entries, once the log holds a v7 segment
     offload.manifest                         ← segments copied to the object store, once offload has run
@@ -1452,6 +1453,12 @@ after a power loss it can lag by the filesystem's writeback delay; it is
 synced at open (with its directory entry, so a fresh shard's first segment has
 a mark), at clean shutdown and close, and after a truncation or reset. A
 missing or corrupt mark reads as absent.
+
+A log that a failed fsync poisons also writes a `poisoned` file of the same
+32 bytes and layout, holding the mark as of the failure. It is not synced.
+The next open of the log, under `OnCommit`, cuts the log back to that mark,
+writes the state files again, and removes the file last. A file that does not
+decode still triggers the rewrite of the state files, and cuts nothing.
 
 ## `storage-id`: the data directory's identity
 

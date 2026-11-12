@@ -993,6 +993,10 @@ impl DiskLog {
         // Before recovery, which needs it to tell a segment that was
         // offloaded from one that was lost.
         let manifest = offload::manifest::load(&dir)?;
+        // Before the segments are looked at, so recovery sees the cut log.
+        if let Some(marker) = durable_mark::load_poison(&dir) {
+            recovery::after_poison(&dir, &label, &config, marker)?;
+        }
         let recovered = recovery::recover_shard(&dir, &label, &config, &manifest)?;
         // Does not touch the archive: an unreachable one must not stop the
         // log from serving. The first pass opens it.

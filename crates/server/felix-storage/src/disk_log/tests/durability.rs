@@ -340,3 +340,91 @@ async fn opening_a_log_flushes_its_directory_once() {
         }
     }
 }
+
+/// A restart in the boot that poisoned the log: the failed flush's bytes are
+/// still in the page cache and read back as valid records. They were never
+/// acknowledged under `OnCommit`, so the log opens without them and takes
+/// the next append where they began.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_cuts_the_unsynced_bytes() {
+    // Small segments, so the bytes of the failed flush span a rollover.
+    for failing in 3..6 {
+        let dir = tempdir().expect("dir");
+        let log = open(&dir, FsyncMode::OnCommit);
+        for i in 0..failing {
+            log.append(&records(&[&format!("v{i}")]))
+                .await
+                .expect("append");
+        }
+        log.inner
+            .fail_next_flush
+            .store(true, std::sync::atomic::Ordering::Release);
+        log.append(&records(&["lost"]))
+            .await
+            .expect_err("flush failed");
+        assert!(log.is_poisoned());
+        drop(log);
+        assert!(dir.path().join("poisoned").exists());
+
+        let log = open(&dir, FsyncMode::OnCommit);
+        let kept: Vec<String> = (0..failing).map(|i| format!("v{i}")).collect();
+        assert_eq!(read_all(&log, 0).await, kept, "failing at {failing}");
+        assert!(!dir.path().join("poisoned").exists());
+        log.append(&records(&["next"])).await.expect("append");
+        let mut expected = kept;
+        expected.push("next".to_string());
+        assert_eq!(read_all(&log, 0).await, expected);
+    }
+}
+
+/// The cut stays off for a relaxed mode, whose records past the last sync
+/// were acknowledged, and the marker is still cleared.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_keeps_a_relaxed_logs_records() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b"])).await.expect("append");
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.sync().await.expect_err("flush failed");
+    drop(log);
+    assert!(dir.path().join("poisoned").exists());
+
+    let log = open(&dir, FsyncMode::None);
+    assert_eq!(read_all(&log, 0).await, ["a", "b"]);
+    assert!(!dir.path().join("poisoned").exists());
+}
+
+/// A state file whose last write failed is read back from the page cache as
+/// if it were durable, so a start after a poison writes it again.
+#[tokio::test]
+async fn a_restart_after_a_poisoned_flush_writes_the_state_files_again() {
+    use std::os::unix::fs::MetadataExt;
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    log.accept_generation(3, Some("leader-a"))
+        .await
+        .expect("accept");
+    let ballot = dir.path().join("ballot");
+    let before = (
+        std::fs::metadata(&ballot).expect("ballot").ino(),
+        std::fs::read(&ballot).expect("read"),
+    );
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    log.append(&records(&["lost"]))
+        .await
+        .expect_err("flush failed");
+    drop(log);
+
+    let log = open(&dir, FsyncMode::OnCommit);
+    let after = (
+        std::fs::metadata(&ballot).expect("ballot").ino(),
+        std::fs::read(&ballot).expect("read"),
+    );
+    assert_ne!(before.0, after.0, "the ballot was not written again");
+    assert_eq!(before.1, after.1);
+    drop(log);
+}

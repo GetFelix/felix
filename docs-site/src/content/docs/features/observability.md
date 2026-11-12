@@ -560,18 +560,22 @@ ever reporting ready, so whatever started it sees a failed start, not a crash.
 
 `/ready` also turns false when a log is poisoned, which happens when a disk
 flush (an fsync) fails on it. The body has one line per poisoned log, with
-the shard and what stopped it:
+its tenant and what stopped it:
 
 ```text
-log acme/prod/orders/0 is poisoned: a flush of the replica state failed (...)
+a log of tenant acme is poisoned: a flush of the replica state failed (...)
+reboot the host before restarting the broker; the broker log names each shard
 ```
 
 A poisoned log refuses writes until the broker restarts, because the
 operating system may have dropped the data the failed flush was meant to
-keep. Check the disk, then reboot the host before starting the broker again:
-after a restart without a reboot the broker can read that data back from
-memory although it never reached the disk
-([#2308](https://github.com/GetFelix/felix/issues/2308)).
+keep. The process does not exit and `/live` stays ok, so restarting is up to
+you. Check the disk, then reboot the host before starting the broker again.
+The listener has no authentication, so the body names the tenant only, as
+`/metrics` does; the broker's log has the full shard name. A broker that
+restarts on the same boot cuts a poisoned `OnCommit` log back to its last
+synced point and writes its state files again, but the reboot is still the
+safe path.
 
 For now one poisoned log makes the whole broker not ready, healthy shards
 included. The plan is for only that shard to stop, with its leader handing

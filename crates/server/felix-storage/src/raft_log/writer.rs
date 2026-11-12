@@ -264,7 +264,8 @@ where
             }
         };
         // After a purge past the log's end the first index is above the
-        // tail, and there is nothing to cut.
+        // tail, and there is nothing to cut. `SegmentSet::truncate` agrees,
+        // but only after the fence and a blocking hop.
         if keep >= log.tail_offset().await.map_err(io_error)? {
             return Ok(());
         }
@@ -307,6 +308,15 @@ where
                     log.label()
                 )));
             }
+        }
+        // An id more than one below the log's base would record a purge with
+        // missing entries between it and the first one held.
+        if index.saturating_add(1) < log.base_offset() {
+            return Err(invalid(format!(
+                "{}: asked to purge through index {index}, below the log's base {}",
+                log.label(),
+                log.base_offset()
+            )));
         }
         let tail = log.tail_offset().await.map_err(io_error)?;
         if index >= shared.first_index() && index < tail {

@@ -51,9 +51,8 @@ pub(crate) use self::plan::{
     End, IndexRebuild, RecoveryPlan, Removal, Resume, Step, View, plan_recovery,
 };
 
-// Only the tests reach these through `super::*`.
-#[cfg(test)]
 use self::durable_mark::DurableMark;
+// Only the tests reach these through `super::*`.
 #[cfg(test)]
 use crate::CorruptionKind;
 #[cfg(test)]
@@ -360,6 +359,91 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
     // duplicate that later code treats as two segments.
     ids.dedup();
     Ok(ids)
+}
+
+/// Start after a log was poisoned in the boot still running. The bytes of
+/// the flush that failed can sit in the page cache looking valid, and a sync
+/// of them would succeed without writing anything. So the log is cut back to
+/// the mark the poison recorded, as a power loss would have left it, and the
+/// small state files are written again, which is a real write.
+///
+/// Only under `OnCommit` is the cut safe: nothing past the last sync was
+/// acknowledged there. A relaxed mode acknowledged those records, and its
+/// run already took a new storage id. The marker goes last, so a crash part
+/// way repeats all of this.
+pub(super) fn after_poison(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    marker: Option<DurableMark>,
+) -> Result<()> {
+    if matches!(config.fsync_mode, crate::log::FsyncMode::OnCommit)
+        && let Some(mark) = marker
+    {
+        cut_to_mark(dir, label, mark)?;
+    }
+    for name in STATE_FILES {
+        let bytes = match crate::fs::read(dir.join(name)) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(err) => return Err(err.into()),
+        };
+        crate::run_state::write_atomically(dir, name, &bytes, true)?;
+    }
+    match crate::fs::remove_file(dir.join(durable_mark::poison_file_name())) {
+        Ok(()) => Ok(sync_dir(dir)?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Files whose last write may have failed, each read back from the page
+/// cache as if it were durable.
+const STATE_FILES: [&str; 4] = ["ballot", "replica", "replica-set", "epochs"];
+
+/// Drop everything past `mark`: the segments after its own, and its own
+/// bytes past `synced_bytes`. A mark naming a segment that is gone, or a
+/// segment already that short, leaves the log as it is.
+fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
+    let ids = discover_segment_ids(dir)?;
+    if !ids.contains(&mark.segment) {
+        return Ok(());
+    }
+    let path = dir.join(segment_file_name(mark.segment));
+    let len = crate::fs::metadata(&path)?.len();
+    let newer: Vec<SegmentId> = ids.into_iter().filter(|id| *id > mark.segment).collect();
+    if newer.is_empty() && len <= mark.synced_bytes {
+        return Ok(());
+    }
+    tracing::warn!(
+        shard = label,
+        segment = mark.segment,
+        synced_bytes = mark.synced_bytes,
+        later_segments = newer.len(),
+        "the last run poisoned this log; cutting it back to its last synced point"
+    );
+    // Newest first, so a crash part way leaves a longer log and no gap.
+    for id in newer.into_iter().rev() {
+        crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
+        remove_segment_files(dir, id)?;
+        sync_dir(dir)?;
+    }
+    if len > mark.synced_bytes {
+        crate::fs::note_torn_tail(&path);
+        // Cut and possibly appended to again, so these must not outlive it.
+        for stale in [known_file_name(mark.segment), index_file_name(mark.segment)] {
+            match crate::fs::remove_file(dir.join(stale)) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => return Err(err.into()),
+            }
+        }
+        let file = crate::fs::OpenOptions::new().write(true).open(&path)?;
+        file.set_len(mark.synced_bytes)?;
+        crate::io::sync_data(&file)?;
+        sync_dir(dir)?;
+    }
+    Ok(())
 }
 
 /// Unlink a segment and its index. The caller syncs the directory.

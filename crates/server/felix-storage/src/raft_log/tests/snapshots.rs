@@ -104,3 +104,26 @@ async fn a_leftover_temporary_is_not_the_snapshot() {
     assert!(store.install(first.clone()).await.expect("install"));
     assert_eq!(store.current().await.expect("read"), Some(first));
 }
+
+/// The covered id is read while an install or a read holds the I/O lock, so
+/// a purge does not wait on a snapshot write.
+#[tokio::test]
+async fn covers_does_not_wait_for_snapshot_io() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    assert!(
+        store
+            .install(snapshot(1, 5, "five"))
+            .await
+            .expect("install")
+    );
+    let held = store.hold_io();
+    let reader = store.clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(reader.covers()).expect("send"));
+    let seen = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("covers() waited for the I/O lock");
+    assert_eq!(seen, Some(SnapshotId { term: 1, index: 5 }));
+    drop(held);
+}
