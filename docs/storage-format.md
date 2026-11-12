@@ -1194,7 +1194,7 @@ read, and the next open deletes it.
 Each open writes the member file from its own copy, so a second one would
 undo the first's changes, and two writers on one log would corrupt it. The
 open takes an exclusive, non-blocking `flock` on `store/lock` before it
-reads the member file, and holds it until the store is dropped. A second
+reads the member file, and unlocks it when the store is dropped. A second
 open fails with "resource busy", whether it comes from the same process,
 another process, or through a symlink. The kernel releases the lock when the
 holder exits, so a crash leaves nothing to clean up.
