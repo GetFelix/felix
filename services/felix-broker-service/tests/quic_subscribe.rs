@@ -1473,3 +1473,126 @@ async fn quic_subscribe_range_stops_at_its_end() -> Result<()> {
     server_task.abort();
     Ok(())
 }
+
+/// Records published while a bounded subscription is being set up never leak
+/// past `end` or open a hole below it, whether `end` is the tail it saw, or
+/// beyond it. The subscriber leaves fanout when the range finishes.
+#[tokio::test]
+#[serial]
+async fn quic_subscribe_range_is_exact_while_publishing() -> Result<()> {
+    unsafe {
+        std::env::set_var("FELIX_ACK_ON_COMMIT", "false");
+    }
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    for (stream, durable) in [("matches", true), ("chatter", false)] {
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                stream,
+                StreamMetadata {
+                    durable,
+                    shards: 1,
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
+
+    let (server_config, cert) = build_server_config()?;
+    let server = Arc::new(QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?);
+    let addr = server.local_addr()?;
+    let config = felix_broker_service::config::BrokerConfig::from_env()?;
+    let auth = auth_fixture(
+        "t1",
+        vec![
+            "stream.publish:stream:t1/*/*".to_string(),
+            "stream.subscribe:stream:t1/*/*".to_string(),
+        ],
+    );
+    let server_task = tokio::spawn(felix_broker_service::serving::quic::serve(
+        Arc::clone(&server),
+        Arc::clone(&broker),
+        config,
+        Arc::clone(&auth.auth),
+    ));
+
+    let client = Connection::connect(addr, "localhost", build_client_config(cert, &auth)?).await?;
+    let publisher = client.publisher().await?;
+    let publish = |from: usize, to: usize| {
+        let publisher = &publisher;
+        async move {
+            for i in from..to {
+                publisher
+                    .publish(
+                        "t1",
+                        "default",
+                        "matches",
+                        format!("move-{i}").into_bytes(),
+                        felix_wire::AckMode::PerMessage,
+                    )
+                    .await?;
+            }
+            Result::<()>::Ok(())
+        }
+    };
+    publish(0, 10).await?;
+
+    // `end` at the tail the subscriber saw, then five records beyond it.
+    let mut tail = 10usize;
+    for ahead in [0usize, 5, 0, 5] {
+        let end = tail + ahead;
+        let racing = publish(tail, tail + 12);
+        let mut range = client
+            .subscribe_range(
+                "t1",
+                "default",
+                "matches",
+                0,
+                felix_client::StartPosition::Offset(tail as u64 - 3),
+                end as u64,
+            )
+            .await?;
+        let (published, offsets) = tokio::join!(racing, async {
+            let mut offsets = Vec::new();
+            while let Some(event) = timeout(Duration::from_secs(10), range.next_event()).await?? {
+                offsets.push(event.offset.expect("offset"));
+            }
+            Result::<Vec<u64>>::Ok(offsets)
+        });
+        published?;
+        assert_eq!(offsets?, (tail as u64 - 3..end as u64).collect::<Vec<_>>());
+        assert!(range.reached_end());
+        tail += 12;
+    }
+    // The finished ranges must release their fanout slots.
+    timeout(Duration::from_secs(10), async {
+        while broker
+            .registered_subscribers("t1", "default", "matches", 0)
+            .await?
+            != 0
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        Result::<()>::Ok(())
+    })
+    .await??;
+
+    server_task.abort();
+    Ok(())
+}
