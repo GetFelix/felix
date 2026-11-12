@@ -11,6 +11,9 @@ name: Metadata Raft benchmark
 # store, with `base` set to the commit before it.
 
 on:
+  # TEMPORARY: lets the branch run before the workflow exists on main.
+  push:
+    branches: [cp/metadata-harness]
   workflow_dispatch:
     inputs:
       base:
@@ -49,9 +52,9 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Check out the base
-        if: inputs.base != ''
+        if: inputs.base != '' || github.event_name == 'push'
         env:
-          BASE: ${{ inputs.base }}
+          BASE: ${{ inputs.base || (github.event_name == 'push' && 'origin/main' || '') }}
         run: |
           git worktree add "$RUNNER_TEMP/base" "$BASE"
           # The base may predate the benchmark; both sides run this commit's.
@@ -60,8 +63,8 @@ jobs:
 
       - name: Run the benchmark
         env:
-          SCALE: ${{ inputs.scale }}
-          BASE: ${{ inputs.base }}
+          SCALE: ${{ inputs.scale || 'full' }}
+          BASE: ${{ inputs.base || (github.event_name == 'push' && 'origin/main' || '') }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/results"
@@ -79,7 +82,7 @@ jobs:
 
       - name: Compare
         env:
-          BASE: ${{ inputs.base }}
+          BASE: ${{ inputs.base || (github.event_name == 'push' && 'origin/main' || '') }}
         run: |
           set -o pipefail
           out="$RUNNER_TEMP/results"
