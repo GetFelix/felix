@@ -7,12 +7,19 @@ use anyhow::Result;
 use felix_broker::Broker;
 
 use crate::observability::tenants::TenantDelivery;
+use crate::serving::revocation::Revocable;
 
 /// Bound on catch-up passes, so a stream being published to faster than it can
 /// be written cannot keep a subscribe from completing. Reaching it hands over to
 /// live delivery, which is correct: offsets are on the wire, so a client can see
 /// any residual gap rather than being misled about it.
 const MAX_CATCH_UP_PASSES: usize = 8;
+
+/// Why a replay stopped short: the credential the subscription was opened
+/// with was revoked. The caller ends the subscription with the refusal.
+#[derive(Debug, thiserror::Error)]
+#[error("the subscription's credential was revoked during replay")]
+pub(super) struct ReplayRevoked;
 
 /// Where replayed events are written.
 ///
@@ -83,6 +90,9 @@ pub(crate) struct EventFormat {
 /// With `end`, nothing at or above it is written. Returns whether the replay
 /// reached `end`, in which case the subscription is over and live delivery
 /// never starts.
+///
+/// Fails with [`ReplayRevoked`] once `revocable` is revoked, checked before
+/// every frame and raced against every read.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_replay<S: EventSink>(
     event_send: &mut S,
@@ -100,11 +110,13 @@ pub(super) async fn write_replay<S: EventSink>(
     max_bytes: usize,
     format: EventFormat,
     end: Option<u64>,
+    revocable: Option<&Revocable>,
 ) -> Result<bool> {
     let cap = end.unwrap_or(u64::MAX);
     let mut replay = Replay {
         sink: event_send,
         broker,
+        revocable,
         tenant_id,
         namespace,
         stream,
@@ -243,7 +255,8 @@ pub(super) async fn write_replay<S: EventSink>(
 }
 
 /// Write `[from, end)` from disk and nothing else: a bounded subscription
-/// whose range lies below the tail needs no live edge to pin.
+/// whose range lies below the tail needs no live edge to pin. Revocation
+/// ends it as it does [`write_replay`].
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn write_history<S: EventSink>(
     event_send: &mut S,
@@ -258,10 +271,12 @@ pub(super) async fn write_history<S: EventSink>(
     max_events: usize,
     max_bytes: usize,
     format: EventFormat,
+    revocable: Option<&Revocable>,
 ) -> Result<()> {
     let mut replay = Replay {
         sink: event_send,
         broker,
+        revocable,
         tenant_id,
         namespace,
         stream,
@@ -280,6 +295,9 @@ pub(super) async fn write_history<S: EventSink>(
 struct Replay<'a, S> {
     sink: &'a mut S,
     broker: &'a Arc<Broker>,
+    /// The subscription's credential. Not watched by anything else until
+    /// live delivery starts, so the replay checks it itself.
+    revocable: Option<&'a Revocable>,
     tenant_id: &'a str,
     namespace: &'a str,
     stream: &'a str,
@@ -330,17 +348,23 @@ impl<S: EventSink> Replay<'_, S> {
         /// that starts arbitrarily far back.
         const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
         while self.next < until {
-            let records = self
-                .broker
-                .read_committed(
-                    self.tenant_id,
-                    self.namespace,
-                    self.stream,
-                    self.shard,
-                    self.next,
-                    HISTORY_PAGE_BYTES,
-                )
-                .await?;
+            let read = self.broker.read_committed(
+                self.tenant_id,
+                self.namespace,
+                self.stream,
+                self.shard,
+                self.next,
+                HISTORY_PAGE_BYTES,
+            );
+            // A read can wait on the committed mark, so it is raced rather
+            // than only checked. Dropping it mid-read writes nothing.
+            let records = match self.revocable {
+                Some(revocable) => tokio::select! {
+                    records = read => records?,
+                    () = revocable.revoked() => return Err(ReplayRevoked.into()),
+                },
+                None => read.await?,
+            };
             if records.is_empty() {
                 break;
             }
@@ -377,7 +401,12 @@ impl<S: EventSink> Replay<'_, S> {
         Ok(())
     }
 
+    /// Checked before each frame rather than raced with its write: a frame
+    /// cut off midway would leave no clean boundary for the refusal.
     async fn write(&mut self, ready: &ReadyBatch) -> Result<()> {
+        if self.revocable.is_some_and(Revocable::is_revoked) {
+            return Err(ReplayRevoked.into());
+        }
         write_replay_batch(self.sink, self.subscription_id, ready, self.format).await
     }
 }
