@@ -354,6 +354,7 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 | `gate-perf.yml` | Cells 1 and 2, batched only, judged on medians | The paired rule. Batch 1. Cells 3 to 6 and 11 to 14. The engine A/B |
 | `gate-failover.yml` | Cell 7. Control plane down as pass or fail | Cell 8 as a time. Cell 9. The paired rule |
 | `gate-groups.yml` | A stub | Cell 10 |
+| `gate-liveness.yml` | Not a gate cell. Prices store liveness in shadow mode on the hybrid, on against off, with sync on commit ([replication engine](replication-engine.md), "How to run the gate"). Shown in the report, never in the verdict | |
 | `gate.yml` | The report | Matrix 16 to 18 and 21. The stall comparison between engines |
 
 Changes the workflows need, in the order the gate needs them:
