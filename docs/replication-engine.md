@@ -676,17 +676,15 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10), and
 `[workspace.dependencies]` pins `openraft = "=0.10.0"`, which `felix-storage`
-uses behind its `raft` feature. The control plane runs 0.9.25 today
-(`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
-pinned version as part of its storage track, so the workspace has one
-openraft. A version change is a reviewed update, never a side effect of
+uses behind its `raft` feature. The control plane uses the same pin
+(`services/felix-controlplane-service/Cargo.toml:61`), so the workspace has
+one openraft. A version change is a reviewed update, never a side effect of
 refreshing the lockfile.
 
 **Release rule (decided).** A Felix release ships a control plane on 0.10
 only if 0.10 is final, or the pinned version has passed the full
 control-plane simulator, crash-point and history checks. With 0.10.0 final
-the first condition holds; the checks still run before the control plane
-switches. The control plane's openraft types stay inside `src/raft/`, so a
+the first condition holds. The control plane's openraft types stay inside `src/raft/`, so a
 version change touches only that module.
 
 **What 0.10.0 adds that this design uses.** Each needs checking against the
@@ -747,21 +745,19 @@ pins it.
 The adapter stays thin: openraft types do not leave `felix-storage::raft_log`
 and the engine module that drives it, so an API change is contained there.
 The control plane already keeps openraft types inside `src/raft/` for the
-same reason (`services/felix-controlplane-service/Cargo.toml:62`).
+same reason (`services/felix-controlplane-service/Cargo.toml:60`).
 
 A member that rejoins after its volume was wiped reports a log that went
 backwards. Without permission for that, the leader trips over the reverted
-log, which is the error the control plane's chaos test caught
-(`Cargo.toml:63-68`). On 0.9 the `loosen-follower-log-revert` feature allows
-it, and the control plane keeps that feature until it moves. On 0.10 the
-feature is deprecated in favour of `Config::allow_log_reversion`, which the
-adapter sets for every group.
+log, which is the error the control plane's chaos test caught. On 0.10 the
+permission is `Config::allow_log_reversion`, which the control plane sets
+(`services/felix-controlplane-service/src/raft/handle.rs`) and the adapter
+sets for every group.
 
 Checklist for each openraft version change:
 
 1. Pin the exact version in `Cargo.toml` and `Cargo.lock`.
-2. Allow log reversion: `allow_log_reversion` on 0.10, the
-   `loosen-follower-log-revert` feature on 0.9.
+2. Allow log reversion with `Config::allow_log_reversion`.
 3. Check the follower-side leader lease still equals `election_timeout_max`,
    and that a follower still refuses votes for that long, since the lease
    margin depends on both (Decisions, 5).
@@ -1431,27 +1427,34 @@ and writes one report:
 | Workflow | Criterion | What it runs |
 |---|---|---|
 | `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
-| `gate-perf.yml` | 2, 3 | RF 1 and RF 3 on three brokers, 1 KiB and 64 KiB, the baseline tag against this commit on one runner |
+| `gate-perf.yml` | 2, 3 | RF 1 on one broker and RF 3 on three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99, the baseline tag against this commit on one runner |
 | `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
 Each part also runs alone with its own "Run workflow" button. Small sizes make
 a dry run: for example `seeds: 8`, `shards: 2`, `modes: off`,
-`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `rounds: 2`,
-`seconds: 5` for `gate-perf.yml`.
+`nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `seconds: 5`
+for `gate-perf.yml` (it always starts with six rounds).
 
 The perf and failover parts build the baseline (default `v0.7.1`, the last
 v0.7.x release) and this commit, then alternate the two sides trial by trial
-with the side that goes first flipping each round, so runner drift lands on
-both. Both sides use this commit's `felix-cluster` harness and `felix-loadgen`;
-only `felix-broker` differs. The figure for a cell is the median over the
-rounds both sides completed. A cell with no results, or with fewer than half
-the rounds completed by both sides, fails. `scripts/ci/gate_perf.py` applies
-the rules: throughput at least
-0.90 of the baseline, p99 at most 1.20, failover no longer than the baseline
-plus the `failover_slack` input, 5% by default: failover is quantized by the
-failure-detection timer, and a half-millisecond difference is not a regression.
-Set it to 0 for the literal rule.
+with the baseline running on both sides of the head in turn, so runner drift
+lands on both. The perf part also runs the baseline a second time each round
+for the A/A validity check. Both sides use this commit's `felix-cluster`
+harness and `felix-loadgen`; only `felix-broker` differs.
+
+`scripts/ci/gate_perf.py` applies the paired rule of
+[`release-gate.md`](release-gate.md), section 3. Each round gives one
+candidate/baseline ratio. The figure for a cell is the median ratio with its
+exact interval over 6, 12 or 24 rounds (undecided cells get more rounds).
+Throughput passes when the interval's lower end is above 0.97, p99 when its
+upper end is under 1.10, and failover when baseline over candidate is above
+0.95. A cell with no results, or a missing or partial round, fails. The
+engine A/B rule (0.90 and 1.20 on medians) is `--mode engine` and is not wired
+into the workflows yet. The `failover_slack` input is gone. On hosted runners
+the p99 cells are expected to come out void on the A/A check, so a hosted run
+cannot clear a release; the gate needs the dedicated runner
+(`vars.FELIX_LARGE_RUNNER`).
 
 The last job, `report`, assembles `gate-report.md` (also in the run summary and
 in the `gate-report-<engine>` artifact): one row per criterion with pass, fail

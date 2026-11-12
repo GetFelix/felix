@@ -1,12 +1,11 @@
 use std::time::Duration;
 
 use axum::http::StatusCode;
-use openraft::error::{RPCError, RaftError};
-use openraft::raft::VoteResponse;
+use openraft::errors::RPCError;
 
 use super::*;
 
-type Reply = Result<VoteResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>;
+type Reply = Result<wire::VoteResponse, RPCError<TypeConfig>>;
 
 async fn serve(app: axum::Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -21,7 +20,6 @@ fn network(addr: &str) -> HttpNetwork {
     HttpNetwork::for_tests(addr, crate::raft::hold::tests::hold_at(Default::default()))
 }
 
-#[allow(clippy::result_large_err)] // openraft's RPCError
 async fn vote(addr: &str) -> Reply {
     network(addr).send("vote", &serde_json::json!({})).await
 }

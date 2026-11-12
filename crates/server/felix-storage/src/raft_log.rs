@@ -34,8 +34,8 @@ mod codec;
 mod flush_queue;
 mod purged;
 mod reader;
-mod snapshot;
-mod state_file;
+pub(crate) mod snapshot;
+pub(crate) mod state_file;
 mod tail_cache;
 #[cfg(test)]
 mod tests;
