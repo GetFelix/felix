@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794441236390,
+  "lastUpdate": 1794442661207,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66330,6 +66330,72 @@ window.BENCHMARK_DATA = {
             "range": "890.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 492.00\nmean: 998.60\nstdev: 890.97\ncv: 89.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3cfc31b1cc7484c69fcbb1156ac0fe363f276e3e",
+          "message": "fix(storage): a failed fsync or sync_dir on any of a log's files poisons the log (#1998) (#2302)\n\n* fix(storage): a failed fsync or sync_dir on any of a log's files poisons the log (#1998)\n\nA failed segment flush already poisoned the log. A failed flush of the\nballot, the replica set, the replica state or the generation history, of\na rollover's index or directory entry, or of a retention removal did not:\nmemory and disk could differ, and the commit offset write was retried.\n\nEvery sync error from the io seam is now marked, the log poisons on one\nwherever it surfaces, and later operations fail with\nStorageError::Poisoned. /ready answers 503 once a log is poisoned.\n\nSpec-Unaffected: storage error handling only; no protocol, replication\nrule or model changes.\n\n* fix(storage): review fixes for the fsync poison (#1998)\n\n- seal(): a failed index sync, or a failed sync in the roll that follows,\n  now poisons the log. It returned the error and went on acknowledging.\n- The state files (ballot, replica set, replica state, generation history)\n  return SyncFailed for a failed flush, as the docs say, not Io.\n- /ready names each poisoned log and what stopped it, from the new\n  disk_log::poisoned_logs(). A truncation that failed is no longer\n  reported as a failed flush.\n- Tests fail every flush of a seal and of both retention removals, and\n  check the state writes' error. Each wrap was reverted and its test\n  watched failing.\n- Docs: a restart on the same boot after a failed flush is not covered\n  yet (#2308), so the docs say to reboot first instead of claiming the\n  reopen reads only what reached the disk. The broker-wide /ready 503 is\n  the interim; the decided behaviour is per shard (#2300).\n\nSpec-Unaffected: storage error handling and readiness reporting only, no protocol or model change",
+          "timestamp": "2026-11-12T00:13:41Z",
+          "tree_id": "aa56ce53edcca986c3ef2f0465faa7850a8dfd57",
+          "url": "https://github.com/GetFelix/felix/commit/3cfc31b1cc7484c69fcbb1156ac0fe363f276e3e"
+        },
+        "date": 1794442653468,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "3.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 85.20\nstdev: 3.19\ncv: 3.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 117,
+            "range": "5.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 117.00\nmean: 116.00\nstdev: 5.48\ncv: 4.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 153,
+            "range": "130.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 231.80\nstdev: 130.72\ncv: 56.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 101,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 101.00\nmean: 100.40\nstdev: 0.89\ncv: 0.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 219,
+            "range": "10.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 219.00\nmean: 218.00\nstdev: 10.49\ncv: 4.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 433,
+            "range": "445.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 433.00\nmean: 641.60\nstdev: 445.30\ncv: 69.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
