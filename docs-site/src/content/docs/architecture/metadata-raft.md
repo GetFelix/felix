@@ -290,6 +290,14 @@ The store passes openraft's own storage conformance suite on every test
 run, just as the node/shard contract suites run against every metadata
 backend.
 
+The same group can be built on Felix's own segment store instead, so a node
+has one storage engine. That build exists and CI tests it, but no release
+turns it on: it needs `RUSTFLAGS="--cfg felix_segment_store"`, and a group
+on redb has no conversion tool yet. Members of the two builds serve their
+peer routes under different prefixes and never exchange Raft messages. The
+plan is in
+[the design document](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#moving-to-the-segment-store).
+
 ## Why not SWIM gossip
 
 Replacing heartbeat-to-control-plane liveness with SWIM-style gossip

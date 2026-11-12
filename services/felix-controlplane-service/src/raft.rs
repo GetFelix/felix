@@ -19,6 +19,9 @@
 //! - `store` — the Raft log, vote, and current snapshot, in one crash-safe
 //!   redb file per instance. Consensus state is the one thing here that must
 //!   never lie about being on disk.
+//! - `segment_store` — the same on `felix-storage`'s metadata store, in
+//!   place of `store` in a build with `--cfg felix_segment_store`. No
+//!   release sets it.
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
@@ -30,6 +33,7 @@
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
+#[cfg(not(felix_segment_store))]
 mod chunks;
 mod handle;
 mod health;
@@ -40,6 +44,9 @@ mod leader;
 mod network;
 mod peer;
 mod proposal;
+#[cfg(felix_segment_store)]
+mod segment_store;
+#[cfg(not(felix_segment_store))]
 mod store;
 mod types;
 mod version;
@@ -50,9 +57,27 @@ pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
 pub use proposal::NoQuorum;
 
+// One name for whichever store this build runs on.
+#[cfg(felix_segment_store)]
+use segment_store as store;
+
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+/// Where a member's peer routes live. A member on the segment store serves
+/// and calls another prefix than a member on redb, so a request between the
+/// two is a 404 and the two never exchange Raft messages
+/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
+#[cfg(not(felix_segment_store))]
+pub const PEER_PREFIX: &str = "/internal/raft";
+#[cfg(felix_segment_store)]
+pub const PEER_PREFIX: &str = "/internal/raft/v2";
+
+/// The path of the peer route `name`, such as `vote`.
+pub fn peer_route(name: &str) -> String {
+    format!("{PEER_PREFIX}/{name}")
+}
 
 /// This instance's identity within the Raft group.
 pub type NodeId = u64;

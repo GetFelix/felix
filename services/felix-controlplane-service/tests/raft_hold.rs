@@ -73,7 +73,8 @@ async fn start(id: NodeId, dir: &std::path::Path, standing: Arc<AtomicU8>) -> No
         move |request: axum::extract::Request, next: axum::middleware::Next| {
             let standing = Arc::clone(&standing);
             async move {
-                if request.uri().path() == "/internal/raft/standing" {
+                if request.uri().path() == felix_controlplane_service::raft::peer_route("standing")
+                {
                     match standing.load(Ordering::SeqCst) {
                         FAIL => {
                             return axum::response::IntoResponse::into_response(

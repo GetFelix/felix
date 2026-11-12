@@ -1,10 +1,8 @@
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use openraft::storage::{IOFlushed, RaftLogStorage};
-
 use super::*;
-use crate::raft::types::{Entry, EntryPayload, LeaderId, LogId, Membership, Vote};
+use crate::raft::types::{Entry, EntryPayload, Membership, Vote, test_log_id};
 
 struct NullApp;
 
@@ -37,7 +35,7 @@ fn settings(dir: &std::path::Path) -> RaftSettings {
 /// A peer that counts the vote requests it is sent and grants none.
 async fn counting_peer(asked: Arc<AtomicUsize>) -> String {
     let app = axum::Router::new().route(
-        "/internal/raft/vote",
+        &crate::raft::peer_route("vote"),
         axum::routing::post(move || {
             asked.fetch_add(1, Ordering::SeqCst);
             async { axum::http::StatusCode::SERVICE_UNAVAILABLE }
@@ -52,12 +50,7 @@ async fn counting_peer(asked: Arc<AtomicUsize>) -> String {
 }
 
 /// A store whose vote says member 1 led term 5 of a three-member group.
-async fn store_of_a_former_leader(dir: &std::path::Path, peer: &str) {
-    let db = store::open(&dir.join("raft.redb")).expect("open store");
-    let mut log = store::LogStore::new(Arc::clone(&db));
-    log.save_vote(&Vote::new_committed(5, 1))
-        .await
-        .expect("save vote");
+async fn store_of_a_former_leader(dir: &std::path::Path, peer: &str, vote_withheld: bool) {
     let nodes: BTreeMap<NodeId, openraft::impls::BasicNode> = (1..=3)
         .map(|id| {
             let addr = peer.to_string();
@@ -65,15 +58,12 @@ async fn store_of_a_former_leader(dir: &std::path::Path, peer: &str) {
         })
         .collect();
     let membership = Membership::new(vec![BTreeSet::from([1, 2, 3])], nodes).expect("membership");
-    let leader = LeaderId {
-        term: 5,
-        node_id: 1,
-    };
     let entry = Entry {
-        log_id: LogId::new(leader, 0),
+        log_id: test_log_id(5, 1, 0),
         payload: EntryPayload::Membership(membership),
     };
-    log.append([entry], IOFlushed::Noop).await.expect("append");
+    let vote = Vote::new_committed(5, 1);
+    store::seed(dir, "test-cluster", vote, vec![entry], vote_withheld).await;
 }
 
 /// openraft has a restarted leader campaign at once, whatever the election
@@ -84,11 +74,7 @@ async fn a_member_withholding_its_vote_does_not_campaign_after_a_restart() {
     let dir = tempfile::tempdir().expect("tempdir");
     let asked = Arc::new(AtomicUsize::new(0));
     let peer = counting_peer(Arc::clone(&asked)).await;
-    store_of_a_former_leader(dir.path(), &peer).await;
-    {
-        let db = store::open(&dir.path().join("raft.redb")).expect("open store");
-        store::set_vote_withheld(&db, true).expect("withhold");
-    }
+    store_of_a_former_leader(dir.path(), &peer, true).await;
 
     let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
         .await
@@ -106,7 +92,7 @@ async fn a_restarted_leader_that_may_vote_campaigns() {
     let dir = tempfile::tempdir().expect("tempdir");
     let asked = Arc::new(AtomicUsize::new(0));
     let peer = counting_peer(Arc::clone(&asked)).await;
-    store_of_a_former_leader(dir.path(), &peer).await;
+    store_of_a_former_leader(dir.path(), &peer, false).await;
 
     let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
         .await

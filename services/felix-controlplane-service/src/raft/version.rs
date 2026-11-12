@@ -155,7 +155,7 @@ pub(super) async fn probe(
     timeout: Duration,
 ) -> Option<u16> {
     let response = client
-        .get(format!("{base}/internal/raft/standing"))
+        .get(format!("{base}{}", super::peer_route("standing")))
         .query(asker)
         .timeout(timeout)
         .send()

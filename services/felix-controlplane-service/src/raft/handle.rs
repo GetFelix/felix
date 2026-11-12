@@ -29,9 +29,11 @@ pub struct RaftHandle {
     /// Kept past construction only for [`AppStateMachine::restamp`], which
     /// runs on the proposal path rather than the apply loop.
     pub(super) app: Arc<dyn AppStateMachine>,
-    /// Weak so that a stopped node releases its store even while clones of
-    /// the handle live on, and a restart in the same process can reopen it.
-    pub(super) db: std::sync::Weak<redb::Database>,
+    /// The store's own record of this member: whether it holds Raft state
+    /// and whether its vote is withheld. It does not keep the store open
+    /// past a stop, so a restart in the same process can reopen it while
+    /// clones of the handle live on.
+    pub(super) member: store::MemberState,
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
@@ -46,6 +48,7 @@ pub struct RaftHandle {
     pub(super) stopped: Arc<AtomicBool>,
     /// The snapshot transfer this member is receiving, chunk by chunk
     /// ([`super::chunks`]).
+    #[cfg(not(felix_segment_store))]
     pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
 }
 
@@ -61,10 +64,15 @@ impl RaftHandle {
     /// catching up after starting empty, in which case it keeps withholding
     /// its vote.
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
-        std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
-        let db = store::open(&settings.data_dir.join("raft.redb"))?;
-        store::claim_cluster_id(&db, &settings.security.cluster_id)?;
-        let may_vote = !store::vote_withheld(&db)?;
+        // The store is opened, and on the segment store marked as started,
+        // before the node below exists: a node campaigns on its own timer.
+        let store::Opened {
+            log_store,
+            state_machine,
+            may_vote,
+            committed_floor,
+            member,
+        } = store::open_member(&settings, Arc::clone(&app)).await?;
         let config = openraft::Config {
             cluster_name: "felix-metadata".to_string(),
             heartbeat_interval: settings.heartbeat_interval.as_millis() as u64,
@@ -91,14 +99,6 @@ impl RaftHandle {
             ..Default::default()
         };
         let config = Arc::new(config.validate().context("raft config")?);
-
-        // What this node had committed before it stopped: the floor its
-        // state machine must be replayed back to before anything serves
-        // from it. Read before the node starts, because the node moves it.
-        let committed_floor = store::persisted_committed_index(&db);
-        let log_store = store::LogStore::new(Arc::clone(&db));
-        let state_machine =
-            store::StateMachineStore::open(Arc::clone(&db), Arc::clone(&app)).await?;
 
         let versions = Arc::default();
         let hold = Arc::new(super::hold::Hold::new(
@@ -159,12 +159,13 @@ impl RaftHandle {
             security: Arc::new(settings.security),
             peer_addrs: Arc::new(settings.peer_addrs),
             app,
-            db: Arc::downgrade(&db),
+            member,
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
             hold,
             stopped: Arc::default(),
+            #[cfg(not(felix_segment_store))]
             receiving: Arc::default(),
         };
         tokio::spawn(handle.clone().watch_versions());
@@ -176,7 +177,7 @@ impl RaftHandle {
         RaftStatus {
             id: self.id,
             leader: metrics.current_leader.filter(|_| !self.is_stopped()),
-            term: metrics.current_term,
+            term: super::health::shown_term(metrics.current_term),
             last_applied_index: metrics.last_applied.map(|log_id| log_id.index),
             voters: metrics.membership_config.membership().voter_ids().collect(),
         }
@@ -309,7 +310,7 @@ impl RaftHandle {
             .shutdown()
             .await
             .map_err(|err| anyhow::anyhow!("raft shutdown: {err}"))?;
-        Ok(())
+        self.member.close().await
     }
 }
 
