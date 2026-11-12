@@ -234,21 +234,35 @@ impl DiskLog {
     /// saved for some other log. When the index it names holds an entry of
     /// another term, `open` takes nothing as committed; this fails, with
     /// the saved id left as it was.
+    ///
+    /// `keep_alive` is held until the last clone of the log is dropped. The
+    /// store passes its lock, so it is not released while a flusher can
+    /// still write.
     #[cfg(feature = "raft")]
     pub(crate) fn open_refusing_other_commit(
         dir: impl Into<PathBuf>,
         label: impl Into<String>,
         config: LogConfig,
+        keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Result<Self> {
         let files = SealedFiles::new(config.max_open_sealed_segments);
-        Self::open_shared(
+        let log = Self::open_shared(
             dir.into(),
             label.into(),
             config,
             None,
             files,
             OtherCommit::Refuse,
-        )
+        )?;
+        *log.inner.keep_alive.lock() = Some(keep_alive);
+        Ok(log)
+    }
+
+    /// Let go of the `keep_alive` value now, for a log that was shut down
+    /// cleanly and is not written again.
+    #[cfg(feature = "raft")]
+    pub(crate) fn release_keep_alive(&self) {
+        self.inner.keep_alive.lock().take();
     }
 
     pub fn label(&self) -> &str {
@@ -1158,6 +1172,7 @@ impl DiskLog {
         let durable_upto = segments.tail_offset();
         let inner = Arc::new(LogInner {
             label,
+            keep_alive: Mutex::new(None),
             config: config.clone(),
             segments: RwLock::new(segments),
             append_lock: Mutex::new(()),
@@ -1751,6 +1766,9 @@ struct Snapshot {
 /// Shared state behind every clone of a [`DiskLog`].
 struct LogInner {
     label: String,
+    /// Dropped with the log; see [`DiskLog::open_refusing_other_commit`].
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    keep_alive: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
     /// under the read lock and does its I/O after releasing it, and an append

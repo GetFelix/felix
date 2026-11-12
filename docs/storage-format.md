@@ -1204,6 +1204,19 @@ The file is empty and is not part of the store's state. One that is missing
 is created. On a platform without `flock`, and on the simulator's in-memory
 filesystem, the claim is kept in the process instead.
 
+The lock lives as long as the log does: the log holds it too, so a clone of
+the log that outlives the store (after an error, or a failed shutdown) keeps
+the store locked while its flusher can still write.
+
+A first start also takes an exclusive `flock` on the data directory while it
+builds the store, so two first starts do not share `store.tmp`. The one that
+comes second finds the store built and opens it, or is refused as busy.
+
+`flock` is only as strong as the filesystem. On Linux NFS it is emulated with
+byte-range locks, which belong to the process: two opens in one process do
+not exclude each other, and closing any descriptor of the file drops the
+lock. Keep the data directory on a local disk.
+
 Per-shard log directories are not locked yet
 ([#2344](https://github.com/GetFelix/felix/issues/2344)).
 
@@ -1219,7 +1232,9 @@ Per-shard log directories are not locked yet
    setting. A saved committed id whose index holds another term's entry
    refuses the open: the id was saved for some other log, and a restart
    must not apply entries up to it. The id is left on disk, so the next
-   open refuses too. (A shard group's log takes nothing as committed
+   open refuses too. The exception is an id past the recovered log: it is
+   lowered to the log's end first (see "The commit offset is lowered"
+   above), so it names no entry and refuses nothing. (A shard group's log takes nothing as committed
    instead and opens.)
 4. It opens the snapshot and refuses a log whose `raft-purged` id is past
    it: that log has lost entries.

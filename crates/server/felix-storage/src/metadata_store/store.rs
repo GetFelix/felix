@@ -16,7 +16,8 @@ use crate::{DiskLog, StorageError};
 /// One member's metadata store. The only way to open one.
 ///
 /// Holds the store's lock until it and every clone of its member file are
-/// dropped. Shut the log down ([`Self::shutdown`]) before dropping it.
+/// dropped, and, until [`Self::shutdown`] succeeds, every clone of its log.
+/// Shut the log down before dropping it.
 pub struct MetadataStore<C, K> {
     member: MemberFile,
     log: RaftLog<C, K>,
@@ -92,8 +93,15 @@ where
             ..config
         };
         // Fails on a saved committed id whose entry is of another term.
-        let disk = DiskLog::open_refusing_other_commit(store_dir.join(LOG_DIR), label, config)
-            .map_err(io_error)?;
+        // The log keeps the lock: its clones outlive this store, and the
+        // lock must not go while any of them can write.
+        let disk = DiskLog::open_refusing_other_commit(
+            store_dir.join(LOG_DIR),
+            label,
+            config,
+            std::sync::Arc::new(member.clone()),
+        )
+        .map_err(io_error)?;
         let opened = async {
             let log = RaftLog::new(disk.clone(), codec)?;
             let snapshots = SnapshotStore::open(&store_dir)?;
@@ -161,10 +169,15 @@ where
         self.member.mark_started().await
     }
 
-    /// Flush and close the log. The lock is released when the store and
-    /// every clone of its member file are dropped.
+    /// Flush and close the log, then give up the log's hold on the lock, so
+    /// the store can be opened again once the store and every clone of its
+    /// member file are dropped. A shutdown that fails keeps the log's hold,
+    /// and the lock stays until the last clone of the log is gone.
     pub async fn shutdown(self) -> io::Result<()> {
-        self.log.disk_log().shutdown().await.map_err(io_error)
+        let disk = self.log.disk_log();
+        disk.shutdown().await.map_err(io_error)?;
+        disk.release_keep_alive();
+        Ok(())
     }
 }
 

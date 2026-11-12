@@ -67,6 +67,63 @@ async fn a_store_is_held_by_one_opener() {
     open(dir.path()).await.expect("released");
 }
 
+/// The log's clones outlive the store, so the lock stays until the last of
+/// them is gone: a flusher behind one can still write.
+#[tokio::test]
+async fn a_log_clone_keeps_the_store_locked_after_the_store_is_dropped() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let log = store.log();
+    drop(store);
+    let err = open(dir.path()).await.err().expect("second open");
+    assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
+
+    log.disk_log().shutdown().await.expect("shutdown");
+    drop(log);
+    open(dir.path()).await.expect("released");
+}
+
+/// Several first starts of one data directory at once, over and over: each
+/// either opens or is refused as busy, and the store they leave is whole.
+#[test]
+fn racing_first_starts_leave_a_whole_store() {
+    for round in 0..200 {
+        let dir = tempdir().expect("dir");
+        let store = dir.path().join(STORE_DIR);
+        let start = std::sync::Barrier::new(4);
+        let opened: Vec<_> = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        MemberFile::open(&store, CLUSTER)
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().expect("racer"))
+                .collect()
+        });
+        for result in &opened {
+            if let Err(err) = result {
+                assert_eq!(
+                    err.kind(),
+                    io::ErrorKind::ResourceBusy,
+                    "round {round}: {err}"
+                );
+            }
+        }
+        assert!(
+            opened.iter().any(Result::is_ok),
+            "round {round}: nobody opened it"
+        );
+        drop(opened);
+        assert!(store.join(LOG_DIR).is_dir(), "round {round}: no log dir");
+        MemberFile::open(&store, CLUSTER).unwrap_or_else(|err| panic!("round {round}: {err}"));
+    }
+}
+
 /// A new store, and a started one whose log is still blank, hold no Raft
 /// state. The vote is not withheld here: the caller decides.
 #[tokio::test]
