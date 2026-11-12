@@ -654,6 +654,12 @@ impl SimCluster {
         mid_append
     }
 
+    /// The data directory of the broker at `index`.
+    #[cfg(test)]
+    pub(crate) fn data_path(&self, index: usize) -> &std::path::Path {
+        self.nodes[index].data_path()
+    }
+
     /// Every power loss so far.
     pub fn power_losses(&self) -> Vec<PowerLoss> {
         self.power.lock().losses().to_vec()

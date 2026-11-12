@@ -850,3 +850,68 @@ fn a_cut_reports_where_the_whole_records_end() {
     }
     assert!(clean > 0 && torn > 0, "{clean} clean, {torn} torn");
 }
+
+/// Unsynced records before the append can be lost while records of the
+/// append come back whole. Recovery owes a cut there, so the cut must not
+/// report the append's whole records as the end of a clean log.
+#[test]
+fn a_cut_that_loses_bytes_before_the_append_reports_where_it_began() {
+    use crate::segment::format::{SegmentHeader, encode_record};
+    use crate::segment::{ScanStart, scan_segment};
+
+    let header = SegmentHeader::new(0, 1).encode().to_vec();
+    let record = |out: &mut Vec<u8>, offset: u64| {
+        encode_record(
+            out,
+            offset,
+            100 + offset,
+            b"12345678",
+            None,
+            None,
+            &Default::default(),
+        );
+    };
+    // An earlier batch nobody synced, then the append the cut lands in.
+    let (mut earlier, mut append) = (Vec::new(), Vec::new());
+    (0..4).for_each(|offset| record(&mut earlier, offset));
+    (4..12).for_each(|offset| record(&mut append, offset));
+    let from = (header.len() + earlier.len()) as u64;
+    let each = (append.len() / 8) as u64;
+
+    let mut lost_before_whole_after = 0;
+    for seed in 0..4000 {
+        let sim = Sim::new("before");
+        let segment = sim.path(SEGMENT);
+        durable_file(&segment, &header);
+        let seg = OpenOptions::new().write(true).open(&segment).expect("open");
+        io::write_at(&seg, &earlier, header.len() as u64).expect("earlier batch");
+        let reported = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = std::sync::Arc::clone(&reported);
+        sim_fs::arm_power_cut(&sim.root, seed, move |_, from| {
+            *slot.lock().unwrap() = Some(from);
+        })
+        .expect("arm");
+        io::write_at(&seg, &append, from).expect("append");
+        assert!(sim_fs::reboot(&sim.root).expect("reboot"));
+
+        let reported = reported.lock().unwrap().expect("cut");
+        let after = fs::read(&segment).expect("read");
+        let len = after.len() as u64;
+        let scan = scan_segment(&segment, 0, "t/ns/s/0", 4096, ScanStart::Full, true);
+        let nothing_to_repair = scan.is_ok_and(|outcome| outcome.torn_tail.is_none());
+        assert_eq!(
+            nothing_to_repair,
+            len <= reported,
+            "seed {seed}: {len} bytes came back, whole records end at {reported}"
+        );
+        let kept = &after[from as usize..];
+        if after[header.len()..from as usize] != earlier[..]
+            && (kept.len() as u64).is_multiple_of(each)
+            && *kept == append[..kept.len()]
+        {
+            assert_eq!(reported, from, "seed {seed}");
+            lost_before_whole_after += 1;
+        }
+    }
+    assert!(lost_before_whole_after > 0);
+}

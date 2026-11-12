@@ -57,7 +57,8 @@ pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
 /// unless the append held several records and the size stopped between two
 /// of them with nothing missing before it. The offset is where the append
 /// began, moved past each of its records that came back whole, so a segment
-/// no longer than it has no tail to repair.
+/// no longer than it has no tail to repair. It stays where the append began
+/// when unsynced bytes before the append were lost.
 /// The device's contents are fixed at the cut; whatever the process writes
 /// after it is lost at [`reboot`].
 ///

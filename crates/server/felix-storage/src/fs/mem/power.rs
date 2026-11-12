@@ -39,7 +39,8 @@ pub(super) enum Power {
 /// append's own size and sectors are drawn so it never comes back whole.
 ///
 /// Also returns where the whole records of the append end in what came back:
-/// `from` when its first record is short or damaged. An append can hold
+/// `from` when its first record is short or damaged, or when anything before
+/// the append was lost. An append can hold
 /// several records, and a size that stops between two of them with every
 /// sector there leaves a clean log that recovery has nothing to cut from.
 pub(super) fn torn_append(
@@ -87,6 +88,11 @@ pub(super) fn torn_append(
         } else {
             out.extend((start..stop).map(old));
         }
+    }
+    // Unsynced bytes before the append can be lost too, and then recovery
+    // owes a cut back to them however much of the append is whole.
+    if out[..from] != current[..from] {
+        return (out, from);
     }
     let intact = out[from..]
         .iter()
