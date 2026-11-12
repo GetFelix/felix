@@ -623,7 +623,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (257K distinct states) |
 | `FelixRaftPlacementStaleFull.cfg` | the same with two terms | not registered: unfinished after eight minutes on a laptop; run through the dispatch |
 | `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
-| `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `LeaderCompleteness`: pinned finding, #2365 |
+| `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
 | `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |
 | `FelixRaftPlacementAnswerAnyId.cfg` | a wiped copy answers a request that names the copy id it replaced | violate `LeaderCompleteness` |
@@ -2578,8 +2578,8 @@ Each knob drops one rule:
   whose vote is withheld.
 
 `WithheldCounts = TRUE` is what the metadata group does today, and it is a
-finding: `FelixRaftPlacementSameIdCounted.cfg` loses a committed entry in nine
-steps (#2365). The wiped member forgot the term it voted in, so the leader of
+finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
+(#2365). The wiped member forgot the term it voted in, so the leader of
 an older term commits with it after a newer leader was elected on its vote.
 The config is pinned as an expected violation until the rule is built.
 

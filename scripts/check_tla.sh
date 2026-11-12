@@ -557,7 +557,7 @@ expectations=(
   "FelixRaftPlacementMoveWipe pass"
   "FelixRaftPlacementStale pass"
   "FelixRaftPlacementSameId pass"
-  "FelixRaftPlacementSameIdCounted violates LeaderCompleteness"
+  "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
   "FelixRaftPlacementNoWithhold violates LeaderCompleteness"
   "FelixRaftPlacementAnswerAnyId violates LeaderCompleteness"
