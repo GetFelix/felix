@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794462169305,
+  "lastUpdate": 1794464149156,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52676,6 +52676,58 @@ window.BENCHMARK_DATA = {
             "range": "10668.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1101813.37\nmean: 1103294.98\nstdev: 10668.68\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "82063214baf1f43d33b2bc6eb4820bdc32fe1e4a",
+          "message": "sim: relaxed-fsync power loss, majority cut and wipe faults (#2327)\n\n* sim: relaxed-fsync power loss, majority cut and wipe faults, with a checker for what each may lose (#2292, #2273)\n\nSpec-Unaffected: simulator and test harness only\n\n* sim: forget only what a disk fault may lose, and judge every disk at the end\n\nReview fixes for the disk fault checker:\n\n- An allowed loss makes only the lost records unknown (and drops reads\n  that saw them), not every earlier acknowledgement of the shard.\n- A copy counts as taken only when the faulted disk lost it, and stops\n  counting once two disks hold the record again. A loss is excused only\n  when at least two disks lost the record.\n- At the end of the run every disk is read again: an acknowledged record\n  no fault took must be on one, including shards with no final read.\n- A cache loss forgets cache writes (and reads) from before the fault,\n  not the whole run.\n- Disks are read right before a multi-broker fault changes them, with no\n  await in between, so nothing is acknowledged unjudged.\n\nRevert checks: each new unit test fails with its fix reverted\n(an_allowed_loss_forgets_only_the_records_it_took,\na_copy_the_fault_did_not_take_is_not_thinned,\na_record_two_disks_hold_again_is_no_longer_thinned,\na_loss_on_one_disk_is_never_excused,\nan_acknowledged_record_on_no_disk_at_the_end_is_a_finding,\na_cache_loss_forgets_only_writes_before_the_fault).\n\nSpec-Unaffected: simulator checker and docs only; no broker behaviour changes.\n\n* docs(sim): seed 3 wipes stall until the mode runs the re-form step\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-11T22:11:50-08:00",
+          "tree_id": "7bb525bb9c0c67c0a51c0059c511ac9f17218aa8",
+          "url": "https://github.com/GetFelix/felix/commit/82063214baf1f43d33b2bc6eb4820bdc32fe1e4a"
+        },
+        "date": 1794464148467,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 552709.26,
+            "range": "35938.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552709.26\nmean: 553187.29\nstdev: 35938.10\ncv: 6.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 552709.26,
+            "range": "35938.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552709.26\nmean: 553187.29\nstdev: 35938.10\ncv: 6.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121481.85,
+            "range": "784.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121481.85\nmean: 121328.21\nstdev: 784.88\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1214818.5,
+            "range": "7848.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1214818.50\nmean: 1213282.13\nstdev: 7848.82\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
