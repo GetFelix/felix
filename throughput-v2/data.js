@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794464149156,
+  "lastUpdate": 1794464368604,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52728,6 +52728,58 @@ window.BENCHMARK_DATA = {
             "range": "7848.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1214818.50\nmean: 1213282.13\nstdev: 7848.82\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c2dcfcac98620f17ecedb2ab5c72e420bfd9ecb4",
+          "message": "spec: FelixRaft for track 4: membership, copy identity, re-forming, the switch, the lease, sleep (#2244) (#2306)\n\n* spec: TLA+ model of Raft on the segment log (#2198)\n\nFelixRaft.tla models one Raft group whose log is the segment log, with\nthe crash rules the raft_log adapter (#2167) must keep: append returns\nbefore the fsync, the flush callback, truncate_after, purge, a torn tail\ncut at the open, and vote and snapshot files replaced by rename. Votes\ncarry openraft's committed flag. Blank and membership entries hold an\nindex and no event, and one subscriber checks the offsets it is given.\n\nFive configurations pass, twelve drop one rule each and must violate\nthe check that rule protects, and five witnesses show the behaviour is\nreached. Membership changes, the lease, disk loss and the switch from\nthe hybrid protocol are not modelled yet.\n\n* spec: say which index the open must clamp, and what the model leaves out\n\nReview of the FelixRaft model: the knob for an index read back past the\nlog takes openraft's applied-index path, a snapshot install is one step\nhere, and DiskLog's own commit offset is not modelled.\n\n* spec: snapshot install as three writes, per-broker skipped counts, twins held to the harm\n\nA follower installs a leader's snapshot as openraft does: cut a conflicting\ntail, replace the snapshot and state machine, purge up to it, with a crash\nbetween any two. Each serving broker counts skipped offsets from its own log.\n\nTruncateNotDurable, SaveCommittedUnflushed and PurgeBeforeSnapshot are held\nto StateMachineSafety and AckedSurvive, not to the checks that restate them.\nTruncateNotDurable now makes the cut durable at the next flush, which shows\nthat is too late.\n\nNew: FelixRaftFourTerms, FelixRaftSnapshotReplace, FelixRaftOffsetsFailover,\nFelixRaftDeliverUncommittedDense and three witnesses. Unregistered and run by\ndispatch: FelixRaftSnapshotCrashes, FelixRaftOffsetsFailoverCrash.\n\n* spec: hold SaveCommittedUnflushed to an undelivered record; FourTerms runs when FelixRaft.tla changes\n\nSaveCommittedUnflushed failed StateMachineSafety by construction, through the\nmarker the model writes for lost entries. It is now held to AckedDelivered:\nthe broker is elected and a subscriber resuming below the start of its log is\nnever given an acknowledged record.\n\nA change to FelixRaft.tla counts as a change to every FelixRaft configuration,\nso a pull request that edits only the spec still checks FelixRaftFourTerms,\nthe one passing check of the commit rule for earlier terms.\n\n* spec: register the four long FelixRaft configurations\n\nFelixRaftTermsFull (26.0M distinct states, 59 min), FelixRaftOffsetsFailoverCrash\n(16.1M, 41 min), FelixRaftSnapshotCrashes (9.4M, 21 min) and FelixRaftOffsetsFull\n(8.9M, 20 min) passed in a dispatched run at d060d47bd. The weights are those\ntimes. Only their comments changed since.\n\n* docs(formal): the raft_log adapter is built; evidence lines follow in #2297\n\nSpec-Unaffected: README prose only\n\n* spec: FelixRaft membership, copy identity and the switch from the hybrid (#2244)\n\nThree modules beside FelixRaft.tla, each with passing configurations and\ndropped-rule twins held to the harm. README sections follow with the\nremaining modules.\n\n* spec: re-forming a Raft group (#2244)\n\n* docs(formal): sections and rows for the four track 4 modules; weights (#2244)\n\n* docs(replication): what the track 4 models found in the per-shard Raft design (#2303, #2304, #2305)\n\n* spec: the Raft leader lease, sleep and wake, and the dispatch results (#2244)\n\nFelixRaftLease.tla: the leader lease with drifting clocks and messages in\nflight, and the later store-liveness lease. 25 configurations registered.\nFelixRaftSleep.tla: the sleep handshake, the wake paths, ask before\ncampaigning and the hold on a restarted member. 19 registered.\n\nThree long configurations passed in a dispatch run and are registered with\ntheir weights. FelixRaftReformStaleMembershipFull violated AckedSurvive\nthere; FelixRaftReformStaleMembershipTwoRotated pins the same trace in\nseconds (#2311).\n\nExpected violations of the design as written: #2307 (lease after a\nrestart), #2310 (sleep), #2311 (re-form).\n\n* docs(replication): what the lease, sleep and re-form models found (#2307, #2310, #2311)\n\n* ci(tla): twenty PR shards, balanced by measured PR minutes\n\nA FelixRaft.tla change makes every FelixRaft config count as changed, so\nthe PR shards were planned to a full hour and shards 9 and 10 hit the\ntimeout. Balance by the times a PR runner measured and spread over twenty\nshards, planned at about 37 minutes each.\n\n* spec: review fixes for the track 4 models; re-form is operator-only in 0.8, sleep is deferred (#2244)\n\nRe-form: DirLost separates a relaxed fsync rotation, which keeps synced\nmembership entries, from a lost or restored directory. WaitPlaced is the\nrule of #2311: wait for every placed broker. `lost` excuses a record only\nwhen no disk holds it, so a record held by a learner no membership names\nis now a violation (FelixRaftReformLearnerHolds, #2311), and\nFelixRaftReformLearnerWaited passes with WaitPlaced on.\n\nDecided in #2167: in 0.8 a re-form starts only from an operator's command\nand sleep is deferred to v0.9.0. The module headers and the README say\nwhat that leaves of each model. The operator's command is not modelled.\n\nSleep: a lost ask (FelixRaftSleepAskLost, #2320) and a hold that is too\nshort each depose a healthy leader. NoNeedlessDeposal also counts a leader\nthat steps down.\n\nPassing configurations that rest on a rule nobody has built say so in\ntheir headers and README rows (#2304, #2307, #2310).\n\nRegistered from dispatch runs: FelixRaftMembershipTerms (109 min),\nFelixRaftReformTwoRotatedFull (112), FelixRaftLeaseStoreWide (36).\nWeights corrected: FelixRaftSwitchStarts 11, FelixRaftSwitchGenZeroFull 37.",
+          "timestamp": "2026-11-12T06:11:59Z",
+          "tree_id": "55a2a22303a261f63d7b45a5480fb0c53c2bc338",
+          "url": "https://github.com/GetFelix/felix/commit/c2dcfcac98620f17ecedb2ab5c72e420bfd9ecb4"
+        },
+        "date": 1794464367859,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 596709.39,
+            "range": "53002.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 596709.39\nmean: 627749.19\nstdev: 53002.80\ncv: 8.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 596709.39,
+            "range": "53002.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 596709.39\nmean: 627749.19\nstdev: 53002.80\ncv: 8.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158275.02,
+            "range": "2885.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158275.02\nmean: 158209.04\nstdev: 2885.90\ncv: 1.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1582750.23,
+            "range": "28859.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1582750.23\nmean: 1582090.45\nstdev: 28859.00\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
