@@ -36,7 +36,8 @@ passes on a rerun counts as red until the first failure is explained.
 - A stall counts against Raft only if the hybrid does not stall on the same
   seed and mode (criterion 1). A stall that the hybrid shares needs an open
   issue.
-- Sleep is on in every Raft run.
+- Sleep is deferred (#2167). Raft runs tick due groups and send idle
+  heartbeats; no group is put to sleep.
 
 ## 1. The fault matrix
 
@@ -72,15 +73,15 @@ liveness check of the history campaign is today
 | 2 | Power loss of one broker, fsync on commit | Sim mode `power-loss`. Storage power-loss suite | 2000 seeds. 110 storage seeds | History clean. Every torn tail is repaired. No vote is lower after the restart than before it |
 | 3 | Power loss of a majority at once, fsync on commit | Sim mode `majority-cut` (gap 10) | 2000 seeds, at least 200 with two of three cut together | Nothing acknowledged is lost. No copy id rotates. Every shard is served, with no re-form |
 | 4 | A wiped copy: one shard directory, and a whole data root | Sim mode `wipe` and history wipe fault (gap 1). Cluster test ported from `failures/wiped.rs` | 2000 seeds. One 20 minute history run | The copy comes back with a new copy id as a learner. It never votes under its old id. History clean. The group settles |
-| 5 | Wiped copies, a majority of one group | Sim mode `wipe` (gap 1) | 2000 seeds, at least 200 with a majority wiped | The group re-forms and is served. Only records that no disk holds are lost, and the checker is told which. Offsets are never reused |
+| 5 | Wiped copies, a majority of one group | Sim mode `wipe` (gap 1), then the operator re-form command | 2000 seeds, at least 200 with a majority wiped | After the operator runs the re-form command, the group is served. Only records that no disk holds are lost, and the checker is told which. Offsets are never reused |
 | 6 | One shard directory restored to an older copy | Sim restore fault (gap 2), with a nemesis aimed inside one mark interval of an acknowledged write, and one pinned seed for the example in "What this does not catch" | 2000 seeds | See "Row 6" below |
 | 7 | A whole data root restored to an older copy | Sim restore fault (gap 2). Cluster test | 2000 seeds | The broker starts no member until the restore check has run. Every copy id in the root rotates. History clean |
-| 8 | Re-form after rotated voters, RF 3 and RF 1 | Sim wipe fault (gap 1) and relaxed-fsync power loss (gap 10). Cluster test for the operator command | 2000 seeds | Every shard is served. The base is the highest reported log id. A retired member never votes or acknowledges in the old epoch |
-| 9 | A partition during a re-form | Sim faults aimed at a re-form in progress (gap 3) | 2000 seeds. A pinned seed for each step | No commit in the old epoch after any voter retired. While a voter is unreachable the control plane writes no new epoch, for a partition of at least 120 s. No epoch has two bases. Served after the heal |
+| 8 | Operator re-form after rotated voters, RF 3 and RF 1 | Sim wipe fault (gap 1) and relaxed-fsync power loss (gap 10), each followed by the operator re-form command. Cluster test for the command | 2000 seeds | Every shard is served. The base is the highest reported log id. A retired member never votes or acknowledges in the old epoch |
+| 9 | A partition during the operator re-form command | Sim faults aimed at a re-form command in progress (gap 3) | 2000 seeds. A pinned seed for each step | No commit in the old epoch after any voter retired. While a voter is unreachable the control plane writes no new epoch, for a partition of at least 120 s. No epoch has two bases. Served after the heal |
 | 10 | Control plane down, then a leader crash | History nemesis `election`. Sim control-plane pause for a whole run. Failover test | 20 minutes, three seeds. 2000 seeds. Six rounds | Every shard the killed broker led fails over. `Quorum` acknowledgements and consumer groups continue. The acknowledgement path makes no control-plane request, counted |
 | 11 | Faults on the control plane's own group | History mode with three control-plane members (#2226). Sim mode with the metadata group (#2232) | 20 minutes, three seeds. 2000 seeds | History clean. A member's vote never goes down. No acknowledged metadata write is lost. Every member's state is equal at the same applied index |
 | 12 | Membership change under load | Sim mode `placement`. History kinds `MoveShard`, `Drain` and `InterruptedMove` | 2000 seeds. Part of `all` and `adversarial` | History clean. No group stops on an index collision. Every group settles. The write pause is within cell 12 |
-| 13 | Sleep and wake | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | 2000 seeds. 20 minutes. Nightly at 2,000 members | `SleepersWake` and `AsleepIsLevel` hold. History clean. Every shard is served. The term limits below hold. With liveness missing a dead broker, a leader is elected within two audit periods (40 s in this mode) |
+| 13 | Sleep and wake. Deferred (#2167): not run in 0.8 | Sim mode `sleep` (#2239). History run with an idle phase (gap 4). The scale run that kills a broker leading sleeping groups | Not run | Not run |
 | 14 | The switch, with faults, stream and cache shards | Sim switch under every mode (#2242). History switch campaign (gap 5). Cache shard schedules (gap 12) | 2000 seeds per mode. 20 minutes, three seeds | History clean across the switch. A generation 0 record is never read as a Raft entry. Only copies that acknowledged the base vote. For a cache shard: two copies with skewed clocks compute the same digest, and the counter sums after the switch equal the checkpoint |
 | 15 | A crash in the middle of the switch, stream and cache shards | Sim crash at each step of the switch (#2242), including the counter checkpoint and the state digest (gap 12). The upgrade test (#2257) | Every step, on leader, follower and control plane | The shard is a closed hybrid shard or a Raft shard with one base, never both. A copy that failed its digest is a learner |
 | 16 | The bridge upgrade | Upgrade test (#2257, gaps 6 and 11): the latest v0.7 release with data, to the bridge build, switch under faults, latch, to the candidate | One run per night and per release candidate, with clients writing the whole time | History clean over the whole path. Every acknowledged record is readable at its offset on the candidate. 0.8.0 refuses an unlatched cluster and writes nothing. After the latch: a voter that crashed between the compare-and-swap and its member start comes up from the recorded base; a learner left from a failed first seal comes up as a learner; a directory with no member mark after a re-form starts from the current epoch, base and voters |
@@ -96,7 +97,7 @@ Rows 1, 2, 10 and 12 run today on the hybrid, and so do the sim modes of rows 3,
 or the harness they name. Row 23 applies only to logs that accept a relaxed
 fsync mode (#2248).
 
-**Row 13, term limits.** A count of terms per fault says little: one real
+**Row 13, term limits.** Deferred with sleep (#2167). A count of terms per fault says little: one real
 failure may cost several terms and a harmless event must cost none. The
 limits are per kind of fault, from "When a broker dies with sleeping
 leaders" in [`per-shard-raft.md`](per-shard-raft.md). Each limit holds
@@ -170,8 +171,8 @@ is stronger: it looks at the disks, so it catches a record that one more
 failover would lose although the final read still shows it.
 
 The simulator's cluster checkers move as the hand-off table in
-[`hybrid-retirement.md`](hybrid-retirement.md) says, and `SleepersWake`,
-`AsleepIsLevel` and `IdleGroupsSleep` are added with sleep.
+[`hybrid-retirement.md`](hybrid-retirement.md) says, and sleep checkers
+(`SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep`) wait for sleep (#2167).
 
 ## 3. Perf cells
 
@@ -263,10 +264,11 @@ and each trial starts from an empty data directory. A trial is 30 seconds.
 | 7 | Failover time, control plane up | 300 RF 3 streams led by the killed broker. Six rounds at least | 0.95 | 0.95, against the hybrid |
 | 8 | Failover time, control plane down | The same | Reported. v0.7 does not fail over this way by default | 0.95, against the hybrid with its election on |
 | 9 | RF 3 promotion burst | 1 KiB and 64 KiB | Reported and explained | Reported and explained |
-| 10 | Groups per broker | Three brokers, RF 3. 1,500 shards, the size v0.7 is tested at, and 5,000 | At 1,500, per broker, idle: resident memory at most 250 MB over the v0.7 release on the same shards, and idle CPU under 2% of one core. Total memory reported at 5,000 | At 5,000: Raft adds under 1 GB with one broker killed under load, idle CPU under 5% of one core, every group asleep, no ticks to sleeping groups |
+| 10 | Groups per broker | Three brokers, RF 3. 1,500 shards, the size v0.7 is tested at, and 5,000 | At 1,500, per broker, idle: resident memory at most 250 MB over the v0.7 release on the same shards, and idle CPU under 2% of one core. Total memory reported at 5,000 | At 5,000: Raft adds under 1 GB with one broker killed under load, idle CPU under 5% of one core, with due groups ticked and idle heartbeats sent |
 | 11 | The exact log mark | Cells 1 and 2 at batch 1, mark exact against the trailing floor, same commit | Not a release cell | 0.97, p99 1.10, and no more synced writes per group commit, counted. If so the exact mark ships. If not, the trailing floor ships (row 6) |
 | 12 | Move under load, write pause | One RF 3 stream moved 20 times per round while publishers write at a fixed rate. Six rounds at least | 0.95 on the longest gap between acknowledgements. No write fails for good | The same, against the hybrid |
-| 13 | First write after sleep | p50 and p99 | Not a release cell | At most one round trip over a write to an awake group |
+| 13 | First write after sleep. Deferred (#2167) | Not run | Not run | Not run |
+| 15 | `Quorum` on a `Periodic` stream, RF 3 | 1 KiB, batch 1 for p50 and p99, batch 64 for throughput. Default fsync policy | 0.97 against the v0.7 release. p99 1.10 | 0.90 and 1.20 |
 | 14 | The control plane's group | The cells of `metadata-raft-design.md`, "Perf gate" (#2224) | 0.97 against the v0.7 release, and against redb on the same openraft version | Does not apply |
 
 Cell 4 exists because of a regression the fast subset missed: p50 and p99
@@ -295,7 +297,7 @@ once per release for the write-up. They do not gate.
 
 | Check | Pull request CI | Nightly | Release gate |
 | --- | --- | --- | --- |
-| Simulator modes `off`, `clocks`, `placement`, `power-loss`, `sleep` | Pinned seeds, on both engines while both exist | 2000 seeds in `off`. 250 seeds in each other mode, a window that moves each night | 2000 seeds in every mode, on the release commit |
+| Simulator modes `off`, `clocks`, `placement`, `power-loss` | Pinned seeds, on both engines while both exist | 2000 seeds in `off`. 250 seeds in each other mode, a window that moves each night | 2000 seeds in every mode, on the release commit |
 | Simulator faults: wipe, restore, re-form, majority cut, relaxed fsync, the switch and latch races (rows 3 to 9, 19, 22, 23) | The pinned seed of each | Each joins the moving window as its own mode. `wipe`, `majority-cut`, `majority-cut-relaxed` and `relaxed-power-loss` are in `dst-nightly.yml` | 2000 seeds each. Dispatch `all`, then `disks` |
 | Simulator with the metadata group, and the switch (rows 11, 14, 15) | Pinned seeds | In the moving window | 2000 seeds each |
 | History campaign | Process faults, short | `all`, `adversarial` and `election`, 20 minutes, one seed. The metadata group mode. The switch campaign, while both engines are on main and on the bridge branch after that. The duplicate-offset nemesis | The same set, three seeds each |
@@ -304,7 +306,7 @@ once per release for the write-up. They do not gate.
 | Storage power-loss suite | Eight seeds per scenario | 110 seeds | Green |
 | TLA+ | The registered configs | Walks | Every `FelixRaft` config and twin that the pull requests name, including #2244, #2266 and #2267 |
 | Perf | The fast subset, advisory. Cells 1 and 2 as an engine A/B on pull requests that touch replication or storage | Cells 1, 2 and 4 as a release A/B, six rounds. A fail opens an issue | Every cell of section 3, both comparisons |
-| Failover | Cluster tests | Scale run with sleeping leaders | Cells 7 and 8 |
+| Failover | Cluster tests | Scale run with a killed leader | Cells 7 and 8 |
 | Groups per broker | No | 2,000 members | 1,500 and 5,000 members. 10,000 reported |
 | Upgrade and rollback (rows 16 to 18, 21) | No | On main, with main as the candidate, every night. On the bridge branch, weekly | On each release candidate |
 
@@ -330,7 +332,7 @@ it.
 | 1 | A wipe fault in the simulator and the history campaign, for one shard directory and for a data root | #2273 | Matrix 4, 5, 8 |
 | 2 | A restore fault in the simulator: a shard directory or a data root put back to an older copy | #2274 | Matrix 6, 7 |
 | 3 | Simulator faults aimed at a re-form in progress, and the re-form races | #2275 | Matrix 9, 22 |
-| 4 | An idle phase in the history campaign, so groups sleep before the faults | #2276 | Matrix 13 |
+| 4 | An idle phase in the history campaign, so groups sleep before the faults. Deferred with sleep (#2167) | #2276 | Matrix 13 |
 | 5 | A history campaign that switches shards from the hybrid to Raft under faults | #2277 | Matrix 14 |
 | 6 | The upgrade test does not go backwards, and does not check a client history across the path | #2278 | Matrix 16, 17 |
 | 7 | History rules that read the disks: `AckedSurvive`, term agreement, named losses. And a stale-read rule for streams | #2279 | Section 2 |
@@ -343,7 +345,7 @@ it.
 
 Already filed: the metadata group in the history campaign (#2226) and in the
 simulator (#2232), the metadata benchmark (#2224), the conversion tool
-(#2234), the sleep mode (#2239), the switch in the simulator (#2242), the
+(#2234), the sleep mode (#2239, deferred to v0.9.0), the switch in the simulator (#2242), the
 upgrade test (#2257) and the groups-per-broker run (#2243).
 
 ## How this maps to the gate workflows
@@ -379,7 +381,7 @@ Changes the workflows need, in the order the gate needs them:
 6. **Time the failover with the control plane down** on both sides, in
    place of pass or fail. Under Raft the `replica_election::` tests are
    retired, so take the test by a name that both engines have.
-7. **Simulator modes.** Add `sleep`, the metadata group, the switch, and
+7. **Simulator modes.** Add the metadata group, the switch (and `sleep` once it returns), and
    one mode per fault of rows 3 to 9, 19, 22 and 23, so each can be swept
    and can join the nightly window.
 8. **History campaigns.** Three seeds per nemesis. Add the metadata group

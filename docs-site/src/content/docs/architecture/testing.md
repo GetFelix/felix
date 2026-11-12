@@ -370,6 +370,11 @@ within the configured bounds.
   a majority round never returns a stale value.
 - `FelixPlacementPacing.tla` checks that concurrent moves across shards stay
   within the copy limits, including with two control-plane instances.
+- `FelixRaft.tla` models the engine planned for 0.8: one Raft group whose log
+  is the segment log. It checks Raft's safety properties, that an
+  acknowledged record is on a majority's disks, and that the offsets a
+  subscriber sees have no gap and are never reused, under the crash rules the
+  log storage must keep. That storage is not built yet.
 
 Each configuration declares whether it must pass or which invariant it must
 break. The breaking ones remove one piece of the design, such as the fence, the

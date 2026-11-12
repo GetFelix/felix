@@ -282,7 +282,8 @@ or the publish path hands the batch to `client_write` and the adapter calls
 `begin_append` and `commit` from inside it. The first keeps the hot path
 untouched and is what the prototype tries first. If openraft cannot accept
 entries it did not append, the second is the fallback, and its cost shows up
-in the gate's latency cells. Decided: adopt first, see Decisions, 2.
+in the gate's latency cells. Decided since (issue #2167): 0.8 takes the
+second, see Decisions, 2.
 
 ### Raft log on the segment store
 
@@ -624,6 +625,11 @@ used by every shard group and by the control plane, tested once.
   `crates/server/felix-storage/src/raft_log/tests/suite.rs` runs the 13
   cases that need only reads, appends, truncation and the vote, all through
   the adapter.
+- **One model.** What the adapter must guarantee to openraft is model-checked
+  in `docs/formal/FelixRaft.tla`: when the flush callback may fire, what a
+  crash may leave of the log, the vote and the snapshot, and what the
+  committed index read back may be. See "One engine: Raft on the segment
+  log" in [`docs/formal/README.md`](formal/README.md).
 - **Truncation is allowed.** `store.rs` says the segment store forbids
   truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported
@@ -982,6 +988,13 @@ the new kind. A test that no client read path returns it. A rollback test
 where a version 8 reader refuses the segment.
 
 ### 2. The leader's entries are adopted from disk first
+
+**Decided since (issue #2167).** 0.8 does not adopt. A write goes through
+`client_write` and the adapter appends, which is the fallback named below.
+Adoption comes back only if the gate's latency cells need it, and only
+after it is modelled. See [`per-shard-raft.md`](per-shard-raft.md),
+"Writing through openraft". The rest of this decision is kept as the
+design for that later step.
 
 **Decision.** The broker keeps appending on the leader (`begin_append`, then
 `commit`). openraft adopts entries already durable at their offsets. If
