@@ -102,12 +102,19 @@ pub fn torn_tails_repaired(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
 
 /// The segments, as paths below `root`, that were opened, in order. A
 /// segment appears once for each stretch between reboots in which it was
-/// opened.
+/// opened. Opens made inside [`unobserved`] are left out.
 ///
 /// # Errors
 /// `NotFound` when `root` was not registered.
 pub fn segments_opened(root: &Path) -> io::Result<Vec<std::path::PathBuf>> {
     Ok(tree(root)?.opened_segments())
+}
+
+/// Run `read`, a look at the devices from outside any broker, without
+/// counting the segments it opens in [`segments_opened`]. It covers opens made
+/// on the calling thread.
+pub fn unobserved<R>(read: impl FnOnce() -> R) -> R {
+    crate::fs::unobserved(read)
 }
 
 /// Fail one flush under `root` (of a file or a directory) with an I/O

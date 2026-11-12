@@ -259,7 +259,9 @@ simulated directory. The `TornTailRepaired` checker fails the seed when the
 segment a cut tore is opened again but not among them on that broker before
 its next power loss or the end of the run. Recovery runs when a log is opened,
 so a segment never opened again (the broker stayed down, or no longer hosts
-that shard) is not held to a repair. A segment that came back without its name, or
+that shard) is not held to a repair. Only the broker's own opens count: the
+simulator also reads the disks of brokers that are down, to judge what a fault
+cost, and those reads repair nothing. A segment that came back without its name, or
 with nothing past where the append began, has nothing to repair and is not
 held to it.
 

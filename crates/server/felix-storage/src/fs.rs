@@ -26,7 +26,7 @@ pub(crate) use std::fs::{
 };
 
 #[cfg(feature = "sim")]
-pub(crate) use mem::{Tree, claim, register, tree_at, unregister};
+pub(crate) use mem::{Tree, claim, register, tree_at, unobserved, unregister};
 #[cfg(feature = "sim")]
 pub(crate) use routed::{
     File, OpenOptions, create_dir_all, metadata, note_torn_tail, read, read_dir, read_to_string,

@@ -770,3 +770,22 @@ fn a_cut_with_no_append_keeps_what_was_synced() {
     assert_eq!(fs::read(&path).expect("read"), b"synced");
     assert!(!sim_fs::reboot(&sim.root).expect("reboot"), "only once");
 }
+
+#[test]
+fn an_unobserved_open_of_a_segment_is_not_recorded() {
+    let sim = Sim::new("unobserved");
+    let segment = sim.path(SEGMENT);
+    sim_fs::unobserved(|| durable_file(&segment, &bytes(100, 1)));
+    sim_fs::unobserved(|| fs::read(&segment).expect("read"));
+    assert!(
+        sim_fs::segments_opened(&sim.root)
+            .expect("opened")
+            .is_empty()
+    );
+    // The broker's own open afterwards still counts.
+    fs::read(&segment).expect("read");
+    assert_eq!(
+        sim_fs::segments_opened(&sim.root).expect("opened"),
+        vec![PathBuf::from(SEGMENT)]
+    );
+}

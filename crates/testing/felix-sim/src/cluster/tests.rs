@@ -259,6 +259,33 @@ async fn a_wiped_data_directory_is_empty_and_the_broker_starts_on_it() {
     restarted(&cluster, 0).await;
 }
 
+/// Reading the disks of a broker that is down opens its torn segment and
+/// repairs nothing, so it must not count as the open that owes a repair.
+#[tokio::test(start_paused = true)]
+async fn reading_the_disks_does_not_open_a_torn_segment() {
+    use crate::client::{Recorder, SimClient};
+    log();
+    let config = SimConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        power_loss: true,
+        ..small()
+    };
+    let cluster = SimCluster::start(1, config).await.unwrap();
+    let recorder = Recorder::new(cluster.config.shards);
+    let stop = CancellationToken::new();
+    let client = SimClient::new(0, cluster.clone(), recorder, Rng::new(1));
+    let client = tokio::spawn(client.run(stop.clone()));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    assert!(cluster.power_loss(0).await, "no append to cut");
+    stop.cancel();
+    let _ = client.await;
+    let losses = cluster.power_losses();
+    assert!(losses[0].torn.is_some(), "no torn segment");
+    assert!(!cluster.disk_values()[0].is_empty());
+    assert_eq!(cluster.segments_opened(0).len(), losses[0].opened_before);
+}
+
 /// A cut inside an append leaves a torn tail; the restart repairs it, keeps
 /// its storage id and starts clean, since every acknowledged record was
 /// synced, so nothing is held.
