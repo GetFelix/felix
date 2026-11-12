@@ -143,14 +143,15 @@ cases:
 - The shard directory is missing or empty.
 - The storage id rotated: the data root was lost, or it failed the restore
   gate below. A crash or a power cut alone takes nothing a peer counted,
-  because a Raft log is opened only with fsync on commit (issue #2248).
+  because a Raft log is opened only with fsync on commit (decided, issue
+  #2248).
 - The directory fails the restore check below.
 
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
 the write path. The log is fsync on commit and refuses any other mode
-(issue #2248): a member acknowledges an append only once it is on disk, so
-a power cut cannot shorten what a peer counted.
+(decided, issue #2248): a member acknowledges an append only once it is on
+disk, so a power cut cannot shorten what a peer counted.
 
 **The restore check.** A directory restored from a backup or a VM rollback
 keeps its copy id with an older log and an older vote. Raft cannot see
@@ -176,18 +177,41 @@ hold a copy of it:
 
 - **The run witness.** It is written after the root's write is synced and
   before the vote is answered. The witness is in memory, so this adds no
-  fsync, and it is exact for as long as the machine stays up.
-- **The control plane.** The broker's heartbeat carries the sequence, and
-  the control plane keeps the highest it has seen for that storage id. It
-  trails by one heartbeat, and it survives a machine restart, a replaced
-  machine and a VM rollback, none of which leave a witness.
+  fsync. For as long as the machine stays up it is exact for votes, and
+  for the log it trails by up to one mark interval, like the log mark.
+- **The control plane.** The broker's heartbeat carries the last synced
+  sequence, never one whose write is still in flight, and the control
+  plane stores the highest it has seen for that storage id. The stored
+  value survives a machine restart, a replaced machine and a VM rollback,
+  none of which leave a witness. It is one metadata write per broker per
+  heartbeat in which the sequence changed.
 
 The gate fails a root whose sequence is below either copy, and its copy
 ids rotate. A root that is ahead of a copy crashed between the two writes
-and passes. What the gate cannot see is a root restored without a witness
-from a backup less than one heartbeat older than the last mark the broker
-wrote. To restore a live snapshot safely an operator rotates the storage id
-with a command first, and the operations docs say so. See Questions, 12.
+and passes. That is why the heartbeat carries only a synced value: a power
+cut after an unsynced one would leave the root behind and rotate every
+copy for nothing.
+
+What the gate cannot see:
+
+- **With a witness,** a root that goes back by less than one mark interval
+  with no vote saved since. Example: a mark batch is written, the root is
+  copied, C acknowledges R, C is killed before the next batch, and the
+  copy is put back. This is the residual of "What this does not catch"
+  below at the scale of a root, and Questions, 11 decides both. The
+  witness cannot count appends itself, because an ordinary crash would
+  then leave it ahead of the root and read as a restore.
+- **Without a witness,** a root restored from a backup newer than the last
+  value the control plane stored. That is one heartbeat while the control
+  plane is reachable. It is the whole outage while it is not, because
+  failover goes on without the control plane: with the control plane down
+  for ten minutes, a copy taken at sequence 7, a vote at sequence 8 and a
+  restore to the copy pass the gate when the control plane returns holding
+  7, and the broker votes again in the same term.
+
+So restoring a live snapshot is supported only after an operator command
+that rotates the storage id, and the operations docs say so. See
+Questions, 12.
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -256,8 +280,12 @@ control plane.
    records on its disk, committed or not. A rotated copy keeps its records,
    so it names the newest membership in them too.
 2. The control plane asks the copies to retire only in one of two cases:
-   every voter's broker is reachable and reports the group leaderless, or a
-   majority of the voters has already rotated. In any other case it does
+   every broker in the wait set of step 4 is reachable and reports the
+   group leaderless, or a majority of the voters has already rotated and
+   no placed broker reports a leader. The second condition matters because
+   the control plane's record of the voters can be stale: the voters it
+   knows may have rotated after a change that left a healthy group
+   elsewhere. In any other case it does
    nothing, and the group is left to elect. With A down and B and C merely
    slow to elect, A is unreachable and nobody has rotated, so nothing is
    retired and the stall heals by itself.
@@ -333,13 +361,22 @@ of the base and the floor are never given out again, and a reader sees
 them as a gap, which is how a lost record already shows. The case the
 model first found, a majority power loss on relaxed fsync (issue #2305),
 cannot happen now that Raft logs are fsync on commit. The floor is for
-what remains, a majority of disks lost at once. It trails the log by one
-report interval, so offsets acknowledged inside that interval and then
-lost with a majority of the disks can be given out again. See Questions,
-13.
+what remains, a majority of disks lost at once. The floor is the last
+value the control plane stored, so offsets acknowledged after it and then
+lost with a majority of the disks can be given out again. That is one
+report interval while the control plane is reachable and the whole outage
+while it is not, since writes go on without it. Brokers batch the floors
+of their shards into one report, so the control plane makes one metadata
+write per broker per interval, not one per shard. The new epoch's log
+starts above the base with an index gap up to the floor, and how the
+adapter represents that gap is settled in the pull request that builds
+re-forming. See Questions, 13.
 
-If a voter's broker cannot be reached, the control plane waits. An operator
-can force the re-form without it. The command names the missing copies and
+If a broker in the wait set cannot be reached, the control plane waits,
+whether that broker is a voter or only placed. A broker placed by a move
+that died holding nothing blocks the automatic re-form the same way. An
+operator can force the re-form without it. The command names the missing
+copies and
 says two things: records only they held are lost, and they made no promise,
 so they must not come back under their old ids (the new epoch makes their
 messages void, and they stop when they learn of it). An RF 1 shard whose
@@ -688,11 +725,12 @@ sent a heartbeat.
 
 A restarted member also grants no vote at first (issue #2307). The leader
 lease rests on each follower's promise not to vote for one election timeout
-after it took the leader's message. openraft keeps that window in memory,
-and 0.10.0 rebuilds the stored vote at start with no window. A follower
-that answered the leader and restarted would grant a vote at once, and a
-second leader could pass the lease check while the first lease still runs.
-Felix waits the window out instead of storing it. The node layer drops
+after it took the leader's message. openraft keeps that window in memory.
+At start, 0.10.0 renews it for a full `election_timeout_max` when the
+stored vote is committed, which is the vote of a follower that took a
+leader's message. A stored vote that is not committed gets no window.
+Felix does not rest the lease on which of the two a restart finds, or on
+that code staying as it is. The node layer drops
 every vote and pre-vote request for a group, before it reaches openraft,
 until `election_timeout_max` has passed on the monotonic clock since the
 broker process started. The process started after the last message the old
@@ -702,9 +740,8 @@ next timeout. It is the vote hold of "Votes after a wake" with a different
 start, and it never ends early. The cost is that a restarted broker cannot
 help elect for up to two seconds, which is less than the time it is held
 from campaigning.
-`admit_local_ack` stays off until this is built. If openraft later starts
-with a full window on a stored vote for another node, the hold stays as a
-second guard.
+`admit_local_ack` stays off until this is built, with a test for each
+kind of stored vote.
 
 ### What sleep costs a write
 
@@ -1111,10 +1148,10 @@ off and stays registered as an expected violation.
 
 | Issue | Rule | Built in | What the model must show |
 | --- | --- | --- | --- |
-| #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). A restore after a machine restart inside one heartbeat is pinned as the accepted residual |
+| #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | A new copy announces its id and the control plane drops the old report. Every placed broker reports from its current copy | #2250 | `JoinKeepsReport` and `RotatedNotWaited` off in every passing re-form config, which is already so. Must still fail: one twin with each knob on |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor trails by one report is pinned as the accepted residual |
-| #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with it on, which is openraft 0.10.0 alone |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with it on. That twin has to be checked again against openraft 0.10.0, which renews the window for a committed stored vote, so the trace it shows must go through a vote that is not committed |
 | #2310 | A send closes the proposal. A follower refuses a leader it does not support. The request goes to a left-out member, a refusal wakes the leader, and votes are held after a wake | #2239 | `HeartbeatKeepsProposal` and `SleepUnsupported` off, which the passing sleep configs already have. New: the request to a left-out member, the waking refusal and the vote hold. With them the two false-alarm configs pass, `NoNeedlessDeposal` as it is and `AsleepIsLevel` restated for counted members. Must still fail: both configs with the new rules off |
 | #2311 | The control plane records the target first and step 4 waits for every placed broker | #2235, #2250 | `WaitPlaced` on: the stale-membership configs with two lost disks pass `AckedSurvive`, with and without a client write. Must still fail: the same with `WaitPlaced` off |
 
@@ -1212,7 +1249,7 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Reports metrics, drives nothing | | Behind the feature, so a shipping broker gains no fsync. An A/B cell prices the probe before it is on anywhere |
 | 3 (#2231) | Group runtime: type config, member id, group registry, peer messages for Raft behind a negotiated capability, node ticker | track 2 adapter; openraft 0.10.1, which is not released (the lock has 0.9.25, see #2215) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, `opened` and `deposed`. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3 | Behind the feature, fresh clusters only. Starts with the adoption test. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, `opened` and `deposed`. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. Starts with the adoption test. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, the fence drain around each step, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, re-forming a group with the copy announce, the wait for placed brokers and the offset floor. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
@@ -1341,22 +1378,26 @@ Each has a recommendation, judged on safety and performance only.
     witness alone catches a same-run restore only while the machine stays
     up. The usual restore is the other one: the latest snapshot put on a
     restarted or replaced machine, which has no witness (issue #2303). Two
-    options. (a) The heartbeat carries the sequence and the control plane
-    keeps the highest, written at most once per heartbeat and only when it
-    changed. (b) Witness only, and every restore of a live snapshot needs
-    the operator command. Recommended: (a), with the command documented as
-    the supported way either way. (a) costs one number per heartbeat and
-    leaves a window of one heartbeat. (b) makes safety rest on an operator
-    remembering a step, and a miss is two leaders in one term.
+    options. (a) The heartbeat carries the synced sequence and the control
+    plane stores the highest. (b) Witness only, and every restore of a
+    live snapshot needs the operator command. Recommended: (a), with the
+    command documented as the supported way either way. (a) costs one
+    metadata write per broker per heartbeat in which the sequence changed.
+    It leaves a window back to the last value the control plane stored:
+    one heartbeat normally, the whole outage when the control plane was
+    down while the broker voted. (b) makes safety rest on an operator
+    remembering a step every time, and a miss is two leaders in one term.
 
 13. **Is the trailing offset floor enough?** After a majority of a group's
-    disks is lost at once, offsets acknowledged since the leader's last
-    report can be given out again (issue #2305). A crash or a power cut
-    cannot cause it, since Raft logs are fsync on commit. Closing it fully
-    means telling the control plane of every commit, which puts the control
-    plane on the write path. Recommended: accept it, keep the report
-    interval short (start: one second), and say so where the loss of a
-    majority of disks is documented. The records themselves are already
+    disks is lost at once, offsets acknowledged since the last floor the
+    control plane stored can be given out again (issue #2305). That is one
+    report interval, or the whole outage if the control plane was down. A
+    crash or a power cut cannot cause it, since Raft logs are fsync on
+    commit. Closing it fully means telling the control plane of every
+    commit, which puts the control plane on the write path. Recommended: accept it, keep the report
+    interval short (start: one second, one batched metadata write per
+    broker), and say so where the loss of a majority of disks is
+    documented. The records themselves are already
     lost in that case. The floor only keeps a reader from seeing other
     records under most of their offsets.
 
@@ -1369,6 +1410,9 @@ Each has a recommendation, judged on safety and performance only.
     after a wake. (c) Accept one election per sleeping group the two
     brokers share. Recommended: (b). It adds no new message, the vote hold
     is the one a restarted member needs anyway, and it also covers a
-    follower that cannot hear the leader for any other reason. (c) is
+    follower that cannot hear the leader for any other reason. (b) needs
+    pre-vote on: without it, a member that cannot hear the leader raises
+    its term when it campaigns, and its answer to the next heartbeat
+    deposes the leader whatever the others refused. (c) is
     cheap to build but one bad link between two brokers would depose every
     sleeping leader they share.
