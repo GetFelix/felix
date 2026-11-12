@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794517967958,
+  "lastUpdate": 1794519409133,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -67584,6 +67584,72 @@ window.BENCHMARK_DATA = {
             "range": "794.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 566.00\nmean: 962.80\nstdev: 794.33\ncv: 82.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d88ecd43492af0450dd2fbaf4089ad3f94f367f1",
+          "message": "feat(wire): subscribe with an end offset (#1053) (#1909)\n\n* feat(wire): subscribe with an end offset (#1053)\n\nA subscribe may carry end: the subscription delivers [start, end) of a\ndurable stream shard and finishes with subscription_ended. A range at or\nbelow the committed tail is read from disk and never joins fanout; one\nabove it follows live delivery and the receiver cuts the batch at end.\nNegotiated with FEATURE_SUBSCRIBE_END (0x40, extended word).\n\nCloses #1053\n\n* fix(wire): a bounded replay pages a dropped gap below end before stopping (#1053)\n\n* chore: spec pairing for subscribe end offset\n\nSpec-Unaffected: the end offset only stops delivery to one subscriber at a bound it chose; read order, the readable bound, offsets and fencing in FelixShardSessions are unchanged.\n\n* test(broker-service): bounded subscription is exact while publishing\n\n* docs: subscribe end bit in the changelog fragment, history-only bound",
+          "timestamp": "2026-11-12T21:32:57Z",
+          "tree_id": "8a38cd2d61a744d0da5e9f134f109826663c4f64",
+          "url": "https://github.com/GetFelix/felix/commit/d88ecd43492af0450dd2fbaf4089ad3f94f367f1"
+        },
+        "date": 1794519401783,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 67,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 67.00\nmean: 67.60\nstdev: 0.89\ncv: 1.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 93,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 93.00\nmean: 92.60\nstdev: 1.14\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 121,
+            "range": "18.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 127.00\nstdev: 18.07\ncv: 14.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.20\nstdev: 1.30\ncv: 1.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 187,
+            "range": "4.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 188.60\nstdev: 4.77\ncv: 2.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 300,
+            "range": "141.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 300.00\nmean: 359.00\nstdev: 141.64\ncv: 39.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
