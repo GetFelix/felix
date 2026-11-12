@@ -798,6 +798,9 @@ fi
 # outcome.
 # FelixRaftReformStaleMembershipFull is not registered either: it gives the
 # violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
+# FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
+# (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
+# hours, so nothing checks it yet.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has

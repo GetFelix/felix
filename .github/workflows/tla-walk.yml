@@ -200,6 +200,7 @@ jobs:
           - FelixShardCpLiveSkippedGeneration
           - FelixShardUnifiedReadmitFull
           - FelixShardUnifiedDropEvidencedFull
+          - FelixRaftPlacementFull
     steps:
       - name: Checkout
         uses: actions/checkout@v7

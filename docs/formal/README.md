@@ -615,11 +615,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
 | `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree` (137K distinct states) |
 | `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the same (2.7M distinct states) |
-| `FelixRaftPlacementFull.cfg` | the same with two terms and the write | not registered: over 9.5M distinct states and unfinished after nine minutes on a laptop; run through the dispatch |
+| `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
 | `FelixRaftPlacementReseat.cfg` | three brokers, two terms: one directory is wiped, the copy takes a new copy id and the leader swaps it in | pass the same (565K distinct states) |
 | `FelixRaftPlacementShrink.cfg` | three brokers, two terms: a seat is removed, three voters become two, and the removed copy is deleted under the rule | pass the same (207K distinct states) |
 | `FelixRaftPlacementMoveWipe.cfg` | the move in one term with one lost directory and the moved copy deleted under the rule | pass the same (1.1M distinct states) |
-| `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered; run through the dispatch |
+| `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered and not checked yet: unfinished after three hours on a CI runner, at 98M distinct states with 18.5M queued |
 | `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (257K distinct states) |
 | `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (12.6M distinct states, 49 minutes on a CI runner) |
 | `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
@@ -2604,6 +2604,13 @@ whatever became of the copies that gave them. None of the shard side is built
 yet: no code calls `add_learner` or `change_membership` for a shard group, and
 no code mints a copy id.
 
+The group's membership is given at the start. `FelixRaftPlacementReachForm.cfg`
+only shows that three empty brokers elect a leader and acknowledge a write.
+Forming a group from the peers' answers at first boot is not modelled
+(#2371), and neither is the metadata group rejoining under a new id after a
+lost volume, the fix #2365 settled on. The shard rule it copies is here
+(`Rotate = TRUE`, `FelixRaftPlacementReseat.cfg`, `AnswerAnyId`).
+
 ### Re-forming a group
 
 `FelixRaftReform.tla` models the path in
@@ -3001,8 +3008,8 @@ four `StoodOneDest` and the four `StoodSeveralDest`),
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`,
-`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg` and
-`FelixShardUnifiedDropEvidencedFull.cfg`. Each must pass. A smaller sibling of each
+`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg`,
+`FelixShardUnifiedDropEvidencedFull.cfg` and `FelixRaftPlacementFull.cfg`. Each must pass. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
