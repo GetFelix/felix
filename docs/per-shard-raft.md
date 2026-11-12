@@ -262,7 +262,8 @@ a member opens its directory:
   returns, and both the mark and the vote are durable before the vote is
   answered to anyone. The last log id is marked in batches, one synced
   write per root per mark interval, so it is a floor that trails the log by
-  up to that interval.
+  up to that interval. The id in the mark is an fsynced one, because an
+unsynced id after a power cut would read as a restore and rotate the copy.
 
 **What this does not catch.** A single shard directory that goes back to a
 state younger than one mark interval, with no vote saved since, passes
@@ -343,7 +344,8 @@ What `plan` works out for one group, and `apply` then does:
    whether the copy rotated, the last log id of the records on its disk,
    and the newest membership in those records. A broker declared dead is
    shown as missing. If a copy's records name a voter that is not on the
-   list, the group is blocked.
+   list, the group is blocked. Declaring the broker of a since-removed
+   voter dead unblocks a lagging copy whose newest membership names it.
 2. **Refuse.** A group is left alone if any reachable copy reports a
    leader for the epoch, and blocked if a placed broker is unreachable and
    not declared dead.
@@ -431,8 +433,8 @@ the base, that copy is the only voter and the rest are learners. The leader
 promotes each learner by a membership change as soon as it has caught up.
 Until the voters are again a majority of the placed set, the control plane
 shows the shard as under-replicated and does not count it as RF 3, and a
-`Quorum` acknowledgement rests on as many disks as there are voters, which
-can be one. The same holds for a switch that started with two voters.
+`Quorum` acknowledgement rests on as many copies as there are voters,
+which can be one. The same holds for a switch that started with two voters.
 
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
@@ -481,9 +483,10 @@ configuration acknowledges a `Leader` write at the same point 0.7 does. A
 power cut can then lose the same unsynced tail it can in 0.7, and those
 records were acknowledged on one broker only, which is the loss `Leader`
 already documents. Nothing else changes with the policy: the log is still
-fsynced under group commit, a `Quorum` acknowledgement still waits for
-the commit index, which counts fsynced copies only, and subscribers are
-still fed up to `read_bound`.
+fsynced under group commit, the commit index counts fsynced copies only,
+and subscribers are still fed up to `read_bound`.
+
+**`Quorum` on a `Periodic` stream.** Decided (issue #2167): the acknowledgement waits until a majority has written the record, or until it is committed, whichever is first. Each follower's node layer sends the leader its written position (last log id) after the adapter's `append` has handed the records to the kernel. The leader counts a member when that log id carries the leader's own term and is at or past the record, and counts itself at its own written position. The majority is of the voters of the effective membership, both halves of a joint one, never learners. This count releases the publisher's acknowledgement and nothing else. The commit index, votes, `read_bound`, apply, the offset floor and the root's log marks use fsynced positions only, so no member can come to hold a different record at a committed offset. With no power cut, an acknowledged record is in every later leader's log. It can be lost only if a copy that held it loses power before its fsync and a majority then elects without a copy that still holds it. At RF 3 that is one follower's power cut and then the leader failing before it re-replicates. The window is one group-commit fsync. The offset is then given to another record, which no subscriber saw. On a stream with fsync on commit, `Quorum` waits for the commit index.
 
 Only openraft writes to a Raft shard's log. The blank entry, membership
 entries and publishes all get their index from openraft, so they cannot
@@ -540,8 +543,9 @@ Rules for the ticker:
   group, the time its next tick is due, and ticks only the groups that
   are due. A leader is due when its next heartbeat is. A follower is due
   when its election timeout could have run out, counted from the last
-  leader message the node layer handed to it, so a follower that keeps
-  hearing its leader is not ticked at all. A group with no leader is due
+  message openraft accepted from the current leader, not from any
+  heartbeat, so a stale leader's heartbeats cannot keep a follower
+  unticked. A follower that keeps hearing its leader is not ticked at all. A group with no leader is due
   every interval.
 - **Slower idle timers.** A leader that has proposed nothing for the idle
   time is due at a longer idle heartbeat interval. That interval stays
@@ -551,11 +555,11 @@ Rules for the ticker:
   so the tick interval is added to election and heartbeat latency. The lease
   margin (engine page, Decisions, 5) counts it.
 
-Cost: a tick costs about 9 microseconds of CPU (from the measurement
-above). Ticking all of 2,000 members 20 times a second would be about a
-third of a core. With only due groups ticked, a broker ticks the groups it
-leads, about 667 of 2,000: about 3,300 ticks a second at a 200 ms
-heartbeat, or 3% of a core, and less at the idle interval. A late or
+Cost: 9 microseconds is a floor. It is the average over ticks every
+10 ms, four of five of which send nothing, while a due tick sends a
+heartbeat at up to about 43 microseconds. So 2,000 members at a 500 ms
+idle heartbeat cost 1.2% to 5.7% of a core against the 2% limit, before
+follower handling. The #2231 stub-group run decides. A late or
 skipped tick is safe for the same reason a dropped one is. Idle CPU is
 measured now, on the group runtime with stub groups, before any shard
 runs on it. See Questions, 15.
@@ -642,7 +646,9 @@ the log except through openraft ("Writing through openraft").
 ### Acknowledging a write
 
 A `Quorum` write is acknowledged when `await_commit` returns: the commit
-index has passed it and the entry there has the term it was written at. If
+index has passed it and the entry there has the term it was written at. On
+a `Periodic` stream it is acknowledged earlier if a majority has written
+it ("Two signals from one append"). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
@@ -670,13 +676,16 @@ memory. Decided (issue #2167): `Leader` streams keep the local
 acknowledgement, and the window is waited out after a restart, not
 stored. The node layer drops every vote and pre-vote request for a group,
 before it reaches openraft, until `election_timeout_max` has passed on the
-monotonic clock since the broker process started. The process started
-after the last message the old one took, so the wait covers the promise.
+monotonic clock since that member started, not since the process started.
+The member started after the last message the old one took, so the wait
+covers the promise. A held member is not ticked.
 Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
 
-openraft 0.10.0 already does part of this. At start it renews the window
+The campaign side does rest on openraft: `Engine::startup`
+(engine_impl.rs:195-200) keeps a restarted member from campaigning
+early. openraft 0.10.0 also does part of the vote side. At start it renews the window
 for a full `election_timeout_max` when the stored vote is committed, which
 is the vote of a follower that took a leader's message
 (`Engine::startup`). A stored vote that is not committed gets no window.
