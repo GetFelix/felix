@@ -33,6 +33,10 @@ use crate::ports;
 /// How many members the group has.
 pub(crate) const MEMBERS: usize = 3;
 
+/// The live members' API addresses, by member, with the token that cuts
+/// their connections.
+type Live = Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken)>>>>;
+
 /// A forwarded address that can be cut: while closed it takes no traffic,
 /// and closing it drops the connections already through.
 #[derive(Clone)]
@@ -133,9 +137,8 @@ pub(crate) struct Group {
     members: tokio::sync::Mutex<Vec<Member>>,
     /// The gates of the forwarders from member `from` to member `to`.
     gates: Vec<Vec<Option<Gate>>>,
-    front: SocketAddr,
     /// Live API addresses and their stop tokens, read by the front.
-    live: Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken)>>>>,
+    live: Live,
     forwarders: Vec<tokio::task::JoinHandle<()>>,
     /// Which member is isolated, if one is.
     isolated: Mutex<Option<usize>>,
@@ -183,8 +186,7 @@ impl Group {
                 gates[from][to] = Some(gate);
             }
         }
-        let live: Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken)>>>> =
-            Arc::new(Mutex::new(vec![None; MEMBERS]));
+        let live: Live = Arc::new(Mutex::new(vec![None; MEMBERS]));
         let front_live = Arc::clone(&live);
         let listener = tokio::net::TcpListener::bind(front)
             .await
@@ -222,7 +224,6 @@ impl Group {
             setup,
             members: tokio::sync::Mutex::new(members),
             gates,
-            front,
             live,
             forwarders,
             isolated: Mutex::new(None),
@@ -242,11 +243,6 @@ impl Group {
         }
         group.wait_for_leader(Duration::from_secs(30)).await?;
         Ok(group)
-    }
-
-    /// Where brokers reach the group.
-    pub(super) fn front(&self) -> SocketAddr {
-        self.front
     }
 
     /// A store that writes through whichever member is up, for the harness's

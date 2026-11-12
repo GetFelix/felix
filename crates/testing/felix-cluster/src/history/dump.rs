@@ -10,7 +10,6 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use felix_controlplane_service::model::{ReplicaReport, ShardAssignment, ShardKind};
-use felix_controlplane_service::store::ControlPlaneStore;
 
 use super::campaign::Campaign;
 use crate::Cluster;

@@ -5,7 +5,6 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use felix_cluster::{ClockFault, Cluster, ClusterConfig, Endpoint, Fault, StreamSpec};
-use felix_controlplane_service::store::ControlPlaneStore;
 use serial_test::serial;
 
 const STREAM: &str = "orders";

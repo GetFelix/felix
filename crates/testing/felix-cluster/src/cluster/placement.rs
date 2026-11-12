@@ -311,7 +311,6 @@ impl Cluster {
     /// `kind name/shard`: a staged successor or joining follower, or a leader
     /// fenced for the cut-over.
     pub async fn moving_shards(&self) -> Result<Vec<String>> {
-        use felix_controlplane_service::store::ControlPlaneStore;
         let assignments = self
             .control_plane()
             .store
@@ -340,7 +339,6 @@ impl Cluster {
     /// reported a caught-up replica at the current generation.
     pub(crate) async fn shard_statuses(&self) -> Result<Vec<ShardStatus>> {
         use felix_controlplane_service::model::ShardState;
-        use felix_controlplane_service::store::ControlPlaneStore;
         let store = &self.control_plane().store;
         let assignments = store
             .list_shard_assignments()

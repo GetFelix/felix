@@ -20,7 +20,6 @@ use super::subscriber::Subscribers;
 use super::workload::{ClientKind, Workload};
 use crate::{CacheSpec, Cluster, ClusterConfig, StreamSpec, wait};
 use felix_common::fleet;
-use felix_controlplane_service::store::ControlPlaneStore;
 
 /// The seed, as a number or `random`.
 pub const SEED_VAR: &str = "FELIX_HISTORY_SEED";
