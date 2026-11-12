@@ -1,9 +1,9 @@
 ---
-title: "felix-agents"
+title: "KBL"
 description: "A swarm of workers with Felix as its data backend: tasks flow out through a consumer group, results flow back through conditional cache writes, and one log records the whole run for live viewing and replay."
 ---
 
-[felix-agents](https://github.com/GetFelix/felix-agents) models a swarm of
+[KBL](https://github.com/GetFelix/KBL) models a swarm of
 workers, here AI agents, with Felix as their data backend. A planner splits a
 job into tasks, the tasks flow out to many workers, and the results flow back.
 Workers claim tasks, share what they find, lock what they change and spend
@@ -17,11 +17,11 @@ replayed by scrubbing back to any moment of it.
 It is at the design stage. `agents-tool` sets up a run's streams and caches on
 Felix and writes its first record, and `felix-mcp` serves one MCP tool, which
 says which run the agent is in. The task tools are not built, so no swarm runs. The
-[style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
+[style frame](https://github.com/GetFelix/KBL/blob/main/prototype/style-frame.html)
 fixes the look of the viewer, driven by a hand-written run rather than a
 working swarm. The sections below describe the design.
 
-![felix-agents style frame: fifty workers in a ring around the planner and its task queue, tasks flowing out and results flowing back, with the board, the run log and a timeline of every worker's claims](/built-on-felix/agents-burst.webp?v=1)
+![KBL style frame: fifty workers in a ring around the planner and its task queue, tasks flowing out and results flowing back, with the board, the run log and a timeline of every worker's claims](/built-on-felix/agents-burst.webp?v=1)
 
 ## How it uses Felix
 
@@ -97,7 +97,7 @@ issuer, which `agents-tool` runs for now.
 There is no request and reply between clients, so `ask` is built on the
 messages stream. There is no bounded counter add, so a budget takes a reserve,
 a check and a refund. Each gap has an
-[issue](https://github.com/GetFelix/felix-agents/labels/felix-gap).
+[issue](https://github.com/GetFelix/KBL/labels/felix-gap).
 
 ## What it demonstrates
 
@@ -109,5 +109,5 @@ a check and a refund. Each gap has an
 
 ## More
 
-- [README](https://github.com/GetFelix/felix-agents#readme)
-- [Design](https://github.com/GetFelix/felix-agents/blob/main/docs/design.md): the data model, the Felix mapping, the gaps and the build order
+- [README](https://github.com/GetFelix/KBL#readme)
+- [Design](https://github.com/GetFelix/KBL/blob/main/docs/design.md): the data model, the Felix mapping, the gaps and the build order
