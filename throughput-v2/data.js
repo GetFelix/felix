@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794452163483,
+  "lastUpdate": 1794452766532,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52520,6 +52520,58 @@ window.BENCHMARK_DATA = {
             "range": "10227.61",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1135814.07\nmean: 1141479.91\nstdev: 10227.61\ncv: 0.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b52e3709e1c268164e3624f9e809bf00deac54a8",
+          "message": "fix(storage): save_vote takes the winner's committed vote after a losing self-vote (#2231) (#2328)\n\nA committed vote may replace an uncommitted one in the same term for any\nleader. A second uncommitted vote, a second committed leader, a lower term\nand a given-up term are still refused.\n\nSpec-Unaffected: the ballot rules the spec models are unchanged; this only admits the transition openraft makes.",
+          "timestamp": "2026-11-12T02:59:04Z",
+          "tree_id": "e040e10852dfab343f59af06cfbd85decd47b71c",
+          "url": "https://github.com/GetFelix/felix/commit/b52e3709e1c268164e3624f9e809bf00deac54a8"
+        },
+        "date": 1794452765858,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 476289.5,
+            "range": "35035.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476289.50\nmean: 495929.90\nstdev: 35035.75\ncv: 7.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 476289.5,
+            "range": "35035.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 476289.50\nmean: 495929.90\nstdev: 35035.75\ncv: 7.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 113334.22,
+            "range": "5198.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 113334.22\nmean: 111508.26\nstdev: 5198.25\ncv: 4.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1133342.19,
+            "range": "51982.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1133342.19\nmean: 1115082.64\nstdev: 51982.45\ncv: 4.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
