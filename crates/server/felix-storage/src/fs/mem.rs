@@ -59,6 +59,25 @@ struct FlushFault {
     failed: bool,
 }
 
+thread_local! {
+    /// Set while the simulation itself reads a device. See [`unobserved`].
+    static UNOBSERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `read` on this thread without recording the segments it opens. Only a
+/// broker opening its log recovers it, so a read from outside the broker
+/// must not count as the open that owed a repair.
+pub(crate) fn unobserved<R>(read: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNOBSERVED.set(self.0);
+        }
+    }
+    let _restore = Restore(UNOBSERVED.replace(true));
+    read()
+}
+
 #[derive(Default)]
 struct Opened {
     order: Vec<PathBuf>,
@@ -211,7 +230,7 @@ impl Tree {
             .to_str()
             .and_then(crate::segment::parse_segment_file_name)
             .map(|_| Arc::from(path));
-        if segment.is_some() {
+        if segment.is_some() && !UNOBSERVED.get() {
             let mut opened = self.opened.lock();
             if opened.since_reboot.insert(path.to_path_buf()) {
                 opened.order.push(path.to_path_buf());
@@ -517,13 +536,13 @@ impl Tree {
             }
         };
         let mut rng = crate::io::writeback::SplitMix64::new(seed);
-        let torn = {
+        let (torn, whole) = {
             let data = file.data.lock();
             power::torn_append(&data.durable, &data.current, from, end, &mut rng)
         };
         let rebooted = self.rebooted(&mut rng, Some((file, torn)));
         *self.power.lock() = power::Power::Out(rebooted);
-        on_cut(path, from as u64);
+        on_cut(path, whole as u64);
     }
 
     /// What a power loss now leaves, without touching the live tree, which
