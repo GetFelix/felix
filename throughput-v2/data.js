@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794523133578,
+  "lastUpdate": 1794524973528,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53352,6 +53352,58 @@ window.BENCHMARK_DATA = {
             "range": "23762.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1184670.56\nmean: 1176164.78\nstdev: 23762.12\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ac63b7381037c5ee9db796b919da1f817c92059f",
+          "message": "fix(sim): torn-tail-repaired no longer fails on a clean log (#2195) (#2383)\n\nfelix-sim's torn-tail-repaired check had two false positives: the nemesis's own disk reads (since #2327) were recorded as a broker reopening a torn segment, and a cut that left whole records with nothing lost before it was treated as torn. Recovery was correct in every seed. The check still holds the broker to a repair whenever any byte before the cut was lost, and a real torn open without a repair is still a finding. Refs #2195.",
+          "timestamp": "2026-11-12T23:04:41Z",
+          "tree_id": "bbdb43eeddfed26a6bab5bfadaf712ad1b955ff5",
+          "url": "https://github.com/GetFelix/felix/commit/ac63b7381037c5ee9db796b919da1f817c92059f"
+        },
+        "date": 1794524972551,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 374289.57,
+            "range": "8428.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374289.57\nmean: 377236.87\nstdev: 8428.71\ncv: 2.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 374289.57,
+            "range": "8428.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 374289.57\nmean: 377236.87\nstdev: 8428.71\ncv: 2.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83052.53,
+            "range": "999.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83052.53\nmean: 82820.67\nstdev: 999.98\ncv: 1.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 830525.34,
+            "range": "9999.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 830525.34\nmean: 828206.66\nstdev: 9999.78\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
