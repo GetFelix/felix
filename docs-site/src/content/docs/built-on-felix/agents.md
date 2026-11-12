@@ -59,7 +59,7 @@ read, so replay and live delivery meet with no gap.
 
 Some of this is not yet reachable the way the design wants. Each gap has an
 issue labelled
-[`felix-gap`](https://github.com/GetFelix/felix-agents/labels/felix-gap).
+[`felix-gap`](https://github.com/GetFelix/KBL/labels/felix-gap).
 
 ```mermaid
 flowchart LR
@@ -82,8 +82,7 @@ KBL is early. The tracker is still being built, and the dashboard shows hand-wri
   the reference worker with a model API and spend limits, and a release with a
   quick start.
 
-The dashboard images in the repository are style frames drawn from
-hand-written fixtures. The tracker does not feed them yet. Its
+The
 [threat model](https://github.com/GetFelix/KBL/blob/main/docs/threat-model.md)
 also lists gaps that are still open, such as plain HTTP between the tracker
 and its callers.
