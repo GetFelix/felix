@@ -33,8 +33,8 @@
 mod codec;
 mod purged;
 mod reader;
-mod snapshot;
-mod state_file;
+pub(crate) mod snapshot;
+pub(crate) mod state_file;
 #[cfg(test)]
 mod tests;
 mod writer;

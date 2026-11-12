@@ -1089,8 +1089,82 @@ id, the metadata and the data change in that one rename, so a reader never
 sees one snapshot's data under another's id. A snapshot that covers less
 than the stored one is not written. A file that does not decode, or whose
 lengths do not add up to the file's, fails the open: the log below the
-snapshot may be purged, so it cannot be read as "no snapshot". A
-`raft-snapshot.tmp` left by a crash is never read.
+snapshot may be purged, so it cannot be read as "no snapshot". The same
+goes for a file of another format version, even with a correct checksum. A
+`raft-snapshot.tmp` left by a crash is never read, and the next open deletes
+it.
+
+## `member`: a metadata store's member file
+
+The control plane's metadata store keeps one small file beside its Raft log
+and its snapshot. It says which cluster the store belongs to, whether the
+member's vote is withheld, and carries two marks the upgrade from redb
+uses. The control plane does not run on this store yet. The files and their
+rules are in place for the step that switches it over; the design is in
+[metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
+
+A member's data directory (`FELIX_RAFT_DATA_DIR`) will look like this:
+
+```text
+raft.redb          ← an older release's store, or the stub a conversion leaves
+store/
+  member           ← this file
+  raft-snapshot    ← the snapshot, in the format above
+  log/             ← the Raft log, a segment log with a raft-purged file
+```
+
+```text
+ 0   4  magic              u32  "FLMB"
+ 4   2  version            u16  1
+ 6   2  flags              u16  bit 0  vote withheld
+                                bit 1  converted
+                                bit 2  started
+ 8   2  cluster id length  u16  zero until a cluster id is claimed
+10   4  crc                u32  crc32 over bytes 0..10 and the cluster id
+14      cluster id, UTF-8
+```
+
+What the fields mean:
+
+- **Cluster id.** The store belongs to one cluster for good. A claim of
+  another id is refused and writes nothing.
+- **Vote withheld.** The member rejoined with an empty store and may have
+  forgotten a vote, so it must not vote or campaign until it has caught up.
+- **Converted.** The conversion tool built this store from a redb store.
+- **Started.** The member has started on this store at least once, so it
+  may have voted or acknowledged in the new group. The mark is on disk
+  before the Raft node exists.
+
+Every change replaces the file: a temporary, an fsync, a rename and a
+directory sync, all before the change returns. A crash leaves the old file
+or the new one. If a write fails, the file may be either, so every later
+change fails too and the member has to stop.
+
+Nothing can rebuild this file. One that fails its checksum, has another
+length than its header says, is another format version, or sets a flag bit
+this build does not know fails the open. It is never read as "no file",
+which would give a withheld vote back and forget that the member started.
+
+The member file is the first file written to a store. A store with no
+member file is a new one. A store that holds a log or a snapshot and no
+member file has lost it, and the open fails. A `member.tmp` left by a crash
+is never read, and the next open deletes it.
+
+### Whether a member may start
+
+The service decides from the names in the data directory and this file. It
+never opens `raft.redb`, and it decides before it writes anything, so a
+refusal leaves the directory as it was.
+
+| `raft.redb` | `store/` | The service |
+| --- | --- | --- |
+| absent | absent | Starts as a new member. |
+| absent | present | Starts. |
+| present | present, with the converted mark | Starts. The file is the conversion's stub. |
+| present | absent, without the mark, or with a member file that does not decode | Refuses to start and names the conversion tool. |
+
+A name that cannot be examined, for example for lack of permission, is a
+refusal too. It is not read as absent.
 
 ## `ballot`: whom the generation was accepted from
 
