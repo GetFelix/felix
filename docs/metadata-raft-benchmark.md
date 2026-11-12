@@ -54,8 +54,98 @@ store traits it uses have not changed.
 
 ## The redb baseline
 
-Not yet recorded: the table below is filled from the first `full` run on the
-runner.
+Median of three `full` runs on the shared self-hosted runner (the head side of
+an A/A run of this commit against main, Actions run 43148436768). Throughput
+and latency on that runner are noisy; the gate holds a change to the noise band
+of its own base runs, not to these digits.
 
 | Cell and metric | Value |
 |---|---|
+| failover failed_rounds | 0 |
+| failover max_ms | 2268 |
+| failover p50_ms | 2014 |
+| failover rounds | 5 |
+| idle/m3 cpu_percent | 0.8 |
+| idle/m3 process_rss_mib | 39.78 |
+| placement_update failed | 0 |
+| placement_update ops_per_s | 1614 |
+| placement_update p50_ms | 2.319 |
+| placement_update p99_ms | 6.132 |
+| propose/m1/16KiB/p1 bytes_written_per_entry | 1.851e+05 |
+| propose/m1/16KiB/p1 failed | 0 |
+| propose/m1/16KiB/p1 ops_per_s | 745.7 |
+| propose/m1/16KiB/p1 p50_ms | 1.267 |
+| propose/m1/16KiB/p1 p99_ms | 2.659 |
+| propose/m1/16KiB/p128 bytes_written_per_entry | 1.326e+05 |
+| propose/m1/16KiB/p128 failed | 0 |
+| propose/m1/16KiB/p128 ops_per_s | 2350 |
+| propose/m1/16KiB/p128 p50_ms | 53.09 |
+| propose/m1/16KiB/p128 p99_ms | 102.7 |
+| propose/m1/16KiB/p16 bytes_written_per_entry | 1.395e+05 |
+| propose/m1/16KiB/p16 failed | 0 |
+| propose/m1/16KiB/p16 ops_per_s | 1733 |
+| propose/m1/16KiB/p16 p50_ms | 8.896 |
+| propose/m1/16KiB/p16 p99_ms | 12.86 |
+| propose/m1/256B/p1 bytes_written_per_entry | 5.835e+04 |
+| propose/m1/256B/p1 failed | 0 |
+| propose/m1/256B/p1 ops_per_s | 1575 |
+| propose/m1/256B/p1 p50_ms | 0.5401 |
+| propose/m1/256B/p1 p99_ms | 1.256 |
+| propose/m1/256B/p128 bytes_written_per_entry | 3586 |
+| propose/m1/256B/p128 failed | 0 |
+| propose/m1/256B/p128 ops_per_s | 2.487e+04 |
+| propose/m1/256B/p128 p50_ms | 5.01 |
+| propose/m1/256B/p128 p99_ms | 6.989 |
+| propose/m1/256B/p16 bytes_written_per_entry | 9734 |
+| propose/m1/256B/p16 failed | 0 |
+| propose/m1/256B/p16 ops_per_s | 9097 |
+| propose/m1/256B/p16 p50_ms | 1.645 |
+| propose/m1/256B/p16 p99_ms | 3.624 |
+| propose/m3/16KiB/p1 bytes_written_per_entry | 5.532e+05 |
+| propose/m3/16KiB/p1 failed | 0 |
+| propose/m3/16KiB/p1 ops_per_s | 243.6 |
+| propose/m3/16KiB/p1 p50_ms | 3.842 |
+| propose/m3/16KiB/p1 p99_ms | 11.21 |
+| propose/m3/16KiB/p128 bytes_written_per_entry | 4.014e+05 |
+| propose/m3/16KiB/p128 failed | 0 |
+| propose/m3/16KiB/p128 ops_per_s | 562.5 |
+| propose/m3/16KiB/p128 p50_ms | 220.5 |
+| propose/m3/16KiB/p128 p99_ms | 325.8 |
+| propose/m3/16KiB/p16 bytes_written_per_entry | 4.056e+05 |
+| propose/m3/16KiB/p16 failed | 0 |
+| propose/m3/16KiB/p16 ops_per_s | 466.2 |
+| propose/m3/16KiB/p16 p50_ms | 31.53 |
+| propose/m3/16KiB/p16 p99_ms | 110.9 |
+| propose/m3/256B/p1 bytes_written_per_entry | 1.721e+05 |
+| propose/m3/256B/p1 failed | 0 |
+| propose/m3/256B/p1 ops_per_s | 540.2 |
+| propose/m3/256B/p1 p50_ms | 1.472 |
+| propose/m3/256B/p1 p99_ms | 8.309 |
+| propose/m3/256B/p128 bytes_written_per_entry | 8569 |
+| propose/m3/256B/p128 failed | 0 |
+| propose/m3/256B/p128 ops_per_s | 8001 |
+| propose/m3/256B/p128 p50_ms | 14.96 |
+| propose/m3/256B/p128 p99_ms | 58.86 |
+| propose/m3/256B/p16 bytes_written_per_entry | 1.996e+04 |
+| propose/m3/256B/p16 failed | 0 |
+| propose/m3/256B/p16 ops_per_s | 3912 |
+| propose/m3/256B/p16 p50_ms | 3.836 |
+| propose/m3/256B/p16 p99_ms | 6.701 |
+| replica_report failed | 0 |
+| replica_report ops_per_s | 3912 |
+| replica_report p50_ms | 3.976 |
+| replica_report p99_ms | 6.027 |
+| restart_to_ready/1MiB ready_ms | 381.4 |
+| restart_to_ready/32MiB ready_ms | 2.019e+04 |
+| snapshot_build/1MiB build_ms | 6.94 |
+| snapshot_build/1MiB longest_write_ms | 71.27 |
+| snapshot_build/32MiB build_ms | 304.8 |
+| snapshot_build/32MiB longest_write_ms | 1e+04 |
+| snapshot_install/1MiB install_ms | 455.2 |
+| snapshot_install/1MiB ok | 1 |
+| snapshot_install/32MiB install_ms | 4.713e+04 |
+| snapshot_install/32MiB ok | 1 |
+| stream_create failed | 0 |
+| stream_create ops_per_s | 526.6 |
+| stream_create p50_ms | 1.567 |
+| stream_create p99_ms | 7.204 |
