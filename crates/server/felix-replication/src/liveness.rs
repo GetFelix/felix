@@ -51,6 +51,11 @@ pub struct Liveness {
 struct Inner {
     state: State,
     decisions: VecDeque<Decision>,
+    /// Peers that answered that they run store liveness, where no handshake
+    /// is on record to say so.
+    running: HashSet<String>,
+    /// Peers being asked right now, so each is asked by one task at a time.
+    asking: HashSet<String>,
 }
 
 /// What store liveness would have done so far, and how it sees its peers.
@@ -74,6 +79,8 @@ impl Liveness {
             inner: Mutex::new(Inner {
                 state: State::new(config, Instant::now()),
                 decisions: VecDeque::new(),
+                running: HashSet::default(),
+                asking: HashSet::default(),
             }),
         })
     }
@@ -170,6 +177,10 @@ impl Liveness {
         }
     }
 
+    /// Never waits on a peer: heartbeats and capability questions run as
+    /// their own tasks. One unreachable broker must not stretch the gap
+    /// between the heartbeats the others get, or they would withdraw support
+    /// for a healthy broker.
     async fn exchange<R: PeerRequester + Send + Sync + 'static>(
         self: Arc<Self>,
         requester: Arc<R>,
@@ -179,45 +190,34 @@ impl Liveness {
         let every = self.config.interval;
         let mut ticker = tokio::time::interval(every);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut watched = HashSet::default();
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = ticker.tick() => {}
             }
             let peers = sharing(&router);
-            let (this, epoch) = (&self, self.epoch);
-            let round = async {
-                let offers = futures::future::join_all(peers.iter().map(|peer| {
-                    let requester = &requester;
-                    let known = watched.contains(&peer.node_id);
-                    async move { offers(requester.as_ref(), peer, known, every).await }
-                }))
-                .await;
-                let running: Vec<&SharedPeer> = peers
-                    .iter()
-                    .zip(offers)
-                    .filter_map(|(peer, offers)| offers.then_some(peer))
-                    .collect();
-                if this.inner.lock().state.may_send(Instant::now()) {
-                    futures::future::join_all(running.iter().map(|peer| {
-                        let requester = &requester;
-                        async move { beat(requester.as_ref(), peer, epoch, every).await }
-                    }))
-                    .await;
-                }
-                running
-                    .iter()
-                    .map(|peer| peer.node_id.clone())
-                    .collect::<HashSet<String>>()
-            };
-            watched = tokio::select! {
-                _ = shutdown.cancelled() => return,
-                watched = round => watched,
-            };
-            let leaders: HashSet<String> = peers
+            let running: Vec<&SharedPeer> = peers
                 .iter()
-                .filter(|peer| peer.leads && watched.contains(&peer.node_id))
+                .filter(|peer| self.runs_it(&requester, peer, &shutdown))
+                .collect();
+            if self.inner.lock().state.may_send(Instant::now()) {
+                for peer in &running {
+                    let (requester, peer, epoch) =
+                        (Arc::clone(&requester), (*peer).clone(), self.epoch);
+                    let shutdown = shutdown.clone();
+                    tokio::spawn(async move {
+                        tokio::select! {
+                            _ = shutdown.cancelled() => {}
+                            _ = beat(requester.as_ref(), &peer, epoch, every) => {}
+                        }
+                    });
+                }
+            }
+            let watched: HashSet<String> =
+                running.iter().map(|peer| peer.node_id.clone()).collect();
+            let leaders: HashSet<String> = running
+                .iter()
+                .filter(|peer| peer.leads)
                 .map(|peer| peer.node_id.clone())
                 .collect();
             let mut inner = self.inner.lock();
@@ -239,6 +239,47 @@ impl Liveness {
                     .count() as f64,
             );
         }
+    }
+
+    /// Whether `peer` runs store liveness. Its latest handshake decides. With
+    /// none on record it is asked in the background and stays what it was
+    /// last known to be: a peer that was watched and has died must stay
+    /// watched to be missed.
+    fn runs_it<R: PeerRequester + Send + Sync + 'static>(
+        self: &Arc<Self>,
+        requester: &Arc<R>,
+        peer: &SharedPeer,
+        shutdown: &CancellationToken,
+    ) -> bool {
+        if let Some(offered) = requester.recorded_capabilities(&peer.node_id) {
+            return offered.contains(PeerCapabilities::STORE_LIVENESS);
+        }
+        let mut inner = self.inner.lock();
+        if inner.asking.insert(peer.node_id.clone()) {
+            let (this, requester, peer) = (Arc::clone(self), Arc::clone(requester), peer.clone());
+            let (within, shutdown) = (self.config.interval, shutdown.clone());
+            tokio::spawn(async move {
+                let asked = tokio::select! {
+                    _ = shutdown.cancelled() => return,
+                    asked = tokio::time::timeout(
+                        within,
+                        requester.capabilities(&peer.node_id, peer.addr),
+                    ) => asked,
+                };
+                let mut inner = this.inner.lock();
+                inner.asking.remove(&peer.node_id);
+                match asked {
+                    Ok(Ok(offered)) if offered.contains(PeerCapabilities::STORE_LIVENESS) => {
+                        inner.running.insert(peer.node_id);
+                    }
+                    Ok(Ok(_)) => {
+                        inner.running.remove(&peer.node_id);
+                    }
+                    _ => {}
+                }
+            });
+        }
+        inner.running.contains(&peer.node_id)
     }
 }
 
@@ -319,24 +360,6 @@ fn sharing(router: &ShardRouter) -> Vec<SharedPeer> {
         }
     }
     peers
-}
-
-/// Whether `peer` runs store liveness. Its latest handshake decides. With
-/// none on record it is asked, and if it cannot be reached it stays what it
-/// was: a peer that was watched and has died must stay watched to be missed.
-async fn offers<R: PeerRequester>(
-    requester: &R,
-    peer: &SharedPeer,
-    known: bool,
-    within: Duration,
-) -> bool {
-    if let Some(offered) = requester.recorded_capabilities(&peer.node_id) {
-        return offered.contains(PeerCapabilities::STORE_LIVENESS);
-    }
-    match tokio::time::timeout(within, requester.capabilities(&peer.node_id, peer.addr)).await {
-        Ok(Ok(offered)) => offered.contains(PeerCapabilities::STORE_LIVENESS),
-        _ => known,
-    }
 }
 
 /// Send `peer` one heartbeat, giving up after `within`. The answer only

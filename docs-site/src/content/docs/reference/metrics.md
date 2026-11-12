@@ -210,6 +210,14 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
+| `felix_broker_store_liveness_probe_seconds` | histogram | - | How long each store liveness disk probe took. Only from a broker built with the `raft` feature and started with `FELIX_STORE_LIVENESS=shadow`, as are the rest of the `store_liveness` metrics. Nothing acts on them yet. |
+| `felix_broker_store_liveness_probe_failures_total` | counter | - | Disk probes that failed. |
+| `felix_broker_store_liveness_sending` | gauge | - | 1 while this broker sends store liveness heartbeats, 0 while no probe has finished within the stall limit (5 s). |
+| `felix_broker_store_liveness_heartbeats_total` | counter | `outcome` | Store liveness heartbeats sent, by `ok`, `refused` or `timeout`. |
+| `felix_broker_store_liveness_peers` | gauge | - | Brokers this one shares a shard with and watches. |
+| `felix_broker_store_liveness_peers_withdrawn` | gauge | - | Watched brokers this one would not support right now: silent for 1.5 s. |
+| `felix_broker_store_liveness_held_leaders` | gauge | - | After a start, leaders of shards this broker follows that it has not heard yet, while the restart hold runs. |
+| `felix_broker_store_liveness_decisions_total` | counter | `decision` | What store liveness would have done: `withdraw`, `restore`, `restarted`, `silenced`, `resumed`, `hold_released`, `hold_expired`. |
 | `felix_broker_replication_passes_waiting` | gauge | - | Shards waiting for a pass or fence slot right now. Staying high means more shards have work than this broker ships at once. |
 | `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `appended` is an append since the shard was last asked; `urgent` is a write waiting on the mark, a shard new to this leader, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
 | `felix_broker_replication_drain_withheld_total` | counter | `log` | Drained reports held back because a follower was still behind on a log. A planned move waits on this. |

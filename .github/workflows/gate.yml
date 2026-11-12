@@ -80,8 +80,17 @@ jobs:
     with:
       engine: ${{ inputs.engine }}
 
+  # Prices store liveness in shadow mode on the hybrid. Reported beside the
+  # criteria; it never changes the verdict.
+  liveness:
+    uses: ./.github/workflows/gate-liveness.yml
+    with:
+      engine: ${{ inputs.engine }}
+      rounds: ${{ inputs.perf_rounds }}
+      seconds: ${{ inputs.perf_seconds }}
+
   report:
-    needs: [history, perf, failover, groups]
+    needs: [history, perf, failover, groups, liveness]
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10

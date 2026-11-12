@@ -244,9 +244,11 @@ The rest of per-shard Raft fits without changing a method:
   `confirm_read`, a placement change through `placement_changed`, and a Raft
   message through `handle`. The node ticker, the audit timer and the sleep
   handshake are inside the engine.
-- **Store liveness.** The liveness heartbeat is a peer message and arrives
-  through `handle`. It replaces `suspicion.rs`, which the hybrid starts
-  itself.
+- **Store liveness.** The liveness heartbeat is a peer message. It will
+  replace `suspicion.rs`, which the hybrid starts itself. It is built in
+  shadow mode, beside the hybrid and outside the trait: the broker service
+  starts it and hands it peers' heartbeats, and the engine never sees it
+  ([per-shard Raft](per-shard-raft.md), "What is built: shadow mode").
 - **Closing the fence for a membership step.** `EngineHost` gains one
   method that closes a shard without deposing it. The engine waits on
   `quiesced` and reopens with `opened` at the same generation.
@@ -1351,10 +1353,22 @@ and writes one report:
 | `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
+`gate.yml` also runs **Gate - store liveness A/B** (`gate-liveness.yml`).
+It is not a criterion and never changes the verdict. It prices store
+liveness in shadow mode ([per-shard Raft](per-shard-raft.md), "What is
+built: shadow mode") before anything turns it on. One `felix-broker`, built
+from this commit with the `raft` feature, runs each cell with store liveness
+off and with `FELIX_STORE_LIVENESS=shadow`. Every broker syncs on commit
+(`FELIX_DURABLE_FSYNC_MODE=on_commit`), so the probe's sync competes with
+group commit for the device. The cells are RF 1 at 1 KiB (no shared shards,
+so the probe alone), RF 3 at 1 KiB and RF 3 at 64 KiB. The report shows the
+table under "priced only", judged by the same limits as the perf cells. Run
+alone, the workflow is red when a cell is outside them.
+
 Each part also runs alone with its own "Run workflow" button. Small sizes make
 a dry run: for example `seeds: 8`, `shards: 2`, `modes: off`,
 `nemeses: all`, `duration_secs: 60` for `gate-history.yml`, and `rounds: 2`,
-`seconds: 5` for `gate-perf.yml`.
+`seconds: 5` for `gate-perf.yml` and `gate-liveness.yml`.
 
 The perf and failover parts build the baseline (default `v0.7.1`, the last
 v0.7.x release) and this commit, then alternate the two sides trial by trial

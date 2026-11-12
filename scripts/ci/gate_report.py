@@ -3,11 +3,12 @@
 
   gate_report.py ARTIFACT_DIR REPO_DIR [--engine ENGINE] [--sha SHA] [--run-url URL] [--out FILE]
 
-Each part (history, perf, failover, groups) uploads an artifact `gate-result-<part>-<engine>` holding
+Each part (history, perf, failover, groups, and the priced-only liveness) uploads an artifact `gate-result-<part>-<engine>` holding
 `result.json` ({"part", "engine", "status", "summary"}) and `section.md`. A status is
 `pass`, `fail`, `unavailable` (the engine does not exist yet), `n/a` (the criterion
 does not apply to this engine) or `skipped` (the part was not asked for). The gate passes only when every part passes.
 Criterion 7, the size of each protocol, is counted from REPO_DIR and never fails.
+The parts in PRICED are shown in the report and never change its verdict.
 """
 import argparse
 import json
@@ -20,6 +21,12 @@ PARTS = [
     ("perf", "2, 3. Throughput and p99"),
     ("failover", "4, 5. Failover and control plane down"),
     ("groups", "6. Groups per broker"),
+]
+
+# Measured and shown, never part of the verdict: features that are off by
+# default and are priced before anything turns them on.
+PRICED = [
+    ("liveness", "Store liveness in shadow mode, on against off (priced only)"),
 ]
 
 
@@ -99,8 +106,12 @@ def main(argv):
             f"| {title} | {part['status'] if part else 'missing'} | "
             f"{(part or {}).get('summary', 'no artifact')} |"
         )
+    for name, title in PRICED:
+        part = parts.get(name)
+        if part:
+            lines.append(f"| {title} | {part['status']} | {part.get('summary', '')} |")
     lines.append("")
-    for name, _ in PARTS:
+    for name, _ in PARTS + PRICED:
         part = parts.get(name)
         if part and part["section"].strip():
             lines += [part["section"].rstrip(), ""]

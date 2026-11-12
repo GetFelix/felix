@@ -102,6 +102,12 @@ class Report(unittest.TestCase):
     def test_a_missing_part_is_incomplete(self):
         self.assertEqual(self.verdict({"history": "pass"}), "INCOMPLETE")
 
+    def test_a_priced_part_never_changes_the_verdict(self):
+        s = {n: "pass" for n, _ in gate_report.PARTS}
+        for status in ("fail", "pass"):
+            s["liveness"] = status
+            self.assertEqual(self.verdict(s), "PASS")
+
     def test_unavailable_engine_is_not_available_not_pass(self):
         self.assertEqual(self.verdict({n: "unavailable" for n, _ in gate_report.PARTS}), "NOT AVAILABLE")
 

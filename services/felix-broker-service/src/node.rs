@@ -108,7 +108,9 @@ where
     {
         peer.unified_fence = false;
         // Store liveness is tied to the disk, and there is none.
-        peer.store_liveness = false;
+        if std::mem::take(&mut peer.store_liveness) {
+            tracing::warn!("store liveness needs a durable data directory; it stays off");
+        }
     }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();

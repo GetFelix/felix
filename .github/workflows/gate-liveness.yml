@@ -1,0 +1,201 @@
+name: Gate - store liveness A/B
+
+# What store liveness costs the hybrid before it is on anywhere
+# (docs/per-shard-raft.md, "Store liveness"; docs/replication-engine.md, "How
+# to run the gate"). One felix-broker, built from this commit with the `raft`
+# feature, runs each cell twice: with store liveness off (the baseline, what a
+# release does) and with FELIX_STORE_LIVENESS=shadow (the head). Every broker
+# syncs on commit, so the probe's sync competes with group commit for the
+# device.
+#
+# The sides alternate trial by trial and the side that goes first flips each
+# round, as in gate-perf.yml. Medians over the rounds are compared with the
+# same rules (scripts/ci/gate_perf.py): throughput at least 0.90 of the
+# baseline, p99 at most 1.20.
+#
+# This prices a feature that is off by default. It is reported beside the
+# gate's criteria and does not change the gate's verdict.
+
+on:
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Which gate report this belongs to"
+        type: choice
+        options: [hybrid, raft]
+        default: hybrid
+      rounds:
+        description: "Rounds; each runs every cell once per side (even, so each side goes first equally often)"
+        type: string
+        default: "6"
+      seconds:
+        description: "Seconds each trial publishes"
+        type: string
+        default: "30"
+      fail_on_regression:
+        description: "Go red when a cell is outside the limits"
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      engine: { type: string, default: hybrid }
+      rounds: { type: string, default: "6" }
+      seconds: { type: string, default: "30" }
+      fail_on_regression: { type: boolean, default: false }
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: /tmp/felix-gate-target-liveness
+
+jobs:
+  ab:
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 120
+    steps:
+      - name: Check the inputs
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+        run: |
+          set -euo pipefail
+          [[ "$ROUNDS" =~ ^[1-9][0-9]?$ ]] || { echo "rounds must be 1 to 99"; exit 1; }
+          [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: |
+            . -> /tmp/felix-gate-target-liveness
+
+      # One broker for both sides, so the only difference between them is the
+      # environment variable.
+      - name: Build
+        run: |
+          set -euo pipefail
+          cargo build --release -p felix-broker-service --bin felix-broker --features felix-broker-service/raft
+          cargo build --release -p felix-cluster --bin felix-cluster -p felix-loadgen --bin felix-loadgen
+          mkdir -p /tmp/felix-gate/bin
+          cp "$CARGO_TARGET_DIR/release/felix-broker" "$CARGO_TARGET_DIR/release/felix-cluster" \
+            "$CARGO_TARGET_DIR/release/felix-loadgen" /tmp/felix-gate/bin/
+
+      - name: Run the cells, alternating sides
+        id: run
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+          FELIX_DURABLE_FSYNC_MODE: on_commit
+        run: |
+          set -euo pipefail
+          results=/tmp/felix-gate/results.jsonl
+          : > "$results"
+          # name, replication factor, payload bytes, batch. RF 1 shares no
+          # shard between brokers, so it prices the probe alone; RF 3 adds the
+          # heartbeats.
+          cells="sync-rf1-1k:1:1024:64 sync-rf3-1k:3:1024:64 sync-rf3-64k:3:65536:4"
+          for round in $(seq 1 "$ROUNDS"); do
+            echo "::group::Round $round of $ROUNDS"
+            if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
+            for cell in $cells; do
+              IFS=: read -r name rf payload batch <<<"$cell"
+              for side in $sides; do
+                if [ "$side" = head ]; then liveness=shadow; else liveness=off; fi
+                FELIX_STORE_LIVENESS=$liveness scripts/ci/gate-perf-cell.sh /tmp/felix-gate/bin "$side" "$name" \
+                  "$rf" "$payload" "$batch" "$SECONDS_PER_TRIAL" "$round" "$results" \
+                  || echo "::warning::$side $name round $round failed"
+              done
+            done
+            echo "::endgroup::"
+          done
+
+      - name: Compare
+        if: always() && steps.run.outcome != 'skipped'
+        env:
+          ROUNDS: ${{ inputs.rounds }}
+        run: |
+          set -o pipefail
+          # The verdict is read by the result job; a regression does not fail
+          # this step, so the trials and the table are always uploaded.
+          python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl \
+            --expect-cells sync-rf1-1k,sync-rf3-1k,sync-rf3-64k --min-rounds $(( (ROUNDS + 1) / 2 )) \
+            --md /tmp/felix-gate/table.md --json /tmp/felix-gate/verdict.json || true
+
+      - name: Upload the raw trials
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-liveness-trials
+          path: /tmp/felix-gate/results.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-liveness-verdict
+          path: |
+            /tmp/felix-gate/table.md
+            /tmp/felix-gate/verdict.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  result:
+    needs: ab
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: gate-liveness-verdict
+          path: verdict
+        continue-on-error: true
+
+      - name: Write the result
+        env:
+          ENGINE: ${{ inputs.engine }}
+          ROUNDS: ${{ inputs.rounds }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+          FAIL_ON_REGRESSION: ${{ inputs.fail_on_regression }}
+        run: |
+          set -euo pipefail
+          out=gate-liveness
+          mkdir -p "$out"
+          if [ -f verdict/verdict.json ]; then
+            status=$(jq -r .status verdict/verdict.json)
+            bad=$(jq '[.verdicts[] | select(.ok | not)] | length' verdict/verdict.json)
+            summary="$bad of $(jq '.verdicts | length' verdict/verdict.json) checks outside the limits"
+          else
+            status=fail; summary="no verdict: the A/B job did not finish"
+          fi
+          jq -cn --arg e "$ENGINE" --arg s "$status" --arg m "$summary" \
+            '{part: "liveness", engine: $e, status: $s, summary: $m}' > "$out/result.json"
+          {
+            echo "### Store liveness in shadow mode, on against off (priced, not a criterion)"
+            echo
+            echo "One broker build with the \`raft\` feature, sync on commit, $ROUNDS rounds of $SECONDS_PER_TRIAL s per trial, medians. Baseline: store liveness off. Head: \`FELIX_STORE_LIVENESS=shadow\`. Limits as for the gate: throughput at least 0.90 of the baseline, p99 at most 1.20."
+            echo
+            if [ -f verdict/table.md ]; then cat verdict/table.md; else echo "No table."; fi
+          } > "$out/section.md"
+          cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FAIL_ON_REGRESSION" = true ] && [ "$status" != pass ]; then exit 1; fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gate-result-liveness-${{ inputs.engine }}
+          path: gate-liveness
+          retention-days: 30

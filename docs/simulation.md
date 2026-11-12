@@ -366,6 +366,21 @@ with its start time, its end time and its result: acknowledged, refused (it
 was certainly not written) or unknown (it may or may not have been written,
 for example when the quorum wait timed out).
 
+### A stalled store liveness probe
+
+Store liveness in shadow mode ([per-shard Raft](per-shard-raft.md), "What is
+built: shadow mode") is off in a run unless `SimConfig::store_liveness` is
+set, so existing seeds keep their schedules. It needs the crate's `raft`
+feature, which `cargo test -p felix-sim` turns on for its own tests.
+
+`SimCluster::slow_probe_sync(index, delay)` makes one broker's probe sync
+take `delay` of virtual time. Only the probe is slowed: the logs sync as
+before. That is the fault store liveness exists for, a disk that stalls
+while the process and the network stay up.
+`SimCluster::store_liveness(index)` reads what that broker would have
+decided. The tests in `src/cluster/liveness/tests.rs` use both. The seeded
+nemesis does not draw this fault yet.
+
 ## Checkers
 
 A seed fails when any checker reports a problem, except a warning. History

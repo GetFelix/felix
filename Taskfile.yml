@@ -24,6 +24,9 @@ tasks:
       # misplaced `#[cfg]` on felix-common's modules reached main past a lint
       # that only ever ran `--all-features`.
       - "cargo check -p felix-common"
+      # The broker as a release builds it: without `raft`, which the
+      # workspace's tests switch on for everyone.
+      - "cargo check -p felix-broker-service"
 
 
   clippy:

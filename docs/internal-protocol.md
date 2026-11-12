@@ -123,6 +123,7 @@ never have dialled the one that shipped to it.
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
+| `1 << 23` | `STORE_LIVENESS` | takes `StoreLiveness` heartbeats (see "Store liveness"). Offered only by a broker built with the `raft` feature and started with `FELIX_STORE_LIVENESS=shadow`; no release offers it |
 
 #### Storage identity
 
@@ -1138,6 +1139,22 @@ in the follower's heartbeat, and the control plane promotes once a majority of
 the set names it. See `docs/replication-design.md`, "Failover on the
 followers' word".
 
+### Store liveness
+
+A broker that runs store liveness tells each broker it shares a shard with
+that its disk still takes synced writes: `StoreLiveness` (kind 57), answered
+with `Pong`. The body is the correlation id and the sender's store epoch,
+both `u64`. The epoch rises each time the sender starts.
+
+It is sent only to a peer that offered `STORE_LIVENESS`, and a broker that
+does not offer it refuses the kind as `UnsupportedKind`. Like a ping it goes
+on the control lane and is answered as soon as it arrives. The receiver
+names the sender by the node id of its `Hello`. The answer carries nothing:
+what a broker thinks of a peer comes from the heartbeats that peer sends.
+
+Nothing acts on it yet. See `docs/per-shard-raft.md`, "What is built: shadow
+mode".
+
 ## Errors
 
 Typed, because they need different responses:
@@ -1324,7 +1341,7 @@ goes on its own class's streams:
 
 | Class | Streams | Carries |
 | --- | --- | --- |
-| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping` |
+| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping`, `StoreLiveness` |
 | Forward | `FELIX_INTERNAL_STREAMS_PER_CONN` | `ForwardPublish`, `ForwardCacheOp` |
 | Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log |
 
@@ -1340,7 +1357,7 @@ fix. A promoted leader serves nothing until its fence is answered, and a ping
 stuck behind a forward would read as a dead leader, hence the control stream.
 
 **The control stream is not served in order either.** A broker answers each
-`Fence`, `ReplicateFetch`, `PreVote` and `Ping` as it finishes, matched by
+`Fence`, `ReplicateFetch`, `PreVote`, `Ping` and `StoreLiveness` as it finishes, matched by
 correlation id, and reads the next request while earlier ones run. Without
 this, one slow request held up everything behind it on the stream. During a
 burst of shard creates, the promotion fences for the new shards would hold up

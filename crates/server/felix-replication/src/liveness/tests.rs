@@ -289,6 +289,7 @@ impl ProbeDisk for Disk {
 #[derive(Default)]
 struct Net {
     brokers: Mutex<Map<String, Arc<Liveness>>>,
+    delivered: AtomicU64,
 }
 
 struct From {
@@ -310,6 +311,7 @@ impl PeerRequester for From {
         match target {
             Some(target) => {
                 target.heard(self.node_id, beat.epoch);
+                self.net.delivered.fetch_add(1, Ordering::Relaxed);
                 Ok(InternalMessage::Pong(Pong { correlation_id: 0 }))
             }
             None => Err(PeerError::ShuttingDown),
@@ -624,4 +626,185 @@ fn the_capability_is_offered_only_when_turned_on() {
         ..config
     };
     assert!(on.capabilities().contains(PeerCapabilities::STORE_LIVENESS));
+}
+
+/// Hands heartbeats to a [`Liveness`] as the broker's peer handler does, and
+/// counts everything else.
+struct Hearing {
+    liveness: Arc<Liveness>,
+    others: AtomicU64,
+}
+
+#[async_trait::async_trait]
+impl crate::peer::PeerRequestHandler for Hearing {
+    async fn handle(&self, request: InternalMessage) -> InternalMessage {
+        self.handle_from(None, PeerCapabilities::NONE, request)
+            .await
+    }
+
+    async fn handle_from(
+        &self,
+        peer: Option<Arc<str>>,
+        _caller: PeerCapabilities,
+        request: InternalMessage,
+    ) -> InternalMessage {
+        match (&request, peer) {
+            (InternalMessage::StoreLiveness(beat), Some(peer)) => {
+                self.liveness.heard(&peer, beat.epoch);
+            }
+            _ => {
+                self.others.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        InternalMessage::Pong(Pong {
+            correlation_id: request.correlation_id(),
+        })
+    }
+}
+
+/// **Over the real transport a heartbeat reaches a broker that runs store
+/// liveness, named by the sender's node id, and never one that does not.**
+/// The second listener is a broker as it ships: it does not offer the
+/// capability, so the pool will not even send it the frame.
+#[tokio::test]
+async fn a_heartbeat_reaches_only_a_broker_that_runs_store_liveness() {
+    use crate::peer::{PeerPool, PeerServer, PeerTransportConfig};
+
+    let config = |store_liveness| PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        store_liveness,
+        ..Default::default()
+    };
+    let listen = |config: PeerTransportConfig| {
+        let hearing = Arc::new(Hearing {
+            liveness: Liveness::new(1, LivenessConfig::default()),
+            others: AtomicU64::new(0),
+        });
+        let handler: Arc<dyn crate::peer::PeerRequestHandler> = Arc::clone(&hearing) as _;
+        let server = PeerServer::bind(B.to_string(), &config, handler).expect("bind");
+        let addr = server.local_addr().expect("addr");
+        let shutdown = CancellationToken::new();
+        tokio::spawn(server.serve(shutdown.clone()));
+        (hearing, addr, shutdown)
+    };
+    let within = Duration::from_secs(2);
+    let peer = |addr| SharedPeer {
+        node_id: B.to_string(),
+        addr,
+        leads: false,
+    };
+
+    let (running, addr, stop) = listen(config(true));
+    let pool = PeerPool::new(A.to_string(), config(true), CancellationToken::new()).expect("pool");
+    let offered = pool.capabilities(B, addr).await.expect("handshake");
+    assert!(offered.contains(PeerCapabilities::STORE_LIVENESS));
+    beat(pool.as_ref(), &peer(addr), 9, within).await;
+    assert_eq!(running.liveness.epoch_of(A), Some(9));
+    assert_eq!(running.others.load(Ordering::Relaxed), 0);
+    pool.shutdown().await;
+    stop.cancel();
+
+    let (shipping, addr, stop) = listen(config(false));
+    let pool = PeerPool::new(A.to_string(), config(true), CancellationToken::new()).expect("pool");
+    let offered = pool.capabilities(B, addr).await.expect("handshake");
+    assert!(!offered.contains(PeerCapabilities::STORE_LIVENESS));
+    let sent = pool
+        .request(
+            B,
+            addr,
+            InternalMessage::StoreLiveness(StoreLiveness {
+                correlation_id: 0,
+                epoch: 9,
+            }),
+        )
+        .await;
+    assert!(
+        !matches!(sent, Ok(InternalMessage::Pong(_))),
+        "a broker that does not run store liveness took a heartbeat: {sent:?}"
+    );
+    assert_eq!(shipping.liveness.epoch_of(A), None);
+    assert_eq!(shipping.others.load(Ordering::Relaxed), 0);
+    pool.shutdown().await;
+    stop.cancel();
+}
+
+/// A requester whose requests to `dead` never answer.
+struct Hanging {
+    inner: From,
+    dead: &'static str,
+}
+
+impl PeerRequester for Hanging {
+    async fn request(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+        message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        if node_id == self.dead {
+            return std::future::pending().await;
+        }
+        self.inner.request(node_id, addr, message).await
+    }
+
+    async fn capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        if node_id == self.dead {
+            return Ok(PeerCapabilities::STORE_LIVENESS);
+        }
+        self.inner.capabilities(node_id, addr).await
+    }
+}
+
+/// **A peer that never answers does not slow the heartbeats to the rest.**
+/// broker-a shares shards with broker-b and a broker-c that hangs on every
+/// request. If a round waited for broker-c, broker-b would hear broker-a
+/// only every second, and one lost heartbeat would withdraw its support.
+#[tokio::test(start_paused = true)]
+async fn a_hanging_peer_does_not_slow_the_heartbeats_to_others() {
+    let nodes: Map<String, NodeRef> = [(A, 7001), (B, 7002), (C, 7003)]
+        .into_iter()
+        .map(|(id, port)| (id.to_string(), node(id, port)))
+        .collect();
+    let router = ShardRouter::new(A, "us-west-2", RegionRouter::new("us-west-2".to_string()));
+    let key = ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: ShardKind::Stream,
+    };
+    let set = vec![A.to_string(), B.to_string(), C.to_string()];
+    router.publish(
+        RoutingTable::build([(key, A.to_string(), set, 1)], &nodes),
+        &nodes,
+    );
+
+    let net = Arc::new(Net::default());
+    let b = Liveness::new(1, LivenessConfig::default());
+    net.brokers.lock().insert(B.to_string(), Arc::clone(&b));
+    let a = Liveness::new(1, LivenessConfig::default());
+    a.start(
+        Arc::new(Hanging {
+            inner: From {
+                node_id: A,
+                net: Arc::clone(&net),
+            },
+            dead: C,
+        }),
+        Arc::new(router),
+        Arc::new(Disk::default()) as Arc<dyn ProbeDisk>,
+        CancellationToken::new(),
+    );
+
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let heard = net.delivered.load(Ordering::Relaxed);
+    assert!(
+        heard >= 18,
+        "broker-b got {heard} heartbeats in 10 s; an interval is 500 ms"
+    );
+    assert_eq!(b.epoch_of(A), Some(1));
 }

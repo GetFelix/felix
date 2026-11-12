@@ -485,6 +485,94 @@ with its own safety argument (see "Leases that survive sleep").
 reports through the control-plane heartbeat and writes nothing to disk. It
 is deleted with the hybrid.
 
+### What is built: shadow mode
+
+Store liveness exists today in shadow mode. It runs beside the hybrid,
+records what it would decide, and acts on nothing. The hybrid still fails
+over on `suspicion.rs` alone, and store liveness neither reads nor writes
+the hybrid's suspects.
+
+It is off twice over. The code is compiled only with the `raft` cargo
+feature, which no release enables. A broker built with the feature runs it
+only when started with `FELIX_STORE_LIVENESS=shadow` and a durable data
+directory. A broker without both writes no probe file, syncs nothing extra
+and never offers the `STORE_LIVENESS` capability, so no peer sends it a
+heartbeat.
+
+```bash
+cargo build -p felix-broker-service --bin felix-broker --features raft
+```
+
+Then add `FELIX_STORE_LIVENESS=shadow` to the environment of each broker in
+the cluster. A broker that runs it only exchanges heartbeats with peers
+that run it too.
+
+What a broker running it does:
+
+- **Epoch.** At start it reads `store-epoch` in the data root, adds one,
+  and syncs the new value before it sends anything. A peer that sees a
+  different epoch records a restart.
+- **Probe.** Every 500 ms it rewrites eight bytes of `store-liveness.probe`
+  in the data root and syncs them, through the same I/O path as a log
+  flush (`F_FULLFSYNC` on macOS). One probe runs at a time. A probe that
+  overruns the interval is waited for, never doubled.
+- **Heartbeat.** Every 500 ms, while a probe finished within the last 5 s,
+  it sends each broker it shares a shard with a `StoreLiveness` message
+  carrying its epoch ([internal protocol](internal-protocol.md), "Store
+  liveness"). A broker whose probe has not finished for 5 s, or keeps
+  failing, sends nothing.
+- **Withdrawal.** A peer not heard for 1.5 s loses support. The next
+  heartbeat restores it.
+- **Restart hold.** For 3.5 s after its start (the 1.5 s plus a 2 s election
+  timeout) the broker counts the leaders of the shards it follows that it
+  has not heard yet. Members of their groups are the ones the sleep pull
+  request will hold.
+
+| Timer | Value |
+| --- | --- |
+| Probe and heartbeat interval | 500 ms |
+| Support withdrawn after silence of | 1.5 s |
+| Sending stops when no probe finished for | 5 s |
+| Restart hold ends at first leader contact, or after | 3.5 s |
+
+The two limits are separate on purpose. A single sync that takes 3 s is
+longer than the 1.5 s of silence, but the broker keeps sending through it
+because its last probe finished less than 5 s ago. Nobody withdraws
+support.
+
+An epoch lower than the one a peer last showed is ignored while that peer
+has support: it is a message from before the restart. From a peer that had
+gone silent it is taken as a restart, because a replaced disk starts its
+epoch again.
+
+Every decision is logged, counted in
+`felix_broker_store_liveness_decisions_total` by `decision` (`withdraw`,
+`restore`, `restarted`, `silenced`, `resumed`, `hold_released`,
+`hold_expired`), and kept for tests. The other metrics are the probe time
+(`felix_broker_store_liveness_probe_seconds`), whether the broker is
+sending (`felix_broker_store_liveness_sending`) and how many peers it
+watches and would not support
+(`felix_broker_store_liveness_peers`,
+`felix_broker_store_liveness_peers_withdrawn`). The
+[metrics reference](../docs-site/src/content/docs/reference/metrics.md)
+lists them all.
+
+Limits of the shadow version:
+
+- One probe file, in the data root. Shard directories mounted from other
+  devices are not probed yet (#2312).
+- The heartbeat is its own message. It moves into the per-peer heartbeat
+  batch when coalescing lands.
+- The restart hold is counted per leader broker, since there are no groups
+  to hold yet.
+
+The simulator can stall one broker's probe (`SimCluster::slow_probe_sync`).
+Its tests show the stalled broker going silent with a working network and
+its peers withdrawing support while every shard keeps its leader and
+generation, with the control plane cut off as well, and a restart showing
+a new epoch. The cost of running it is measured by the store liveness A/B
+(engine page, "How to run the gate").
+
 ## Sleep and wake
 
 A member is awake or asleep. The node ticker holds the state. openraft does
@@ -1050,7 +1138,7 @@ and the hybrid is what ships.
 | # | Pull request | Depends on | Why it is safe alone |
 | --- | --- | --- | --- |
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
-| 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Reports metrics, drives nothing | | Behind the feature, so a shipping broker gains no fsync. An A/B cell prices the probe before it is on anywhere |
+| 2 (#2229) | Store liveness in shadow mode: disk probe, epochs, per-peer exchange. Reports metrics, drives nothing | | Behind the feature and `FELIX_STORE_LIVENESS=shadow`, so a shipping broker gains no fsync. An A/B cell prices the probe before it is on anywhere |
 | 3 (#2231) | Group runtime: type config, member id, group registry, peer messages for Raft behind a negotiated capability, node ticker | track 2 adapter; openraft 0.10.1, which is not released (the lock has 0.9.25, see #2215) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: adoption with the term gate, `await_commit`, `read_bound`, read index, `opened` and `deposed`. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3 | Behind the feature, fresh clusters only. Starts with the adoption test. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: learner, joint change, transfer, the fence drain around each step, leader reports and routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
