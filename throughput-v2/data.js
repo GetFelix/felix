@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794513604311,
+  "lastUpdate": 1794517972215,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53196,6 +53196,58 @@ window.BENCHMARK_DATA = {
             "range": "29801.61",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1588326.85\nmean: 1577523.73\nstdev: 29801.61\ncv: 1.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dc36a46470397e39363d7ad5ae6cf21001be596a",
+          "message": "feat(controlplane): the metadata group on the segment store, behind a build-time switch (#2230 part 2) (#2360)\n\nThe control plane's metadata group on the segment store behind --cfg felix_segment_store (#2230 part 2): MetadataStore log and state machine, /internal/raft/v2 peer routes, one-request snapshots, close on every start-failure and shutdown path, segment-store CI job.\n\nSpec-Unaffected: the control plane's metadata group is not one of the modelled paths; the store rules this calls into are FelixRaft.tla's, unchanged.",
+          "timestamp": "2026-11-12T21:05:31Z",
+          "tree_id": "3b4ec58daaa38a9c88057b24f3715522dc4d9350",
+          "url": "https://github.com/GetFelix/felix/commit/dc36a46470397e39363d7ad5ae6cf21001be596a"
+        },
+        "date": 1794517971443,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361591.3,
+            "range": "15617.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361591.30\nmean: 356392.40\nstdev: 15617.77\ncv: 4.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361591.3,
+            "range": "15617.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361591.30\nmean: 356392.40\nstdev: 15617.77\ncv: 4.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81282.31,
+            "range": "1084.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81282.31\nmean: 81386.23\nstdev: 1084.99\ncv: 1.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812823.07,
+            "range": "10849.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812823.07\nmean: 813862.27\nstdev: 10849.96\ncv: 1.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
