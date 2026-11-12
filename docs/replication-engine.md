@@ -635,17 +635,15 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10), and
 `[workspace.dependencies]` pins `openraft = "=0.10.0"`, which `felix-storage`
-uses behind its `raft` feature. The control plane runs 0.9.25 today
-(`services/felix-controlplane-service/Cargo.toml:69`) and moves to the same
-pinned version as part of its storage track, so the workspace has one
-openraft. A version change is a reviewed update, never a side effect of
+uses behind its `raft` feature. The control plane uses the same pin
+(`services/felix-controlplane-service/Cargo.toml:61`), so the workspace has
+one openraft. A version change is a reviewed update, never a side effect of
 refreshing the lockfile.
 
 **Release rule (decided).** A Felix release ships a control plane on 0.10
 only if 0.10 is final, or the pinned version has passed the full
 control-plane simulator, crash-point and history checks. With 0.10.0 final
-the first condition holds; the checks still run before the control plane
-switches. The control plane's openraft types stay inside `src/raft/`, so a
+the first condition holds. The control plane's openraft types stay inside `src/raft/`, so a
 version change touches only that module.
 
 **What 0.10.0 adds that this design uses.** Each needs checking against the
@@ -706,21 +704,19 @@ pins it.
 The adapter stays thin: openraft types do not leave `felix-storage::raft_log`
 and the engine module that drives it, so an API change is contained there.
 The control plane already keeps openraft types inside `src/raft/` for the
-same reason (`services/felix-controlplane-service/Cargo.toml:62`).
+same reason (`services/felix-controlplane-service/Cargo.toml:60`).
 
 A member that rejoins after its volume was wiped reports a log that went
 backwards. Without permission for that, the leader trips over the reverted
-log, which is the error the control plane's chaos test caught
-(`Cargo.toml:63-68`). On 0.9 the `loosen-follower-log-revert` feature allows
-it, and the control plane keeps that feature until it moves. On 0.10 the
-feature is deprecated in favour of `Config::allow_log_reversion`, which the
-adapter sets for every group.
+log, which is the error the control plane's chaos test caught. On 0.10 the
+permission is `Config::allow_log_reversion`, which the control plane sets
+(`services/felix-controlplane-service/src/raft/handle.rs`) and the adapter
+sets for every group.
 
 Checklist for each openraft version change:
 
 1. Pin the exact version in `Cargo.toml` and `Cargo.lock`.
-2. Allow log reversion: `allow_log_reversion` on 0.10, the
-   `loosen-follower-log-revert` feature on 0.9.
+2. Allow log reversion with `Config::allow_log_reversion`.
 3. Check the follower-side leader lease still equals `election_timeout_max`,
    and that a follower still refuses votes for that long, since the lease
    margin depends on both (Decisions, 5).

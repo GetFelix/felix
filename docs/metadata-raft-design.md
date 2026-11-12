@@ -344,8 +344,8 @@ has no operator path today; the tests use the command.
 
 ## Library
 
-**openraft, pinned to the stable 0.9 line** (0.9.25; 0.10.0 is released,
-and the move to it is planned in
+**openraft, pinned to one exact version** (0.10.0, the workspace pin; the
+move from 0.9 is described in
 [openraft 0.9 to 0.10](#openraft-09-to-010)), wrapped behind a small crate-local seam so
 openraft types never appear in the store traits or handlers. This is the same
 discipline as the storage layer's `AppendOnlyLog` seam, and the insurance
@@ -465,7 +465,7 @@ to it. A heartbeat still goes while openraft has nothing else queued for
 the member (it is caught up and nothing new has been written), with the
 commit index removed so the member applies
 nothing, not even entries it was sent before the hold. A held member that is
-behind gets nothing at all: openraft 0.9 retries the held append or snapshot
+behind gets nothing at all: openraft retries the held append or snapshot
 with backoff, up to a second apart, and never sends a heartbeat in its place.
 It may time out and call elections, which the others refuse while they hear
 from the leader, and once it is released its first append can come back with
@@ -922,23 +922,32 @@ today.
 
 ### openraft 0.9 to 0.10
 
-The workspace pins `openraft = "=0.10.0"`. The control plane moves to that
-pin first, still on redb and still with its current leader id, so the
-library change and the store change are separate steps.
+The workspace pins `openraft = "=0.10.0"`, and the control plane runs that
+pin. It moved first, still on redb and still with its leader id (a term and
+a node id), so the library change and the store change are separate steps.
 
-This step must roll one member at a time, and roll back, so nothing a 0.9
-member reads may change:
+A group is upgraded one member at a time: stop a member, start it on the new
+build, wait until it is ready, then do the next. A member can also go back
+to the release that ran 0.9, on the same data directory. Both work because
+nothing a 0.9 member reads has changed:
 
 - **The peer format is Felix's, not the library's.** Each peer request and
-  response is a Felix type that mirrors the 0.9 JSON, checked against bytes
-  captured from the last release. The same fixtures cover what is stored:
-  the vote, a log entry and the snapshot meta. The library's own types are not put on
-  the wire.
+  response is a Felix type (`raft/wire.rs`) with the JSON 0.9 wrote. The
+  library's own types are not put on the wire or in the store. The bytes are
+  pinned by fixtures in `raft/fixtures/openraft-0.9`, printed by openraft
+  0.9.25 for the control plane's type configuration. They cover each request
+  and response, and what is stored: the vote, log entries, the committed and
+  purged positions, and the snapshot meta.
+- **A peer's error is text.** The two library versions do not agree on the
+  shape of an error. A member whose Raft node has stopped answers 503, which
+  every version reads as an unreachable member and backs off from.
 - **Snapshots still travel in chunks, with a snapshot id.** 0.10 sends a
   snapshot in one piece and has no snapshot id. The network layer cuts the
   piece into the 0.9 chunk requests on the way out and joins them on the
-  way in, and names the transfer by the snapshot's last log id. A 0.9
-  leader can then bring a lagging 0.10 member up to date, and the reverse.
+  way in (`raft/chunks.rs`), and names the transfer by the snapshot's last
+  log id. A 0.9 leader can then bring a lagging 0.10 member up to date, and
+  the reverse. A transfer that fails part-way starts again from the first
+  chunk.
 - **The stored snapshot meta keeps its id field**, so a 0.9 binary started
   on a store a 0.10 binary wrote still parses it.
 
@@ -960,20 +969,34 @@ What changes in `src/raft/`:
 The table is the library's API. None of it reaches the wire or the redb
 file in this step.
 
-Behaviour that changes, each pinned by a test before the step merges:
+Behaviour that changed, and what pins each:
 
-- **A leader past its lease refuses proposals.** The write path retries on
-  the same member inside the write deadline, as it retries a forward.
-- **A restarted leader campaigns at once.** A member whose vote is withheld
-  must still never campaign. The test starts such a member with a stored
-  vote that says it led.
+- **A leader past its lease refuses proposals.** The refusal names no
+  leader, so the write path does not forward it. It retries on the same
+  member inside the write deadline (`raft/handle/tests.rs`).
+- **A restarted leader campaigns at once**, whatever the election switch
+  says. A member whose vote is withheld must still never campaign, so it
+  starts with `Config::enable_leader_restore` off. The test starts such a
+  member with a stored vote that says it led, and counts the vote requests
+  its peers receive (`raft/handle/tests.rs`).
 - **A restarted follower refuses votes for one election timeout.** After a
   whole-group restart the first election can take that long. The failover
   cell of the perf gate measures it.
 - **Retry backoff** starts at 200 ms and doubles to 1 s. The network layer
   keeps its own backoff, which starts at one heartbeat.
 - **What a held member is sent** ([Upgrading](#upgrading)) depends on how
-  openraft retries. The hold tests run again on 0.10.
+  openraft retries. The hold tests run on 0.10 unchanged.
+- **A member that took only part of an append says how far.** 0.10 reports
+  the last entry a follower accepted. The answer to a peer is 0.9's partial
+  success when that is short of what was sent, so a leader on either version
+  never counts the rest as stored.
+
+The mixed-version test (`tests/raft_runtime.rs`) runs this build next to the
+v0.7.1 binary in one group of three. A 0.9 leader sends a lagging 0.10
+member a snapshot. The other two members are upgraded. The third is then
+rolled back to v0.7.1 on a store the new build installed and built snapshots
+in, and a 0.10 leader sends it a snapshot. CI downloads the released binary
+for it (`scripts/fetch-released-controlplane.sh`).
 
 Leadership transfer on drain comes after the store has switched. Pre-vote
 (`Config::enable_pre_vote`, off unless set) stays off; see the open
@@ -1382,6 +1405,7 @@ is the umbrella.
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
+| openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 
 One deliberate deviation from the sketch above, made while landing #337: the
@@ -1408,12 +1432,13 @@ durable before it is acknowledged are unchanged.
 Four findings from landing #342, each one a bug the chaos suite caught
 that no earlier test could see:
 
-- **`loosen-follower-log-revert` is not optional.** A member rejoining with
-  a wiped volume reports a log that went backwards; without that openraft
-  feature the *leader* trips a debug assertion in its replication-progress
-  tracking when the member returns, and a release build would carry the
-  inconsistent progress state silently. The feature is now on, with the
-  reasoning at the dependency declaration.
+- **Allowing a log to go backwards is not optional.** A member rejoining
+  with a wiped volume reports a log that went backwards; without openraft's
+  permission for that the *leader* trips a debug assertion in its
+  replication-progress tracking when the member returns, and a release build
+  would carry the inconsistent progress state silently. It is on
+  (`Config::allow_log_reversion`), with the reasoning where the config is
+  built in `raft/handle.rs`.
 - **A restart is not done until the state machine is.** A restarted member
   learned the leader within a heartbeat and reported ready while its
   volatile state machine was still replaying the log, serving a world

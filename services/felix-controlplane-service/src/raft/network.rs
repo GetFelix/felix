@@ -1,32 +1,34 @@
 //! Raft RPCs to peers: JSON over each member's peer listener.
 //!
-//! The wire format is openraft's own request/response types serialized as
-//! JSON, with the server's `Result` shipped whole — a remote `RaftError` is
-//! data to the caller (openraft reacts to it), while a transport failure is
-//! `Unreachable` or `Network`. Collapsing the two would turn "the peer told
-//! me no" into "the peer is unreachable", which drive opposite behaviours.
+//! The wire format is Felix's ([`super::wire`]): the requests and responses
+//! openraft 0.9 serialized, snapshots in chunks included, so members on
+//! either side of the 0.10 upgrade talk to each other. A peer's refusal
+//! comes back as the `Err` half of its answer and is reported as
+//! `Unreachable`, like a transport failure that will not fix itself.
 //!
 //! openraft only backs off on `Unreachable`; after any other transport
 //! error it retries a replication at once. So everything that will not fix
 //! itself within a millisecond has to be reported as `Unreachable`, or a
 //! down member costs the leader a busy loop of failed RPCs.
+use std::future::Future;
 use std::time::Duration;
 
-use openraft::error::{
-    InstallSnapshotError, NetworkError, RPCError, RaftError, RemoteError, Unreachable,
-};
-use openraft::network::{Backoff, RPCOption, RaftNetwork, RaftNetworkFactory};
+use futures_util::FutureExt;
+use openraft::OptionalSend;
+use openraft::errors::{NetworkError, RPCError, ReplicationClosed, StreamingError, Unreachable};
+use openraft::network::v2::RaftNetworkV2;
+use openraft::network::{Backoff, RPCOption, RaftNetworkFactory};
 use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
-    VoteRequest, VoteResponse,
+    AppendEntriesRequest, AppendEntriesResponse, AppendResult, SnapshotResponse, VoteRequest,
+    VoteResponse,
 };
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::hold::Hold;
-use super::types::TypeConfig;
-use super::{NodeId, PeerSecurity};
+use super::types::{Snapshot, TypeConfig, Vote};
+use super::{NodeId, PeerSecurity, chunks, wire};
 
 pub(super) struct HttpNetworkFactory {
     client: reqwest::Client,
@@ -61,7 +63,11 @@ impl HttpNetworkFactory {
 impl RaftNetworkFactory<TypeConfig> for HttpNetworkFactory {
     type Network = HttpNetwork;
 
-    async fn new_client(&mut self, target: u64, node: &openraft::BasicNode) -> Self::Network {
+    async fn new_client(
+        &mut self,
+        target: u64,
+        node: &openraft::impls::BasicNode,
+    ) -> Self::Network {
         // The configured address wins over the one the membership recorded
         // when the group formed, so a moved peer port needs no membership
         // change.
@@ -122,6 +128,18 @@ impl std::fmt::Display for PeerStatus {
 
 impl std::error::Error for PeerStatus {}
 
+/// A peer that answered the request with an error of its own.
+#[derive(Debug)]
+struct PeerRefused(serde_json::Value);
+
+impl std::fmt::Display for PeerRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "peer refused: {}", self.0)
+    }
+}
+
+impl std::error::Error for PeerRefused {}
+
 /// Keep error messages to one readable line, whatever the peer sent.
 const BODY_EXCERPT: usize = 200;
 
@@ -146,16 +164,15 @@ impl HttpNetwork {
         }
     }
 
-    #[allow(clippy::result_large_err)] // openraft's RPCError is the trait's error type
-    async fn send<Req, Resp, E>(
+    /// The peer's answer, its refusal included.
+    async fn send_reply<Req, Resp>(
         &self,
         path: &str,
         request: &Req,
-    ) -> Result<Resp, RPCError<u64, openraft::BasicNode, E>>
+    ) -> Result<wire::Reply<Resp>, RPCError<TypeConfig>>
     where
         Req: serde::Serialize,
         Resp: serde::de::DeserializeOwned,
-        E: std::error::Error + serde::de::DeserializeOwned,
     {
         let url = format!("{}/internal/raft/{path}", self.base);
         let response = self
@@ -193,16 +210,26 @@ impl HttpNetwork {
                 body,
             })));
         }
-        let result: Result<Resp, E> = response
+        response
             .json()
             .await
-            .map_err(|err| RPCError::Network(NetworkError::new(&err)))?;
-        result.map_err(|err| RPCError::RemoteError(RemoteError::new(self.target, err)))
+            .map_err(|err| RPCError::Network(NetworkError::new(&err)))
+    }
+
+    async fn send<Req, Resp>(&self, path: &str, request: &Req) -> Result<Resp, RPCError<TypeConfig>>
+    where
+        Req: serde::Serialize,
+        Resp: serde::de::DeserializeOwned,
+    {
+        match self.send_reply(path, request).await? {
+            wire::Reply::Ok(response) => Ok(response),
+            wire::Reply::Err(err) => Err(refused(err)),
+        }
     }
 
     /// Entries and snapshots go only to a member not known to be below the
     /// group's floor ([`super::hold`]); otherwise it reads as unreachable.
-    fn hold_back(&self) -> Result<(), Unreachable> {
+    fn hold_back(&self) -> Result<(), Unreachable<TypeConfig>> {
         self.hold
             .check(self.target)
             .map_err(|held| Unreachable::new(&held))
@@ -221,13 +248,26 @@ impl HttpNetwork {
     }
 }
 
-impl RaftNetwork<TypeConfig> for HttpNetwork {
+fn refused(err: serde_json::Value) -> RPCError<TypeConfig> {
+    RPCError::Unreachable(Unreachable::new(&PeerRefused(err)))
+}
+
+fn streaming(err: RPCError<TypeConfig>) -> StreamingError<TypeConfig> {
+    match err {
+        RPCError::Timeout(err) => StreamingError::Timeout(err),
+        RPCError::Unreachable(err) => StreamingError::Unreachable(err),
+        RPCError::Network(err) => StreamingError::Network(err),
+    }
+}
+
+impl RaftNetworkV2<TypeConfig> for HttpNetwork {
+    type SnapshotData = super::types::SnapshotData;
+
     async fn append_entries(
         &mut self,
         mut rpc: AppendEntriesRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<AppendEntriesResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>>
-    {
+    ) -> Result<AppendResult<TypeConfig>, RPCError<TypeConfig>> {
         if let Err(held) = self.hold_back() {
             if !rpc.entries.is_empty() {
                 return Err(RPCError::Unreachable(held));
@@ -240,19 +280,27 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
             // the hold.
             rpc.leader_commit = None;
         }
-        let response = self.send("append-entries", &rpc).await;
-        let prev = rpc.prev_log_id.map(|log_id| log_id.index);
+        let request = wire::AppendEntriesRequest {
+            vote: (&rpc.vote).into(),
+            prev_log_id: wire::log_id(&rpc.prev_log_id),
+            entries: rpc.entries.iter().map(wire::Entry::from).collect(),
+            leader_commit: wire::log_id(&rpc.leader_commit),
+        };
+        let response: wire::AppendEntriesResponse = self.send("append-entries", &request).await?;
+        let prev = request.prev_log_id.map(|log_id| log_id.index);
+        let last = request.entries.last().map(|entry| entry.log_id);
         match &response {
-            Ok(AppendEntriesResponse::Success) => {
-                let last = rpc.entries.last().map(|entry| entry.log_id.index);
-                self.acknowledged(last.or(prev));
+            wire::AppendEntriesResponse::Success => {
+                self.acknowledged(last.map(|log_id| log_id.index).or(prev));
             }
-            Ok(AppendEntriesResponse::PartialSuccess(matched)) => {
+            wire::AppendEntriesResponse::PartialSuccess(matched) => {
                 self.acknowledged(matched.map(|log_id| log_id.index));
             }
             // A lagging member conflicts above what it acknowledged; only
             // one that lost its log conflicts at or below it.
-            Ok(AppendEntriesResponse::Conflict) if prev.is_some() && prev <= self.acknowledged => {
+            wire::AppendEntriesResponse::Conflict
+                if prev.is_some() && prev <= self.acknowledged =>
+            {
                 self.acknowledged = None;
                 if self.hold.lost_log(self.target) {
                     self.ask();
@@ -262,42 +310,83 @@ impl RaftNetwork<TypeConfig> for HttpNetwork {
             // log looks like one that is behind. It may lose it between two
             // conflicts, so each one asks again once the last ask settled.
             // Up-to-date members answer success and are never asked.
-            Ok(AppendEntriesResponse::Conflict)
+            wire::AppendEntriesResponse::Conflict
                 if self.acknowledged.is_none() && self.hold.unconfirmed(self.target) =>
             {
                 self.ask();
             }
             _ => {}
         }
-        response
-    }
-
-    async fn install_snapshot(
-        &mut self,
-        rpc: InstallSnapshotRequest<TypeConfig>,
-        _option: RPCOption,
-    ) -> Result<
-        InstallSnapshotResponse<u64>,
-        RPCError<u64, openraft::BasicNode, RaftError<u64, InstallSnapshotError>>,
-    > {
-        self.hold_back().map_err(RPCError::Unreachable)?;
-        let response = self.send("install-snapshot", &rpc).await;
-        if rpc.done && response.is_ok() {
-            self.acknowledged(rpc.meta.last_log_id.map(|log_id| log_id.index));
-        }
-        response
+        let response = match response {
+            wire::AppendEntriesResponse::Success => AppendEntriesResponse::Success,
+            wire::AppendEntriesResponse::PartialSuccess(matched) => {
+                AppendEntriesResponse::PartialSuccess(wire::lib_log_id(matched))
+            }
+            wire::AppendEntriesResponse::Conflict => AppendEntriesResponse::Conflict,
+            wire::AppendEntriesResponse::HigherVote(vote) => {
+                AppendEntriesResponse::HigherVote(vote.into())
+            }
+        };
+        Ok(
+            response
+                .into_append_result(rpc.prev_log_id, wire::lib_log_id(last).or(rpc.prev_log_id)),
+        )
     }
 
     async fn vote(
         &mut self,
-        rpc: VoteRequest<u64>,
+        rpc: VoteRequest<TypeConfig>,
         _option: RPCOption,
-    ) -> Result<VoteResponse<u64>, RPCError<u64, openraft::BasicNode, RaftError<u64>>> {
-        self.send("vote", &rpc).await
+    ) -> Result<VoteResponse<TypeConfig>, RPCError<TypeConfig>> {
+        let request = wire::VoteRequest {
+            vote: (&rpc.vote).into(),
+            last_log_id: wire::log_id(&rpc.last_log_id),
+        };
+        let response: wire::VoteResponse = self.send("vote", &request).await?;
+        Ok(VoteResponse::new(
+            Vote::from(response.vote),
+            wire::lib_log_id(response.last_log_id),
+            response.vote_granted,
+        ))
     }
 
-    fn backoff(&self) -> Backoff {
-        Backoff::new(backoff_delays(self.heartbeat))
+    /// Sent as the chunk requests a 0.9 member understands. Any failure ends
+    /// the transfer, and openraft starts it again from the first chunk.
+    async fn full_snapshot(
+        &mut self,
+        vote: Vote,
+        snapshot: Snapshot,
+        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
+        _option: RPCOption,
+    ) -> Result<SnapshotResponse<TypeConfig>, StreamingError<TypeConfig>> {
+        self.hold_back()?;
+        let meta = wire::SnapshotMeta::from(&snapshot.meta);
+        let data = snapshot.snapshot.into_inner();
+        let mut cancel = std::pin::pin!(cancel);
+        for chunk in chunks::cut((&vote).into(), &meta, &data, chunks::CHUNK) {
+            if let Some(closed) = cancel.as_mut().now_or_never() {
+                return Err(closed.into());
+            }
+            let done = chunk.done;
+            let response: wire::InstallSnapshotResponse = self
+                .send("install-snapshot", &chunk)
+                .await
+                .map_err(streaming)?;
+            let theirs = Vote::from(response.vote);
+            // A member that has moved on to a newer leader says so, and the
+            // rest of the snapshot is of no use to it.
+            if theirs > vote {
+                return Ok(SnapshotResponse::new(theirs));
+            }
+            if done {
+                self.acknowledged(meta.last_log_id.map(|log_id| log_id.index));
+            }
+        }
+        Ok(SnapshotResponse::new(vote))
+    }
+
+    fn backoff(&self) -> Option<Backoff> {
+        Some(Backoff::new(backoff_delays(self.heartbeat)))
     }
 }
 

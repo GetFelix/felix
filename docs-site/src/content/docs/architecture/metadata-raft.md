@@ -70,9 +70,11 @@ flowchart LR
 | An instance loses its volume | Rejoins empty and does not vote or stand for election until it has caught up with the group, so an empty log cannot elect a member missing acknowledged writes. Caught up by snapshot install; no data surgery |
 | Quorum lost | Survivors fail readiness rather than serve writes that cannot commit; brokers keep serving on their catalogs and leases, as during any control-plane outage |
 
-Library: [openraft](https://github.com/databendlabs/openraft), pinned to the
-stable 0.9 line, wrapped behind a seam so its pre-1.0 API churn stays
-contained.
+Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
+exact version (0.10.0), wrapped behind a seam so its pre-1.0 API churn stays
+contained. What members send each other and store is Felix's own format,
+unchanged from the releases that ran openraft 0.9, so a group is upgraded
+one member at a time and a member can be rolled back.
 
 ## Configuring it
 
@@ -173,16 +175,18 @@ them while they hear from the leader, but after a long hold the member's
 first answer can cost one extra election. The gauge returns to 0 when the member leaves
 the group or this member stops leading.
 
-### Leader deploys pause writes for one election (pre-0.10 openraft)
+### Leader deploys pause writes for one election
 
-openraft 0.9 has no leadership-transfer API, so a rolling deploy that
-restarts the current **leader** pauses metadata writes for one election
-timeout (~1.2s at defaults) while a successor elects itself. Reads keep
+The control plane does not hand leadership over before a member stops, so a
+rolling deploy that restarts the current **leader** pauses metadata writes
+for one election timeout (~1.2s at defaults) while a successor elects
+itself. Reads keep
 serving, followers restart with no pause, and brokers are unaffected: they
 retry heartbeats and keep their catalogs through far longer outages than
-this. `transfer_leader` arrives with openraft 0.10, and the seam owns the
-shutdown path, so adopting it is a contained change. Until then the pause is
-expected behaviour.
+this. openraft 0.10, which the control plane now runs, can transfer
+leadership, and the seam owns the shutdown path, so adopting it is a
+contained change that comes after the move to the segment store. Until then
+the pause is expected behaviour.
 
 ### Deploying on Kubernetes
 

@@ -1,6 +1,7 @@
 //! The server half of the Raft transport: three POST routes handing each
-//! RPC to the local node and shipping its whole `Result` back as JSON —
-//! the shape [`super::network`] expects on the other side — plus the
+//! RPC to the local node and answering in Felix's peer format
+//! ([`super::wire`]), the shape [`super::network`] and a member on a release
+//! that ran openraft 0.9 both expect, plus the
 //! proposal route, the leader-only route ([`super::leader`]), and the two a
 //! member uses to enter the group ([`super::join`]).
 //!
@@ -12,13 +13,10 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use openraft::error::{InstallSnapshotError, RaftError};
-use openraft::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest, InstallSnapshotResponse,
-    VoteRequest, VoteResponse,
-};
+use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
-use super::types::TypeConfig;
+use super::types::{Snapshot, Vote};
+use super::{chunks, wire};
 
 pub(super) fn router(handle: super::RaftHandle) -> Router {
     let security = std::sync::Arc::clone(&handle.security);
@@ -67,18 +65,49 @@ async fn leader_request(
     }
 }
 
+/// This member's raft node has stopped. Any status but 2xx reads as an
+/// unreachable member to every version of the sender, which then backs off.
+fn stopped(err: impl std::fmt::Display) -> Response {
+    (StatusCode::SERVICE_UNAVAILABLE, format!("raft node: {err}")).into_response()
+}
+
 async fn append_entries(
     State(handle): State<super::RaftHandle>,
-    Json(rpc): Json<AppendEntriesRequest<TypeConfig>>,
-) -> Json<Result<AppendEntriesResponse<u64>, RaftError<u64>>> {
-    Json(handle.raft.append_entries(rpc).await)
+    Json(rpc): Json<wire::AppendEntriesRequest>,
+) -> Response {
+    let rpc = AppendEntriesRequest {
+        vote: rpc.vote.into(),
+        prev_log_id: wire::lib_log_id(rpc.prev_log_id),
+        entries: rpc.entries.into_iter().map(Into::into).collect(),
+        leader_commit: wire::lib_log_id(rpc.leader_commit),
+    };
+    let sent = rpc.last_log_id();
+    let response = match handle.raft.append_entries(rpc).await {
+        // A member that took only some of the entries says how far, so the
+        // leader never counts the rest as stored here.
+        Ok(Ok(accepted)) if accepted != sent => {
+            wire::AppendEntriesResponse::PartialSuccess(wire::log_id(&accepted))
+        }
+        Ok(result) => match AppendEntriesResponse::from(result) {
+            AppendEntriesResponse::Success => wire::AppendEntriesResponse::Success,
+            AppendEntriesResponse::PartialSuccess(matched) => {
+                wire::AppendEntriesResponse::PartialSuccess(wire::log_id(&matched))
+            }
+            AppendEntriesResponse::Conflict => wire::AppendEntriesResponse::Conflict,
+            AppendEntriesResponse::HigherVote(vote) => {
+                wire::AppendEntriesResponse::HigherVote((&vote).into())
+            }
+        },
+        Err(err) => return stopped(err),
+    };
+    Json(wire::Reply::Ok(response)).into_response()
 }
 
 /// A member withholding its vote answers like an unreachable one. openraft
 /// would grant from an empty log, which is exactly what must not happen.
 async fn vote(
     State(handle): State<super::RaftHandle>,
-    Json(rpc): Json<VoteRequest<u64>>,
+    Json(rpc): Json<wire::VoteRequest>,
 ) -> Response {
     if !handle.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
         return (
@@ -87,8 +116,16 @@ async fn vote(
         )
             .into_response();
     }
-    let result: Result<VoteResponse<u64>, RaftError<u64>> = handle.raft.vote(rpc).await;
-    Json(result).into_response()
+    let rpc = VoteRequest::new(rpc.vote.into(), wire::lib_log_id(rpc.last_log_id));
+    match handle.raft.vote(rpc).await {
+        Ok(response) => Json(wire::Reply::Ok(wire::VoteResponse {
+            vote: (&response.vote).into(),
+            vote_granted: response.vote_granted,
+            last_log_id: wire::log_id(&response.last_log_id),
+        }))
+        .into_response(),
+        Err(err) => stopped(err),
+    }
 }
 
 async fn standing(
@@ -107,9 +144,44 @@ async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
     }
 }
 
+/// One chunk of a snapshot, as a 0.9 member sends it. The chunks are joined
+/// here and the library is handed the whole snapshot with the last one.
 async fn install_snapshot(
     State(handle): State<super::RaftHandle>,
-    Json(rpc): Json<InstallSnapshotRequest<TypeConfig>>,
-) -> Json<Result<InstallSnapshotResponse<u64>, RaftError<u64, InstallSnapshotError>>> {
-    Json(handle.raft.install_snapshot(rpc).await)
+    Json(chunk): Json<wire::InstallSnapshotRequest>,
+) -> Response {
+    let sender = Vote::from(chunk.vote);
+    let mine = match handle.raft.with_raft_state(|state| *state.vote_ref()).await {
+        Ok(vote) => vote,
+        Err(err) => return stopped(err),
+    };
+    let mut answer = wire::InstallSnapshotResponse {
+        vote: (&mine).into(),
+    };
+    // A sender that is no longer the leader this member follows learns so
+    // from the vote in the answer, before any of its bytes are kept.
+    if sender < mine {
+        return Json(wire::Reply::Ok(answer)).into_response();
+    }
+    // Held to the end of the install, so two transfers cannot interleave.
+    let mut receiving = handle.receiving.lock().await;
+    let (meta, data) = match chunks::receive(&mut receiving, chunk) {
+        Ok(Some(whole)) => whole,
+        Ok(None) => return Json(wire::Reply::Ok(answer)).into_response(),
+        Err(mismatch) => {
+            return Json(wire::Reply::<wire::InstallSnapshotResponse>::Err(mismatch))
+                .into_response();
+        }
+    };
+    let snapshot = Snapshot {
+        meta: meta.into(),
+        snapshot: std::io::Cursor::new(data),
+    };
+    match handle.raft.install_full_snapshot(sender, snapshot).await {
+        Ok(response) => {
+            answer.vote = (&response.vote).into();
+            Json(wire::Reply::Ok(answer)).into_response()
+        }
+        Err(err) => stopped(err),
+    }
 }
