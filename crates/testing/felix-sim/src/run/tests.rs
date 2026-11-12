@@ -82,3 +82,83 @@ fn the_replay_command_keeps_power_loss_on() {
         "FELIX_SIM_POWER_LOSS=1 FELIX_SIM_SEED=7 task sim:replay"
     );
 }
+
+#[test]
+fn a_deadline_fires_only_when_it_is_not_dropped_in_time() {
+    let (fired, seen) = std::sync::mpsc::channel();
+    let kept = Deadline::start(Duration::from_millis(50), {
+        let fired = fired.clone();
+        move || fired.send("kept").unwrap()
+    });
+    let dropped = Deadline::start(Duration::from_millis(50), move || {
+        fired.send("dropped").unwrap()
+    });
+    drop(dropped);
+    assert_eq!(seen.recv_timeout(Duration::from_secs(10)), Ok("kept"));
+    drop(kept);
+    assert!(seen.recv_timeout(Duration::from_millis(200)).is_err());
+}
+
+/// Holds the simulation thread and never gives it back to the runtime.
+struct HoldsTheThread;
+
+#[async_trait::async_trait]
+impl Checker for HoldsTheThread {
+    fn name(&self) -> &'static str {
+        "holds-the-thread"
+    }
+
+    async fn check(&mut self, _ctx: &CheckContext) -> Vec<Finding> {
+        std::thread::sleep(Duration::from_secs(3600));
+        Vec::new()
+    }
+}
+
+const HOLDING_CHILD: &str = "FELIX_SIM_TEST_HOLDING_CHILD";
+
+/// A run whose thread never returns to the runtime cannot see the stall
+/// watch's cancel. It must end the process naming its seed, not hang it.
+#[test]
+fn a_run_that_holds_its_thread_ends_the_process_with_its_seed() {
+    if std::env::var_os(HOLDING_CHILD).is_some() {
+        let config = SimConfig {
+            real_time_limit: Duration::from_secs(8),
+            ..small()
+        };
+        run_seed_with(7, config, vec![Box::new(HoldsTheThread)]);
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "run::tests::a_run_that_holds_its_thread_ends_the_process_with_its_seed",
+            "--nocapture",
+        ])
+        .env(HOLDING_CHILD, "1")
+        .env_remove("RUST_LOG")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("start the child run");
+    let mut stderr = child.stderr.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+        text
+    });
+    let begun = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if begun.elapsed() > Duration::from_secs(120) {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the run held its thread and the process did not end");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stderr = reader.join().unwrap();
+    assert!(!status.success(), "{stderr}");
+    assert!(stderr.contains("seed 7 ran past"), "{stderr}");
+}

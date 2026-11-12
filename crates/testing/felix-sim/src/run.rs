@@ -29,7 +29,7 @@
 //! See `docs/simulation.md`.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use felix_cluster::history::checker::{self, Report};
@@ -233,6 +233,19 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
         "clock skew needs a build with RUSTFLAGS=\"--cfg tokio_unstable\"; run it through \
          task sim:replay"
     );
+    // The stall watch ends a run only if the runtime polls again. Work that
+    // holds the thread and never returns to the runtime would hang the test
+    // binary instead, so past a hard bound the process exits naming the
+    // seed. Declared before the runtime, so it also covers the runtime's drop.
+    let limit = config.real_time_limit + config.real_time_limit / 4;
+    let _bound = Deadline::start(limit, move || {
+        eprintln!(
+            "seed {seed} ran past {limit:?} of real time: something holds the simulation \
+             thread and never returns to the runtime, so the stall watch cannot end the run. \
+             To run it again:\n    FELIX_SIM_SEED={seed} task sim:replay"
+        );
+        std::process::exit(1);
+    });
     let mut builder = tokio::runtime::Builder::new_current_thread();
     builder.enable_all().start_paused(true);
     // `select!` picks among ready branches at random. Seeded, it picks the
@@ -243,6 +256,30 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
     crate::clock::attribute_tasks(&mut builder);
     let runtime = builder.build().expect("build the simulation runtime");
     runtime.block_on(run(seed, config, checkers))
+}
+
+/// Calls `expired` on a thread of its own unless it is dropped within `limit`
+/// of real time.
+struct Deadline {
+    _finished: mpsc::Sender<()>,
+}
+
+impl Deadline {
+    fn start(limit: Duration, expired: impl FnOnce() + Send + 'static) -> Self {
+        let (finished, wait) = mpsc::channel::<()>();
+        std::thread::Builder::new()
+            .name("sim-deadline".into())
+            .spawn(move || {
+                // A dropped sender disconnects the channel and ends the wait.
+                if let Err(mpsc::RecvTimeoutError::Timeout) = wait.recv_timeout(limit) {
+                    expired();
+                }
+            })
+            .expect("start the run's deadline");
+        Self {
+            _finished: finished,
+        }
+    }
 }
 
 async fn run(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker>>) -> SimOutcome {
