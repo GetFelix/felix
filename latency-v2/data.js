@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794451737048,
+  "lastUpdate": 1794452160764,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66594,6 +66594,72 @@ window.BENCHMARK_DATA = {
             "range": "961.67",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1304.00\nmean: 1480.80\nstdev: 961.67\ncv: 64.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54eff3716469d6b68b624ab60b0fc844d2cc28da",
+          "message": "feat(controlplane): metadata Raft on openraft 0.10, still on redb (#2225) (#2324)\n\nThe control plane moves from openraft 0.9.25 to the workspace pin (=0.10.0),\nso the workspace has one openraft. The store stays redb and the leader id\nstays a term and a node id.\n\nA group must be upgraded one member at a time, and a member must be able to\ngo back, so nothing a 0.9 member reads changes:\n\n- raft/wire.rs: Felix-owned types for every peer request and response and\n  for everything stored. They write the JSON 0.9 wrote, pinned by fixtures\n  printed by openraft 0.9.25.\n- raft/chunks.rs: a snapshot is cut into 0.9's chunk requests and joined on\n  the way in. The snapshot id stays, derived from the last log id.\n- A member whose Raft node has stopped answers 503, since error bodies\n  differ between the two library versions.\n\n0.10 has a restarted leader campaign at once, whatever enable_elect says. A\nmember that withholds its vote starts with enable_leader_restore off.\nPre-vote is set off. Log reversion is allowed through the config.\n\ntests/raft_runtime.rs runs the v0.7.1 binary and this build in one group:\na snapshot each way, and a member rolled back onto a store this build wrote\nsnapshots into. coverage.yml downloads the released binary for it.\n\nSpec-Unaffected: the peer and stored formats and the library version are\nnot modelled; no Raft rule of Felix's own changes.",
+          "timestamp": "2026-11-12T02:49:18Z",
+          "tree_id": "ab55f6d13cb001ccf3b3f188a421655f2e6eaacd",
+          "url": "https://github.com/GetFelix/felix/commit/54eff3716469d6b68b624ab60b0fc844d2cc28da"
+        },
+        "date": 1794452152642,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.20\nstdev: 0.84\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 123,
+            "range": "4.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 125.20\nstdev: 4.49\ncv: 3.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 153,
+            "range": "276.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 276.00\nstdev: 276.81\ncv: 100.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "5.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 110.80\nstdev: 5.26\ncv: 4.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 228,
+            "range": "20.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 228.00\nmean: 234.60\nstdev: 20.62\ncv: 8.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 769,
+            "range": "518.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 769.00\nmean: 767.80\nstdev: 518.96\ncv: 67.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
