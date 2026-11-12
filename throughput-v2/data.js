@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794489622402,
+  "lastUpdate": 1794490262797,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52936,6 +52936,58 @@ window.BENCHMARK_DATA = {
             "range": "33904.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 935034.45\nmean: 924772.60\nstdev: 33904.14\ncv: 3.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef63f790f8ba730ba676434238553147ddccc358",
+          "message": "fix(storage): a same-boot restart after a poisoned log cuts the failed flush's bytes (#2308, #2270) (#2347)\n\n* fix(storage): a same-boot restart after a poisoned log cuts the failed flush's bytes (#2308, #2270)\n\nSpec-Unaffected: the TLA models describe the log's contents after a crash, and the cut leaves what a power loss at the last synced point would\n\n* fix(storage): poison marker keeps the synced point and the failed run's mode (#2308)\n\nThe marker records the synced point held in memory, so a sync whose\ndurable.mark write failed still counts, and the poisoned run's fsync mode\nin the mark's reserved byte. The next open decides from that mode: an\nOnCommit run is cut back and durable.mark set to the cut, a relaxed run's\nbytes past the mark are read back, written again and synced. An unreadable\nmarker logs a warning.\n\n* chore: lockfile for the storage test's tracing-subscriber",
+          "timestamp": "2026-11-12T13:25:30Z",
+          "tree_id": "2bf7596bdbaa67a70e489573d98c17dea3406114",
+          "url": "https://github.com/GetFelix/felix/commit/ef63f790f8ba730ba676434238553147ddccc358"
+        },
+        "date": 1794490261724,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347010.02,
+            "range": "11821.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347010.02\nmean: 343996.73\nstdev: 11821.65\ncv: 3.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347010.02,
+            "range": "11821.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347010.02\nmean: 343996.73\nstdev: 11821.65\ncv: 3.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79644.81,
+            "range": "560.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79644.81\nmean: 79780.81\nstdev: 560.95\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796448.06,
+            "range": "5609.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796448.06\nmean: 797808.13\nstdev: 5609.45\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
