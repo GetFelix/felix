@@ -22,7 +22,7 @@ const VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + index(8) + generation(8) +
 /// meta length(4) + data length(8) + crc(4)
 const HEADER_LEN: usize = 40;
-const FILE_NAME: &str = "raft-snapshot";
+pub(crate) const FILE_NAME: &str = "raft-snapshot";
 
 /// The last entry a snapshot covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,10 +59,12 @@ struct Shared {
 impl SnapshotStore {
     /// Open the snapshot kept in `dir`, which must exist. A file that does
     /// not decode fails the open: the log below it may be purged, so
-    /// reading it as "no snapshot" would lose the state it holds.
+    /// reading it as "no snapshot" would lose the state it holds. A
+    /// temporary a crash left is deleted.
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         let stored = read(&dir)?.map(|snapshot| snapshot.last);
+        state_file::remove_temporary(&dir, FILE_NAME)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 dir,
@@ -137,6 +139,10 @@ pub(super) fn decode(bytes: &[u8]) -> Option<StoredSnapshot> {
     let magic = u32::from_be_bytes(header[0..4].try_into().ok()?);
     let version = u16::from_be_bytes(header[4..6].try_into().ok()?);
     if magic != MAGIC || version != VERSION {
+        return None;
+    }
+    // A later version may give these bytes a meaning this build would ignore.
+    if header[6..8] != [0, 0] {
         return None;
     }
     let index = u64::from_be_bytes(header[8..16].try_into().ok()?);
