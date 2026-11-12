@@ -52,6 +52,15 @@ pub struct RaftHandle {
     pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
 }
 
+/// Stop a node whose start failed. Bounded: the stop waits for an apply in
+/// flight, and a stuck one must not turn a failed start into a hang.
+async fn stop_failed_start(raft: &Raft) {
+    let stop = tokio::time::timeout(Duration::from_secs(5), raft.shutdown()).await;
+    if !matches!(stop, Ok(Ok(()))) {
+        tracing::warn!("the raft node did not stop cleanly after a failed start");
+    }
+}
+
 impl RaftHandle {
     /// Open (or create) this instance's Raft state under
     /// `settings.data_dir` and start the node.
@@ -66,13 +75,33 @@ impl RaftHandle {
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
         // The store is opened, and on the segment store marked as started,
         // before the node below exists: a node campaigns on its own timer.
+        let opened = store::open_member(&settings, Arc::clone(&app)).await?;
+        let member = opened.member.clone();
+        match Self::start_on(settings, app, opened).await {
+            Ok(handle) => Ok(handle),
+            Err(err) => {
+                // Closed here, or the store stays locked and a retry in this
+                // process is refused as busy.
+                if let Err(close) = member.close().await {
+                    tracing::warn!(error = %close, "close the store after a failed start");
+                }
+                Err(err)
+            }
+        }
+    }
+
+    async fn start_on(
+        settings: RaftSettings,
+        app: Arc<dyn AppStateMachine>,
+        opened: store::Opened,
+    ) -> Result<Self> {
         let store::Opened {
             log_store,
             state_machine,
             may_vote,
             committed_floor,
             member,
-        } = store::open_member(&settings, Arc::clone(&app)).await?;
+        } = opened;
         let config = openraft::Config {
             cluster_name: "felix-metadata".to_string(),
             heartbeat_interval: settings.heartbeat_interval.as_millis() as u64,
@@ -127,6 +156,42 @@ impl RaftHandle {
         // missing entries it committed in its previous life, and requests
         // routed to it read a world that never existed. The chaos suite
         // caught exactly that.
+        if let Err(err) = Self::replayed(&raft, committed_floor).await {
+            stop_failed_start(&raft).await;
+            return Err(err);
+        }
+
+        let forward = match settings.security.client(settings.write_timeout) {
+            Ok(forward) => forward,
+            Err(err) => {
+                stop_failed_start(&raft).await;
+                return Err(err).context("build forwarding client");
+            }
+        };
+        let handle = Self {
+            raft,
+            id: settings.node_id,
+            write_timeout: settings.write_timeout,
+            forward,
+            security: Arc::new(settings.security),
+            peer_addrs: Arc::new(settings.peer_addrs),
+            app,
+            member,
+            may_vote: Arc::new(AtomicBool::new(may_vote)),
+            leader_service: Arc::new(std::sync::OnceLock::new()),
+            versions,
+            hold,
+            stopped: Arc::default(),
+            #[cfg(not(felix_segment_store))]
+            receiving: Arc::default(),
+        };
+        tokio::spawn(handle.clone().watch_versions());
+        Ok(handle)
+    }
+
+    /// Wait until the state machine is back to `committed_floor`, what this
+    /// node had committed before it stopped.
+    async fn replayed(raft: &Raft, committed_floor: Option<u64>) -> Result<()> {
         if let Some(floor) = committed_floor {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
             loop {
@@ -147,29 +212,7 @@ impl RaftHandle {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         }
-
-        let handle = Self {
-            raft,
-            id: settings.node_id,
-            write_timeout: settings.write_timeout,
-            forward: settings
-                .security
-                .client(settings.write_timeout)
-                .context("build forwarding client")?,
-            security: Arc::new(settings.security),
-            peer_addrs: Arc::new(settings.peer_addrs),
-            app,
-            member,
-            may_vote: Arc::new(AtomicBool::new(may_vote)),
-            leader_service: Arc::new(std::sync::OnceLock::new()),
-            versions,
-            hold,
-            stopped: Arc::default(),
-            #[cfg(not(felix_segment_store))]
-            receiving: Arc::default(),
-        };
-        tokio::spawn(handle.clone().watch_versions());
-        Ok(handle)
+        Ok(())
     }
 
     pub fn status(&self) -> RaftStatus {
@@ -306,11 +349,15 @@ impl RaftHandle {
     pub async fn shutdown(&self) -> Result<()> {
         self.stopped
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        self.raft
+        // The store is closed even when the node's shutdown fails, so its
+        // lock does not outlive the member.
+        let stopped = self
+            .raft
             .shutdown()
             .await
-            .map_err(|err| anyhow::anyhow!("raft shutdown: {err}"))?;
-        self.member.close().await
+            .map_err(|err| anyhow::anyhow!("raft shutdown: {err}"));
+        let closed = self.member.close().await;
+        stopped.and(closed)
     }
 }
 

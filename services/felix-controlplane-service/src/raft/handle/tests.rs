@@ -133,3 +133,26 @@ async fn a_lease_expired_refusal_is_not_forwarded() {
     );
     handle.shutdown().await.expect("shutdown");
 }
+
+/// A start that fails after the store is open closes it again, so a retry
+/// in the same process can open it instead of finding it busy.
+#[tokio::test]
+async fn a_failed_start_releases_the_store() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut bad = settings(dir.path());
+    // Refused by openraft's config check, after the store is open.
+    bad.election_timeout = (Duration::from_millis(300), Duration::from_millis(150));
+    RaftHandle::start(bad, Arc::new(NullApp))
+        .await
+        .err()
+        .expect("an invalid config is refused");
+
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("restart after the failed start");
+    handle.shutdown().await.expect("shutdown");
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("restart after a shutdown");
+    handle.shutdown().await.expect("shutdown");
+}
