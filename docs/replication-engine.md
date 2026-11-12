@@ -374,8 +374,18 @@ append with nothing to wait for fires its callback before it returns, but
 only when the queue is empty, so a callback never overtakes an earlier
 one.
 
-> `raft_log/tests/flush_queue.rs`, `one_flush_answers_every_waiting_append`
-> and `a_failed_flush_fails_every_waiting_append`.
+If the task stops (a callback panics, or its runtime shuts down, even
+before the task first runs), it fails every callback it still held, and
+the next append that has to wait starts a new task. The log is not
+poisoned: no flush failed, so nothing on disk is in doubt. The task holds
+its own handle to the log, so appends still queued when the last user of
+the log goes are answered with their real flush.
+
+> `raft_log/tests/flush_queue.rs`, `one_flush_answers_every_waiting_append`,
+> `a_failed_flush_fails_every_waiting_append`,
+> `an_append_after_the_task_stopped_is_flushed`,
+> `a_task_dropped_before_it_ran_fails_what_was_sent` and
+> `a_queued_append_outlives_the_log`.
 
 **The newest entries are read from memory.** Replication reads an entry
 right after it is appended. The adapter keeps the last 4 MiB of records it
