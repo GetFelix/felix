@@ -16,8 +16,6 @@ name: Gate - performance A/B
 # `engine: raft` ends in a skip until the Raft engine exists.
 
 on:
-  push:
-    branches: [ci/gate-2298]
   workflow_dispatch:
     inputs:
       engine:
@@ -57,9 +55,9 @@ jobs:
       - name: Plan
         id: plan
         env:
-          ENGINE: hybrid
-          BASELINE: v0.7.1
-          SECONDS_PER_TRIAL: 10
+          ENGINE: ${{ inputs.engine }}
+          BASELINE: ${{ inputs.baseline_ref }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
           case "$ENGINE" in
@@ -98,7 +96,7 @@ jobs:
 
       - name: Add the baseline worktree
         env:
-          BASELINE: v0.7.1
+          BASELINE: ${{ inputs.baseline_ref }}
         run: |
           set -euo pipefail
           git fetch --tags --quiet origin
@@ -129,13 +127,14 @@ jobs:
       - name: Run the cells, alternating sides
         id: run
         env:
-          SECONDS_PER_TRIAL: 10
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
           results=/tmp/felix-gate/results.jsonl
           : > "$results"
           # name, replication factor, payload bytes, batch. RF 1 is one broker.
-          cells="rf1-1k:1:1024:64 rf1-1k-b1:1:1024:1"
+          cells="rf1-1k:1:1024:64 rf1-64k:1:65536:64 rf3-1k:3:1024:64 rf3-64k:3:65536:64
+                 rf1-1k-b1:1:1024:1 rf1-64k-b1:1:65536:1 rf3-1k-b1:3:1024:1 rf3-64k-b1:3:65536:1"
           active=$cells
           done_rounds=0
           for target in 6 12 24; do
@@ -176,7 +175,7 @@ jobs:
           # Paired rule: a cell with no rows, a missing or partial round, or a
           # void A/A check fails; a lost trial is never a pass.
           python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/results.jsonl --aa \
-            --expect-cells rf1-1k,rf1-1k-b1 \
+            --expect-cells rf1-1k,rf1-64k,rf3-1k,rf3-64k,rf1-1k-b1,rf1-64k-b1,rf3-1k-b1,rf3-64k-b1 \
             --md /tmp/felix-gate/table.md --json /tmp/felix-gate/verdict.json
 
       - name: Upload the raw trials
@@ -213,10 +212,10 @@ jobs:
 
       - name: Write the result
         env:
-          ENGINE: hybrid
+          ENGINE: ${{ inputs.engine }}
           RUN: ${{ needs.plan.outputs.run }}
-          BASELINE: v0.7.1
-          SECONDS_PER_TRIAL: 10
+          BASELINE: ${{ inputs.baseline_ref }}
+          SECONDS_PER_TRIAL: ${{ inputs.seconds }}
         run: |
           set -euo pipefail
           out=gate-perf
@@ -246,6 +245,6 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: gate-result-perf-hybrid
+          name: gate-result-perf-${{ inputs.engine }}
           path: gate-perf
           retention-days: 30
