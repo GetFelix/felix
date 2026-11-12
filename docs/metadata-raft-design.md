@@ -1286,8 +1286,8 @@ and a cell fails if the new store is worse by more than that band.
 The benchmark and the redb baseline are in
 [metadata-raft-benchmark.md](metadata-raft-benchmark.md)
 ([#2224](https://github.com/GetFelix/felix/issues/2224)). It runs from the
-**Metadata Raft benchmark** workflow, which compares two commits and runs the
-baseline twice for the noise band.
+**Metadata Raft benchmark** workflow, which compares two commits over
+repeated alternating runs and takes the noise band from the spread of the base.
 
 ### Order of work
 

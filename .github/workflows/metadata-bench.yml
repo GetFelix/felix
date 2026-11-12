@@ -5,10 +5,11 @@ name: Metadata Raft benchmark
 # snapshot build, restart and install, disk cost and idle cost
 # (docs/metadata-raft-design.md, "Perf gate"; docs/metadata-raft-benchmark.md).
 #
-# One job builds `base` and this commit, runs base, head and base again (the
-# A/A run that sets each cell's noise band), and fails a cell only when head is
-# worse than base by more than that band. Run it on the commit that moves the
-# store, with `base` set to the commit before it.
+# One job builds `base` and this commit, runs them alternately `reps` times,
+# takes each metric's median per side, and fails a cell only when head is worse
+# than base by more than that cell's noise band (the spread of the base runs,
+# never under 10%). Run it on the commit that moves the store, with `base` set
+# to the commit before it.
 
 on:
   # TEMPORARY: lets the branch run before the workflow exists on main.
@@ -25,6 +26,10 @@ on:
         type: choice
         options: [quick, full]
         default: full
+      reps:
+        description: "Runs per side, taken alternately"
+        required: false
+        default: "3"
 
 permissions:
   contents: read
@@ -64,21 +69,24 @@ jobs:
       - name: Run the benchmark
         env:
           SCALE: ${{ inputs.scale || 'full' }}
+          REPS: ${{ inputs.reps || '3' }}
           BASE: ${{ inputs.base || (github.event_name == 'push' && 'origin/main' || '') }}
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/results"
           mkdir -p "$out"
           if [ -z "$BASE" ]; then
-            scripts/ci/metadata_bench.sh "$out/head.json" "$SCALE"
+            for rep in $(seq 1 "$REPS"); do
+              scripts/ci/metadata_bench.sh "$out/head-$rep.json" "$SCALE"
+            done
             exit 0
           fi
           # Alternate so drift in the runner lands on both sides.
-          (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$RUNNER_TEMP/base-target" \
-            "$GITHUB_WORKSPACE/scripts/ci/metadata_bench.sh" "$out/base.json" "$SCALE")
-          scripts/ci/metadata_bench.sh "$out/head.json" "$SCALE"
-          (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$RUNNER_TEMP/base-target" \
-            "$GITHUB_WORKSPACE/scripts/ci/metadata_bench.sh" "$out/aa.json" "$SCALE")
+          for rep in $(seq 1 "$REPS"); do
+            (cd "$RUNNER_TEMP/base" && CARGO_TARGET_DIR="$RUNNER_TEMP/base-target" \
+              "$GITHUB_WORKSPACE/scripts/ci/metadata_bench.sh" "$out/base-$rep.json" "$SCALE")
+            scripts/ci/metadata_bench.sh "$out/head-$rep.json" "$SCALE"
+          done
 
       - name: Compare
         env:
@@ -87,10 +95,10 @@ jobs:
           set -o pipefail
           out="$RUNNER_TEMP/results"
           if [ -z "$BASE" ]; then
-            python3 scripts/ci/metadata_bench.py table "$out/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 scripts/ci/metadata_bench.py table "$out"/head*.json | tee -a "$GITHUB_STEP_SUMMARY"
           else
-            python3 scripts/ci/metadata_bench.py compare "$out/base.json" "$out/head.json" \
-              --aa "$out/aa.json" --md "$out/compare.md" | tee -a "$GITHUB_STEP_SUMMARY"
+            python3 scripts/ci/metadata_bench.py compare --base "$out"/base-*.json \
+              --head "$out"/head-*.json --md "$out/compare.md" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/upload-artifact@v7

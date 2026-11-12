@@ -38,6 +38,9 @@ const NAMESPACE: &str = "ns";
 /// Measurement windows and sizes. `quick` proves the harness works in a few
 /// minutes; `full` is what the gate compares.
 struct Scale {
+    /// Load that runs before the window and is thrown away: the first
+    /// seconds of a fresh group are connection setup and cold caches.
+    warmup: Duration,
     window: Duration,
     idle: Duration,
     failover_rounds: usize,
@@ -49,6 +52,7 @@ impl Scale {
     fn from_env() -> Self {
         match std::env::var("FELIX_METADATA_BENCH_SCALE").as_deref() {
             Ok("full") => Self {
+                warmup: Duration::from_secs(3),
                 window: Duration::from_secs(10),
                 idle: Duration::from_secs(30),
                 failover_rounds: 5,
@@ -56,6 +60,7 @@ impl Scale {
                 snapshot_sizes: vec![("1MiB", 1 << 20), ("32MiB", 32 << 20)],
             },
             _ => Self {
+                warmup: Duration::from_secs(1),
                 window: Duration::from_secs(2),
                 idle: Duration::from_secs(5),
                 failover_rounds: 1,
@@ -78,6 +83,7 @@ fn security() -> PeerSecurity {
 struct Probe {
     inner: Arc<MetadataStateMachine>,
     snapshots: AtomicU64,
+    restores: AtomicU64,
     last_snapshot_nanos: AtomicU64,
 }
 
@@ -95,7 +101,8 @@ impl AppStateMachine for Probe {
         bytes
     }
     async fn restore(&self, snapshot: &[u8]) {
-        self.inner.restore(snapshot).await
+        self.inner.restore(snapshot).await;
+        self.restores.fetch_add(1, Ordering::SeqCst);
     }
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
         AppStateMachine::restamp(&*self.inner, command, now_millis)
@@ -146,6 +153,7 @@ async fn try_open_member(
     let probe = Arc::new(Probe {
         inner: Arc::clone(&inner),
         snapshots: AtomicU64::new(0),
+        restores: AtomicU64::new(0),
         last_snapshot_nanos: AtomicU64::new(0),
     });
     let handle = match RaftHandle::start(
@@ -273,16 +281,34 @@ fn percentile(sorted: &[Duration], q: f64) -> f64 {
     sorted[index].as_secs_f64() * 1e3
 }
 
-/// Closed-loop load: `proposers` tasks each run `op` back to back for
-/// `window`. Returns throughput and latency quantiles of the acknowledged
-/// operations, and how many failed.
-async fn run_load<F, Fut>(proposers: usize, window: Duration, op: F) -> Value
+/// Closed-loop load: `proposers` tasks each run `op` back to back, first for
+/// `warmup` (not measured), then for `window`. Returns throughput and latency
+/// quantiles of the acknowledged operations in the window, and how many
+/// failed. `op` gets a counter that keeps rising across both phases, so the
+/// names it builds from it never repeat.
+async fn run_load<F, Fut>(proposers: usize, warmup: Duration, window: Duration, op: F) -> Value
+where
+    F: Fn(usize, u64) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = bool> + Send + 'static,
+{
+    run_load_counted(proposers, warmup, window, op).await.0
+}
+
+/// `run_load` plus the acknowledged operation count and what the process wrote
+/// during the window.
+async fn run_load_counted<F, Fut>(
+    proposers: usize,
+    warmup: Duration,
+    window: Duration,
+    op: F,
+) -> (Value, u64, u64)
 where
     F: Fn(usize, u64) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = bool> + Send + 'static,
 {
     let op = Arc::new(op);
     let started = Instant::now();
+    let measured_from = started + warmup;
     let mut tasks = Vec::new();
     for proposer in 0..proposers {
         let op = Arc::clone(&op);
@@ -290,18 +316,26 @@ where
             let mut latencies = Vec::new();
             let mut failed = 0u64;
             let mut i = 0u64;
-            while started.elapsed() < window {
+            while Instant::now() < measured_from + window {
                 let begun = Instant::now();
-                if op(proposer, i).await {
-                    latencies.push(begun.elapsed());
-                } else {
-                    failed += 1;
+                let ok = op(proposer, i).await;
+                // An operation counts for the window it began in.
+                if begun >= measured_from {
+                    if ok {
+                        latencies.push(begun.elapsed());
+                    } else {
+                        failed += 1;
+                    }
                 }
                 i += 1;
             }
             (latencies, failed)
         }));
     }
+    let written_before = {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(measured_from)).await;
+        usage().written_bytes
+    };
     let mut all = Vec::new();
     let mut failed = 0;
     for task in tasks {
@@ -309,14 +343,20 @@ where
         all.extend(latencies);
         failed += f;
     }
-    let elapsed = started.elapsed().as_secs_f64();
+    let written = usage().written_bytes.saturating_sub(written_before);
+    let elapsed = measured_from.elapsed().as_secs_f64();
     all.sort();
-    json!({
-        "ops_per_s": all.len() as f64 / elapsed,
-        "p50_ms": percentile(&all, 0.50),
-        "p99_ms": percentile(&all, 0.99),
-        "failed": failed,
-    })
+    let acked = all.len() as u64;
+    (
+        json!({
+            "ops_per_s": acked as f64 / elapsed,
+            "p50_ms": percentile(&all, 0.50),
+            "p99_ms": percentile(&all, 0.99),
+            "failed": failed,
+        }),
+        acked,
+        written,
+    )
 }
 
 /// Linux accounting for this process; zeros elsewhere, so the cells that use
@@ -365,25 +405,21 @@ async fn propose_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
             for proposers in [1usize, 16, 128] {
                 let group = Group::start(members, 1_000_000).await;
                 let store = group.writer();
-                let before = usage();
-                let result = run_load(proposers, scale.window, move |p, i| {
-                    let store = Arc::clone(&store);
-                    async move {
-                        store
-                            .create_namespace(namespace(&format!("n-{p}-{i}"), payload))
-                            .await
-                            .is_ok()
-                    }
-                })
-                .await;
-                let after = usage();
-                let mut result = result;
-                let ops = result["ops_per_s"].as_f64().unwrap_or(0.0) * scale.window.as_secs_f64();
-                if ops > 0.0 && after.written_bytes > before.written_bytes {
+                let (mut result, acked, written) =
+                    run_load_counted(proposers, scale.warmup, scale.window, move |p, i| {
+                        let store = Arc::clone(&store);
+                        async move {
+                            store
+                                .create_namespace(namespace(&format!("n-{p}-{i}"), payload))
+                                .await
+                                .is_ok()
+                        }
+                    })
+                    .await;
+                if acked > 0 && written > 0 {
                     // The whole process writes: every member's log, so this is
                     // per committed entry across the group.
-                    result["bytes_written_per_entry"] =
-                        json!((after.written_bytes - before.written_bytes) as f64 / ops);
+                    result["bytes_written_per_entry"] = json!(written as f64 / acked as f64);
                 }
                 cells.insert(format!("propose/m{members}/{label}/p{proposers}"), result);
                 group.stop().await;
@@ -470,7 +506,7 @@ async fn placement_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     store.register_node(node_named("n1")).await.expect("node");
 
     // Stream creates, one after another: the latency of one create.
-    let creates = run_load(1, scale.window, {
+    let creates = run_load(1, scale.warmup, scale.window, {
         let store = Arc::clone(&store);
         move |_, i| {
             let store = Arc::clone(&store);
@@ -508,7 +544,7 @@ async fn placement_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     let keys = Arc::new(keys);
 
     // Placement updates: rewrite assignments the way a move or a repair does.
-    let updates = run_load(4, scale.window, {
+    let updates = run_load(4, scale.warmup, scale.window, {
         let store = Arc::clone(&store);
         let keys = Arc::clone(&keys);
         move |p, i| {
@@ -535,7 +571,7 @@ async fn placement_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         .map(|a| ((a.key.stream.clone(), a.key.shard), a.generation))
         .collect();
     let generations = Arc::new(generations);
-    let reports = run_load(16, scale.window, {
+    let reports = run_load(16, scale.warmup, scale.window, {
         let store = Arc::clone(&store);
         let keys = Arc::clone(&keys);
         move |p, i| {
@@ -563,6 +599,7 @@ async fn placement_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
 /// Kill the leader and time the next acknowledged write.
 async fn failover_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     let mut millis = Vec::new();
+    let mut failed_rounds = 0u64;
     for round in 0..scale.failover_rounds {
         let group = Group::start(3, 1_000_000).await;
         let leader = group.leader_index();
@@ -575,6 +612,8 @@ async fn failover_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
             .await;
         if written.is_ok() {
             millis.push(began.elapsed().as_secs_f64() * 1e3);
+        } else {
+            failed_rounds += 1;
         }
         group.stop().await;
     }
@@ -583,7 +622,12 @@ async fn failover_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     let worst = millis.last().copied().unwrap_or(0.0);
     cells.insert(
         "failover".to_string(),
-        json!({ "p50_ms": median, "max_ms": worst, "rounds": millis.len() }),
+        json!({
+            "p50_ms": median,
+            "max_ms": worst,
+            "rounds": millis.len(),
+            "failed_rounds": failed_rounds,
+        }),
     );
 }
 
@@ -677,11 +721,16 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         // a listener task that is still winding down may hold a moment longer.
         // That wait is not part of the measurement.
         let mut dir = dir;
+        let reopen_deadline = Instant::now() + Duration::from_secs(60);
         let (restarted, began) = loop {
             let began = Instant::now();
             match try_open_member(1, dir, 1_000_000).await {
                 Ok(member) => break (member, began),
-                Err((_, back)) => {
+                Err((err, back)) => {
+                    assert!(
+                        Instant::now() < reopen_deadline,
+                        "member would not reopen: {err:#}"
+                    );
                     dir = back;
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
@@ -704,8 +753,9 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     }
 }
 
-/// A two-member group with its log purged behind a snapshot, then an empty
-/// member added: the time is the snapshot install and apply.
+/// One member with its log purged behind a snapshot, then an empty learner
+/// added: the time is the snapshot install and apply. `ok` is true only when
+/// the learner restored the snapshot.
 async fn install_cell(label: &str, bytes: usize, cells: &mut BTreeMap<String, Value>) {
     let group = Group::start(1, 1_000_000).await;
     fill(&group.members[0].store, bytes).await;
@@ -715,7 +765,9 @@ async fn install_cell(label: &str, bytes: usize, cells: &mut BTreeMap<String, Va
         .trigger_snapshot()
         .await
         .expect("snapshot");
+    let deadline = Instant::now() + Duration::from_secs(120);
     while group.members[0].probe.snapshots.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "snapshot never built");
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -727,17 +779,27 @@ async fn install_cell(label: &str, bytes: usize, cells: &mut BTreeMap<String, Va
         .handle
         .add_learner(2, joiner.addr.to_string())
         .await;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while joined.is_ok()
+        && joiner.probe.restores.load(Ordering::SeqCst) == 0
+        && Instant::now() < deadline
+    {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let restored = joiner.probe.restores.load(Ordering::SeqCst) > 0;
     let elapsed = began.elapsed().as_secs_f64() * 1e3;
     cells.insert(
         format!("snapshot_install/{label}"),
-        json!({ "install_ms": elapsed, "ok": joined.is_ok() }),
+        json!({ "install_ms": elapsed, "ok": joined.is_ok() && restored }),
     );
     let _ = joiner.handle.shutdown().await;
     joiner.server.abort();
     group.stop().await;
 }
 
-/// An idle three-member group: CPU and memory of the whole process.
+/// An idle three-member group: CPU and resident memory of the whole test
+/// process. It runs first, so the memory is the process plus three members
+/// and not what the other cells left behind.
 async fn idle_cell(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
     let group = Group::start(3, 1_000_000).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -748,7 +810,7 @@ async fn idle_cell(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         "idle/m3".to_string(),
         json!({
             "cpu_percent": (after.cpu_secs - before.cpu_secs) / scale.idle.as_secs_f64() * 100.0,
-            "rss_mib": after.rss_bytes as f64 / (1 << 20) as f64,
+            "process_rss_mib": after.rss_bytes as f64 / (1 << 20) as f64,
         }),
     );
     group.stop().await;
@@ -759,11 +821,11 @@ async fn idle_cell(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
 async fn metadata_bench() {
     let scale = Scale::from_env();
     let mut cells = BTreeMap::new();
+    idle_cell(&scale, &mut cells).await;
     propose_cells(&scale, &mut cells).await;
     placement_cells(&scale, &mut cells).await;
     failover_cells(&scale, &mut cells).await;
     snapshot_cells(&scale, &mut cells).await;
-    idle_cell(&scale, &mut cells).await;
 
     let report = json!({ "scale": std::env::var("FELIX_METADATA_BENCH_SCALE").unwrap_or_else(|_| "quick".into()), "cells": cells });
     let text = serde_json::to_string_pretty(&report).expect("encode");

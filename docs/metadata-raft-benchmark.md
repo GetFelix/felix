@@ -19,11 +19,11 @@ behind a load balancer. The code is
 | `stream_create` | One stream create after another, three members | the same, without bytes |
 | `placement_update` | Shard assignments rewritten by four proposers, three members | the same |
 | `replica_report` | Replica reports for every shard of one stream from 16 proposers, the steady write load of the log | the same |
-| `failover` | The leader is stopped; the time until a write through a survivor is acknowledged | `p50_ms`, `max_ms` |
+| `failover` | The leader is stopped; the time until a write through a survivor is acknowledged | `p50_ms`, `max_ms`, `rounds` (acknowledged), `failed_rounds` |
 | `snapshot_build/<1MiB,32MiB>` | A snapshot of that much metadata, with a writer running | `build_ms` (the state machine's snapshot call), `longest_write_ms` |
 | `restart_to_ready/<size>` | Stop a member behind that snapshot and start it again; time until it confirms leadership | `ready_ms` |
-| `snapshot_install/<size>` | Add an empty member to a group whose log is gone behind that snapshot | `install_ms` |
-| `idle/m3` | Three idle members, whole process | `cpu_percent`, `rss_mib` (Linux) |
+| `snapshot_install/<size>` | Add an empty learner to a one-member group whose log is gone behind that snapshot; the time until the learner has restored the snapshot | `install_ms`, `ok` (the learner restored) |
+| `idle/m3` | Three idle members, whole process; runs first so the memory is the process plus the members | `cpu_percent`, `process_rss_mib` (Linux) |
 
 Not measured yet: fsyncs per committed entry (the bytes written per entry stand
 in), and the time to store a snapshot after it is built, because the Raft handle
@@ -41,12 +41,14 @@ python3 scripts/ci/metadata_bench.py table bench.json
 For a number worth recording, use Actions: **Metadata Raft benchmark**
 (`metadata-bench.yml`), "Run workflow", scale `full`. Leave `base` empty to
 get one table. To gate a change, set `base` to the commit before it. The job
-builds both commits, runs base, head, then base again, and compares. The second
-base run is the A/A run: the gap between the two base runs of a cell, as a
-fraction of their mean, is that cell's noise band (never under 10%). Head is
-held against the mean of the two base runs and fails a cell only when it is
-worse by more than the band. A cell head does not report fails. Throughput is
-better higher; every other metric is better lower. Both sides run the head
+builds both commits and runs them alternately three times each (`reps`), so
+drift on the runner lands on both sides. Each load cell throws away a warmup
+before its measured window. Per metric the median of the runs is compared; a
+cell's noise band is the spread of the base runs, (max - min) / median, never
+under 10%. Head fails a cell when it is worse than the base median by more than
+the band. A cell head does not report fails. Throughput, `ok` and `rounds` are
+better higher; every other metric is better lower, so a failed round or a
+snapshot install that did not complete fails the cell. Both sides run the head
 commit's benchmark file, so a base that predates it still works as long as the
 store traits it uses have not changed.
 

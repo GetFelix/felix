@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """Compare runs of the metadata Raft benchmark (docs/metadata-raft-design.md, "Perf gate").
 
-  metadata_bench.py compare BASE.json HEAD.json [--aa BASE2.json] [--floor FRACTION] [--md OUT]
-  metadata_bench.py table RESULT.json
+  metadata_bench.py compare --base B1.json B2.json ... --head H1.json H2.json ... [--floor FRACTION] [--md OUT]
+  metadata_bench.py table RESULT.json [RESULT.json ...]
 
 Each file is the output of `tests/metadata_bench.rs`: {"cells": {cell: {metric: number}}}.
-A metric is better when higher (`ops_per_s`) or lower (everything else that
-is a time, size or cost). `--aa` is a second run of the baseline; the gap
-between the two runs of one cell, as a fraction of their mean, is that cell's
-noise band. HEAD is held against that mean and fails a cell only when it is
-worse by more than the band, which is at least --floor (10% by default). A cell HEAD does not report fails: a missing
-measurement is never a pass. `failed` counts and `ok` flags must not get worse.
+Pass several runs per side, taken alternately (base, head, base, head, ...) so
+runner drift lands on both. Each metric is the median of its runs. A cell's
+noise band is the spread of the base runs ((max - min) / median), never under
+--floor (10% by default). HEAD fails a cell only when it is worse than BASE
+by more than the band. A cell HEAD does not report fails: a missing
+measurement is never a pass. Throughput, `ok` and `rounds` are better higher;
+everything else (times, sizes, costs, `failed`, `failed_rounds`) is better lower.
 """
 import argparse
 import json
+import statistics
 import sys
 
-HIGHER_IS_BETTER = {"ops_per_s"}
-SKIP = {"rounds"}
+HIGHER_IS_BETTER = {"ops_per_s", "ok", "rounds"}
 
 
 def flatten(path):
@@ -27,39 +28,51 @@ def flatten(path):
         f"{cell} {metric}": float(value)
         for cell, metrics in cells.items()
         for metric, value in metrics.items()
-        if metric not in SKIP and isinstance(value, (int, float, bool))
+        if isinstance(value, (int, float, bool))
     }
+
+
+def collect(paths):
+    """Per metric, the value from every run that reports it."""
+    runs = {}
+    for path in paths:
+        for name, value in flatten(path).items():
+            runs.setdefault(name, []).append(value)
+    return runs
 
 
 def worse_by(metric, base, head):
     """How much worse HEAD is than BASE, as a fraction of BASE. Negative is better."""
+    higher = metric.split()[-1] in HIGHER_IS_BETTER
     if base == 0:
-        return 0.0 if head == 0 else float("inf")
-    change = (head - base) / base
-    return -change if metric.split()[-1] in HIGHER_IS_BETTER else change
+        if head == 0:
+            return 0.0
+        return float("-inf") if higher == (head > 0) else float("inf")
+    change = (head - base) / abs(base)
+    return -change if higher else change
 
 
 def compare(args):
-    base, head = flatten(args.base), flatten(args.head)
-    aa = flatten(args.aa) if args.aa else {}
+    base, head = collect(args.base), collect(args.head)
     rows, failed = [], False
     for name in sorted(base):
         metric = name.split()[-1]
+        runs = base[name]
+        reference = statistics.median(runs)
         if name not in head:
-            rows.append((name, base[name], None, None, None, "FAIL (missing)"))
+            rows.append((name, reference, None, None, None, "FAIL (missing)"))
             failed = True
             continue
-        reference, band = base[name], args.floor
-        if name in aa:
-            reference = (base[name] + aa[name]) / 2
-            if reference != 0:
-                band = max(band, abs(base[name] - aa[name]) / abs(reference))
-        worse = worse_by(metric, reference, head[name])
+        band = args.floor
+        if reference != 0:
+            band = max(band, (max(runs) - min(runs)) / abs(reference))
+        value = statistics.median(head[name])
+        worse = worse_by(metric, reference, value)
         verdict = "FAIL" if worse > band else "ok"
         failed |= verdict == "FAIL"
-        rows.append((name, reference, head[name], worse, band, verdict))
+        rows.append((name, reference, value, worse, band, verdict))
     lines = [
-        "| Cell and metric | Base (mean) | Head | Worse by | Noise band | |",
+        "| Cell and metric | Base (median) | Head (median) | Worse by | Noise band | |",
         "|---|---|---|---|---|---|",
     ]
     for name, b, h, worse, band, verdict in rows:
@@ -77,7 +90,8 @@ def compare(args):
 
 def table(args):
     lines = ["| Cell and metric | Value |", "|---|---|"]
-    lines += [f"| {name} | {value:.4g} |" for name, value in sorted(flatten(args.result).items())]
+    medians = {name: statistics.median(runs) for name, runs in collect(args.results).items()}
+    lines += [f"| {name} | {value:.4g} |" for name, value in sorted(medians.items())]
     print("\n".join(lines))
     return 0
 
@@ -86,14 +100,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     cmp_parser = sub.add_parser("compare")
-    cmp_parser.add_argument("base")
-    cmp_parser.add_argument("head")
-    cmp_parser.add_argument("--aa")
+    cmp_parser.add_argument("--base", nargs="+", required=True)
+    cmp_parser.add_argument("--head", nargs="+", required=True)
     cmp_parser.add_argument("--floor", type=float, default=0.10)
     cmp_parser.add_argument("--md")
     cmp_parser.set_defaults(run=compare)
     table_parser = sub.add_parser("table")
-    table_parser.add_argument("result")
+    table_parser.add_argument("results", nargs="+")
     table_parser.set_defaults(run=table)
     args = parser.parse_args()
     sys.exit(args.run(args))
