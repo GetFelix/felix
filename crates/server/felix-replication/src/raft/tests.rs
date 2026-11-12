@@ -308,7 +308,8 @@ async fn many_groups_elect_and_replicate() {
         for broker in BROKERS {
             let log = &cluster.logs[&(broker.to_string(), n)];
             assert!(log.tail_offset().await.expect("tail") > last, "{broker}");
-            assert!(log.durable_offset() > last, "{broker}");
+            // A follower can hear of the commit before its own flush ends.
+            eventually(|| (log.durable_offset() > last).then_some(())).await;
         }
     }
     cluster.stop().await;

@@ -76,6 +76,10 @@ impl RuntimeConfig {
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
+            // openraft keeps six ring buffers of this many slots per member
+            // for its `runtime-stats` feature, which is off: about 360 KB a
+            // member at the default 1,024.
+            log_stage_capacity: Some(1),
             ..Config::default()
         }
         .validate()

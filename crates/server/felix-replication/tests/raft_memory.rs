@@ -36,24 +36,103 @@ fn counter(size: usize) -> &'static AtomicUsize {
     }
 }
 
+/// `RAFT_MEMORY_TRACE=<bytes>`: also keep a backtrace for each live
+/// allocation of at least that size, and print where a member's bytes are.
+static TRACE_MIN: AtomicUsize = AtomicUsize::new(0);
+static TRACED: parking_lot::Mutex<Option<HashMap<usize, (usize, std::backtrace::Backtrace)>>> =
+    parking_lot::Mutex::new(None);
+thread_local! {
+    static TRACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn trace(change: impl FnOnce(&mut HashMap<usize, (usize, std::backtrace::Backtrace)>)) {
+    // Tracing allocates, which must not trace itself.
+    let _ = TRACING.try_with(|tracing| {
+        if !tracing.replace(true) {
+            if let Some(traced) = TRACED.lock().as_mut() {
+                change(traced);
+            }
+            tracing.set(false);
+        }
+    });
+}
+
+fn traced_alloc(ptr: *mut u8, size: usize) {
+    let min = TRACE_MIN.load(Ordering::Relaxed);
+    if min != 0 && size >= min && size < RESERVATION {
+        trace(|traced| {
+            traced.insert(
+                ptr as usize,
+                (size, std::backtrace::Backtrace::force_capture()),
+            );
+        });
+    }
+}
+
+fn traced_free(ptr: *mut u8) {
+    if TRACE_MIN.load(Ordering::Relaxed) != 0 {
+        trace(|traced| {
+            traced.remove(&(ptr as usize));
+        });
+    }
+}
+
+/// The live traced allocations by call site, largest first.
+fn print_trace(members: usize) {
+    let Some(traced) = TRACED.lock().take() else {
+        return;
+    };
+    TRACE_MIN.store(0, Ordering::Relaxed);
+    let mut sites: HashMap<String, (usize, usize, usize)> = HashMap::new();
+    for (size, backtrace) in traced.into_values() {
+        let text = backtrace.to_string();
+        // The frames above the allocator, without addresses or line noise.
+        let frames: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.trim().split_once(": "))
+            .map(|(_, frame)| frame)
+            .filter(|frame| !frame.contains("alloc") && !frame.contains("raft_memory::trace"))
+            .take(14)
+            .collect();
+        let site = sites.entry(frames.join("\n    ")).or_default();
+        site.0 += size;
+        site.1 += 1;
+        site.2 = site.2.max(size);
+    }
+    let mut sites: Vec<_> = sites.into_iter().collect();
+    sites.sort_by_key(|(_, (bytes, ..))| std::cmp::Reverse(*bytes));
+    for (site, (bytes, count, largest)) in sites.into_iter().take(25) {
+        println!(
+            "{} B a member in {count} allocations, the largest {largest} B:\n    {site}",
+            bytes / members
+        );
+    }
+}
+
 struct Counting;
 
 // SAFETY: every call goes to `System` unchanged; this only counts.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         counter(layout.size()).fetch_add(layout.size(), Ordering::Relaxed);
-        unsafe { System.alloc(layout) }
+        let ptr = unsafe { System.alloc(layout) };
+        traced_alloc(ptr, layout.size());
+        ptr
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         counter(layout.size()).fetch_sub(layout.size(), Ordering::Relaxed);
+        traced_free(ptr);
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         counter(new_size).fetch_add(new_size, Ordering::Relaxed);
         counter(layout.size()).fetch_sub(layout.size(), Ordering::Relaxed);
-        unsafe { System.realloc(ptr, layout, new_size) }
+        traced_free(ptr);
+        let ptr = unsafe { System.realloc(ptr, layout, new_size) };
+        traced_alloc(ptr, new_size);
+        ptr
     }
 }
 
@@ -66,6 +145,8 @@ const GROUPS: u32 = 40;
 /// about 157 KB a member with a third of them leading. The bound leaves room
 /// for a debug build. A member that costs more than this breaks the
 /// 5,000-member gate, and the design has to hear about it.
+/// It costs more today, in openraft's channels and statistics (#2335):
+/// see "The groups-per-broker gate" in the design.
 const MEMBER_BUDGET: usize = 256 * 1024;
 
 #[derive(Default)]
@@ -151,6 +232,13 @@ async fn an_idle_member_stays_within_the_designs_memory() {
     }
     let a_written_log = (LIVE.load(Ordering::Relaxed) - unwritten) / written.len();
 
+    if let Some(min) = std::env::var("RAFT_MEMORY_TRACE")
+        .ok()
+        .and_then(|min| min.parse().ok())
+    {
+        *TRACED.lock() = Some(HashMap::new());
+        TRACE_MIN.store(min, Ordering::Relaxed);
+    }
     let before = LIVE.load(Ordering::Relaxed);
     let reserved_before = RESERVED.load(Ordering::Relaxed);
 
@@ -230,6 +318,7 @@ async fn an_idle_member_stays_within_the_designs_memory() {
         a_written_log / 1024,
         reserved / 1024
     );
+    print_trace(members);
     assert!(
         each <= MEMBER_BUDGET,
         "a member costs {each} bytes, over the {MEMBER_BUDGET} budget"
