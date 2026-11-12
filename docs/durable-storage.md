@@ -1264,10 +1264,13 @@ restart of such a broker has kept nothing.
 The id names the data, not the node. A restart after a clean stop keeps it.
 A wipe gives a new one: anything that removes the file, whether a deleted or reformatted data
 directory, a replaced disk, or a fresh volume mounted at the same path, means
-the next start finds no file and writes a new id. Deleting a shard's
+the next start finds no file and writes a new id. Deleting, emptying or restoring a shard's
 directory and leaving the rest of the data directory in place keeps the id, so
-that loss is not detected; to give a broker an empty shard, empty its whole
-data directory. An upgrade from a build
+that loss is not detected. The broker still reports the copy as kept and
+trusted, so a promotion fence can count the empty copy and an acknowledged write
+can be lost (#2376). Never change one shard directory. To recover a broker's
+storage, stop the broker and replace or wipe its whole data directory. Version
+0.8 removes the hazard. An upgrade from a build
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felixctl data restore-point` also writes a
