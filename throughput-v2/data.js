@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794509449333,
+  "lastUpdate": 1794510086529,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53092,6 +53092,58 @@ window.BENCHMARK_DATA = {
             "range": "10731.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1193652.15\nmean: 1200196.68\nstdev: 10731.18\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "767a8a4e7f8a8a3725c399ce91a01973cd064c13",
+          "message": "fix(storage): the metadata store locks the data dir for a first start and keeps its lock with the log (#2355) (#2359)\n\nThe metadata store's lock holds up when clones of its log and snapshot store outlive it. Two first starts no longer share store.tmp. A shutdown closes the log and snapshot store for every clone, so a leftover clone cannot append, vote, give up a generation, purge or install a snapshot once the lock is free.\n\nCloses #2355\nPart of #2230\n\nSpec-Unaffected: the ballot writes only gain a refusal once the log is closed, which the model has no notion of; votes and generations behave the same while the log is open.",
+          "timestamp": "2026-11-12T10:57:19-08:00",
+          "tree_id": "e860dcad7fa003eab148ee7beb0e7a825da7753c",
+          "url": "https://github.com/GetFelix/felix/commit/767a8a4e7f8a8a3725c399ce91a01973cd064c13"
+        },
+        "date": 1794510085934,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 511792.37,
+            "range": "24821.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511792.37\nmean: 496087.76\nstdev: 24821.93\ncv: 5.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 511792.37,
+            "range": "24821.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511792.37\nmean: 496087.76\nstdev: 24821.93\ncv: 5.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117730.76,
+            "range": "2187.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117730.76\nmean: 117403.18\nstdev: 2187.95\ncv: 1.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1177307.65,
+            "range": "21879.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1177307.65\nmean: 1174031.80\nstdev: 21879.49\ncv: 1.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
