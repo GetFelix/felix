@@ -621,7 +621,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementMoveWipe.cfg` | the move in one term with one lost directory and the moved copy deleted under the rule | pass the same (1.1M distinct states) |
 | `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered; run through the dispatch |
 | `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (257K distinct states) |
-| `FelixRaftPlacementStaleFull.cfg` | the same with two terms | not registered: unfinished after eight minutes on a laptop; run through the dispatch |
+| `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (12.6M distinct states, 49 minutes on a CI runner) |
 | `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
 | `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
 | `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
@@ -636,6 +636,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementReachReseat.cfg` | witness: a rotated copy is swapped in for its old id | violate `NeverReseats` |
 | `FelixRaftPlacementReachWipedLeads.cfg` | witness: a wiped broker leads again under its new copy id | violate `NeverWipedLeads` |
 | `FelixRaftPlacementReachVotesAgain.cfg` | witness: a member that kept its id through a wipe votes again | violate `NeverVotesAgain` |
+| `FelixRaftPlacementReachForm.cfg` | witness for a first boot: three brokers with empty directories elect a leader and acknowledge a write. The membership is given at the start; forming a group from the peers' answers is not modelled (#2371) | violate `NeverForms` |
 | `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
 | `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |

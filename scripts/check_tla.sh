@@ -556,6 +556,7 @@ expectations=(
   "FelixRaftPlacementShrink pass"
   "FelixRaftPlacementMoveWipe pass"
   "FelixRaftPlacementStale pass"
+  "FelixRaftPlacementStaleFull pass"
   "FelixRaftPlacementSameId pass"
   "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
@@ -570,6 +571,7 @@ expectations=(
   "FelixRaftPlacementReachReseat violates NeverReseats"
   "FelixRaftPlacementReachWipedLeads violates NeverWipedLeads"
   "FelixRaftPlacementReachVotesAgain violates NeverVotesAgain"
+  "FelixRaftPlacementReachForm violates NeverForms"
   "FelixRaftSwitch pass"
   "FelixRaftSwitchLag pass"
   "FelixRaftSwitchLagWipe pass"
@@ -989,9 +991,11 @@ weights=(
   "FelixRaftMembershipFailover 8"
   "FelixRaftIdentityDirRestore 2"
   "FelixRaftIdentityWipeThenRestore 2"
-  "FelixRaftPlacementFailover 6"
+  "FelixRaftPlacementFailover 10"
+  "FelixRaftPlacementReseat 2"
   "FelixRaftPlacementMoveWipe 3"
-  "FelixRaftPlacementSameId 3"
+  "FelixRaftPlacementStaleFull 49"
+  "FelixRaftPlacementSameId 2"
   "FelixRaftPlacementSameIdFive 20"
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
@@ -1086,7 +1090,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Reform Lease Sleep Switch"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"

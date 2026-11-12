@@ -566,6 +566,10 @@ DeliveredAgree ==
 
 IsMember(e) == e.kind = "member"
 
+\* A first boot: brokers with empty directories elect a leader and
+\* acknowledge a write.
+NeverForms == Acked = {}
+
 \* The committed memberships that are not joint.
 FinalCfgs == {committed[k].e.cfg : k \in {n \in CommittedCfgs : ~Joint(committed[n].e.cfg)}}
 
