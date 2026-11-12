@@ -191,7 +191,14 @@ impl DiskLog {
         config: LogConfig,
     ) -> Result<Self> {
         let files = SealedFiles::new(config.max_open_sealed_segments);
-        Self::open_shared(dir.into(), label.into(), config, None, files)
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            None,
+            files,
+            OtherCommit::Drop,
+        )
     }
 
     /// Open a shard log, creating it to begin at `base_offset` if it does not
@@ -213,7 +220,35 @@ impl DiskLog {
         base_offset: Offset,
     ) -> Result<Self> {
         let files = SealedFiles::new(config.max_open_sealed_segments);
-        Self::open_shared(dir.into(), label.into(), config, Some(base_offset), files)
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            Some(base_offset),
+            files,
+            OtherCommit::Drop,
+        )
+    }
+
+    /// [`Self::open`] for a Raft log that must not start on a committed id
+    /// saved for some other log. When the index it names holds an entry of
+    /// another term, `open` takes nothing as committed; this fails, with
+    /// the saved id left as it was.
+    #[cfg(feature = "raft")]
+    pub(crate) fn open_refusing_other_commit(
+        dir: impl Into<PathBuf>,
+        label: impl Into<String>,
+        config: LogConfig,
+    ) -> Result<Self> {
+        let files = SealedFiles::new(config.max_open_sealed_segments);
+        Self::open_shared(
+            dir.into(),
+            label.into(),
+            config,
+            None,
+            files,
+            OtherCommit::Refuse,
+        )
     }
 
     pub fn label(&self) -> &str {
@@ -984,6 +1019,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Option<Offset>,
         files: Arc<SealedFiles>,
+        #[cfg_attr(not(feature = "raft"), allow(unused_variables))] other_commit: OtherCommit,
     ) -> Result<Self> {
         config.validate()?;
 
@@ -1056,6 +1092,22 @@ impl DiskLog {
         #[cfg(feature = "raft")]
         if config.raft_log {
             let found = committed_generation_here(&segments, &replica, past_the_log, &label)?;
+            if found.is_none()
+                && other_commit == OtherCommit::Refuse
+                && another_entry_is_there(&segments, &replica, past_the_log, &label)?
+            {
+                // Before the replica state is rewritten below, so the next
+                // open finds the same thing.
+                return Err(StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "{label}: index {} was saved as committed at generation {}, but the \
+                         entry there is another one; this log is not the one that id was saved for",
+                        replica.commit_offset.saturating_sub(1),
+                        replica.committed_generation
+                    ),
+                )));
+            }
             if found.is_none() {
                 tracing::warn!(
                     shard = %label,
@@ -1339,6 +1391,17 @@ impl DiskLog {
     }
 }
 
+/// What an open does with a Raft log whose saved committed id names an
+/// index that holds some other entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OtherCommit {
+    /// Nothing in the log is taken as committed.
+    Drop,
+    /// The open fails, with the saved id left as it was.
+    #[cfg(feature = "raft")]
+    Refuse,
+}
+
 /// The generation of the record below a Raft log's saved commit offset, or
 /// `None` when that record is some other entry than the one that was
 /// committed: its generation is not the one saved with the offset.
@@ -1366,6 +1429,31 @@ fn committed_generation_here(
     };
     let same_entry = found == saved || (lowered && found < saved);
     Ok((saved != 0 && same_entry).then_some(found))
+}
+
+/// Whether the record below the saved commit offset is there, with a known
+/// generation that is not the saved one's. A record that cannot be read
+/// that way is not proof of another log's entry.
+#[cfg(feature = "raft")]
+fn another_entry_is_there(
+    segments: &SegmentSet,
+    replica: &replica_state::ReplicaState,
+    lowered: bool,
+    label: &str,
+) -> Result<bool> {
+    let saved = replica.committed_generation;
+    let Some(last) = replica.commit_offset.checked_sub(1) else {
+        return Ok(false);
+    };
+    if saved == 0 || last < segments.base_offset() {
+        return Ok(false);
+    }
+    Ok(match segments.read_plan(last).generation_at(last, label)? {
+        Some(Some(found)) if found != crate::log::UNKNOWN_WRITER => {
+            found > saved || (!lowered && found != saved)
+        }
+        _ => false,
+    })
 }
 
 #[cfg(feature = "raft")]

@@ -19,7 +19,11 @@ use super::machine::Machine;
 use super::{Codec, Types, open};
 use crate::raft_log::{LogReader, RaftLog};
 
-struct Store(RaftLog<Types, Codec>);
+/// The second field, when set, is stored before each purge.
+pub(crate) struct Store(
+    pub(crate) RaftLog<Types, Codec>,
+    pub(crate) Option<super::machine::Unstored>,
+);
 
 impl RaftLogReader<Types> for Store {
     async fn try_get_log_entries<RB>(&mut self, range: RB) -> io::Result<Vec<super::TestEntry>>
@@ -78,6 +82,9 @@ impl RaftLogStorage<Types> for Store {
     }
 
     async fn purge(&mut self, log_id: LogIdOf<Types>) -> io::Result<()> {
+        if let Some(unstored) = &self.1 {
+            unstored.store().await?;
+        }
         self.0.purge(log_id).await
     }
 }
@@ -89,7 +96,7 @@ impl StoreBuilder<Types, Store, Machine, TempDir> for Builder {
         let dir = tempfile::tempdir().expect("dir");
         let raft = open(&dir);
         let machine = Machine::open(dir.path());
-        Ok((dir, Store(raft), machine))
+        Ok((dir, Store(raft, None), machine))
     }
 }
 

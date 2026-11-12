@@ -132,11 +132,25 @@ impl SimOutcome {
         } else {
             ""
         };
-        let power = if self.config.power_loss {
-            "FELIX_SIM_POWER_LOSS=1 "
-        } else {
-            ""
+        let relaxed = self.config.fsync_mode != felix_storage::log::FsyncMode::OnCommit;
+        let power = match (self.config.power_loss, relaxed) {
+            (false, _) => "",
+            (true, false) => "FELIX_SIM_POWER_LOSS=1 ",
+            (true, true) => "FELIX_SIM_POWER_LOSS=relaxed ",
         };
+        let power = format!(
+            "{power}{}{}",
+            if self.config.majority_cut {
+                "FELIX_SIM_MAJORITY_CUT=1 "
+            } else {
+                ""
+            },
+            if self.config.wipes {
+                "FELIX_SIM_WIPE=1 "
+            } else {
+                ""
+            }
+        );
         match self.config.clocks {
             ClockSkew::Off => format!(
                 "{placement}{power}FELIX_SIM_SEED={} task sim:replay",
@@ -330,6 +344,17 @@ async fn drive(
             Plan::generate(seed, config.brokers, config.fault_window, config.power_loss)
                 .with_placement(seed, config.brokers, config.fault_window)
         }
+    };
+    let plan = if config.majority_cut || config.wipes {
+        plan.with_disk_faults(
+            seed,
+            config.brokers,
+            config.fault_window,
+            config.majority_cut,
+            config.wipes,
+        )
+    } else {
+        plan
     };
     if config.faults {
         for step in &plan.steps {

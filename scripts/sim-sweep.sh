@@ -7,8 +7,11 @@
 # with FELIX_SIM_SEED set, so its outcome lands in <out>/seed-<n>.log.
 #
 # FELIX_SIM_MODE picks the nemeses beyond the default faults: `off` (default),
-# `clocks` (bounded clock skew), `placement` (placement faults) or
-# `power-loss` (power cuts in place of kills).
+# `clocks` (bounded clock skew), `placement` (placement faults),
+# `power-loss` (power cuts in place of kills), `relaxed-power-loss` (the same
+# on brokers that do not sync), `majority-cut` and `majority-cut-relaxed`
+# (several brokers lose power at once) or `wipe` (shard directories and data
+# directories emptied).
 #
 # A failing seed is sorted by what its log says:
 #
@@ -50,7 +53,11 @@ case "$mode" in
   clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
   placement) mode_env=(FELIX_SIM_PLACEMENT=1); mode_prefix="FELIX_SIM_PLACEMENT=1 " ;;
   power-loss) mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
-  *) echo "FELIX_SIM_MODE must be off, clocks, placement or power-loss, got $mode" >&2; exit 2 ;;
+  relaxed-power-loss) mode_env=(FELIX_SIM_POWER_LOSS=relaxed); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed " ;;
+  majority-cut) mode_env=(FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_MAJORITY_CUT=1 " ;;
+  majority-cut-relaxed) mode_env=(FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1 " ;;
+  wipe) mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
+  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed or wipe, got $mode" >&2; exit 2 ;;
 esac
 
 bin=${FELIX_SIM_BIN:-}

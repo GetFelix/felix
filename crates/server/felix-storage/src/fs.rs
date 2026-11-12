@@ -55,6 +55,21 @@ pub(crate) fn from_os(file: std::fs::File) -> File {
 #[inline]
 pub(crate) fn note_torn_tail(_segment: &Path) {}
 
+/// Whether `path` is on the simulator's filesystem, where a file has no
+/// descriptor to lock. Never, without the `sim` feature.
+#[cfg(feature = "raft")]
+pub(crate) fn in_memory(path: &Path) -> bool {
+    #[cfg(feature = "sim")]
+    {
+        mem::in_memory(path)
+    }
+    #[cfg(not(feature = "sim"))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// Whether `path` exists. Any error counts as no, as with `Path::exists`.
 pub(crate) fn exists(path: impl AsRef<Path>) -> bool {
     metadata(path).is_ok()

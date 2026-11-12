@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, Endpoint, Fault, StreamSpec};
 use felix_common::fleet;
-use felix_controlplane_service::store::ControlPlaneStore;
-use felix_controlplane_service::store::memory::InMemoryStore;
+use felix_controlplane_service::store::ControlPlaneAuthStore;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -120,8 +119,8 @@ async fn start_with(
     cluster
 }
 
-fn store(cluster: &Cluster) -> &InMemoryStore {
-    &cluster
+fn store(cluster: &Cluster) -> &(dyn ControlPlaneAuthStore + Send + Sync) {
+    &*cluster
         .control_plane
         .as_ref()
         .expect("control plane running")

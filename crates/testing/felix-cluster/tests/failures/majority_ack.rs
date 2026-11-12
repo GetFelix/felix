@@ -8,7 +8,6 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, Endpoint, Fault, StreamSpec};
-use felix_controlplane_service::store::ControlPlaneStore;
 use serial_test::serial;
 
 const STREAM: &str = "orders";

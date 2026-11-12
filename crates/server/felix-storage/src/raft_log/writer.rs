@@ -15,7 +15,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 
 use super::codec::record_from_entry;
 use super::flush_queue::FlushQueue;
-use super::purged::{self, Purged};
+use super::purged::Purged;
 use super::{
     EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
     term_of_generation,
@@ -170,22 +170,31 @@ where
         }
         let first = earlier.first().map_or(batch.first, |batch| batch.first);
 
-        let tail = log.tail_now();
-        let purged = *shared.purged.lock();
-        // No entry above the purged id: the log restarts where this append
-        // begins. That is right after the purged id when there is one, and
-        // anywhere when nothing was ever purged.
-        if tail <= shared.first_index() {
-            if purged.is_some_and(|purged| purged.index + 1 != first) {
-                return Err(invalid(format!(
-                    "{}: an append at index {first} does not follow the purged id",
-                    log.label()
-                )));
+        let tail = match shared.hides() {
+            Some(snapshots) => {
+                shared.admit(snapshots, first).await?;
+                log.tail_now()
             }
-            if first > tail {
-                log.reset_to(first).await.map_err(io_error)?;
+            None => {
+                let tail = log.tail_now();
+                let purged = shared.bounds.lock().on_disk;
+                // No entry above the purged id: the log restarts where this
+                // append begins. That is right after the purged id when
+                // there is one, and anywhere when nothing was ever purged.
+                if tail <= shared.first_index() {
+                    if purged.is_some_and(|purged| purged.index + 1 != first) {
+                        return Err(invalid(format!(
+                            "{}: an append at index {first} does not follow the purged id",
+                            log.label()
+                        )));
+                    }
+                    if first > tail {
+                        log.reset_to(first).await.map_err(io_error)?;
+                    }
+                }
+                tail
             }
-        }
+        };
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut last = None;
@@ -297,8 +306,10 @@ where
     /// machine is ahead of the log.
     ///
     /// Refused when the log holds another term's entry at that index, and,
-    /// under [`RaftLog::purge_within`], past the stored snapshot. An id at
-    /// or below the purged id does nothing.
+    /// under [`RaftLog::purge_within`], past the stored snapshot. Under
+    /// [`RaftLog::purge_hides_past`] an id past the stored snapshot is
+    /// removed up to the snapshot and hidden from there. An id at or below
+    /// the purged id removes nothing new.
     async fn purge(&mut self, log_id: LogIdOf<C>) -> io::Result<()> {
         let shared = &self.shared;
         let log = &shared.log;
@@ -307,15 +318,23 @@ where
         shared.flushes.drained().await;
         let index = log_id.index();
         let term = **log_id.committed_leader_id();
+        let purged = Purged {
+            index,
+            generation: generation_of(term)?,
+        };
+        if let Some(snapshots) = shared.hides() {
+            return shared.purge_hiding(snapshots, purged).await;
+        }
         if shared
-            .purged
+            .bounds
             .lock()
-            .is_some_and(|purged| index <= purged.index)
+            .on_disk
+            .is_some_and(|on_disk| index <= on_disk.index)
         {
             return Ok(());
         }
-        if let Some(snapshots) = shared.covering.get() {
-            let covered = snapshots.covers().map(|last| last.index);
+        if let Some(covering) = shared.covering.get() {
+            let covered = covering.snapshots.covers().map(|last| last.index);
             if covered.is_none_or(|covered| covered < index) {
                 return Err(invalid(format!(
                     "{}: asked to purge through index {index}, past the stored snapshot, which covers {covered:?}",
@@ -323,33 +342,26 @@ where
                 )));
             }
         }
-        let tail = log.tail_now();
-        if index >= shared.first_index() && index < tail {
-            let held = term_at(log.writer_at(index).await.map_err(io_error)?, index)?;
-            if held != term {
-                return Err(invalid(format!(
-                    "{}: asked to purge through index {index} of term {term}, but the entry there is of term {held}",
-                    log.label()
-                )));
-            }
-        }
+        shared.check_held(purged).await?;
+        shared.remove_through(purged).await
+    }
+}
 
-        let purged = Purged {
-            index,
-            generation: generation_of(term)?,
-        };
-        let dir = log.dir().to_path_buf();
-        felix_common::blocking::spawn(move || purged::store(&dir, &purged))
-            .await
-            .map_err(io::Error::other)??;
-        *shared.purged.lock() = Some(purged);
-
-        let first: Offset = index + 1;
-        if first >= tail {
-            log.reset_to(first).await.map_err(io_error)
-        } else {
-            log.trim_before(first).await.map(drop).map_err(io_error)
-        }
+impl<C, K> RaftLog<C, K>
+where
+    C: LogTypes,
+    CommittedLeaderIdOf<C>: From<u64> + Deref<Target = u64>,
+    K: EntryCodec<C>,
+{
+    /// Whether the log holds nothing a member could have voted from: no
+    /// vote, no record and no purged id. A member that never voted leaves
+    /// this, and so does a log directory that was emptied.
+    pub async fn is_blank(&self) -> io::Result<bool> {
+        let log = &self.shared.log;
+        let tail = log.tail_offset().await.map_err(io_error)?;
+        Ok(matches!(log.accepted_vote(), (0, None, _))
+            && self.shared.bounds.lock().on_disk.is_none()
+            && tail == log.base_offset())
     }
 }
 

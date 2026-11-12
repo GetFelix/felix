@@ -3,20 +3,24 @@
 //!
 //! A member's data directory holds `store/`: the Raft log in `store/log/`,
 //! the snapshot in `store/raft-snapshot` ([`SnapshotStore`], shared with
-//! every other Raft group) and the member file in `store/member`
-//! ([`MemberFile`]). A directory an older release wrote holds `raft.redb`
-//! instead. The design is in `docs/metadata-raft-design.md`, "Moving to the
+//! every other Raft group), the member file in `store/member`
+//! ([`MemberFile`]) and the lock file `store/lock`. [`MetadataStore::open`]
+//! is the one way to open them together. A directory an older release wrote
+//! holds `raft.redb` instead. The design is in `docs/metadata-raft-design.md`, "Moving to the
 //! segment store"; the byte formats are in `docs/storage-format.md`.
 //!
 //! [`decide_start`] reads names and the member file only. It never opens
 //! `raft.redb` and never writes, so a refusal leaves the directory as it
 //! was found.
 
+mod lock;
 mod member;
+mod store;
 #[cfg(test)]
 mod tests;
 
 pub use member::{Member, MemberFile, Started};
+pub use store::MetadataStore;
 
 use std::io;
 use std::path::Path;
@@ -42,9 +46,15 @@ pub enum Start {
     /// vote withheld.
     New,
     /// A whole store: its member file, which decoded, and its log
-    /// directory, where the vote lives. With [`Member::started`] set the
-    /// member may have voted, and its log is what it voted from. A store
-    /// whose log directory is gone is refused, never reported here.
+    /// directory, where the vote lives. A store whose log directory is
+    /// gone is refused, never reported here.
+    ///
+    /// With [`Member::started`] set the member may have voted. This does
+    /// not say its log still holds that vote: only the directory's name is
+    /// checked. A crash right after the mark, or a log directory that was
+    /// emptied, leaves a started member with a blank log.
+    /// [`MetadataStore::open`] finds that and withholds the vote or reports
+    /// it.
     Existing(Member),
 }
 
