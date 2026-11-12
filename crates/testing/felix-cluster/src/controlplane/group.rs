@@ -19,13 +19,16 @@ use anyhow::{Context, Result, bail};
 use felix_controlplane_service::api::types::{FeatureFlags, Region};
 use felix_controlplane_service::api::{AppState, build_router};
 use felix_controlplane_service::config::NodeLivenessConfig;
+use felix_controlplane_service::model::Tenant;
 use felix_controlplane_service::raft::{
     AppStateMachine, LeadershipGate, NodeId, PeerSecurity, RaftHandle, RaftSettings,
 };
 use felix_controlplane_service::store::memory::InMemoryStore;
 use felix_controlplane_service::store::raft::RaftStore;
 use felix_controlplane_service::store::raft::state_machine::MetadataStateMachine;
-use felix_controlplane_service::store::{ControlPlaneAuthStore, ControlPlaneStore, StoreConfig};
+use felix_controlplane_service::store::{
+    ControlPlaneAuthStore, ControlPlaneStore, StoreConfig, StoreError,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::ports;
@@ -34,8 +37,8 @@ use crate::ports;
 pub(crate) const MEMBERS: usize = 3;
 
 /// The live members, by member: API address, the token that cuts its
-/// connections, and its store.
-type Live = Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken, Arc<RaftStore>)>>>>;
+/// connections, its store and its Raft handle.
+type Live = Arc<Mutex<Vec<Option<(SocketAddr, CancellationToken, Arc<RaftStore>, RaftHandle)>>>>;
 
 /// A forwarded address that can be cut: while closed it takes no traffic,
 /// and closing it drops the connections already through.
@@ -142,6 +145,9 @@ pub(crate) struct Group {
     forwarders: Vec<tokio::task::JoinHandle<()>>,
     /// Which member is isolated, if one is.
     isolated: Mutex<Option<usize>>,
+    /// Tenants the group acknowledged to the harness. Every member must
+    /// still hold each of them once the group has converged.
+    acked: Mutex<Vec<String>>,
 }
 
 impl Group {
@@ -198,7 +204,7 @@ impl Group {
                 .expect("live lock")
                 .iter()
                 .flatten()
-                .map(|(addr, cut, _)| (*addr, cut.clone()))
+                .map(|(addr, cut, _, _)| (*addr, cut.clone()))
                 .collect();
             if !live.is_empty() {
                 let turn = rotation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -227,6 +233,7 @@ impl Group {
             live,
             forwarders,
             isolated: Mutex::new(None),
+            acked: Mutex::new(Vec::new()),
         };
         {
             let mut members = group.members.lock().await;
@@ -255,17 +262,28 @@ impl Group {
             .map(|r| Arc::clone(&r.store))
     }
 
-    /// The store of a running member, for the harness's own reads and writes.
-    /// It changes as members are killed and restarted, so a caller asks again
+    /// The store of a running member, for the harness's own reads and writes:
+    /// the leader's when one is up, because a follower's copy can lag. It
+    /// changes as members are killed and restarted, so a caller asks again
     /// each time rather than holding one.
     pub(super) fn live_store(&self) -> Option<Arc<RaftStore>> {
-        self.live
-            .lock()
-            .expect("live lock")
-            .iter()
-            .flatten()
-            .next()
-            .map(|(_, _, store)| Arc::clone(store))
+        // A cut-off member still believes it leads until it notices, and its
+        // reads are stale and its writes cannot commit.
+        let isolated = *self.isolated.lock().expect("isolated lock");
+        let live = self.live.lock().expect("live lock");
+        let running = || {
+            live.iter()
+                .enumerate()
+                .filter(|(index, _)| Some(*index) != isolated)
+                .filter_map(|(_, member)| member.as_ref())
+        };
+        running()
+            .find(|(_, _, _, handle)| {
+                let status = handle.status();
+                status.leader == Some(status.id)
+            })
+            .or_else(|| running().next())
+            .map(|(_, _, store, _)| Arc::clone(store))
     }
 
     /// Start member `index` on its directory: a new member on an empty one,
@@ -375,6 +393,7 @@ impl Group {
             members[index].api,
             started.stop.clone(),
             Arc::clone(&started.store),
+            started.handle.clone(),
         ));
         members[index].running = Some(started);
         Ok(())
@@ -429,8 +448,10 @@ impl Group {
             .position(|m| m.id == leader && m.running.is_some())
     }
 
-    /// Stop member `index` the way a crash does: connections cut, loops
-    /// stopped, state left on its directory.
+    /// Stop member `index`: connections cut, loops stopped, the Raft handle
+    /// shut down, state left on its directory. The member goes through a
+    /// graceful shutdown, not a crash, because it runs in this process and
+    /// cannot be killed without taking the harness with it.
     pub(crate) async fn kill(&self, index: usize) -> Result<()> {
         let mut members = self.members.lock().await;
         let running = members[index]
@@ -495,9 +516,50 @@ impl Group {
         }
     }
 
-    /// Bring every member back and wait until they agree: one leader and the
-    /// same shard assignments. Applied indexes are not compared, because
-    /// replica reports keep landing. Members that never agree are a metadata bug.
+    /// Remember `id` as acknowledged without writing it, to test that the
+    /// check for lost writes notices.
+    #[cfg(test)]
+    pub(super) fn claim_acknowledged(&self, id: &str) {
+        self.acked.lock().expect("acked lock").push(id.to_string());
+    }
+
+    /// Write a new tenant through the group and remember it once the group
+    /// acknowledges it. Retries while a leader is being elected, for up to 30s.
+    pub(crate) async fn acknowledge_write(&self) -> Result<()> {
+        let id = format!("ack-{}", self.acked.lock().expect("acked lock").len());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(store) = self.live_store() {
+                let write = store.create_tenant(Tenant {
+                    tenant_id: id.clone(),
+                    display_name: id.clone(),
+                });
+                match tokio::time::timeout(Duration::from_secs(5), write).await {
+                    Ok(Ok(_)) => {
+                        self.acked.lock().expect("acked lock").push(id);
+                        return Ok(());
+                    }
+                    // A retry after a timeout may find the first attempt landed.
+                    Ok(Err(StoreError::Conflict(_))) => {
+                        self.acked.lock().expect("acked lock").push(id);
+                        return Ok(());
+                    }
+                    Ok(Err(_)) | Err(_) => {}
+                }
+            }
+            if Instant::now() > deadline {
+                bail!("the metadata group acknowledged no write within 30s");
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Bring every member back and wait until they agree: one leader, every
+    /// acknowledged write present, and the same metadata state. Members at
+    /// the same applied index must hold identical state; members at different
+    /// indexes (replica reports keep landing) must agree on everything the
+    /// reports and heartbeats do not touch. Members that never agree are a
+    /// metadata bug.
     pub(crate) async fn converge(&self, within: Duration) -> Result<()> {
         self.heal_partition();
         for index in 0..MEMBERS {
@@ -517,55 +579,63 @@ impl Group {
         }
     }
 
-    /// Each member's applied index and assignments, and the first way they
-    /// differ.
+    /// Each member's applied index and state, and the first way they differ
+    /// or lack an acknowledged write.
     async fn views(&self) -> Result<(String, Option<String>)> {
         let members = self.members.lock().await;
-        let mut seen: Vec<(NodeId, Option<u64>, Vec<String>)> = Vec::new();
+        let mut seen: Vec<View> = Vec::new();
         for member in members.iter() {
             let running = member.running.as_ref().context("a member is down")?;
-            let assignments = running
-                .store
-                .list_shard_assignments()
-                .await
-                .context("list assignments")?;
-            let mut lines: Vec<String> = assignments
-                .iter()
-                .map(|a| {
-                    format!(
-                        "{}/{}/{}#{}={}@{}",
-                        a.key.tenant_id,
-                        a.key.stream,
-                        a.key.shard,
-                        a.generation,
-                        a.leader,
-                        a.replicas.join(",")
-                    )
-                })
-                .collect();
-            lines.sort();
-            seen.push((member.id, running.handle.status().last_applied_index, lines));
+            // The index before and after: a state read while it moved is not
+            // a state at either.
+            let before = running.handle.status().last_applied_index;
+            let state = State::read(&running.store).await?;
+            let after = running.handle.status().last_applied_index;
+            seen.push(View {
+                id: member.id,
+                applied: (before == after).then_some(before).flatten(),
+                state,
+            });
         }
         let summary = seen
             .iter()
-            .map(|(id, applied, lines)| {
+            .map(|v| {
                 format!(
-                    "member {id}: applied {applied:?}, {} assignments",
-                    lines.len()
+                    "member {}: applied {:?}, {} stable and {} volatile entries",
+                    v.id,
+                    v.applied,
+                    v.state.stable.len(),
+                    v.state.volatile.len()
                 )
             })
             .collect::<Vec<_>>()
             .join("; ");
+        let acked = self.acked.lock().expect("acked lock").clone();
+        for view in &seen {
+            if let Some(lost) = acked.iter().find(|id| !view.state.tenants.contains(*id)) {
+                return Ok((
+                    summary,
+                    Some(format!(
+                        "member {} lost the acknowledged write {lost}",
+                        view.id
+                    )),
+                ));
+            }
+        }
         let first = &seen[0];
         let mismatch = seen.iter().skip(1).find_map(|other| {
-            if other.2 != first.2 {
-                Some(format!(
-                    "assignments differ between member {} and {}",
-                    first.0, other.0
-                ))
+            let same_index = first.applied.is_some() && first.applied == other.applied;
+            let (what, differ) = if same_index {
+                ("state", first.state != other.state)
             } else {
-                None
-            }
+                ("stable state", first.state.stable != other.state.stable)
+            };
+            differ.then(|| {
+                format!(
+                    "{what} differs between member {} and {} (applied {:?} and {:?})",
+                    first.id, other.id, first.applied, other.applied
+                )
+            })
         });
         Ok((summary, mismatch))
     }
@@ -585,6 +655,91 @@ impl Group {
         for task in &self.forwarders {
             task.abort();
         }
+    }
+}
+
+struct View {
+    id: NodeId,
+    /// The applied index the state was read at, when it held still while
+    /// being read.
+    applied: Option<u64>,
+    state: State,
+}
+
+/// What a member holds, as sorted lines.
+#[derive(PartialEq)]
+struct State {
+    tenants: Vec<String>,
+    /// Tenants, namespaces, streams, caches, shard assignments and the nodes'
+    /// specs: nothing a heartbeat or a replica report rewrites.
+    stable: Vec<String>,
+    /// Node status and replica reports, which change while the group runs.
+    volatile: Vec<String>,
+}
+
+impl State {
+    async fn read(store: &RaftStore) -> Result<Self> {
+        fn line(kind: &str, item: &impl serde::Serialize) -> String {
+            format!(
+                "{kind} {}",
+                serde_json::to_string(item).expect("metadata encodes")
+            )
+        }
+        let mut tenants = Vec::new();
+        let mut stable = Vec::new();
+        let mut volatile = Vec::new();
+        for tenant in store.list_tenants().await.context("list tenants")? {
+            tenants.push(tenant.tenant_id.clone());
+            stable.push(line("tenant", &tenant));
+            for namespace in store
+                .list_namespaces(&tenant.tenant_id)
+                .await
+                .context("list namespaces")?
+            {
+                stable.push(line("namespace", &namespace));
+                let (tenant_id, name) = (&tenant.tenant_id, &namespace.namespace);
+                for stream in store
+                    .list_streams(tenant_id, name)
+                    .await
+                    .context("list streams")?
+                {
+                    stable.push(line("stream", &stream));
+                }
+                for cache in store
+                    .list_caches(tenant_id, name)
+                    .await
+                    .context("list caches")?
+                {
+                    stable.push(line("cache", &cache));
+                }
+            }
+        }
+        for node in store.list_nodes().await.context("list nodes")? {
+            stable.push(line("node", &(&node.node_id, &node.spec)));
+            volatile.push(line("node-status", &(&node.node_id, &node.status)));
+        }
+        for assignment in store
+            .list_shard_assignments()
+            .await
+            .context("list assignments")?
+        {
+            stable.push(line("assignment", &assignment));
+        }
+        for report in store
+            .list_replica_reports()
+            .await
+            .context("list replica reports")?
+        {
+            volatile.push(line("report", &report));
+        }
+        tenants.sort();
+        stable.sort();
+        volatile.sort();
+        Ok(Self {
+            tenants,
+            stable,
+            volatile,
+        })
     }
 }
 

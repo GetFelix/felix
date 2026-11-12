@@ -396,7 +396,7 @@ impl ControlPlane {
     /// whatever the store holds when the request arrives.
     pub async fn seed_tenant(&self, tenant_id: &str) -> Result<()> {
         match self
-            .store
+            .live_store()
             .create_tenant(felix_controlplane_service::model::Tenant {
                 tenant_id: tenant_id.to_string(),
                 display_name: tenant_id.to_string(),
@@ -477,12 +477,12 @@ impl ControlPlane {
     /// replica holding the log from one that does not, and refuses to guess.
     pub async fn unreported_shards(&self) -> Result<Vec<String>> {
         let assignments = self
-            .store
+            .live_store()
             .list_shard_assignments()
             .await
             .context("list shard assignments")?;
         let reports: std::collections::HashMap<_, _> = self
-            .store
+            .live_store()
             .list_replica_reports()
             .await
             .context("list replica reports")?
@@ -527,7 +527,7 @@ impl ControlPlane {
                 && key.shard == shard
         };
         let Some(assignment) = self
-            .store
+            .live_store()
             .list_shard_assignments()
             .await
             .context("list shard assignments")?
@@ -587,7 +587,7 @@ impl ControlPlane {
         shard: u32,
     ) -> Result<Option<felix_controlplane_service::model::ReplicaReport>> {
         Ok(self
-            .store
+            .live_store()
             .list_replica_reports()
             .await
             .context("list replica reports")?

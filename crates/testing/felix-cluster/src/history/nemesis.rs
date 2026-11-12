@@ -485,10 +485,22 @@ impl Fault {
             Fault::ControlPlaneCrash { during } => {
                 compound::crash_control_plane(cluster, during).await
             }
-            Fault::MetadataKill { member } => metadata_group(cluster)?.kill(*member).await,
-            Fault::MetadataKillLeader => metadata_group(cluster)?.kill_leader().await.map(drop),
+            // Each fault is followed by a write the degraded group must
+            // acknowledge and still hold after the heal.
+            Fault::MetadataKill { member } => {
+                let group = metadata_group(cluster)?;
+                group.kill(*member).await?;
+                group.acknowledge_write().await
+            }
+            Fault::MetadataKillLeader => {
+                let group = metadata_group(cluster)?;
+                group.kill_leader().await?;
+                group.acknowledge_write().await
+            }
             Fault::MetadataPartitionLeader => {
-                metadata_group(cluster)?.isolate_leader().await.map(drop)
+                let group = metadata_group(cluster)?;
+                group.isolate_leader().await?;
+                group.acknowledge_write().await
             }
             Fault::ElectWithoutControlPlane { node, .. } => {
                 cluster.crash_control_plane().await?;

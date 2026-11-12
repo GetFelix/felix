@@ -313,7 +313,7 @@ impl Cluster {
     pub async fn moving_shards(&self) -> Result<Vec<String>> {
         let assignments = self
             .control_plane()
-            .store
+            .live_store()
             .list_shard_assignments()
             .await
             .map_err(|err| anyhow!("list shard assignments: {err}"))?;
