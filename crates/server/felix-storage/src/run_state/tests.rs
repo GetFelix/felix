@@ -217,21 +217,32 @@ fn a_watched_directory_forgets_its_boot_on_poison() {
     );
 }
 
-/// Forgetting the boot leaves an `OnCommit` run and a clean stop as they
-/// were: neither depends on the page cache.
+/// A poisoned `OnCommit` run names no boot, but its page cache is as
+/// suspect as a relaxed run's, so forgetting rewrites it to rotate the id on
+/// the next start. Forgetting twice changes nothing more.
 #[test]
-fn forgetting_the_boot_leaves_other_records_alone() {
+fn forgetting_the_boot_of_an_on_commit_run_rotates_the_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let mut fresh = counter(0);
     let first = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
     forget_boot(dir.path()).expect("forget");
+    forget_boot(dir.path()).expect("forget again");
     assert_eq!(
         read(dir.path(), first.id).expect("read"),
-        LastRun::Crashed {
-            relaxed: false,
-            boot: None
-        }
+        relaxed_crash(None)
     );
+    let second = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+}
+
+/// Forgetting the boot leaves a clean stop as it was: it does not depend on
+/// the page cache.
+#[test]
+fn forgetting_the_boot_leaves_a_clean_stop_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_in(dir.path(), ON_COMMIT, BOOT, &mut fresh);
     mark_clean(dir.path(), first.id).expect("mark clean");
     forget_boot(dir.path()).expect("forget");
     assert_eq!(read(dir.path(), first.id).expect("read"), LastRun::Clean);

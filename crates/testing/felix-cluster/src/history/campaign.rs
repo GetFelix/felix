@@ -14,7 +14,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 
 use super::model::{Consistency, History, ListSpec, Opened, millis};
-use super::nemesis::{ClusterView, Fault, Nemesis, ShardView};
+use super::nemesis::{ClusterView, Fault, FaultKind, Nemesis, ShardView};
 use super::rng::Rng;
 use super::subscriber::Subscribers;
 use super::workload::{ClientKind, Workload};
@@ -456,13 +456,7 @@ impl Campaign {
                 workload.fault(format!("could not {fault}: {err:#}"));
                 let healed = fault.heal(cluster).await;
                 workload.set_addrs(cluster.broker_addrs());
-                if fault.kind().needs_metadata_group() {
-                    // The group refusing a write with a quorum up, or failing
-                    // to converge after the heal, is a metadata bug, not a
-                    // fault that could not be injected.
-                    healed.with_context(|| format!("heal {fault} after: {err:#}"))?;
-                    return Err(err.context(format!("{fault}")));
-                }
+                after_failed_inject(fault.kind(), err, healed, &fault)?;
             } else {
                 if let Fault::ElectWithoutControlPlane { node, .. } = &fault {
                     let elected =
@@ -593,3 +587,23 @@ fn random_seed() -> u64 {
     // Mixed so two runs started in the same second still differ widely.
     Rng::new(nanos ^ u64::from(std::process::id())).next_u64()
 }
+
+/// What a failed inject means once the fault has been healed anyway. Only the
+/// metadata faults fail the run: the group refusing a write with a quorum up,
+/// or failing to converge after the heal, is a metadata bug. For any other
+/// fault the inject error is logged by the caller and the run goes on.
+fn after_failed_inject(
+    kind: FaultKind,
+    inject_err: anyhow::Error,
+    heal_result: Result<()>,
+    fault: &dyn std::fmt::Display,
+) -> Result<()> {
+    if !kind.needs_metadata_group() {
+        return Ok(());
+    }
+    heal_result.with_context(|| format!("heal {fault} after: {inject_err:#}"))?;
+    Err(inject_err.context(format!("{fault}")))
+}
+
+#[cfg(test)]
+mod tests;

@@ -212,6 +212,26 @@ async fn a_truncation_stops_at_the_purged_id() {
     assert_eq!(all(&raft).await.expect("read"), late);
 }
 
+/// A purge more than one below the base of a log that purged nothing would
+/// record a purged id with missing entries between it and the first one.
+#[tokio::test]
+async fn a_purge_below_the_base_is_refused() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let late = [normal(1, 7, "a"), normal(1, 8, "b")];
+    append_flushed(&mut raft, &late).await;
+    let err = raft
+        .purge(log_id(1, 3))
+        .await
+        .expect_err("entries 4 to 6 are missing");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    assert_eq!(state(&raft).await.0, None);
+    assert_eq!(all(&raft).await.expect("read"), late);
+    // Right below the base nothing is missing.
+    raft.purge(log_id(1, 6)).await.expect("purge");
+    assert_eq!(state(&raft).await.0, Some(log_id(1, 6)));
+}
+
 /// Under `purge_within`, a purge stops at the stored snapshot, and a log
 /// already purged past its snapshot is refused.
 #[tokio::test]
