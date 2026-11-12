@@ -365,7 +365,7 @@ Present when the control plane runs its metadata Raft group.
 | --- | --- | --- | --- |
 | `felix_meta_raft_is_leader` | gauge | - | `1` on the member that is currently leader. |
 | `felix_meta_raft_leader_known` | gauge | - | `1` while this member knows who the leader is. |
-| `felix_meta_raft_term` | gauge | - | Current Raft term. A term that keeps climbing means elections are not settling. |
+| `felix_meta_raft_term` | gauge | - | Current Raft term. A term that keeps climbing means elections are not settling. A term of 2^62 or more is shown with 2^62 taken off. |
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |
 | `felix_meta_raft_last_applied_index` | gauge | - | Index of the last entry applied. A gap to the last log index is apply lag. |
 | `felix_meta_raft_snapshot_index` | gauge | - | Index of the last snapshot. |

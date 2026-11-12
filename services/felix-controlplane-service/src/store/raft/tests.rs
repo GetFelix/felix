@@ -245,11 +245,11 @@ async fn stub_member(version: Arc<std::sync::atomic::AtomicU16>) -> String {
     let addr = listener.local_addr().expect("addr").to_string();
     let app = axum::Router::new()
         .route(
-            "/internal/raft/append-entries",
+            &crate::raft::peer_route("append-entries"),
             axum::routing::post(|| async { axum::Json(serde_json::json!({ "Ok": "Success" })) }),
         )
         .route(
-            "/internal/raft/standing",
+            &crate::raft::peer_route("standing"),
             axum::routing::get(move || {
                 let version = version.load(std::sync::atomic::Ordering::SeqCst);
                 async move {
@@ -284,7 +284,7 @@ async fn a_failing_learner_is_not_retried_in_a_loop() {
     let addr = listener.local_addr().expect("addr").to_string();
     let counted = Arc::clone(&appends);
     let app = axum::Router::new().route(
-        "/internal/raft/append-entries",
+        &crate::raft::peer_route("append-entries"),
         axum::routing::post(move || {
             counted.fetch_add(1, Ordering::SeqCst);
             async { axum::http::StatusCode::NOT_FOUND }
@@ -3339,7 +3339,7 @@ async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
         );
         axum::Router::new()
             .route(
-                "/internal/raft/append-entries",
+                &crate::raft::peer_route("append-entries"),
                 axum::routing::post(move || {
                     appends.fetch_add(1, Ordering::SeqCst);
                     let reply = if conflict.load(Ordering::SeqCst) {
@@ -3351,7 +3351,7 @@ async fn the_leader_holds_a_member_below_the_floor_until_it_reports_it() {
                 }),
             )
             .route(
-                "/internal/raft/standing",
+                &crate::raft::peer_route("standing"),
                 axum::routing::get(move || {
                     let version = version.load(Ordering::SeqCst);
                     async move {

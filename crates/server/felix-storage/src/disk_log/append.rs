@@ -756,6 +756,15 @@ impl LogInner {
         self.check_not_poisoned()
     }
 
+    /// Fails once [`DiskLog::close`] has finished. Only meaningful under
+    /// `replica_persisted`, the lock `close` sets it under.
+    pub(super) fn check_open(&self) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(StorageError::Closed(self.label.clone()));
+        }
+        Ok(())
+    }
+
     /// [`Self::check_healthy`] without the closed check, for the state
     /// writes a closing log still makes.
     pub(super) fn check_not_poisoned(&self) -> Result<()> {

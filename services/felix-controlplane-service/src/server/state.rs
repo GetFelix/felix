@@ -100,11 +100,13 @@ async fn open_store(
             // Before the routes serve: an empty member must not answer a
             // vote until it knows whether it is forming the group or
             // rejoining one it forgot.
-            handle.enter_group(
-                raft_cfg.peers.clone(),
-                raft_cfg.initial_cluster_state,
-                api_shutdown.child_token(),
-            )?;
+            handle
+                .enter_group(
+                    raft_cfg.peers.clone(),
+                    raft_cfg.initial_cluster_state,
+                    api_shutdown.child_token(),
+                )
+                .await?;
             raft_handle = Some(handle.clone());
             Arc::new(RaftStore::new(handle, machine))
         }

@@ -422,7 +422,11 @@ async fn the_rpc_routes_refuse_callers_without_peer_credentials() {
     leader_of(&[&node]).await;
 
     let anonymous = reqwest::Client::new();
-    let propose = format!("http://{}/internal/raft/propose", node.addr);
+    let propose = format!(
+        "http://{}{}",
+        node.addr,
+        felix_controlplane_service::raft::peer_route("propose")
+    );
     let status = |response: reqwest::Response| response.status().as_u16();
     let refused = anonymous
         .post(&propose)
@@ -445,7 +449,11 @@ async fn the_rpc_routes_refuse_callers_without_peer_credentials() {
         .expect("send");
     assert_eq!(refused, 401, "no peer token");
     let refused = anonymous
-        .post(format!("http://{}/internal/raft/vote", node.addr))
+        .post(format!(
+            "http://{}{}",
+            node.addr,
+            felix_controlplane_service::raft::peer_route("vote")
+        ))
         .header(
             felix_controlplane_service::raft::CLUSTER_ID_HEADER,
             "test-cluster",
@@ -502,6 +510,7 @@ async fn empty_members_form_a_group_only_when_told_to() {
                 InitialClusterState::Existing,
                 shutdown.clone(),
             )
+            .await
             .expect("enter group");
     }
     // Many election timeouts, and every member can see every other.
@@ -539,6 +548,7 @@ async fn empty_members_form_a_group_only_when_told_to() {
     for node in &nodes {
         node.handle
             .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
             .expect("enter group");
     }
     let refs: Vec<&TestNode> = nodes.iter().collect();
@@ -617,8 +627,9 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
         .expect("client");
     let result = no_cert
         .get(format!(
-            "https://localhost:{}/internal/raft/standing",
-            nodes[0].2
+            "https://localhost:{}{}",
+            nodes[0].2,
+            felix_controlplane_service::raft::peer_route("standing")
         ))
         .header(
             felix_controlplane_service::raft::CLUSTER_ID_HEADER,

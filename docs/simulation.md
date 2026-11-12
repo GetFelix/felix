@@ -40,6 +40,13 @@ stops and reports a `stalled` finding. That means some broker task never
 waits on a timer, which holds the paused clock still; the finding says so and
 prints no census, since the busy task would hold that up too.
 
+The watch can only end a run that still returns to the runtime now and then.
+Work that holds the thread outright, such as a blocking wait that never
+returns, would hang the whole test binary. So each run also has a hard bound
+of `real_time_limit` plus a quarter (ten minutes by default): past it, the
+process prints `seed <n> ran past ...` with the replay command and exits
+with a failure.
+
 `FELIX_SIM_POWER_LOSS=1` turns on power cuts ([Power loss](#power-loss)) the
 same way. `FELIX_SIM_POWER_LOSS=relaxed` cuts them under brokers that do not
 sync before they acknowledge. `FELIX_SIM_MAJORITY_CUT=1` and

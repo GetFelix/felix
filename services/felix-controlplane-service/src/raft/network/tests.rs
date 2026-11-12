@@ -35,7 +35,7 @@ async fn a_missing_route_is_unreachable_and_names_the_status() {
 #[tokio::test]
 async fn a_withheld_vote_is_unreachable_and_keeps_the_reason() {
     let app = axum::Router::new().route(
-        "/internal/raft/vote",
+        &crate::raft::peer_route("vote"),
         axum::routing::post(|| async {
             (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -54,7 +54,7 @@ async fn a_withheld_vote_is_unreachable_and_keeps_the_reason() {
 #[tokio::test]
 async fn a_long_error_body_is_cut_short() {
     let app = axum::Router::new().route(
-        "/internal/raft/vote",
+        &crate::raft::peer_route("vote"),
         axum::routing::post(|| async { (StatusCode::FORBIDDEN, "é".repeat(1000)) }),
     );
     let addr = serve(app).await;
@@ -75,7 +75,10 @@ async fn a_refused_connection_is_unreachable() {
 /// A 2xx that is not a raft reply is a fault in the peer, not an outage.
 #[tokio::test]
 async fn an_unparseable_success_is_a_network_error() {
-    let app = axum::Router::new().route("/internal/raft/vote", axum::routing::post(|| async {}));
+    let app = axum::Router::new().route(
+        &crate::raft::peer_route("vote"),
+        axum::routing::post(|| async {}),
+    );
     let addr = serve(app).await;
     let err = vote(&addr).await.expect_err("empty body");
     assert!(matches!(err, RPCError::Network(_)), "{err:?}");

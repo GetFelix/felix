@@ -26,6 +26,10 @@ tasks:
       - "cargo check -p felix-common"
       # Without `raft`, as every release builds it.
       - "cargo check -p felix-replication"
+      # felix-broker must not depend on openraft, and openraft's types stay
+      # in the Raft log adapter, the per-shard runtime and the control
+      # plane's Raft module.
+      - "scripts/check-openraft-containment.sh"
 
 
   clippy:
@@ -89,6 +93,22 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
+  # The control plane's metadata group on the segment store instead of redb:
+  # clippy and the package's whole suite (the storage suite, the contract
+  # suites, raft_core, raft_runtime, raft_chaos) with
+  # `--cfg felix_segment_store`. No release sets the cfg, so this is the
+  # only place that side is built. It changes every crate's build, so it
+  # keeps its own target directory.
+  segment-store:check:
+    env:
+      RUSTFLAGS: "--cfg felix_segment_store"
+    cmds:
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/segment-store" \
+          cargo clippy -p felix-controlplane-service --all-targets -- -D warnings
+      - |
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/segment-store" \
+          cargo test -p felix-controlplane-service
   # Replays the seed in FELIX_SIM_SEED exactly. Tokio seeds `select!` only
   # under `--cfg tokio_unstable`, which changes every crate's build, so this
   # keeps its own target directory. A plain `cargo test` replay repeats the

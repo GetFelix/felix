@@ -20,8 +20,9 @@ impl std::fmt::Display for Command {
     }
 }
 
-// The leader id stays openraft's default (`leader_id_adv`, a term and a node
-// id): it is part of every stored log id and of the peer format.
+// On redb the leader id stays openraft's default (`leader_id_adv`, a term
+// and a node id): it is part of every stored log id and of the peer format.
+#[cfg(not(felix_segment_store))]
 openraft::declare_raft_types!(
     pub(crate) TypeConfig:
         D = Command,
@@ -30,14 +31,47 @@ openraft::declare_raft_types!(
         Node = openraft::impls::BasicNode,
 );
 
+// The segment store's log id is a term and an index, so the leader id is
+// the standard one: one leader per term.
+#[cfg(felix_segment_store)]
+openraft::declare_raft_types!(
+    pub(crate) TypeConfig:
+        D = Command,
+        R = Vec<u8>,
+        NodeId = u64,
+        Node = openraft::impls::BasicNode,
+        LeaderId = openraft::impls::leader_id_std::LeaderId<u64, u64>,
+);
+
 pub(crate) type SnapshotData = Cursor<Vec<u8>>;
 pub(crate) type Raft = openraft::Raft<TypeConfig, super::store::StateMachineStore>;
-pub(crate) type LeaderId = openraft::impls::leader_id_adv::LeaderId<u64, u64>;
-pub(crate) type LogId = openraft::LogId<LeaderId>;
+/// What a vote names.
+pub(crate) type LeaderId = openraft::type_config::alias::LeaderIdOf<TypeConfig>;
+/// What a log id names: the same on redb, the term alone on the segment
+/// store.
+pub(crate) type CommittedLeaderId = openraft::type_config::alias::CommittedLeaderIdOf<TypeConfig>;
+pub(crate) type LogId = openraft::LogId<CommittedLeaderId>;
 pub(crate) type Vote = openraft::impls::Vote<LeaderId>;
 pub(crate) type Membership = openraft::impls::Membership<u64, openraft::impls::BasicNode>;
-pub(crate) type Entry = openraft::impls::Entry<LeaderId, EntryPayload>;
+pub(crate) type Entry = openraft::impls::Entry<CommittedLeaderId, EntryPayload>;
 pub(crate) type EntryPayload = openraft::impls::EntryPayload<Command, Membership>;
-pub(crate) type StoredMembership = openraft::StoredMembership<LeaderId, Membership>;
-pub(crate) type SnapshotMeta = openraft::storage::SnapshotMeta<LeaderId, Membership>;
-pub(crate) type Snapshot = openraft::storage::Snapshot<LeaderId, Membership, SnapshotData>;
+pub(crate) type StoredMembership = openraft::StoredMembership<CommittedLeaderId, Membership>;
+pub(crate) type SnapshotMeta = openraft::storage::SnapshotMeta<CommittedLeaderId, Membership>;
+pub(crate) type Snapshot = openraft::storage::Snapshot<CommittedLeaderId, Membership, SnapshotData>;
+
+/// The log id of `term` at `index`. On redb a log id also names its leader,
+/// `node`.
+#[cfg(test)]
+pub(crate) fn test_log_id(term: u64, node: u64, index: u64) -> LogId {
+    #[cfg(not(felix_segment_store))]
+    let leader = LeaderId {
+        term,
+        node_id: node,
+    };
+    #[cfg(felix_segment_store)]
+    let leader = {
+        let _ = node;
+        term.into()
+    };
+    LogId::new(leader, index)
+}

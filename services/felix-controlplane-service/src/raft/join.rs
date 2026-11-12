@@ -30,7 +30,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use super::{InitialClusterState, NodeId, RaftHandle, store};
+use super::{InitialClusterState, NodeId, RaftHandle};
 
 /// What a member reports to one deciding how to enter the group.
 #[derive(Debug, Serialize, Deserialize)]
@@ -65,18 +65,17 @@ impl RaftHandle {
     /// docs. It forms a new group only when `initial` is
     /// [`InitialClusterState::New`]. Call before the RPC routes serve, so no
     /// vote leaks out first.
-    pub fn enter_group(
+    pub async fn enter_group(
         &self,
         peers: BTreeMap<NodeId, String>,
         initial: InitialClusterState,
         shutdown: CancellationToken,
     ) -> anyhow::Result<()> {
         if self.may_vote.load(Ordering::SeqCst) {
-            let db = self.store()?;
-            if store::holds_state(&db)? {
+            if self.member.holds_state()? {
                 return Ok(());
             }
-            store::set_vote_withheld(&db, true)?;
+            self.member.set_vote_withheld(true).await?;
             self.may_vote.store(false, Ordering::SeqCst);
             self.raft.runtime_config().elect(false);
         }
@@ -107,16 +106,12 @@ impl RaftHandle {
 
         // Holding state while withholding the vote means an earlier catch-up
         // was interrupted; the group exists, so there is nothing to decide.
-        if !self
-            .store()
-            .and_then(|db| store::holds_state(&db))
-            .unwrap_or(true)
-        {
+        if !self.member.holds_state().unwrap_or(true) {
             loop {
                 let mut empty = 1; // this member
                 let mut exists = false;
                 for base in &others {
-                    let url = format!("{base}/internal/raft/standing");
+                    let url = format!("{base}{}", super::peer_route("standing"));
                     let standing = match client.get(url).send().await {
                         Ok(response) => response.json::<Standing>().await.ok(),
                         Err(_) => None,
@@ -160,10 +155,7 @@ impl RaftHandle {
     async fn form_group(&self, peers: BTreeMap<NodeId, String>) {
         // Cleared before initialize writes anything: a crash in between
         // leaves an empty member, which simply decides again.
-        if let Err(err) = self
-            .store()
-            .and_then(|db| store::set_vote_withheld(&db, false))
-        {
+        if let Err(err) = self.member.set_vote_withheld(false).await {
             tracing::error!(error = %err, "could not record that this member may vote");
             return;
         }
@@ -179,7 +171,7 @@ impl RaftHandle {
         loop {
             let mut target = None;
             for base in others {
-                let url = format!("{base}/internal/raft/catch-up-target");
+                let url = format!("{base}{}", super::peer_route("catch-up-target"));
                 if let Ok(response) = client.get(url).send().await
                     && response.status().is_success()
                     && let Ok(answer) = response.json::<CatchUpTarget>().await
@@ -202,10 +194,7 @@ impl RaftHandle {
                     .map(|log_id| log_id.index)
                     .unwrap_or(0);
                 if applied >= target {
-                    if let Err(err) = self
-                        .store()
-                        .and_then(|db| store::set_vote_withheld(&db, false))
-                    {
+                    if let Err(err) = self.member.set_vote_withheld(false).await {
                         tracing::error!(error = %err, "could not record that this member may vote");
                         return;
                     }
@@ -216,12 +205,6 @@ impl RaftHandle {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
         }
-    }
-
-    fn store(&self) -> anyhow::Result<std::sync::Arc<redb::Database>> {
-        self.db
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("raft node has stopped"))
     }
 
     fn allow_votes(&self) {

@@ -130,7 +130,7 @@ impl RaftHandle {
     async fn forward_to(&self, base: &str, command: &[u8], budget: Duration) -> Result<Vec<u8>> {
         let response = self
             .forward
-            .post(format!("{base}/internal/raft/propose"))
+            .post(format!("{base}{}", super::peer_route("propose")))
             .timeout(budget)
             .body(command.to_vec())
             .send()

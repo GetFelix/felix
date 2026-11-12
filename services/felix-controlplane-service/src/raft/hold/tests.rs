@@ -71,7 +71,7 @@ async fn member(version: u16) -> Member {
     );
     let app = axum::Router::new()
         .route(
-            "/internal/raft/append-entries",
+            &crate::raft::peer_route("append-entries"),
             axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
                 appends.fetch_add(1, Ordering::SeqCst);
                 *last.lock().expect("last lock") = Some(body);
@@ -84,7 +84,7 @@ async fn member(version: u16) -> Member {
             }),
         )
         .route(
-            "/internal/raft/standing",
+            &crate::raft::peer_route("standing"),
             axum::routing::get(move || {
                 probes.fetch_add(1, Ordering::SeqCst);
                 let (version, delay) = (
@@ -115,11 +115,7 @@ fn network(addr: &str, hold: Arc<Hold>) -> HttpNetwork {
 }
 
 fn log_id(index: u64) -> crate::raft::types::LogId {
-    let leader = crate::raft::types::LeaderId {
-        term: 1,
-        node_id: 1,
-    };
-    crate::raft::types::LogId::new(leader, index)
+    crate::raft::types::test_log_id(1, 1, index)
 }
 
 /// An append after `prev`, carrying entries up to `last`, with the leader's

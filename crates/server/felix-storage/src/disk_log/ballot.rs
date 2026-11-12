@@ -254,6 +254,9 @@ impl DiskLog {
         let leader: Option<Arc<str>> = leader.map(Arc::from);
         felix_common::blocking::spawn(move || {
             let mut persisted = inner.replica_persisted.lock();
+            // `close` sets this under the same lock: once it has, the
+            // directory may already be another log's.
+            inner.check_open()?;
             inner.check_not_poisoned()?;
             if let Some(kept) = &kept
                 && inner.replica_set.read().as_ref() != Some(kept)
@@ -329,6 +332,7 @@ impl DiskLog {
             // The writer's lock, so a raise cannot land between the read and
             // the write and be given up unseen.
             let _persisted = inner.replica_persisted.lock();
+            inner.check_open()?;
             inner.check_not_poisoned()?;
             let generation = inner.accepted_generation.load(Ordering::Acquire);
             inner.poison_on_sync_failure(

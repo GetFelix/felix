@@ -1133,11 +1133,17 @@ it.
 The control plane's metadata store keeps one small file beside its Raft log
 and its snapshot. It says which cluster the store belongs to, whether the
 member's vote is withheld, and carries two marks the upgrade from redb
-uses. The control plane does not run on this store yet. The files and their
-rules are in place for the step that switches it over; the design is in
+uses. No release build of the control plane runs on this store. It is built
+in only with `--cfg felix_segment_store`, which CI sets to test it; the
+design is in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
 
-A member's data directory (`FELIX_RAFT_DATA_DIR`) will look like this:
+In that build the snapshot's metadata is JSON: the last log id as a term
+and an index, and the last membership with the id of its entry. The data is
+the state machine's bytes as they are. A membership entry's payload in the
+log is the same JSON membership.
+
+A member's data directory (`FELIX_RAFT_DATA_DIR`) then looks like this:
 
 ```text
 raft.redb          ← an older release's store, or the stub a conversion leaves
@@ -1206,6 +1212,22 @@ The file is empty and is not part of the store's state. One that is missing
 is created. On a platform without `flock`, and on the simulator's in-memory
 filesystem, the claim is kept in the process instead.
 
+The lock lives as long as the log and the snapshot store do: both hold it
+too, so a clone that outlives the store (after an error, a failed shutdown,
+or a snapshot build openraft did not wait for) keeps the store locked while
+it can still write. A clean shutdown closes both before it lets the lock go,
+so an append or a snapshot install through a clone left over fails instead
+of writing into a store another process may have opened.
+
+A first start also takes an exclusive `flock` on the data directory while it
+builds the store, so two first starts do not share `store.tmp`. The one that
+comes second finds the store built and opens it, or is refused as busy.
+
+`flock` is only as strong as the filesystem. On Linux NFS it is emulated with
+byte-range locks, which belong to the process: two opens in one process do
+not exclude each other, and closing any descriptor of the file drops the
+lock. Keep the data directory on a local disk.
+
 Per-shard log directories are not locked yet
 ([#2344](https://github.com/GetFelix/felix/issues/2344)).
 
@@ -1221,7 +1243,9 @@ Per-shard log directories are not locked yet
    setting. A saved committed id whose index holds another term's entry
    refuses the open: the id was saved for some other log, and a restart
    must not apply entries up to it. The id is left on disk, so the next
-   open refuses too. (A shard group's log takes nothing as committed
+   open refuses too. The exception is an id past the recovered log: it is
+   lowered to the log's end first (see "The commit offset is lowered"
+   above), so it names no entry and refuses nothing. (A shard group's log takes nothing as committed
    instead and opens.)
 4. It opens the snapshot and refuses a log whose `raft-purged` id is past
    it: that log has lost entries.
