@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794441239992,
+  "lastUpdate": 1794442663650,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52260,6 +52260,58 @@ window.BENCHMARK_DATA = {
             "range": "12809.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1132797.19\nmean: 1137063.69\nstdev: 12809.99\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3cfc31b1cc7484c69fcbb1156ac0fe363f276e3e",
+          "message": "fix(storage): a failed fsync or sync_dir on any of a log's files poisons the log (#1998) (#2302)\n\n* fix(storage): a failed fsync or sync_dir on any of a log's files poisons the log (#1998)\n\nA failed segment flush already poisoned the log. A failed flush of the\nballot, the replica set, the replica state or the generation history, of\na rollover's index or directory entry, or of a retention removal did not:\nmemory and disk could differ, and the commit offset write was retried.\n\nEvery sync error from the io seam is now marked, the log poisons on one\nwherever it surfaces, and later operations fail with\nStorageError::Poisoned. /ready answers 503 once a log is poisoned.\n\nSpec-Unaffected: storage error handling only; no protocol, replication\nrule or model changes.\n\n* fix(storage): review fixes for the fsync poison (#1998)\n\n- seal(): a failed index sync, or a failed sync in the roll that follows,\n  now poisons the log. It returned the error and went on acknowledging.\n- The state files (ballot, replica set, replica state, generation history)\n  return SyncFailed for a failed flush, as the docs say, not Io.\n- /ready names each poisoned log and what stopped it, from the new\n  disk_log::poisoned_logs(). A truncation that failed is no longer\n  reported as a failed flush.\n- Tests fail every flush of a seal and of both retention removals, and\n  check the state writes' error. Each wrap was reverted and its test\n  watched failing.\n- Docs: a restart on the same boot after a failed flush is not covered\n  yet (#2308), so the docs say to reboot first instead of claiming the\n  reopen reads only what reached the disk. The broker-wide /ready 503 is\n  the interim; the decided behaviour is per shard (#2300).\n\nSpec-Unaffected: storage error handling and readiness reporting only, no protocol or model change",
+          "timestamp": "2026-11-12T00:13:41Z",
+          "tree_id": "aa56ce53edcca986c3ef2f0465faa7850a8dfd57",
+          "url": "https://github.com/GetFelix/felix/commit/3cfc31b1cc7484c69fcbb1156ac0fe363f276e3e"
+        },
+        "date": 1794442663121,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533839.39,
+            "range": "39488.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533839.39\nmean: 530755.59\nstdev: 39488.84\ncv: 7.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533839.39,
+            "range": "39488.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533839.39\nmean: 530755.59\nstdev: 39488.84\ncv: 7.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119150.24,
+            "range": "2495.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119150.24\nmean: 119662.04\nstdev: 2495.70\ncv: 2.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1191502.39,
+            "range": "24956.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1191502.39\nmean: 1196620.37\nstdev: 24956.96\ncv: 2.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
