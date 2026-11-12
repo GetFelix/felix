@@ -3,6 +3,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -23,7 +24,9 @@ pub struct RuntimeConfig {
     /// How often the ticker runs each group's timer check. A timeout is
     /// noticed at the next check, so this adds to the two below.
     pub tick: Duration,
-    /// How often a leader with nothing to send sends a heartbeat.
+    /// How often a leader with nothing to send sends a heartbeat. One goes
+    /// out at the first timer check after this has passed, so with the
+    /// default tick a busy leader sends one every 250 ms.
     pub heartbeat: Duration,
     /// How often it sends one once the group is idle: no entry sent for
     /// [`Self::idle_after`]. A follower of an idle leader waits three of
@@ -73,6 +76,9 @@ impl RuntimeConfig {
             // A shard's log is its data. Entries leave it by retention,
             // never because a snapshot was taken.
             snapshot_policy: SnapshotPolicy::Never,
+            // A snapshot that is taken anyway purges nothing. The default
+            // keeps only the last 1,000 entries under one.
+            max_in_snapshot_log_to_keep: u64::MAX,
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
@@ -97,6 +103,11 @@ pub enum OpenError {
     Closed,
     #[error("the shard already has a group here")]
     AlreadyOpen,
+    /// A close of the shard's last member has not finished. Until it has,
+    /// that member may still write to the log. Try again after the close
+    /// returns.
+    #[error("the shard's last group here is still stopping")]
+    Closing,
     /// The log cannot be a Raft log, or its Raft state does not read back.
     #[error(transparent)]
     Log(#[from] io::Error),
@@ -153,6 +164,9 @@ enum Slot {
     /// Reserved by an open that is still starting the member.
     Opening,
     Open(Arc<Group>),
+    /// Held by a close until the member has stopped, so no second member
+    /// starts on the log while the first can still write to it.
+    Closing(Arc<Group>),
 }
 
 /// A shard's slot while its member starts. Dropped before the member is
@@ -178,6 +192,11 @@ pub(crate) struct Registry {
     /// The open groups, as the ticker walks them. Replaced whole on every
     /// open and close, so a tick takes no lock.
     ticked: ArcSwap<Vec<Arc<Group>>>,
+    /// Times the ticker ended on a panic and was started again.
+    pub(crate) ticker_restarts: AtomicU64,
+    /// Makes the ticker's next interval panic.
+    #[cfg(test)]
+    pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Default)]
@@ -197,7 +216,7 @@ impl Registry {
             .values()
             .filter_map(|slot| match slot {
                 Slot::Open(group) => Some(Arc::clone(group)),
-                Slot::Opening => None,
+                Slot::Opening | Slot::Closing(_) => None,
             })
             .collect();
         self.ticked.store(Arc::new(open));
@@ -266,6 +285,9 @@ impl GroupRuntime {
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
+                    ticker_restarts: AtomicU64::new(0),
+                    #[cfg(test)]
+                    trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
@@ -277,7 +299,7 @@ impl GroupRuntime {
         let inner = &self.inner;
         let mut ticker = inner.ticker.lock();
         if ticker.is_none() && !inner.stop.is_cancelled() {
-            *ticker = Some(tokio::spawn(ticker::run(
+            *ticker = Some(tokio::spawn(ticker::supervise(
                 Arc::clone(&inner.registry),
                 inner.tick,
                 inner.timers,
@@ -301,8 +323,10 @@ impl GroupRuntime {
             if slots.closed {
                 return Err(OpenError::Closed);
             }
-            if slots.by_shard.contains_key(&shard) {
-                return Err(OpenError::AlreadyOpen);
+            match slots.by_shard.get(&shard) {
+                None => {}
+                Some(Slot::Closing(_)) => return Err(OpenError::Closing),
+                Some(Slot::Opening | Slot::Open(_)) => return Err(OpenError::AlreadyOpen),
             }
             slots.by_shard.insert(shard.clone(), Slot::Opening);
         }
@@ -363,21 +387,35 @@ impl GroupRuntime {
     /// Stop this broker's member of `shard`'s group and forget it. The log
     /// is left as it is, for the caller to close or reopen. False if the
     /// shard has no group here.
+    ///
+    /// The shard cannot be opened again until the member has stopped: an
+    /// open before that is refused with [`OpenError::Closing`]. That holds
+    /// even if the caller drops this future.
     pub async fn close(&self, shard: &ShardKey) -> bool {
-        let registry = &self.inner.registry;
-        let group = {
+        let registry = Arc::clone(&self.inner.registry);
+        let (shard, group) = {
             let mut slots = registry.slots.write();
             // A slot still opening is its open's to place or free.
-            if !matches!(slots.by_shard.get(shard), Some(Slot::Open(_))) {
-                return false;
-            }
-            let Some(Slot::Open(group)) = slots.by_shard.remove(shard) else {
+            let Some((shard, Slot::Open(group))) = slots.by_shard.get_key_value(shard) else {
                 return false;
             };
+            let (shard, group) = (Arc::clone(shard), Arc::clone(group));
+            slots
+                .by_shard
+                .insert(Arc::clone(&shard), Slot::Closing(Arc::clone(&group)));
             registry.publish(&slots);
-            group
+            (shard, group)
         };
-        group.shutdown().await;
+        // In its own task, so the slot is freed when the member has
+        // stopped and not when the caller stops waiting.
+        let stopped = tokio::spawn(async move {
+            group.shutdown().await;
+            let mut slots = registry.slots.write();
+            if matches!(slots.by_shard.get(&shard), Some(Slot::Closing(_))) {
+                slots.by_shard.remove(&shard);
+            }
+        });
+        let _ = stopped.await;
         true
     }
 
@@ -396,7 +434,9 @@ impl GroupRuntime {
                 .by_shard
                 .drain()
                 .filter_map(|(_, slot)| match slot {
-                    Slot::Open(group) => Some(group),
+                    // A member being closed is stopped by its close too.
+                    // Both wait for the same stop.
+                    Slot::Open(group) | Slot::Closing(group) => Some(group),
                     Slot::Opening => None,
                 })
                 .collect();
@@ -449,8 +489,23 @@ impl GroupRuntime {
         self.inner.registry.ticked.load().len()
     }
 
+    /// How many times the ticker ended on a panic and was started again.
+    /// Anything but zero is a bug worth a look: while the ticker is down no
+    /// group on this broker heartbeats or notices a timeout.
+    pub fn ticker_restarts(&self) -> u64 {
+        self.inner.registry.ticker_restarts.load(Ordering::Relaxed)
+    }
+
     #[cfg(test)]
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn trip_ticker(&self) {
+        self.inner
+            .registry
+            .trip_ticker
+            .store(true, Ordering::Relaxed);
     }
 }

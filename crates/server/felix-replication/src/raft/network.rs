@@ -92,6 +92,10 @@ pub enum Refused {
     /// The member is there and has stopped.
     #[error("{0} has stopped: {1}")]
     Stopped(Box<Addressee>, String),
+    /// A shard group's snapshot holds no records, so a member that took one
+    /// would purge records it was never sent. No member takes one.
+    #[error("{0} takes no snapshot: a shard's records are only in its log")]
+    NoSnapshots(Box<Addressee>),
 }
 
 /// The member a message was for. Boxed in [`Refused`] to keep the error
@@ -183,13 +187,15 @@ impl Router {
             beat: sent.as_ref().map_or(0, |sent| sent.gap),
             body,
         };
-        match tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await {
-            Ok(Ok(reply)) => {
-                if let (Some(sent), Reply::Append(Ok(_))) = (&sent, &reply.0) {
-                    self.pace.answered(&to, sent);
-                }
-                Ok(reply.0)
+        let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
+        if let Some(sent) = &sent {
+            match &answer {
+                Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, sent),
+                _ => self.pace.unanswered(&to),
             }
+        }
+        match answer {
+            Ok(Ok(reply)) => Ok(reply.0),
             Ok(Err(refused)) => Err(Unreachable::new(&refused)),
             Err(elapsed) => Err(Unreachable::new(&elapsed)),
         }
@@ -251,6 +257,8 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
         }
     }
 
+    /// Every member refuses this (`Refused::NoSnapshots`). A leader keeps
+    /// its whole log, so it has no reason to send one.
     async fn full_snapshot(
         &self,
         target: MemberId,

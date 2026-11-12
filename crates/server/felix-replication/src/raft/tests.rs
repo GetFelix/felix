@@ -75,6 +75,8 @@ struct Net {
     cut: parking_lot::Mutex<HashSet<String>>,
     /// How many more appends that name the idle gap are lost on the way.
     lose_idle: std::sync::atomic::AtomicU32,
+    /// The only broker they are lost on the way to, if one is named.
+    lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
 }
 
@@ -83,7 +85,9 @@ impl RaftTransport for Net {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
         let broker: &str = &request.to().broker;
+        let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
         if request.beat > timers().heartbeat.as_millis() as u64
+            && loses(&self.lose_idle_to.lock())
             && self
                 .lose_idle
                 .try_update(Relaxed, Relaxed, |left| left.checked_sub(1))
@@ -260,6 +264,66 @@ impl Cluster {
         }
     }
 
+    /// Commit at least `count` records through group `n`, many at a time
+    /// so they share fsyncs. Returns the last one's index.
+    async fn write_many(&self, n: u32, count: u64) -> u64 {
+        let first = self.write(n, b"record").await;
+        let leader = self.elected(n).await;
+        let member = self
+            .runtime(&leader.broker)
+            .group(&shard(n))
+            .expect("group");
+        let mut last = first;
+        for _ in 0..count.div_ceil(100) {
+            let writes = (0..100).map(|_| {
+                member.raft().client_write(Command {
+                    timestamp_micros: 1_700_000_000,
+                    payload: Bytes::from_static(b"record"),
+                })
+            });
+            for written in futures::future::join_all(writes)
+                .await
+                .into_iter()
+                .flatten()
+            {
+                last = last.max(written.log_id.index);
+            }
+        }
+        // Whatever a change of leader refused.
+        while last < first + count {
+            last = self.write(n, b"record").await;
+        }
+        last
+    }
+
+    /// Have `broker`'s member of group `n` take a snapshot that covers
+    /// `index`, and give any purge that follows time to run.
+    async fn snapshot(&self, broker: &str, n: u32, index: u64) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let member = self.runtime(broker).group(&shard(n)).expect("group");
+        // Asked again until it covers the index: the first may be taken
+        // before the member has applied it.
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            member.raft().trigger().snapshot().await.expect("snapshot");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let covered = member.raft().metrics().borrow_watched().snapshot;
+            if covered.is_some_and(|covered| covered.index >= index) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "no snapshot");
+        }
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    /// The entry `broker`'s member of group `n` has purged its log up to.
+    fn purged(&self, broker: &str, n: u32) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let member = self.runtime(broker).group(&shard(n)).expect("group");
+        let purged = member.raft().metrics().borrow_watched().purged;
+        purged.map(|purged| purged.index)
+    }
+
     /// Stop every broker and close every log, as a process exit does.
     async fn stop(&mut self) {
         for runtime in self.runtimes() {
@@ -399,7 +463,7 @@ async fn only_a_group_whose_timer_is_due_is_ticked() {
     for (member, after) in after {
         let sent = after - before[&member];
         if member == leader {
-            // About one per heartbeat, 15 here, and far from one per interval.
+            // One per heartbeat, 12 here, and far from one per interval.
             assert!((8..=20).contains(&sent), "{member}: {sent} checks");
         } else {
             assert!(sent <= 3, "{member}: {sent} checks of {every_interval}");
@@ -484,6 +548,14 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
     pace.answered(&c, &to_c);
     assert_eq!(pace.leader_gap(timers.now()), idle);
 
+    // A heartbeat c does not take: c may have restarted and forgotten the
+    // gap, so the leader is fast again until c answers.
+    let _lost = pace.sending(&c, false);
+    pace.unanswered(&c);
+    assert_eq!(pace.leader_gap(timers.now()), short, "c may have forgotten");
+    pace.answered(&c, &pace.sending(&c, false));
+    assert_eq!(pace.leader_gap(timers.now()), idle);
+
     // An entry: short again at once, and the old answers count for nothing
     // when the group next goes idle.
     later(10_000).await;
@@ -523,6 +595,76 @@ async fn a_follower_waits_by_the_gap_its_leader_named() {
     pace.followed(Some(timers.idle_heartbeat));
     pace.voted();
     assert_eq!(pace.follower_wait(), timers.election_min);
+}
+
+/// The gap comes from a peer. Whatever it says, a follower waits no longer
+/// than it would for the idle gap it names itself.
+#[tokio::test(start_paused = true)]
+async fn a_gap_from_the_wire_is_held_to_the_idle_interval() {
+    let (pace, timers) = pace();
+    pace.followed(Some(timers.idle_heartbeat));
+    let longest = pace.follower_wait();
+    for huge in [timers.idle_heartbeat + 1, u64::MAX / 3 + 1, u64::MAX] {
+        pace.followed(Some(huge));
+        assert_eq!(pace.follower_wait(), longest, "a gap of {huge}");
+    }
+}
+
+/// A follower that restarts forgets the idle gap and stands as soon as
+/// openraft lets it. Its leader finds out from the first heartbeat the
+/// follower does not take, and heartbeats fast again, so losing the next
+/// ones costs the leader nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_follower_that_misses_idle_heartbeats_does_not_stand() {
+    use std::sync::atomic::Ordering::Relaxed;
+    // The follower may stand 3.8 s after it starts. Two lost heartbeats at
+    // the idle interval would leave it unheard for almost 6 s.
+    let idle = RuntimeConfig {
+        idle_after: Duration::from_secs(1),
+        election_min: Duration::from_millis(1800),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(idle, true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, last).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster.statuses(0)[0].term;
+    let follower = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+    let checks = |cluster: &Cluster| -> u64 {
+        let status = cluster.runtime(&leader.broker).status(&shard(0));
+        status.expect("group").ticks
+    };
+
+    // Idle, and slow. Restart the follower just after a heartbeat.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let seen = checks(&cluster);
+    while checks(&cluster) == seen {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let runtime = cluster.runtime(follower);
+    assert!(runtime.close(&shard(0)).await);
+    let log = cluster
+        .logs
+        .remove(&(follower.to_string(), 0))
+        .expect("log");
+    log.close().await.expect("close");
+    let log = open_log(cluster.root.path(), follower, 0, log_config());
+    cluster.logs.insert((follower.into(), 0), log.clone());
+    *cluster.net.lose_idle_to.lock() = Some(follower.into());
+    cluster.net.lose_idle.store(2, Relaxed);
+    runtime.open(group(0), 1, log).await.expect("reopen");
+
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    assert_eq!(cluster.net.lost_idle.load(Relaxed), 2);
+    assert_eq!(cluster.leader(0), Some(leader), "the leader changed");
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, term, "{}: an election ran", status.member);
+    }
+    cluster.stop().await;
 }
 
 /// A group with no writes heartbeats at the idle interval, and a write
@@ -762,6 +904,88 @@ async fn closing_one_group_leaves_the_others() {
     cluster.stop().await;
 }
 
+/// A close holds the shard until its member has stopped. An open that
+/// races it is refused, so two members never run on one log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let runtime = cluster.runtime("a");
+    let closing = runtime.group(&shard(0)).expect("group");
+
+    // Park the member's core, so it cannot stop until released.
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    closing
+        .raft()
+        .external_request(move |_| {
+            let _ = parked.recv();
+        })
+        .await
+        .expect("park");
+    let close = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.close(&shard(0)).await }
+    });
+    eventually(|| runtime.status(&shard(0)).is_none().then_some(())).await;
+
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    for _ in 0..20 {
+        assert!(
+            matches!(
+                runtime.open(group(0), 1, log.clone()).await,
+                Err(OpenError::Closing)
+            ),
+            "a second member started while the first was still running"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(!close.is_finished());
+    assert_ne!(closing.status().role, Role::Stopped);
+    assert!(!runtime.close(&shard(0)).await, "closed twice");
+
+    release.send(()).expect("release");
+    assert!(close.await.expect("close"));
+    assert_eq!(closing.status().role, Role::Stopped);
+    drop(closing);
+
+    let log = cluster.logs.remove(&("a".to_string(), 0)).expect("log");
+    log.close().await.expect("close");
+    let log = open_log(cluster.root.path(), "a", 0, log_config());
+    cluster.logs.insert(("a".into(), 0), log.clone());
+    runtime.open(group(0), 1, log).await.expect("reopen");
+    let last = cluster.write(0, b"with a again").await;
+    eventually(|| (runtime.status(&shard(0))?.committed >= Some(last)).then_some(())).await;
+    cluster.stop().await;
+}
+
+/// A ticker that panics is started again, and counted. Without one no group
+/// on the broker would heartbeat or notice a timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_ticker_that_panics_is_started_again() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster.statuses(0)[0].term;
+    let runtime = cluster.runtime(&leader.broker);
+    let checks = || runtime.status(&shard(0)).expect("group").ticks;
+    assert_eq!(runtime.ticker_restarts(), 0);
+
+    runtime.trip_ticker();
+    eventually(|| (runtime.ticker_restarts() == 1).then_some(())).await;
+    let before = checks();
+    eventually(|| (checks() >= before + 3).then_some(())).await;
+
+    // The leader went on heartbeating soon enough to keep its followers.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    cluster.write(0, b"record").await;
+    assert_eq!(cluster.leader(0), Some(leader), "the leader changed");
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, term, "{}: an election ran", status.member);
+    }
+    assert_eq!(runtime.ticker_restarts(), 1);
+    cluster.stop().await;
+}
+
 /// A restarted broker's members come back from their logs: the vote, the
 /// entries and the membership. Nobody forms the group again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -803,30 +1027,21 @@ async fn restarted_brokers_resume_from_their_logs() {
 }
 
 /// A snapshot holds the applied id and the membership and takes nothing
-/// from the log. A member that restarts on one still has its entries.
+/// from the log, however long the log is. A member that restarts on one
+/// still has its entries.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_snapshot_keeps_the_log() {
-    use openraft::async_runtime::watch::WatchReceiver;
-
     let mut cluster = Cluster::new(true);
     cluster.form(0).await;
-    let last = cluster.write(0, b"record").await;
+    // More than openraft keeps under a snapshot unless told otherwise.
+    let last = cluster.write_many(0, 1200).await;
     cluster.committed_everywhere(0, last).await;
 
-    for runtime in cluster.runtimes() {
-        let member = runtime.group(&shard(0)).expect("group");
-        // Asked again until it covers the record: the first may be taken
-        // before the member has applied it.
-        let deadline = tokio::time::Instant::now() + PATIENCE;
-        loop {
-            member.raft().trigger().snapshot().await.expect("snapshot");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            let covered = member.raft().metrics().borrow_watched().snapshot;
-            if covered.is_some_and(|covered| covered.index >= last) {
-                break;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "no snapshot");
-        }
+    for broker in BROKERS {
+        cluster.snapshot(broker, 0, last).await;
+    }
+    for broker in BROKERS {
+        assert_eq!(cluster.purged(broker, 0), None, "{broker} purged its log");
     }
     for log in cluster.logs.values() {
         assert_eq!(log.base_offset(), 0, "a snapshot purged the log");
@@ -838,8 +1053,69 @@ async fn a_snapshot_keeps_the_log() {
     cluster.elected(0).await;
     let next = cluster.write(0, b"after").await;
     assert!(next > last);
+    for broker in BROKERS {
+        assert_eq!(cluster.purged(broker, 0), None, "{broker} purged its log");
+    }
     for log in cluster.logs.values() {
         assert_eq!(log.base_offset(), 0);
+    }
+    cluster.stop().await;
+}
+
+/// A snapshot has no records in it, so a member that installed one from
+/// ahead of its log would purge records it was never sent. A member far
+/// behind refuses the snapshot and catches up from its leader's log, which
+/// the leader's own snapshot left whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let first = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, first).await;
+    let leader = cluster.elected(0).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+
+    cluster.net.cut.lock().insert(behind.into());
+    let last = cluster.write_many(0, 1200).await;
+    let leader = cluster.elected(0).await;
+    cluster.snapshot(&leader.broker, 0, last).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let snapshot = leading.raft().get_snapshot().await.expect("read");
+    let meta = snapshot.expect("snapshot").meta;
+    assert!(meta.last_log_id.is_some_and(|id| id.index >= last));
+    assert_eq!(cluster.purged(&leader.broker, 0), None, "the leader purged");
+
+    let log = cluster.logs[&(behind.to_string(), 0)].clone();
+    let held = log.tail_offset().await.expect("tail");
+    let term = leading.status().term;
+    let leads = LeaderIdOf::<ShardTypes>::new(term, leader.clone());
+    let request = RaftRequest {
+        group: group(0),
+        to: MemberId::new(behind, 1),
+        beat: 0,
+        body: Request::Snapshot {
+            vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
+            meta,
+        },
+    };
+    let answer = cluster.runtime(behind).handle(request).await;
+    assert!(matches!(answer, Err(Refused::NoSnapshots(_))));
+    let tail = log.tail_offset().await.expect("tail");
+    assert_eq!((log.base_offset(), tail), (0, held));
+
+    cluster.net.cut.lock().clear();
+    cluster.committed_everywhere(0, last).await;
+    for broker in BROKERS {
+        assert_eq!(cluster.purged(broker, 0), None, "{broker} purged its log");
+    }
+    for log in cluster.logs.values() {
+        assert_eq!(log.base_offset(), 0, "a member is missing records");
     }
     cluster.stop().await;
 }

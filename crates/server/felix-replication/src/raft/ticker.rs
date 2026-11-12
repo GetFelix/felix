@@ -7,23 +7,59 @@
 //! never asked, and a leader is asked once per heartbeat. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use futures::StreamExt;
 use futures::stream::FuturesUnordered;
+use futures::{FutureExt, StreamExt};
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
 use super::runtime::Registry;
 
-pub(crate) async fn run(
+/// Times the ticker ended on a panic and was started again. Any increase
+/// is a bug: no group on the broker was ticked in between.
+const TICKER_RESTARTS_TOTAL: &str = "felix_broker_raft_ticker_restarts_total";
+
+/// Run the ticker until `stop`, starting it again if it panics.
+///
+/// Without a ticker no leader here heartbeats and no follower here stands,
+/// and nothing else would show it. A restart puts both back within a
+/// heartbeat, where failing the runtime would stop every group for a bug
+/// that may be in one. The restarts are logged and counted for whoever
+/// watches the broker.
+pub(crate) async fn supervise(
     registry: Arc<Registry>,
     every: Duration,
     timers: Timers,
     stop: CancellationToken,
 ) {
+    loop {
+        let ticker = run(Arc::clone(&registry), every, timers, stop.clone());
+        let Err(panic) = AssertUnwindSafe(ticker).catch_unwind().await else {
+            return;
+        };
+        let reason = panic
+            .downcast_ref::<&str>()
+            .map(|reason| reason.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "no message".into());
+        let restarts = registry.ticker_restarts.fetch_add(1, Ordering::Relaxed) + 1;
+        metrics::counter!(TICKER_RESTARTS_TOTAL).increment(1);
+        tracing::error!(%reason, restarts, "the Raft ticker panicked and is being started again");
+        // A ticker that panics every time must not spin.
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            () = tokio::time::sleep(Duration::from_millis(timers.heartbeat)) => {}
+        }
+    }
+}
+
+async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: CancellationToken) {
     let mut interval = tokio::time::interval(every);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut looks = Looks::default();
@@ -32,6 +68,10 @@ pub(crate) async fn run(
             biased;
             () = stop.cancelled() => return,
             _ = interval.tick() => {}
+        }
+        #[cfg(test)]
+        if registry.trip_ticker.swap(false, Ordering::Relaxed) {
+            panic!("tripped by a test");
         }
         let due = looks.due(registry.ticked(), &timers);
         tokio::select! {

@@ -557,7 +557,20 @@ Rules for the ticker:
   short interval back. See "Idle groups" below.
 - **The interval adds to timeouts.** A timeout is noticed at the next tick,
   so the tick interval is added to election and heartbeat latency. The lease
-  margin (engine page, Decisions, 5) counts it.
+  margin (engine page, Decisions, 5) counts it. For the heartbeat that is
+  the whole interval: openraft sends one only once 200 ms have passed since
+  it handled the last, and the tick 200 ms later arrives a moment too
+  early. So a busy leader heartbeats every 250 ms, not every 200.
+- **A ticker that panics is started again.** With no ticker, no leader on
+  the broker heartbeats and no follower stands, and nothing else would
+  show it. The runtime catches the panic, logs it at error, adds one to
+  `felix_broker_raft_ticker_restarts_total` and to
+  `GroupRuntime::ticker_restarts()`, waits one heartbeat and starts the
+  ticker again. Restarting was chosen over failing the runtime: a restart
+  has every group ticked again well inside the election timeout, and
+  failing would stop every group on the broker for a bug that may be in
+  one. Any restart is a bug to look at, so the count is there for the
+  broker's health check to read when the runtime is wired in (#2233).
 
 Cost: 9 microseconds is a floor. It is the average over ticks every
 10 ms, four of five of which send nothing, while a due tick sends a
@@ -580,7 +593,7 @@ like any other.
 
 A group is idle when its leader has sent no entry for `idle_after` (5 s).
 An idle leader heartbeats every `idle_heartbeat` (2 s) instead of every
-200 ms. The cost is that a dead leader of an idle group is noticed later.
+250 ms (the 200 ms heartbeat, sent at the next tick). The cost is that a dead leader of an idle group is noticed later.
 A group that takes writes is unchanged.
 
 The rule that keeps a slow leader from being deposed by its own followers:
@@ -597,10 +610,18 @@ Nothing is negotiated. Each side acts only on what it has seen:
   spread per member so the followers do not stand in the same tick. Two
   lost heartbeats therefore start no election. openraft's own timeout
   still applies on top, so the wait is the longer of the two.
-- A leader goes on heartbeating at 200 ms, naming the idle gap, until every
-  follower has answered a message that named it. Only then does it slow
-  down. Sending an entry voids those answers and makes the next heartbeat
-  due within 200 ms.
+- A follower holds the gap it is told to its own idle interval. The value
+  comes from a peer, and no message may make a follower wait longer than
+  the timers it was configured with.
+- A leader goes on heartbeating at the short interval, naming the idle gap,
+  until every follower has answered a message that named it. Only then
+  does it slow down. Sending an entry voids those answers and makes the
+  next heartbeat due within 200 ms.
+- A follower that restarts has forgotten the gap and may stand as soon as
+  openraft lets it. So a message a follower does not take, because it was
+  lost, refused or rejected, voids that follower's answer too. The leader
+  is back at the short interval within one heartbeat and stays there until
+  the follower answers again.
 
 So a lost message can leave a leader fast or a follower patient, and
 never a slow leader with an impatient follower. A follower that has
@@ -609,6 +630,11 @@ is gone, and stops holding the leader at the short interval. A follower
 whose answers are all lost for that long, while it still hears the leader,
 is the one case left: the leader keeps heartbeating at the short interval
 meanwhile, so the follower keeps hearing it and does not stand.
+
+One window is left open. A follower that was down for longer than those
+5 s no longer holds the leader fast, so if it comes back and the first
+idle heartbeat to it is lost, it can stand before the next one. That costs
+an election in an idle group and no record.
 
 openraft has one heartbeat interval and one election timeout per group,
 fixed when the group starts, so none of this changes its configuration.
@@ -666,9 +692,11 @@ open:
   group (shard and epoch) and the member (broker and copy id). The runtime
   hands it on only if both match the member it holds. A message for an
   older copy or another epoch is refused.
-- `close(shard)` stops one member and leaves its log to the caller.
-  `shutdown()` stops the ticker and every member. Neither writes anything:
-  what a member acknowledged is already on disk.
+- `close(shard)` stops one member and leaves its log to the caller. The
+  shard stays taken until the member has stopped, even if the caller stops
+  waiting: an `open` before that is refused as `Closing`, so two members
+  never run on one log. `shutdown()` stops the ticker and every member.
+  Neither writes anything: what a member acknowledged is already on disk.
 - `status(shard)` reports the member's role, term, leader, last index,
   committed index, the last entry written and the last entry flushed, and
   the ticks it was sent and the ticks dropped.
@@ -694,6 +722,17 @@ What the runtime sets in openraft: the timers from Questions, 4;
 retention and never because a snapshot was taken; and `allow_log_reversion`
 off (Questions, 2). Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
+
+A snapshot must not cost a record either, and a shard group's snapshot
+holds none. Two settings keep that true until retention is designed:
+
+- `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
+  default keeps only the last 1,000 entries under a snapshot and purges
+  the rest, which here would be records.
+- No member takes a snapshot from a peer. Installing one purges the log up
+  to it, so a member behind its leader would drop records it was never
+  sent. The member answers `NoSnapshots` and logs an error. A leader keeps
+  its whole log, so a member that is behind is sent the entries.
 
 Each group has a small state machine that keeps the last applied entry and
 the membership in memory. A shard's state is its log. A membership record's
@@ -1780,8 +1819,10 @@ ones settled by the decisions of issue #2167 say so.
 
 4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
    heartbeat 200 ms, idle heartbeat 2 s after 5 s without an entry,
-   election timeout 1 to 2 s. That is a quarter of the default heartbeat
-   traffic for a busy group and a tenth for an idle one. A follower
+   election timeout 1 to 2 s. A busy leader's heartbeat goes out at the
+   next tick, every 250 ms ("One timer for every group"). That is a fifth
+   of the default heartbeat traffic for a busy group and a fortieth for an
+   idle one. A follower
    stands 3 to 4 s after its leader's last message, because openraft adds
    the leader lease (2 s) to the election timeout. That is ahead of the
    hybrid's 5 s suspicion. The failover cells decide the final values. A

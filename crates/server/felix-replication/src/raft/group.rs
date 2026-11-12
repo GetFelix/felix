@@ -49,6 +49,12 @@ impl Timers {
     pub(crate) fn now(&self) -> u64 {
         self.started.elapsed().as_millis() as u64
     }
+
+    /// A peer that has answered nothing for this long has timed out
+    /// whatever gap it was told: it has stood or is gone.
+    fn silent(&self) -> u64 {
+        self.election_min + 2 * self.election_max
+    }
 }
 
 /// How fast a group's timers run: a leader that has sent no entry for
@@ -60,8 +66,9 @@ impl Timers {
 /// by the gap its leader last told it, and a leader slows down only once
 /// every follower has answered a message that named the idle gap. A lost
 /// message leaves the leader fast or the follower patient, never a patient
-/// leader with an impatient follower. See `docs/per-shard-raft.md`, "Idle
-/// groups".
+/// leader with an impatient follower. A follower that restarts forgets the
+/// gap it was told, so an append it does not take voids its answer. See
+/// `docs/per-shard-raft.md`, "Idle groups".
 pub(crate) struct Pace {
     timers: Timers,
     /// When the next timer check can matter, in milliseconds on the
@@ -148,6 +155,25 @@ impl Pace {
         }
     }
 
+    /// `to` did not take the append: it was lost, refused or rejected. The
+    /// peer may have restarted and forgotten the idle gap, so the leader
+    /// goes back to the short one until it answers again.
+    pub(crate) fn unanswered(&self, to: &MemberId) {
+        let timers = &self.timers;
+        let now = timers.now();
+        let mut peers = self.peers.lock();
+        let Some(peer) = peers.iter_mut().find(|peer| &peer.id == to) else {
+            return;
+        };
+        peer.idle_under = None;
+        // A peer long silent is not waited for (`leader_gap`), so a broker
+        // that is down does not keep its groups' leaders fast.
+        if now < peer.answered + timers.silent() {
+            self.due
+                .fetch_min(now + timers.heartbeat, Ordering::Relaxed);
+        }
+    }
+
     /// How long a leader waits until its next heartbeat.
     pub(super) fn leader_gap(&self, now: u64) -> u64 {
         let timers = &self.timers;
@@ -155,9 +181,8 @@ impl Pace {
         if timers.idle_heartbeat <= timers.heartbeat || now < wrote + timers.idle_after {
             return timers.heartbeat;
         }
-        // A peer silent this long has timed out whatever it was told, so it
-        // no longer holds the leader to the short gap.
-        let silent = timers.election_min + 2 * timers.election_max;
+        // A peer long silent no longer holds the leader to the short gap.
+        let silent = timers.silent();
         let patient = |peer: &Peer| peer.idle_under == Some(wrote) || now >= peer.answered + silent;
         match self.peers.lock().iter().all(patient) {
             true => timers.idle_heartbeat,
@@ -174,7 +199,10 @@ impl Pace {
         if promised <= timers.heartbeat {
             return timers.election_min;
         }
-        timers.election_min.max(3 * promised) + self.jitter
+        timers
+            .election_min
+            .max(promised.saturating_mul(3))
+            .saturating_add(self.jitter)
     }
 
     /// This member took an append from its leader, which named `gap`.
@@ -182,13 +210,18 @@ impl Pace {
         let timers = &self.timers;
         let now = timers.now();
         if let Some(gap) = gap {
-            // An unknown gap is the short one: checked early is safe.
-            let gap = if gap == 0 { timers.heartbeat } else { gap };
+            // An unknown gap is the short one: checked early is safe. The
+            // value is a peer's, so it is held to the longest gap this
+            // member would name itself: no message can make it wait longer.
+            let gap = match gap {
+                0 => timers.heartbeat,
+                gap => gap.min(timers.idle_heartbeat),
+            };
             self.promised.store(gap, Ordering::Relaxed);
         }
         self.heard.store(now, Ordering::Relaxed);
         self.due
-            .store(now + self.follower_wait(), Ordering::Relaxed);
+            .store(now.saturating_add(self.follower_wait()), Ordering::Relaxed);
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
@@ -311,7 +344,8 @@ impl Group {
             // is due and not just before it.
             ServerState::Leader => now + pace.leader_gap(now) + 1,
             ServerState::Follower | ServerState::Candidate => {
-                (pace.heard.load(Ordering::Relaxed) + pace.follower_wait()).max(now + tick)
+                let heard = pace.heard.load(Ordering::Relaxed);
+                heard.saturating_add(pace.follower_wait()).max(now + tick)
             }
             ServerState::Learner | ServerState::Shutdown => now + election_min,
         }
@@ -323,7 +357,6 @@ impl Group {
         let reply = self.dispatch(body).await?;
         match &reply {
             Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
-            Reply::Snapshot(_) => self.pace.followed(None),
             Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
             _ => {}
         }
@@ -357,16 +390,17 @@ impl Group {
                 .await
                 .map(Reply::Vote)
                 .map_err(|err| stopped(err.to_string())),
-            Request::Snapshot { vote, meta } => {
-                let snapshot = openraft::type_config::alias::SnapshotOf::<ShardTypes, Vec<u8>> {
-                    meta,
-                    snapshot: Vec::new(),
-                };
-                self.raft
-                    .install_full_snapshot(vote, snapshot)
-                    .await
-                    .map(Reply::Snapshot)
-                    .map_err(|err| stopped(err.to_string()))
+            // A snapshot carries no records, and installing one purges the
+            // log up to it: the member would drop records it was never
+            // sent. Refused until retention says how a member that far
+            // behind gets them.
+            Request::Snapshot { meta, .. } => {
+                let member = Box::new(Addressee {
+                    group: self.id.clone(),
+                    to: self.member.clone(),
+                });
+                tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: taking it would purge records this member was not sent");
+                Err(Refused::NoSnapshots(member))
             }
             Request::TransferLeader(req) => self
                 .raft
