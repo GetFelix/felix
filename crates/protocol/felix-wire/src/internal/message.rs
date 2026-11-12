@@ -4,7 +4,7 @@ use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, LeaseForwardCacheOk, NotLeader,
     PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, ReplicateBootstrap, ReplicateError,
-    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords, StoreLiveness,
 };
 
 /// A decoded internal message.
@@ -62,6 +62,7 @@ pub enum InternalMessage {
     ReplicateFetch(ReplicateFetch),
     Ping(Ping),
     Pong(Pong),
+    StoreLiveness(StoreLiveness),
     PreVote(PreVote),
     PreVoteAnswer(PreVoteAnswer),
     /// A conditional put that asks the owner to mint a lease token. The body
@@ -165,6 +166,7 @@ impl InternalMessage {
             Self::ReplicateFetch(_) => Kind::ReplicateFetch,
             Self::Ping(_) => Kind::Ping,
             Self::Pong(_) => Kind::Pong,
+            Self::StoreLiveness(_) => Kind::StoreLiveness,
             Self::PreVote(_) => Kind::PreVote,
             Self::PreVoteAnswer(_) => Kind::PreVoteAnswer,
             Self::LeaseForwardCacheOp(_) => Kind::LeaseForwardCacheOp,
@@ -175,6 +177,9 @@ impl InternalMessage {
     /// The capability a peer must have offered to be sent this message, if
     /// any. The pool refuses to send one the peer did not offer.
     pub fn required_capability(&self) -> Option<PeerCapabilities> {
+        if matches!(self, Self::StoreLiveness(_)) {
+            return Some(PeerCapabilities::STORE_LIVENESS);
+        }
         let election = match self {
             Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
                 Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
@@ -315,6 +320,7 @@ impl InternalMessage {
             Self::ReplicateFetch(m) => m.correlation_id,
             Self::Ping(m) => m.correlation_id,
             Self::Pong(m) => m.correlation_id,
+            Self::StoreLiveness(m) => m.correlation_id,
             Self::PreVote(m) => m.correlation_id,
             Self::PreVoteAnswer(m) => m.correlation_id,
             Self::LeaseForwardCacheOp(m) => m.correlation_id,

@@ -96,6 +96,7 @@ fn the_existing_kind_discriminants_are_unchanged() {
         (52, Kind::SequencedForwardPublish),
         (53, Kind::FenceKeptOk),
         (54, Kind::FenceAttestedOk),
+        (57, Kind::StoreLiveness),
     ] {
         assert_eq!(Kind::from_u16(value).expect("known"), kind);
         assert_eq!(kind as u16, value);
@@ -153,6 +154,10 @@ fn every_body_begins_with_its_correlation_id() {
         }),
         InternalMessage::Ping(Ping { correlation_id: id }),
         InternalMessage::Pong(Pong { correlation_id: id }),
+        InternalMessage::StoreLiveness(StoreLiveness {
+            correlation_id: id,
+            epoch: 3,
+        }),
         InternalMessage::FenceOk(FenceOk {
             correlation_id: id,
             log_end: 1,

@@ -96,6 +96,10 @@ pub(crate) struct Node {
     /// Killed uncleanly and not up since: the next start distrusts every
     /// copy, so until it is up the sim reads its copies as doubted.
     left_unclean: std::sync::atomic::AtomicBool,
+    /// How long this broker's store-liveness probe sync takes, in
+    /// milliseconds. Outlives a restart, as a slow disk does.
+    #[cfg(feature = "raft")]
+    pub(crate) probe_delay_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Node {
@@ -108,6 +112,8 @@ impl Node {
             state: Mutex::new(State::Down),
             index,
             left_unclean: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(feature = "raft")]
+            probe_delay_ms: Arc::default(),
         })
     }
 
@@ -177,6 +183,10 @@ impl Node {
         if config.finalize_record_generations.is_some() {
             broker_config.segment_size_bytes = Some(RECORD_GENERATIONS_SEGMENT_BYTES);
         }
+        #[cfg(feature = "raft")]
+        if config.store_liveness {
+            broker_config.store_liveness = Some(Arc::clone(&self.probe_delay_ms));
+        }
         let link = NodeLink::new(cp.link(), self.cut.clone());
         let opened = clock::on(
             self.owner(),
@@ -239,6 +249,12 @@ impl Node {
         self.left_unclean
             .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
+    }
+
+    /// The running broker's store liveness, when the run turned it on.
+    #[cfg(feature = "raft")]
+    pub(crate) fn store_liveness(&self) -> Option<Arc<felix_replication::liveness::Liveness>> {
+        self.broker()?.store_liveness()
     }
 
     /// Whether the running broker started with its unclean-start handling.

@@ -138,6 +138,7 @@ pub(super) fn bind_peer_listener(
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
     clients: Option<CancellationToken>,
     serving: Option<&CancellationToken>,
+    store_liveness: super::store_liveness::StoreLiveness,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -166,7 +167,8 @@ pub(super) fn bind_peer_listener(
                 let handler = match clients {
                     Some(clients) => handler.serving_clients_after(clients),
                     None => handler,
-                };
+                }
+                .with_store_liveness(store_liveness);
                 let server = peer::PeerServer::bind_with_tls(
                     membership_config.node_id.clone(),
                     peer_config,

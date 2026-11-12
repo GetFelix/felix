@@ -155,6 +155,9 @@ demo = []
 # transport and control-plane link, for the deterministic simulator. Off in
 # the release binary.
 sim = []
+# Per-shard Raft (`docs/per-shard-raft.md`). No release enables it. Today it
+# compiles store liveness, which runs only with `FELIX_STORE_LIVENESS=shadow`.
+raft = ["felix-replication/raft"]
 telemetry = ["felix-client/telemetry", "felix-broker/telemetry"]
 perf_debug = ["felix-broker/perf_debug"]
 

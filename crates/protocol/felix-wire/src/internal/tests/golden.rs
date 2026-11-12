@@ -99,6 +99,34 @@ fn replicate_records_matches_its_golden_vector() {
 }
 
 #[test]
+fn store_liveness_matches_its_golden_vector() {
+    let message = InternalMessage::StoreLiveness(StoreLiveness {
+        correlation_id: 9,
+        epoch: 0x0102,
+    });
+    let expected: Vec<u8> = [
+        &[0x46, 0x4C, 0x58, 0x49][..],
+        &[0x00, 0x01][..],
+        &[0x00, 57][..],
+        &[0x00, 0x00, 0x00, 0x10][..],
+        &[0, 0, 0, 0, 0, 0, 0, 9][..],
+        // the sender's store epoch
+        &[0, 0, 0, 0, 0, 0, 1, 2][..],
+    ]
+    .concat();
+    assert_eq!(
+        message.encode().expect("encode").as_ref(),
+        expected.as_slice()
+    );
+    assert_eq!(
+        message.required_capability(),
+        Some(PeerCapabilities::STORE_LIVENESS)
+    );
+    let frame = message.encode().expect("encode");
+    assert_eq!(InternalMessage::decode(frame).expect("decode"), message);
+}
+
+#[test]
 fn ping_and_pong_match_their_golden_vectors() {
     for (message, kind) in [
         (InternalMessage::Ping(Ping { correlation_id: 9 }), 38u8),

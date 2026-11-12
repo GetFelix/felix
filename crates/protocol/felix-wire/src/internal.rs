@@ -26,7 +26,9 @@ pub use election::{
     PreVoteRefusal, ReplicaSetView, SetMember,
 };
 pub use error_code::ErrorCode;
-pub use fence::{Fence, FenceAttestation, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch};
+pub use fence::{
+    Fence, FenceAttestation, FenceOk, PeerCapabilities, Ping, Pong, ReplicateFetch, StoreLiveness,
+};
 pub use forward::{
     AckMode, CacheOpKind, ForwardCacheCondition, ForwardCacheError, ForwardCacheOk, ForwardCacheOp,
     ForwardCacheOutcome, ForwardLease, ForwardProducer, ForwardPublish, ForwardPublishError,

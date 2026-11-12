@@ -34,7 +34,14 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 
+[features]
+# Brokers built with per-shard Raft's code (`docs/per-shard-raft.md`), so a
+# run can turn store liveness on.
+raft = ["felix-broker-service/raft", "felix-replication/raft"]
+
 [dev-dependencies]
+# Turns `raft` on for this crate's own tests, so `cargo test` runs them.
+felix-sim = { path = ".", features = ["raft"] }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -173,6 +173,10 @@ pub struct PeerTransportConfig {
     /// Only takes effect with `fence`, and the broker turns it off without a
     /// durable directory, which has nothing to attest.
     pub unified_fence: bool,
+    /// Whether this broker runs store liveness (`docs/per-shard-raft.md`,
+    /// "Store liveness") and so takes its peers' heartbeats. Off by default,
+    /// and only a build with the `raft` feature ever turns it on.
+    pub store_liveness: bool,
 }
 
 /// Where a broker's peer identity comes from. All three or none: a listener
@@ -211,6 +215,7 @@ impl Default for PeerTransportConfig {
             fence: true,
             election: false,
             unified_fence: true,
+            store_liveness: false,
         }
     }
 }
@@ -275,7 +280,12 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::HEAD_TRIM)
             .union(PeerCapabilities::RECORD_HEADERS)
             .union(PeerCapabilities::SEQUENCED_FORWARDS)
-            .union(PeerCapabilities::WRITER_GENERATIONS);
+            .union(PeerCapabilities::WRITER_GENERATIONS)
+            .union(if self.store_liveness {
+                PeerCapabilities::STORE_LIVENESS
+            } else {
+                PeerCapabilities::NONE
+            });
         if self.fence {
             labels
                 .union(PeerCapabilities::FENCE)
@@ -358,6 +368,23 @@ impl PeerTransportConfig {
                 ));
             }
         };
+        #[cfg(feature = "raft")]
+        {
+            config.store_liveness = match std::env::var("FELIX_STORE_LIVENESS")
+                .ok()
+                .map(|value| value.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                None | Some("" | "off") => false,
+                Some("shadow") => true,
+                Some(other) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::InvalidInput,
+                        format!("FELIX_STORE_LIVENESS must be shadow or off, not {other:?}"),
+                    ));
+                }
+            };
+        }
         config.election = match std::env::var("FELIX_INTERNAL_ELECTION")
             .ok()
             .map(|value| value.trim().to_ascii_lowercase())

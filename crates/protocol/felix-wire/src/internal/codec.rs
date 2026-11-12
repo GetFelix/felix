@@ -16,7 +16,7 @@ use super::{
     MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
     Pong, PreVote, PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView,
     ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
-    ReplicateRecords, SetMember, ShardRef,
+    ReplicateRecords, SetMember, ShardRef, StoreLiveness,
 };
 use crate::error::{Error, Result};
 
@@ -217,6 +217,10 @@ impl InternalMessage {
             }
             Self::Ping(Ping { correlation_id }) | Self::Pong(Pong { correlation_id }) => {
                 body.put_u64(*correlation_id);
+            }
+            Self::StoreLiveness(m) => {
+                body.put_u64(m.correlation_id);
+                body.put_u64(m.epoch);
             }
             Self::FenceOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -841,6 +845,14 @@ impl InternalMessage {
                 } else {
                     Self::Pong(Pong { correlation_id })
                 })
+            }
+            Kind::StoreLiveness => {
+                let message = StoreLiveness {
+                    correlation_id: take_u64(&mut body)?,
+                    epoch: take_u64(&mut body)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::StoreLiveness(message))
             }
             Kind::FenceOk | Kind::FenceKeptOk | Kind::FenceAttestedOk => {
                 let mut message = FenceOk {

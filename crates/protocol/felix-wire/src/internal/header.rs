@@ -247,6 +247,12 @@ pub enum Kind {
     ReplicateStampedRecords = 55,
     /// `ReplicateHeaderedFetch`, answered with `ReplicateStampedRecords`.
     ReplicateStampedFetch = 56,
+    /// One broker tells another its store is alive: the correlation id and
+    /// the sender's store epoch. Answered with `Pong`. Sent only to a peer
+    /// that offered [`PeerCapabilities::STORE_LIVENESS`].
+    ///
+    /// [`PeerCapabilities::STORE_LIVENESS`]: super::PeerCapabilities::STORE_LIVENESS
+    StoreLiveness = 57,
 }
 
 impl Kind {
@@ -310,6 +316,7 @@ impl Kind {
             54 => Ok(Kind::FenceAttestedOk),
             55 => Ok(Kind::ReplicateStampedRecords),
             56 => Ok(Kind::ReplicateStampedFetch),
+            57 => Ok(Kind::StoreLiveness),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

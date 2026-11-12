@@ -47,6 +47,8 @@
 
 mod census;
 pub(crate) mod kills;
+#[cfg(feature = "raft")]
+mod liveness;
 mod node;
 pub(crate) mod power;
 
@@ -143,6 +145,11 @@ pub struct SimConfig {
     /// at startup). `Some` also gives the brokers small segments, so their
     /// logs roll onto format v9 after it.
     pub finalize_record_generations: Option<Duration>,
+    /// Whether the brokers run store liveness in shadow mode. Off by default,
+    /// so a seed's schedule stays what it was: its heartbeats cross the
+    /// simulated network like any other message.
+    #[cfg(feature = "raft")]
+    pub store_liveness: bool,
 }
 
 impl SimConfig {
@@ -169,6 +176,8 @@ impl SimConfig {
             clock_plan: None,
             finalize_election: true,
             finalize_record_generations: None,
+            #[cfg(feature = "raft")]
+            store_liveness: false,
         }
     }
 

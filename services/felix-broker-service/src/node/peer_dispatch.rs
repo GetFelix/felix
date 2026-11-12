@@ -28,6 +28,8 @@ pub(crate) struct BrokerPeerHandler<E> {
     /// started from its control-plane view: it serves no client until it has
     /// registered, as its own listeners do not.
     clients: Option<CancellationToken>,
+    /// Takes peers' store-liveness heartbeats, on a broker that runs it.
+    liveness: super::store_liveness::StoreLiveness,
 }
 
 impl<E> BrokerPeerHandler<E> {
@@ -36,6 +38,7 @@ impl<E> BrokerPeerHandler<E> {
             forwarding,
             engine,
             clients: None,
+            liveness: Default::default(),
         }
     }
 
@@ -52,6 +55,15 @@ impl<E> BrokerPeerHandler<E> {
     /// Refuse forwarded client requests until `clients` is cancelled.
     pub(crate) fn serving_clients_after(mut self, clients: CancellationToken) -> Self {
         self.clients = Some(clients);
+        self
+    }
+
+    /// Hand peers' store-liveness heartbeats to `liveness`.
+    pub(crate) fn with_store_liveness(
+        mut self,
+        liveness: super::store_liveness::StoreLiveness,
+    ) -> Self {
+        self.liveness = liveness;
         self
     }
 
@@ -119,6 +131,17 @@ impl<E: Engine + 'static> PeerRequestHandler for BrokerPeerHandler<E> {
             | InternalMessage::Fence(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::PreVote(_)) => self.engine.handle(sender, caller, request).await,
+            // Shadow mode: recorded and answered, and nothing else reads it.
+            InternalMessage::StoreLiveness(beat) => {
+                let correlation_id = beat.correlation_id;
+                self.liveness.heard(sender, beat).unwrap_or_else(|| {
+                    InternalMessage::ForwardPublishError(ForwardPublishError {
+                        correlation_id,
+                        code: ErrorCode::UnsupportedKind,
+                        detail: "this broker does not run store liveness".to_string(),
+                    })
+                })
+            }
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => InternalMessage::ForwardPublishError(ForwardPublishError {

@@ -154,6 +154,9 @@ impl PeerCapabilities {
     /// `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`, since a
     /// stamped batch travels on the headered layout.
     pub const WRITER_GENERATIONS: Self = Self(1 << 22);
+    /// Takes [`StoreLiveness`] heartbeats. Offered only by a broker that
+    /// runs store liveness, so no other broker is ever sent one.
+    pub const STORE_LIVENESS: Self = Self(1 << 23);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
@@ -287,8 +290,17 @@ pub struct Ping {
     pub correlation_id: u64,
 }
 
-/// The answer to [`Ping`].
+/// The answer to [`Ping`] and to [`StoreLiveness`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pong {
     pub correlation_id: u64,
+}
+
+/// A store-liveness heartbeat: the sender's disk took a synced write
+/// recently. See "Store liveness" in `docs/per-shard-raft.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreLiveness {
+    pub correlation_id: u64,
+    /// Rises each time the sender starts, so a restart shows.
+    pub epoch: u64,
 }

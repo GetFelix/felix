@@ -689,6 +689,19 @@ async fn serve_connection(
                         });
                         continue;
                     }
+                    // Like a ping: out of order and without a permit, so a
+                    // heartbeat never waits behind a slow fence and reads as
+                    // a stalled store. Reached only when this broker offers
+                    // `STORE_LIVENESS`.
+                    request @ InternalMessage::StoreLiveness(_) => {
+                        let handler = Arc::clone(&handler);
+                        let peer = identity.lock().clone();
+                        let send = Arc::clone(&send);
+                        app.spawn(async move {
+                            answer_out_of_order(&send, offered_by, handler.handle_from(peer, offered_by, request)).await;
+                        });
+                        continue;
+                    }
                     // Fences, tail fetches and pre-votes run side by side and
                     // are answered as they finish, so a promotion fence slow
                     // to persist does not hold up a read round's fence or a

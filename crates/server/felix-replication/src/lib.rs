@@ -50,6 +50,8 @@ mod follower;
 pub mod halted;
 mod incarnation;
 pub(crate) mod leadership;
+#[cfg(feature = "raft")]
+pub mod liveness;
 pub(crate) mod metrics;
 pub mod promotion;
 pub mod quorum;

@@ -237,3 +237,30 @@ pub(crate) fn record_quorum_wait(waited: std::time::Duration) {
 pub(crate) fn record_quorum(reason: &'static str) {
     metrics::counter!(QUORUM_FAILED_TOTAL, "reason" => reason).increment(1);
 }
+
+/// Store liveness (`liveness`), all from shadow mode: nothing acts on them.
+///
+/// How long each disk probe took. A tail near the stall limit means the
+/// volume is close to silencing this broker.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_PROBE_SECONDS: &str = "felix_broker_store_liveness_probe_seconds";
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_PROBE_FAILURES_TOTAL: &str =
+    "felix_broker_store_liveness_probe_failures_total";
+/// Heartbeats sent, by `outcome`.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_HEARTBEATS_TOTAL: &str = "felix_broker_store_liveness_heartbeats_total";
+/// 1 while this broker sends heartbeats, 0 while its disk has stalled.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_SENDING: &str = "felix_broker_store_liveness_sending";
+/// Peers this broker watches, and how many it would not support right now.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_PEERS: &str = "felix_broker_store_liveness_peers";
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_PEERS_WITHDRAWN: &str = "felix_broker_store_liveness_peers_withdrawn";
+/// Leaders whose groups' members here would still be held after a start.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_HELD_LEADERS: &str = "felix_broker_store_liveness_held_leaders";
+/// What store liveness would have done, by `decision`.
+#[cfg(feature = "raft")]
+pub(crate) const LIVENESS_DECISIONS_TOTAL: &str = "felix_broker_store_liveness_decisions_total";

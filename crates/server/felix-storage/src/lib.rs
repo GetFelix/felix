@@ -78,6 +78,8 @@ mod shard_slots;
 #[cfg(feature = "sim")]
 pub mod sim_fs;
 pub mod storage_identity;
+#[cfg(feature = "raft")]
+pub mod store_liveness;
 mod task;
 pub mod tiered;
 

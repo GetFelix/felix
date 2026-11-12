@@ -88,6 +88,10 @@ pub struct SimBrokerConfig {
     /// A segment size to use instead of the default, so a short run rolls
     /// its logs onto new segments.
     pub segment_size_bytes: Option<u64>,
+    /// Run store liveness in shadow mode, with a disk whose probe sync takes
+    /// this many milliseconds of virtual time. `None` leaves it off.
+    #[cfg(feature = "raft")]
+    pub store_liveness: Option<Arc<AtomicU64>>,
 }
 
 impl SimBrokerConfig {
@@ -103,6 +107,8 @@ impl SimBrokerConfig {
             ),
             fsync_mode: felix_storage::log::FsyncMode::None,
             segment_size_bytes: None,
+            #[cfg(feature = "raft")]
+            store_liveness: None,
             node_id,
             data_dir: data_dir.into(),
         }
@@ -115,6 +121,8 @@ impl SimBrokerConfig {
             election: true,
             // So a seed can be replayed with the kill switch thrown.
             unified_fence: std::env::var("FELIX_UNIFIED_FENCE").map_or(true, |v| v.trim() != "0"),
+            #[cfg(feature = "raft")]
+            store_liveness: self.store_liveness.is_some(),
             ..Default::default()
         };
         BrokerConfig {
@@ -169,6 +177,7 @@ pub struct OpenedBroker<L> {
     quorum_marks: Arc<QuorumMarks>,
     engine: Arc<crate::shards::routing::StreamEngine>,
     handler: Arc<dyn PeerRequestHandler>,
+    store_liveness: super::store_liveness::StoreLiveness,
     prefetch: Option<replication::confirmed::Prefetch>,
     capabilities: PeerCapabilities,
     outgoing: PeerCapabilities,
@@ -195,6 +204,8 @@ pub struct SimBroker {
     started_unclean: bool,
     node_id: String,
     membership: Option<MembershipTask>,
+    #[cfg(feature = "raft")]
+    store_liveness: super::store_liveness::StoreLiveness,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
 }
@@ -320,7 +331,28 @@ impl SimBroker {
                 )) as Arc<dyn replication::confirmed::ConfirmedRoutes>
             }),
         );
-        let handler = Arc::new(handler);
+        #[cfg(feature = "raft")]
+        let store_liveness = {
+            let delay = config.store_liveness.clone();
+            super::store_liveness::StoreLiveness::open_with(
+                &broker_config,
+                durable_storage.as_ref().map(DurableStorage::root),
+                move |probe| {
+                    Arc::new(SlowDisk {
+                        probe,
+                        delay_ms: delay.unwrap_or_default(),
+                    })
+                },
+            )
+            .await?
+        };
+        #[cfg(not(feature = "raft"))]
+        let store_liveness = super::store_liveness::StoreLiveness::open(
+            &broker_config,
+            durable_storage.as_ref().map(DurableStorage::root),
+        )
+        .await?;
+        let handler = Arc::new(handler.with_store_liveness(store_liveness.clone()));
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {
             capabilities: peer.capabilities(),
@@ -339,6 +371,7 @@ impl SimBroker {
             quorum_marks,
             engine,
             handler,
+            store_liveness,
             prefetch,
             registered,
             registered_watch,
@@ -398,6 +431,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             registered,
             registered_watch,
             handler: _,
+            store_liveness,
             capabilities: _,
             outgoing: _,
         } = self;
@@ -513,6 +547,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
         }
         let (router, ingress, lifecycle, ownership) =
             cluster.expect("a cluster member has shard state");
+        store_liveness.start(&peers, Some(&router), &shutdown);
         SimBroker {
             broker,
             router,
@@ -530,13 +565,38 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             started_unclean,
             node_id,
             membership,
+            #[cfg(feature = "raft")]
+            store_liveness,
             shutdown,
             tasks,
         }
     }
 }
 
+/// The real probe behind a sync that takes `delay_ms` of virtual time.
+#[cfg(feature = "raft")]
+struct SlowDisk {
+    probe: replication::liveness::VolumeProbe,
+    delay_ms: Arc<AtomicU64>,
+}
+
+#[cfg(feature = "raft")]
+#[async_trait::async_trait]
+impl replication::liveness::ProbeDisk for SlowDisk {
+    async fn probe(&self) -> std::io::Result<()> {
+        let delay = self.delay_ms.load(std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(Duration::from_millis(delay)).await;
+        self.probe.probe().await
+    }
+}
+
 impl SimBroker {
+    /// This broker's store liveness, when the config turned it on.
+    #[cfg(feature = "raft")]
+    pub fn store_liveness(&self) -> Option<Arc<replication::liveness::Liveness>> {
+        self.store_liveness.running()
+    }
+
     pub fn broker(&self) -> &Arc<Broker> {
         &self.broker
     }

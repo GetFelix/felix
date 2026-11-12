@@ -40,6 +40,7 @@ mod correlation {
             InternalMessage::ReplicateFetch(m) => m.correlation_id,
             InternalMessage::Ping(m) => m.correlation_id,
             InternalMessage::Pong(m) => m.correlation_id,
+            InternalMessage::StoreLiveness(m) => m.correlation_id,
             InternalMessage::PreVote(m) => m.correlation_id,
             InternalMessage::PreVoteAnswer(m) => m.correlation_id,
             InternalMessage::LeaseForwardCacheOp(m) => m.correlation_id,
@@ -63,6 +64,10 @@ mod correlation {
         vec![
             InternalMessage::Ping(Ping { correlation_id: 7 }),
             InternalMessage::Pong(Pong { correlation_id: 7 }),
+            InternalMessage::StoreLiveness(StoreLiveness {
+                correlation_id: 7,
+                epoch: 2,
+            }),
             InternalMessage::PreVote(PreVote {
                 correlation_id: 7,
                 shard: shard(),
@@ -266,7 +271,8 @@ mod correlation {
                 | InternalMessage::Fence(_)
                 | InternalMessage::PreVote(_)
                 | InternalMessage::ReplicateFetch(_)
-                | InternalMessage::Ping(_) => {
+                | InternalMessage::Ping(_)
+                | InternalMessage::StoreLiveness(_) => {
                     assert_eq!(class, LaneClass::Control, "{:?}", message.kind())
                 }
                 other => assert_eq!(class, LaneClass::Replication, "{:?}", other.kind()),

@@ -32,6 +32,7 @@ mod shutdown;
 pub mod sim;
 mod startup;
 pub(crate) mod storage;
+pub(crate) mod store_liveness;
 mod sync;
 
 use std::future::Future;
@@ -106,6 +107,8 @@ where
         && let Some(peer) = config.peer_transport.as_mut()
     {
         peer.unified_fence = false;
+        // Store liveness is tied to the disk, and there is none.
+        peer.store_liveness = false;
     }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
@@ -534,6 +537,11 @@ where
         }),
         &sync_shutdown,
     );
+    let store_liveness = store_liveness::StoreLiveness::open(
+        &config,
+        durable_storage.as_ref().map(|storage| storage.root()),
+    )
+    .await?;
     // Its own token, so a stopping broker can stop taking forwarded writes
     // while it still ships to followers over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();
@@ -558,6 +566,7 @@ where
         // for the shards it leads instead of waiting on it. After a start from
         // the view that lasts until it has registered.
         gate_readiness_on_sync.then_some(&clients),
+        store_liveness.clone(),
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -584,6 +593,11 @@ where
         leads_after: view.as_ref().map(|_| clients.clone()),
         sync_shutdown: &sync_shutdown,
     });
+    store_liveness.start(
+        &peers,
+        cluster.as_ref().map(|(router, _, _, _)| router),
+        &sync_shutdown,
+    );
 
     // Only where a restart could start from it: a cluster member with a data
     // directory whose routes come from the shard watch.
