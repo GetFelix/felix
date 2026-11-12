@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794466205210,
+  "lastUpdate": 1794485710036,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52832,6 +52832,58 @@ window.BENCHMARK_DATA = {
             "range": "16403.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1212859.33\nmean: 1213873.21\nstdev: 16403.24\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9983c6c331118b8a0b890d6f388d56c9a163ebf1",
+          "message": "feat(storage): the metadata store's lock, open rules and purge rule (#2230 part 1, #2341) (#2352)\n\n* wip(storage): the metadata store's lock, open rules and hidden purge (#2230, #2341)\n\nNot compiled yet: the build queue was full. See plans/lanes/cp-2230.md.\n\nSpec-Unaffected: the hidden purge and the append rule implement what\nFelixRaft.tla already states (PurgedCoveredBySnapshot); no spec changes.\n\n* feat(storage): the store's open rules tested under power cuts and a reference model (#2230)\n\nThe append rule is decided before anything is removed, so a refused\nappend leaves the log as it was. The open refuses a saved committed id\nwhose index holds an entry of another term and leaves the id on disk.\nThe lock is unlocked on drop, not only closed. Crash-point tests over the\nstore at every step, a seeded model test, and openraft's suite over the\nstore as it is opened.\n\nSpec-Unaffected: the store implements what FelixRaft.tla already states\n(PurgedCoveredBySnapshot); no spec changes.\n\n* docs(storage): the store's lock is unlocked on drop\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-12T04:10:58-08:00",
+          "tree_id": "3ac141fd616a10a3f2613e5c9af13d1976abd9ac",
+          "url": "https://github.com/GetFelix/felix/commit/9983c6c331118b8a0b890d6f388d56c9a163ebf1"
+        },
+        "date": 1794485709422,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 520832.54,
+            "range": "44235.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520832.54\nmean: 532494.54\nstdev: 44235.38\ncv: 8.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 520832.54,
+            "range": "44235.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520832.54\nmean: 532494.54\nstdev: 44235.38\ncv: 8.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121050.29,
+            "range": "760.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121050.29\nmean: 120986.98\nstdev: 760.54\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1210502.87,
+            "range": "7605.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1210502.87\nmean: 1209869.79\nstdev: 7605.41\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
