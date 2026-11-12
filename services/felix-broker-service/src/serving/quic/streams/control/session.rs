@@ -18,7 +18,8 @@ const SERVED_FEATURES_HI: u32 = felix_wire::FEATURE_INSPECT
     | felix_wire::FEATURE_STREAM_DELETED
     | felix_wire::FEATURE_PUBLISH_WIDTH
     | felix_wire::FEATURE_EXPLICIT_SHARD
-    | felix_wire::FEATURE_HEAD_TRIM;
+    | felix_wire::FEATURE_HEAD_TRIM
+    | felix_wire::FEATURE_SUBSCRIBE_END;
 
 // One parameter per field `Auth` offers.
 #[allow(clippy::too_many_arguments)]

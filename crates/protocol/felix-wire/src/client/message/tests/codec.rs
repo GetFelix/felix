@@ -36,6 +36,7 @@ fn message_all_variants_encode_decode() {
         stream: "stream".to_string(),
         shard: None,
         queue_capacity: None,
+        end: None,
     };
     let frame = message.encode().expect("encode");
     let decoded = Message::decode(frame).expect("decode");

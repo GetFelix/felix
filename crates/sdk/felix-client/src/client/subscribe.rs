@@ -64,6 +64,48 @@ impl Connection {
         shard: u32,
         start: Option<StartPosition>,
     ) -> Result<Subscription> {
+        self.open_subscription(tenant_id, namespace, stream, shard, start, None)
+            .await
+    }
+
+    /// Subscribe to `[start, end)` of one shard of a durable stream.
+    ///
+    /// The subscription delivers every record below `end` and then ends:
+    /// [`Subscription::next_event`] returns `None` and
+    /// [`Subscription::reached_end`] is `true`. A range at or below the
+    /// committed tail is read from history without joining fanout; a range
+    /// past it follows live delivery and stops at `end`. It keeps the binary
+    /// event path, so it suits exporting a bounded range better than paging
+    /// [`Connection::read`].
+    ///
+    /// `end` is the offset after the last record wanted, so a range read up to
+    /// [`Subscription::live_offset`] ends there. Fails when the broker does not
+    /// advertise [`felix_wire::FEATURE_SUBSCRIBE_END`], rather than letting an
+    /// older broker run on into live delivery, and when the stream is not
+    /// durable. Falling behind ends the subscription with
+    /// [`crate::SubscriptionLagged`] like any other.
+    pub async fn subscribe_range(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: StartPosition,
+        end: u64,
+    ) -> Result<Subscription> {
+        self.open_subscription(tenant_id, namespace, stream, shard, Some(start), Some(end))
+            .await
+    }
+
+    async fn open_subscription(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<StartPosition>,
+        end: Option<u64>,
+    ) -> Result<Subscription> {
         if tenant_id != self.auth_tenant_id {
             return Err(anyhow::anyhow!(
                 "tenant mismatch: client auth is scoped to {}",
@@ -98,6 +140,23 @@ impl Connection {
         // during the disconnect. That is worse than an error, because the
         // application has no way to notice. `Latest` is safe to send either
         // way: it is what an old broker does anyway.
+        if end.is_some() {
+            if !felix_wire::supports_feature(
+                negotiated.server_features_hi,
+                felix_wire::FEATURE_SUBSCRIBE_END,
+            ) {
+                return Err(anyhow::anyhow!(
+                    "broker does not support bounded subscriptions \
+                     (it did not advertise FEATURE_SUBSCRIBE_END); nothing was sent"
+                ));
+            }
+            if !felix_wire::supports(server_flags, felix_wire::FLAG_EVENT_BATCH_OFFSETS) {
+                return Err(anyhow::anyhow!(
+                    "broker does not deliver event offsets (negotiated flags {server_flags:#06x}); \
+                     a bounded subscription counts offsets"
+                ));
+            }
+        }
         let needs_replay = matches!(
             start,
             Some(StartPosition::Earliest) | Some(StartPosition::Offset(_))
@@ -122,6 +181,7 @@ impl Connection {
                 // is byte-identical to what a client sent before sharding.
                 shard: (shard != 0).then_some(shard),
                 queue_capacity,
+                end,
             },
         )
         .await?;

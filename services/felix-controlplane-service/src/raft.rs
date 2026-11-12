@@ -15,10 +15,15 @@
 //!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
+//! - `waiver` — the operator's `form-without` file, which lets a first
+//!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
 //! - `store` — the Raft log, vote, and current snapshot, in one crash-safe
 //!   redb file per instance. Consensus state is the one thing here that must
 //!   never lie about being on disk.
+//! - `segment_store` — the same on `felix-storage`'s metadata store, in
+//!   place of `store` in a build with `--cfg felix_segment_store`. No
+//!   release sets it.
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
@@ -30,6 +35,7 @@
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
+#[cfg(not(felix_segment_store))]
 mod chunks;
 mod handle;
 mod health;
@@ -40,19 +46,42 @@ mod leader;
 mod network;
 mod peer;
 mod proposal;
+#[cfg(felix_segment_store)]
+mod segment_store;
+#[cfg(not(felix_segment_store))]
 mod store;
 mod types;
 mod version;
+mod waiver;
 mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
 pub use proposal::NoQuorum;
+pub use waiver::form_without;
+
+// One name for whichever store this build runs on.
+#[cfg(felix_segment_store)]
+use segment_store as store;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
+
+/// Where a member's peer routes live. A member on the segment store serves
+/// and calls another prefix than a member on redb, so a request between the
+/// two is a 404 and the two never exchange Raft messages
+/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
+#[cfg(not(felix_segment_store))]
+pub const PEER_PREFIX: &str = "/internal/raft";
+#[cfg(felix_segment_store)]
+pub const PEER_PREFIX: &str = "/internal/raft/v2";
+
+/// The path of the peer route `name`, such as `vote`.
+pub fn peer_route(name: &str) -> String {
+    format!("{PEER_PREFIX}/{name}")
+}
 
 /// This instance's identity within the Raft group.
 pub type NodeId = u64;
@@ -90,6 +119,21 @@ pub struct RaftSettings {
     /// config change rather than a membership change. Empty means the
     /// recorded addresses are used as they are.
     pub peer_addrs: BTreeMap<NodeId, String>,
+    #[cfg(test)]
+    pub(crate) faults: Faults,
+}
+
+/// Failures a unit test injects into a member's start and stop.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Faults {
+    /// The start fails once the node is running.
+    pub(crate) fail_after_node_start: bool,
+    /// The node's stop reports an error.
+    pub(crate) fail_node_stop: bool,
+    /// A member forming the group stops short of `initialize`, as a crash
+    /// there would.
+    pub(crate) stop_before_initialize: bool,
 }
 
 impl RaftSettings {
@@ -107,6 +151,8 @@ impl RaftSettings {
             snapshot_logs_since_last: 500,
             logs_kept_behind_snapshot: 100,
             write_timeout: Duration::from_secs(10),
+            #[cfg(test)]
+            faults: Faults::default(),
         }
     }
 }

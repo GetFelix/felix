@@ -619,7 +619,7 @@ fn start_group() -> Group {
     let (status, body) = http(
         peer_addrs[0],
         "POST",
-        "/internal/raft/propose",
+        &felix_controlplane_service::raft::peer_route("propose"),
         Some(PEER_TOKEN),
         Some(&import),
     )

@@ -119,6 +119,16 @@ impl Subscription {
         matches!(self.ended.get(), Some(Ended::Deleted))
     }
 
+    /// Whether the subscription ended because it reached the `end` it was
+    /// opened with ([`crate::Connection::subscribe_range`]).
+    ///
+    /// Set before [`Self::next_event`] returns `None`, like
+    /// [`Self::shard_moved`]. `false` after a `None` means the stream closed
+    /// some other way, and a range reader has not got every record.
+    pub fn reached_end(&self) -> bool {
+        matches!(self.ended.get(), Some(Ended::Reached))
+    }
+
     /// The next event, or `None` once the broker has closed the event stream.
     ///
     /// Losing the connection is an error, [`crate::SubscriptionLost`], not
@@ -276,6 +286,7 @@ pub struct ShardMoved {
 enum Ended {
     Moved(ShardMoved),
     Deleted,
+    Reached,
 }
 
 enum QueuedEvent {

@@ -982,6 +982,7 @@ impl DiskLog {
 
     /// Run `write`, a change to a file in this log's directory, unless the
     /// log is closed. A close cannot start between the check and the write.
+    #[cfg(feature = "raft")]
     pub(crate) fn write_while_open<T>(
         &self,
         write: impl FnOnce() -> std::io::Result<T>,

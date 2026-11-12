@@ -152,6 +152,10 @@ pub struct SubscriptionReceiver {
     /// [`Subscription::into_parts`]. `None` while the receiver is still inside
     /// a `Subscription`, which filters per record instead.
     skip_below: Option<u64>,
+    /// Set by [`Self::end_at`]: the first offset not to deliver.
+    end: Option<u64>,
+    /// Whether delivery has reached `end`. Nothing is yielded after that.
+    reached_end: bool,
 }
 
 impl SubscriptionReceiver {
@@ -168,7 +172,23 @@ impl SubscriptionReceiver {
             stats,
             end_on_lag: false,
             skip_below: None,
+            end: None,
+            reached_end: false,
         }
+    }
+
+    /// Stop at `end`: batches are cut so nothing at or above it is yielded,
+    /// and once a batch reaches it [`Self::recv`] yields `None` even while
+    /// nothing more is published. [`Self::reached_end`] tells that apart from
+    /// any other end.
+    pub fn end_at(&mut self, end: u64) {
+        self.end = Some(end);
+    }
+
+    /// Whether the subscription ended at the offset given to
+    /// [`Self::end_at`]. Final once [`Self::recv`] has returned `None`.
+    pub fn reached_end(&self) -> bool {
+        self.reached_end
     }
 
     /// Where to resume once this subscriber's queue has dropped a batch of a
@@ -223,6 +243,9 @@ impl SubscriptionReceiver {
     /// those bounds cover its queue too.
     pub async fn recv_held(&mut self) -> Option<(DeliveryEnvelope, HeldBytes)> {
         loop {
+            if self.reached_end {
+                return None;
+            }
             let queued = if self.end_on_lag {
                 self.recv_before_lag().await?
             } else {
@@ -246,6 +269,9 @@ impl SubscriptionReceiver {
         &mut self,
     ) -> std::result::Result<(DeliveryEnvelope, HeldBytes), mpsc::error::TryRecvError> {
         loop {
+            if self.reached_end {
+                return Err(mpsc::error::TryRecvError::Disconnected);
+            }
             let (envelope, held) = self.receiver.try_recv()?.into_parts();
             if self.past_lag(&envelope) {
                 return Err(mpsc::error::TryRecvError::Disconnected);
@@ -305,6 +331,32 @@ impl SubscriptionReceiver {
     /// Drop what lies below the resume point: the whole batch, or the prefix
     /// of one that straddles it. Same rule as `Subscription::extend_pending`.
     fn admit(&mut self, envelope: DeliveryEnvelope) -> Option<DeliveryEnvelope> {
+        let envelope = self.admit_from(envelope)?;
+        self.cut_at_end(envelope)
+    }
+
+    /// Cut `envelope` at `end`, and note when delivery has reached it.
+    fn cut_at_end(&mut self, envelope: DeliveryEnvelope) -> Option<DeliveryEnvelope> {
+        let (Some(end), Some(base)) = (self.end, envelope.base_offset()) else {
+            return Some(envelope);
+        };
+        let past = base + envelope.len() as u64;
+        if past < end {
+            return Some(envelope);
+        }
+        self.reached_end = true;
+        // Later publishes are of no interest; stop the queue taking them.
+        self.receiver.close();
+        if base >= end {
+            return None;
+        }
+        Some(match past > end {
+            true => envelope.take_records((end - base) as usize),
+            false => envelope,
+        })
+    }
+
+    fn admit_from(&mut self, envelope: DeliveryEnvelope) -> Option<DeliveryEnvelope> {
         self.taken(&envelope);
         let (Some(skip), Some(base)) = (self.skip_below, envelope.base_offset()) else {
             self.skip_below = None;

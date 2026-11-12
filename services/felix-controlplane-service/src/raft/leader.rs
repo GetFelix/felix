@@ -37,8 +37,8 @@ pub enum AskLeaderError {
     Failed(#[from] anyhow::Error),
 }
 
-/// Path of the route a follower forwards leader-only requests to.
-pub(super) const LEADER_ROUTE: &str = "/internal/raft/leader";
+/// Name of the route a follower forwards leader-only requests to.
+pub(super) const LEADER_ROUTE: &str = "leader";
 
 impl RaftHandle {
     /// Register the service answering [`RaftHandle::ask_leader`]. Once per
@@ -100,7 +100,7 @@ impl RaftHandle {
                     };
                     let sent = self
                         .forward
-                        .post(format!("{base}{LEADER_ROUTE}"))
+                        .post(format!("{base}{}", super::peer_route(LEADER_ROUTE)))
                         .timeout(remaining.min(ATTEMPT_CAP))
                         .body(request.clone())
                         .send()

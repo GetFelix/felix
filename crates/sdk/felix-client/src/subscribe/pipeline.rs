@@ -436,6 +436,10 @@ async fn run_subscription_dispatch_task(
                         let _ = ended.set(Ended::Deleted);
                         return;
                     }
+                    Message::SubscriptionEnded { .. } => {
+                        let _ = ended.set(Ended::Reached);
+                        return;
+                    }
                     Message::SubscriptionLagged { resume_from, .. } => {
                         end.dropped(resume_from);
                         break 'frames;

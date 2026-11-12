@@ -282,14 +282,80 @@ refuses vote requests and does not stand for election. It asks its peers
   (`GET /internal/raft/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
-- **First boot**: a majority, this member included, answers and is empty,
-  *and* the operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such
-  member initializes the configured group, which openraft allows. A
-  single-member group decides this alone. With the default, `existing`, an
-  empty majority waits and logs why instead: a member cannot tell a first
-  boot from a lost volume, and only the operator knows which it is.
-- **Neither**: it waits and asks again, so a lone wiped member never forms a
-  group of its own.
+- **First boot**: every configured member answers and is empty, *and* the
+  operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such member
+  initializes the configured group, which openraft allows. A single-member
+  group decides this alone. With the default, `existing`, empty members wait
+  and log why instead: a member cannot tell a first boot from a lost volume,
+  and only the operator knows which it is.
+- **Neither**: it waits and asks again, and logs which members it is waiting
+  for and why.
+
+A first boot acts on answers, never on silence:
+
+- **Every member must answer.** A member that is down may be the one that
+  holds the group's data. A majority of empty answers used to be enough, so
+  two members that lost their volumes while the third was down formed a new
+  group under `new`, and the third's acknowledged writes were gone when it
+  came back. The cost is that a cluster's first start needs every member
+  up, once.
+- **Only a decoded, empty answer is empty.** A 403 (the member belongs to
+  another cluster), any other refusal, a failed TLS handshake and a body
+  that does not decode all block a first boot. None of them counts as "the
+  group exists" either.
+- **Each member has its own address.** `FELIX_RAFT_PEERS` is refused when
+  two ids share one, since one machine would then answer for both.
+- **The group exists when a log holds an entry at index 1 or above.** Every
+  first-boot member writes the same membership at index 0 and may vote for
+  itself before anyone leads, so neither says a group exists. An entry at
+  index 1 takes a leader, and a leader takes a formed majority. Until then
+  every member answers empty, so the members of a first boot never wait on
+  each other.
+
+One case is not covered: a volume lost after the group formed and before its
+first leader wrote an entry. Every log is still empty then, so under `new` the
+member forms again and has forgotten any vote it gave
+([#2374](https://github.com/GetFelix/felix/issues/2374)).
+
+#### Forming without a lost machine
+
+If a member's machine is gone for good before the group ever formed, the
+others would wait for it forever. The operator can waive it. On each
+surviving member, while it is stopped:
+
+```bash
+felix-controlplane raft form-without --data-dir /var/lib/felix/raft \
+  --cluster-id prod-metadata --slot 3
+```
+
+`--slot` is the absent member's `FELIX_RAFT_NODE_ID` and may be repeated.
+The command writes a `form-without` file into the data directory and prints
+what it wrote. At its next start the member logs the waiver as a warning and
+may form the group without an answer from that slot.
+
+What the waiver does and does not do:
+
+- **It excuses silence only.** If the waived slot answers, its answer counts
+  like any other: a group that exists is caught up with, and a 403, a
+  failed TLS handshake or an undecodable answer still blocks. Silence is a
+  connection that fails or times out.
+- **It names a minority.** The members that answer empty, this one included,
+  must still be a majority of the configured group.
+- **It is used once.** The member removes the file before it initializes.
+  It also removes it, with a warning, when it finds the group exists or
+  that it holds Raft state. A crash between the removal and the
+  initialization leaves an empty member with no waiver: run the command
+  again.
+- **It applies to a first start only.** The command refuses a member that
+  holds Raft state (a vote, a log entry or a snapshot). A member that
+  started, waited for the dead peer and was stopped holds none, so the
+  command accepts it.
+- **It does not shrink the group.** The absent slot stays a voter, so the
+  group runs two of three with no slack until a machine with an empty volume
+  starts at that slot's address.
+- **It cannot see the absent machine's disk.** If that machine holds this
+  cluster's data and returns, the group formed without it has replaced it.
+  Use the waiver only under a cluster id that no volume has ever held.
 
 **Known gap (#2365).** Only the vote is withheld. The member still answers
 appends and heartbeats, and a leader counts them. It forgot the term it last
@@ -311,7 +377,8 @@ restore path is the answer. What the member must not do is paper over it:
 two empty members of three that can reach each other but not the third
 used to form a new, empty group on their own, with new signing keys and
 every generation back to zero. Now they form one only under `new`, which
-belongs to a cluster's first start and nowhere else.
+belongs to a cluster's first start and nowhere else, and only once the
+third has answered that it is empty too.
 
 **Cluster id.** Every member is configured with `FELIX_RAFT_CLUSTER_ID`,
 etcd's cluster token under another name. The first start records it in the
@@ -764,7 +831,8 @@ leader's snapshot as in
 | --- | --- |
 | One instance of three dies | Leader (if it was the leader) re-elected in one election timeout; writes pause for that long, reads keep serving; M7 signal holds |
 | Instance loses its volume | Rejoins without a vote, catches up by log or snapshot, then votes again ([above](#rejoining-after-a-lost-volume)); no operator data surgery |
-| A majority loses its volumes | The empty members wait rather than form a new, empty group, unless `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`; recovery is the snapshot restore |
+| A majority loses its volumes | The empty members wait rather than form a new, empty group. Under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` they still wait until every member answers and is empty, so a member that holds the log blocks them whether it is up or down; recovery is the snapshot restore |
+| A member's machine is lost before the group first forms | The others wait for its answer. `felix-controlplane raft form-without` lets them form without it ([above](#forming-without-a-lost-machine)) |
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
 | Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances (see [Restoring beyond quorum loss](#restoring-beyond-quorum-loss)) |
@@ -791,6 +859,12 @@ leader's snapshot as in
   with a moving grantor).
 - **Snapshot/restore**: wipe one instance's volume mid-traffic; assert it
   rejoins and converges.
+- **First start** (`tests/raft_core.rs`): two empty members do not form
+  while the third is down, answers 403 or answers something undecodable;
+  two wiped members do not form over a down member that holds an
+  acknowledged write; three empty members form one group; and the
+  `form-without` waiver forms once, is removed, and never overrides a member
+  that answers.
 
 ## What would overturn this
 
@@ -807,15 +881,24 @@ leader's snapshot as in
 
 ## Moving to the segment store
 
-**Status: design. The store exists; the service does not use it.**
+**Status: built behind a switch that no release turns on.**
 `felix-storage` has the member file, the lock, the snapshot file, the purge
-rule and `MetadataStore::open`, which checks the start rules below. Nothing
-in the control plane calls them yet: no routes, no state machine on the
-snapshot file, no build switch, no conversion tool. Everything above
-describes what runs today: openraft with its log, vote and snapshot in one
-redb file. This section is the plan to move that state onto `felix-storage`,
-so a Felix node has one storage engine (issue
+rule and `MetadataStore::open`, which checks the start rules below. The
+control plane runs on them only in a build with
+`RUSTFLAGS="--cfg felix_segment_store"`: the standard leader id, the state
+machine on the snapshot file, the peer routes under their new prefix and
+the started mark. CI builds and tests that side
+(`task segment-store:check`). Every release build is without the switch,
+and there is no conversion tool yet. So everything above still describes
+what runs: openraft with its log, vote and snapshot in one redb file. This
+section is the plan to move that state onto `felix-storage`, so a Felix
+node has one storage engine (issue
 [#2167](https://github.com/GetFelix/felix/issues/2167)).
+
+The switch is a compiler cfg and not a Cargo feature. The two stores
+exclude each other, because the leader id is part of the type every Raft
+call uses, and `--all-features`, which the lint and coverage runs pass,
+would turn a feature on.
 The reasons, and the answer to "the segment store cannot truncate", are in
 [replication-engine.md](replication-engine.md#control-plane-storage-on-the-segment-log).
 
@@ -942,7 +1025,11 @@ lock, as today, and writes the file outside it. The data is stored as raw
 bytes. Today it is stored as a JSON array of numbers, several times larger.
 
 **Transfer.** A snapshot travels to a follower in one request over the
-authenticated peer listener. State is small, so chunking is not needed.
+authenticated peer listener. State is small, so chunking is not needed. The
+request's body is the length of a JSON head in four big-endian bytes, the
+head (the sender's vote, the snapshot's last log id and its membership),
+then the data as it is. The route has no body limit, and the request has a
+60 second timeout of its own.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
 apply the log up to the committed index. The member stays out of rotation
@@ -1074,8 +1161,9 @@ membership change and a snapshot passes it. Issue
 [#2252](https://github.com/GetFelix/felix/issues/2252) tracks the path.
 
 **Converted and unconverted members never talk.** Every route on the peer
-listener moves to a new prefix: append entries, vote, snapshot install,
-propose, standing, the catch-up target and the leader route. A request
+listener moves to a new prefix, from `/internal/raft` to
+`/internal/raft/v2`: append entries, vote, snapshot install, propose,
+standing, the catch-up target and the leader route. A request
 between the two kinds of member gets a 404. To Raft that is a partition. A
 group that is upgraded one member at a time therefore stays safe: the old
 members keep a majority until the member that tips it stops, and then the
@@ -1208,7 +1296,8 @@ or earlier upgrades through 0.8.
 - The adapter is the `raft_log` module of `felix-storage`, compiled only
   with the crate's `raft` feature. The feature is off by default and brings
   in openraft as an optional dependency.
-- The control plane turns the feature on. `felix-broker` never does.
+- The control plane turns the feature on, today only in a build with
+  `--cfg felix_segment_store`. `felix-broker` never does.
 - openraft types stay inside `felix-storage::raft_log` and the control
   plane's `src/raft/`. The store traits and handlers never see them.
 - redb moves to the conversion tool's crate, then leaves the workspace.
@@ -1223,7 +1312,11 @@ the broker alone. The check is therefore per package, as a lint step:
 - The same holds for the broker binary's package until per-shard Raft
   lands, which removes that line on purpose.
 - A script fails the lint if `openraft::` appears outside the two modules
-  above.
+  above and their tests.
+
+All three are `scripts/check-openraft-containment.sh`, a step of
+`task lint`. The script also checks that it still finds openraft under the
+control plane, so it cannot pass by finding nothing anywhere.
 
 One cost: the control plane now links `felix-storage` and what it depends
 on, including the object-store client it never uses.
@@ -1436,6 +1529,7 @@ is the umbrella.
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
+| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots in one request and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
 | openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 

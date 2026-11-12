@@ -1131,11 +1131,17 @@ it.
 The control plane's metadata store keeps one small file beside its Raft log
 and its snapshot. It says which cluster the store belongs to, whether the
 member's vote is withheld, and carries two marks the upgrade from redb
-uses. The control plane does not run on this store yet. The files and their
-rules are in place for the step that switches it over; the design is in
+uses. No release build of the control plane runs on this store. It is built
+in only with `--cfg felix_segment_store`, which CI sets to test it; the
+design is in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
 
-A member's data directory (`FELIX_RAFT_DATA_DIR`) will look like this:
+In that build the snapshot's metadata is JSON: the last log id as a term
+and an index, and the last membership with the id of its entry. The data is
+the state machine's bytes as they are. A membership entry's payload in the
+log is the same JSON membership.
+
+A member's data directory (`FELIX_RAFT_DATA_DIR`) then looks like this:
 
 ```text
 raft.redb          ← an older release's store, or the stub a conversion leaves
