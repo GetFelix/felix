@@ -269,23 +269,16 @@ impl DiskLog {
             // the open takes the generation from, never a raised generation
             // with no leader. The committed mark is in the same file, so it
             // is on disk exactly when its vote is.
-            // Many Raft groups elect at once when a broker dies, so their
-            // votes share flushes (#2317).
-            let flush = match inner.config.raft_log {
-                true => Flush::Shared,
-                false => Flush::Own,
-            };
             if let Some(leader) = &leader {
                 inner.poison_on_sync_failure(
                     "the ballot",
-                    store_with(
+                    store(
                         &inner.dir,
                         &Ballot {
                             generation,
                             leader: leader.to_string(),
                             committed,
                         },
-                        flush,
                     ),
                 )?;
             }
@@ -297,7 +290,7 @@ impl DiskLog {
                 };
                 inner.poison_on_sync_failure(
                     "the replica state",
-                    replica_state::store_with(&inner.dir, &state, flush),
+                    replica_state::store(&inner.dir, &state),
                 )?;
                 inner
                     .commit_persisted
@@ -552,35 +545,6 @@ pub(super) fn load(dir: &Path) -> Result<Option<Ballot>> {
 /// Write a shard's ballot durably, as `replica_state::store` writes its state:
 /// a crash leaves the old ballot or the new one.
 pub(super) fn store(dir: &Path, ballot: &Ballot) -> Result<()> {
-    store_with(dir, ballot, Flush::Own)
-}
-
-/// Whether a small state file gets its own flushes or shares its device's
-/// with the other logs writing one now (`io/shared_sync.rs`). Durable on
-/// return either way.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Flush {
-    Own,
-    Shared,
-}
-
-impl Flush {
-    pub(super) fn file(self, file: &crate::fs::File) -> std::io::Result<()> {
-        match self {
-            Self::Own => crate::io::sync_all(file),
-            Self::Shared => crate::io::sync_all_shared(file),
-        }
-    }
-
-    pub(super) fn dir(self, dir: &Path) -> std::io::Result<()> {
-        match self {
-            Self::Own => sync_dir(dir),
-            Self::Shared => crate::io::sync_dir_shared(dir),
-        }
-    }
-}
-
-pub(super) fn store_with(dir: &Path, ballot: &Ballot, flush: Flush) -> Result<()> {
     use std::io::Write;
 
     if ballot.leader.len() > MAX_LEADER_LEN {
@@ -604,12 +568,12 @@ pub(super) fn store_with(dir: &Path, ballot: &Ballot, flush: Flush) -> Result<()
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(&ballot.encode()).map_err(StorageError::Io)?;
         step()?;
-        flush.file(&file)?;
+        crate::io::sync_all(&file)?;
     }
     step()?;
     crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     step()?;
-    flush.dir(dir)?;
+    sync_dir(dir)?;
     Ok(())
 }
 

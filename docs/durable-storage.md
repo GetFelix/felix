@@ -1445,9 +1445,7 @@ leader's own crash", for the whole of it and what it costs.
 
 Rotating the id does not reset a broker's election promises: the accepted
 generation and ballot are synced whatever the fsync mode, so a crash keeps
-them. A Raft log's vote shares its flush with the other Raft logs on the
-device that save one in the same moment, and is still on disk before the
-save returns (`docs/per-shard-raft.md`, "Many groups electing at once"). Giving a copy up only narrows them: the ballot it writes accepts no
+them. Giving a copy up only narrows them: the ballot it writes accepts no
 leader at the generation it had already accepted. The start records the id it
 rotated away in `rotated-ids` (`docs/storage-format.md`), so a set that still
 names the copy under that id is read as naming this directory's own copy, with

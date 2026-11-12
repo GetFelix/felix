@@ -48,9 +48,6 @@ pub(crate) mod uring_fsync;
 ))]
 pub(crate) mod writeback;
 
-#[cfg(unix)]
-mod shared_sync;
-
 use std::io::{self, Write};
 #[cfg(unix)]
 use std::os::unix::fs::FileExt;
@@ -422,44 +419,6 @@ fn sync_all_unmarked(file: &File) -> io::Result<()> {
         return mem.sync();
     }
     os(file).sync_all()
-}
-
-/// [`sync_all`] for a small file many logs write in the same moment, as
-/// each does its vote: the callers share one flush of the device
-/// (`io/shared_sync.rs`). On disk before this returns, as with `sync_all`.
-pub(crate) fn sync_all_shared(file: &File) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let shared = || {
-            before_sync(file, SyncKind::All)?;
-            #[cfg(feature = "sim")]
-            if let Some(mem) = file.as_mem() {
-                return mem.sync();
-            }
-            shared_sync::sync(os(file))
-        };
-        shared().map_err(SyncFailure::mark)
-    }
-    #[cfg(not(unix))]
-    sync_all(file)
-}
-
-/// [`sync_dir`] through the device's shared flush; see [`sync_all_shared`].
-pub(crate) fn sync_dir_shared(path: &std::path::Path) -> io::Result<()> {
-    #[cfg(unix)]
-    {
-        let shared = || {
-            before_sync_dir(path)?;
-            #[cfg(feature = "sim")]
-            if let Some(flushed) = crate::fs::sync_simulated_dir(path) {
-                return flushed;
-            }
-            shared_sync::sync(&std::fs::File::open(path)?)
-        };
-        shared().map_err(SyncFailure::mark)
-    }
-    #[cfg(not(unix))]
-    sync_dir(path)
 }
 
 /// Marks an error as a failed flush, whichever call issued it, so the log

@@ -626,26 +626,20 @@ idle groups and is a separate decision.
 ### Many groups electing at once
 
 A vote is a small file per shard, written whole and renamed into place,
-and a vote at a new term also writes the shard's replica state. That was
-two to four fsyncs per vote, and groups did not share them. With 40 groups
-told to form at once on a slow disk, a round of votes took longer than the
-election timeout, the timeouts fired again and added more votes, and the
-groups never settled (issue #2317).
+and a vote at a new term also writes the shard's replica state. That is
+two to four fsyncs per vote, and each group does its own.
 
-Votes of Raft logs now share flushes of their device
-(`felix-storage/src/io/shared_sync.rs`). A vote is still on disk before it
-is answered: each save returns only after a flush that started after its
-write. Saves that arrive while a flush runs wait for the next one
-together, so a round of votes costs a few flushes however many groups
-vote. On Linux the shared flush is one `syncfs` of the filesystem. A Raft
-log fsyncs on commit, so little else is dirty there. On macOS each file
-gets a plain `fsync` and the shared flush is one `F_FULLFSYNC`, which
-empties the drive's whole cache. A failed shared flush fails every later
-vote on that device, and each log that hears of it stops, as with any
-failed fsync. The hybrid's ballots are written as before.
+On Linux that is fast enough. The runtime's test forms 40 groups at once on
+three brokers and has each take a write: every group is led within 2 s, at
+the first term that can elect. Sharing one flush of the device between the
+groups that vote in the same moment was tried and dropped. It was slower
+(2 to 6 s) and took more election rounds.
 
-The runtime's test forms 40 groups at once on three brokers and has each
-take a write. It did not settle in 30 s before the change.
+On macOS the same test does not settle in 30 s, so it is skipped there
+(issue #2317). The time goes to creating and renaming the vote files, which
+wait behind the `F_FULLFSYNC` calls in flight, and sharing flushes did not
+help. Brokers run on Linux, so this affects development on a Mac only: form
+groups a few at a time there.
 
 ## Group runtime
 
@@ -1293,7 +1287,7 @@ and the hybrid is what ships.
 | --- | --- | --- | --- |
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
-| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions, shared flushes for votes (#2317). Built. Peer messages for Raft on the broker transport, behind a negotiated capability, follow in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
+| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind a negotiated capability, follow in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
