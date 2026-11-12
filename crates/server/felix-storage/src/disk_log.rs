@@ -980,6 +980,17 @@ impl DiskLog {
         flushed.and(marked)
     }
 
+    /// Run `write`, a change to a file in this log's directory, unless the
+    /// log is closed. A close cannot start between the check and the write.
+    pub(crate) fn write_while_open<T>(
+        &self,
+        write: impl FnOnce() -> std::io::Result<T>,
+    ) -> Result<T> {
+        let segments = self.inner.segments.read();
+        segments.check_open()?;
+        write().map_err(StorageError::Io)
+    }
+
     /// Whether [`Self::close`] has finished on this log or any clone of it.
     pub fn is_closed(&self) -> bool {
         self.inner.closed.load(std::sync::atomic::Ordering::Acquire)

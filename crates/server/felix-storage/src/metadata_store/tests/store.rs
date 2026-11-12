@@ -2,8 +2,10 @@
 //! and repairs, and the purge and append rules its log runs with.
 
 use openraft::StorageError;
+use openraft::storage::RaftLogReader;
 use openraft::testing::log::{StoreBuilder, Suite};
 use openraft::type_config::TypeConfigExt;
+use openraft::type_config::alias::VoteOf;
 use tempfile::tempdir;
 
 use super::*;
@@ -127,6 +129,57 @@ async fn a_snapshot_store_clone_cannot_install_into_a_released_store() {
         .await
         .expect_err("refused after shutdown");
     assert_eq!(reopened.snapshots().covers(), None);
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// A vote through a clone left over from a shutdown is refused: the member
+/// that holds the store now may have voted in that term already.
+#[tokio::test]
+async fn a_log_clone_cannot_vote_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+    let mut current = reopened.log();
+    let voted = VoteOf::<Types>::new(8, 3);
+    current.save_vote(&voted).await.expect("vote");
+    let before = listing(dir.path());
+
+    log.save_vote(&VoteOf::<Types>::new(8, 2))
+        .await
+        .expect_err("refused");
+    log.disk_log()
+        .give_up_generation()
+        .await
+        .expect_err("refused");
+    assert_eq!(listing(dir.path()), before, "a closed log wrote");
+    reopened.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("reopen");
+    let mut reader = reopened.log().reader();
+    assert_eq!(reader.read_vote().await.expect("vote"), Some(voted));
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// A purge past the tail through a clone left over from a shutdown is
+/// refused before it writes the purged id.
+#[tokio::test]
+async fn a_log_clone_cannot_purge_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    append_flushed(&mut log, &entries(0, 3)).await;
+    store
+        .snapshots()
+        .install(snapshot(10))
+        .await
+        .expect("install");
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+    let before = listing(dir.path());
+
+    log.purge(log_id(1, 8)).await.expect_err("refused");
+    assert_eq!(listing(dir.path()), before, "a closed log wrote");
     reopened.shutdown().await.expect("shutdown");
 }
 

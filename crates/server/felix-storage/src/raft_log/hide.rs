@@ -140,9 +140,14 @@ impl<K> Shared<K> {
     pub(super) async fn remove_through(&self, purged: Purged) -> io::Result<()> {
         let log = &self.log;
         let dir = log.dir().to_path_buf();
-        felix_common::blocking::spawn(move || purged::store(&dir, &purged))
-            .await
-            .map_err(io::Error::other)??;
+        // Refused once closed: the directory may already be another log's.
+        let writer = log.clone();
+        felix_common::blocking::spawn(move || {
+            writer.write_while_open(|| purged::store(&dir, &purged))
+        })
+        .await
+        .map_err(io::Error::other)?
+        .map_err(io_error)?;
         {
             let mut bounds = self.bounds.lock();
             bounds.on_disk = Some(purged);
