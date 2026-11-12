@@ -226,9 +226,10 @@ pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str
 /// Refuse a data dir that a `--cfg felix_segment_store` build has written.
 /// That build keeps its state in `store/` and no `raft.redb`, so opening
 /// redb here would create an empty store and the member would come up as
-/// new, dropping the group's metadata. Nothing on disk yet says a store was
-/// rolled back to redb (`rollback` and `restore` move `store/` aside), so
-/// any `store/` is refused. Checked before anything is written.
+/// new, dropping the group's metadata. This build cannot read the member
+/// file, so it cannot tell a rolled-back store from a live one, and any
+/// `store/` is refused (`rollback` and `restore` move it aside). Checked
+/// before anything is written.
 fn refuse_segment_store(data_dir: &Path) -> Result<()> {
     let store = data_dir.join(SEGMENT_STORE_DIR);
     match std::fs::symlink_metadata(&store) {
@@ -237,7 +238,8 @@ fn refuse_segment_store(data_dir: &Path) -> Result<()> {
         Ok(_) => anyhow::bail!(
             "{} holds a segment store, written by a build with --cfg felix_segment_store. \
              This build keeps its state in raft.redb and cannot read it: run the member on \
-             a build with that switch (docs/metadata-raft-design.md, \"Upgrading an \
+             a build with that switch, or finish going back to redb with the conversion \
+             tool's rollback or restore (docs/metadata-raft-design.md, \"Upgrading an \
              existing cluster\")",
             store.display()
         ),

@@ -1204,13 +1204,20 @@ no store and come up as a new, empty member.
 **What a build without the switch does with `store/`.** It refuses to
 start, before it creates `raft.redb` or writes anything, and the error names
 `--cfg felix_segment_store`. `felix-controlplane raft form-without` refuses
-the directory too. A directory made by a build with the switch has `store/`
-and no `raft.redb`. Without the check, a build without the switch would
-create an empty `raft.redb` there and start as a new member. Restart every
-member that way and the group forms again with no metadata. No mark says
-that a store was rolled back, because `rollback` and `restore` move
-`store/` aside. So any `store/` is refused, and the way back to redb goes
-through those commands.
+the directory too. A directory that a build with the switch created from
+scratch has `store/` and no `raft.redb`. Without the check, a build without
+the switch would create an empty `raft.redb` there and start as a new
+member. Restart every member that way and the group forms again with no
+metadata. A build without the switch cannot read the member file, so it
+cannot tell a rolled-back store from a live one, and it refuses any
+`store/`:
+
+- A directory created by a build with the switch has no way back to redb.
+  Keep running it on a build with the switch, or wipe it and let the member
+  rejoin.
+- A converted directory goes back through `rollback` or `restore`, which
+  move `store/` aside. A `restore` that stopped part way is finished by
+  running it again.
 
 **How the service decides, without reading redb.** It looks at names and at
 its own member file only:
