@@ -28,7 +28,7 @@ against a broker run on Linux x64 only.
 ## Install
 
 ```bash
-dotnet add package Felix.Client --version 0.7.1
+dotnet add package Felix.Client --version 0.7.2
 ```
 
 This page describes the 0.7 API. Earlier releases lack some of it, so install 0.7.0 or later.

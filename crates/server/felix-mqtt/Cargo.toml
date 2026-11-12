@@ -17,9 +17,9 @@ publish = false
 async-trait = { workspace = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
-felix-authz = { path = "../felix-authz", version = "0.7.1" }
-felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.7.1" }
-felix-wire = { path = "../../protocol/felix-wire", version = "0.7.1" }
+felix-authz = { path = "../felix-authz", version = "0.7.2" }
+felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.7.2" }
+felix-wire = { path = "../../protocol/felix-wire", version = "0.7.2" }
 metrics = { workspace = true }
 sha1 = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
