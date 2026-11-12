@@ -121,6 +121,16 @@ shard it follows, and a failover per shard it leads. A downgrade and
 upgrade again keeps whatever the newer release last recorded, so a crash on
 the older release in between is not detected.
 
+**A first start of the metadata Raft group.** Members now record each other
+before any of them votes
+([forming the group](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group)),
+over a new peer route, `POST /internal/raft/forming`. A group that already
+runs never uses it, so upgrading one needs nothing. A group that has not
+formed yet needs every control-plane member on a release with the route: a
+member on an older release answers 404, and the others wait and log
+`it runs a build without the forming route`. Start a new cluster with every
+member on the same release.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,

@@ -284,8 +284,9 @@ refuses vote requests and does not stand for election. It asks its peers
   far. Readiness keeps it out of rotation until then.
 - **First boot**: every configured member answers and is empty, *and* the
   operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such member
-  initializes the configured group, which openraft allows. A single-member
-  group decides this alone. With the default, `existing`, empty members wait
+  initializes the configured group, which openraft allows, once every
+  other member has recorded it ([below](#forming-the-group)). A
+  single-member group decides this alone. With the default, `existing`, empty members wait
   and log why instead: a member cannot tell a first boot from a lost volume,
   and only the operator knows which it is.
 - **Neither**: it waits and asks again, and logs which members it is waiting
@@ -312,10 +313,88 @@ A first boot acts on answers, never on silence:
   every member answers empty, so the members of a first boot never wait on
   each other.
 
-One case is not covered: a volume lost after the group formed and before its
-first leader wrote an entry. Every log is still empty then, so under `new` the
-member forms again and has forgotten any vote it gave
+#### Forming the group
+
+An empty log does not show that nobody has voted. Members vote before the
+first leader writes its first entry, so in a cluster's first moments every
+member answers empty while votes are already out. A member that lost its
+volume in that window, with `new` still set, used to form again and vote a
+second time in a term it had forgotten. Two members could then lead the same
+group, and one acknowledged a write the other overwrote
 ([#2374](https://github.com/GetFelix/felix/issues/2374)).
+
+So a member forms in three steps, and each is on disk before the next
+starts:
+
+```mermaid
+sequenceDiagram
+    participant A as member 1 (empty)
+    participant B as member 2
+    participant C as member 3
+    A->>B: GET standing
+    B-->>A: empty, formed: []
+    A->>C: GET standing
+    C-->>A: empty, formed: []
+    Note over A: 1. mark: write the forming mark, fsync
+    A->>B: POST forming {member: 1}
+    Note over B: 2. record: write "1 set out to form", fsync
+    B-->>A: 204
+    A->>C: POST forming {member: 1}
+    Note over C: 2. record: write "1 set out to form", fsync
+    C-->>A: 204
+    Note over A: 3. vote: give the vote back, initialize
+```
+
+1. **Mark.** Every member has answered empty and none names this member. It
+   writes a *forming mark* to its own store.
+2. **Record.** It sends `POST /internal/raft/forming` with its id and the
+   ids of the group to every member that answered. Each one writes the id to
+   its own store and syncs it before it answers. A member records whatever
+   its own state is: formed, empty or still withholding its vote. It refuses
+   a group that is not the one in its own `FELIX_RAFT_PEERS` (409), since
+   members initialized with different groups can split.
+3. **Vote.** Once every one of them has answered, the member gives back its
+   vote and initializes. Until then it votes for nobody and asks again.
+
+`standing` lists the ids a member has recorded, as `formed`. An empty member
+reads the lists when it starts:
+
+- **Named by a peer, and it holds no mark.** The volume that held the mark is
+  gone, and that volume may have voted. The member never forms. It keeps its
+  vote withheld and catches up with a confirmed leader, like any member that
+  rejoins.
+- **Named by a peer, and it holds its mark.** It was stopped between the mark
+  and the vote. The mark is on the same volume as the vote, so that volume
+  has not been lost and has not voted. The member asks for the records again
+  and goes on.
+- **Not named.** A first boot, as above. Members that have already formed do
+  not stand in its way: only a record of *this* member counts, so a member
+  that starts late forms with the same group, and the others can win its
+  vote.
+
+This closes the gap because every vote a member gives comes after a record
+of that member on every other member that answered. The record is lost only
+if all of those volumes are lost as well, and then nothing is left for a
+second vote to contradict. Neither the mark nor the records are Raft state:
+a member that holds only those still counts as empty, and `form-without`
+still accepts it.
+
+What it costs:
+
+- **A first start needs every member on a build that has the route.** A
+  member on an older build answers `standing` as empty and 404 to `forming`.
+  That is no record, so the others wait and log which member it is. An
+  existing group is not affected: its logs hold entries past index 1, so no
+  member tries to form.
+- **A majority of volumes lost in the first moments leaves nobody to lead.**
+  With one volume lost, the other two elect a leader and the member catches
+  up. With two lost before any leader wrote an entry, the wiped members wait
+  for a leader that the third cannot become alone. If the cluster never held
+  data, stop every member, empty every volume and start again; otherwise it
+  is quorum loss and the [restore](#restoring-beyond-quorum-loss) applies.
+
+Still remove `new` once the cluster has started. The record makes a stale
+`new` safe in this window, and `existing` keeps it from mattering at all.
 
 #### Forming without a lost machine
 
@@ -341,6 +420,8 @@ What the waiver does and does not do:
   connection that fails or times out.
 - **It names a minority.** The members that answer empty, this one included,
   must still be a majority of the configured group.
+- **It covers the record too.** A waived slot that stays silent is not asked
+  to record the forming member. One that answers is asked like any other.
 - **It is used once.** The member removes the file before it initializes.
   It also removes it, with a warning, when it finds the group exists or
   that it holds Raft state. A crash between the removal and the
@@ -823,6 +904,8 @@ leader's snapshot as in
 | One instance of three dies | Leader (if it was the leader) re-elected in one election timeout; writes pause for that long, reads keep serving; M7 signal holds |
 | Instance loses its volume | Rejoins without a vote, catches up by log or snapshot, then votes again ([above](#rejoining-after-a-lost-volume)); no operator data surgery |
 | A majority loses its volumes | The empty members wait rather than form a new, empty group. Under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` they still wait until every member answers and is empty, so a member that holds the log blocks them whether it is up or down; recovery is the snapshot restore |
+| A member's volume is lost after the group formed and before its first leader wrote an entry | Its peers recorded it before it first voted, so it does not form again, even under `new`. It waits for the others to elect a leader, catches up and votes again ([above](#forming-the-group)). If a majority's volumes go in that window, nobody can lead: empty every volume and start again if the cluster held no data, or restore |
+| A first start with a member on a build without the `forming` route | Nobody forms: that member cannot record the others. The log names it. Start every member on the same release |
 | A member's machine is lost before the group first forms | The others wait for its answer. `felix-controlplane raft form-without` lets them form without it ([above](#forming-without-a-lost-machine)) |
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
@@ -855,7 +938,13 @@ leader's snapshot as in
   two wiped members do not form over a down member that holds an
   acknowledged write; three empty members form one group; and the
   `form-without` waiver forms once, is removed, and never overrides a member
-  that answers.
+  that answers. For the forming record: a member wiped before the first
+  entry does not form again and votes only after it has caught up with a
+  leader; two wiped members do not form over a third whose log is empty; a
+  late member forms against peers that have formed and have no leader; a
+  member does not vote while one peer has not recorded it; and
+  (`raft/join/tests.rs`) members stopped between the records and
+  `initialize` form after a restart.
 
 ## What would overturn this
 

@@ -38,6 +38,9 @@ pub struct RaftHandle {
     pub(super) member: store::MemberState,
     /// Where the store lives, and the `form-without` waiver beside it.
     pub(super) data_dir: Arc<std::path::PathBuf>,
+    /// The member ids [`RaftHandle::enter_group`] was given: the group this
+    /// member would form, and the only one it records a peer as forming.
+    pub(super) configured: Arc<std::sync::OnceLock<std::collections::BTreeSet<NodeId>>>,
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
@@ -190,6 +193,7 @@ impl RaftHandle {
             app,
             member,
             data_dir: Arc::new(settings.data_dir),
+            configured: Arc::default(),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
