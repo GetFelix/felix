@@ -239,6 +239,12 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
     // seed. Declared before the runtime, so it also covers the runtime's drop.
     let limit = config.real_time_limit + config.real_time_limit / 4;
     let _bound = Deadline::start(limit, move || {
+        // Output that nobody drains blocks every writer, this message too,
+        // so the exit does not wait on it.
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_secs(10));
+            std::process::exit(1);
+        });
         eprintln!(
             "seed {seed} ran past {limit:?} of real time: something holds the simulation \
              thread and never returns to the runtime, so the stall watch cannot end the run. \
