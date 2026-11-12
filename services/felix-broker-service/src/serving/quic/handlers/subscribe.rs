@@ -54,7 +54,7 @@ use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
 use feeder::{SubscriberRevocation, run_lane_feeder};
-use replay::{CountingSink, EventFormat, write_replay};
+use replay::{CountingSink, EventFormat, write_history, write_replay};
 
 /// Application code on an event stream reset because this broker stopped
 /// serving the shard before the subscription went live.
@@ -100,6 +100,7 @@ pub(crate) async fn handle_subscribe_message(
     start: Option<StartPosition>,
     shard: Option<u32>,
     queue_capacity: Option<u32>,
+    end: Option<u64>,
     peer_flags: u16,
     // The extension bits negotiated at auth; record headers ride event frames
     // only when this carries `EXT_RECORD_HEADERS`.
@@ -173,6 +174,20 @@ pub(crate) async fn handle_subscribe_message(
             return Ok(true);
         }
 
+        // A bound counts offsets, so the subscriber must be reading them.
+        if end.is_some() && !offsets_enabled {
+            return subscribe_failed(
+                ClientError::invalid("end needs the event offsets flag").into_message(),
+                subscriptions,
+                out_ack_tx,
+                out_ack_depth,
+                ack_throttle_tx,
+                ack_timeout_state,
+                cancel_tx,
+            )
+            .await;
+        }
+
         // Ask broker core for a managed subscriber queue.
         //
         // With a start position the broker registers the live subscription
@@ -184,70 +199,99 @@ pub(crate) async fn handle_subscribe_message(
         // On failure, respond on the control stream (through the ack queue) and keep
         // the stream alive.
         let start = start.or(offsets_enabled.then_some(StartPosition::Latest));
+        // A range below the tail cannot grow, so it is read from disk and
+        // never registered for fanout.
+        let mut history_only = None;
+        if let (Some(end), Some(start)) = (end, start) {
+            match broker
+                .history_to(&tenant_id, &namespace, &stream, shard, start, end)
+                .await
+            {
+                Ok(join) => history_only = join,
+                Err(err) => {
+                    return subscribe_failed(
+                        subscribe_error_message(err),
+                        subscriptions,
+                        out_ack_tx,
+                        out_ack_depth,
+                        ack_throttle_tx,
+                        ack_timeout_state,
+                        cancel_tx,
+                    )
+                    .await;
+                }
+            }
+        }
         let mut replay = None;
-        let mut join = None;
-        let mut subscription = match start {
-            None => match broker
-                .subscribe_sized(
-                    &tenant_id,
-                    &namespace,
-                    &stream,
-                    shard,
-                    queue_capacity.map(|granted| granted as usize),
-                )
-                .await
-            {
-                Ok(subscription) => subscription,
-                Err(err) => {
-                    return subscribe_failed(
-                        subscribe_error_message(err),
-                        subscriptions,
-                        out_ack_tx,
-                        out_ack_depth,
-                        ack_throttle_tx,
-                        ack_timeout_state,
-                        cancel_tx,
+        let mut join = history_only;
+        let mut subscription = if history_only.is_some() {
+            None
+        } else {
+            Some(match start {
+                None => match broker
+                    .subscribe_sized(
+                        &tenant_id,
+                        &namespace,
+                        &stream,
+                        shard,
+                        queue_capacity.map(|granted| granted as usize),
                     )
-                    .await;
-                }
-            },
-            Some(start) => match broker
-                .subscribe_from_sized(
-                    &tenant_id,
-                    &namespace,
-                    &stream,
-                    shard,
-                    start,
-                    queue_capacity.map(|granted| granted as usize),
-                )
-                .await
-            {
-                Ok(resumed) => {
-                    replay = Some((resumed.history, resumed.backlog, resumed.backlog_start));
-                    join = resumed.join;
-                    resumed.subscription
-                }
-                Err(err) => {
-                    return subscribe_failed(
-                        subscribe_error_message(err),
-                        subscriptions,
-                        out_ack_tx,
-                        out_ack_depth,
-                        ack_throttle_tx,
-                        ack_timeout_state,
-                        cancel_tx,
+                    .await
+                {
+                    Ok(subscription) => subscription,
+                    Err(err) => {
+                        return subscribe_failed(
+                            subscribe_error_message(err),
+                            subscriptions,
+                            out_ack_tx,
+                            out_ack_depth,
+                            ack_throttle_tx,
+                            ack_timeout_state,
+                            cancel_tx,
+                        )
+                        .await;
+                    }
+                },
+                Some(start) => match broker
+                    .subscribe_from_sized(
+                        &tenant_id,
+                        &namespace,
+                        &stream,
+                        shard,
+                        start,
+                        queue_capacity.map(|granted| granted as usize),
                     )
-                    .await;
-                }
-            },
+                    .await
+                {
+                    Ok(resumed) => {
+                        replay = Some((resumed.history, resumed.backlog, resumed.backlog_start));
+                        join = resumed.join;
+                        resumed.subscription
+                    }
+                    Err(err) => {
+                        return subscribe_failed(
+                            subscribe_error_message(err),
+                            subscriptions,
+                            out_ack_tx,
+                            out_ack_depth,
+                            ack_throttle_tx,
+                            ack_timeout_state,
+                            cancel_tx,
+                        )
+                        .await;
+                    }
+                },
+            })
         };
 
-        subscription.set_owner(felix_broker::SubscriberOwner {
-            subscription_id,
-            connection_id: connection.info().id.0,
-            peer: connection.info().peer_addr.to_string(),
-            principal,
-        });
+        if let Some(subscription) = &subscription {
+            subscription.set_owner(felix_broker::SubscriberOwner {
+                subscription_id,
+                connection_id: connection.info().id.0,
+                peer: connection.info().peer_addr.to_string(),
+                principal,
+            });
+        }
 
         // Checked again now that it is registered: an ending that landed
         // since the first check would otherwise have missed it.
@@ -375,50 +419,102 @@ pub(crate) async fn handle_subscribe_message(
         // overtake replay because nothing drains that queue until registration
         // below. History, then backlog, then live -- contiguous.
         let delivery = TenantDelivery::for_tenant(&tenant_id);
-        if let Some((history, backlog, backlog_start)) = replay
-            && let Err(err) = write_replay(
-                &mut CountingSink {
-                    inner: &mut event_send,
-                    delivery: &delivery,
-                },
-                &broker,
-                &tenant_id,
-                &namespace,
-                &stream,
-                shard,
-                subscription_id,
-                history,
-                backlog,
-                backlog_start,
-                &mut subscription,
-                config.event_batch_max_events.max(1),
-                config.event_batch_max_bytes.max(1),
-                EventFormat {
-                    offsets: offsets_enabled,
-                    skips: skip_enabled,
-                    publisher: publisher_enabled,
-                    headers: headers_enabled,
-                    timestamps: timestamps_enabled,
-                },
-            )
-            .await
-        {
-            subscriptions.release();
-            tracing::info!(error = %err, "subscription replay failed");
-            // Stopped serving the shard mid-replay (lease lapsed, shard moved).
-            // Finishing the stream would read as a clean end; a reset reads
-            // as a lost subscription, which the client resumes from its last
-            // offset wherever the shard is served now.
-            if err.chain().any(|cause| {
-                matches!(
-                    cause.downcast_ref::<felix_broker::BrokerError>(),
-                    Some(felix_broker::BrokerError::NotReadable { .. })
+        let format = EventFormat {
+            offsets: offsets_enabled,
+            skips: skip_enabled,
+            publisher: publisher_enabled,
+            headers: headers_enabled,
+            timestamps: timestamps_enabled,
+        };
+        let sink_delivery = &delivery;
+        let replayed: Result<bool> = match (&mut subscription, replay) {
+            (Some(subscription), Some((history, backlog, backlog_start))) => {
+                write_replay(
+                    &mut CountingSink {
+                        inner: &mut event_send,
+                        delivery: sink_delivery,
+                    },
+                    &broker,
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    subscription_id,
+                    history,
+                    backlog,
+                    backlog_start,
+                    subscription,
+                    config.event_batch_max_events.max(1),
+                    config.event_batch_max_bytes.max(1),
+                    format,
+                    end,
                 )
-            }) {
-                let _ = event_send.reset(NOT_SERVING_HERE);
+                .await
+            }
+            _ => match (history_only, end) {
+                (Some(join), Some(end)) => write_history(
+                    &mut CountingSink {
+                        inner: &mut event_send,
+                        delivery: sink_delivery,
+                    },
+                    &broker,
+                    &tenant_id,
+                    &namespace,
+                    &stream,
+                    shard,
+                    subscription_id,
+                    join.start_offset,
+                    end,
+                    config.event_batch_max_events.max(1),
+                    config.event_batch_max_bytes.max(1),
+                    format,
+                )
+                .await
+                .map(|()| true),
+                _ => Ok(false),
+            },
+        };
+        let reached_end = match replayed {
+            Ok(reached) => reached,
+            Err(err) => {
+                subscriptions.release();
+                tracing::info!(error = %err, "subscription replay failed");
+                // Stopped serving the shard mid-replay (lease lapsed, shard moved).
+                // Finishing the stream would read as a clean end; a reset reads
+                // as a lost subscription, which the client resumes from its last
+                // offset wherever the shard is served now.
+                if err.chain().any(|cause| {
+                    matches!(
+                        cause.downcast_ref::<felix_broker::BrokerError>(),
+                        Some(felix_broker::BrokerError::NotReadable { .. })
+                    )
+                }) {
+                    let _ = event_send.reset(NOT_SERVING_HERE);
+                }
+                return Ok(true);
+            }
+        };
+        if let (true, Some(end)) = (reached_end, end) {
+            // Dropping the subscription unregisters it from fanout.
+            drop(subscription);
+            subscriptions.release();
+            let ended = Message::SubscriptionEnded {
+                subscription_id,
+                end,
+            };
+            if let Err(err) = write_message(&mut event_send, ended).await {
+                tracing::info!(error = %err, "subscription end frame not written");
+            } else {
+                let _ = event_send.finish();
             }
             return Ok(true);
         }
+        // Live delivery needs the registration; only a range wholly below the
+        // tail is served without one, and that ended above.
+        let Some(subscription) = subscription else {
+            subscriptions.release();
+            return Ok(true);
+        };
 
         // Batching configuration.
         // Note: `batch_size` is the “fanout batch size” (publisher -> broker internal),
@@ -435,6 +531,7 @@ pub(crate) async fn handle_subscribe_message(
             max_bytes,
             flush_delay,
             single_event_mode: config.fanout_batch_size <= 1,
+            end,
             offsets_enabled,
             skip_enabled,
             publisher_enabled,
@@ -456,9 +553,18 @@ pub(crate) async fn handle_subscribe_message(
         let manager = Arc::clone(lane_manager);
         let lane_idx = manager.select_lane(subscription_id, Some(connection_id));
         let (mut event_rx, unsubscribe_guard) = subscription.into_parts();
+        if let Some(end) = end {
+            event_rx.end_at(end);
+        }
         // Without offsets the client could not resume from where the drop was.
+        // A bounded subscription ends at a drop whatever the client offered:
+        // it asked for every record below `end`, and a hole would break that.
         if offsets_enabled
-            && felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SUBSCRIPTION_LAGGED)
+            && (end.is_some()
+                || felix_wire::supports_feature(
+                    peer_features,
+                    felix_wire::FEATURE_SUBSCRIPTION_LAGGED,
+                ))
         {
             event_rx.end_on_lag();
         }

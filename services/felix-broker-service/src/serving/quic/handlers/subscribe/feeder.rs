@@ -395,6 +395,9 @@ pub(super) async fn run_lane_feeder(
         // the records dropped before it.
         let last = match (event_rx.lag_ended(), event_rx.moved()) {
             _ if revoked_frame.is_some() => revoked_frame,
+            _ if event_rx.reached_end() => config
+                .end
+                .and_then(|end| ended_frame(config.subscription_id, end)),
             (Some(resume_from), _) => lagged_frame(config.subscription_id, resume_from),
             (None, Some(moved)) if config.shard_moved_enabled => {
                 match shard_moved_frame(config.subscription_id, moved) {
@@ -529,6 +532,21 @@ fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
         Ok(frame) => Some(frame.encode()),
         Err(err) => {
             tracing::warn!(error = %err, subscription_id, "encode subscription_lagged failed");
+            None
+        }
+    }
+}
+
+/// The last frame of a subscription that reached the `end` it asked for.
+fn ended_frame(subscription_id: u64, end: u64) -> Option<Bytes> {
+    let message = felix_wire::Message::SubscriptionEnded {
+        subscription_id,
+        end,
+    };
+    match message.encode() {
+        Ok(frame) => Some(frame.encode()),
+        Err(err) => {
+            tracing::warn!(error = %err, subscription_id, "encode subscription_ended failed");
             None
         }
     }
