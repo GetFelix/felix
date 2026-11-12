@@ -7,13 +7,20 @@
 //! or the new one. Nothing can rebuild it, so a file that does not decode
 //! fails the open and is never read as "no file": that would give back a
 //! withheld vote and forget that the member has started.
+//!
+//! A store is born whole: its directory is built under a temporary name
+//! with the member file and an empty `log/` in it, then renamed into place
+//! and the data directory synced. So a `store/` that exists always has
+//! both, and one that lacks either was damaged after the fact.
 
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::LOG_DIR;
-use crate::raft_log::{snapshot, state_file};
+use crate::disk_log::crash_point;
+use crate::raft_log::state_file;
 
 /// `"FLMB"`.
 const MAGIC: u32 = 0x464C_4D42;
@@ -27,6 +34,11 @@ const CONVERTED: u16 = 1 << 1;
 const STARTED: u16 = 1 << 2;
 const KNOWN_FLAGS: u16 = VOTE_WITHHELD | CONVERTED | STARTED;
 
+/// Stores open in this process. Each [`MemberFile`] writes the file from
+/// its own copy, so a second one on the same store would undo the first's
+/// changes.
+static OPEN: parking_lot::Mutex<Option<HashSet<PathBuf>>> = parking_lot::Mutex::new(None);
+
 /// The member file of one metadata store. Cheap to clone; every clone sees
 /// the same file.
 #[derive(Debug, Clone)]
@@ -35,65 +47,56 @@ pub struct MemberFile {
 }
 
 impl MemberFile {
-    /// Open the member file of the store in `store_dir`, which must exist.
+    /// Open the store in `store_dir` for the cluster `cluster_id`, making it
+    /// if there is none.
     ///
-    /// A store with no member file is a new one, and reads as
-    /// [`Member::default`]. The member file is the first thing written to a
-    /// store, so a directory that holds a log or a snapshot without one has
-    /// lost it, and the open fails.
-    pub fn open(store_dir: impl Into<PathBuf>) -> io::Result<Self> {
+    /// A new store is created whole, member file and empty log directory
+    /// together, and is on disk before this returns, so the log can only be
+    /// opened in a store whose member file names its cluster. An existing
+    /// store must hold both, and belong to `cluster_id`. A store already
+    /// open in this process is refused, as is an empty `cluster_id`.
+    pub fn open(store_dir: impl Into<PathBuf>, cluster_id: &str) -> io::Result<Self> {
         let dir = store_dir.into();
-        let member = read(&dir)?;
-        if member.is_none() {
-            for name in [LOG_DIR, snapshot::FILE_NAME] {
-                if super::present(&dir.join(name))? {
-                    return Err(invalid(format!(
-                        "{} holds {name} and no member file, so its cluster id, its withheld \
-                         vote and its marks are unknown",
-                        dir.display()
-                    )));
-                }
-            }
-        }
-        state_file::remove_temporary(&dir, FILE_NAME)?;
-        Ok(Self {
-            shared: Arc::new(Shared {
-                dir,
-                state: parking_lot::Mutex::new(State {
-                    member: member.unwrap_or_default(),
-                    failed: false,
-                }),
-            }),
-        })
-    }
-
-    /// The member as the file holds it.
-    pub fn member(&self) -> Member {
-        self.shared.state.lock().member.clone()
-    }
-
-    /// Record that this store belongs to `cluster_id`. Fails, with nothing
-    /// written, when it already belongs to another cluster.
-    pub async fn claim_cluster_id(&self, cluster_id: &str) -> io::Result<()> {
         if cluster_id.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "a cluster id cannot be empty",
             ));
         }
-        let cluster_id = cluster_id.to_string();
-        self.change(move |member, dir| match &member.cluster_id {
-            Some(recorded) if *recorded == cluster_id => Ok(()),
-            Some(recorded) => Err(invalid(format!(
-                "{} belongs to cluster '{recorded}', not '{cluster_id}'",
-                dir.display()
-            ))),
-            None => {
-                member.cluster_id = Some(cluster_id);
-                Ok(())
-            }
+        let registration = Registration::claim(&dir)?;
+        if !super::present(&dir)? {
+            create(&dir, cluster_id)?;
+        }
+        let member = existing(&dir)?;
+        if member.cluster_id != cluster_id {
+            return Err(invalid(format!(
+                "{} belongs to cluster '{}', not '{cluster_id}'",
+                dir.display(),
+                member.cluster_id
+            )));
+        }
+        state_file::remove_temporary(&dir, FILE_NAME)?;
+        Ok(Self {
+            shared: Arc::new(Shared {
+                dir,
+                state: parking_lot::Mutex::new(State {
+                    member,
+                    failed: false,
+                }),
+                _registration: registration,
+            }),
         })
-        .await
+    }
+
+    /// Where the store's Raft log lives. The directory exists once
+    /// [`Self::open`] has returned.
+    pub fn log_dir(&self) -> PathBuf {
+        self.shared.dir.join(LOG_DIR)
+    }
+
+    /// The member as the file holds it.
+    pub fn member(&self) -> Member {
+        self.shared.state.lock().member.clone()
     }
 
     /// Withhold or give back the member's vote, on disk before this
@@ -119,7 +122,9 @@ impl MemberFile {
             Ok(())
         })
         .await?;
-        Ok(Started(()))
+        Ok(Started {
+            store_dir: self.shared.dir.clone(),
+        })
     }
 
     /// Set or clear the converted mark, on disk before this returns. For
@@ -172,6 +177,33 @@ struct Shared {
     dir: PathBuf,
     /// Held across a write, so two changes do not interleave.
     state: parking_lot::Mutex<State>,
+    _registration: Registration,
+}
+
+/// A store's place in [`OPEN`], given up when the last clone is dropped.
+#[derive(Debug)]
+struct Registration(PathBuf);
+
+impl Registration {
+    fn claim(dir: &Path) -> io::Result<Self> {
+        // Lexical: a store reached through a symlink is not caught here.
+        let key = std::path::absolute(dir)?;
+        if !OPEN.lock().get_or_insert_default().insert(key.clone()) {
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                format!("{} is already open in this process", dir.display()),
+            ));
+        }
+        Ok(Self(key))
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        if let Some(open) = OPEN.lock().as_mut() {
+            open.remove(&self.0);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -183,8 +215,8 @@ struct State {
 /// What the member file holds.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Member {
-    /// The cluster this store belongs to, once claimed.
-    pub cluster_id: Option<String>,
+    /// The cluster this store belongs to, for good. Never empty.
+    pub cluster_id: String,
     /// The member must not vote or campaign: it rejoined with an empty
     /// store and may have forgotten a vote.
     pub vote_withheld: bool,
@@ -194,13 +226,96 @@ pub struct Member {
     pub started: bool,
 }
 
-/// Proof that the started mark is on disk. Only
+/// Proof that the started mark of one store is on disk. Only
 /// [`MemberFile::mark_started`] makes one.
 #[derive(Debug)]
-pub struct Started(());
+pub struct Started {
+    store_dir: PathBuf,
+}
+
+impl Started {
+    /// The store whose mark this proves.
+    pub fn store_dir(&self) -> &Path {
+        &self.store_dir
+    }
+
+    /// Fails unless this proves the mark of the store in `store_dir`, so a
+    /// node is not made on one store with another store's proof. The paths
+    /// are compared as written.
+    pub fn check(&self, store_dir: &Path) -> io::Result<()> {
+        if self.store_dir == store_dir {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "the started mark is for {}, not {}",
+                self.store_dir.display(),
+                store_dir.display()
+            ),
+        ))
+    }
+}
+
+/// Build the store in `dir` for `cluster_id`: a temporary directory with the
+/// member file and an empty log directory, renamed into place, and the
+/// parent synced. A crash leaves no store, or the whole one, beside perhaps
+/// the temporary, which the next build replaces.
+fn create(dir: &Path, cluster_id: &str) -> io::Result<()> {
+    let name = dir
+        .file_name()
+        .ok_or_else(|| invalid(format!("{} is not a directory name", dir.display())))?;
+    let parent = match dir.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let mut building = name.to_os_string();
+    building.push(".tmp");
+    let building = parent.join(building);
+    let step = || crash_point::reached(dir);
+
+    // The data directory's own entry must be on disk too, or the store goes
+    // with it.
+    crate::io::create_dir_all_durable(parent)?;
+    if super::present(&building)? {
+        crate::fs::remove_dir_all(&building)?;
+    }
+    step()?;
+    crate::fs::create_dir_all(building.join(LOG_DIR))?;
+    let member = Member {
+        cluster_id: cluster_id.to_string(),
+        ..Member::default()
+    };
+    // Syncs `building`, so the log directory's entry is on disk too.
+    state_file::store(&building, FILE_NAME, &[&encode(&member)?])?;
+    step()?;
+    crate::fs::rename(&building, dir)?;
+    step()?;
+    crate::io::sync_dir(parent)
+}
+
+/// The member of the store in `dir`, which exists. A store is born with its
+/// member file and its log directory, so one without either is refused.
+pub(super) fn existing(dir: &Path) -> io::Result<Member> {
+    let member = read(dir)?.ok_or_else(|| {
+        invalid(format!(
+            "{} holds no member file, so its cluster id, its withheld vote and its marks \
+             are unknown",
+            dir.display()
+        ))
+    })?;
+    if !super::present(&dir.join(LOG_DIR))? {
+        return Err(invalid(format!(
+            "{} has a member file and no {LOG_DIR} directory: its log, and any vote in it, \
+             is gone",
+            dir.display()
+        )));
+    }
+    Ok(member)
+}
 
 /// The member file in `dir`, or `None` when the store has none. Read-only.
-pub(super) fn read(dir: &Path) -> io::Result<Option<Member>> {
+fn read(dir: &Path) -> io::Result<Option<Member>> {
     let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
         return Ok(None);
     };
@@ -210,7 +325,7 @@ pub(super) fn read(dir: &Path) -> io::Result<Option<Member>> {
 }
 
 pub(super) fn encode(member: &Member) -> io::Result<Vec<u8>> {
-    let cluster_id = member.cluster_id.as_deref().unwrap_or_default();
+    let cluster_id = member.cluster_id.as_str();
     let id_len = u16::try_from(cluster_id.len())
         .map_err(|_| invalid("a cluster id is over 65535 bytes".to_string()))?;
     let mut flags = 0;
@@ -265,8 +380,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Member, String> {
         ));
     }
     let cluster_id = std::str::from_utf8(cluster_id).map_err(|_| damaged())?;
+    if cluster_id.is_empty() {
+        return Err("the member file has no cluster id".to_string());
+    }
     Ok(Member {
-        cluster_id: (!cluster_id.is_empty()).then(|| cluster_id.to_string()),
+        cluster_id: cluster_id.to_string(),
         vote_withheld: flags & VOTE_WITHHELD != 0,
         converted: flags & CONVERTED != 0,
         started: flags & STARTED != 0,

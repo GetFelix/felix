@@ -33,37 +33,43 @@ pub const LOG_DIR: &str = "log";
 pub const REDB_FILE: &str = "raft.redb";
 
 /// What a member starts on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Start {
-    /// Neither a store nor a redb file: a new member.
+    /// No store, and no redb file: nothing here says this member ever ran.
+    /// A member that was in the cluster and lost its whole data directory
+    /// looks the same, and may have voted in a term it no longer knows. A
+    /// member that joins a cluster already running must start with its
+    /// vote withheld.
     New,
-    /// A store, with no redb file or with the stub of a converted one.
-    Existing,
+    /// A whole store: its member file, which decoded, and its log
+    /// directory, where the vote lives. With [`Member::started`] set the
+    /// member may have voted, and its log is what it voted from. A store
+    /// whose log directory is gone is refused, never reported here.
+    Existing(Member),
 }
 
 /// Whether a member may start on `data_dir`, from the names in it and the
 /// store's member file.
 ///
-/// A `raft.redb` is refused unless the store beside it carries the
-/// converted mark: the mark is written before the conversion replaces the
-/// file with its stub, so with the mark the file is the stub, and without
-/// it the file may hold a group's state that this build cannot read. A
-/// name that cannot be examined and a member file that does not decode are
-/// refused too. Nothing is written.
+/// A store must hold a member file that decodes and a log directory, or
+/// the start is refused: a store is created with both, so one without
+/// either has lost state it cannot rebuild, possibly the member's vote. A
+/// `raft.redb` is refused unless the store beside it carries the converted
+/// mark: the mark is written before the conversion replaces the file with
+/// its stub, so with the mark the file is the stub, and without it the
+/// file may hold a group's state that this build cannot read. A name that
+/// cannot be examined is refused too. Nothing is written.
 pub fn decide_start(data_dir: &Path) -> io::Result<Start> {
     let redb = data_dir.join(REDB_FILE);
     let store = data_dir.join(STORE_DIR);
-    let has_store = present(&store)?;
-    if !present(&redb)? {
-        return Ok(if has_store {
-            Start::Existing
-        } else {
-            Start::New
-        });
-    }
-    let converted = has_store && member::read(&store)?.is_some_and(|member| member.converted);
-    if converted {
-        return Ok(Start::Existing);
+    let member = if present(&store)? {
+        Some(member::existing(&store)?)
+    } else {
+        None
+    };
+    let converted = member.as_ref().is_some_and(|member| member.converted);
+    if !present(&redb)? || converted {
+        return Ok(member.map_or(Start::New, Start::Existing));
     }
     Err(io::Error::new(
         io::ErrorKind::InvalidData,

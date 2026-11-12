@@ -168,3 +168,28 @@ async fn a_snapshot_of_another_version_is_refused() {
         assert_eq!(std::fs::read(&path).expect("read"), bytes, "left as found");
     }
 }
+
+/// The reserved bytes are zero. A file that sets them, even with a correct
+/// checksum, fails the open instead of being read with them ignored.
+#[tokio::test]
+async fn a_snapshot_with_reserved_bytes_set_is_refused() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    store
+        .install(snapshot(4, 7, "seven"))
+        .await
+        .expect("install");
+    let path = dir.path().join("raft-snapshot");
+    let good = std::fs::read(&path).expect("read");
+
+    for reserved in [1u16, 0x8000] {
+        let mut bytes = good.clone();
+        bytes[6..8].copy_from_slice(&reserved.to_be_bytes());
+        let crc = crate::segment::format::crc32(&[&bytes[..36], &bytes[40..]]);
+        bytes[36..40].copy_from_slice(&crc.to_be_bytes());
+        assert_eq!(decode(&bytes), None, "reserved {reserved:#06x}");
+        std::fs::write(&path, &bytes).expect("write");
+        let err = SnapshotStore::open(dir.path()).expect_err("reserved bytes set");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+}

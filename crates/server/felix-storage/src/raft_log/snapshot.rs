@@ -141,6 +141,10 @@ pub(super) fn decode(bytes: &[u8]) -> Option<StoredSnapshot> {
     if magic != MAGIC || version != VERSION {
         return None;
     }
+    // A later version may give these bytes a meaning this build would ignore.
+    if header[6..8] != [0, 0] {
+        return None;
+    }
     let index = u64::from_be_bytes(header[8..16].try_into().ok()?);
     let generation = u64::from_be_bytes(header[16..24].try_into().ok()?);
     let meta_len = u32::from_be_bytes(header[24..28].try_into().ok()?) as usize;

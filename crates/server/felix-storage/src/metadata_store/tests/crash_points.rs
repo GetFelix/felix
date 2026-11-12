@@ -19,22 +19,32 @@ const SEEDS: u64 = 8;
 /// More steps than any sequence here has.
 const MOST_STEPS: usize = 32;
 
-/// A data directory as a conversion leaves it: `store/` beside a stub
-/// `raft.redb`, both on disk.
+const CLUSTER: &str = "prod-eu";
+
+/// A data directory on the simulator's filesystem.
 struct Sim(PathBuf);
 
 impl Sim {
-    fn new(name: &str, seed: u64) -> Self {
+    /// Empty: a new member's.
+    fn empty(name: &str, seed: u64) -> Self {
         let root = std::env::temp_dir().join(format!(
             "felix-simfs-member-{}-{name}-{seed}",
             std::process::id()
         ));
         sim_fs::register_root(&root);
-        crate::io::create_dir_all_durable(&root.join(STORE_DIR)).expect("store");
-        let stub = crate::fs::File::create(root.join(REDB_FILE)).expect("stub");
-        crate::io::sync_all(&stub).expect("sync");
-        crate::io::sync_dir(&root).expect("sync");
         Self(root)
+    }
+
+    /// As a conversion leaves it: a converted store beside a stub
+    /// `raft.redb`, all on disk.
+    async fn converted(name: &str, seed: u64) -> Self {
+        let sim = Self::empty(name, seed);
+        let file = MemberFile::open(sim.store(), CLUSTER).expect("store");
+        file.set_converted(true).await.expect("converted");
+        let stub = crate::fs::File::create(sim.0.join(REDB_FILE)).expect("stub");
+        crate::io::sync_all(&stub).expect("sync");
+        crate::io::sync_dir(&sim.0).expect("sync");
+        sim
     }
 
     fn store(&self) -> PathBuf {
@@ -65,8 +75,8 @@ where
     for step in 0..MOST_STEPS {
         let mut finished = false;
         for seed in 0..SEEDS {
-            let sim = Sim::new(&format!("{name}-{step}"), seed);
-            let file = MemberFile::open(sim.store()).expect("open");
+            let sim = Sim::converted(&format!("{name}-{step}"), seed).await;
+            let file = MemberFile::open(sim.store(), CLUSTER).expect("open");
             prepare(file.clone()).await;
             let before = file.member();
 
@@ -80,12 +90,12 @@ where
             // Decided before the open, which may delete a temporary.
             let decided = decide_start(&sim.0);
             let reopened =
-                MemberFile::open(sim.store()).unwrap_or_else(|err| panic!("{at}: {err}"));
+                MemberFile::open(sim.store(), CLUSTER).unwrap_or_else(|err| panic!("{at}: {err}"));
             let found = reopened.member();
             check(&found, &before, changed.is_ok(), &at);
             // Beside the stub, the service starts exactly when the mark is set.
             match decided {
-                Ok(start) => assert!(start == Start::Existing && found.converted, "{at}"),
+                Ok(start) => assert!(start == Start::Existing(found.clone()), "{at}"),
                 Err(err) => assert!(!found.converted, "{at}: {err}"),
             }
             // The store still takes a change.
@@ -104,28 +114,6 @@ where
     stopped
 }
 
-/// The first write of a new store: nothing, or the claimed id.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cut_at_each_step_of_the_first_write_leaves_no_file_or_a_whole_one() {
-    let stopped = at_every_step(
-        "first",
-        |_| async {},
-        |file| async move { file.claim_cluster_id("prod-eu").await },
-        |found, before, returned, at| {
-            let claimed = Member {
-                cluster_id: Some("prod-eu".to_string()),
-                ..Member::default()
-            };
-            assert!(found == before || *found == claimed, "{at}: {found:?}");
-            if returned {
-                assert_eq!(*found, claimed, "{at}: came undone");
-            }
-        },
-    )
-    .await;
-    assert_eq!(stopped, 4);
-}
-
 /// The started mark over an existing file. Once `mark_started` has
 /// returned, the mark survives a power cut: that is what lets the Raft node
 /// be made.
@@ -133,10 +121,7 @@ async fn a_cut_at_each_step_of_the_first_write_leaves_no_file_or_a_whole_one() {
 async fn a_started_mark_that_returned_survives_a_cut() {
     let stopped = at_every_step(
         "started",
-        |file| async move {
-            file.claim_cluster_id("prod-eu").await.expect("claim");
-            file.set_converted(true).await.expect("converted");
-        },
+        |_| async {},
         |file| async move { file.mark_started().await.map(drop) },
         |found, before, returned, at| {
             let started = Member {
@@ -161,7 +146,6 @@ async fn a_vote_withheld_or_given_back_survives_a_cut_once_it_returned() {
         let stopped = at_every_step(
             &format!("withheld-{withheld}"),
             |file| async move {
-                file.claim_cluster_id("prod-eu").await.expect("claim");
                 file.set_vote_withheld(!withheld).await.expect("set");
                 file.mark_started().await.expect("start");
             },
@@ -189,8 +173,6 @@ async fn a_cleared_converted_mark_survives_a_cut_once_it_returned() {
     let stopped = at_every_step(
         "cleared",
         |file| async move {
-            file.claim_cluster_id("prod-eu").await.expect("claim");
-            file.set_converted(true).await.expect("converted");
             file.mark_started().await.expect("start");
         },
         |file| async move { file.set_converted(false).await },
@@ -206,32 +188,65 @@ async fn a_cleared_converted_mark_survives_a_cut_once_it_returned() {
     assert_eq!(stopped, 4);
 }
 
-/// A member's first start: claim, withhold, mark started, stopped at every
-/// step of the three writes. What reopens is a prefix of the three, never
-/// a later change without an earlier one.
+/// A member's first start on an empty data directory: the open makes the
+/// store, then the vote is withheld and the started mark set, stopped at
+/// every step with the power cut after it. What is left is no store, or a
+/// whole one holding a prefix of the writes. A store whose open returned
+/// survives, and so does a started mark that returned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cut_during_a_first_start_leaves_a_prefix_of_its_writes() {
-    let stopped = at_every_step(
-        "first-start",
-        |_| async {},
-        |file| async move {
-            file.claim_cluster_id("prod-eu").await?;
-            file.set_vote_withheld(true).await?;
-            file.mark_started().await.map(drop)
-        },
-        |found, _, returned, at| {
-            if found.started {
-                assert!(found.vote_withheld, "{at}: started with its vote");
+async fn a_cut_during_a_first_start_leaves_no_store_or_a_prefix_of_its_writes() {
+    let mut stopped = 0;
+    for step in 0..MOST_STEPS {
+        let mut finished = false;
+        for seed in 0..SEEDS {
+            let sim = Sim::empty(&format!("first-start-{step}"), seed);
+            let at = format!("first start: step {step}, seed {seed}");
+
+            crash_point::watch(&sim.store(), Some(step));
+            let mut opened = false;
+            let started = async {
+                let file = MemberFile::open(sim.store(), CLUSTER)?;
+                opened = true;
+                file.set_vote_withheld(true).await?;
+                file.mark_started().await
             }
-            if found.vote_withheld {
-                assert!(found.cluster_id.is_some(), "{at}: no cluster id");
+            .await;
+            crash_point::unwatch(&sim.store());
+            sim_fs::crash(&sim.0, seed).expect("crash");
+
+            let decided = decide_start(&sim.0).unwrap_or_else(|err| panic!("{at}: {err}"));
+            match &decided {
+                // The log is opened once the open returns, so the store
+                // must be on disk by then.
+                Start::New => assert!(!opened, "{at}: an opened store is gone"),
+                Start::Existing(found) => {
+                    assert_eq!(found.cluster_id, CLUSTER, "{at}");
+                    if found.started {
+                        assert!(found.vote_withheld, "{at}: started with its vote");
+                    }
+                    if started.is_ok() {
+                        assert!(found.started, "{at}: a node could exist without its mark");
+                    }
+                }
             }
-            assert!(!found.converted, "{at}");
-            if returned {
-                assert!(found.started, "{at}: came undone");
-            }
-        },
-    )
-    .await;
-    assert_eq!(stopped, 12);
+            // Whatever was left opens, and takes the rest of the start.
+            let file =
+                MemberFile::open(sim.store(), CLUSTER).unwrap_or_else(|err| panic!("{at}: {err}"));
+            assert!(
+                crate::fs::is_dir(file.log_dir()),
+                "{at}: a store without its log"
+            );
+            file.mark_started()
+                .await
+                .unwrap_or_else(|err| panic!("{at}: {err}"));
+            finished = started.is_ok();
+        }
+        if finished {
+            break;
+        }
+        stopped += 1;
+        assert!(step + 1 < MOST_STEPS, "never ran out of steps");
+    }
+    // Three in the store's build, four in each of the two writes.
+    assert_eq!(stopped, 11);
 }
