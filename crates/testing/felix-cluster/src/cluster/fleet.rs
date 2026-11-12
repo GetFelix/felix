@@ -5,8 +5,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 
-use felix_controlplane_service::store::ControlPlaneStore;
-
 use super::Cluster;
 use crate::wait;
 

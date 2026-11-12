@@ -71,6 +71,13 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
             campaign = campaign.with_spare_broker();
             (RandomNemesis::adversarial(), "adversarial faults")
         }
+        Some("metadata") => {
+            campaign.mode = Mode::LeaseFree;
+            (
+                RandomNemesis::metadata(),
+                "faults on a three-member metadata group",
+            )
+        }
         Some("election") => {
             campaign.mode = Mode::LeaseFree;
             (
@@ -81,7 +88,7 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
         Some("all") | None if long => (RandomNemesis::all_faults(), "every fault family"),
         None => (RandomNemesis::process_faults(), "process faults"),
         Some(other) => panic!(
-            "{}={other:?} is not `all`, `adversarial` or `election`",
+            "{}={other:?} is not `all`, `adversarial`, `election` or `metadata`",
             history::campaign::NEMESIS_VAR
         ),
     };

@@ -20,7 +20,6 @@ use super::subscriber::Subscribers;
 use super::workload::{ClientKind, Workload};
 use crate::{CacheSpec, Cluster, ClusterConfig, StreamSpec, wait};
 use felix_common::fleet;
-use felix_controlplane_service::store::ControlPlaneStore;
 
 /// The seed, as a number or `random`.
 pub const SEED_VAR: &str = "FELIX_HISTORY_SEED";
@@ -235,6 +234,7 @@ impl Campaign {
                 .collect(),
             caches: vec![CacheSpec::quorum(&self.cache, 1, 3)],
             proxy_links: nemesis.needs_proxy_links(),
+            metadata_group: nemesis.needs_metadata_group(),
             power_loss: nemesis.needs_power_loss(),
             broker_env,
             ..ClusterConfig::default()
@@ -274,13 +274,16 @@ impl Campaign {
             .as_ref()
             .ok_or_else(|| anyhow!("control plane is not running"))?;
         let mut placed = Vec::new();
-        for assignment in control_plane.store.list_shard_assignments().await? {
+        for assignment in control_plane.live_store().list_shard_assignments().await? {
             if self
                 .shard_names()
                 .any(|(_, name)| name == assignment.key.stream)
             {
                 placed.push((assignment.key.stream.clone(), assignment.generation));
-                control_plane.store.put_shard_assignment(assignment).await?;
+                control_plane
+                    .live_store()
+                    .put_shard_assignment(assignment)
+                    .await?;
             }
         }
         wait::until(SETTLE_TIMEOUT, "each set to be written again", || async {
@@ -451,8 +454,15 @@ impl Campaign {
                 // A pause that timed out waiting for the stop may still take
                 // effect, so heal anyway rather than leave it behind.
                 workload.fault(format!("could not {fault}: {err:#}"));
-                let _ = fault.heal(cluster).await;
+                let healed = fault.heal(cluster).await;
                 workload.set_addrs(cluster.broker_addrs());
+                if fault.kind().needs_metadata_group() {
+                    // The group refusing a write with a quorum up, or failing
+                    // to converge after the heal, is a metadata bug, not a
+                    // fault that could not be injected.
+                    healed.with_context(|| format!("heal {fault} after: {err:#}"))?;
+                    return Err(err.context(format!("{fault}")));
+                }
             } else {
                 if let Fault::ElectWithoutControlPlane { node, .. } = &fault {
                     let elected =

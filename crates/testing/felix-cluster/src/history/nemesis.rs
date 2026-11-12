@@ -87,6 +87,12 @@ pub trait Nemesis {
     fn needs_election(&self) -> bool {
         false
     }
+
+    /// Whether any fault this nemesis may pick acts on the members of the
+    /// control plane's own Raft group, so the cluster must run it as one.
+    fn needs_metadata_group(&self) -> bool {
+        false
+    }
 }
 
 /// What a nemesis may target.
@@ -183,6 +189,13 @@ pub enum FaultKind {
     /// the killed broker again before the control plane returns, then brings
     /// the control plane back. Needs `replica_election`.
     ElectWithoutControlPlane,
+    /// Kill one member of the metadata Raft group, then start it on its
+    /// directory when healed. Needs the control plane to be a real group.
+    MetadataKill,
+    /// Kill whichever member leads the metadata group.
+    MetadataKillLeader,
+    /// Cut the metadata group's leader off from the other two members.
+    MetadataPartitionLeader,
 }
 
 impl FaultKind {
@@ -206,7 +219,10 @@ impl FaultKind {
             | FaultKind::RestartLoop
             | FaultKind::PowerLoss
             | FaultKind::ControlPlaneCrash
-            | FaultKind::ElectWithoutControlPlane => FaultFamily::Compound,
+            | FaultKind::ElectWithoutControlPlane
+            | FaultKind::MetadataKill
+            | FaultKind::MetadataKillLeader
+            | FaultKind::MetadataPartitionLeader => FaultFamily::Compound,
         }
     }
 
@@ -235,6 +251,16 @@ impl FaultKind {
     /// Whether a fault of this kind cuts the power.
     pub fn needs_power_loss(self) -> bool {
         self == FaultKind::PowerLoss
+    }
+
+    /// Whether a fault of this kind acts on the metadata group's members.
+    pub fn needs_metadata_group(self) -> bool {
+        matches!(
+            self,
+            FaultKind::MetadataKill
+                | FaultKind::MetadataKillLeader
+                | FaultKind::MetadataPartitionLeader
+        )
     }
 
     /// Whether a fault of this kind needs replicas to elect a leader.
@@ -345,6 +371,12 @@ pub enum Fault {
         /// What is in flight when the control plane goes down.
         during: Box<Fault>,
     },
+    MetadataKill {
+        /// Index of the member, 0 to 2.
+        member: usize,
+    },
+    MetadataKillLeader,
+    MetadataPartitionLeader,
     ElectWithoutControlPlane {
         /// The leader killed once the control plane is down.
         node: String,
@@ -383,6 +415,9 @@ impl Fault {
             Fault::PowerLoss { .. } => FaultKind::PowerLoss,
             Fault::ControlPlaneCrash { .. } => FaultKind::ControlPlaneCrash,
             Fault::ElectWithoutControlPlane { .. } => FaultKind::ElectWithoutControlPlane,
+            Fault::MetadataKill { .. } => FaultKind::MetadataKill,
+            Fault::MetadataKillLeader => FaultKind::MetadataKillLeader,
+            Fault::MetadataPartitionLeader => FaultKind::MetadataPartitionLeader,
         }
     }
 
@@ -405,7 +440,11 @@ impl Fault {
             | Fault::RestartLoop { node, .. }
             | Fault::ElectWithoutControlPlane { node, .. } => vec![node.clone()],
             // Every broker, so nothing else can be aimed away from it.
-            Fault::ControlPlaneClockStep { .. } | Fault::PowerLoss { .. } => Vec::new(),
+            Fault::ControlPlaneClockStep { .. }
+            | Fault::PowerLoss { .. }
+            | Fault::MetadataKill { .. }
+            | Fault::MetadataKillLeader
+            | Fault::MetadataPartitionLeader => Vec::new(),
             Fault::ControlPlaneCrash { during } => during.targets(),
             Fault::MoveShard { from, to, .. } | Fault::InterruptedMove { from, to, .. } => {
                 vec![from.clone(), to.clone()]
@@ -446,6 +485,23 @@ impl Fault {
             Fault::ControlPlaneCrash { during } => {
                 compound::crash_control_plane(cluster, during).await
             }
+            // Each fault is followed by a write the degraded group must
+            // acknowledge and still hold after the heal.
+            Fault::MetadataKill { member } => {
+                let group = metadata_group(cluster)?;
+                group.kill(*member).await?;
+                group.acknowledge_write().await
+            }
+            Fault::MetadataKillLeader => {
+                let group = metadata_group(cluster)?;
+                group.kill_leader().await?;
+                group.acknowledge_write().await
+            }
+            Fault::MetadataPartitionLeader => {
+                let group = metadata_group(cluster)?;
+                group.isolate_leader().await?;
+                group.acknowledge_write().await
+            }
             Fault::ElectWithoutControlPlane { node, .. } => {
                 cluster.crash_control_plane().await?;
                 cluster.kill_node(node)
@@ -480,6 +536,13 @@ impl Fault {
                 compound::restart_loop(cluster, node, *restarts).await
             }
             Fault::PowerLoss { .. } => cluster.restart_stopped_nodes().await,
+            Fault::MetadataKill { .. }
+            | Fault::MetadataKillLeader
+            | Fault::MetadataPartitionLeader => {
+                let group = metadata_group(cluster)?;
+                group.heal_partition();
+                group.converge(METADATA_CONVERGE).await
+            }
             Fault::ControlPlaneCrash { during } => {
                 compound::recover_control_plane(cluster, during).await
             }
@@ -516,6 +579,9 @@ impl Fault {
             | Fault::InterruptedMove { .. }
             | Fault::RestartLoop { .. }
             | Fault::PowerLoss { .. }
+            | Fault::MetadataKill { .. }
+            | Fault::MetadataKillLeader
+            | Fault::MetadataPartitionLeader
             | Fault::ElectWithoutControlPlane { .. } => Vec::new(),
             Fault::ControlPlaneCrash { during } => during.harness_faults(),
             Fault::Several { faults, .. } => {
@@ -568,6 +634,9 @@ impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Fault::Kill { node } => write!(f, "kill {node}"),
+            Fault::MetadataKill { member } => write!(f, "kill metadata member {member}"),
+            Fault::MetadataKillLeader => write!(f, "kill the metadata leader"),
+            Fault::MetadataPartitionLeader => write!(f, "partition the metadata leader"),
             Fault::Pause { node } => write!(f, "pause {node}"),
             Fault::Partition { node } => write!(f, "partition {node}"),
             Fault::DropOutbound { node, peers } => {
@@ -714,6 +783,19 @@ impl RandomNemesis {
         ])
     }
 
+    /// Faults on the control plane's own Raft group, with a broker kill
+    /// between them so failovers happen while members are down: a member
+    /// killed, the leader killed, the leader cut off from the other two.
+    /// Needs the control plane to run as a three-member group.
+    pub fn metadata() -> Self {
+        Self::new(vec![
+            FaultKind::MetadataKill,
+            FaultKind::MetadataKillLeader,
+            FaultKind::MetadataPartitionLeader,
+            FaultKind::Kill,
+        ])
+    }
+
     /// Only [`FaultKind::ElectWithoutControlPlane`]: leaders killed while the
     /// control plane is down, so every failover is an election among the
     /// replicas.
@@ -809,6 +891,11 @@ impl Nemesis for RandomNemesis {
                 seed: rng.next_u64(),
             },
             FaultKind::ControlPlaneCrash => compound::pick_control_plane_crash(rng, view, node)?,
+            FaultKind::MetadataKill => Fault::MetadataKill {
+                member: rng.below(crate::controlplane::group::MEMBERS as u64) as usize,
+            },
+            FaultKind::MetadataKillLeader => Fault::MetadataKillLeader,
+            FaultKind::MetadataPartitionLeader => Fault::MetadataPartitionLeader,
             FaultKind::ElectWithoutControlPlane => Fault::ElectWithoutControlPlane {
                 node: compound::a_leader(rng, view, node),
                 restart_while_down: rng.percent(50),
@@ -831,6 +918,25 @@ impl Nemesis for RandomNemesis {
     fn needs_election(&self) -> bool {
         self.kinds.iter().any(|kind| kind.needs_election())
     }
+
+    fn needs_metadata_group(&self) -> bool {
+        self.kinds.iter().any(|kind| kind.needs_metadata_group())
+    }
+}
+
+/// How long the metadata members get to agree after a fault is healed.
+const METADATA_CONVERGE: Duration = Duration::from_secs(60);
+
+/// The control plane's Raft group, or an error when the cluster runs the
+/// in-memory store.
+fn metadata_group(cluster: &Cluster) -> Result<&std::sync::Arc<crate::controlplane::group::Group>> {
+    cluster
+        .control_plane
+        .as_ref()
+        .and_then(|control_plane| control_plane.group())
+        .context(
+            "the control plane is not a metadata group; start the cluster with `metadata_group`",
+        )
 }
 
 /// Wait until no shard is moving: every move the fault started, and any
