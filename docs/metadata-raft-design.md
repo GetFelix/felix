@@ -1283,9 +1283,11 @@ and a cell fails if the new store is worse by more than that band.
 | Disk cost | Fsyncs and bytes written per committed entry |
 | Idle | CPU and resident memory of an idle member |
 
-No benchmark measures the metadata group today. Building it and recording
-the redb baseline is the first step
-([#2224](https://github.com/GetFelix/felix/issues/2224)).
+The benchmark and the redb baseline are in
+[metadata-raft-benchmark.md](metadata-raft-benchmark.md)
+([#2224](https://github.com/GetFelix/felix/issues/2224)). It runs from the
+**Metadata Raft benchmark** workflow, which compares two commits and runs the
+baseline twice for the noise band.
 
 ### Order of work
 
