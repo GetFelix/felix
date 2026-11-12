@@ -528,6 +528,7 @@ impl Group {
     pub(crate) async fn acknowledge_write(&self) -> Result<()> {
         let id = format!("ack-{}", self.acked.lock().expect("acked lock").len());
         let deadline = Instant::now() + Duration::from_secs(30);
+        let mut last = "no member is running".to_string();
         loop {
             if let Some(store) = self.live_store() {
                 let write = store.create_tenant(Tenant {
@@ -544,11 +545,12 @@ impl Group {
                         self.acked.lock().expect("acked lock").push(id);
                         return Ok(());
                     }
-                    Ok(Err(_)) | Err(_) => {}
+                    Ok(Err(err)) => last = format!("{err}"),
+                    Err(_) => last = "no answer within 5s".to_string(),
                 }
             }
             if Instant::now() > deadline {
-                bail!("the metadata group acknowledged no write within 30s");
+                bail!("the metadata group acknowledged no write within 30s: {last}");
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
