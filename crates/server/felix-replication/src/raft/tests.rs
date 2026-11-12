@@ -424,6 +424,34 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
     (pace, timers)
 }
 
+/// A busy group heartbeats every 200 ms and an idle one every 2 s, and a
+/// follower of an idle leader waits three of those before it may stand.
+#[tokio::test(start_paused = true)]
+async fn a_busy_group_beats_at_200_ms_and_an_idle_one_at_2_s() {
+    let (pace, timers) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
+
+    let entry = pace.sending(&b, true);
+    pace.answered(&b, &entry);
+    pace.answered(&c, &pace.sending(&c, true));
+    assert_eq!(pace.leader_gap(timers.now()), 200);
+
+    later(timers.idle_after - timers.heartbeat).await;
+    pace.answered(&b, &pace.sending(&b, false));
+    pace.answered(&c, &pace.sending(&c, false));
+    later(timers.heartbeat).await;
+    let (to_b, to_c) = (pace.sending(&b, false), pace.sending(&c, false));
+    assert_eq!((to_b.gap, to_c.gap), (2000, 2000));
+    pace.answered(&b, &to_b);
+    pace.answered(&c, &to_c);
+    assert_eq!(pace.leader_gap(timers.now()), 2000);
+
+    pace.followed(Some(2000));
+    let wait = pace.follower_wait();
+    assert!((6000..6000 + timers.election_max).contains(&wait), "{wait}");
+}
+
 /// The leader's side of the idle rule: it slows down only once every
 /// follower has answered a heartbeat that named the idle gap, an entry
 /// voids those answers, and a follower long silent no longer counts.
@@ -933,7 +961,7 @@ fn the_default_timers_are_the_designs() {
     assert_eq!(raft.heartbeat_interval, 200);
     assert_eq!(
         RuntimeConfig::default().idle_heartbeat,
-        Duration::from_secs(1)
+        Duration::from_secs(2)
     );
     assert_eq!(RuntimeConfig::default().idle_after, Duration::from_secs(5));
     assert_eq!(raft.election_timeout_min, 1000);

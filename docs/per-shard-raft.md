@@ -579,7 +579,7 @@ like any other.
 ### Idle groups
 
 A group is idle when its leader has sent no entry for `idle_after` (5 s).
-An idle leader heartbeats every `idle_heartbeat` (1 s) instead of every
+An idle leader heartbeats every `idle_heartbeat` (2 s) instead of every
 200 ms. The cost is that a dead leader of an idle group is noticed later.
 A group that takes writes is unchanged.
 
@@ -607,8 +607,8 @@ never a slow leader with an impatient follower. A follower that has
 answered nothing for longer than any election timeout (5 s) has stood or
 is gone, and stops holding the leader at the short interval. A follower
 whose answers are all lost for that long, while it still hears the leader,
-is the one case left: with the default 1 s it still does not stand,
-because openraft's own timeout is longer than three idle intervals.
+is the one case left: the leader keeps heartbeating at the short interval
+meanwhile, so the follower keeps hearing it and does not stand.
 
 openraft has one heartbeat interval and one election timeout per group,
 fixed when the group starts, so none of this changes its configuration.
@@ -617,9 +617,9 @@ often, and a follower waits longer because the ticker does not ask it at
 all until its wait is over. A follower in openraft 0.10 stands only when
 it has heard nothing for the leader lease (the longest election timeout,
 2 s) plus its own election timeout (1 to 2 s), so 3 to 4 s after the
-leader's last message whether the group is idle or not. With the default
-idle interval the follower's wait is the same 3 to 4 s. A longer idle
-interval makes it three intervals.
+leader's last message whether the group is idle or not. At the default
+idle interval of 2 s the follower waits three intervals, 6 s plus its
+spread, so a dead leader of an idle group is noticed in 6 to 7 s.
 
 Pre-vote is off, as it is by default in openraft. A member cut off from
 its leader therefore raises the term when it stands. That is unchanged by
@@ -1779,9 +1779,9 @@ ones settled by the decisions of issue #2167 say so.
    copy of the code.
 
 4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
-   heartbeat 200 ms, idle heartbeat 1 s after 5 s without an entry,
+   heartbeat 200 ms, idle heartbeat 2 s after 5 s without an entry,
    election timeout 1 to 2 s. That is a quarter of the default heartbeat
-   traffic for a busy group and a twentieth for an idle one. A follower
+   traffic for a busy group and a tenth for an idle one. A follower
    stands 3 to 4 s after its leader's last message, because openraft adds
    the leader lease (2 s) to the election timeout. That is ahead of the
    hybrid's 5 s suspicion. The failover cells decide the final values. A

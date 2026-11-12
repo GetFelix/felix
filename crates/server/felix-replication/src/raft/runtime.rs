@@ -43,7 +43,7 @@ impl Default for RuntimeConfig {
         Self {
             tick: Duration::from_millis(50),
             heartbeat: Duration::from_millis(200),
-            idle_heartbeat: Duration::from_secs(1),
+            idle_heartbeat: Duration::from_secs(2),
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
