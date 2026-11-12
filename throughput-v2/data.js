@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794524973528,
+  "lastUpdate": 1794527623016,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53404,6 +53404,58 @@ window.BENCHMARK_DATA = {
             "range": "9999.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 830525.34\nmean: 828206.66\nstdev: 9999.78\ncv: 1.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "763f838f0831f2f9918091878b05f4242636d0f3",
+          "message": "spec: FelixRaftPlacement, the voter set following placement with lost disks (#2198) (#2366)\n\nFelixRaftPlacement: the voter set follows placement (membership changes through joint consensus, copy ids, disk loss, subscriber offsets), with twins for each rule. Pinned expected violations: SameIdCounted/SameIdFive (#2365) and StaleWipe (#2385). A move plus a lost disk plus a leader change is not yet checked (stated in docs/per-shard-raft.md). Part of #2198.",
+          "timestamp": "2026-11-12T15:44:31-08:00",
+          "tree_id": "af4dcb853a5d1e821ec38d04aa8bfbcdf21ab613",
+          "url": "https://github.com/GetFelix/felix/commit/763f838f0831f2f9918091878b05f4242636d0f3"
+        },
+        "date": 1794527622082,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345400.43,
+            "range": "11870.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345400.43\nmean: 344247.81\nstdev: 11870.76\ncv: 3.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345400.43,
+            "range": "11870.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345400.43\nmean: 344247.81\nstdev: 11870.76\ncv: 3.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80366.67,
+            "range": "901.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80366.67\nmean: 79984.31\nstdev: 901.22\ncv: 1.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803666.73,
+            "range": "9012.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803666.73\nmean: 799843.11\nstdev: 9012.22\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
