@@ -36,14 +36,15 @@ impl Cluster {
             .build()
             .context("build harness HTTP client")?;
 
-        let control_plane = ControlPlane::start_with(
-            &config.tenant_id,
-            NodeLivenessConfig {
-                expiry_timeout_ms: config.node_expiry.as_millis() as u64,
-                ..crate::controlplane::LIVENESS
-            },
-        )
-        .await?;
+        let liveness = NodeLivenessConfig {
+            expiry_timeout_ms: config.node_expiry.as_millis() as u64,
+            ..crate::controlplane::LIVENESS
+        };
+        let control_plane = if config.metadata_group {
+            ControlPlane::start_group(&config.tenant_id, liveness).await?
+        } else {
+            ControlPlane::start_with(&config.tenant_id, liveness).await?
+        };
         let credentials = control_plane.credentials(&config.tenant_id);
 
         // Metadata first: a broker syncs streams at startup, and one that starts

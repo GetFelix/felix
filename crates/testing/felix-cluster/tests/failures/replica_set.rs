@@ -8,7 +8,6 @@ use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use felix_controlplane_service::model::StreamKey;
-use felix_controlplane_service::store::ControlPlaneStore;
 use felix_replication::peer::config::PeerTlsConfig;
 use felix_replication::peer::tls::PeerTls;
 use felix_replication::peer::{PeerPool, PeerTransportConfig};

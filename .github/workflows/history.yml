@@ -16,9 +16,12 @@ name: History checker (nightly)
 # time, on three brokers; `adversarial` injects the compound ones (overlapping
 # faults, a partition that forces a failover, moves cut short, restart loops,
 # torn writes, drains that change replica sets) on four. The nightly run does
-# both, as two jobs with their own seeds. A manual run can also pick `election`:
-# leaders killed while the control plane is down, with replica_election on, so
-# every failover is an election among the replicas.
+# all three, as jobs with their own seeds. `metadata` runs the control plane as
+# a real three-member Raft group and kills a member, kills its leader and cuts
+# the leader off; after each heal the members must agree on every assignment.
+# A manual run can also pick `election`: leaders killed while the control plane
+# is down, with replica_election on, so every failover is an election among
+# the replicas.
 
 on:
   schedule:
@@ -50,6 +53,7 @@ on:
           - both
           - all
           - adversarial
+          - metadata
           - election
         default: both
 
@@ -80,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial"]' || format('["{0}"]', inputs.nemesis)) }}
+        nemesis: ${{ fromJSON((inputs.nemesis || 'both') == 'both' && '["all","adversarial","metadata"]' || format('["{0}"]', inputs.nemesis)) }}
     steps:
       - uses: actions/checkout@v7
         with:

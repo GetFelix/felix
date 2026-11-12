@@ -433,6 +433,24 @@ it had started resumes or is dropped once it is back, and the heal waits up
 to 60s for no shard to be moving, as it does after a `MoveShard` or `Drain`.
 A killed leader's shards fail over only once it is back.
 
+The metadata nemesis (`FELIX_HISTORY_NEMESIS=metadata`, `RandomNemesis::metadata`)
+runs the control plane as a real three-member Raft group instead of one
+in-memory store: three members on their own redb directories, each serving the
+API, the expiry sweep and placement only while it leads, behind one address
+that forwards to any live member. It picks `MetadataKill` (one member),
+`MetadataKillLeader` and `MetadataPartitionLeader` (the leader cut off from the
+other two, both directions), mixed with broker kills. Brokers and the history
+checker run as always. After each fault the harness writes a tenant through
+the degraded group and records it once acknowledged. After the heal it restarts any member that is
+down and waits up to 60s for all three to agree: every acknowledged write
+present on every member, identical tenants, namespaces, streams, caches, shard
+assignments and node specs, and identical state, replica reports included,
+wherever two members sit at the same applied index. Members that never agree,
+or lose an acknowledged write, fail the run. A killed member shuts down
+cleanly in this process; a real crash, and two members down at once, are not
+exercised yet. Without the group the nemesis fails at its first fault, naming
+the missing group. The nightly workflow runs it with its own seed.
+
 The adversarial nemesis runs on four brokers (`Campaign::with_spare_broker`)
 with every list and the cache on three of them. The fourth broker matters in
 two ways. A drain now has somewhere to move a follower copy, so it changes the
