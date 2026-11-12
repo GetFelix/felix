@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794510086529,
+  "lastUpdate": 1794513604311,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53144,6 +53144,58 @@ window.BENCHMARK_DATA = {
             "range": "21879.49",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1177307.65\nmean: 1174031.80\nstdev: 21879.49\ncv: 1.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1a130d9a82f3c3a849b5820d5e4a3b5f8647128",
+          "message": "fix(sim): a run that holds its thread ends the process with its seed (#2370)\n\nEach simulator run gets a hard real-time bound (real_time_limit plus a quarter). Past it the process prints the seed and its replay command and exits with a failure, so a run whose thread never returns to the runtime fails sim:determinism naming the seed instead of hanging until the job timeout. Refs #2368.",
+          "timestamp": "2026-11-12T11:56:21-08:00",
+          "tree_id": "e66a004113795e203c90de3b9ccb6698a307dcc2",
+          "url": "https://github.com/GetFelix/felix/commit/d1a130d9a82f3c3a849b5820d5e4a3b5f8647128"
+        },
+        "date": 1794513603525,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 641860.99,
+            "range": "29021.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 641860.99\nmean: 658335.17\nstdev: 29021.89\ncv: 4.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 641860.99,
+            "range": "29021.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 641860.99\nmean: 658335.17\nstdev: 29021.89\ncv: 4.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 158832.68,
+            "range": "2980.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 158832.68\nmean: 157752.37\nstdev: 2980.16\ncv: 1.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1588326.85,
+            "range": "29801.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1588326.85\nmean: 1577523.73\nstdev: 29801.61\ncv: 1.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
