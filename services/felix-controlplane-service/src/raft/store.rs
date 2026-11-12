@@ -58,9 +58,89 @@ const KEY_VOTE_WITHHELD: &str = "vote_withheld";
 /// The cluster this data dir belongs to (`FELIX_RAFT_CLUSTER_ID`).
 const KEY_CLUSTER_ID: &str = "cluster_id";
 
+/// A member's store, opened: what its Raft node is made from.
+pub(super) struct Opened {
+    pub(super) log_store: LogStore,
+    pub(super) state_machine: StateMachineStore,
+    pub(super) may_vote: bool,
+    /// What this node had committed before it stopped: the floor its state
+    /// machine must be replayed back to before anything serves from it.
+    /// Read before the node starts, because the node moves it.
+    pub(super) committed_floor: Option<u64>,
+    pub(super) member: MemberState,
+}
+
+/// Open (or create) the member's store under `settings.data_dir`.
+pub(super) async fn open_member(
+    settings: &super::RaftSettings,
+    app: Arc<dyn AppStateMachine>,
+) -> Result<Opened> {
+    std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
+    let db = open(&settings.data_dir.join("raft.redb"))?;
+    claim_cluster_id(&db, &settings.security.cluster_id)?;
+    Ok(Opened {
+        log_store: LogStore::new(Arc::clone(&db)),
+        state_machine: StateMachineStore::open(Arc::clone(&db), app).await?,
+        may_vote: !vote_withheld(&db)?,
+        committed_floor: persisted_committed_index(&db),
+        member: MemberState {
+            db: Arc::downgrade(&db),
+        },
+    })
+}
+
+/// What a running member reads and changes in its store outside the log.
+///
+/// Weak, so that a stopped node releases its store even while clones of the
+/// handle live on, and a restart in the same process can reopen it.
+#[derive(Clone)]
+pub(super) struct MemberState {
+    db: std::sync::Weak<Database>,
+}
+
+impl MemberState {
+    fn db(&self) -> Result<Arc<Database>> {
+        self.db
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("raft node has stopped"))
+    }
+
+    /// Whether the store holds any consensus state.
+    pub(super) fn holds_state(&self) -> Result<bool> {
+        holds_state(&*self.db()?)
+    }
+
+    /// Durable before it returns.
+    pub(super) async fn set_vote_withheld(&self, withheld: bool) -> Result<()> {
+        set_vote_withheld(&*self.db()?, withheld)
+    }
+
+    /// The node has stopped. The file closes when its last user is dropped.
+    pub(super) async fn close(&self) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Leave a store in `dir` as a member that held `vote` and `entries` would
+/// have, with its vote withheld or not.
+#[cfg(test)]
+pub(super) async fn seed(
+    dir: &Path,
+    _cluster_id: &str,
+    vote: Vote,
+    entries: Vec<Entry>,
+    vote_withheld: bool,
+) {
+    let db = open(&dir.join("raft.redb")).expect("open store");
+    let mut log = LogStore::new(Arc::clone(&db));
+    log.save_vote(&vote).await.expect("save vote");
+    log.append(entries, IOFlushed::Noop).await.expect("append");
+    set_vote_withheld(&db, vote_withheld).expect("vote flag");
+}
+
 /// The committed index this store had persisted when it last ran — what a
 /// restarting node must re-apply before it is fit to serve.
-pub(super) fn persisted_committed_index(db: &Database) -> Option<u64> {
+fn persisted_committed_index(db: &Database) -> Option<u64> {
     read_meta::<Option<wire::LogId>>(db, KEY_COMMITTED)
         .ok()
         .flatten()
@@ -70,7 +150,7 @@ pub(super) fn persisted_committed_index(db: &Database) -> Option<u64> {
 
 /// Whether this store holds any consensus state: a vote, a log entry, or a
 /// snapshot. An empty one is a first boot or a wiped volume.
-pub(super) fn holds_state(db: &Database) -> Result<bool> {
+fn holds_state(db: &Database) -> Result<bool> {
     let txn = db.begin_read().context("read raft store")?;
     let logs = txn.open_table(LOGS).context("open log table")?;
     if logs.first().context("read log table")?.is_some() {
@@ -85,7 +165,7 @@ pub(super) fn holds_state(db: &Database) -> Result<bool> {
     Ok(false)
 }
 
-pub(super) fn vote_withheld(db: &Database) -> Result<bool> {
+fn vote_withheld(db: &Database) -> Result<bool> {
     Ok(read_meta::<bool>(db, KEY_VOTE_WITHHELD)
         .map_err(|err| anyhow::anyhow!("read vote flag: {err}"))?
         .unwrap_or(false))
@@ -93,7 +173,7 @@ pub(super) fn vote_withheld(db: &Database) -> Result<bool> {
 
 /// Durable before it returns, so a crash never forgets that a half-filled
 /// log is not yet fit to vote.
-pub(super) fn set_vote_withheld(db: &Database, withheld: bool) -> Result<()> {
+fn set_vote_withheld(db: &Database, withheld: bool) -> Result<()> {
     write_meta(db, KEY_VOTE_WITHHELD, &withheld)
         .map_err(|err| anyhow::anyhow!("write vote flag: {err}"))
 }
@@ -105,7 +185,7 @@ pub(super) fn set_vote_withheld(db: &Database, withheld: bool) -> Result<()> {
 /// empty or predates the id: either way this is the first start that knows
 /// it. After that, a member pointed at the wrong group's peers, or a volume
 /// mounted into the wrong cluster, fails here instead of mixing two logs.
-pub(super) fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
+fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
     let recorded = read_meta::<String>(db, KEY_CLUSTER_ID)
         .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
     match recorded {
@@ -119,17 +199,22 @@ pub(super) fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
     }
 }
 
-/// Refuse if this data dir already belongs to a cluster other than
-/// `cluster_id`. Records nothing.
-pub(super) fn check_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
-    let recorded = read_meta::<String>(db, KEY_CLUSTER_ID)
-        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
-    match recorded {
-        Some(recorded) if recorded != cluster_id => {
-            anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'")
-        }
-        _ => Ok(()),
+/// Whether the stopped member in `data_dir` holds consensus state. Refuses
+/// a store that belongs to a cluster other than `cluster_id`. Creates and
+/// records nothing; no store is no state.
+pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str) -> Result<bool> {
+    let path = data_dir.join("raft.redb");
+    if !path.exists() {
+        return Ok(false);
     }
+    // Fails while the member runs: its process holds the file.
+    let db = open(&path).context("open the raft store; stop the member first")?;
+    let recorded = read_meta::<String>(&db, KEY_CLUSTER_ID)
+        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
+    if let Some(recorded) = recorded.filter(|recorded| recorded != cluster_id) {
+        anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'");
+    }
+    holds_state(&db)
 }
 
 /// Open (or create) the store file and make sure both tables exist, so

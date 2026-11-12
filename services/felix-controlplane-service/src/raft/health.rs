@@ -90,7 +90,8 @@ impl RaftHandle {
                     _ = shutdown.cancelled() => return,
                     _ = ticker.tick() => {
                         let metrics = raft.metrics().borrow_watched().clone();
-                        metrics::gauge!("felix_meta_raft_term").set(metrics.current_term as f64);
+                        metrics::gauge!("felix_meta_raft_term")
+                            .set(shown_term(metrics.current_term) as f64);
                         metrics::gauge!("felix_meta_raft_leader_known")
                             .set(if metrics.current_leader.is_some() { 1.0 } else { 0.0 });
                         metrics::gauge!("felix_meta_raft_is_leader")
@@ -107,3 +108,19 @@ impl RaftHandle {
         })
     }
 }
+
+/// The first term of a store converted from redb. Terms it copied are below
+/// this and every term after the conversion is at or above it
+/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
+const CONVERTED_TERM_BASE: u64 = 1 << 62;
+
+/// A term as it is shown: one at or past [`CONVERTED_TERM_BASE`] with that
+/// taken off. The gauge is a float, exact only below 2^53, and a status
+/// reader may hold a signed 64-bit number. The term on the wire and on disk
+/// is unchanged.
+pub(super) fn shown_term(term: u64) -> u64 {
+    term.checked_sub(CONVERTED_TERM_BASE).unwrap_or(term)
+}
+
+#[cfg(test)]
+mod tests;

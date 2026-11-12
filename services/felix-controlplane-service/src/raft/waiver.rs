@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use super::{NodeId, store};
 
 const FILE: &str = "form-without";
-const STORE_FILE: &str = "raft.redb";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Waiver {
@@ -33,21 +32,19 @@ struct Waiver {
 /// Refuses a member that holds Raft state, since that member has no first
 /// start left to make. A store that only went through a blocked first start
 /// holds none, so the waiver still applies to it.
-pub fn form_without(data_dir: &Path, cluster_id: &str, slots: &BTreeSet<NodeId>) -> Result<String> {
+pub async fn form_without(
+    data_dir: &Path,
+    cluster_id: &str,
+    slots: &BTreeSet<NodeId>,
+) -> Result<String> {
     anyhow::ensure!(!cluster_id.is_empty(), "--cluster-id must not be empty");
     anyhow::ensure!(!slots.is_empty(), "name at least one --slot");
+    anyhow::ensure!(
+        !store::stopped_member_holds_state(data_dir, cluster_id).await?,
+        "this member holds raft state, so it is not making a first start; \
+         form-without applies only to a member that has never formed or joined a group"
+    );
     std::fs::create_dir_all(data_dir).context("create raft data dir")?;
-    let store_path = data_dir.join(STORE_FILE);
-    if store_path.exists() {
-        // Fails while the member runs: the store is locked by its process.
-        let db = store::open(&store_path).context("open the raft store; stop the member first")?;
-        anyhow::ensure!(
-            !store::holds_state(&db)?,
-            "this member holds raft state, so it is not making a first start; \
-             form-without applies only to a member that has never formed or joined a group"
-        );
-        store::check_cluster_id(&db, cluster_id)?;
-    }
     let waiver = Waiver {
         cluster_id: cluster_id.to_string(),
         slots: slots.clone(),

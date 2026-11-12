@@ -65,6 +65,15 @@ futures-util = { version = "0.3", default-features = false }
 redb = "4"
 uuid = { workspace = true }
 
+# The metadata store on the segment store, compiled only under
+# `RUSTFLAGS="--cfg felix_segment_store"`. No release sets it. A cfg and not
+# a Cargo feature, because the two stores exclude each other and
+# `--all-features` would pick this one (docs/metadata-raft-design.md,
+# "Moving to the segment store").
+[target.'cfg(felix_segment_store)'.dependencies]
+felix-storage = { path = "../../crates/server/felix-storage", version = "0.8.0-preview.0", features = ["raft"] }
+bytes = { workspace = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tower = "0.5"

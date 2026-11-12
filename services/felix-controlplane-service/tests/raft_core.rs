@@ -422,7 +422,11 @@ async fn the_rpc_routes_refuse_callers_without_peer_credentials() {
     leader_of(&[&node]).await;
 
     let anonymous = reqwest::Client::new();
-    let propose = format!("http://{}/internal/raft/propose", node.addr);
+    let propose = format!(
+        "http://{}{}",
+        node.addr,
+        felix_controlplane_service::raft::peer_route("propose")
+    );
     let status = |response: reqwest::Response| response.status().as_u16();
     let refused = anonymous
         .post(&propose)
@@ -445,7 +449,11 @@ async fn the_rpc_routes_refuse_callers_without_peer_credentials() {
         .expect("send");
     assert_eq!(refused, 401, "no peer token");
     let refused = anonymous
-        .post(format!("http://{}/internal/raft/vote", node.addr))
+        .post(format!(
+            "http://{}{}",
+            node.addr,
+            felix_controlplane_service::raft::peer_route("vote")
+        ))
         .header(
             felix_controlplane_service::raft::CLUSTER_ID_HEADER,
             "test-cluster",
@@ -502,6 +510,7 @@ async fn empty_members_form_a_group_only_when_told_to() {
                 InitialClusterState::Existing,
                 shutdown.clone(),
             )
+            .await
             .expect("enter group");
     }
     // Many election timeouts, and every member can see every other.
@@ -539,6 +548,7 @@ async fn empty_members_form_a_group_only_when_told_to() {
     for node in &nodes {
         node.handle
             .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
             .expect("enter group");
     }
     let refs: Vec<&TestNode> = nodes.iter().collect();
@@ -569,7 +579,7 @@ async fn standing_stub(
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
     let router = axum::Router::new().route(
-        "/internal/raft/standing",
+        &felix_controlplane_service::raft::peer_route("standing"),
         axum::routing::get(move || async move {
             (
                 axum::http::StatusCode::from_u16(status).expect("status"),
@@ -611,6 +621,7 @@ async fn first_start_without_the_second(
     for node in &nodes {
         node.handle
             .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
             .expect("enter group");
     }
     (nodes, members, shutdown)
@@ -634,12 +645,13 @@ async fn assert_no_group_forms(nodes: &[TestNode], why: &str) {
     }
 }
 
-fn waive_the_second(dir: &std::path::Path) -> anyhow::Result<String> {
+async fn waive_the_second(dir: &std::path::Path) -> anyhow::Result<String> {
     felix_controlplane_service::raft::form_without(
         dir,
         "test-cluster",
         &std::collections::BTreeSet::from([2]),
     )
+    .await
 }
 
 /// The initial membership every first-boot member writes at index 0 is not
@@ -669,11 +681,16 @@ async fn three_empty_members_form_one_group() {
     ]);
     let shutdown = tokio_util::sync::CancellationToken::new();
     let enter = |node: &TestNode| {
-        node.handle
-            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
-            .expect("enter group");
+        let handle = node.handle.clone();
+        let (members, shutdown) = (members.clone(), shutdown.clone());
+        async move {
+            handle
+                .enter_group(members, InitialClusterState::New, shutdown)
+                .await
+                .expect("enter group");
+        }
     };
-    enter(&first);
+    enter(&first).await;
     wait_until(
         "the first member to initialize",
         Duration::from_secs(10),
@@ -690,7 +707,7 @@ async fn three_empty_members_form_one_group() {
         stub.abort();
         let dir: PathBuf = dirs[i + 1].path().into();
         let node = start_node(dir.clone(), settings((i + 2) as NodeId, dir), Some(addr)).await;
-        enter(&node);
+        enter(&node).await;
         nodes.push(node);
     }
     let refs: Vec<&TestNode> = nodes.iter().collect();
@@ -736,6 +753,7 @@ async fn first_boot_waits_for_every_peer() {
     .await;
     late.handle
         .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
         .expect("enter group");
     nodes.push(late);
     let refs: Vec<&TestNode> = nodes.iter().collect();
@@ -806,6 +824,7 @@ async fn wiped_members_do_not_form_over_a_down_data_holder() {
     holder
         .handle
         .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
         .expect("enter group");
     tokio::time::sleep(Duration::from_secs(2)).await;
     for node in &nodes {
@@ -857,7 +876,9 @@ async fn form_without_forms_once_and_is_consumed() {
         tempfile::tempdir().expect("tempdir"),
     ];
     for dir in &dirs {
-        waive_the_second(dir.path()).expect("write the waiver");
+        waive_the_second(dir.path())
+            .await
+            .expect("write the waiver");
     }
     let waiver = dirs[0].path().join("form-without");
     let written = std::fs::read(&waiver).expect("read the waiver");
@@ -883,7 +904,9 @@ async fn form_without_forms_once_and_is_consumed() {
 
     // The tool refuses a member that has formed, and a waiver left in its
     // directory some other way is removed at start, unused.
-    let refused = waive_the_second(dirs[0].path()).expect_err("a member with state");
+    let refused = waive_the_second(dirs[0].path())
+        .await
+        .expect_err("a member with state");
     assert!(
         format!("{refused:#}").contains("holds raft state"),
         "{refused:#}"
@@ -898,6 +921,7 @@ async fn form_without_forms_once_and_is_consumed() {
             felix_controlplane_service::raft::InitialClusterState::New,
             shutdown.clone(),
         )
+        .await
         .expect("enter group");
     assert!(!waiver.exists(), "a member with state kept a waiver");
     shutdown.cancel();
@@ -919,7 +943,9 @@ async fn form_without_never_overrides_an_answering_peer() {
             tempfile::tempdir().expect("tempdir"),
         ];
         for dir in &dirs {
-            waive_the_second(dir.path()).expect("write the waiver");
+            waive_the_second(dir.path())
+                .await
+                .expect("write the waiver");
         }
         let (second, stub) = standing_stub(status, body).await;
         let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
@@ -964,7 +990,9 @@ async fn form_without_does_not_excuse_a_failed_tls_handshake() {
             tls.clone()
         });
         if id != 2 {
-            waive_the_second(dir.path()).expect("write the waiver");
+            waive_the_second(dir.path())
+                .await
+                .expect("write the waiver");
         }
         let handle = RaftHandle::start(settings, Arc::new(KvApp::default()))
             .await
@@ -993,6 +1021,7 @@ async fn form_without_does_not_excuse_a_failed_tls_handshake() {
     for (handle, ..) in [&nodes[0], &nodes[2]] {
         handle
             .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
             .expect("enter group");
     }
     tokio::time::sleep(Duration::from_secs(3)).await;
@@ -1031,8 +1060,9 @@ async fn form_without_applies_after_a_blocked_first_start() {
     drop(nodes);
 
     for dir in &dirs {
-        assert!(dir.path().join("raft.redb").exists(), "no store yet");
-        waive_the_second(dir.path()).expect("a store without state takes the waiver");
+        waive_the_second(dir.path())
+            .await
+            .expect("a store without state takes the waiver");
     }
     let (nodes, _, shutdown) = first_start_without_the_second(&dirs, Some(addrs), second).await;
     let refs: Vec<&TestNode> = nodes.iter().collect();
@@ -1111,8 +1141,9 @@ async fn peers_replicate_over_mtls_and_refuse_a_caller_without_a_certificate() {
         .expect("client");
     let result = no_cert
         .get(format!(
-            "https://localhost:{}/internal/raft/standing",
-            nodes[0].2
+            "https://localhost:{}{}",
+            nodes[0].2,
+            felix_controlplane_service::raft::peer_route("standing")
         ))
         .header(
             felix_controlplane_service::raft::CLUSTER_ID_HEADER,

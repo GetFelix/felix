@@ -16,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("`felix-controlplane admin` moved to `felixctl`; see `felixctl --help`");
     }
     if args.first().map(String::as_str) == Some("raft") {
-        return raft_command(&args[1..]);
+        return raft_command(&args[1..]).await;
     }
 
     let config = config::ControlPlaneConfig::from_env_or_yaml().expect("control plane config");
@@ -32,7 +32,7 @@ const RAFT_USAGE: &str = "usage: felix-controlplane raft form-without --data-dir
 
 /// `raft form-without`: let this stopped member's first start form the
 /// group without the named slots answering.
-fn raft_command(args: &[String]) -> anyhow::Result<()> {
+async fn raft_command(args: &[String]) -> anyhow::Result<()> {
     use anyhow::Context;
 
     if args.first().map(String::as_str) != Some("form-without") {
@@ -61,7 +61,8 @@ fn raft_command(args: &[String]) -> anyhow::Result<()> {
     let data_dir = data_dir.with_context(|| format!("--data-dir is required\n{RAFT_USAGE}"))?;
     let cluster_id =
         cluster_id.with_context(|| format!("--cluster-id is required\n{RAFT_USAGE}"))?;
-    let written = felix_controlplane_service::raft::form_without(&data_dir, &cluster_id, &slots)?;
+    let written =
+        felix_controlplane_service::raft::form_without(&data_dir, &cluster_id, &slots).await?;
     println!("{written}");
     Ok(())
 }
