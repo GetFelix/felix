@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794455238668,
+  "lastUpdate": 1794462169305,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52624,6 +52624,58 @@ window.BENCHMARK_DATA = {
             "range": "41436.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1592226.96\nmean: 1615921.33\nstdev: 41436.23\ncv: 2.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c045edc8029b9559877f9fed7954b6be32a0a0f3",
+          "message": "test(controlplane): metadata Raft benchmark and the redb baseline harness (#2224) (#2319)\n\n* test(controlplane): metadata Raft benchmark and the redb baseline harness (#2224)\n\nReal control-plane members on redb driven through the store traits: proposal\nlatency and throughput, placement writes, the replica-report stream,\nfailover, snapshot build, restart and install, and idle cost. A workflow\ncompares two commits with an A/A run for the noise band.\n\nSpec-Unaffected: test and CI code only, no protocol or state-machine change\n\n* ci: run the metadata benchmark on this branch while it is not on main yet\n\nSpec-Unaffected: CI only\n\n* test(controlplane): wait for the redb lock before restarting a bench member\n\nSpec-Unaffected: test code only\n\n* ci(bench): hold head against the mean of the two baseline runs\n\nSpec-Unaffected: CI and test code only\n\n* test(controlplane): bench warmup, repeated alternating runs with medians, and gates that cannot pass on a failure\n\n* ci(bench): a wider noise floor for tail latencies\n\n* docs(bench): record the redb baseline and drop the temporary push trigger\n\n* docs(bench): the baseline is redb on openraft 0.10",
+          "timestamp": "2026-11-12T05:36:24Z",
+          "tree_id": "13cf5397947e9212bf5abe985c04fbc9ea3b8f32",
+          "url": "https://github.com/GetFelix/felix/commit/c045edc8029b9559877f9fed7954b6be32a0a0f3"
+        },
+        "date": 1794462168624,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 475719.73,
+            "range": "14866.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 475719.73\nmean: 477029.97\nstdev: 14866.76\ncv: 3.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 475719.73,
+            "range": "14866.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 475719.73\nmean: 477029.97\nstdev: 14866.76\ncv: 3.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 110181.34,
+            "range": "1066.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 110181.34\nmean: 110329.50\nstdev: 1066.87\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1101813.37,
+            "range": "10668.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1101813.37\nmean: 1103294.98\nstdev: 10668.68\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
