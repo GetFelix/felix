@@ -1,8 +1,9 @@
 //! Raft RPCs to peers: JSON over each member's peer listener.
 //!
-//! The wire format is Felix's ([`super::wire`]): the requests and responses
-//! openraft 0.9 serialized, snapshots in chunks included, so members on
-//! either side of the 0.10 upgrade talk to each other. A peer's refusal
+//! The wire format is Felix's ([`super::wire`]): on redb, the requests and
+//! responses openraft 0.9 serialized, snapshots in chunks included, so
+//! members on either side of the 0.10 upgrade talk to each other. On the
+//! segment store a snapshot goes in one request. A peer's refusal
 //! comes back as the `Err` half of its answer and is reported as
 //! `Unreachable`, like a transport failure that will not fix itself.
 //!
@@ -13,6 +14,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+#[cfg(not(felix_segment_store))]
 use futures_util::FutureExt;
 use openraft::OptionalSend;
 use openraft::errors::{NetworkError, RPCError, ReplicationClosed, StreamingError, Unreachable};
@@ -28,7 +30,7 @@ use std::sync::Arc;
 
 use super::hold::Hold;
 use super::types::{Snapshot, TypeConfig, Vote};
-use super::{NodeId, PeerSecurity, chunks, wire};
+use super::{NodeId, PeerSecurity, wire};
 
 pub(super) struct HttpNetworkFactory {
     client: reqwest::Client,
@@ -140,6 +142,10 @@ impl std::fmt::Display for PeerRefused {
 
 impl std::error::Error for PeerRefused {}
 
+/// How long one snapshot request may take, sending and installing included.
+#[cfg(felix_segment_store)]
+const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Keep error messages to one readable line, whatever the peer sent.
 const BODY_EXCERPT: usize = 200;
 
@@ -174,20 +180,39 @@ impl HttpNetwork {
         Req: serde::Serialize,
         Resp: serde::de::DeserializeOwned,
     {
-        let url = format!("{}/internal/raft/{path}", self.base);
-        let response = self
-            .client
-            .post(url)
-            .json(request)
-            .send()
-            .await
-            .map_err(|err| {
-                if err.is_connect() || err.is_timeout() {
-                    RPCError::Unreachable(Unreachable::new(&err))
-                } else {
-                    RPCError::Network(NetworkError::new(&err))
-                }
-            })?;
+        let url = format!("{}{}", self.base, super::peer_route(path));
+        self.answer(self.client.post(url).json(request)).await
+    }
+
+    /// A whole snapshot as one request. The client's timeout is sized for a
+    /// heartbeat or a batch of entries, so this one has its own.
+    #[cfg(felix_segment_store)]
+    async fn send_snapshot(
+        &self,
+        body: Vec<u8>,
+    ) -> Result<wire::InstallSnapshotResponse, RPCError<TypeConfig>> {
+        let url = format!("{}{}", self.base, super::peer_route("install-snapshot"));
+        let request = self.client.post(url).timeout(SNAPSHOT_TIMEOUT).body(body);
+        match self.answer(request).await? {
+            wire::Reply::Ok(response) => Ok(response),
+            wire::Reply::Err(err) => Err(refused(err)),
+        }
+    }
+
+    async fn answer<Resp>(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> Result<wire::Reply<Resp>, RPCError<TypeConfig>>
+    where
+        Resp: serde::de::DeserializeOwned,
+    {
+        let response = request.send().await.map_err(|err| {
+            if err.is_connect() || err.is_timeout() {
+                RPCError::Unreachable(Unreachable::new(&err))
+            } else {
+                RPCError::Network(NetworkError::new(&err))
+            }
+        })?;
         let status = response.status();
         if !status.is_success() {
             // Every non-2xx is an answer that will be the same on an
@@ -350,8 +375,40 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
         ))
     }
 
+    /// Sent whole, in one request.
+    #[cfg(felix_segment_store)]
+    async fn full_snapshot(
+        &mut self,
+        vote: Vote,
+        snapshot: Snapshot,
+        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
+        _option: RPCOption,
+    ) -> Result<SnapshotResponse<TypeConfig>, StreamingError<TypeConfig>> {
+        self.hold_back()?;
+        let head = wire::SnapshotHead {
+            vote: (&vote).into(),
+            meta: (&snapshot.meta).into(),
+        };
+        let last = head.meta.last_log_id.map(|log_id| log_id.index);
+        let body = wire::snapshot_body(&head, &snapshot.snapshot.into_inner());
+        let sent = self.send_snapshot(body);
+        let response = tokio::select! {
+            closed = cancel => return Err(closed.into()),
+            response = sent => response.map_err(streaming)?,
+        };
+        let theirs = Vote::from(response.vote);
+        // A member that has moved on to a newer leader says so, and has not
+        // taken the snapshot.
+        if theirs > vote {
+            return Ok(SnapshotResponse::new(theirs));
+        }
+        self.acknowledged(last);
+        Ok(SnapshotResponse::new(vote))
+    }
+
     /// Sent as the chunk requests a 0.9 member understands. Any failure ends
     /// the transfer, and openraft starts it again from the first chunk.
+    #[cfg(not(felix_segment_store))]
     async fn full_snapshot(
         &mut self,
         vote: Vote,
@@ -363,7 +420,7 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
         let meta = wire::SnapshotMeta::from(&snapshot.meta);
         let data = snapshot.snapshot.into_inner();
         let mut cancel = std::pin::pin!(cancel);
-        for chunk in chunks::cut((&vote).into(), &meta, &data, chunks::CHUNK) {
+        for chunk in super::chunks::cut((&vote).into(), &meta, &data, super::chunks::CHUNK) {
             if let Some(closed) = cancel.as_mut().now_or_never() {
                 return Err(closed.into());
             }

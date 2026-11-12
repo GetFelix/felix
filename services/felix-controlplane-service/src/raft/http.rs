@@ -5,6 +5,10 @@
 //! proposal route, the leader-only route ([`super::leader`]), and the two a
 //! member uses to enter the group ([`super::join`]).
 //!
+//! Every route is under [`super::PEER_PREFIX`], which differs between a
+//! member on redb and one on the segment store, so neither answers the
+//! other.
+//!
 //! Served on the peer listener only, behind [`super::peer::require_peer`]:
 //! `propose` alone can replace the whole store, so nothing here is reachable
 //! from the public API port or without the cluster's peer credentials.
@@ -16,18 +20,21 @@ use axum::{Json, Router};
 use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
 use super::types::{Snapshot, Vote};
-use super::{chunks, wire};
+use super::{peer_route, wire};
 
 pub(super) fn router(handle: super::RaftHandle) -> Router {
     let security = std::sync::Arc::clone(&handle.security);
     Router::new()
-        .route("/internal/raft/append-entries", post(append_entries))
-        .route("/internal/raft/vote", post(vote))
-        .route("/internal/raft/install-snapshot", post(install_snapshot))
-        .route("/internal/raft/propose", post(propose))
-        .route(super::leader::LEADER_ROUTE, post(leader_request))
-        .route("/internal/raft/standing", get(standing))
-        .route("/internal/raft/catch-up-target", get(catch_up_target))
+        .route(&peer_route("append-entries"), post(append_entries))
+        .route(&peer_route("vote"), post(vote))
+        .route(&peer_route("install-snapshot"), install_snapshot_route())
+        .route(&peer_route("propose"), post(propose))
+        .route(
+            &peer_route(super::leader::LEADER_ROUTE),
+            post(leader_request),
+        )
+        .route(&peer_route("standing"), get(standing))
+        .route(&peer_route("catch-up-target"), get(catch_up_target))
         // Axum's default body limit (2MB) is below openraft's default
         // snapshot chunk (3MB); a snapshot install crossing that line would
         // be refused with a 413 the sender reads as a network fault. Sized
@@ -144,8 +151,50 @@ async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
     }
 }
 
+#[cfg(not(felix_segment_store))]
+fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
+    post(install_snapshot)
+}
+
+/// A snapshot arrives whole, so this route lifts the router's body limit:
+/// the state is as large as it is, and only a peer with the cluster's
+/// credentials gets this far.
+#[cfg(felix_segment_store)]
+fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
+    post(install_snapshot).layer(axum::extract::DefaultBodyLimit::disable())
+}
+
+/// A whole snapshot in one request ([`wire::snapshot_body`]).
+#[cfg(felix_segment_store)]
+async fn install_snapshot(
+    State(handle): State<super::RaftHandle>,
+    body: axum::body::Bytes,
+) -> Response {
+    let Some((head, data)) = wire::parse_snapshot_body(&body) else {
+        return (StatusCode::BAD_REQUEST, "not a snapshot request").into_response();
+    };
+    let snapshot = Snapshot {
+        meta: head.meta.into(),
+        snapshot: std::io::Cursor::new(data.to_vec()),
+    };
+    // A sender that is no longer the leader this member follows learns so
+    // from the vote in the answer; the library refuses its snapshot.
+    match handle
+        .raft
+        .install_full_snapshot(Vote::from(head.vote), snapshot)
+        .await
+    {
+        Ok(response) => Json(wire::Reply::Ok(wire::InstallSnapshotResponse {
+            vote: (&response.vote).into(),
+        }))
+        .into_response(),
+        Err(err) => stopped(err),
+    }
+}
+
 /// One chunk of a snapshot, as a 0.9 member sends it. The chunks are joined
 /// here and the library is handed the whole snapshot with the last one.
+#[cfg(not(felix_segment_store))]
 async fn install_snapshot(
     State(handle): State<super::RaftHandle>,
     Json(chunk): Json<wire::InstallSnapshotRequest>,
@@ -165,7 +214,7 @@ async fn install_snapshot(
     }
     // Held to the end of the install, so two transfers cannot interleave.
     let mut receiving = handle.receiving.lock().await;
-    let (meta, data) = match chunks::receive(&mut receiving, chunk) {
+    let (meta, data) = match super::chunks::receive(&mut receiving, chunk) {
         Ok(Some(whole)) => whole,
         Ok(None) => return Json(wire::Reply::Ok(answer)).into_response(),
         Err(mismatch) => {
@@ -185,3 +234,6 @@ async fn install_snapshot(
         Err(err) => stopped(err),
     }
 }
+
+#[cfg(test)]
+mod tests;

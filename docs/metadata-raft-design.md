@@ -798,15 +798,24 @@ leader's snapshot as in
 
 ## Moving to the segment store
 
-**Status: design. The store exists; the service does not use it.**
+**Status: built behind a switch that no release turns on.**
 `felix-storage` has the member file, the lock, the snapshot file, the purge
-rule and `MetadataStore::open`, which checks the start rules below. Nothing
-in the control plane calls them yet: no routes, no state machine on the
-snapshot file, no build switch, no conversion tool. Everything above
-describes what runs today: openraft with its log, vote and snapshot in one
-redb file. This section is the plan to move that state onto `felix-storage`,
-so a Felix node has one storage engine (issue
+rule and `MetadataStore::open`, which checks the start rules below. The
+control plane runs on them only in a build with
+`RUSTFLAGS="--cfg felix_segment_store"`: the standard leader id, the state
+machine on the snapshot file, the peer routes under their new prefix and
+the started mark. CI builds and tests that side
+(`task segment-store:check`). Every release build is without the switch,
+and there is no conversion tool yet. So everything above still describes
+what runs: openraft with its log, vote and snapshot in one redb file. This
+section is the plan to move that state onto `felix-storage`, so a Felix
+node has one storage engine (issue
 [#2167](https://github.com/GetFelix/felix/issues/2167)).
+
+The switch is a compiler cfg and not a Cargo feature. The two stores
+exclude each other, because the leader id is part of the type every Raft
+call uses, and `--all-features`, which the lint and coverage runs pass,
+would turn a feature on.
 The reasons, and the answer to "the segment store cannot truncate", are in
 [replication-engine.md](replication-engine.md#control-plane-storage-on-the-segment-log).
 
@@ -933,7 +942,11 @@ lock, as today, and writes the file outside it. The data is stored as raw
 bytes. Today it is stored as a JSON array of numbers, several times larger.
 
 **Transfer.** A snapshot travels to a follower in one request over the
-authenticated peer listener. State is small, so chunking is not needed.
+authenticated peer listener. State is small, so chunking is not needed. The
+request's body is the length of a JSON head in four big-endian bytes, the
+head (the sender's vote, the snapshot's last log id and its membership),
+then the data as it is. The route has no body limit, and the request has a
+60 second timeout of its own.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
 apply the log up to the committed index. The member stays out of rotation
@@ -1065,8 +1078,9 @@ membership change and a snapshot passes it. Issue
 [#2252](https://github.com/GetFelix/felix/issues/2252) tracks the path.
 
 **Converted and unconverted members never talk.** Every route on the peer
-listener moves to a new prefix: append entries, vote, snapshot install,
-propose, standing, the catch-up target and the leader route. A request
+listener moves to a new prefix, from `/internal/raft` to
+`/internal/raft/v2`: append entries, vote, snapshot install, propose,
+standing, the catch-up target and the leader route. A request
 between the two kinds of member gets a 404. To Raft that is a partition. A
 group that is upgraded one member at a time therefore stays safe: the old
 members keep a majority until the member that tips it stops, and then the
@@ -1199,7 +1213,8 @@ or earlier upgrades through 0.8.
 - The adapter is the `raft_log` module of `felix-storage`, compiled only
   with the crate's `raft` feature. The feature is off by default and brings
   in openraft as an optional dependency.
-- The control plane turns the feature on. `felix-broker` never does.
+- The control plane turns the feature on, today only in a build with
+  `--cfg felix_segment_store`. `felix-broker` never does.
 - openraft types stay inside `felix-storage::raft_log` and the control
   plane's `src/raft/`. The store traits and handlers never see them.
 - redb moves to the conversion tool's crate, then leaves the workspace.
@@ -1214,7 +1229,11 @@ the broker alone. The check is therefore per package, as a lint step:
 - The same holds for the broker binary's package until per-shard Raft
   lands, which removes that line on purpose.
 - A script fails the lint if `openraft::` appears outside the two modules
-  above.
+  above and their tests.
+
+All three are `scripts/check-openraft-containment.sh`, a step of
+`task lint`. The script also checks that it still finds openraft under the
+control plane, so it cannot pass by finding nothing anywhere.
 
 One cost: the control plane now links `felix-storage` and what it depends
 on, including the object-store client it never uses.
@@ -1427,6 +1446,7 @@ is the umbrella.
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
+| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots in one request and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
 | openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 

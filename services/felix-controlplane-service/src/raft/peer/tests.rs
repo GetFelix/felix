@@ -20,7 +20,10 @@ fn security(token: Option<&str>) -> PeerSecurity {
 
 fn guarded(security: PeerSecurity) -> Router {
     Router::new()
-        .route("/internal/raft/propose", post(|| async { "applied" }))
+        .route(
+            &crate::raft::peer_route("propose"),
+            post(|| async { "applied" }),
+        )
         .layer(axum::middleware::from_fn_with_state(
             Arc::new(security),
             require_peer,
@@ -28,7 +31,7 @@ fn guarded(security: PeerSecurity) -> Router {
 }
 
 async fn call(router: Router, cluster: Option<&str>, bearer: Option<&str>) -> StatusCode {
-    let mut request = Request::post("/internal/raft/propose");
+    let mut request = Request::post(crate::raft::peer_route("propose"));
     if let Some(cluster) = cluster {
         request = request.header(CLUSTER_ID_HEADER, cluster);
     }
