@@ -26,20 +26,26 @@
 //!   error, never a guess.
 //! - **The log starts after the purged id.** The id is on disk before a
 //!   purge deletes anything, and segments go whole, so records at or below
-//!   it can remain. They are never read as entries.
+//!   it can remain. They are never read as entries. Under
+//!   [`RaftLog::purge_hides_past`] an id past the stored snapshot is kept
+//!   in memory only and read the same way.
 //!
 //! openraft types stay inside this module and the engine that drives it.
 
 mod codec;
+mod hide;
 mod purged;
 mod reader;
 pub(crate) mod snapshot;
 pub(crate) mod state_file;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod writer;
 
 pub use codec::EntryCodec;
+/// The leader id in a log id: for this log, the term. Named in the bounds
+/// of everything generic over [`LogTypes`].
+pub use openraft::type_config::alias::CommittedLeaderIdOf;
 pub use reader::LogReader;
 pub use snapshot::{SnapshotId, SnapshotStore, StoredSnapshot};
 
@@ -50,9 +56,9 @@ use std::sync::Arc;
 use openraft::RaftTypeConfig;
 use openraft::entry::{Entry, EntryPayload};
 use openraft::storage::LogState;
-use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
+use openraft::type_config::alias::LogIdOf;
 
-use self::purged::Purged;
+use self::hide::{Bounds, Covering, PastSnapshot};
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::Offset;
@@ -103,10 +109,11 @@ pub struct RaftLog<C, K> {
 struct Shared<K> {
     log: DiskLog,
     codec: K,
-    /// The last purged entry, as `raft-purged` holds it.
-    purged: parking_lot::Mutex<Option<Purged>>,
-    /// Set by [`RaftLog::purge_within`]: a purge stops at this snapshot.
-    covering: std::sync::OnceLock<SnapshotStore>,
+    /// The last purged entry.
+    bounds: parking_lot::Mutex<Bounds>,
+    /// Set by [`RaftLog::purge_within`] or [`RaftLog::purge_hides_past`]:
+    /// the snapshot that bounds a purge, and what a purge past it does.
+    covering: std::sync::OnceLock<Covering>,
     /// Read-held by each append until its callback has fired, and
     /// write-held by a truncation.
     flushing: Arc<tokio::sync::RwLock<()>>,
@@ -148,7 +155,10 @@ where
             shared: Arc::new(Shared {
                 log,
                 codec,
-                purged: parking_lot::Mutex::new(purged),
+                bounds: parking_lot::Mutex::new(Bounds {
+                    on_disk: purged,
+                    hidden: None,
+                }),
                 covering: std::sync::OnceLock::new(),
                 flushing: Arc::default(),
                 #[cfg(test)]
@@ -177,8 +187,12 @@ where
     /// snapshot did not reach disk. Fails if the log is already purged past
     /// the snapshot, or a snapshot was already named.
     pub fn purge_within(&self, snapshots: &SnapshotStore) -> io::Result<()> {
+        self.bound_purges(snapshots, PastSnapshot::Refuse)
+    }
+
+    fn bound_purges(&self, snapshots: &SnapshotStore, past: PastSnapshot) -> io::Result<()> {
         let log = &self.shared.log;
-        let purged = *self.shared.purged.lock();
+        let purged = self.shared.bounds.lock().on_disk;
         let covered = snapshots.covers().map(|last| last.index);
         if let Some(purged) = purged
             && covered.is_none_or(|covered| covered < purged.index)
@@ -189,7 +203,11 @@ where
                 purged.index
             )));
         }
-        self.shared.covering.set(snapshots.clone()).map_err(|_| {
+        let covering = Covering {
+            snapshots: snapshots.clone(),
+            past,
+        };
+        self.shared.covering.set(covering).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::AlreadyExists,
                 format!("{}: a snapshot already bounds its purges", log.label()),
@@ -223,7 +241,7 @@ impl<K> Shared<K> {
     /// purged. Records below it are never read as entries.
     fn first_index(&self) -> Offset {
         let base = self.log.base_offset();
-        match *self.purged.lock() {
+        match self.bounds.lock().purged() {
             Some(purged) => base.max(purged.index + 1),
             None => base,
         }
@@ -234,7 +252,7 @@ impl<K> Shared<K> {
         C: LogTypes,
         CommittedLeaderIdOf<C>: From<u64> + Deref<Target = u64>,
     {
-        let Some(purged) = *self.purged.lock() else {
+        let Some(purged) = self.bounds.lock().purged() else {
             return Ok(None);
         };
         Ok(Some(log_id::<C>(

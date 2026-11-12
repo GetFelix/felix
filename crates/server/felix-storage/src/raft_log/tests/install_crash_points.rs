@@ -258,6 +258,7 @@ async fn a_cut_at_each_step_of_a_snapshot_install_opens() {
             let mut machine = Machine {
                 snapshots,
                 state: State::default(),
+                snapshot_each_apply: false,
             };
             raft.truncate_after(Some(committed)).await?;
             machine.install_snapshot(&meta(&leader), data).await?;

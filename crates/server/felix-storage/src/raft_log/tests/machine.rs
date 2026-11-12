@@ -23,6 +23,9 @@ pub(super) struct State {
 pub(super) struct Machine {
     pub(super) snapshots: SnapshotStore,
     pub(super) state: State,
+    /// Store a snapshot after every apply, so that what is applied is
+    /// always what the stored snapshot covers.
+    pub(super) snapshot_each_apply: bool,
 }
 
 impl Machine {
@@ -32,6 +35,7 @@ impl Machine {
         Self {
             snapshots: SnapshotStore::open(dir).expect("snapshots"),
             state: State::default(),
+            snapshot_each_apply: false,
         }
     }
 
@@ -109,6 +113,11 @@ impl RaftStateMachine<Types> for Machine {
             if let Some(responder) = responder {
                 responder.send(response);
             }
+        }
+        if self.snapshot_each_apply {
+            let meta = Self::meta(&self.state);
+            let data = json(&self.state)?;
+            self.snapshots.install(stored(&meta, data)?).await?;
         }
         Ok(())
     }

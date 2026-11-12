@@ -13,12 +13,12 @@
 //! and the data directory synced. So a `store/` that exists always has
 //! both, and one that lacks either was damaged after the fact.
 
-use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::LOG_DIR;
+use super::lock::StoreLock;
 use crate::disk_log::crash_point;
 use crate::raft_log::state_file;
 
@@ -34,11 +34,6 @@ const CONVERTED: u16 = 1 << 1;
 const STARTED: u16 = 1 << 2;
 const KNOWN_FLAGS: u16 = VOTE_WITHHELD | CONVERTED | STARTED;
 
-/// Stores open in this process. Each [`MemberFile`] writes the file from
-/// its own copy, so a second one on the same store would undo the first's
-/// changes.
-static OPEN: parking_lot::Mutex<Option<HashSet<PathBuf>>> = parking_lot::Mutex::new(None);
-
 /// The member file of one metadata store. Cheap to clone; every clone sees
 /// the same file.
 #[derive(Debug, Clone)]
@@ -53,8 +48,13 @@ impl MemberFile {
     /// A new store is created whole, member file and empty log directory
     /// together, and is on disk before this returns, so the log can only be
     /// opened in a store whose member file names its cluster. An existing
-    /// store must hold both, and belong to `cluster_id`. A store already
-    /// open in this process is refused, as is an empty `cluster_id`.
+    /// store must hold both, and belong to `cluster_id`. An empty
+    /// `cluster_id` is refused.
+    ///
+    /// The store's lock is taken before the member file is read and held
+    /// until the last clone is dropped. A store that is already open, in
+    /// this process or another, by this path or through a symlink, is
+    /// refused with [`io::ErrorKind::ResourceBusy`].
     pub fn open(store_dir: impl Into<PathBuf>, cluster_id: &str) -> io::Result<Self> {
         let dir = store_dir.into();
         if cluster_id.is_empty() {
@@ -63,10 +63,12 @@ impl MemberFile {
                 "a cluster id cannot be empty",
             ));
         }
-        let registration = Registration::claim(&dir)?;
         if !super::present(&dir)? {
             create(&dir, cluster_id)?;
         }
+        // Before the file is read: every change is written from the copy
+        // read here, so a second holder would undo the first's changes.
+        let lock = StoreLock::take(&dir)?;
         let member = existing(&dir)?;
         if member.cluster_id != cluster_id {
             return Err(invalid(format!(
@@ -83,7 +85,7 @@ impl MemberFile {
                     member,
                     failed: false,
                 }),
-                _registration: registration,
+                _lock: lock,
             }),
         })
     }
@@ -177,33 +179,8 @@ struct Shared {
     dir: PathBuf,
     /// Held across a write, so two changes do not interleave.
     state: parking_lot::Mutex<State>,
-    _registration: Registration,
-}
-
-/// A store's place in [`OPEN`], given up when the last clone is dropped.
-#[derive(Debug)]
-struct Registration(PathBuf);
-
-impl Registration {
-    fn claim(dir: &Path) -> io::Result<Self> {
-        // Lexical: a store reached through a symlink is not caught here.
-        let key = std::path::absolute(dir)?;
-        if !OPEN.lock().get_or_insert_default().insert(key.clone()) {
-            return Err(io::Error::new(
-                io::ErrorKind::ResourceBusy,
-                format!("{} is already open in this process", dir.display()),
-            ));
-        }
-        Ok(Self(key))
-    }
-}
-
-impl Drop for Registration {
-    fn drop(&mut self) {
-        if let Some(open) = OPEN.lock().as_mut() {
-            open.remove(&self.0);
-        }
-    }
+    /// Released when the last clone is dropped.
+    _lock: StoreLock,
 }
 
 #[derive(Debug)]

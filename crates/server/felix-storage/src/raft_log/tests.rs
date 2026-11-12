@@ -9,7 +9,7 @@ mod machine;
 mod purge;
 mod snapshots;
 mod suite;
-mod writes;
+pub(crate) mod writes;
 
 use std::io;
 
@@ -29,7 +29,7 @@ use crate::log::{
 };
 
 openraft::declare_raft_types!(
-    pub(super) Types:
+    pub(crate) Types:
         D = String,
         R = String,
         NodeId = u64,
@@ -38,10 +38,10 @@ openraft::declare_raft_types!(
 );
 
 type Membership = openraft::impls::Membership<u64, openraft::impls::EmptyNode>;
-type TestEntry = Entry<CommittedLeaderIdOf<Types>, EntryPayload<String, Membership>>;
+pub(crate) type TestEntry = Entry<CommittedLeaderIdOf<Types>, EntryPayload<String, Membership>>;
 
 #[derive(Clone, Copy)]
-pub(super) struct Codec;
+pub(crate) struct Codec;
 
 impl EntryCodec<Types> for Codec {
     fn encode_data(&self, data: &String) -> io::Result<AppendRecord> {
@@ -104,15 +104,15 @@ pub(super) fn open(dir: &TempDir) -> RaftLog<Types, Codec> {
     RaftLog::new(log, Codec).expect("a Raft log")
 }
 
-fn log_id(term: u64, index: u64) -> LogIdOf<Types> {
+pub(crate) fn log_id(term: u64, index: u64) -> LogIdOf<Types> {
     LogIdOf::<Types>::new(term.into(), index)
 }
 
-fn blank(term: u64, index: u64) -> TestEntry {
+pub(crate) fn blank(term: u64, index: u64) -> TestEntry {
     TestEntry::new_blank(log_id(term, index))
 }
 
-fn normal(term: u64, index: u64, data: &str) -> TestEntry {
+pub(crate) fn normal(term: u64, index: u64, data: &str) -> TestEntry {
     TestEntry::new_normal(log_id(term, index), data.to_string())
 }
 
@@ -160,7 +160,7 @@ pub(super) async fn store(raft: &RaftLog<Types, Codec>, entries: &[TestEntry]) -
     log.sync().await.map_err(io::Error::other)
 }
 
-async fn all(raft: &RaftLog<Types, Codec>) -> io::Result<Vec<TestEntry>> {
+pub(crate) async fn all(raft: &RaftLog<Types, Codec>) -> io::Result<Vec<TestEntry>> {
     raft.reader().try_get_log_entries(..).await
 }
 
@@ -599,3 +599,6 @@ async fn a_paged_read_crosses_a_record_too_large_for_its_page() {
     store(&raft, &entries).await.expect("store");
     assert_eq!(all(&raft).await.expect("read"), entries);
 }
+
+/// What tests outside this module need to drive the log.
+pub(crate) use openraft::storage::{RaftLogReader as LogReads, RaftLogStorage as LogWrites};

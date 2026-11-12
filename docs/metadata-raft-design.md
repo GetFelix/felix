@@ -798,8 +798,13 @@ leader's snapshot as in
 
 ## Moving to the segment store
 
-**Status: design, not built.** Everything above describes what runs today:
-openraft 0.9 with its log, vote and snapshot in one redb file. This section
+**Status: design. The store exists; the service does not use it.**
+`felix-storage` has the member file, the lock, the snapshot file, the purge
+rule and `MetadataStore::open`, which checks the start rules below. Nothing
+in the control plane calls them yet: no routes, no state machine on the
+snapshot file, no build switch, no conversion tool. Everything above
+describes what runs today: openraft with its log, vote and snapshot in one
+redb file. This section
 is the plan to move that state onto `felix-storage`, so a Felix node has one
 storage engine (issue [#2167](https://github.com/GetFelix/felix/issues/2167)).
 The reasons, and the answer to "the segment store cannot truncate", are in
@@ -827,8 +832,22 @@ One directory per member, under the Raft data directory:
 | File | Holds | Written by |
 | --- | --- | --- |
 | `store/log/` | The Raft log: a `DiskLog` opened as a Raft log. Each entry is one record, the record's offset is the entry's index, and the term is in the record header. The vote and the committed index live in the log's ballot and replica-state files. | The `raft_log` adapter |
-| `store/snapshot` | The current snapshot: last log id, membership, the state machine's bytes, one checksum. | Rename into place |
+| `store/raft-snapshot` | The current snapshot: last log id, membership, the state machine's bytes, one checksum. | Rename into place |
 | `store/member` | The cluster id, the vote-withheld flag, and two marks the upgrade uses: *converted* and *started*. | Rename into place |
+| `store/lock` | Nothing. The open holds an exclusive `flock` on it, so a second process, a restore tool or a second open in the same process is refused while the store is in use. | Created at open |
+
+`MetadataStore::open` in `felix-storage` is the one way to open these. It
+decides the start before it writes, takes the lock, and checks the rules in
+this section. The byte formats and the open's steps are in
+[storage-format.md](storage-format.md#member-a-metadata-stores-member-file).
+
+**A blank log.** A log with no vote, no entry and no purged id says nothing
+about what the member did. A crash between the started mark and the first
+vote leaves one, and so does a log directory that was emptied. With a
+snapshot beside it the log was lost, so the open withholds the member's
+vote. With no snapshot the open reports "no Raft state" and the service
+treats the member as one with an empty store: it withholds its vote unless
+it is forming a new cluster.
 
 Rules for the log:
 
@@ -861,8 +880,8 @@ fsynced. A crash leaves the old snapshot or the new one. Two files would
 allow new data under the old id, which the model rejects
 (`SnapshotTwoRenames`).
 
-**Only forward.** A snapshot is stored only if its last index is past the
-stored one. The check and the rename happen under one lock in the store,
+**Never backward.** A snapshot is stored only if it is not behind the stored
+one: its last index is at or past the stored one's. The check and the rename happen under one lock in the store,
 which replaces redb's single writer. This keeps the rule from
 [Snapshots, compaction, recovery](#snapshots-compaction-recovery): a build
 that finishes after a newer install is dropped.

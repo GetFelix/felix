@@ -93,6 +93,36 @@ impl StoreBuilder<Types, Store, Machine, TempDir> for Builder {
     }
 }
 
+/// The log as the metadata store opens it: a purge past the stored
+/// snapshot is hidden, and an append must continue what is on disk.
+///
+/// The suite purges what it has only applied, where openraft purges what a
+/// snapshot covers. One case
+/// (`get_initial_state_membership_from_log_insm_is_smaller`) applies two
+/// entries to an empty log's state machine, purges through them and
+/// appends: with no snapshot that append is the one the rule refuses. So
+/// this state machine stores a snapshot at every apply, and the rule is
+/// the one the store runs with.
+struct HidingBuilder;
+
+impl StoreBuilder<Types, Store, Machine, TempDir> for HidingBuilder {
+    async fn build(&self) -> Result<(TempDir, Store, Machine), StorageError<Types>> {
+        let dir = tempfile::tempdir().expect("dir");
+        let raft = open(&dir);
+        let mut machine = Machine::open(dir.path());
+        machine.snapshot_each_apply = true;
+        raft.purge_hides_past(&machine.snapshots).expect("hide");
+        Ok((dir, Store(raft), machine))
+    }
+}
+
+#[test]
+fn the_log_passes_the_whole_storage_suite_hiding_purges() {
+    Types::run(async {
+        Suite::test_all(HidingBuilder).await.expect("suite");
+    });
+}
+
 #[test]
 fn the_log_passes_the_whole_storage_suite() {
     Types::run(async {

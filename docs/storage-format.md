@@ -1067,6 +1067,34 @@ the segments at `index + 1`.
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.
 
+### Purging past the snapshot
+
+A group whose state machine is rebuilt from its snapshot must never restart
+on a log that begins after that snapshot: the entries in between would be
+gone. The metadata store's log keeps that from happening
+(`RaftLog::purge_hides_past`):
+
+- A purge up to the stored snapshot writes `raft-purged` and removes the
+  entries, as above.
+- A purge past the stored snapshot removes entries up to the snapshot and
+  *hides* the rest. The hidden id is kept in memory only. The log state,
+  reads, truncation and the committed id all see it as the purged id, and
+  the entries stay on disk. A crash forgets the hidden id and brings the
+  entries back.
+- The next purge or append removes a hidden id's entries for real once a
+  stored snapshot covers it.
+- An append must continue the entries on disk, or start right after the id
+  in `raft-purged` or right after the stored snapshot when no entry is above
+  them. Any other append is a storage error. A purge past the log's end with
+  no snapshot, then an append, is the case this refuses: on disk it would
+  leave a hole nothing covers.
+
+A log that holds no entry, no purged id and no snapshot at all starts where
+its first append begins. There is nothing before it to leave a hole after.
+
+A shard group's log refuses a purge past its snapshot instead
+(`RaftLog::purge_within`).
+
 ## `raft-snapshot`: a Raft group's snapshot
 
 One snapshot: the last entry it covers, the caller's metadata and the data.
@@ -1159,8 +1187,46 @@ was created, maybe the member's vote, which lives in the log. The open and
 the start decision both refuse it. A `member.tmp` left by a crash is never
 read, and the next open deletes it.
 
-Only one open of a store is allowed in a process at a time: each open writes
-the file from its own copy, so a second one would undo the first's changes.
+### `lock`: one holder at a time
+
+Each open writes the member file from its own copy, so a second one would
+undo the first's changes, and two writers on one log would corrupt it. The
+open takes an exclusive, non-blocking `flock` on `store/lock` before it
+reads the member file, and holds it until the store is dropped. A second
+open fails with "resource busy", whether it comes from the same process,
+another process, or through a symlink. The kernel releases the lock when the
+holder exits, so a crash leaves nothing to clean up.
+
+The file is empty and is not part of the store's state. One that is missing
+is created. On a platform without `flock`, and on the simulator's in-memory
+filesystem, the claim is kept in the process instead.
+
+Per-shard log directories are not locked yet
+([#2344](https://github.com/GetFelix/felix/issues/2344)).
+
+### Opening the store
+
+`MetadataStore::open` is the one way to open a member's store. In order:
+
+1. It decides the start (below). A refusal writes nothing, not even an
+   empty `store/`.
+2. It opens the member file, creating the store if there is none, and takes
+   the lock.
+3. It opens `log/` as a Raft log that is fsynced on commit. Neither is a
+   setting.
+4. It opens the snapshot and refuses a log whose `raft-purged` id is past
+   it: that log has lost entries.
+5. If the log holds no vote, no record and no purged id (a *blank* log) and
+   a snapshot is stored, the log was lost and the vote with it. The open
+   sets the vote-withheld flag before it returns. A blank log with no
+   snapshot is reported to the caller as "no Raft state". A member that
+   crashed right after its started mark looks like that too, so the started
+   mark alone never means the log holds a vote.
+6. If the snapshot covers the log's last entry, it empties the log so that
+   it starts right after the snapshot. A snapshot install ends with that
+   purge, and a crash before it leaves it for the open.
+7. It reads the saved committed id. One whose entry is of another term
+   refuses the start: the entries up to it are not the committed ones.
 
 ### Whether a member may start
 

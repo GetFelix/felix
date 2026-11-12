@@ -2,6 +2,7 @@
 
 #[cfg(feature = "sim")]
 mod crash_points;
+mod store;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -202,6 +203,66 @@ async fn a_store_opens_once_at_a_time() {
     drop(clone);
     let member = reopened(&store);
     assert!(member.vote_withheld && member.started, "{member:?}");
+}
+
+/// The lock is on the file, not the path: a store reached through a
+/// symlink is the same store.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_store_reached_through_a_symlink_is_refused() {
+    let dir = tempdir().expect("dir");
+    let store = dir.path().join(STORE_DIR);
+    let file = MemberFile::open(&store, CLUSTER).expect("open");
+    let link = dir.path().join("link");
+    std::os::unix::fs::symlink(&store, &link).expect("symlink");
+    let data_link = dir.path().join("data-link");
+    std::os::unix::fs::symlink(dir.path(), &data_link).expect("symlink");
+    for path in [link.clone(), data_link.join(STORE_DIR)] {
+        let err = MemberFile::open(&path, CLUSTER).expect_err("through a symlink");
+        assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
+    }
+    drop(file);
+    MemberFile::open(&link, CLUSTER).expect("released on drop");
+}
+
+const CHILD_STORE: &str = "FELIX_TEST_LOCK_CHILD_STORE";
+
+/// Run by [`another_process_is_refused_while_the_store_is_open`] in a
+/// second process: exits 0 when the store named in the environment is
+/// busy, 3 when it opened. Does nothing as a test of its own.
+#[test]
+fn lock_child() {
+    let Some(store) = std::env::var_os(CHILD_STORE) else {
+        return;
+    };
+    let code = match MemberFile::open(PathBuf::from(store), CLUSTER) {
+        Err(err) if err.kind() == io::ErrorKind::ResourceBusy => 0,
+        Ok(_) => 3,
+        Err(_) => 4,
+    };
+    std::process::exit(code);
+}
+
+/// A second process is refused while the store is open here, and gets in
+/// once it is dropped. This is what an in-process registry could not do.
+#[cfg(unix)]
+#[tokio::test]
+async fn another_process_is_refused_while_the_store_is_open() {
+    let dir = tempdir().expect("dir");
+    let store = dir.path().join(STORE_DIR);
+    let child = || {
+        std::process::Command::new(std::env::current_exe().expect("this binary"))
+            .args(["--exact", "metadata_store::tests::lock_child"])
+            .env(CHILD_STORE, &store)
+            .output()
+            .expect("child")
+            .status
+            .code()
+    };
+    let file = MemberFile::open(&store, CLUSTER).expect("open");
+    assert_eq!(child(), Some(0), "a second process opened a held store");
+    drop(file);
+    assert_eq!(child(), Some(3), "the lock outlived its holder");
 }
 
 /// A started mark proves the mark of its own store only.
