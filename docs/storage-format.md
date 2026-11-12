@@ -1089,8 +1089,101 @@ id, the metadata and the data change in that one rename, so a reader never
 sees one snapshot's data under another's id. A snapshot that covers less
 than the stored one is not written. A file that does not decode, or whose
 lengths do not add up to the file's, fails the open: the log below the
-snapshot may be purged, so it cannot be read as "no snapshot". A
-`raft-snapshot.tmp` left by a crash is never read.
+snapshot may be purged, so it cannot be read as "no snapshot". The same
+goes for a file of another format version or with its reserved bytes set,
+even with a correct checksum. A
+`raft-snapshot.tmp` left by a crash is never read, and the next open deletes
+it.
+
+## `member`: a metadata store's member file
+
+The control plane's metadata store keeps one small file beside its Raft log
+and its snapshot. It says which cluster the store belongs to, whether the
+member's vote is withheld, and carries two marks the upgrade from redb
+uses. The control plane does not run on this store yet. The files and their
+rules are in place for the step that switches it over; the design is in
+[metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
+
+A member's data directory (`FELIX_RAFT_DATA_DIR`) will look like this:
+
+```text
+raft.redb          ← an older release's store, or the stub a conversion leaves
+store/
+  member           ← this file
+  raft-snapshot    ← the snapshot, in the format above
+  log/             ← the Raft log, a segment log with a raft-purged file
+```
+
+```text
+ 0   4  magic              u32  "FLMB"
+ 4   2  version            u16  1
+ 6   2  flags              u16  bit 0  vote withheld
+                                bit 1  converted
+                                bit 2  started
+ 8   2  cluster id length  u16  never zero
+10   4  crc                u32  crc32 over bytes 0..10 and the cluster id
+14      cluster id, UTF-8
+```
+
+What the fields mean:
+
+- **Cluster id.** The store belongs to one cluster for good. The store is
+  opened with its cluster id, and an open with another id is refused and
+  writes nothing. A file with no id fails the open.
+- **Vote withheld.** The member rejoined with an empty store and may have
+  forgotten a vote, so it must not vote or campaign until it has caught up.
+- **Converted.** The conversion tool built this store from a redb store.
+- **Started.** The member has started on this store at least once, so it
+  may have voted or acknowledged in the new group. The mark is on disk
+  before the Raft node exists.
+
+Every change replaces the file: a temporary, an fsync, a rename and a
+directory sync, all before the change returns. A crash leaves the old file
+or the new one. If a write fails, the file may be either, so every later
+change fails too and the member has to stop.
+
+Nothing can rebuild this file. One that fails its checksum, has another
+length than its header says, is another format version, or sets a flag bit
+this build does not know fails the open. It is never read as "no file",
+which would give a withheld vote back and forget that the member started.
+
+A store is created whole. The open builds it under a temporary name,
+`store.tmp`, with the member file and an empty `log/` inside, renames it to
+`store`, and syncs the data directory, all before the open returns. So the
+member file names the cluster before anything can open the log, and a crash
+leaves no store or a whole one. A `store.tmp` left by a crash is not the
+store, and the next open builds it again.
+
+A `store/` without a member file, or without `log/`, lost something after it
+was created, maybe the member's vote, which lives in the log. The open and
+the start decision both refuse it. A `member.tmp` left by a crash is never
+read, and the next open deletes it.
+
+Only one open of a store is allowed in a process at a time: each open writes
+the file from its own copy, so a second one would undo the first's changes.
+
+### Whether a member may start
+
+The service decides from the names in the data directory and this file. It
+never opens `raft.redb`, and it decides before it writes anything, so a
+refusal leaves the directory as it was.
+
+| `raft.redb` | `store/` | The service |
+| --- | --- | --- |
+| either | present, without a member file that decodes or without `log/` | Refuses to start. |
+| absent | absent | Starts as a new member. |
+| absent | whole | Starts on the store. |
+| present | whole, with the converted mark | Starts on the store. The file is the conversion's stub. |
+| present | absent, or whole without the mark | Refuses to start and names the conversion tool. |
+
+A new member has nothing on disk that says it ever ran, which is also what a
+member that lost its whole data directory looks like. Such a member may have
+voted in a term it no longer knows, so one that joins a running cluster
+starts with its vote withheld. A member that starts on its store reads its
+started mark from the member file.
+
+A name that cannot be examined, for example for lack of permission, is a
+refusal too. It is not read as absent.
 
 ## `ballot`: whom the generation was accepted from
 
