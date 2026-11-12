@@ -1,6 +1,8 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
+use felix_controlplane_service::store::ControlPlaneStore;
+
 use super::ControlPlane;
 
 /// One HTTP request from a plain thread, so the caller can block its own
@@ -172,5 +174,32 @@ async fn converge_fails_when_an_acknowledged_write_is_missing() {
         format!("{err:#}").contains("lost the acknowledged write"),
         "{err:#}"
     );
+    control_plane.shutdown().await;
+}
+
+/// A retry after a timeout can find the first attempt already landed: the
+/// Conflict then counts as an acknowledged write because the tenant is there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn acknowledge_write_counts_a_conflict_when_the_write_landed() {
+    let control_plane = ControlPlane::start_group("tenant-a", super::LIVENESS)
+        .await
+        .expect("start the group");
+    let group = control_plane.group().expect("a group").clone();
+    let store = group.live_store().expect("a live member");
+    store
+        .create_tenant(felix_controlplane_service::model::Tenant {
+            tenant_id: "ack-0".into(),
+            display_name: "ack-0".into(),
+        })
+        .await
+        .expect("create ack-0 first");
+    group
+        .acknowledge_write()
+        .await
+        .expect("a landed write is acknowledged");
+    group
+        .converge(Duration::from_secs(30))
+        .await
+        .expect("the acknowledged write is held");
     control_plane.shutdown().await;
 }
