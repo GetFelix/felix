@@ -175,7 +175,9 @@ fn shard(n: u32) -> ShardKey {
     }
 }
 
+// Runs in the nightly workflow until the pin moves; see docs/per-shard-raft.md.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "fails until the openraft pin carries databendlabs/openraft#2313 (issue #2312); run with --ignored"]
 async fn an_idle_member_stays_within_the_designs_memory() {
     let root = tempfile::tempdir().expect("dir");
     let net = Arc::new(Net::default());

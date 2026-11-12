@@ -755,6 +755,11 @@ Memory per member is measured by a test
 in one process, a third of them leaders, counting live heap bytes added on
 top of the open logs. It fails above 256 KB per member, and it fails
 today: see "The groups-per-broker gate" for the number and where it goes.
+Until the openraft pin carries databendlabs/openraft#2313 (issue #2312),
+the test is ignored in pull request CI and runs nightly instead, in the
+`raft-memory` job of `.github/workflows/nightly.yml`, which prints the
+number. Run it by hand with
+`cargo test -p felix-replication --features raft --test raft_memory -- --ignored`.
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 

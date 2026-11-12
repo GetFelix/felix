@@ -793,6 +793,16 @@ async fn a_write_is_reported_written_and_flushed() {
     let written = flushed.written.expect("written before it is flushed");
     assert!(written.index >= index);
     cluster.committed_everywhere(0, index).await;
+    // openraft counts a follower's entry toward its local commit once the
+    // append is accepted, which can be before the log has written it.
+    eventually(|| {
+        cluster
+            .statuses(0)
+            .iter()
+            .all(|status| status.flushed.is_some_and(|at| at.index >= index))
+            .then_some(())
+    })
+    .await;
     for status in cluster.statuses(0) {
         let term = status.term;
         assert_eq!(status.written, Some(LogPoint { term, index }));
@@ -842,12 +852,30 @@ async fn a_stuck_group_does_not_hold_up_the_rest() {
         cluster.elected(n).await;
         cluster.write(n, b"record").await;
     }
-    let dropped = cluster
-        .runtime("a")
-        .status(&shard(0))
-        .expect("status")
-        .dropped_ticks;
-    assert!(dropped > 0, "the stuck group's checks were not dropped");
+    // Wait on the ticker, not on how long the writes took: in a slow build
+    // they can finish before its first deadline has passed.
+    let stuck_dropped = || {
+        let status = cluster.runtime("a").status(&shard(0)).expect("status");
+        (status.dropped_ticks > 0).then_some(())
+    };
+    eventually(stuck_dropped).await;
+    // And while it stays stuck, the ticker goes on to later intervals: each
+    // other group's leader is checked again.
+    let ticks = |n: u32| -> u64 {
+        let statuses = cluster
+            .runtimes()
+            .into_iter()
+            .map(|runtime| runtime.status(&shard(n)));
+        statuses.map(|status| status.expect("status").ticks).sum()
+    };
+    let before: Vec<u64> = (1..4).map(ticks).collect();
+    eventually(|| {
+        (1..4)
+            .zip(&before)
+            .all(|(n, was)| ticks(n) > *was)
+            .then_some(())
+    })
+    .await;
 
     release.send(()).expect("release");
     cluster.stop().await;
@@ -915,15 +943,19 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
     let runtime = cluster.runtime("a");
     let closing = runtime.group(&shard(0)).expect("group");
 
-    // Park the member's core, so it cannot stop until released.
+    // Park the member's core, so it cannot stop until released. Wait until
+    // the core is in it: a shutdown sent before then stops the member first.
     let (release, parked) = std::sync::mpsc::channel::<()>();
+    let (in_park, entered) = std::sync::mpsc::channel::<()>();
     closing
         .raft()
         .external_request(move |_| {
+            let _ = in_park.send(());
             let _ = parked.recv();
         })
         .await
         .expect("park");
+    eventually(|| entered.try_recv().ok()).await;
     let close = tokio::spawn({
         let runtime = runtime.clone();
         async move { runtime.close(&shard(0)).await }
@@ -932,12 +964,10 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
 
     let log = cluster.logs[&("a".to_string(), 0)].clone();
     for _ in 0..20 {
+        let opened = runtime.open(group(0), 1, log.clone()).await;
         assert!(
-            matches!(
-                runtime.open(group(0), 1, log.clone()).await,
-                Err(OpenError::Closing)
-            ),
-            "a second member started while the first was still running"
+            matches!(opened, Err(OpenError::Closing)),
+            "a second member started while the first was still running: {opened:?}"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
