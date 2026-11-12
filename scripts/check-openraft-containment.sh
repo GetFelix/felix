@@ -31,9 +31,9 @@ for package in felix-broker felix-broker-service; do
   fi
 done
 
-# openraft's types stay inside the adapter, the tests of the store built on
-# it, and the control plane's Raft module.
-allowed='^(crates/server/felix-storage/src/raft_log(\.rs|/)|crates/server/felix-storage/src/metadata_store/tests/|services/felix-controlplane-service/src/raft(\.rs|/))'
+# openraft's types stay inside the adapter and its tests, the tests of the
+# store built on it, and the control plane's Raft module.
+allowed='^(crates/server/felix-storage/src/raft_log(\.rs|/)|crates/server/felix-storage/tests/raft_log[^/]*\.rs$|crates/server/felix-storage/src/metadata_store/tests/|services/felix-controlplane-service/src/raft(\.rs|/))'
 outside=$(git grep -lE '\bopenraft::' -- 'crates/**/*.rs' 'services/**/*.rs' 'demos/**/*.rs' 'tests/**/*.rs' | grep -vE "$allowed" || true)
 if [ -n "$outside" ]; then
   echo "error: openraft is named outside felix-storage's raft_log and the control plane's src/raft:" >&2

@@ -1229,7 +1229,7 @@ the broker alone. The check is therefore per package, as a lint step:
 - The same holds for the broker binary's package until per-shard Raft
   lands, which removes that line on purpose.
 - A script fails the lint if `openraft::` appears outside the two modules
-  above.
+  above and their tests.
 
 All three are `scripts/check-openraft-containment.sh`, a step of
 `task lint`. The script also checks that it still finds openraft under the
