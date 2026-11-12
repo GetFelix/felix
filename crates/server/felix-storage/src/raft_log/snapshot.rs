@@ -42,7 +42,8 @@ pub struct StoredSnapshot {
 }
 
 /// The one snapshot of a Raft group, in a directory. Cheap to clone; every
-/// clone sees the same snapshot.
+/// clone sees the same snapshot, and a [`Self::close`] through one closes
+/// them all.
 #[derive(Debug, Clone)]
 pub struct SnapshotStore {
     shared: Arc<Shared>,
@@ -57,6 +58,12 @@ struct Shared {
     /// The last entry the stored snapshot covers, behind a lock that is never
     /// held across I/O. A purge reads it on a runtime worker.
     covered: parking_lot::Mutex<Option<SnapshotId>>,
+    /// Set under `stored`, so an install either finishes before the close
+    /// or is refused.
+    closed: std::sync::atomic::AtomicBool,
+    /// Held while a clone can still install. openraft builds a snapshot on
+    /// a task it does not wait for, so a clone can outlive the store.
+    keep_alive: parking_lot::Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 impl SnapshotStore {
@@ -73,8 +80,31 @@ impl SnapshotStore {
                 dir,
                 covered: parking_lot::Mutex::new(stored.flatten()),
                 stored: parking_lot::Mutex::new(stored),
+                closed: std::sync::atomic::AtomicBool::new(false),
+                keep_alive: parking_lot::Mutex::new(None),
             }),
         })
+    }
+
+    /// Hold `keep_alive` until [`Self::close`] or the last clone is dropped.
+    /// The metadata store passes its lock.
+    pub(crate) fn keep_alive(&self, keep_alive: Arc<dyn std::any::Any + Send + Sync>) {
+        *self.shared.keep_alive.lock() = Some(keep_alive);
+    }
+
+    /// Refuse every later install, through this store or any clone, once an
+    /// install in flight has finished, then let go of the keep-alive value.
+    pub(crate) async fn close(&self) -> io::Result<()> {
+        let shared = Arc::clone(&self.shared);
+        felix_common::blocking::spawn(move || {
+            let _stored = shared.stored.lock();
+            shared
+                .closed
+                .store(true, std::sync::atomic::Ordering::Release);
+            shared.keep_alive.lock().take();
+        })
+        .await
+        .map_err(io::Error::other)
     }
 
     /// The last entry the stored snapshot covers, or `None` when there is
@@ -102,11 +132,16 @@ impl SnapshotStore {
 
     /// Replace the stored snapshot, on disk before this returns. Returns
     /// false, with nothing written, when the stored one covers a later
-    /// entry: a snapshot never goes back.
+    /// entry: a snapshot never goes back. Fails once the store is closed.
     pub async fn install(&self, snapshot: StoredSnapshot) -> io::Result<bool> {
         let shared = Arc::clone(&self.shared);
         felix_common::blocking::spawn(move || {
             let mut stored = shared.stored.lock();
+            if shared.closed.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(io::Error::other(crate::StorageError::Closed(
+                    shared.dir.display().to_string(),
+                )));
+            }
             let index = |last: Option<SnapshotId>| last.map(|last| last.index);
             if stored.is_some_and(|stored| index(stored) > index(snapshot.last)) {
                 return Ok(false);

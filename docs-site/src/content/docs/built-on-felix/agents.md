@@ -1,113 +1,117 @@
 ---
-title: "felix-agents"
-description: "A swarm of workers with Felix as its data backend: tasks flow out through a consumer group, results flow back through conditional cache writes, and one log records the whole run for live viewing and replay."
+title: "KBL"
+description: "A work tracker for coding agents, backed by Felix: bugs come in, each item goes to one agent, and one durable log records everything that happened."
 ---
 
-[felix-agents](https://github.com/GetFelix/felix-agents) models a swarm of
-workers, here AI agents, with Felix as their data backend. A planner splits a
-job into tasks, the tasks flow out to many workers, and the results flow back.
-Workers claim tasks, share what they find, lock what they change and spend
-from a budget. Felix hands out the work, holds the shared state, enforces who
-may write what and keeps every step in one durable log.
+[KBL](https://github.com/GetFelix/KBL) (Kanban By Log, pronounced Kibble) is a
+work tracker for coding agents. It pulls bugs in from GitHub, Azure DevOps or
+Jira, hands each item to one agent, and keeps dependencies and priorities.
+People guide it from a dashboard. Agents from any vendor take work from it
+through an MCP server, `kbl-mcp`.
 
-The viewer in the browser is a live picture of the swarm: workers claiming
-tasks, sending and receiving work, and results coming back. Any run can be
-replayed by scrubbing back to any moment of it.
+KBL makes no model calls itself. Triage, gathering context, splitting,
+answering questions and fixing are all work items that an agent or a person
+completes. The tracker, `kbl-mcp` and the dashboard only store, order, hand
+out and display work.
 
-It is at the design stage. `agents-tool` sets up a run's streams and caches on
-Felix and writes its first record, and `felix-mcp` serves one MCP tool, which
-says which run the agent is in. The task tools are not built, so no swarm runs. The
-[style frame](https://github.com/GetFelix/felix-agents/blob/main/prototype/style-frame.html)
-fixes the look of the viewer, driven by a hand-written run rather than a
-working swarm. The sections below describe the design.
+## What it is for
 
-![felix-agents style frame: fifty workers in a ring around the planner and its task queue, tasks flowing out and results flowing back, with the board, the run log and a timeline of every worker's claims](/built-on-felix/agents-burst.webp?v=1)
+A coding agent has no way to ask for the most important item it can start and
+know nobody else got it. Nobody can see what is waiting, what is blocked or
+who holds what. And item B cannot start until item A is done. KBL answers
+those three.
+
+With KBL you can bring bugs in once each, see the queue, let any MCP host ask
+for its next item, and accept, edit or reject what an agent proposes. You can
+also open a fix's decision replay, scrub through what the agent decided, and
+redo from a past decision as new work. The first attempt stays as it was.
 
 ## How it uses Felix
 
-Agents reach Felix through `felix-mcp`, an MCP server that holds one agent's own
-Felix token. Its tools are Felix operations: claim a task, write the board, take
-a lease, send a message, store an artifact. The model only acts through those
-tools, so what it can do is what the agent's token allows. Any MCP host, such as
-Claude Code, can join a run by adding `felix-mcp` to its config.
+KBL has no database. Everything it keeps is in Felix.
 
-| Resource | Kind | What it holds |
-|---|---|---|
-| Run log | Durable stream, one shard | Every step of the run, in one order, with the publisher Felix recorded |
-| Tasks | Durable stream with a consumer group | Tasks posted by the planner, claimed by workers |
-| Messages | Durable stream | Agent to agent messages, keyed by recipient |
-| Board | Log-backed cache | Shared findings, one key per entry |
-| Leases | Log-backed cache with a TTL | One key per thing that can be locked |
-| Presence | Log-backed cache with a TTL | One key per agent, refreshed by its runtime |
-| Results | Log-backed cache | One key per task, first write wins |
-| Spend | Counters | Tokens and cost, per run and per agent |
+| Need | Felix feature |
+|---|---|
+| One agent per item, and redelivery when an agent dies | A [consumer group](/features/queues/) with a visibility timeout, claim extension, max attempts and dead letters |
+| Priority | One ready stream per tier, polled in order |
+| Items, dependencies, context and budgets | A log-backed [cache](/features/cache/) with [conditional writes](/features/cache/#9-conditional-writes) |
+| Importing an upstream bug once | A conditional write on the upstream id that succeeds only if the key is absent |
+| The record | One durable stream, `work.events`, with the publisher recorded |
+| Replay and the live dashboard | Range reads, and subscribe from an offset, through [felix-gateway](/clients/browsers/) |
+| What each principal may write | [RBAC](/features/security/), down to a cache key prefix |
 
-Workers take tasks from a [consumer group](/features/queues/). A worker extends
-its claim while a long model call runs, and a worker that dies stops extending,
-so its task goes to another worker when the visibility timeout lapses. The
-result is written with a [conditional write](/features/cache/#9-conditional-writes)
-that only succeeds if the task has no result yet, so a redelivered task is
-recorded once. A task that keeps failing is dead-lettered.
+The consumer group is what keeps two agents off the same item. An agent asks
+`kbl-mcp` for its next item, and the tracker claims it from the group as a
+member named after that agent. While the agent works, `kbl-mcp` extends the
+claim every 30 seconds. A dead agent stops extending, so its claim lapses and
+the item goes to another agent.
 
-![Style frame of recovery: two workers' claims lapsed, their tasks went back to the queue and two other workers picked them up as attempt 2](/built-on-felix/agents-recovery.webp?v=1)
+Conditional writes keep people and agents from overwriting each other. A write
+that lost a race is refused, and the writer sees the newer value. They also
+make an import safe to repeat: an upstream bug is written once, so a second
+sync does not create a second item.
 
-The board and the leases are conditional writes too. An agent writes a board
-entry at the version it read, and if someone changed it first the write is
-refused and the agent sees the new value. A lease is a key taken only if absent,
-with a TTL, and renewed at the version it was taken. A lapsed entry is deleted
-on the log, so every [watcher](/features/cache/#7-keyed-watch) sees a dead
-agent's lease and presence go.
+The log is the record. The tracker is the only writer of `work.events`, and
+it appends a record only if the current state allows it. The dashboard is a
+fold of that log, so it can show the state at any earlier offset. That is the
+replay. To follow live it subscribes from the offset after the last record it
+read, so replay and live delivery meet with no gap.
 
-A budget is a reservation on a [counter](/features/cache/#8-counters): before
-each model call the runtime adds the call's worst case and backs off if the sum
-passes the limit, so racing workers stop the run early, never late.
-
-Each agent has its own principal, and Felix [RBAC](/features/security/) grants
-cache access down to a key prefix. A worker can write its own board entries and
-nothing of the planner's, and has no grant on the spend counters at all. If a
-prompt injection makes the model try, Felix refuses the write and the refusal
-is on the run log under that agent's identity.
-
-![Style frame of a refused write: worker w3 tried to write the planner's board entry and post tasks, and both refusals show on the board, the feed and the timeline](/built-on-felix/agents-injection.webp?v=1)
+Some of this is not yet reachable the way the design wants. Each gap has an
+issue labelled
+[`felix-gap`](https://github.com/GetFelix/KBL/labels/felix-gap).
 
 ```mermaid
 flowchart LR
-  A["Agent<br/>agents-run + felix-mcp"] -- "QUIC, agent token" --> B[("Felix brokers<br/>run log, tasks, board,<br/>leases, spend")]
-  H["Any MCP host"] -- "felix-mcp" --> B
-  V["Viewer browser"] -- "WebSocket" --> G["felix-gateway"]
-  G -- "range reads,<br/>subscribe from an offset" --> B
-  T["agents-tool"] -- "runs, identities, grants" --> CP["Control plane"]
+  S["GitHub, Azure DevOps,<br/>Jira, people"] --> T["Tracker"]
+  T -- "work.events, ready streams,<br/>item keys" --> F[("Felix")]
+  A["Agent + kbl-mcp"] -- "work tools" --> T
+  D["Dashboard"] -- "WebSocket" --> G["felix-gateway"]
+  G -- "range reads,<br/>subscribe from an offset" --> F
 ```
 
-The viewer reads the run log through [felix-gateway](/clients/browsers/) and
-folds it into the state of the run at any offset. To follow live it subscribes
-from the offset after the last record it read, so the replay and live delivery
-meet with no gap.
+## Status
 
-felix-gateway serves range reads and time lookups, but its TypeScript client
-does not expose them ([#53](https://github.com/GetFelix/felix-gateway/issues/53)).
-It also does not pass on the recorded publisher
-([#54](https://github.com/GetFelix/felix-gateway/issues/54)). Scrubbing and
-verified authorship in the viewer wait on both.
+KBL is early. The tracker is still being built, and the dashboard shows hand-written data, not a live queue.
 
-The attempt limit before a task is dead-lettered is one broker setting, so
-workers also count attempts themselves. Agent identities need an outside OIDC
-issuer, which `agents-tool` runs for now.
+- Done: the task tools, scripted planner and workers, the death and poison
+  checks, and the dashboard and replay style frames.
+- In progress: the tracker itself. That covers GitHub ingest, items and
+  dependencies, ready tiers, `work_next` and the rest of the work tools.
+- Not built: Claude Code fixing real issues end to end, the live dashboard,
+  the reference worker with a model API and spend limits, and a release with a
+  quick start.
 
-There is no request and reply between clients, so `ask` is built on the
-messages stream. There is no bounded counter add, so a budget takes a reserve,
-a check and a refund. Each gap has an
-[issue](https://github.com/GetFelix/felix-agents/labels/felix-gap).
+The
+[threat model](https://github.com/GetFelix/KBL/blob/main/docs/threat-model.md)
+also lists gaps that are still open, such as plain HTTP between the tracker
+and its callers.
 
-## What it demonstrates
+## Try it
 
-- **Each task is done once, even when workers die.** A dead worker's task goes to another, and a task done twice is recorded once.
-- **Agents don't overwrite each other.** A stale board write or lease is refused, and the agent sees what changed.
-- **The run is a record you can replay.** Every claim, write, message, model call and refusal is on one log, in one order.
-- **Budgets hold under a race.** A run never spends past its limit plus one reservation per worker in flight.
-- **A prompt-injected agent stays in its lane.** Felix refuses writes outside the agent's grants, whatever the model asks for.
+The dev stack runs Felix in containers. You need Docker with Compose v2, or
+Podman with a compose provider that honors `depends_on` conditions, and
+Node 22.
+
+```bash
+git clone https://github.com/GetFelix/KBL
+cd KBL
+dev/up.sh            # start Felix from scratch and wait until it serves
+node dev/check.mjs   # create a run's log and read it back through the gateway
+dev/down.sh          # stop it and delete its data
+```
+
+The stack has a control plane, one broker, felix-gateway and a stand-in
+identity provider. It keeps nothing between starts. The stand-in provider
+signs in anyone, so keep its ports on localhost.
+
+With the stack up, `kbl-tool` creates a run's streams and caches, and
+`kbl-mcp` gives an MCP host the task tools. The README has the commands.
 
 ## More
 
-- [README](https://github.com/GetFelix/felix-agents#readme)
-- [Design](https://github.com/GetFelix/felix-agents/blob/main/docs/design.md): the data model, the Felix mapping, the gaps and the build order
+- [README](https://github.com/GetFelix/KBL#readme)
+- [Work tracker](https://github.com/GetFelix/KBL/blob/main/docs/work-tracker.md): the tools, kinds of work and the flow
+- [Design](https://github.com/GetFelix/KBL/blob/main/docs/design.md): the data model, the Felix mapping and the gaps
+- [Threat model](https://github.com/GetFelix/KBL/blob/main/docs/threat-model.md)
+- [Dashboard mockup](https://github.com/GetFelix/KBL/blob/main/prototype/intake-frame.html)

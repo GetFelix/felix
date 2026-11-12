@@ -349,20 +349,63 @@ sequenceDiagram
     A->>D: append_pending_at(index, records, terms)
     D-->>A: written, readable
     A-->>R: Ok
-    Note over A,D: a task waits for the group commit
+    Note over A,D: the log's flush task waits for the group commit
     D-->>A: flush covers the entries
     A-->>R: callback(Ok)
 ```
 
 The append checks that the first entry is the next index under the same
 lock that assigns offsets, so a hole is refused with nothing written. The
-callback fires from a task that waits on the log's group commit, once per
-append. A flush covers a prefix of the log, so when the callback fires
-every entry below is durable too. The wait follows the log's fsync policy:
-under `FsyncMode::OnCommit` it is a real flush, and under the other modes
-the callback fires at once, as an acknowledgement does for a stream. A
-flush that fails reaches the callback as an error, which openraft treats as
-fatal for the node.
+callback fires once per append, after the log's group commit has covered
+it. A flush covers a prefix of the log, so when the callback fires every
+entry below is durable too. The wait follows the log's fsync policy: under
+`FsyncMode::OnCommit` it is a real flush, and under the other modes the
+callback fires at once, as an acknowledgement does for a stream. A flush
+that fails reaches the callback as an error, which openraft treats as fatal
+for the node.
+
+**One task per log waits for flushes.** An append that has to wait puts
+its callback on the log's flush queue (`raft_log/flush_queue.rs`) and
+returns. One task per log takes everything queued, waits once for the
+newest append, and then fires every callback in the order the appends
+were made. Nothing is spawned per append. If the flush fails, each queued
+append is asked about on its own, so every callback gets the error. An
+append with nothing to wait for fires its callback before it returns, but
+only when the queue is empty, so a callback never overtakes an earlier
+one.
+
+If the task stops (a callback panics, or its runtime shuts down, even
+before the task first runs), it fails every callback it still held, and
+the next append that has to wait starts a new task. The log is not
+poisoned: no flush failed, so nothing on disk is in doubt. The task holds
+its own handle to the log, so appends still queued when the last user of
+the log goes are answered with their real flush.
+
+> `raft_log/tests/flush_queue.rs`, `one_flush_answers_every_waiting_append`,
+> `a_failed_flush_fails_every_waiting_append`,
+> `an_append_after_the_task_stopped_is_flushed`,
+> `a_task_dropped_before_it_ran_fails_what_was_sent` and
+> `a_queued_append_outlives_the_log`.
+
+**The newest entries are read from memory.** Replication reads an entry
+right after it is appended. The adapter keeps the last 4 MiB of records it
+appended, as the `Bytes` the appender handed in, and a read that starts
+among them is served from there with no read of a segment
+(`raft_log/tail_cache.rs`). An older start is read from the segments.
+
+The cache must never return an entry the log no longer holds. `DiskLog`
+counts its cuts: a truncation, a removed head segment and a reset each
+add one. The cache remembers the count from before its oldest record was
+written and is read only while the log still reports that count, so any
+cut, by the adapter or under it, turns it off until the next append
+starts it again. `truncate_after` also empties it before it cuts. A read
+never starts below the purged id, in memory or on disk. The cache is not
+kept across a restart, and the log's state (`get_log_state`) never comes
+from it.
+
+> `raft_log/tests/tail.rs`, `a_cut_entry_is_never_read_again`,
+> `a_cut_made_under_the_adapter_is_seen` and
+> `a_purged_entry_is_never_read_again`.
 
 **A failed flush.** A failed fsync or directory sync poisons the log it
 happened on (`docs/durable-storage.md`, "A failed fsync poisons the log"):
@@ -397,8 +440,9 @@ inherits the rule.
 > `raft_log/tests/writes.rs`, `a_failed_flush_fails_the_callback` and
 > `a_failed_flush_stops_every_later_write`.
 
-**Truncation waits for those callbacks.** `truncate_after` first lets every
-earlier append's callback fire, then cuts. Cutting first would leave a
+**Truncation waits for those callbacks.** `truncate_after` first waits for
+the flush queue to empty, so every earlier append's callback has fired,
+then cuts. Cutting first would leave a
 flush waiting on entries that no longer exist; it would give up and report
 the append failed. The cut itself removes whole segments newest first and
 syncs the directory after each, then cuts the surviving segment, so a crash
@@ -528,7 +572,8 @@ startup purges up to it. The purged id is never past the snapshot.
 filesystem (`raft_log/tests/crash_points.rs`,
 `raft_log/tests/install_crash_points.rs`,
 `disk_log/tests/vote_crash_points.rs`): an append cut before its flush,
-inside the write and after its callback; a truncation cut after each
+inside the write and after its callback; several appends that share one
+flush, cut before it and after it; a truncation cut after each
 unlink, after it returns and after a later append's callback; a committed
 id saved ahead of the flush; a vote save cut at every step. What reopens
 holds every entry whose callback fired, is a gap-free prefix of what was

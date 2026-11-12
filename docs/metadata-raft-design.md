@@ -843,7 +843,7 @@ One directory per member, under the Raft data directory:
 | `store/log/` | The Raft log: a `DiskLog` opened as a Raft log. Each entry is one record, the record's offset is the entry's index, and the term is in the record header. The vote and the committed index live in the log's ballot and replica-state files. | The `raft_log` adapter |
 | `store/raft-snapshot` | The current snapshot: last log id, membership, the state machine's bytes, one checksum. | Rename into place |
 | `store/member` | The cluster id, the vote-withheld flag, and two marks the upgrade uses: *converted* and *started*. | Rename into place |
-| `store/lock` | Nothing. The open holds an exclusive `flock` on it, so a second process, a restore tool or a second open in the same process is refused while the store is in use. | Created at open |
+| `store/lock` | Nothing. The open holds an exclusive `flock` on it, so a second process, a restore tool or a second open in the same process is refused while the store is in use. The log holds the lock too, so it lasts until the last clone of the log is dropped. `flock` on Linux NFS is emulated per process and does not keep two opens in one process apart, so the data directory belongs on a local disk. | Created at open |
 
 `MetadataStore::open` in `felix-storage` is the one way to open these. It
 decides the start before it writes, takes the lock, and checks the rules in

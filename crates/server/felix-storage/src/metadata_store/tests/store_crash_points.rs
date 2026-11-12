@@ -86,15 +86,30 @@ impl Sim {
         Self(root)
     }
 
+    /// Open the store. A cut leaves the dead process's tasks running, and
+    /// the log keeps the lock until the last of them is gone, so a busy
+    /// store is retried for a while.
     pub(super) async fn open(&self) -> io::Result<Store> {
-        Store::open_configured(
-            self.0.clone(),
-            CLUSTER,
-            Codec,
-            "meta/raft".to_string(),
-            config(),
-        )
-        .await
+        let give_up = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let opened = Store::open_configured(
+                self.0.clone(),
+                CLUSTER,
+                Codec,
+                "meta/raft".to_string(),
+                config(),
+            )
+            .await;
+            match opened {
+                Err(err)
+                    if err.kind() == io::ErrorKind::ResourceBusy
+                        && std::time::Instant::now() < give_up =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                other => return other,
+            }
+        }
     }
 
     fn dir(&self, of: Dir) -> PathBuf {
@@ -256,7 +271,10 @@ async fn takes_the_next(sim: &Sim, store: Store, at: &str) {
 /// the store that reopened.
 pub(super) async fn settle(log: &RaftLog<Types, Codec>) {
     let persisted = log.disk_log().commit_offset_persisted();
-    let _ = tokio::time::timeout(std::time::Duration::from_millis(500), persisted).await;
+    // The bound only keeps a hung write from hanging the run.
+    tokio::time::timeout(std::time::Duration::from_secs(10), persisted)
+        .await
+        .expect("the committed id write did not finish in 10 s");
 }
 
 fn vote(term: u64, node: u64) -> VoteOf<Types> {
@@ -353,6 +371,7 @@ async fn a_cut_in_a_vote_save_never_lowers_the_vote() {
         settle(&log).await;
         sim_fs::crash(&sim.0, seed).expect("crash");
         drop(store);
+        drop(log);
 
         let kept = Kept {
             vote: Some(if saved.is_ok() {
@@ -404,6 +423,8 @@ async fn a_cut_around_an_append_and_a_committed_id_keeps_what_was_flushed() {
             sim_fs::crash(&sim.0, seed).expect("crash");
             drop(held);
             drop(store);
+            drop(log);
+            drop(disk);
 
             let confirmed = if flush && saved.is_ok() { 26 } else { 20 };
             let kept = Kept {
@@ -443,6 +464,7 @@ async fn a_cut_in_a_truncation_leaves_no_gap() {
         settle(&log).await;
         sim_fs::crash(&sim.0, seed).expect("crash");
         drop(store);
+        drop(log);
 
         let kept = Kept {
             flushed: written[..=KEEP].to_vec(),
@@ -501,6 +523,7 @@ async fn a_cut_in_a_snapshot_build_and_a_purge_never_starts_the_log_after_its_sn
         settle(&log).await;
         sim_fs::crash(&sim.0, seed).expect("crash");
         drop(store);
+        drop(log);
 
         let kept = Kept {
             flushed: written[..if done.is_ok() { 62 } else { 60 }].to_vec(),
@@ -575,6 +598,7 @@ async fn a_follower_installs(inside: bool) -> [usize; 4] {
         settle(&log).await;
         sim_fs::crash(&sim.0, seed).expect("crash");
         drop(store);
+        drop(log);
 
         let kept = Kept {
             vote: Some(vote(9, 2)),

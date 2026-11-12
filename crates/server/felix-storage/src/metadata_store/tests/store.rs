@@ -2,8 +2,10 @@
 //! and repairs, and the purge and append rules its log runs with.
 
 use openraft::StorageError;
+use openraft::storage::RaftLogReader;
 use openraft::testing::log::{StoreBuilder, Suite};
 use openraft::type_config::TypeConfigExt;
+use openraft::type_config::alias::VoteOf;
 use tempfile::tempdir;
 
 use super::*;
@@ -65,6 +67,161 @@ async fn a_store_is_held_by_one_opener() {
     assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
     store.shutdown().await.expect("shutdown");
     open(dir.path()).await.expect("released");
+}
+
+/// The log's clones outlive the store, so the lock stays until the last of
+/// them is gone: a flusher behind one can still write.
+#[tokio::test]
+async fn a_log_clone_keeps_the_store_locked_after_the_store_is_dropped() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let log = store.log();
+    drop(store);
+    let err = open(dir.path()).await.err().expect("second open");
+    assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
+
+    log.disk_log().shutdown().await.expect("shutdown");
+    drop(log);
+    open(dir.path()).await.expect("released");
+}
+
+/// A shutdown closes the log for every clone: an append through one left
+/// over fails, so it cannot write once the lock is free for another opener.
+#[tokio::test]
+async fn a_log_clone_cannot_append_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    append_flushed(&mut log, &entries(0, 3)).await;
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+
+    append(&mut log, &entries(3, 4))
+        .await
+        .err()
+        .expect("refused");
+    assert!(log.disk_log().is_closed());
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// openraft builds a snapshot on a task it does not wait for, so a clone of
+/// the snapshot store can outlive the store. It keeps the store locked
+/// while the store is dropped, and after a shutdown it cannot install.
+#[tokio::test]
+async fn a_snapshot_store_clone_cannot_install_into_a_released_store() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let snapshots = store.snapshots().clone();
+    let log = store.log();
+    log.disk_log().shutdown().await.expect("shutdown");
+    drop(log);
+    drop(store);
+    let err = open(dir.path()).await.err().expect("second open");
+    assert_eq!(err.kind(), io::ErrorKind::ResourceBusy, "{err}");
+    drop(snapshots);
+
+    let store = open(dir.path()).await.expect("released");
+    let snapshots = store.snapshots().clone();
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released after shutdown");
+    snapshots
+        .install(snapshot(3))
+        .await
+        .expect_err("refused after shutdown");
+    assert_eq!(reopened.snapshots().covers(), None);
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// A vote through a clone left over from a shutdown is refused: the member
+/// that holds the store now may have voted in that term already.
+#[tokio::test]
+async fn a_log_clone_cannot_vote_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+    let mut current = reopened.log();
+    let voted = VoteOf::<Types>::new(8, 3);
+    current.save_vote(&voted).await.expect("vote");
+    let before = listing(dir.path());
+
+    log.save_vote(&VoteOf::<Types>::new(8, 2))
+        .await
+        .expect_err("refused");
+    log.disk_log()
+        .give_up_generation()
+        .await
+        .expect_err("refused");
+    assert_eq!(listing(dir.path()), before, "a closed log wrote");
+    reopened.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("reopen");
+    let mut reader = reopened.log().reader();
+    assert_eq!(reader.read_vote().await.expect("vote"), Some(voted));
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// A purge past the tail through a clone left over from a shutdown is
+/// refused before it writes the purged id.
+#[tokio::test]
+async fn a_log_clone_cannot_purge_after_a_shutdown() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    append_flushed(&mut log, &entries(0, 3)).await;
+    store
+        .snapshots()
+        .install(snapshot(10))
+        .await
+        .expect("install");
+    store.shutdown().await.expect("shutdown");
+    let reopened = open(dir.path()).await.expect("released");
+    let before = listing(dir.path());
+
+    log.purge(log_id(1, 8)).await.expect_err("refused");
+    assert_eq!(listing(dir.path()), before, "a closed log wrote");
+    reopened.shutdown().await.expect("shutdown");
+}
+
+/// Several first starts of one data directory at once, over and over: each
+/// either opens or is refused as busy, and the store they leave is whole.
+#[test]
+fn racing_first_starts_leave_a_whole_store() {
+    for round in 0..200 {
+        let dir = tempdir().expect("dir");
+        let store = dir.path().join(STORE_DIR);
+        let start = std::sync::Barrier::new(4);
+        let opened: Vec<_> = std::thread::scope(|scope| {
+            let racers: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        start.wait();
+                        MemberFile::open(&store, CLUSTER)
+                    })
+                })
+                .collect();
+            racers
+                .into_iter()
+                .map(|racer| racer.join().expect("racer"))
+                .collect()
+        });
+        for result in &opened {
+            if let Err(err) = result {
+                assert_eq!(
+                    err.kind(),
+                    io::ErrorKind::ResourceBusy,
+                    "round {round}: {err}"
+                );
+            }
+        }
+        assert!(
+            opened.iter().any(Result::is_ok),
+            "round {round}: nobody opened it"
+        );
+        drop(opened);
+        assert!(store.join(LOG_DIR).is_dir(), "round {round}: no log dir");
+        MemberFile::open(&store, CLUSTER).unwrap_or_else(|err| panic!("round {round}: {err}"));
+    }
 }
 
 /// A new store, and a started one whose log is still blank, hold no Raft

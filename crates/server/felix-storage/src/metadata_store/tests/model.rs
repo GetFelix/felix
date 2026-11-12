@@ -422,6 +422,8 @@ async fn run(seed: u64) {
                 sim_fs::crash(&sim.0, rng.next_u64()).expect("crash");
                 drop(held);
                 drop(store);
+                drop(log);
+                drop(disk);
                 store = restart(&sim, &mut model, next, &unflushed, &at).await;
                 continue;
             }
