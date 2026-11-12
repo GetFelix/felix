@@ -71,7 +71,7 @@ const STOP_TIMEOUT: Duration = if cfg!(test) {
 /// finish that apply. An in-process retry with the same `app` would then
 /// replay beside it, so after a failed start the process should exit
 /// instead of calling [`RaftHandle::start`] again with the same state
-/// machine. No caller retries today.
+/// machine.
 async fn stop_failed_start(raft: &Raft, #[cfg(test)] faults: super::Faults) {
     #[cfg(test)]
     if let Some(probe) = faults.stop_probe {
@@ -85,8 +85,6 @@ async fn stop_failed_start(raft: &Raft, #[cfg(test)] faults: super::Faults) {
         raft.shutdown().await
     })
     .await;
-    // The stalled stop is only simulated; stop the node for real so a test
-    // can reopen the store.
     #[cfg(test)]
     if faults.stall_failed_start_stop {
         let _ = raft.shutdown().await;

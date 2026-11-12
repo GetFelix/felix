@@ -64,7 +64,7 @@ struct Shared {
     /// Held while a clone can still install. openraft builds a snapshot on
     /// a task it does not wait for, so a clone can outlive the store.
     keep_alive: parking_lot::Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
-    /// Makes the next close fail, for tests of what a caller does then.
+    /// Makes the next close fail, for tests.
     #[cfg(test)]
     fail_close: std::sync::atomic::AtomicBool,
 }
