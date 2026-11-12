@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794464368604,
+  "lastUpdate": 1794466205210,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -52780,6 +52780,58 @@ window.BENCHMARK_DATA = {
             "range": "28859.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1582750.23\nmean: 1582090.45\nstdev: 28859.00\ncv: 1.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9efda9f361aa209a20718e86fe90952fe4e4e35",
+          "message": "test(cluster): history mode with a real three-member metadata Raft group (#2226) (#2323)\n\n* wip: history mode with a real three-member metadata Raft group (#2226)\n\nSpec-Unaffected: test harness only\n\n* test(cluster): history mode with a real three-member metadata Raft group (#2226)\n\nThe control plane runs as three redb-backed members behind one address.\nFaults kill a member, kill the leader and cut the leader off from the other\ntwo; after each heal the members must agree on every shard assignment. The\nnightly history workflow runs it as its own job.\n\nSpec-Unaffected: test harness only, no protocol or state-machine change\n\n* test(cluster): read and write the metadata group through a live member\n\nThe store the harness held was member 0's, which goes stale once that member\nis restarted: a broker's new incarnation never showed in it.\n\nSpec-Unaffected: test harness only\n\n* test(cluster): metadata checker holds acknowledged writes and full state, reads go to the leader\n\n* test(cluster): say why an unacknowledged metadata write failed\n\n* test(cluster): a failed metadata write or heal is a finding, and a Conflict counts only if the tenant landed\n\n* test(cluster): the group's ControlPlane holds no member's store, and a restart waits for the database lock",
+          "timestamp": "2026-11-12T06:46:05Z",
+          "tree_id": "834b559eef4b12c3229eec28695ba6e34bb683c6",
+          "url": "https://github.com/GetFelix/felix/commit/e9efda9f361aa209a20718e86fe90952fe4e4e35"
+        },
+        "date": 1794466204629,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 502557.26,
+            "range": "50888.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 502557.26\nmean: 522736.34\nstdev: 50888.63\ncv: 9.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 502557.26,
+            "range": "50888.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 502557.26\nmean: 522736.34\nstdev: 50888.63\ncv: 9.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121285.93,
+            "range": "1640.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121285.93\nmean: 121387.32\nstdev: 1640.32\ncv: 1.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212859.33,
+            "range": "16403.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212859.33\nmean: 1213873.21\nstdev: 16403.24\ncv: 1.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
