@@ -22,6 +22,7 @@
 //! The withheld vote is persisted, so a crash part-way through catching up
 //! does not turn a half-filled log into a voter. The argument is in
 //! `docs/metadata-raft-design.md` ("Rejoining after a lost volume").
+use openraft::async_runtime::WatchReceiver;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -196,7 +197,7 @@ impl RaftHandle {
                 let applied = self
                     .raft
                     .metrics()
-                    .borrow()
+                    .borrow_watched()
                     .last_applied
                     .map(|log_id| log_id.index)
                     .unwrap_or(0);
@@ -235,7 +236,7 @@ impl RaftHandle {
         if !self.confirm_leadership().await {
             return None;
         }
-        let index = self.raft.metrics().borrow().last_log_index?;
+        let index = self.raft.metrics().borrow_watched().last_log_index?;
         Some(CatchUpTarget { index })
     }
 
@@ -269,7 +270,7 @@ impl RaftHandle {
 
     pub(super) fn standing(&self) -> Standing {
         Standing {
-            last_log_index: self.raft.metrics().borrow().last_log_index,
+            last_log_index: self.raft.metrics().borrow_watched().last_log_index,
             version: self.app.version(),
         }
     }

@@ -57,19 +57,9 @@ rustls = { workspace = true }
 tokio-rustls = "0.26"
 hyper-util = { version = "0.1", features = ["server-auto", "http1", "http2", "tokio", "service"] }
 # The metadata Raft core (`src/raft/`), per docs/metadata-raft-design.md.
-# `storage-v2` unlocks implementing RaftLogStorage/RaftStateMachine directly;
-# openraft types stay inside `src/raft/` — that containment is the seam.
-# `loosen-follower-log-revert` is not optional for us: a member rejoining
-# with a wiped volume reports a log that went backwards, which is a scenario
-# this design explicitly supports — without the feature the *leader* trips a
-# debug assertion in its replication progress when that member returns (the
-# chaos suite caught it), and a release build would carry the inconsistent
-# progress state silently instead.
-openraft = { version = "0.9", features = [
-    "serde",
-    "storage-v2",
-    "loosen-follower-log-revert",
-] }
+# openraft types stay inside `src/raft/`; that containment is the seam.
+openraft = { workspace = true, features = ["serde", "tokio-rt"] }
+futures-util = { version = "0.3", default-features = false }
 # Backs the Raft log, vote, and snapshot store: crash-safe single-file ACID
 # writes so Felix carries no hand-rolled durability code for consensus state.
 redb = "4"

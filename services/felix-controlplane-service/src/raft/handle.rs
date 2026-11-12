@@ -6,6 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use openraft::async_runtime::WatchReceiver;
 
 use super::types::Raft;
 use super::{
@@ -43,6 +44,9 @@ pub struct RaftHandle {
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
+    /// The snapshot transfer this member is receiving, chunk by chunk
+    /// ([`super::chunks`]).
+    pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
 }
 
 impl RaftHandle {
@@ -74,6 +78,16 @@ impl RaftHandle {
             // log already knows a membership that lists it as a voter, and
             // its election timer starts with the node.
             enable_elect: may_vote,
+            // A restarted leader campaigns at once, whatever `enable_elect`
+            // says. A member withholding its vote must not: its log may be
+            // empty, and the vote it stored is from before it was wiped.
+            enable_leader_restore: Some(may_vote),
+            // A member that returns with a wiped volume reports a log that
+            // went backwards, which this design supports. Without this the
+            // leader refuses to replicate to it.
+            allow_log_reversion: Some(true),
+            // Off until it is tested with members that withhold their vote.
+            enable_pre_vote: Some(false),
             ..Default::default()
         };
         let config = Arc::new(config.validate().context("raft config")?);
@@ -118,7 +132,7 @@ impl RaftHandle {
             loop {
                 let applied = raft
                     .metrics()
-                    .borrow()
+                    .borrow_watched()
                     .last_applied
                     .map(|log_id| log_id.index)
                     .unwrap_or(0);
@@ -151,13 +165,14 @@ impl RaftHandle {
             versions,
             hold,
             stopped: Arc::default(),
+            receiving: Arc::default(),
         };
         tokio::spawn(handle.clone().watch_versions());
         Ok(handle)
     }
 
     pub fn status(&self) -> RaftStatus {
-        let metrics = self.raft.metrics().borrow().clone();
+        let metrics = self.raft.metrics().borrow_watched().clone();
         RaftStatus {
             id: self.id,
             leader: metrics.current_leader.filter(|_| !self.is_stopped()),
@@ -173,9 +188,9 @@ impl RaftHandle {
     /// how split brain is manufactured, so this fails on a node that
     /// already has state.
     pub async fn initialize(&self, members: BTreeMap<NodeId, String>) -> Result<()> {
-        let nodes: BTreeMap<NodeId, openraft::BasicNode> = members
+        let nodes: BTreeMap<NodeId, openraft::impls::BasicNode> = members
             .into_iter()
-            .map(|(id, addr)| (id, openraft::BasicNode { addr }))
+            .map(|(id, addr)| (id, openraft::impls::BasicNode { addr }))
             .collect();
         self.raft
             .initialize(nodes)
@@ -232,7 +247,7 @@ impl RaftHandle {
     pub async fn add_learner(&self, id: NodeId, addr: String) -> Result<()> {
         self.admit(id, &addr).await?;
         self.raft
-            .add_learner(id, openraft::BasicNode { addr }, true)
+            .add_learner(id, openraft::impls::BasicNode { addr }, true)
             .await
             .context("add learner")?;
         Ok(())
@@ -244,7 +259,7 @@ impl RaftHandle {
     pub(crate) async fn add_learner_without_waiting(&self, id: NodeId, addr: String) -> Result<()> {
         self.admit(id, &addr).await?;
         self.raft
-            .add_learner(id, openraft::BasicNode { addr }, false)
+            .add_learner(id, openraft::impls::BasicNode { addr }, false)
             .await
             .context("add learner")?;
         Ok(())
@@ -266,7 +281,10 @@ impl RaftHandle {
     /// leader *and* its applied state is current — openraft's read-index,
     /// so a deposed leader that has not heard the news fails it.
     pub async fn confirm_leadership(&self) -> bool {
-        self.raft.ensure_linearizable().await.is_ok()
+        self.raft
+            .ensure_linearizable(openraft::raft::ReadPolicy::ReadIndex)
+            .await
+            .is_ok()
     }
 
     /// Ask for a snapshot now rather than at the log-size policy point.
@@ -294,3 +312,6 @@ impl RaftHandle {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;
