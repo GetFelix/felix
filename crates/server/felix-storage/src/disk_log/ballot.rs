@@ -202,7 +202,9 @@ impl DiskLog {
         generation: u64,
         leader: Option<&str>,
     ) -> Result<GenerationCheck> {
-        let raised = self.raise_ballot(generation, leader, false, None).await?;
+        let raised = self
+            .raise_ballot(generation, leader, false, None, false)
+            .await?;
         Ok(raised.expect("no set to check"))
     }
 
@@ -218,22 +220,33 @@ impl DiskLog {
         leader: &str,
         kept: ReplicaSet,
     ) -> Result<Option<GenerationCheck>> {
-        self.raise_ballot(generation, Some(leader), false, Some(kept))
+        self.raise_ballot(generation, Some(leader), false, Some(kept), false)
             .await
     }
 
     /// `committed` marks the vote committed; it needs a leader, or `store`
     /// refuses it before writing. A raise
     /// without it, or to another generation, clears the mark.
+    ///
+    /// `adopt` lets a committed vote replace an uncommitted one for another
+    /// leader at the same generation; see [`adopts`].
     async fn raise_ballot(
         &self,
         generation: u64,
         leader: Option<&str>,
         committed: bool,
         kept: Option<ReplicaSet>,
+        adopt: bool,
     ) -> Result<Option<GenerationCheck>> {
+        let adopt = adopt && committed;
+        let check = move |accepted: &Accepted, leader: Option<&str>| {
+            if adopt && leader.is_some_and(|leader| adopts(accepted, generation, leader)) {
+                return None;
+            }
+            check(accepted, generation, leader, committed)
+        };
         if kept.is_none()
-            && let Some(found) = check(&self.inner.ballot.read(), generation, leader, committed)
+            && let Some(found) = check(&self.inner.ballot.read(), leader)
         {
             return Ok(Some(found));
         }
@@ -249,12 +262,7 @@ impl DiskLog {
             }
             // Re-checked under the writer's lock: a concurrent request may
             // have raised it, or named its leader, while this waited.
-            if let Some(found) = check(
-                &inner.ballot.read(),
-                generation,
-                leader.as_deref(),
-                committed,
-            ) {
+            if let Some(found) = check(&inner.ballot.read(), leader.as_deref()) {
                 return Ok(Some(found));
             }
             // Before `replica`, so a crash between the two leaves a ballot
@@ -358,7 +366,7 @@ impl DiskLog {
             ));
         }
         let raised = self
-            .raise_ballot(generation, Some(leader), true, None)
+            .raise_ballot(generation, Some(leader), true, None, false)
             .await?;
         Ok(raised.expect("no set to check"))
     }
@@ -367,11 +375,13 @@ impl DiskLog {
     /// caller that has already decided it, as openraft has. On disk before
     /// this returns.
     ///
-    /// A saved vote only moves forward: to a higher generation, or from
-    /// uncommitted to committed for the same leader. Saving the vote held
-    /// writes nothing. Anything else is refused with nothing written: a vote
-    /// that goes back, or changes leader within a generation, can elect two
-    /// leaders.
+    /// A saved vote only moves forward: to a higher generation, or to a
+    /// committed vote from an uncommitted one of the same generation. The
+    /// second may name another leader: a member that voted for one candidate
+    /// follows the one a majority elected. Saving the vote held writes
+    /// nothing. Anything else is refused with nothing written: a vote that
+    /// goes back, a second uncommitted vote in a generation, or a second
+    /// committed leader in one, can elect two leaders.
     ///
     /// A committed vote is written in ballot format v2 whatever the log's
     /// [`crate::log::GenerationGate`] says, so the caller must know every
@@ -400,7 +410,7 @@ impl DiskLog {
             }
         }
         match self
-            .raise_ballot(generation, Some(leader), committed, None)
+            .raise_ballot(generation, Some(leader), committed, None, true)
             .await?
             .expect("no set to check")
         {
@@ -434,7 +444,7 @@ impl DiskLog {
         leader: &str,
     ) -> Result<GenerationCheck> {
         let raised = self
-            .raise_ballot(generation, Some(leader), true, None)
+            .raise_ballot(generation, Some(leader), true, None, false)
             .await?;
         Ok(raised.expect("no set to check"))
     }
@@ -467,6 +477,23 @@ pub(super) fn check(
         }),
         (Some(_), None) => None,
     }
+}
+
+/// Whether a committed vote for `leader` at `generation` may replace the
+/// accepted one, which names another leader.
+///
+/// It may when the accepted vote is at that generation and uncommitted: this
+/// log voted for a candidate that lost, and now hears from the leader the
+/// majority elected. Once the committed vote is held, no other vote at the
+/// generation is taken, so the log still votes once and follows one leader.
+/// A generation that was given up stays given up.
+fn adopts(accepted: &Accepted, generation: u64, leader: &str) -> bool {
+    generation == accepted.generation
+        && !accepted.committed
+        && accepted
+            .leader
+            .as_deref()
+            .is_some_and(|held| !held.is_empty() && held != leader)
 }
 
 /// The generation, leader and committed mark a shard opens with, from its

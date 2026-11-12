@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One perf trial of the no-regression gate: start a three-node cluster with one
-# stream, drive it with felix-loadgen's ingest scenario, append one JSON line.
+# One perf trial of the no-regression gate: start a cluster with one stream (one
+# broker for RF 1, three otherwise), drive it with felix-loadgen's ingest scenario, append one JSON line.
 #
 #   gate-perf-cell.sh <bin dir> <side> <cell> <rf> <payload bytes> <batch> <secs> <round> <results.jsonl>
 #
@@ -27,7 +27,10 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$bin/felix-cluster" up --nodes 3 --stream perf --replication-factor "$rf" >"$work/up.log" 2>&1 &
+# RF 1 is the single-node cell: one broker, no peers.
+nodes=3
+[ "$rf" = 1 ] && nodes=1
+"$bin/felix-cluster" up --nodes "$nodes" --stream perf --replication-factor "$rf" >"$work/up.log" 2>&1 &
 cluster_pid=$!
 for _ in $(seq 1 240); do
   grep -q '^cluster up\.' "$work/up.log" && break
@@ -53,4 +56,4 @@ line=$(grep '^LOADGEN_JSON ' "$work/loadgen.out" | head -1 | cut -d' ' -f2-)
 jq -c --arg side "$side" --arg cell "$cell" --argjson round "$round" \
   '{side: $side, cell: $cell, round: $round,
     msg_s: (.acked_throughput_msg_s // .throughput_msg_s),
-    p99_us: .batch_ack_latency_us.p99, failed_sends: .failed_sends}' <<<"$line" >>"$results"
+    p50_us: .batch_ack_latency_us.p50, p99_us: .batch_ack_latency_us.p99, failed_sends: .failed_sends}' <<<"$line" >>"$results"

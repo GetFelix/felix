@@ -1,5 +1,5 @@
-//! The small files a Raft log keeps beside its segments: the purged id and
-//! the snapshot. Each is replaced whole, so a crash leaves the old file or
+//! The small files a Raft group keeps beside its segments: the purged id,
+//! the snapshot and the metadata store's member file. Each is replaced whole, so a crash leaves the old file or
 //! the new one.
 
 use std::io::{self, Write};
@@ -9,9 +9,9 @@ use crate::disk_log::crash_point;
 
 /// Replace `name` in `dir` with `parts`, in order: a temporary, fsynced,
 /// renamed over the old file, and the directory synced.
-pub(super) fn store(dir: &Path, name: &str, parts: &[&[u8]]) -> io::Result<()> {
+pub(crate) fn store(dir: &Path, name: &str, parts: &[&[u8]]) -> io::Result<()> {
     let path = dir.join(name);
-    let temporary = dir.join(format!("{name}.tmp"));
+    let temporary = temporary(dir, name);
     let step = || crash_point::reached(dir);
     step()?;
     {
@@ -30,10 +30,23 @@ pub(super) fn store(dir: &Path, name: &str, parts: &[&[u8]]) -> io::Result<()> {
 
 /// The bytes of `name` in `dir`, or `None` when it was never written. A
 /// temporary a crash left behind is not the file and is never read.
-pub(super) fn load(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
+pub(crate) fn load(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
     match crate::fs::read(dir.join(name)) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(err),
     }
+}
+
+/// Delete the temporary a crash left while replacing `name` in `dir`, if
+/// there is one. It can be as large as the file and hold the same secrets.
+pub(crate) fn remove_temporary(dir: &Path, name: &str) -> io::Result<()> {
+    match crate::fs::remove_file(temporary(dir, name)) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => Err(err),
+        _ => Ok(()),
+    }
+}
+
+fn temporary(dir: &Path, name: &str) -> std::path::PathBuf {
+    dir.join(format!("{name}.tmp"))
 }

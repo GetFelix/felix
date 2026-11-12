@@ -128,7 +128,10 @@ FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
 ```
 
 Add `FELIX_SIM_PLACEMENT=1` to any of these commands to turn placement faults on,
-and `FELIX_SIM_POWER_LOSS=1` to cut the power in place of kills.
+and `FELIX_SIM_POWER_LOSS=1` to cut the power in place of kills
+(`FELIX_SIM_POWER_LOSS=relaxed` on brokers that do not sync). `FELIX_SIM_MAJORITY_CUT=1`
+cuts several brokers at once and `FELIX_SIM_WIPE=1` wipes shard and data
+directories; `docs/simulation.md` says what each may lose.
 A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`
 writes the run's history to a file so two runs can be diffed.
 

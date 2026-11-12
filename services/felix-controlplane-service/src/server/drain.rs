@@ -123,12 +123,11 @@ impl Running {
         if let Some(handle) = &raft_handle {
             // After the API stops (no new proposals), before metrics: a member
             // that leaves without shutting down looks like a failure to the
-            // group and costs it an election timeout. Known fact, pre-0.10
-            // openraft: there is no leadership-transfer API, so when the member
-            // being deployed *is* the leader, the group pauses writes for one
-            // election timeout before a successor takes over. Bounded (~1s at
-            // defaults), recorded in docs/metadata-raft-design.md, and closed by
-            // the 0.10 upgrade the seam exists to contain.
+            // group and costs it an election timeout. Leadership is not
+            // handed over first, so when the member being deployed *is* the
+            // leader, the group pauses writes for one election timeout before
+            // a successor takes over. Bounded (~1s at defaults) and recorded
+            // in docs/metadata-raft-design.md, where the transfer is planned.
             if !budget
                 .drain("raft_node", async {
                     let _ = handle.shutdown().await;

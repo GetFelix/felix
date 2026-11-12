@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 
 use super::RaftHandle;
+use super::types::{Command, TypeConfig};
 
 /// A proposal ran out its write budget: no leader, or no quorum, answered in
 /// time. The outcome is unknown rather than failed — it may still commit — so
@@ -79,7 +80,7 @@ impl RaftHandle {
             // proposals forever, and that must become this instance's error,
             // not its hang.
             let proposal = self.proposal_bytes(&command);
-            match tokio::time::timeout(attempt, self.raft.client_write(proposal)).await {
+            match tokio::time::timeout(attempt, self.raft.client_write(Command(proposal))).await {
                 Err(_) => {
                     last_refusal = Some(anyhow::anyhow!("proposal not committed in time"));
                     continue;
@@ -148,15 +149,20 @@ impl RaftHandle {
     }
 
     /// Where a refused proposal should go instead, when the refusal says.
-    fn forward_target(
+    /// Where to forward a refused proposal: the leader's peer address, when
+    /// the refusal names one.
+    ///
+    /// A leader that cannot confirm a recent quorum refuses too, and names
+    /// no one. That proposal is tried again here, inside the write deadline.
+    pub(super) fn forward_target(
         &self,
-        err: &openraft::error::RaftError<
-            u64,
-            openraft::error::ClientWriteError<u64, openraft::BasicNode>,
+        err: &openraft::errors::RaftError<
+            TypeConfig,
+            openraft::errors::ClientWriteError<TypeConfig>,
         >,
     ) -> Option<String> {
-        if let openraft::error::RaftError::APIError(
-            openraft::error::ClientWriteError::ForwardToLeader(forward),
+        if let openraft::errors::RaftError::APIError(
+            openraft::errors::ClientWriteError::ForwardToLeader(forward),
         ) = err
         {
             self.peer_url(

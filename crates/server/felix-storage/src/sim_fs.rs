@@ -152,3 +152,27 @@ pub fn file_len(root: &Path, path: &Path) -> io::Result<Option<u64>> {
         Err(err) => Err(err),
     }
 }
+
+/// The boot of the machine under `root`. It is the same until a power cut
+/// is rebooted, then a new one, so a relaxed run's crash record names a boot
+/// the way it does on a real machine.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn boot_id(root: &Path) -> io::Result<crate::run_state::BootId> {
+    let boots = tree(root)?.boots();
+    let mut bytes = [0xB0; 16];
+    bytes[8..].copy_from_slice(&boots.to_be_bytes());
+    Ok(crate::run_state::BootId::from_bytes(bytes))
+}
+
+/// Delete `below` (a path below `root`, a file or a directory) from the
+/// device, and make that durable, as an operator's `rm -rf` on a stopped
+/// broker would. An empty `below` empties `root`. Nothing is an error if it
+/// is already gone.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn wipe(root: &Path, below: &Path) -> io::Result<()> {
+    tree(root)?.wipe(below)
+}

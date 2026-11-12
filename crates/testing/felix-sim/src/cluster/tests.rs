@@ -204,14 +204,59 @@ fn power_loss_is_off_by_default_and_fsyncs_on_commit_when_on() {
     assert_eq!(config.fsync_mode, FsyncMode::OnCommit);
 }
 
+/// Under a relaxed fsync mode a power cut loses unsynced bytes, and the
+/// restart is a new boot of the machine: it takes a new storage id and runs
+/// the unclean-start handling, which a process crash in the same boot does not.
 #[tokio::test(start_paused = true)]
-async fn power_loss_needs_fsync_on_commit() {
+async fn a_relaxed_power_cut_makes_the_restart_unclean() {
+    log();
     let config = SimConfig {
         power_loss: true,
         fsync_mode: FsyncMode::None,
         ..small()
     };
-    assert!(SimCluster::start(1, config).await.is_err());
+    let cluster = SimCluster::start(1, config).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    cluster.power_loss(0).await;
+    restarted(&cluster, 0).await;
+    assert_eq!(cluster.started_unclean(0), Some(true), "a power cut");
+    cluster.crash(1).await;
+    restarted(&cluster, 1).await;
+    assert_eq!(cluster.started_unclean(1), Some(false), "a process crash");
+}
+
+/// Two brokers lose power in the same instant and both come back distrusting
+/// their copies.
+#[tokio::test(start_paused = true)]
+async fn brokers_lose_power_together() {
+    log();
+    let config = SimConfig {
+        power_loss: true,
+        fsync_mode: FsyncMode::None,
+        ..small()
+    };
+    let cluster = SimCluster::start(1, config).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let cut = cluster.power_loss_together(&[0, 1]).await;
+    assert_eq!(cut, vec![0, 1]);
+    assert!(cluster.is_down(0) && cluster.is_down(1));
+    assert_eq!(cluster.power_losses().len(), 2);
+    assert_eq!(cluster.power_losses()[0].at, cluster.power_losses()[1].at);
+}
+
+/// A wipe empties the broker's disk while it is down; the broker starts again
+/// on an empty directory.
+#[tokio::test(start_paused = true)]
+async fn a_wiped_data_directory_is_empty_and_the_broker_starts_on_it() {
+    log();
+    let cluster = SimCluster::start(1, small()).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(!cluster.disk_values()[0].is_empty() || cluster.config.shards > 0);
+    let wiped = cluster.wipe(&[0], WipeScope::Root).await;
+    assert_eq!(wiped, vec![0]);
+    assert!(cluster.is_down(0));
+    assert!(cluster.disk_values()[0].is_empty());
+    restarted(&cluster, 0).await;
 }
 
 /// A cut inside an append leaves a torn tail; the restart repairs it, keeps
