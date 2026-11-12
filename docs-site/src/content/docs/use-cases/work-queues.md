@@ -274,4 +274,4 @@ either on a single group. The Rust, Python and TypeScript clients have the calls
 - [Rust consumer groups](/clients/rust/groups-and-commits/#consumer-groups)
 - [Idempotent producers](/clients/rust/publishing/#idempotent-producers)
 - [Atomic commits](/features/atomic-commits/), for writing a job and the state it belongs to as one record
-- [KBL](/built-on-felix/agents/), which hands tasks out to a swarm of AI workers through a consumer group
+- [KBL](/built-on-felix/agents/), a work tracker that hands each item to one coding agent through a consumer group
