@@ -82,3 +82,39 @@ fn a_shard_held_for_two_unclean_kills_is_not_reported() {
     assert_eq!(left.len(), 1);
     assert_eq!(left[0].0, stream_key(0));
 }
+
+/// At the end, an acknowledged record no fault took must be on some disk,
+/// whether or not its shard could be read back.
+#[tokio::test(start_paused = true)]
+async fn an_acknowledged_record_on_no_disk_at_the_end_is_a_finding() {
+    use felix_cluster::history::model::{Action, AppendOutcome, Op};
+    use felix_cluster::history::rng::Rng;
+
+    let cluster = SimCluster::start(3, config()).await.unwrap();
+    let recorder = crate::client::Recorder::new(cluster.config.shards);
+    let mut client =
+        crate::client::SimClient::new(0, cluster.clone(), recorder.clone(), Rng::new(9));
+    client.append(0).await;
+    let end = |history| CheckContext {
+        point: Point::End,
+        history,
+        ..context(&cluster)
+    };
+    let failing = |found: &[Finding]| found.iter().any(|f| f.severity == Severity::Failure);
+
+    let found = AckedOnSomeDisk.check(&end(recorder.history())).await;
+    assert!(!failing(&found), "{found:?}");
+
+    recorder.push(Op {
+        process: 1,
+        invoke: 0,
+        complete: 1,
+        action: Action::Append {
+            list: crate::client::list_name(1),
+            value: 1 << 40,
+            outcome: AppendOutcome::Ok { offset: Some(0) },
+        },
+    });
+    let found = AckedOnSomeDisk.check(&end(recorder.history())).await;
+    assert!(failing(&found), "{found:?}");
+}

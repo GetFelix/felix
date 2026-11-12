@@ -1,0 +1,3 @@
+- The simulator can lose unsynced bytes: `FELIX_SIM_POWER_LOSS=relaxed` cuts the power under brokers that do not sync before they acknowledge, and the restart sees a new boot of the machine and takes a new storage id.
+  `FELIX_SIM_MAJORITY_CUT=1` cuts the power under several brokers in the same instant, and `FELIX_SIM_WIPE=1` empties one shard directory or a whole data directory while its broker is down (#2292, #2273).
+  The `acked-on-some-disk` checker holds each to what it may lose, and the nightly sweep runs them as modes `relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed` and `wipe`.

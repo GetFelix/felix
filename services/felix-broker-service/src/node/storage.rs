@@ -217,8 +217,13 @@ fn start_run(
     let before = felix_storage::storage_identity::load(root)
         .with_context(|| format!("read the storage id under {}", root.display()))?;
     let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
-    felix_storage::run_state::witness::witness(root, witness, this_boot(), fresh_storage_id())
-        .with_context(|| format!("write the run witness for {}", root.display()))?;
+    felix_storage::run_state::witness::witness(
+        root,
+        witness,
+        this_boot_of(root),
+        fresh_storage_id(),
+    )
+    .with_context(|| format!("write the run witness for {}", root.display()))?;
     let restored = begun.origin == felix_storage::storage_identity::Origin::Loaded
         && begun.recorded.behind(registered.map(|r| r.incarnation));
     let before_id =
@@ -397,7 +402,7 @@ fn begin_run(
         root,
         relaxed,
         registered,
-        this_boot(),
+        this_boot_of(root),
         || felix_storage::inspect::any_repair_pending(root, log),
         fresh_storage_id,
     )
@@ -429,6 +434,17 @@ pub(crate) fn this_boot() -> Option<felix_storage::run_state::BootId> {
         return felix_storage::run_state::BootId::parse(&text);
     }
     felix_storage::run_state::this_boot()
+}
+
+/// The boot the machine holding `root` is in. A simulated directory has its
+/// own, which changes when a simulated power cut is rebooted.
+pub(crate) fn this_boot_of(root: &Path) -> Option<felix_storage::run_state::BootId> {
+    #[cfg(feature = "sim")]
+    if let Ok(boot) = felix_storage::sim_fs::boot_id(root) {
+        return Some(boot);
+    }
+    let _ = root;
+    this_boot()
 }
 
 /// Record that this run on `root` may have lost records it acknowledged with

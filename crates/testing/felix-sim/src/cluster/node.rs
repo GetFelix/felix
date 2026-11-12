@@ -258,6 +258,16 @@ impl Node {
         net.crash(&self.id);
     }
 
+    pub(crate) fn data_path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// Delete `below` on the device, or everything when it is empty.
+    pub(crate) fn wipe(&self, below: &Path) {
+        felix_storage::sim_fs::wipe(self.dir.path(), below)
+            .expect("the data directory is simulated");
+    }
+
     pub(crate) fn arm_power_cut(
         &self,
         seed: u64,
