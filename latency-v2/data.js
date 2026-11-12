@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794442661207,
+  "lastUpdate": 1794448701522,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -66396,6 +66396,72 @@ window.BENCHMARK_DATA = {
             "range": "445.30",
             "unit": "us",
             "extra": "trials: 5\nmedian: 433.00\nmean: 641.60\nstdev: 445.30\ncv: 69.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cc5f6ef62ad0aa30f18f2449083cf757c9836527",
+          "message": "spec: TLA+ model of Raft on the segment log (#2198) (#2220)\n\n* spec: TLA+ model of Raft on the segment log (#2198)\n\nFelixRaft.tla models one Raft group whose log is the segment log, with\nthe crash rules the raft_log adapter (#2167) must keep: append returns\nbefore the fsync, the flush callback, truncate_after, purge, a torn tail\ncut at the open, and vote and snapshot files replaced by rename. Votes\ncarry openraft's committed flag. Blank and membership entries hold an\nindex and no event, and one subscriber checks the offsets it is given.\n\nFive configurations pass, twelve drop one rule each and must violate\nthe check that rule protects, and five witnesses show the behaviour is\nreached. Membership changes, the lease, disk loss and the switch from\nthe hybrid protocol are not modelled yet.\n\n* spec: say which index the open must clamp, and what the model leaves out\n\nReview of the FelixRaft model: the knob for an index read back past the\nlog takes openraft's applied-index path, a snapshot install is one step\nhere, and DiskLog's own commit offset is not modelled.\n\n* spec: snapshot install as three writes, per-broker skipped counts, twins held to the harm\n\nA follower installs a leader's snapshot as openraft does: cut a conflicting\ntail, replace the snapshot and state machine, purge up to it, with a crash\nbetween any two. Each serving broker counts skipped offsets from its own log.\n\nTruncateNotDurable, SaveCommittedUnflushed and PurgeBeforeSnapshot are held\nto StateMachineSafety and AckedSurvive, not to the checks that restate them.\nTruncateNotDurable now makes the cut durable at the next flush, which shows\nthat is too late.\n\nNew: FelixRaftFourTerms, FelixRaftSnapshotReplace, FelixRaftOffsetsFailover,\nFelixRaftDeliverUncommittedDense and three witnesses. Unregistered and run by\ndispatch: FelixRaftSnapshotCrashes, FelixRaftOffsetsFailoverCrash.\n\n* spec: hold SaveCommittedUnflushed to an undelivered record; FourTerms runs when FelixRaft.tla changes\n\nSaveCommittedUnflushed failed StateMachineSafety by construction, through the\nmarker the model writes for lost entries. It is now held to AckedDelivered:\nthe broker is elected and a subscriber resuming below the start of its log is\nnever given an acknowledged record.\n\nA change to FelixRaft.tla counts as a change to every FelixRaft configuration,\nso a pull request that edits only the spec still checks FelixRaftFourTerms,\nthe one passing check of the commit rule for earlier terms.\n\n* spec: register the four long FelixRaft configurations\n\nFelixRaftTermsFull (26.0M distinct states, 59 min), FelixRaftOffsetsFailoverCrash\n(16.1M, 41 min), FelixRaftSnapshotCrashes (9.4M, 21 min) and FelixRaftOffsetsFull\n(8.9M, 20 min) passed in a dispatched run at d060d47bd. The weights are those\ntimes. Only their comments changed since.\n\n* docs(formal): the raft_log adapter is built; evidence lines follow in #2297\n\nSpec-Unaffected: README prose only\n\n* ci(tla): twenty PR shards, balanced by measured PR minutes\n\nA FelixRaft.tla change makes every FelixRaft config count as changed, so\nthe PR shards were planned to a full hour and shards 9 and 10 hit the\ntimeout. Balance by the times a PR runner measured and spread over twenty\nshards, planned at about 37 minutes each.",
+          "timestamp": "2026-11-12T01:50:49Z",
+          "tree_id": "8ae847d032e2514e29b427779e08844bf218e610",
+          "url": "https://github.com/GetFelix/felix/commit/cc5f6ef62ad0aa30f18f2449083cf757c9836527"
+        },
+        "date": 1794448692519,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.60\nstdev: 1.82\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "7.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 212.80\nstdev: 7.85\ncv: 3.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 607,
+            "range": "1388.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 607.00\nmean: 1351.80\nstdev: 1388.37\ncv: 102.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.20\nstdev: 2.17\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 386,
+            "range": "11.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 386.00\nmean: 392.00\nstdev: 11.94\ncv: 3.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 681,
+            "range": "393.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 681.00\nmean: 794.60\nstdev: 393.00\ncv: 49.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
