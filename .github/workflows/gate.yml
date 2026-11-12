@@ -31,18 +31,14 @@ on:
         description: "How long each history nemesis runs"
         type: string
         default: "1200"
-      perf_rounds:
-        description: "Perf A/B rounds (even)"
-        type: string
-        default: "6"
       perf_seconds:
         description: "Seconds per perf trial"
         type: string
         default: "30"
       failover_rounds:
-        description: "Failover A/B rounds"
+        description: "Failover A/B rounds (6, 12 or 24)"
         type: string
-        default: "3"
+        default: "6"
 
 permissions:
   contents: read
@@ -65,7 +61,6 @@ jobs:
     with:
       engine: ${{ inputs.engine }}
       baseline_ref: ${{ inputs.baseline_ref }}
-      rounds: ${{ inputs.perf_rounds }}
       seconds: ${{ inputs.perf_seconds }}
 
   failover:

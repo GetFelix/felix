@@ -351,8 +351,8 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 | Workflow | Covers | Does not cover yet |
 | --- | --- | --- |
 | `gate-history.yml` | Matrix 1, 2, 10, 12. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15, 19, 20, 22, 23. The Raft rules |
-| `gate-perf.yml` | Cells 1 and 2, batched only, judged on medians | The paired rule. Batch 1. Cells 3 to 6 and 11 to 14. The engine A/B |
-| `gate-failover.yml` | Cell 7. Control plane down as pass or fail | Cell 8 as a time. Cell 9. The paired rule |
+| `gate-perf.yml` | Cells 1 and 2 as a release A/B: the paired rule with the A/A check, batch 1 for p50 and p99, batch 64 for throughput, one broker for RF 1 | Cells 3 to 6 and 11 to 14. The engine A/B in the workflow (`gate_perf.py --mode engine` has the rule) |
+| `gate-failover.yml` | Cell 7 under the paired rule at 0.95, six rounds. Control plane down as pass or fail | Adding rounds when undecided. Cell 8 as a time. Cell 9 |
 | `gate-groups.yml` | A stub | Cell 10 |
 | `gate.yml` | The report | Matrix 16 to 18 and 21. The stall comparison between engines |
 
@@ -364,15 +364,17 @@ Changes the workflows need, in the order the gate needs them:
    separate p99 bound, and more rounds for an undecided cell. Add the
    baseline-against-itself pair as the validity check, on half width only. Keep 0.90 and 1.20 on medians as the engine rule.
    Drop the `failover_slack` input: the bound is 0.95.
+   Done for perf and failover (#2298). The move pause cell and adding
+   rounds in the failover workflow are still to do.
 2. **A second comparison.** An input that picks what the baseline is: a
    release tag, or the other engine on the same commit. The engine A/B
    builds once and sets the engine at start. For the bridge candidate the
    release A/B runs once per engine.
 3. **Batch 1 cells.** Today every cell is batched, so its p99 is not a
    request latency. Add batch 1 for cells 1 and 2 and take p50 and p99
-   only there.
+   only there. Done for the workflow's cells 1 and 2 (#2298).
 4. **A true single node.** The single-node cell starts three brokers with
-   RF 1. Start one.
+   RF 1. Start one. Done (#2298).
 5. **Cells 3 to 6**: `Leader` delivered latency, fanout 10 at 16 and 64
    KiB with delivered throughput and batch latency, the cache mixed cell
    with fsyncs per write, and `Quorum` read p99.
