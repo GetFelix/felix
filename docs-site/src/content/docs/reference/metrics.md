@@ -130,6 +130,7 @@ Per-tenant usage. The `tenant` label is capped; once the cap is reached further 
 | `felix_broker_credential_refreshes_total` | counter | `outcome` | Node-credential refreshes, `ok` or `unavailable`. |
 | `felix_broker_credential_rotations_total` | counter | `outcome` | Node credentials adopted from a rotated token file, `ok` or `rejected`. |
 | `felix_broker_principal_revocations_total` | counter | - | Principal revocations this broker applied. |
+| `felix_broker_controlplane_group_mismatch_total` | counter | - | Catalog snapshots refused because they came from another control-plane metadata group than the one this broker's data directory was written under. The broker stops; see [troubleshooting](/reference/troubleshooting/#the-data-directory-belongs-to-another-control-plane). |
 | `felix_revocation_feed_last_success_seconds` | gauge | - | Unix time of the last poll that reached the control plane's revocation feed. A stale value means revocations are not arriving. |
 | `felix_revocation_feed_poll_errors_total` | counter | - | Revocation feed polls that failed. |
 | `felix_jwks_renew_errors_total` | counter | - | Background renewals of a tenant's JWKS that failed. The broker keeps verifying with the keys it has. |

@@ -66,3 +66,16 @@ fn a_read_from_a_member_catching_up_is_a_retryable_503() {
     assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(api.body.code, "unavailable");
 }
+
+#[test]
+fn a_create_before_the_identity_is_a_retryable_503() {
+    let err = StoreError::Unexpected(crate::store::identity::IdentityPending.into());
+    let api = api_internal("failed to create stream", &err);
+    assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(api.body.code, "not_ready");
+    assert!(
+        api.body.message.contains("identity"),
+        "{}",
+        api.body.message
+    );
+}

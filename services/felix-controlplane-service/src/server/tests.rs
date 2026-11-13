@@ -17,6 +17,7 @@ fn config() -> ControlPlaneConfig {
         region_id: "local".to_string(),
         storage: StorageBackend::Memory,
         raft: None,
+        shard_engine: Default::default(),
         changes_limit: 10,
         change_retention_max_rows: Some(20),
         oidc_allowed_algorithms: vec![jsonwebtoken::Algorithm::ES256],

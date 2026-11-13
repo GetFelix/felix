@@ -1,7 +1,6 @@
 - Breaking: 0.8 does not upgrade a 0.7 control plane's metadata. To move to 0.8,
   stop the cluster, start the control plane and every broker on 0.8 with empty data
-  directories (a broker's old data would never be served or deleted; #2438 adds a
-  guard), and recreate tenants, namespaces, streams, caches and tokens. The
+  directories (a broker started on its old one refuses to start, #2438), and recreate tenants, namespaces, streams, caches and tokens. The
   control plane keeps its Raft log, vote and snapshot on Felix's own
   storage engine, in `store/` under `FELIX_RAFT_DATA_DIR`, instead of `raft.redb`
   (#2230, #2236). The log is fsynced on commit, a log id is a term and an index, a

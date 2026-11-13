@@ -82,6 +82,7 @@ async fn a_seeded_broker_holds_every_tenants_keys_before_the_control_plane_goes(
             checked
         },
         crate::cluster::catalog_sync::Provisional::default(),
+        None,
     )
     .expect("a control plane is configured");
 

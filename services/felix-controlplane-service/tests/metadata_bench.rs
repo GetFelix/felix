@@ -210,6 +210,7 @@ impl Group {
             .expect("initialize");
         let group = Self { members };
         group.wait_for_leader().await;
+        group.record_identity().await;
         let store = &group.members[0].store;
         store
             .create_tenant(Tenant {
@@ -223,6 +224,30 @@ impl Group {
             .await
             .expect("namespace");
         group
+    }
+
+    /// Streams are refused until the group records its identity, and the
+    /// writer may be a follower, so wait for every member to apply it.
+    async fn record_identity(&self) {
+        let shutdown = tokio_util::sync::CancellationToken::new();
+        for member in &self.members {
+            drop(
+                member
+                    .store
+                    .spawn_identity_recorder("hybrid".to_string(), shutdown.clone()),
+            );
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for member in &self.members {
+            while !matches!(
+                member.store.group_identity().await,
+                Ok(felix_controlplane_service::store::identity::GroupIdentity::Recorded(_))
+            ) {
+                assert!(Instant::now() < deadline, "no identity recorded");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        shutdown.cancel();
     }
 
     async fn wait_for_leader(&self) {
