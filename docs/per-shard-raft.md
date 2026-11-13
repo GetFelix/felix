@@ -340,23 +340,33 @@ rebooted host holds.
 
 ### Reclaiming kept copies
 
-A kept directory is deleted once two things hold. The copy now in the shard
-directory has a committed index at or above the kept log's last index, and
-that copy's own log starts at or below where the kept one does. Every entry
-the kept directory holds is at or below an index the group has committed, so
-a committed one is in the group's log, and an uncommitted one was never
-acknowledged. The second condition is what makes the first enough: a snapshot
-carries no records, so a copy that caught up by snapshot, or purged its log,
-has committed past the kept directory without holding what is in it. The
-current copy must hold the records itself. Only that evidence counts: no age
-and no timer. A kept directory that cannot be read, a damaged segment for
-one, is held and logged. Reading it opens nothing for writing, so a held
-directory is left byte for byte as it was.
+A kept directory that holds records is deleted once the copy now in the
+shard directory has all three: its flushed last index is at or above the kept
+log's last index, its first index is at or below the kept log's lowest
+record, and its committed index is at or above the kept log's last index.
+Every entry the kept directory holds is at or below an index the group has
+committed, so a committed one is in the group's log, and an uncommitted one
+was never acknowledged. The first two make the third enough. A commit index
+can be saved before its entry is flushed, and a snapshot carries no records,
+so a copy that caught up by snapshot, or purged its log, has committed past
+the kept directory without holding what is in it. The current copy must hold
+the records itself, on disk. The lowest record is where the kept directory's
+lowest segment starts, not the purged id plus one: a purge drops whole
+segments, so the segment holding the purged id keeps the records below it.
+A kept directory with no records at all is covered by the committed index
+alone. Only that evidence counts: no age and no timer.
+
+The pass takes the copy's first and flushed indexes from the running member,
+so a purge held only in memory counts. A kept directory is read without
+opening it for writing, so a held directory is left byte for byte as it was,
+and its segments are scanned up to the durable mark an open would use, so an
+unsynced tail does not make it unreadable. A directory that cannot be read,
+a damaged segment for one, is held and logged.
 
 `GroupRuntime::open_copy` runs the pass after the member starts, which covers
 a restart after the copy caught up. If a kept directory is ahead of the copy,
-one task per group waits for the group's applied index to reach it and tries
-again. It ends when the group closes or the runtime stops, and never starts a
+one task per group waits for the group's applied and flushed indexes to
+reach it and tries again. It ends when the group closes or the runtime stops, and never starts a
 pass after that. A directory held for another reason (the copy does not hold
 its records, it cannot be read, a delete failed) is not retried until the next
 open. Deleting a stream deletes the kept copies of that stream's incarnation
