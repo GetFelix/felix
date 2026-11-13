@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794596387215,
+  "lastUpdate": 1794597897116,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54756,6 +54756,58 @@ window.BENCHMARK_DATA = {
             "range": "8763.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 991354.29\nmean: 993097.78\nstdev: 8763.68\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "71a064d0486399f4445d1b7d65fd5b45fdc094bc",
+          "message": "ci: model-check only the TLA+ configurations a pull request affects (#2452)\n\n* ci: model-check only the TLA+ configurations a pull request affects\n\n`scripts/check_tla.sh --affected <base>` lists the registered configurations\na diff can change the result of: a changed .cfg, every configuration of a\nchanged .tla and of the modules that extend or instantiate it, the names on\nchanged registration lines, and everything when the runner logic or the\nformal jobs in ci.yml change. A new formal-plan job turns that into one\nshard per 30 minutes (at most 30, none when the list is empty), the heavy\njobs and whether to walk the unprobed crash. Main and dispatch keep thirty\nshards over the registered set.\n\n* ci(tla): a renamed spec file lists its old path too\n\ngit diff's rename detection listed only the new path, so a renamed cfg or\nmodule left its registered configs unchecked on the PR. Both diffs now\npass --no-renames; a test renames a cfg.",
+          "timestamp": "2026-11-13T10:50:56-08:00",
+          "tree_id": "736822c9a2cf7cc128990a739bce8edfe18972d9",
+          "url": "https://github.com/GetFelix/felix/commit/71a064d0486399f4445d1b7d65fd5b45fdc094bc"
+        },
+        "date": 1794597896193,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 352992.96,
+            "range": "17516.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352992.96\nmean: 351532.60\nstdev: 17516.45\ncv: 4.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 352992.96,
+            "range": "17516.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 352992.96\nmean: 351532.60\nstdev: 17516.45\ncv: 4.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81254.72,
+            "range": "2197.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81254.72\nmean: 80752.90\nstdev: 2197.56\ncv: 2.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812547.24,
+            "range": "21975.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812547.24\nmean: 807529.02\nstdev: 21975.60\ncv: 2.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
