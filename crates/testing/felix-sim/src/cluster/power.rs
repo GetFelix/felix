@@ -17,7 +17,7 @@ pub struct PowerLoss {
     pub at: Duration,
     /// The segment, below the data directory, whose append the cut landed
     /// in and tore. `None` when no append was in flight, or the segment came
-    /// back without any of it.
+    /// back without any of it or with only whole records of it.
     pub torn: Option<PathBuf>,
     /// How many torn tails the broker's recovery had repaired by the time the
     /// cut took effect.
@@ -29,7 +29,8 @@ pub struct PowerLoss {
 }
 
 /// Whether a segment the cut tore leaves recovery a tail to repair: it came
-/// back, at `len`, with bytes past `from`, where the torn append began.
+/// back, at `len`, with bytes past `from`, where the whole records of the
+/// torn append end.
 pub(crate) fn needs_repair(len: Option<u64>, from: u64) -> bool {
     len.is_some_and(|len| len > from)
 }

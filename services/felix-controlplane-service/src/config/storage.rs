@@ -207,9 +207,10 @@ pub(super) fn raft_from_env() -> Result<Option<RaftBackendConfig>> {
 }
 
 /// `"1=host:port,2=host:port"` — the id the instance answers to, and the
-/// address its Raft peer listener is reached on.
+/// address its Raft peer listener is reached on. Each id and each address
+/// appears once.
 fn parse_raft_peers(value: &str) -> Result<std::collections::BTreeMap<u64, String>> {
-    let mut peers = std::collections::BTreeMap::new();
+    let mut peers = std::collections::BTreeMap::<u64, String>::new();
     for entry in value.split(',').map(str::trim).filter(|e| !e.is_empty()) {
         let (id, addr) = entry
             .split_once('=')
@@ -222,6 +223,16 @@ fn parse_raft_peers(value: &str) -> Result<std::collections::BTreeMap<u64, Strin
         if addr.is_empty() {
             return Err(anyhow!(
                 "FELIX_RAFT_PEERS entry '{entry}' has an empty address"
+            ));
+        }
+        // Two ids at one address would let that one machine answer for
+        // both, so a first start could form without asking a real member.
+        if let Some((other, _)) = peers
+            .iter()
+            .find(|(_, known)| known.eq_ignore_ascii_case(addr))
+        {
+            return Err(anyhow!(
+                "FELIX_RAFT_PEERS gives ids {other} and {id} the same address '{addr}'"
             ));
         }
         if peers.insert(id, addr.to_string()).is_some() {

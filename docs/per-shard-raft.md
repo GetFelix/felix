@@ -163,6 +163,11 @@ cannot tell a broker that lost one shard's directory from one that lost
 nothing. An empty shard directory has no copy id, so the member made there
 is new to Raft whatever the storage id says.
 
+Every Raft request names the member id it is for, and a copy refuses one
+that names another id, an older copy id of its own broker included. Without
+that, a wiped copy would answer a vote request sent to the id it replaced,
+from an empty log (`FelixRaftPlacementAnswerAnyId.cfg`).
+
 A member with a new id has never voted. It joins as a learner and the old
 member is removed by a membership change. This is the rule issue #1331 asks
 for, and it replaces vouching and copy trust. The copy ids of a shard
@@ -941,8 +946,25 @@ match it:
    consensus on its own and commits the membership as the typed record.
 3. If the leader is not in the new set, transfer leadership first.
 
+A copy that left the target keeps its directory until a committed
+membership that is not joint has no vote for its member id. Only then does
+the control plane tell its broker to delete it, and it never places that
+member id again. A copy deleted when the target drops it may still be a
+voter, and the deletion is then a lost disk the group did not have to lose:
+one real loss on top of it loses an acknowledged record
+(`FelixRaftPlacementDeleteOnTarget.cfg`). An id told to delete that is placed
+again has the same end (`FelixRaftPlacementPlaceDoomed.cfg`); the broker
+comes back under its next copy id.
+
+**Known gap (#2385).** The check is made once and the deletion happens
+later. A leader acting on a target the control plane has replaced can give
+the id its vote back in between, and the deletion is then a lost disk again
+(`FelixRaftPlacementStaleWipe.cfg`, pinned). The driver needs a rule that
+stops a leader going back to an older target before it is built.
+
 Only the leader acts, one change at a time, and the steps can be repeated
-safely. Writes go on during every step, because membership entries and
+safely. A leader that acts on a target the control plane has since replaced
+is safe too: every change goes through a joint configuration. Writes go on during every step, because membership entries and
 publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.
@@ -1251,6 +1273,21 @@ off and stays registered as an expected violation.
 | #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with it on. That twin has to be checked again against openraft 0.10.0, which renews the window for a committed stored vote, so the trace it shows must go through a vote that is not committed |
 | #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
+
+**Placement and lost disks.** `FelixRaftPlacement.tla` puts the control
+plane in front of the membership model: it moves a seat, removes one, and
+swaps a seat's id when a broker reports a new copy, and the leader follows
+the target it read, which may be an old one. One disk may be lost at any
+step of a move in one term, and across a leader change for a seat swap.
+A move with a lost disk and a leader change has no result yet: those
+configurations have not finished. A lost disk together with a leader on an old target is the gap above
+(#2385). It adds the two rules above (a request names its member id, a removed
+copy is deleted only after it has no vote) and checks the offsets
+subscribers were given. The same module has the metadata group's rejoin,
+where a wiped member keeps its id, and found that a leader must not count
+such a member while its vote is withheld, and that with five members even
+that is not enough (#2365). Shard groups do not have the problem, because a
+wiped copy takes a new id.
 
 **Later, with store-liveness leases:** support with epochs and expiry, a
 lease that holds while a majority supports the leader's store, and a vote

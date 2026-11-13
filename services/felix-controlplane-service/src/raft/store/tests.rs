@@ -518,3 +518,48 @@ fn the_store_reads_what_0_9_wrote() {
         assert_eq!(data, vec![1, 2]);
     });
 }
+
+fn settings(dir: &Path) -> super::super::RaftSettings {
+    super::super::RaftSettings::new(
+        1,
+        dir.into(),
+        super::super::PeerSecurity {
+            cluster_id: "test-cluster".to_string(),
+            token: None,
+            tls: None,
+        },
+    )
+}
+
+/// A data dir as a segment-store build leaves it: `store/` with its member
+/// file, and no `raft.redb`.
+fn segment_store_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join("store/log")).expect("store dir");
+    std::fs::write(dir.path().join("store/member"), b"member").expect("member file");
+    dir
+}
+
+#[test]
+fn a_segment_store_data_dir_is_refused_before_anything_is_written() {
+    let dir = segment_store_dir();
+    let err = current_thread()
+        .block_on(open_member(&settings(dir.path()), Arc::new(NullApp)))
+        .err()
+        .expect("a segment store is refused");
+    assert!(err.to_string().contains("felix_segment_store"), "{err}");
+    assert!(
+        !dir.path().join("raft.redb").exists(),
+        "the refusal must not create an empty redb store"
+    );
+}
+
+#[test]
+fn form_without_refuses_a_segment_store_data_dir() {
+    let dir = segment_store_dir();
+    let err = current_thread()
+        .block_on(stopped_member_holds_state(dir.path(), "test-cluster"))
+        .expect_err("a segment store is not an empty member");
+    assert!(err.to_string().contains("felix_segment_store"), "{err}");
+    assert!(!dir.path().join("raft.redb").exists());
+}

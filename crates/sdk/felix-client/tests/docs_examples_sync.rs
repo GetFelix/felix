@@ -283,6 +283,14 @@ const RUST_MD_EXAMPLES: &[Example] = &[
         },
     ),
     example(
+        "Subscribing to a range",
+        1,
+        Body {
+            params: "client: &Client, start: u64, end: u64",
+            context: "fn apply(_: u64, _: &Bytes) {}",
+        },
+    ),
+    example(
         "Offsets are how you notice a drop",
         1,
         Body {

@@ -126,3 +126,63 @@ fn an_open_after_the_next_cut_does_not_count_for_the_first() {
     ];
     assert!(unrepaired(&losses, |_| Vec::new(), |_| paths(&[SEG])).is_empty());
 }
+
+/// The broker opens a torn segment and nothing repairs it: the finding the
+/// checker exists for. A read of the simulator's own does not count, the
+/// same read made as the broker would does.
+#[tokio::test(start_paused = true)]
+async fn a_torn_segment_opened_without_a_repair_is_missed() {
+    use felix_cluster::history::rng::Rng;
+    use felix_storage::disk_log::inspect::{RecordsQuery, find_shards, read_records};
+    use felix_storage::log::{FsyncMode, LogConfig};
+    use tokio_util::sync::CancellationToken;
+
+    use crate::client::{Recorder, SimClient};
+    use crate::cluster::{SimCluster, SimConfig};
+
+    let config = SimConfig {
+        brokers: 3,
+        shards: 6,
+        cache_shards: 2,
+        clients: 2,
+        cache_keys: 4,
+        fsync_mode: FsyncMode::OnCommit,
+        power_loss: true,
+        ..SimConfig::for_seed(1)
+    };
+    let cluster = SimCluster::start(1, config).await.unwrap();
+    let recorder = Recorder::new(cluster.config.shards);
+    let stop = CancellationToken::new();
+    let client = SimClient::new(0, cluster.clone(), recorder, Rng::new(1));
+    let client = tokio::spawn(client.run(stop.clone()));
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(cluster.power_loss(0).await, "no append to cut");
+    stop.cancel();
+    let _ = client.await;
+
+    let losses = cluster.power_losses();
+    let torn = losses[0].torn.clone().expect("a torn segment");
+    let missed = || {
+        unrepaired(
+            &losses,
+            |node| cluster.torn_tails_repaired(node),
+            |node| cluster.segments_opened(node),
+        )
+    };
+    cluster.disk_values();
+    assert!(missed().is_empty(), "the simulator's read counted");
+
+    // The inspector opens the segment and repairs nothing, as a recovery
+    // that missed the tail would.
+    let root = cluster.data_path(0);
+    let query = RecordsQuery {
+        offset: 0,
+        around: 100,
+        payload: false,
+    };
+    for shard in find_shards(root).unwrap() {
+        let _ = read_records(&shard.path, &query, &LogConfig::default());
+    }
+    assert!(cluster.segments_opened(0)[losses[0].opened_before..].contains(&torn));
+    assert_eq!(missed().len(), 1);
+}

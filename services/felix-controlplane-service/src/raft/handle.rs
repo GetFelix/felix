@@ -21,7 +21,7 @@ pub struct RaftHandle {
     pub(super) raft: Raft,
     pub(super) id: NodeId,
     #[cfg(test)]
-    faults: super::Faults,
+    pub(super) faults: super::Faults,
     pub(super) write_timeout: Duration,
     /// For forwarding proposals to the leader; pooled per host underneath.
     pub(super) forward: reqwest::Client,
@@ -36,6 +36,8 @@ pub struct RaftHandle {
     /// past a stop, so a restart in the same process can reopen it while
     /// clones of the handle live on.
     pub(super) member: store::MemberState,
+    /// Where the store lives, and the `form-without` waiver beside it.
+    pub(super) data_dir: Arc<std::path::PathBuf>,
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
@@ -187,6 +189,7 @@ impl RaftHandle {
             peer_addrs: Arc::new(settings.peer_addrs),
             app,
             member,
+            data_dir: Arc::new(settings.data_dir),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,

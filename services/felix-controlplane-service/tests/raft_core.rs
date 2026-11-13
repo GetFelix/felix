@@ -560,6 +560,520 @@ async fn empty_members_form_a_group_only_when_told_to() {
     }
 }
 
+/// An address nothing listens on, as a member that is down looks.
+async fn closed_addr() -> SocketAddr {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    listener.local_addr().expect("addr")
+}
+
+/// Something at a member's address that answers `standing` with `status`
+/// and `body`, whoever asks.
+async fn standing_stub(
+    status: u16,
+    body: &'static str,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let router = axum::Router::new().route(
+        &felix_controlplane_service::raft::peer_route("standing"),
+        axum::routing::get(move || async move {
+            (
+                axum::http::StatusCode::from_u16(status).expect("status"),
+                body,
+            )
+        }),
+    );
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (addr, server)
+}
+
+/// Start empty members 1 and 3 of a three-member group whose member 2 is at
+/// `second`, and have them enter it as a first start.
+async fn first_start_without_the_second(
+    dirs: &[tempfile::TempDir; 2],
+    addrs: Option<[SocketAddr; 2]>,
+    second: SocketAddr,
+) -> (
+    Vec<TestNode>,
+    BTreeMap<NodeId, String>,
+    tokio_util::sync::CancellationToken,
+) {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let mut nodes = Vec::new();
+    for (i, id) in [1, 3].into_iter().enumerate() {
+        let dir: PathBuf = dirs[i].path().into();
+        let addr = addrs.map(|addrs| addrs[i]);
+        nodes.push(start_node(dir.clone(), settings(id, dir), addr).await);
+    }
+    let members = BTreeMap::from([
+        (1, nodes[0].addr.to_string()),
+        (2, second.to_string()),
+        (3, nodes[1].addr.to_string()),
+    ]);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    (nodes, members, shutdown)
+}
+
+/// Many election timeouts later, no member has a leader or a membership.
+async fn assert_no_group_forms(nodes: &[TestNode], why: &str) {
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for node in nodes {
+        let status = node.handle.status();
+        assert_eq!(
+            status.leader, None,
+            "{why}: member {} found a leader",
+            status.id
+        );
+        assert!(
+            status.voters.is_empty(),
+            "{why}: member {} formed a group",
+            status.id
+        );
+    }
+}
+
+async fn waive_the_second(dir: &std::path::Path) -> anyhow::Result<String> {
+    felix_controlplane_service::raft::form_without(
+        dir,
+        "test-cluster",
+        &std::collections::BTreeSet::from([2]),
+    )
+    .await
+}
+
+/// The initial membership every first-boot member writes at index 0 is not
+/// a group: a member that decides after a peer has initialized still forms,
+/// or that peer could never win its vote.
+#[tokio::test]
+async fn three_empty_members_form_one_group() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    // Member 1 decides first, against two peers that answer empty and give
+    // no vote, so it initializes and stays at index 0.
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let first = start_node(
+        dirs[0].path().into(),
+        settings(1, dirs[0].path().into()),
+        None,
+    )
+    .await;
+    let (second, second_stub) = standing_stub(200, "{}").await;
+    let (third, third_stub) = standing_stub(200, "{}").await;
+    let members = BTreeMap::from([
+        (1, first.addr.to_string()),
+        (2, second.to_string()),
+        (3, third.to_string()),
+    ]);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let enter = |node: &TestNode| {
+        let handle = node.handle.clone();
+        let (members, shutdown) = (members.clone(), shutdown.clone());
+        async move {
+            handle
+                .enter_group(members, InitialClusterState::New, shutdown)
+                .await
+                .expect("enter group");
+        }
+    };
+    enter(&first).await;
+    wait_until(
+        "the first member to initialize",
+        Duration::from_secs(10),
+        || !first.handle.status().voters.is_empty(),
+    )
+    .await;
+
+    // The real members 2 and 3 start after that and ask it.
+    let mut nodes = vec![first];
+    for (i, (addr, stub)) in [(second, second_stub), (third, third_stub)]
+        .into_iter()
+        .enumerate()
+    {
+        stub.abort();
+        let dir: PathBuf = dirs[i + 1].path().into();
+        let node = start_node(dir.clone(), settings((i + 2) as NodeId, dir), Some(addr)).await;
+        enter(&node).await;
+        nodes.push(node);
+    }
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    wait_until(
+        "every member in the one group",
+        Duration::from_secs(10),
+        || {
+            nodes
+                .iter()
+                .all(|node| node.handle.status().voters == [1, 2, 3] && node.app.get("k").is_some())
+        },
+    )
+    .await;
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// A first start acts on answers, not on silence: with one member down the
+/// other two are a majority and both empty, and they still do not form.
+#[tokio::test]
+async fn first_boot_waits_for_every_peer() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let second = closed_addr().await;
+    let (mut nodes, members, shutdown) = first_start_without_the_second(&dirs, None, second).await;
+    assert_no_group_forms(&nodes, "one member is down").await;
+
+    // The missing member answers, empty like the others.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let late = start_node(
+        dir.path().into(),
+        settings(2, dir.path().into()),
+        Some(second),
+    )
+    .await;
+    late.handle
+        .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    nodes.push(late);
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// #2371: two members lose their volumes while the third, which holds the
+/// group's writes, is down, and `new` is still set. They used to form a
+/// fresh group, and the write was gone when the third came back.
+#[tokio::test]
+async fn wiped_members_do_not_form_over_a_down_data_holder() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        nodes.push(start_node(dir.path().into(), settings(id, dir.path().into()), None).await);
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|node| (node.handle.status().id, node.addr.to_string()))
+        .collect();
+    nodes[0]
+        .handle
+        .initialize(members.clone())
+        .await
+        .expect("initialize");
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "acknowledged")).await.expect("write");
+    wait_until(
+        "the write on the second member",
+        Duration::from_secs(10),
+        || nodes[1].app.get("k").is_some(),
+    )
+    .await;
+    let addrs: Vec<SocketAddr> = nodes.iter().map(|node| node.addr).collect();
+    for node in &nodes {
+        node.stop().await;
+    }
+    drop(nodes);
+
+    // Members 1 and 3 come back on empty volumes; member 2 stays down.
+    let wiped = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let (nodes, _, shutdown) =
+        first_start_without_the_second(&wiped, Some([addrs[0], addrs[2]]), addrs[1]).await;
+    assert_no_group_forms(&nodes, "the data holder is down").await;
+
+    // Member 2 returns with its log. The others see a group and still do
+    // not form one of their own.
+    let holder = start_node(
+        dirs[1].path().into(),
+        settings(2, dirs[1].path().into()),
+        Some(addrs[1]),
+    )
+    .await;
+    holder
+        .handle
+        .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    for node in &nodes {
+        let status = node.handle.status();
+        assert_ne!(
+            status.leader,
+            Some(status.id),
+            "wiped member {} leads",
+            status.id
+        );
+        assert_eq!(node.app.len(), 0, "wiped member {} has a state", status.id);
+    }
+    assert_eq!(holder.app.get("k").as_deref(), Some("acknowledged"));
+    shutdown.cancel();
+    holder.stop().await;
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// Only an answer that decodes as empty counts as empty. A member of
+/// another cluster (403) or a body that is not a standing blocks a first
+/// start like silence does.
+#[tokio::test]
+async fn a_403_or_undecodable_answer_blocks_formation() {
+    for (status, body) in [(403, "wrong raft cluster id"), (200, "not a standing")] {
+        let dirs = [
+            tempfile::tempdir().expect("tempdir"),
+            tempfile::tempdir().expect("tempdir"),
+        ];
+        let (second, stub) = standing_stub(status, body).await;
+        let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
+        assert_no_group_forms(&nodes, body).await;
+        shutdown.cancel();
+        for node in &nodes {
+            node.stop().await;
+        }
+        stub.abort();
+    }
+}
+
+/// With the operator's waiver for a slot whose machine is gone, the other
+/// two form without its answer. The waiver is used up by that: it is gone
+/// before the group exists, and a member that holds state takes no other.
+#[tokio::test]
+async fn form_without_forms_once_and_is_consumed() {
+    let dirs = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    for dir in &dirs {
+        waive_the_second(dir.path())
+            .await
+            .expect("write the waiver");
+    }
+    let waiver = dirs[0].path().join("form-without");
+    let written = std::fs::read(&waiver).expect("read the waiver");
+    let (nodes, members, shutdown) =
+        first_start_without_the_second(&dirs, None, closed_addr().await).await;
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    for dir in &dirs {
+        assert!(
+            !dir.path().join("form-without").exists(),
+            "the waiver outlived the start it was written for"
+        );
+    }
+    // The absent slot is still a voter: the waiver shrinks nothing.
+    assert_eq!(leader.status().voters, [1, 2, 3]);
+    shutdown.cancel();
+    let addr = nodes[0].addr;
+    for node in &nodes {
+        node.stop().await;
+    }
+    drop(nodes);
+
+    // The tool refuses a member that has formed, and a waiver left in its
+    // directory some other way is removed at start, unused.
+    let refused = waive_the_second(dirs[0].path())
+        .await
+        .expect_err("a member with state");
+    assert!(
+        format!("{refused:#}").contains("holds raft state"),
+        "{refused:#}"
+    );
+    std::fs::write(&waiver, written).expect("plant a waiver");
+    let dir: PathBuf = dirs[0].path().into();
+    let node = start_node(dir.clone(), settings(1, dir), Some(addr)).await;
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    node.handle
+        .enter_group(
+            members,
+            felix_controlplane_service::raft::InitialClusterState::New,
+            shutdown.clone(),
+        )
+        .await
+        .expect("enter group");
+    assert!(!waiver.exists(), "a member with state kept a waiver");
+    shutdown.cancel();
+    node.stop().await;
+}
+
+/// A waiver excuses silence and nothing else. If the waived slot answers,
+/// its answer counts: a refusal or an unreadable body still blocks, and a
+/// group that exists is caught up with, not replaced.
+#[tokio::test]
+async fn form_without_never_overrides_an_answering_peer() {
+    for (status, body, consumed) in [
+        (403, "wrong raft cluster id", false),
+        (200, "not a standing", false),
+        (200, r#"{"last_log_index":7}"#, true),
+    ] {
+        let dirs = [
+            tempfile::tempdir().expect("tempdir"),
+            tempfile::tempdir().expect("tempdir"),
+        ];
+        for dir in &dirs {
+            waive_the_second(dir.path())
+                .await
+                .expect("write the waiver");
+        }
+        let (second, stub) = standing_stub(status, body).await;
+        let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
+        assert_no_group_forms(&nodes, body).await;
+        for dir in &dirs {
+            assert_eq!(
+                !dir.path().join("form-without").exists(),
+                consumed,
+                "waiver after the slot answered {body:?}"
+            );
+        }
+        shutdown.cancel();
+        for node in &nodes {
+            node.stop().await;
+        }
+        stub.abort();
+    }
+}
+
+/// A peer that fails the TLS handshake is up, not silent, so the waiver
+/// for its slot does not excuse it. Here slot 2's certificate is from
+/// another CA, as a member of some other cluster's would be.
+#[tokio::test]
+async fn form_without_does_not_excuse_a_failed_tls_handshake() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let pki_dir = tempfile::tempdir().expect("tempdir");
+    let other_pki_dir = tempfile::tempdir().expect("tempdir");
+    let tls = peer_pki(pki_dir.path());
+    let other_tls = peer_pki(other_pki_dir.path());
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let id = (i + 1) as NodeId;
+        let mut settings = settings(id, dir.path().into());
+        settings.security.tls = Some(if id == 2 {
+            other_tls.clone()
+        } else {
+            tls.clone()
+        });
+        if id != 2 {
+            waive_the_second(dir.path())
+                .await
+                .expect("write the waiver");
+        }
+        let handle = RaftHandle::start(settings, Arc::new(KvApp::default()))
+            .await
+            .expect("start raft node");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let server = {
+            let handle = handle.clone();
+            let shutdown = shutdown.clone();
+            tokio::spawn(async move {
+                handle
+                    .serve_peers(listener, shutdown)
+                    .await
+                    .expect("serve peers");
+            })
+        };
+        nodes.push((handle, port, server));
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, (_, port, _))| ((i + 1) as NodeId, format!("localhost:{port}")))
+        .collect();
+    for (handle, ..) in [&nodes[0], &nodes[2]] {
+        handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for (handle, ..) in [&nodes[0], &nodes[2]] {
+        let status = handle.status();
+        assert_eq!(status.leader, None, "member {} found a leader", status.id);
+        assert!(status.voters.is_empty(), "member {} formed", status.id);
+    }
+    for dir in [&dirs[0], &dirs[2]] {
+        assert!(dir.path().join("form-without").exists(), "waiver used");
+    }
+    shutdown.cancel();
+    for (handle, _, server) in nodes {
+        let _ = handle.shutdown().await;
+        server.abort();
+    }
+}
+
+/// The case the waiver is for: two members started, waited on a dead third,
+/// and were stopped. Each has a store by then but no Raft state, so the tool
+/// accepts them and the next start forms.
+#[tokio::test]
+async fn form_without_applies_after_a_blocked_first_start() {
+    let dirs = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let second = closed_addr().await;
+    let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
+    assert_no_group_forms(&nodes, "one member is down").await;
+    shutdown.cancel();
+    let addrs = [nodes[0].addr, nodes[1].addr];
+    for node in &nodes {
+        node.stop().await;
+    }
+    drop(nodes);
+
+    for dir in &dirs {
+        waive_the_second(dir.path())
+            .await
+            .expect("a store without state takes the waiver");
+    }
+    let (nodes, _, shutdown) = first_start_without_the_second(&dirs, Some(addrs), second).await;
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
 /// Under peer mTLS the members replicate over TLS, and a caller holding the
 /// peer token but no certificate from the cluster CA is stopped at the
 /// handshake.

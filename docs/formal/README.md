@@ -613,6 +613,38 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
+| `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
+| `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
+| `FelixRaftPlacementReseat.cfg` | three brokers, two terms: one directory is wiped, the copy takes a new copy id and the leader swaps it in | pass the same (565K distinct states) |
+| `FelixRaftPlacementShrink.cfg` | three brokers, two terms: a seat is removed, three voters become two, and the removed copy is deleted under the rule | pass the same (207K distinct states) |
+| `FelixRaftPlacementMoveWipe.cfg` | the move in one term with one lost directory and the moved copy deleted under the rule | pass the same (1.1M distinct states) |
+| `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered and not checked yet: unfinished after three hours on a CI runner, at 98M distinct states with 18.5M queued |
+| `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (257K distinct states) |
+| `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (12.6M distinct states, 49 minutes on a CI runner) |
+| `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
+| `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
+| `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
+| `FelixRaftPlacementSkipJoint.cfg` | `change_membership` writes the target in one entry | violate `OneLeaderPerTerm` |
+| `FelixRaftPlacementNoWithhold.cfg` | a wiped member that keeps its id votes at once | violate `LeaderCompleteness` |
+| `FelixRaftPlacementAnswerAnyId.cfg` | a wiped copy answers a request that names the copy id it replaced | violate `LeaderCompleteness` |
+| `FelixRaftPlacementDeleteOnTarget.cfg` | a copy is deleted as soon as the target drops it, with one lost disk | violate `AckedOnDisk` |
+| `FelixRaftPlacementTwoWipes.cfg` | two lost directories in a group of three: the bound, not a rule | violate `AckedOnDisk` |
+| `FelixRaftPlacementReachMove.cfg` | witness: a seat moves to the spare broker | violate `NeverMoves` |
+| `FelixRaftPlacementReachShrink.cfg` | witness: the voter set gets smaller | violate `NeverShrinks` |
+| `FelixRaftPlacementReachDelete.cfg` | witness: a removed copy's directory is deleted | violate `NeverDeletes` |
+| `FelixRaftPlacementReachReseat.cfg` | witness: a rotated copy is swapped in for its old id | violate `NeverReseats` |
+| `FelixRaftPlacementReachWipedLeads.cfg` | witness: a wiped broker leads again under its new copy id | violate `NeverWipedLeads` |
+| `FelixRaftPlacementReachVotesAgain.cfg` | witness: a member that kept its id through a wipe votes again | violate `NeverVotesAgain` |
+| `FelixRaftPlacementReseatWrites.cfg` | `FelixRaftPlacementReseat.cfg` with two writes, so `OffsetNeverReused` has two records to compare | pass the same (3.5M distinct states) |
+| `FelixRaftPlacementSameIdWrites.cfg` | `FelixRaftPlacementSameId.cfg` with two terms and two writes | pass the same (364K distinct states) |
+| `FelixRaftPlacementNoWithholdOffsets.cfg` | the same with a wiped member that votes at once: a leader elected on its vote gives a delivered record's offset to another record | violate `OffsetNeverReused` |
+| `FelixRaftPlacementShrinkRetain.cfg` | `FelixRaftPlacementShrink.cfg` with `retain = true`: the removed voter stays as a learner | pass the same (242K distinct states) |
+| `FelixRaftPlacementMoveWipeFailover.cfg` | `FelixRaftPlacementMoveWipe.cfg` with two terms and no write: a leader change during a move with one lost disk | not registered and not checked yet: 14M distinct states and unfinished after ten minutes on a laptop; run through the dispatch |
+| `FelixRaftPlacementReturnWipe.cfg` | three brokers, one term, one lost disk: a seat is removed and one is moved back, the leader on the current target only; the id told to delete is not placed again | pass the same (843K distinct states) |
+| `FelixRaftPlacementPlaceDoomed.cfg` | the same where the control plane may place an id it told to delete | violate `AckedOnDisk` |
+| `FelixRaftPlacementStaleWipe.cfg` | `FelixRaftPlacementStale.cfg` with one lost disk, every rule on: a leader on the replaced target gives a copy its vote back after the control plane told its broker to delete it | violate `AckedOnDisk`: an acknowledged write is on no disk. Pinned finding, #2385 |
+| `FelixRaftPlacementReachForm.cfg` | witness for a first boot: three brokers with empty directories elect a leader and acknowledge a write. The membership is given at the start; forming a group from the peers' answers is not modelled (#2371) | violate `NeverForms` |
 | `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
 | `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
@@ -2500,6 +2532,119 @@ that stops on a follower going backwards is left out. A follower cuts and
 appends in one step, so its last log id never goes down; an implementation
 that syncs the mark between the two must not read a cut as a restore.
 
+### Placement, lost disks and the voter set
+
+`FelixRaftPlacement.tla` models one Raft group whose voter set follows the
+control plane's placement while disks are lost. `FelixRaftMembership.tla` has
+one move with the write fence around it, and `FelixRaftIdentity.tla` has the
+checks that decide when a copy lost what it promised. This module joins the
+two and adds the control plane as the proposer, changes of more than one
+seat, a smaller set, a removed copy's directory, and the offsets subscribers
+were given. It follows [Per-shard Raft](../per-shard-raft.md) ("Membership",
+"Group and member identity") for shard groups and
+[the metadata Raft design](../metadata-raft-design.md) ("Rejoining after a
+lost volume") for the metadata group, so one module covers both.
+
+What is modelled:
+
+- The control plane holds a target, the member ids the group should have. It
+  moves a seat to another broker (a move, a drain or a replaced node), removes
+  a seat with nowhere to put it, and swaps a seat's id when the broker reports
+  a new copy.
+- The leader makes Raft follow the target it read, which may be one the
+  control plane has replaced (`StaleTargets`). It adds each missing member as
+  a learner and calls `change_membership` with the whole target. openraft
+  writes a joint entry and, once that is committed, the entry that leaves it.
+  One membership entry at a time. A new voter need not be level.
+- A wipe empties a broker's directory: log, term and vote. With
+  `Rotate = TRUE` (shard groups) the copy takes a new copy id, nothing answers
+  for the old one, and the leader swaps the new id in. With `Rotate = FALSE`
+  (the metadata group) the member keeps its id and withholds its vote until
+  it has applied up to an index a confirmed leader gave it.
+- A copy the target dropped is deleted once a committed membership that is
+  not joint has no vote for its id. The deletion is not counted as a fault.
+  The control plane never places an id it told to delete; the broker comes
+  back under its next copy id.
+- A broker's subscribers are given a record when the broker learns it is
+  committed. The offset is the entry's index.
+
+An unclean restart is not a fault here: under fsync on commit it loses nothing
+a peer counted. `FelixRaft.tla` has the adapter's fsync rules and
+`FelixRaftIdentity.tla` the restores.
+
+What is checked: `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`,
+`StateMachineSafety`, `AckedSurvive` (no member that could still win an
+election lacks an acknowledged record), `AckedOnDisk` (some directory holds
+every acknowledged record), `OffsetNeverReused` (no offset delivered with two
+records, no record at two offsets), `DeliveredAgree` (what subscribers
+were given is what is committed at those offsets) and `CommitNeverLowers`
+(no step lowers a broker's commit index, except one that empties its
+directory).
+
+A configuration's bounds decide which of these can fail in it. With no
+client write (`Failover`, `MoveWipeFailover`, `SameIdFive`) the Acked,
+Offset and Delivered checks have nothing to hold. With one term
+`LeaderCompleteness` has no earlier term. `OffsetNeverReused` needs two
+records, which only the two-write configurations have;
+`FelixRaftPlacementNoWithholdOffsets.cfg` shows it can fail.
+
+Each knob drops one rule:
+
+- `SkipJoint`: `change_membership` writes the target in one entry.
+- `AnswerAnyId`: a copy answers a request that names an older copy id of its
+  broker.
+- `DeleteOnTarget`: a copy is deleted as soon as the target drops it.
+- `PlaceDoomed`: the control plane may place a member id it told to delete.
+- `NoWithhold`: a wiped member that keeps its id votes at once.
+- `WithheldCounts`: a leader counts the appends and heartbeats of a member
+  whose vote is withheld.
+
+`WithheldCounts = TRUE` is what the metadata group does today, and it is a
+finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
+(#2365). The wiped member forgot the term it voted in, so the leader of
+an older term commits with it after a newer leader was elected on its vote.
+The config is pinned as an expected violation until the rule is built.
+
+Not counting a withheld member is needed, and it is enough for three members
+(`FelixRaftPlacementSameId.cfg` passes). It is not enough for five:
+`FelixRaftPlacementSameIdFive.cfg` elects two leaders in one term. A
+candidate holds the wiped member's vote and is one vote short. The member
+catches up with the older leader, votes again, and grants a second vote in
+the term it forgot. With three members the candidate already has its
+majority when the member votes, so the older leader cannot be confirmed. A
+sure fix gives the wiped member a new id through a membership change, as
+shard groups do, or has it hear from every other member before it votes.
+
+The deletion rule has a gap of its own (#2385). The control plane looks at
+the committed membership once and the broker deletes later. A leader acting
+on a replaced target can give the id its vote back in between, so the
+deletion becomes a second lost disk: `FelixRaftPlacementStaleWipe.cfg`
+loses an acknowledged write with every rule on, and is pinned. A leader held
+to the current target does not (`FelixRaftPlacementReturnWipe.cfg`), and a
+replaced target with no lost disk does not (`FelixRaftPlacementStale.cfg`).
+
+`FelixRaftPlacementTwoWipes.cfg` pins the bound instead of a rule: a group of
+three survives one lost disk at a time.
+
+A lost disk across a leader change is checked for a seat swap with a write
+(`FelixRaftPlacementReseat.cfg`, two terms). For a move to another broker it
+is checked in one term only: the two-term configurations
+(`FelixRaftPlacementMoveWipeFailover.cfg`, `FelixRaftPlacementMoveWipeFull.cfg`)
+have no result yet.
+
+Abstracted: storage, snapshots, the write fence and the lease. A message is
+one atomic step between two brokers. A leader counts the answers it has,
+whatever became of the copies that gave them. None of the shard side is built
+yet: no code calls `add_learner` or `change_membership` for a shard group, and
+no code mints a copy id.
+
+The group's membership is given at the start. `FelixRaftPlacementReachForm.cfg`
+only shows that three empty brokers elect a leader and acknowledge a write.
+Forming a group from the peers' answers at first boot is not modelled
+(#2371), and neither is the metadata group rejoining under a new id after a
+lost volume, the fix #2365 settled on. The shard rule it copies is here
+(`Rotate = TRUE`, `FelixRaftPlacementReseat.cfg`, `AnswerAnyId`).
+
 ### Re-forming a group
 
 `FelixRaftReform.tla` models the path in
@@ -2897,8 +3042,8 @@ four `StoodOneDest` and the four `StoodSeveralDest`),
 `FelixShardElectAdoptTwoWrites.cfg`,
 `FelixShardFencedAckTwoPromotions.cfg`, `FelixShardFencedAckSeatLonger.cfg`,
 `FelixShardFencedAckMove.cfg`, `FelixShardFencedAckStagedMove.cfg`,
-`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg` and
-`FelixShardUnifiedDropEvidencedFull.cfg`. Each must pass. A smaller sibling of each
+`FelixShardFencedAckMoveCancel.cfg`, `FelixShardUnifiedReadmitFull.cfg`,
+`FelixShardUnifiedDropEvidencedFull.cfg` and `FelixRaftPlacementFull.cfg`. Each must pass. A smaller sibling of each
 runs per push. A failure shows the same way a failed walk does, as a failed
 run of that nightly workflow. Either set can also be run on a branch through
 the dispatch of either workflow.
