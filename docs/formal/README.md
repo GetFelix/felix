@@ -597,8 +597,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
-| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
-| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue #2303). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
+| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts. The machine stayed up, so the run witness holds the root sequence | pass the same (1.6M distinct states) |
+| `FelixRaftIdentityRootRestoreNoWitness.cfg` | the same after a machine restart, so no witness is left: the root goes back after the control plane heard its last sequence | pass the same (8.7M distinct states) |
+| `FelixRaftIdentityRootRestoreBatched.cfg` | the same-run restore with a witness and the batched log mark, a mark interval after the last append | pass the same (11.8M distinct states) |
+| `FelixRaftIdentityWipeThenRootRestore.cfg` | two faults on one broker: the directory is emptied, then the root goes back to a backup taken in the same run, before the wipe or after it | pass the same (7.4M distinct states) |
+| `FelixRaftIdentityRootRestoreNoSequence.cfg` | the gate does not compare the root sequence: a backup of the current run reads as a crash and its copy votes twice in a term | violate `OneLeaderPerTerm` (issue #2303) |
+| `FelixRaftIdentityRootRestoreUnheard.cfg` | no witness, and the root goes back before the control plane heard its last sequence | violate `OneLeaderPerTerm`: the residual the design names (issue #2303, Questions, 12) |
+| `FelixRaftIdentityRootRestoreYoung.cfg` | a witness, the batched log mark, and the root goes back inside the mark interval | violate `AckedHeldByLeader`: the residual the design names (Questions, 11) |
 | `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
 | `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
 | `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
@@ -613,6 +619,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreSameRunCaught.cfg` | witness: with no restart, a root restored in its own run is caught by the root sequence and rotated | violate `NeverRotates` |
 | `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
 | `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
 | `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
@@ -2498,7 +2505,9 @@ identity". It is the model's side of #1331. A member id is a broker and a
 copy id. The copy id lives in the shard directory with the storage id it was
 minted under. The data root holds the storage id and, per shard, a mark of
 the highest vote and last log id, with the copy id the marks belong to. The
-vote is always synced.
+vote is always synced. The root also holds a sequence number that rises with
+every synced mark write. The run witness holds a copy of it while the machine
+stays up, and the control plane holds the one it last heard in a heartbeat.
 
 A member that opens its directory rotates its copy (new id, never voted, an
 empty Raft log, a learner) when the directory is empty, was minted under
@@ -2513,6 +2522,16 @@ from a backup, and one shard directory restored under a running root. The
 log mark is exact (written with every append) or batched (a separate step,
 so it trails).
 
+A restored root gets a new storage id, which rotates every copy in it, when
+its incarnation is behind the control plane's or its sequence is below the
+witness's copy or the control plane's. A backup taken in the run the restore
+interrupts carries the current incarnation, so only the sequence catches it
+(`RootRestoreSameRun`). `WitnessLost` is a machine restart with the restore.
+Two windows stay open, as the design says: a root that goes back before the
+control plane heard its last sequence when no witness is left
+(`RestoreUnheard`), and one that goes back inside a mark interval of the
+batched log mark (`RestoreYoung`).
+
 Checked: `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety` (no
 two leaders commit different entries at one index), `AckedSurvive` (no set
 of copies that could elect a leader lacks an acknowledged record, which
@@ -2522,7 +2541,8 @@ leader is elected without a record acknowledged in an earlier term).
 Each knob drops one rule: `WipeKeepsId`, `NoRestoreCheck` (no gate in front
 of Raft), `NoStorageIdCheck` (a directory is not compared with the root's
 storage id), `NoVoteMark`, `VoteBeforeMark` (the vote is answered before its
-mark is synced) and `MarkForgetsCopy` (the marks do not name a copy id).
+mark is synced), `MarkForgetsCopy` (the marks do not name a copy id) and
+`NoRootSequence` (the gate does not compare the root sequence).
 `ExactMark = FALSE` with `RestoreYoung` is the fallback of Questions, 11.
 
 Abstracted: the log is durable when appended (`FelixRaft.tla` has the fsync
@@ -2530,7 +2550,10 @@ rules), messages are atomic steps, a learner needs no membership entry,
 nothing is purged, a rotated copy starts from an empty log, and the leader
 that stops on a follower going backwards is left out. A follower cuts and
 appends in one step, so its last log id never goes down; an implementation
-that syncs the mark between the two must not read a cut as a restore.
+that syncs the mark between the two must not read a cut as a restore. The
+witness is written in the same step as the mark, and the sequence is counted
+only for the broker that has a backup, from the backup on: an earlier write
+is in the backup.
 
 ### Placement, lost disks and the voter set
 
