@@ -473,7 +473,8 @@ impl GroupRuntime {
         else {
             return report;
         };
-        let (dir, log, stop) = (dir.to_path_buf(), log.clone(), self.inner.stop.clone());
+        let (dir, log) = (dir.to_path_buf(), log.clone());
+        let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
         let mut commits = group.commits();
         tokio::spawn(async move {
             loop {
@@ -483,8 +484,12 @@ impl GroupRuntime {
                 while applied(&commits).is_none_or(|applied| applied < wait) {
                     tokio::select! {
                         () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
                         changed = commits.changed() => if changed.is_err() { return },
                     }
+                }
+                if stop.is_cancelled() || stopped.is_cancelled() {
+                    return;
                 }
                 let report = match reclaim_kept(&dir, &log, config.clone()).await {
                     Ok(report) => report,
@@ -501,6 +506,7 @@ impl GroupRuntime {
                 if applied(&commits).is_some_and(|applied| applied >= next) {
                     tokio::select! {
                         () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
                         changed = commits.changed() => if changed.is_err() { return },
                     }
                 }

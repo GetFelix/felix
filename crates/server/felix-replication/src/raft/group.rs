@@ -527,6 +527,11 @@ impl Group {
         async move { propose::acknowledged(waiting?, positions, leading, stop).await }
     }
 
+    /// Cancelled when the member is shut down.
+    pub(crate) fn stopped(&self) -> CancellationToken {
+        self.stop.clone()
+    }
+
     /// The commit table as the state machine publishes it.
     pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
         self.commits.clone()

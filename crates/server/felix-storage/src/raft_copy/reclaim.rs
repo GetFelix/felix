@@ -2,12 +2,14 @@
 //! them covered.
 //!
 //! A kept directory may go once the copy now in the shard directory has a
-//! committed index at or above the kept log's last index. Every entry the
-//! kept directory holds is at or below an index the group has committed. A
-//! committed entry is in the group's log, and so in the current copy's log or
-//! snapshot, and an uncommitted one was never acknowledged. A directory whose
-//! last index cannot be read is held, never reclaimed on a guess. See
-//! `docs/per-shard-raft.md`, "Reclaiming kept copies".
+//! committed index at or above the kept log's last index and holds, in its own
+//! log, every index the kept directory holds. Every entry the kept directory
+//! holds is at or below an index the group has committed, so a committed one
+//! is in the group's log, and an uncommitted one was never acknowledged. A
+//! snapshot carries no records, so a copy that caught up by snapshot, or
+//! purged its log, has committed past the kept directory without holding what
+//! is in it. A directory that cannot be read is held, never reclaimed on a
+//! guess. See `docs/per-shard-raft.md`, "Reclaiming kept copies".
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -15,6 +17,7 @@ use std::path::{Path, PathBuf};
 use super::judge::{KeptCopy, kept_copies, parent_of};
 use crate::disk_log::layout::KEPT_DIR;
 use crate::log::LogConfig;
+use crate::raft_log::held;
 use crate::{DiskLog, metrics_names};
 
 /// What one [`reclaim_kept`] pass did.
@@ -35,13 +38,34 @@ pub struct HeldCopy {
     pub copy: Option<u64>,
     /// The last log index it holds. None when it could not be read.
     pub last_index: Option<u64>,
+    /// Why it was left.
+    pub reason: HeldReason,
+}
+
+/// Why a kept directory was left in place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeldReason {
+    /// The copy has not committed up to its last index yet.
+    NotCommitted,
+    /// The copy's own log starts above where the kept one does, so it does
+    /// not hold what the kept one holds, whatever it has committed.
+    NotHeld,
+    /// Its segments could not be read.
+    Unreadable,
+    /// It was due, but deleting it failed.
+    DeleteFailed,
 }
 
 impl KeptReport {
-    /// The highest last index among the held directories that could be read:
-    /// the committed index at which another pass would reclaim them all.
+    /// The highest last index among the directories held for want of a
+    /// commit: the committed index at which another pass would reclaim them
+    /// all. A directory held for another reason is not waited for.
     pub fn wait_for(&self) -> Option<u64> {
-        self.held.iter().filter_map(|held| held.last_index).max()
+        self.held
+            .iter()
+            .filter(|held| held.reason == HeldReason::NotCommitted)
+            .filter_map(|held| held.last_index)
+            .max()
     }
 }
 
@@ -55,10 +79,19 @@ pub async fn reclaim_kept(
 ) -> io::Result<KeptReport> {
     let parent = parent_of(dir)?;
     let committed = current.committed().0.checked_sub(1);
+    let current_first = held::first_index(current)?;
     let mut report = KeptReport::default();
     for KeptCopy { path, copy } in kept_copies(dir)? {
-        let last = match last_index(&path, config.clone()).await {
-            Ok(last) => last,
+        let read = {
+            let (path, spacing) = (path.clone(), config.index_spacing_bytes);
+            crate::task::blocking(move || {
+                held::read(&path, &path.display().to_string(), spacing)
+                    .map_err(crate::StorageError::Io)
+            })
+            .await
+        };
+        let kept = match read {
+            Ok(kept) => kept,
             Err(err) => {
                 tracing::warn!(
                     path = %path.display(),
@@ -69,20 +102,26 @@ pub async fn reclaim_kept(
                     path,
                     copy,
                     last_index: None,
+                    reason: HeldReason::Unreadable,
                 });
                 continue;
             }
         };
-        let covered = match (last, committed) {
-            (None, _) => true,
-            (Some(last), Some(committed)) => committed >= last,
-            (Some(_), None) => false,
+        let reason = if kept.entries && current_first > kept.first {
+            Some(HeldReason::NotHeld)
+        } else {
+            match (kept.last, committed) {
+                (None, _) => None,
+                (Some(last), Some(committed)) if committed >= last => None,
+                _ => Some(HeldReason::NotCommitted),
+            }
         };
-        if !covered {
+        if let Some(reason) = reason {
             report.held.push(HeldCopy {
                 path,
                 copy,
-                last_index: last,
+                last_index: kept.last,
+                reason,
             });
             continue;
         }
@@ -91,7 +130,7 @@ pub async fn reclaim_kept(
                 tracing::info!(
                     path = %path.display(),
                     copy = ?copy.map(|copy| format!("{copy:016x}")),
-                    last_index = ?last,
+                    last_index = ?kept.last,
                     committed = ?committed,
                     "reclaimed a kept shard copy"
                 );
@@ -106,7 +145,8 @@ pub async fn reclaim_kept(
                 report.held.push(HeldCopy {
                     path,
                     copy,
-                    last_index: last,
+                    last_index: kept.last,
+                    reason: HeldReason::DeleteFailed,
                 });
             }
         }
@@ -116,14 +156,6 @@ pub async fn reclaim_kept(
     }
     publish_kept_metrics(&parent);
     Ok(report)
-}
-
-/// The last log index the directory holds as a Raft log, if it holds any.
-async fn last_index(path: &Path, config: LogConfig) -> io::Result<Option<u64>> {
-    let log = DiskLog::open(path, path.display().to_string(), config).map_err(io::Error::other)?;
-    let last = crate::raft_log::last_point(&log).await;
-    log.close().await.map_err(io::Error::other)?;
-    Ok(last?.map(|point| point.index))
 }
 
 /// Set the kept-copy gauges from what `parent`'s kept directory holds.

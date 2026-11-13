@@ -340,19 +340,27 @@ rebooted host holds.
 
 ### Reclaiming kept copies
 
-A kept directory is deleted once the copy now in the shard directory has a
-committed index at or above the kept log's last index. Every entry the kept
-directory holds is at or below an index the group has committed. A committed
-entry is in the group's log, so it is in the current copy's log or snapshot,
-and an uncommitted one was never acknowledged. Only that evidence counts: no
-age and no timer. A kept directory whose last index cannot be read, a damaged
-segment for one, is held and logged.
+A kept directory is deleted once two things hold. The copy now in the shard
+directory has a committed index at or above the kept log's last index, and
+that copy's own log starts at or below where the kept one does. Every entry
+the kept directory holds is at or below an index the group has committed, so
+a committed one is in the group's log, and an uncommitted one was never
+acknowledged. The second condition is what makes the first enough: a snapshot
+carries no records, so a copy that caught up by snapshot, or purged its log,
+has committed past the kept directory without holding what is in it. The
+current copy must hold the records itself. Only that evidence counts: no age
+and no timer. A kept directory that cannot be read, a damaged segment for
+one, is held and logged. Reading it opens nothing for writing, so a held
+directory is left byte for byte as it was.
 
 `GroupRuntime::open_copy` runs the pass after the member starts, which covers
 a restart after the copy caught up. If a kept directory is ahead of the copy,
 one task per group waits for the group's applied index to reach it and tries
-again, and ends when the group closes. Deleting a stream deletes the kept
-copies of that stream's incarnation too, even when the live directory is gone.
+again. It ends when the group closes or the runtime stops, and never starts a
+pass after that. A directory held for another reason (the copy does not hold
+its records, it cannot be read, a delete failed) is not retried until the next
+open. Deleting a stream deletes the kept copies of that stream's incarnation
+too, even when the live directory is gone.
 
 A re-form that starts a copy at a base without the base's records must not
 count that as holding them (issue #2441): the rule above reads the copy's

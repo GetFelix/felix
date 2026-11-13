@@ -34,6 +34,7 @@
 
 mod codec;
 mod flush_queue;
+pub(crate) mod held;
 mod hide;
 mod purged;
 mod reader;

@@ -211,7 +211,13 @@ impl DirIndex {
                 .and_then(|(name, _)| layout::stream_shard_of(name, tenant, namespace, stream))
                 .is_some_and(|(_, held)| held == incarnation);
             if owned {
-                retire_dir(root, &entry.path())?;
+                match retire_dir(root, &entry.path()) {
+                    // A reclaim of the same copy got there first.
+                    Err(StorageError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    other => {
+                        other?;
+                    }
+                }
             }
         }
         Ok(())
