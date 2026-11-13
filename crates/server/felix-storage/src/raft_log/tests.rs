@@ -8,9 +8,11 @@ mod flush_queue;
 mod install_crash_points;
 mod machine;
 mod purge;
+mod receive;
 mod snapshots;
 mod suite;
 mod tail;
+mod transfer;
 pub(crate) mod writes;
 mod written;
 

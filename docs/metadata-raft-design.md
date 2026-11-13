@@ -359,6 +359,10 @@ sequenceDiagram
    members initialized with different groups can split.
 3. **Vote.** Once every one of them has answered, the member gives back its
    vote and initializes. Until then it votes for nobody and asks again.
+   Between `initialize` and its first vote it writes a *reached* flag to
+   its own store, beside the mark. A member that catches up writes it too,
+   before it votes again, and so does any start that finds Raft state and
+   a vote that is not withheld.
 
 `standing` lists the ids a member has recorded, as `formed`. An empty member
 reads the lists when it starts:
@@ -367,10 +371,16 @@ reads the lists when it starts:
   gone, and that volume may have voted. The member never forms. It keeps its
   vote withheld and catches up with a confirmed leader, like any member that
   rejoins.
-- **Named by a peer, and it holds its mark.** It was stopped between the mark
-  and the vote. The mark is on the same volume as the vote, so that volume
-  has not been lost and has not voted. The member asks for the records again
-  and goes on.
+- **It holds the reached flag.** Its log is blank, so the log was lost after
+  the member may have voted. On the segment store the log is a directory of
+  its own (`store/log/`) and the mark and the flag are beside it, so an
+  emptied log directory keeps both. The member never forms; it catches up
+  like a member that lost its volume.
+- **Named by a peer, and it holds its mark but not the flag.** It was
+  stopped between the mark and its first vote. A crash before `initialize`
+  leaves a blank log and no flag; one after `initialize` leaves a log, and
+  the next start writes the flag. So the member has not voted. It asks for
+  the records again and goes on.
 - **Not named.** A first boot, as above. Members that have already formed do
   not stand in its way: only a record of *this* member counts, so a member
   that starts late forms with the same group, and the others can win its
@@ -386,7 +396,11 @@ still accepts it.
 The model checks the three steps (`docs/formal/FelixRaftPlacementFormEarlyWipe.cfg`,
 `FelixRaftPlacementFormEarlyWipeFirstBoot.cfg`), and shows a member voting
 twice in a term without the record
-(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`).
+(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`). A wipe that takes only
+the log is in `FelixRaftPlacementFormLogWipe.cfg` and
+`FelixRaftPlacementFormLogWipeFirstBoot.cfg`; without the reached flag the
+member forms again on its mark and votes twice
+(`FelixRaftPlacementFormLogWipeUnreached.cfg`).
 
 What it costs:
 
@@ -960,7 +974,8 @@ leader's snapshot as in
   entry does not form again and votes only after it has caught up with a
   leader; two wiped members do not form over a third whose log is empty; a
   late member forms against peers that have formed and have no leader; a
-  member does not vote while one peer has not recorded it; and
+  member does not vote while one peer has not recorded it; on the segment
+  store, a member whose log directory was emptied does not form again; and
   (`raft/join/tests.rs`) members stopped between the records and
   `initialize` form after a restart.
 
@@ -1037,7 +1052,10 @@ vote leaves one, and so does a log directory that was emptied. With a
 snapshot beside it the log was lost, so the open withholds the member's
 vote. With no snapshot the open reports "no Raft state" and the service
 treats the member as one with an empty store: it withholds its vote unless
-it is forming a new cluster.
+it is forming a new cluster. The formation file tells the two cases apart:
+a member that holds the reached flag has voted from this store, so its
+blank log was emptied, and it catches up instead of forming
+([Forming the group](#forming-the-group)).
 
 Rules for the log:
 
@@ -1122,12 +1140,17 @@ start.
 lock, as today, and writes the file outside it. The data is stored as raw
 bytes. Today it is stored as a JSON array of numbers, several times larger.
 
-**Transfer.** A snapshot travels to a follower in one request over the
-authenticated peer listener. State is small, so chunking is not needed. The
-request's body is the length of a JSON head in four big-endian bytes, the
-head (the sender's vote, the snapshot's last log id and its membership),
-then the data as it is. The route has no body limit, and the request has a
-60 second timeout of its own.
+**Transfer.** A snapshot is streamed to a follower in one request over the
+authenticated peer listener, in the body form every group on the segment
+store shares ([replication engine](replication-engine.md), "Sending a
+snapshot"). The head is JSON: the sender's vote, the snapshot's last log id
+and its membership. The follower answers a stale sender, refuses a length
+over `FELIX_RAFT_SNAPSHOT_MAX_BYTES` (1 GiB by default) and refuses a second
+transfer while one runs, all before reading any data. The data is written
+to a file as it arrives, not buffered by the transfer. The install reads it
+back whole once, because the state machine restores from one slice, so a
+member holds one copy of the snapshot then, at most the cap. The transfer
+fails only when no bytes move for 30 s.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
 apply the log up to the committed index. The member stays out of rotation
@@ -1649,7 +1672,7 @@ is the umbrella.
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
-| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots in one request and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
+| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots streamed in one request to a file with a size cap and one install at a time ([#2364](https://github.com/GetFelix/felix/issues/2364)), and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
 | openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 

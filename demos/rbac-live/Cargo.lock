@@ -2227,7 +2227,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openraft"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=8fd649442f613bb790f727d065aba03c8fe151f6#8fd649442f613bb790f727d065aba03c8fe151f6"
+source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
 dependencies = [
  "anyerror",
  "backoff-series",
@@ -2254,7 +2254,7 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=8fd649442f613bb790f727d065aba03c8fe151f6#8fd649442f613bb790f727d065aba03c8fe151f6"
+source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
 dependencies = [
  "chrono",
  "proc-macro2",
@@ -2266,7 +2266,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=8fd649442f613bb790f727d065aba03c8fe151f6#8fd649442f613bb790f727d065aba03c8fe151f6"
+source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -2278,7 +2278,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt-tokio"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=8fd649442f613bb790f727d065aba03c8fe151f6#8fd649442f613bb790f727d065aba03c8fe151f6"
+source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
 dependencies = [
  "futures-util",
  "openraft-rt",
@@ -2886,6 +2886,7 @@ dependencies = [
  "base64 0.23.1",
  "bytes",
  "futures-core",
+ "futures-util",
  "http",
  "http-body",
  "http-body-util",
@@ -2906,12 +2907,14 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tower-http 0.6.8",
  "tower-service",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "wasm-streams",
  "web-sys",
 ]
 
@@ -4109,6 +4112,19 @@ name = "wasm-bindgen-test-shared"
 version = "0.2.108"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a8145dd1593bf0fb137dbfa85b8be79ec560a447298955877804640e40c2d6ea"
+
+[[package]]
+name = "wasm-streams"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9d1ec4f6517c9e11ae630e200b2b65d193279042e28edd4a2cda233e46670bbb"
+dependencies = [
+ "futures-util",
+ "js-sys",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
 
 [[package]]
 name = "web-sys"
