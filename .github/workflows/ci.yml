@@ -634,6 +634,43 @@ jobs:
           # Already gzipped.
           compression-level: 0
 
+  # Durable stream shards on Raft, across broker processes. The harness runs
+  # the prebuilt broker beside the test binary, so this job builds it with the
+  # `raft` feature, which no other job's broker has. Not in `ci-ok`'s needs:
+  # it reports, and does not gate a merge yet.
+  cluster-raft:
+    name: Cluster tests (Raft shards)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    # Hosted, never the self-hosted pool: a broker built with another feature
+    # set would evict the one the `cluster` jobs keep warm there.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build the broker with Raft shards
+        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft
+
+      - name: Test
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+          FELIX_TEST_RAFT_SHARDS: "1"
+        run: cargo test --locked -p felix-cluster --test raft_shards
+
   # Lint and the repository checks, beside the tests rather than in front of
   # them.
   checks:
