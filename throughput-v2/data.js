@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794535327348,
+  "lastUpdate": 1794540750263,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53924,6 +53924,58 @@ window.BENCHMARK_DATA = {
             "range": "2108.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816278.32\nmean: 816982.12\nstdev: 2108.31\ncv: 0.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54a81af0e6b41c349c3e6955c2da93d50c399244",
+          "message": "fix(controlplane): a metadata member records with every peer before its first vote (#2386)\n\nCloses #2374. Forming is mark, record, vote: a member marks itself, every peer durably records its id (POST {prefix}/forming), then it clears its withheld vote and initializes. A named member that holds no mark takes the lost-disk path. standing gains formed. The segment store keeps the mark in a separate formation file.\n\nFelixRaftPlacement: FormRecord on Form; FormEarlyWipe now passes, its Unrecorded twin violates AckedHeldSurvive; FirstBoot, Two and ReachEarlyWipeVotesAgain added. Residual for the segment store build: #2407.",
+          "timestamp": "2026-11-12T19:26:43-08:00",
+          "tree_id": "0ce9feb15475b5a7cb3affc698c316f7320aa896",
+          "url": "https://github.com/GetFelix/felix/commit/54a81af0e6b41c349c3e6955c2da93d50c399244"
+        },
+        "date": 1794540749576,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 632002.58,
+            "range": "61317.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 632002.58\nmean: 638225.99\nstdev: 61317.64\ncv: 9.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 632002.58,
+            "range": "61317.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 632002.58\nmean: 638225.99\nstdev: 61317.64\ncv: 9.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 156631.75,
+            "range": "1264.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 156631.75\nmean: 156759.99\nstdev: 1264.73\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1566317.47,
+            "range": "12647.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1566317.47\nmean: 1567599.90\nstdev: 12647.34\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
