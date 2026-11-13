@@ -262,7 +262,7 @@ VerGt(a, b) == VerGe(a, b) /\ a # b
 
 NoCfg == [old |-> {}, new |-> {}, learners |-> {}, ver |-> V0]
 \* No membership report yet.
-NoRep == [ok |-> FALSE, names |-> {}, settled |-> FALSE, ver |-> V0]
+NoRep == [clear |-> {}, ev |-> {}, mem |-> {}]
 InitCfg == [old |-> InitBrokers \X {0}, new |-> InitBrokers \X {0}, learners |-> {}, ver |-> V0]
 Blank(t) == [term |-> t, kind |-> "blank", val |-> 0, cfg |-> NoCfg]
 Record(t, v) == [term |-> t, kind |-> "record", val |-> v, cfg |-> NoCfg]
@@ -626,8 +626,9 @@ Retarget(T) ==
     /\ tver' = tver + 1
     /\ named' = [m \in Ids |-> IF m \in T THEN <<inc, tver + 1>> ELSE named[m]]
     /\ past' = IF StaleTargets THEN past \cup {Cur} ELSE past
+    /\ rep' = [t \in Brokers |-> NoRep]
     /\ used' = [used EXCEPT !.targets = @ + 1]
-    /\ UNCHANGED <<election, raft, ident, known, doomed, inc, ack, told, rep, delivered>>
+    /\ UNCHANGED <<election, raft, ident, known, doomed, inc, ack, told, delivered>>
 
 \* A move, a drain or a replaced node: seat x goes to broker y. An id the
 \* control plane told to delete is never placed again while it remembers.
@@ -655,8 +656,9 @@ CpReport(s) ==
                /\ tver' = tver + 1
                /\ named' = [m \in Ids |-> IF m \in T THEN <<inc, tver + 1>> ELSE named[m]]
                /\ past' = IF StaleTargets THEN past \cup {Cur} ELSE past
-       ELSE UNCHANGED <<target, tver, named, past>>
-    /\ UNCHANGED <<election, raft, ident, doomed, inc, ack, told, rep, delivered, used>>
+               /\ rep' = [t \in Brokers |-> NoRep]
+       ELSE UNCHANGED <<target, tver, named, past, rep>>
+    /\ UNCHANGED <<election, raft, ident, doomed, inc, ack, told, delivered, used>>
 
 CommittedCfgs == {k \in 1..Len(committed) : committed[k].e.kind = "member"}
 LastCommittedCfg ==
@@ -667,8 +669,8 @@ LastCommittedCfg ==
 \* broker's committed membership and in every membership entry appended
 \* after it, committed or not, and gives the committed membership's version
 \* when that membership is not joint. A broker reports only once every
-\* broker has acknowledged the current incarnation, and a restore throws
-\* away the reports it has.
+\* broker has acknowledged the current incarnation, and a target write or a
+\* restore throws away the reports the control plane has.
 \* In openraft the two are `MembershipState::committed` and `effective`:
 \* a log holds at most one membership entry past the committed one. The
 \* `membership_config` metric is the effective one alone, and dooming on it
@@ -677,24 +679,31 @@ ComIdx(t) ==
     LET ks == {k \in MemberIdxs(t) : k <= commitIdx[t]}
     IN IF ks = {} THEN 0 ELSE MaxOf(ks)
 ComCfg(t) == IF ComIdx(t) = 0 THEN InitCfg ELSE log[t][ComIdx(t)].cfg
+\* Copies the control plane is waiting to delete.
+Cands == {Me(s) : s \in {b \in Brokers : Me(b) \notin target /\ Me(b) \notin doomed /\ LastIdx(b) > 0}}
+Names(t) ==
+    IF LastIdx(t) = 0 THEN {}
+    ELSE Members(ComCfg(t)) \cup
+         UNION {Members(log[t][k].cfg) : k \in {q \in MemberIdxs(t) : q > ComIdx(t)}}
+\* What a report says about the copies waiting to be deleted: those no entry
+\* names (clear), those the committed membership is evidence for (ev), and
+\* the members of that membership, who must report too (mem).
 Snap(t) ==
-    IF LastIdx(t) = 0 THEN [NoRep EXCEPT !.ok = TRUE]
-    ELSE [ok |-> TRUE,
-          names |-> Members(ComCfg(t)) \cup
-                    UNION {Members(log[t][k].cfg) : k \in {q \in MemberIdxs(t) : q > ComIdx(t)}},
-          settled |-> ~Joint(ComCfg(t)),
-          ver |-> ComCfg(t).ver]
+    LET ev == IF LastIdx(t) = 0 \/ Joint(ComCfg(t)) THEN {}
+              ELSE {m \in Cands : m \notin Members(ComCfg(t))
+                                  /\ (DoomAnyVersion \/ VerGt(ComCfg(t).ver, named[m]))}
+    IN [clear |-> {m \in Cands : m \notin Names(t)},
+        ev |-> ev,
+        mem |-> IF ev = {} THEN {} ELSE BrokersOf(Names(t))]
 
 \* The control plane asks for reports while it has a dropped copy to delete.
 Report(t) ==
     /\ AllAcked
-    /\ \E s \in Brokers : Me(s) \notin target /\ Me(s) \notin doomed /\ LastIdx(s) > 0
+    /\ Cands # {}
     /\ rep[t] # Snap(t)
     /\ rep' = [rep EXCEPT ![t] = Snap(t)]
     /\ UNCHANGED <<election, raft, ident, target, known, past, doomed, tver, inc, named, ack,
                    told, delivered, used>>
-
-Fresh(t) == rep[t].ok
 
 \* When the control plane may tell s to delete its copy: the target dropped
 \* it, and some broker reports a committed membership that is not joint,
@@ -715,11 +724,8 @@ DoomGuard(s) ==
           /\ DoomAnyVersion \/ VerGt(LastCommittedCfg.ver, named[Me(s)])
        \/ /\ ~DoomOnCommitted
           /\ \E t0 \in Brokers \ {s} :
-                /\ Fresh(t0)
-                /\ rep[t0].settled
-                /\ DoomAnyVersion \/ VerGt(rep[t0].ver, named[Me(s)])
-                /\ \A t \in BrokersOf(rep[t0].names) \cup {t0} :
-                    t # s => Fresh(t) /\ Me(s) \notin rep[t].names
+                /\ Me(s) \in rep[t0].ev
+                /\ \A t \in (rep[t0].mem \cup {t0}) \ {s} : Me(s) \in rep[t].clear
 \* The control plane tells a broker to delete a copy the target dropped. The
 \* word carries the incarnation it was given in.
 CpDoom(s) ==
