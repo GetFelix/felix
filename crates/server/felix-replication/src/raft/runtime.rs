@@ -590,13 +590,14 @@ impl GroupRuntime {
             group,
             to,
             beat,
+            report,
             body,
             ..
         } = request;
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
-                member.handle(body, beat).await.map(RaftReply)
+                member.handle(body, beat, report).await.map(RaftReply)
             }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }

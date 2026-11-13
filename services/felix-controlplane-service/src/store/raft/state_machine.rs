@@ -355,8 +355,9 @@ impl MetadataStateMachine {
             MetaCommand::PutShardAssignment {
                 assignment,
                 seq_generation,
+                start_placed,
             } => store
-                .apply_put_shard_assignment(assignment, seq_generation)
+                .apply_put_shard_assignment(assignment, seq_generation, start_placed)
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
@@ -376,6 +377,7 @@ impl MetadataStateMachine {
                 seq_generation,
                 at_least,
                 record_previous,
+                start_placed,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
@@ -384,6 +386,7 @@ impl MetadataStateMachine {
                     seq_generation,
                     at_least,
                     record_previous,
+                    start_placed,
                 )
                 .await
                 .map(assignment_written)
@@ -602,7 +605,11 @@ impl MetadataStateMachine {
                 }
                 Ok(MetaResponse::Unit)
             }
-            MetaCommand::ImportState { state, overwrite } => {
+            MetaCommand::ImportState {
+                state,
+                overwrite,
+                mark_unplaced,
+            } => {
                 // A store with any history has consumers whose checkpoints
                 // this would silently invalidate; only an operator saying
                 // `overwrite` — the restore ceremony — may replace it.
@@ -611,7 +618,9 @@ impl MetadataStateMachine {
                         "store already holds state; import requires overwrite".to_string(),
                     ));
                 }
-                store.import_state(*state).await?;
+                let mut state = *state;
+                state.forget_placed(mark_unplaced);
+                store.import_state(state).await?;
                 self.recompute_floor().await;
                 self.node_reset(None);
                 Ok(MetaResponse::Unit)
@@ -711,6 +720,14 @@ impl AppStateMachine for MetadataStateMachine {
 
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
         crate::store::raft::command::restamp(command, now_millis)
+    }
+
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        crate::store::raft::command::settle_for_level(command, level)
+    }
+
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        crate::store::raft::command::depends_on_level(command)
     }
 
     fn version(&self) -> u16 {

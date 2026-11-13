@@ -56,6 +56,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 
@@ -183,6 +184,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_pending_set_is_persisted_until_the_next_write(store).await;
     pausing_moves_is_persisted(store).await;
     replica_reports::readmitted_copies_are_recorded_from_a_set_naming_them(store).await;
+    every_broker_placed_in_the_epoch_stays_on_the_record(store).await;
     super::adoption::run(store).await;
 }
 
@@ -214,6 +216,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 
@@ -332,6 +335,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -795,6 +799,76 @@ async fn learners_are_persisted_until_the_next_write(store: &dyn ControlPlaneSto
     assert!(next.learners.is_empty());
     let read = store.get_shard_assignment(&key(0)).await.expect("get");
     assert!(read.learners.is_empty());
+}
+
+/// The record of brokers placed in the epoch starts with the first
+/// assignment, takes every broker a write names before anything acts on the
+/// set, and keeps a broker a later write removed: the trace of the model's
+/// `FelixRaftReformStaleMembershipTwoMovesForgotten.cfg`. A caller's own
+/// record is ignored, and a shard assigned again starts a new one.
+async fn every_broker_placed_in_the_epoch_stays_on_the_record(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    for (id, port) in [("broker-z", 7502), ("broker-w", 7503)] {
+        store.register_node(node(id, port)).await.expect("register");
+    }
+    let names = |names: &[&str]| -> std::collections::BTreeSet<String> {
+        names.iter().map(|name| format!("broker-{name}")).collect()
+    };
+    let write = |leader: &str, replicas: &[&str], joining: Option<&str>| {
+        let mut next = assignment(0, &format!("broker-{leader}"));
+        next.replicas = replicas.iter().map(|r| format!("broker-{r}")).collect();
+        next.joining = joining.map(|j| format!("broker-{j}"));
+        next.placed = Some(crate::model::PlacedInEpoch {
+            epoch: 7,
+            brokers: names(&["caller"]),
+        });
+        next
+    };
+    let put = |next: ShardAssignment, expected: Option<u64>| async move {
+        match store
+            .put_shard_assignment_if(next, expected, token(store).await)
+            .await
+            .expect("write")
+        {
+            AssignmentWrite::Written(written) => written,
+            other => panic!("not written: {other:?}"),
+        }
+    };
+    let record = |written: &ShardAssignment| {
+        let placed = written.placed.clone().expect("a record");
+        assert_eq!(placed.epoch, 0);
+        placed.brokers
+    };
+
+    let first = put(write("x", &["y", "z"], None), None).await;
+    assert_eq!(record(&first), names(&["x", "y", "z"]));
+    let adding_w = put(
+        write("x", &["y", "z", "w"], Some("w")),
+        Some(first.generation),
+    )
+    .await;
+    assert_eq!(record(&adding_w), names(&["w", "x", "y", "z"]));
+    let without_z = put(write("x", &["y", "w"], None), Some(adding_w.generation)).await;
+    let adding_z = put(
+        write("x", &["y", "w", "z"], Some("z")),
+        Some(without_z.generation),
+    )
+    .await;
+    let back = put(write("x", &["y", "z"], None), Some(adding_z.generation)).await;
+    assert_eq!(record(&back), names(&["w", "x", "y", "z"]));
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(record(&read), names(&["w", "x", "y", "z"]));
+    let snapshot = store.shard_assignment_snapshot().await.expect("snapshot");
+    assert_eq!(record(&snapshot.items[0]), names(&["w", "x", "y", "z"]));
+
+    clear(store).await;
+    let again = put(write("y", &[], None), None).await;
+    assert_eq!(record(&again), names(&["y"]));
+
+    clear(store).await;
+    for id in ["broker-z", "broker-w"] {
+        store.delete_node(id).await.expect("delete");
+    }
 }
 
 /// The identities a promotion's assignment names are read back with it, and
@@ -1664,6 +1738,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     for shard in 0..2 {
         store
@@ -1950,6 +2025,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -2066,6 +2142,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

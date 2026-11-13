@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 
-use super::RaftHandle;
+use super::{NodeId, RaftHandle};
 
 /// Answers leader-only requests. Registered with
 /// [`RaftHandle::set_leader_service`].
@@ -68,19 +68,7 @@ impl RaftHandle {
                     super::NoQuorum::new(self.write_timeout, &last),
                 )));
             }
-            let (leader, recorded) = {
-                let metrics = self.raft.metrics();
-                let metrics = metrics.borrow_watched();
-                let leader = metrics.current_leader;
-                let recorded = leader.and_then(|id| {
-                    metrics
-                        .membership_config
-                        .membership()
-                        .get_node(&id)
-                        .map(|node| node.addr.clone())
-                });
-                (leader, recorded)
-            };
+            let (leader, recorded) = self.known_leader();
             match leader {
                 Some(leader) if leader == self.id => {
                     let service = self
@@ -137,6 +125,22 @@ impl RaftHandle {
         tokio::time::timeout(within, self.confirm_leadership())
             .await
             .unwrap_or(false)
+    }
+
+    /// The leader this member knows of, with the address its membership
+    /// records for it.
+    pub(super) fn known_leader(&self) -> (Option<NodeId>, Option<String>) {
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let leader = metrics.current_leader;
+        let recorded = leader.and_then(|id| {
+            metrics
+                .membership_config
+                .membership()
+                .get_node(&id)
+                .map(|node| node.addr.clone())
+        });
+        (leader, recorded)
     }
 
     /// The current term, as this member knows it.

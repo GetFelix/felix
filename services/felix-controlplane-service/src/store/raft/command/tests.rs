@@ -270,3 +270,20 @@ fn joint_fence_waits_for_the_level_that_keeps_refusals() {
     };
     assert_eq!(finalize.version(), 25);
 }
+
+/// An escaped spelling of the import op is still an import, so it cannot
+/// slip past the leader's level check.
+#[test]
+fn an_escaped_import_op_is_still_settled() {
+    let escaped = br#"{"v":1,"op":"import\u005fstate","overwrite":true}"#;
+    assert!(depends_on_level(escaped));
+    assert!(settle_for_level(escaped, super::super::PLACED_LEVEL - 1).is_err());
+    let settled = settle_for_level(escaped, super::super::PLACED_LEVEL)
+        .expect("settles at the level")
+        .expect("rewritten");
+    let value: serde_json::Value = serde_json::from_slice(&settled).expect("json");
+    assert_eq!(value["mark_unplaced"], true);
+    assert!(!depends_on_level(
+        br#"{"v":1,"op":"record_node_heartbeat"}"#
+    ));
+}

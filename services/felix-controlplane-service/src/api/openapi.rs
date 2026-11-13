@@ -38,7 +38,7 @@ use crate::model::{
     Cache, CacheChange, CacheChangeOp, CacheKey, CachePatchRequest, ConsistencyLevel,
     DeliveryGuarantee, MoveReason, Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey,
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
-    NodeStatus, Readmitted, RetentionPolicy, ShardAssignment, ShardAssignmentChange,
+    NodeStatus, PlacedInEpoch, Readmitted, RetentionPolicy, ShardAssignment, ShardAssignmentChange,
     ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, Stream, StreamChange, StreamChangeOp,
     StreamKey, StreamKind, StreamPatchRequest, StreamRouting, Tenant, TenantChange, TenantChangeOp,
 };
@@ -189,6 +189,7 @@ use crate::model::{
         NodeListResponse,
         ShardAssignment,
         Readmitted,
+        PlacedInEpoch,
         ShardKey,
         ShardState,
         ShardAssignmentListResponse,

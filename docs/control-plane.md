@@ -1008,6 +1008,45 @@ generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
 sets it; a caller's value is ignored. The Raft store writes it
 only at metadata level 29.
 
+An assignment also carries `placed`: every broker the control plane has
+placed for the shard's group in its group epoch, as
+`{"epoch": 0, "brokers": [...]}`. It is the list the re-form command reads
+(`docs/per-shard-raft.md`, "Re-forming a group"). The store sets it; a
+caller's value is ignored.
+
+- The shard's first assignment starts it with the brokers that write names.
+- Every later write adds the brokers it names in any role: leader,
+  replicas, a move's successor or joining copy, a pending set's members,
+  learners. The broker is on the record in the same write that first names
+  it, so before any leader acts on the set.
+- Nothing takes a broker off. A broker moved away stays, because its disk
+  can hold acknowledged records the brokers placed now lack.
+- It is carried in snapshots and the change feed like the rest of the
+  assignment, and goes with the assignment when the stream or cache is
+  deleted.
+- Restoring an export (the import ceremony) drops every record, in the
+  assignments and in the change feed. The export is older than the epoch it
+  is restored into, so a broker placed and moved away since would be
+  missing, and a re-form trusting the record would skip its disk. Without a
+  record the re-form blocks the group.
+- The import also marks every stream and cache it restores, at its
+  incarnation, and their shards never start a record, even on a first
+  assignment. A shard the export shows unassigned may have been assigned
+  since on the live cluster. A stream or cache deleted and created again
+  after the import has a new incarnation and starts records as usual. The
+  mark is carried in snapshots. Under Raft the leader sets the mark when the
+  import enters the log, whatever the proposer sent, so every member applies
+  the same one. Below metadata level 31 an older member cannot read the mark,
+  so the leader refuses the import and asks the operator to finish the
+  control-plane upgrade first.
+
+The record grows with every move for as long as the epoch lasts. No pruning
+rule exists yet, and any rule must be modelled first. Under Raft it is
+started only at metadata level 31. A shard first assigned below that level
+has no record and never gets one in its current epoch: the brokers it placed
+and removed before are unknown, and a record without them would let a
+re-form skip their disks.
+
 A snapshot item also carries `previous`, the set of the assignment the change
 log holds right before it (the generation below, or the one
 `previous_generation` names). A broker that reseeds from the snapshot takes it
