@@ -3,7 +3,9 @@
 //! fsync on commit.
 //!
 //! The count here releases a publisher's acknowledgement and nothing else.
-//! The commit index, votes and the read bound rest on fsynced positions. See
+//! The commit index and the read bound rest on fsynced positions. Votes
+//! compare written logs, which is what keeps such a record from being cut
+//! by a candidate without it. See
 //! `docs/per-shard-raft.md`, "Two signals from one append", and
 //! `docs/formal/FelixRaftWritten.tla`.
 

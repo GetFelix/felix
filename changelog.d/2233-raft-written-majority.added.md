@@ -3,6 +3,8 @@
   the peer transport, when the leader's append asks. `raft::RaftEngine::await_quorum_ack` returns
   at the commit or once a majority of the voters has written the record, whichever is first. The
   count takes voters only, both halves of a joint membership, and only reports at the leader's
-  own term. The commit index, votes and the read bound still use fsynced positions.
+  own term. The commit index and the read bound still use fsynced positions; votes compare
+  written logs, as openraft does, so a voter holding an acknowledged record refuses a candidate
+  without it.
   `docs/formal/FelixRaftWritten.tla` models it. Behind the `raft` feature; no shard is routed to
   it.

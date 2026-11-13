@@ -91,11 +91,12 @@ impl RaftEngine {
     /// On a stream that fsyncs on commit ([`AckAt::Flushed`]) this is
     /// [`Self::await_commit`]. On any other stream it also returns once a
     /// majority of the shard's voters has written the record, each on its
-    /// own word and before its fsync, when that comes before the commit. A
-    /// record acknowledged that way survives every crash and change of
-    /// leader with no power cut. It can be lost if one of those copies
-    /// loses power before its fsync and a majority then elects without a
-    /// copy that still holds the record.
+    /// own word and before its fsync, when that comes before the commit. It
+    /// can be lost if one of those copies loses power before its fsync and a
+    /// majority then elects without a copy that still holds the record. With
+    /// no power cut it survives process crashes within one term, which the
+    /// model checks to the end; the configs with a change of leader or of
+    /// membership have not finished (`docs/formal/README.md`).
     ///
     /// The first such wait on a shard makes its leader ask the followers
     /// for their written positions from then on.

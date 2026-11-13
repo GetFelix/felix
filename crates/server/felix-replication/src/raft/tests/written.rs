@@ -4,8 +4,10 @@
 use felix_storage::raft_log::LogPoint;
 use openraft::async_runtime::watch::WatchReceiver;
 use openraft::impls::EmptyNode;
+use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
 use super::super::group::Group;
+use super::super::network::Reply;
 use super::super::written::{Reports, majority_wrote};
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -211,6 +213,38 @@ impl Led {
             .handle(request)
             .await;
         assert!(answer.is_ok(), "the report was refused");
+    }
+
+    /// Ask `voter` for its vote for `candidate` at the next term, with a
+    /// last log id of `last`. The request is a transfer from the leader
+    /// `voter` follows, so its lease does not decide the answer and only the
+    /// logs are compared.
+    async fn ask_vote(&self, voter: &str, candidate: &str, last: LogPoint) -> bool {
+        let follower = self.cluster.runtime(voter).group(&shard(0));
+        let follower = follower.expect("group");
+        let following = follower.raft().metrics().borrow_watched().vote.clone();
+        let term = following.leader_id().term + 1;
+        let next = LeaderIdOf::<ShardTypes>::new(term, member(candidate));
+        let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(next, false);
+        let last_log_id = LogIdOf::<ShardTypes> {
+            leader_id: CommittedLeaderIdOf::<ShardTypes> { term: last.term },
+            index: last.index,
+        };
+        let mut rpc = VoteRequest::new(vote, Some(last_log_id));
+        rpc.leadership_transfer_from = Some(following);
+        let request = RaftRequest {
+            group: group(0),
+            to: member(voter),
+            beat: 0,
+            report: false,
+            deadline: Duration::from_secs(1),
+            body: Request::Vote(rpc),
+        };
+        let answer = self.cluster.runtime(voter).handle(request).await;
+        match answer.expect("the vote was refused").0 {
+            Reply::Vote(answer) => answer.vote_granted,
+            _ => panic!("not a vote"),
+        }
     }
 }
 
@@ -455,5 +489,42 @@ async fn a_deposed_leader_acknowledges_nothing_on_reports() {
         matches!(refused, Err(CommitError::LeadershipLost { .. })),
         "{refused:?}"
     );
+    led.cluster.stop().await;
+}
+
+/// A follower that has written a record but not fsynced it refuses its vote
+/// to a candidate whose log lacks the record. openraft compares the logs it
+/// has accepted, written or not. Were it to compare fsynced logs only, a
+/// record acknowledged on a written majority could be cut by a leader that
+/// never had it, with no crash (`docs/formal/FelixRaftWritten.tla`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_that_has_written_a_record_refuses_a_candidate_without_it() {
+    let mut led = led().await;
+    let before = led.prime().await;
+    let others = led.others();
+    let (voter, candidate) = (others[0], others[1]);
+
+    let log = led.cluster.logs[&(voter.to_string(), 0)].clone();
+    let held = log.hold_flushes().await;
+    let written = led.propose().await;
+    led.told_by(voter, written).await;
+    let (term, index) = (written.generation, written.end - 1);
+    assert_eq!(
+        before.end - 1,
+        index - 1,
+        "the record follows the primed one"
+    );
+    let flushed = led.status(voter).flushed;
+    assert!(flushed.is_none_or(|at| at.index < index), "{voter} fsynced");
+
+    let lacking = led.ask_vote(voter, candidate, at(term, index - 1)).await;
+    assert!(
+        !lacking,
+        "{voter} voted for a log without its written record"
+    );
+    let holding = led.ask_vote(voter, candidate, at(term, index)).await;
+    assert!(holding, "{voter} refused a log that holds the record");
+
+    drop(held);
     led.cluster.stop().await;
 }

@@ -27,8 +27,10 @@ use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request}
 use super::types::{Command, GroupId, MemberId, Membership, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
-/// The first byte of every body. A reader refuses any other.
-const LAYOUT: u8 = 1;
+/// The first byte of every body. A reader refuses any other, so a peer
+/// on another layout is refused by name rather than misread. 2 added the
+/// report byte to the request header.
+const LAYOUT: u8 = 2;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;

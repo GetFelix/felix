@@ -2569,6 +2569,10 @@ What is modelled:
   of each half while it is joint, and never a learner.
 - The count releases the acknowledgement and nothing else. The commit index
   counts fsynced copies, as in `FelixRaft.tla`.
+- A voter compares the candidate's log with its own, unsynced entries
+  included, as openraft does. Comparing fsynced positions instead would let
+  a candidate without an acknowledged record win a follower that has
+  written it, and cut it there, with no crash.
 - One membership change: three voters and a learner, and a swap of one voter
   for the learner through a joint configuration.
 
@@ -2588,7 +2592,10 @@ power cut (`FelixRaftWritten.cfg`), and the same with two crashes and no power
 cut, where `AckedNeverLost` passes too (`FelixRaftWrittenCrash.cfg`). The
 configurations with a second term or the membership change found no violation
 but did not finish in the time they were given; the table above has how far
-each got. Every twin below, the joint and second-term ones included, fails
+each got. `FelixRaftWrittenFailover.cfg`, `FelixRaftWrittenTerms.cfg` and
+`FelixRaftWrittenJoint.cfg` are running in Actions, and
+`FelixRaftWrittenJointFailover.cfg` has not run. Until they finish, the
+promise is checked for one term only. Every twin below, the joint and second-term ones included, fails
 within seconds.
 
 So the loss this acknowledgement leaves open is exactly one: a copy that held

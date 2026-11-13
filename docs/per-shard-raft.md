@@ -550,11 +550,18 @@ and subscribers are still fed up to `read_bound`.
 **`Quorum` on a `Periodic` stream.** Decided (issue #2167): the
 acknowledgement waits until a majority has written the record, or until it
 is committed, whichever is first. This count releases the publisher's
-acknowledgement and nothing else. The commit index, votes, `read_bound`,
-apply, the offset floor and the root's log marks use fsynced positions
-only, so no member can come to hold a different record at a committed
-offset. On a stream with fsync on commit, `Quorum` waits for the commit
-index.
+acknowledgement and nothing else. The commit index, `read_bound`, apply,
+the offset floor and the root's log marks use fsynced positions only, so
+no member can come to hold a different record at a committed offset. On a
+stream with fsync on commit, `Quorum` waits for the commit index.
+
+Votes are the exception, and must be. A voter compares the candidate's
+last log id with the last entry its own log has accepted, written or not
+(openraft's `handle_vote_req`). Were it to compare fsynced positions, a
+follower that had written an acknowledged record but not yet fsynced it
+would vote for a candidate without the record, and that candidate's first
+append would cut the record from the follower: an acknowledged record lost
+with no crash at all.
 
 A follower's answer to an append comes after its fsync, so its written
 position travels in a message of its own (`raft::RaftEngine::await_quorum_ack`,
@@ -599,8 +606,12 @@ What the acknowledgement promises, and what it does not
 (`docs/formal/FelixRaftWritten.tla`):
 
 - With no power cut, an acknowledged record is in every later leader's
-  log. Process crashes, changes of leader and a membership change lose
-  nothing: a killed broker keeps what it wrote.
+  log: a killed broker keeps what it wrote. The model has checked this to
+  the end for one term with process crashes (`FelixRaftWrittenCrash.cfg`).
+  Changes of leader and a membership change are modelled
+  (`FelixRaftWrittenFailover.cfg`, `FelixRaftWrittenTerms.cfg`,
+  `FelixRaftWrittenJoint.cfg`, `FelixRaftWrittenJointFailover.cfg`), but
+  those runs have not finished, so this is not yet checked across them.
 - It can be lost only if a copy that held it loses power before its fsync
   and a majority then elects without a copy that still holds it. At RF 3
   one power cut is enough. The leader and one follower hold the record. One
@@ -622,6 +633,7 @@ What the acknowledgement promises, and what it does not
 > `a_majority_of_one_half_of_a_joint_membership_is_not_enough`,
 > `a_report_from_another_term_does_not_make_a_majority`,
 > `a_deposed_leader_acknowledges_nothing_on_reports`,
+> `a_follower_that_has_written_a_record_refuses_a_candidate_without_it`,
 > `a_majority_is_the_leader_and_the_voters_that_said_so`,
 > `a_learners_report_is_not_counted`,
 > `a_leader_outside_the_voters_does_not_count_itself`,

@@ -254,7 +254,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[1, 3][..],
+        &[2, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -310,13 +310,43 @@ fn trailing_bytes_and_other_layouts_are_refused() {
     longer.put_u8(0);
     assert!(decode_request(longer.freeze()).is_err());
     let mut other = BytesMut::from(&bytes[..]);
-    other[0] = 2;
+    other[0] = 3;
     assert!(decode_request(other.freeze()).is_err());
 
     let reply = encode_reply(&every_reply()[0]);
     let mut other = BytesMut::from(&reply[..]);
-    other[0] = 2;
+    other[0] = 3;
     assert!(decode_reply(other.freeze()).is_err());
+}
+
+/// A build from before the report byte writes layout 1 with a header one
+/// byte shorter. It is refused by its layout, before any field is read, so
+/// the error names the mismatch instead of a length.
+#[test]
+fn a_layout_1_header_is_refused_by_layout() {
+    let sent = every_request().remove(2);
+    let bytes = encode_request(&sent).expect("encode");
+    // Layout 1 had the same fields up to the beat and no report byte.
+    let mut head = BytesMut::new();
+    put_group(&mut head, &sent.group).expect("group");
+    put_member(&mut head, &sent.to).expect("member");
+    let report_at = 2 + 4 + head.len() + 8;
+    let mut old = bytes.to_vec();
+    old[0] = 1;
+    old.remove(report_at);
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 1"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 1;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 1 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 1"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does
