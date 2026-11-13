@@ -88,7 +88,8 @@
 (*   campaign taken later than allowed. Neither can break the checks. The  *)
 (*   lease check reads the clock when it runs; a check that used a clock   *)
 (*   value cached at the last tick would add the tick to the lease.        *)
-(*   Blank entries, membership, snapshots, pre-vote, leadership transfer.  *)
+(*   Blank entries, membership, snapshots, pre-vote. A failed campaign:    *)
+(*   `StepDown` stands for a leader that learns of a higher term from one. *)
 (*   One in-flight message per pair and direction; a newer answer replaces *)
 (*   an older one still in flight. Any message can be lost. A message that *)
 (*   could only be discarded is dropped at once.                           *)
@@ -116,6 +117,26 @@
 (*                              stalled for a lease does not pass the      *)
 (*                              check, so it cannot block a failover.      *)
 (*                                                                         *)
+(* What Felix sees, and three ways the old leader's window is bypassed     *)
+(* (issue 2249). Off in every config that predates them, where their       *)
+(* variables do not move.                                                  *)
+(*                                                                         *)
+(*   RoleSync = FALSE: Felix reads openraft's role and `last_quorum_acked` *)
+(*   from metrics, which arrive late (`Notice`). Its check runs on the     *)
+(*   term and age it last saw.                                             *)
+(*   LeaderBypass: openraft grants a vote to the leader the voter follows  *)
+(*   inside the window (`from_leased_leader`). A leader that stepped down  *)
+(*   (`StepDown`) campaigns `ElectionTimeoutMin` later, so with a late     *)
+(*   role the lease must not outlast that: `Lease <= ElectionTimeoutMin`.  *)
+(*   Transfers: the leader stops heartbeats and sends `TransferLeader`.    *)
+(*   A follower that takes it clears its window, the target campaigns at   *)
+(*   once and its voters grant inside the window. A transfer that does not *)
+(*   finish makes the leader step down and campaign (`TransferExpire`).    *)
+(*   Felix voids its lease for the term before the message leaves.         *)
+(*   Suspends: a broker's monotonic clock stops while real time runs, and  *)
+(*   it takes no step. On waking Felix sees the jump against boottime and  *)
+(*   refuses local acks until its clock has run one more lease.            *)
+(*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
 (*   LeaseTooLong           -- the config accepts a lease that breaks the  *)
@@ -140,6 +161,15 @@
 (*                             leader's own vote is demoted with none.     *)
 (*   DeliverUncommitted     -- the subscriber reads the leader's whole     *)
 (*                             log.                                        *)
+(*   LeaseOverMin           -- the config accepts a lease longer than      *)
+(*                             `ElectionTimeoutMin` while the role is read *)
+(*                             late.                                       *)
+(*   TransferVoids = FALSE  -- a transfer does not void the lease.         *)
+(*   VoidBeforeSend = FALSE -- the void is its own step, any time after    *)
+(*                             the message left, as a metrics watch would  *)
+(*                             do it.                                      *)
+(*   SuspendCheck = FALSE   -- no wake check: a VM pause, or a platform    *)
+(*                             with no clock that counts suspended time.   *)
 (*   SupportNotDurable      -- (Part 2) support and the recorded epoch are *)
 (*                             lost at a restart.                          *)
 (*   VoteWhileSupported     -- (Part 2) a vote is granted while support    *)
@@ -167,7 +197,9 @@ CONSTANTS
     RestartForgetsWindow, RestartRenewsFollowed, DeliverUncommitted,
     StoreLeases, SupportTime, MaxEpoch, MaxBeats, MaxStalls,
     SupportNotDurable, VoteWhileSupported, LeaseKeptAcrossRestart,
-    ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking
+    ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking,
+    ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, LeaseOverMin,
+    MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends, SuspendCheck
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -176,6 +208,10 @@ Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
 ASSUME LeaseTooLong \/ Lease * DriftHi <= Promise * DriftLo
 ASSUME DriftBeyondBound \/ (DriftLo <= RateLo /\ RateHi <= DriftHi)
 ASSUME 1 <= RateLo /\ RateLo <= RateHi
+ASSUME ElectionTimeoutMin \in 0..ElectionTimeout
+\* A stepped-down leader campaigns `ElectionTimeoutMin` after it stepped
+\* down, on its own clock, and its followers grant it inside their window.
+ASSUME LeaseOverMin \/ RoleSync \/ Lease <= ElectionTimeoutMin
 
 VARIABLES
     term, votedFor, role, log, commit,
@@ -198,13 +234,29 @@ VARIABLES
     fortAck,      \* fortAck[l][f]: the epoch f recorded when it elected l
     beatMsgs,
     beats,        \* liveness heartbeats sent so far, to bound the run
-    stalledAge    \* how long a broker's disk has been stalled, or None
+    stalledAge,   \* how long a broker's disk has been stalled, or None
+    \* Issue 2249
+    leaderOf,     \* on disk: the leader named by the committed vote, or Nobody
+    downAge,      \* how long ago this broker stepped down as leader
+    stepDowns,
+    seenTerm,     \* Felix's view: the term it believes it leads, or 0
+    seenAge,      \* Felix's view: age of `last_quorum_acked` as last seen
+    xfer,         \* openraft: the term this broker started a transfer in, or 0
+    voidTerm,     \* Felix: the term whose lease a transfer voided, or 0
+    auth,         \* a transfer this broker campaigns for: <<leader, term>>
+    xmsgs,        \* TransferLeader messages in flight
+    transfers,
+    suspended,
+    sinceWake,    \* how long ago this broker woke, as Felix measures it
+    suspends
 
 groupVars == <<term, votedFor, followed, role, log, commit, heardAge, startAge, ackAge,
               match>>
 storeVars == <<epoch, sup, fortEpoch, supAge, fortAck, beatMsgs, beats, stalledAge>>
 histVars  == <<delivered, acked, staleAck, elected, nextId>>
-vars == <<groupVars, msgs, restarts, histVars, storeVars>>
+xVars     == <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
+              xmsgs, transfers, suspended, sinceWake, suspends>>
+vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars>>
 
 None == -1
 Symm == Permutations(Servers)
@@ -248,7 +300,21 @@ QAge(l) ==
                     Majority({l} \cup {f \in Others(l) : ackAge[l][f] <= a})}
     IN IF good = {} THEN Old ELSE Min(good)
 
-GroupLease(l) == role[l] = "leader" /\ QAge(l) < Lease
+NoAuth == <<Nobody, 0>>
+Up(b) == ~suspended[b]
+
+\* The term and age Felix's check reads.
+FelixTerm(l) ==
+    IF RoleSync THEN (IF role[l] = "leader" THEN term[l] ELSE 0) ELSE seenTerm[l]
+FelixAge(l) == IF RoleSync THEN QAge(l) ELSE seenAge[l]
+
+GroupLease(l) ==
+    LET t == FelixTerm(l) IN
+    /\ t # 0
+    /\ FelixAge(l) < Lease
+    /\ voidTerm[l] # t
+    /\ Up(l)
+    /\ sinceWake[l] >= Lease
 
 \* Part 2 lease: a majority recorded this epoch and still answers.
 StoreLease(l) ==
@@ -279,11 +345,15 @@ SupportStands(v) ==
     /\ sup[v][l].epoch = fortEpoch[v]
     /\ sup[v][l].left # None
 
+\* openraft grants inside the window to the leader the voter follows, and to
+\* a transfer that leader authorized. The node layer's hold drops both.
 MayGrant(v, c) ==
-    /\ ~LeaderHolds(v)
+    /\ ~LeaderHolds(v) \/ auth[c] = <<v, term[v]>>
     /\ IF StoreLeases
        THEN VoteWhileSupported \/ ~SupportStands(v) \/ votedFor[v] = c
-       ELSE /\ VoteInWindow \/ ~InWindow(v)
+       ELSE /\ \/ VoteInWindow \/ ~InWindow(v)
+               \/ LeaderBypass /\ leaderOf[v] = c
+               \/ auth[c] # NoAuth /\ auth[c] = <<leaderOf[v], term[v]>>
             /\ RestartForgetsWindow \/ ~JustStarted(v)
 
 \* The epoch a voter records for the leader it elects: the one it supports
@@ -316,11 +386,29 @@ Init ==
     /\ beatMsgs = {}
     /\ beats = 0
     /\ stalledAge = [b \in Servers |-> None]
+    /\ leaderOf = [b \in Servers |-> Nobody]
+    /\ downAge = NoAges
+    /\ stepDowns = 0
+    /\ seenTerm = [b \in Servers |-> 0]
+    /\ seenAge = NoAges
+    /\ xfer = [b \in Servers |-> 0]
+    /\ voidTerm = [b \in Servers |-> 0]
+    /\ auth = [b \in Servers |-> NoAuth]
+    /\ xmsgs = {}
+    /\ transfers = 0
+    /\ suspended = [b \in Servers |-> FALSE]
+    /\ sinceWake = NoAges
+    /\ suspends = 0
 
 \* One tick of real time. Every age grows by the gain of the clock it is
-\* read on: a message's stamp is read on the leader's clock.
+\* read on: a message's stamp is read on the leader's clock. A suspended
+\* broker's monotonic clock gains nothing.
 Tick ==
-    \E d \in [Servers -> RateLo..RateHi] :
+    \E d \in [Servers -> 0..RateHi] :
+        /\ \A b \in Servers : IF suspended[b] THEN d[b] = 0 ELSE d[b] >= RateLo
+        /\ downAge' = [b \in Servers |-> Grow(downAge[b], d[b])]
+        /\ seenAge' = [b \in Servers |-> Grow(seenAge[b], d[b])]
+        /\ sinceWake' = [b \in Servers |-> Grow(sinceWake[b], d[b])]
         /\ heardAge' = [b \in Servers |-> Grow(heardAge[b], d[b])]
         /\ startAge' = [b \in Servers |-> Grow(startAge[b], d[b])]
         /\ ackAge' = [l \in Servers |-> [f \in Servers |-> Grow(ackAge[l][f], d[l])]]
@@ -337,14 +425,19 @@ Tick ==
                             ELSE GrowS(stalledAge[b], d[b])]
         /\ UNCHANGED <<term, votedFor, followed, role, log, commit, match, restarts,
                        histVars, epoch, fortEpoch, fortAck, beats>>
+        /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, xfer, voidTerm, auth, xmsgs,
+                       transfers, suspended, suspends>>
 
 Elect(c, Q, nt) ==
     /\ c \in Q /\ Majority(Q)
+    /\ \A v \in Q : Up(v)
     /\ role[c] # "leader"
     /\ \A v \in Q : term[v] < nt
     \* A restarted member is held from campaigning ("Restarted members").
+    \* A transfer's target campaigns at once.
     /\ IF StoreLeases THEN ~SupportStands(c)
-       ELSE ~InWindow(c) /\ ~JustStarted(c)
+       ELSE IF auth[c] # NoAuth THEN TRUE
+       ELSE ~InWindow(c) /\ ~JustStarted(c) /\ downAge[c] >= ElectionTimeoutMin
     /\ \A v \in Q \ {c} : LogOk(c, v) /\ MayGrant(v, c)
     /\ term' = [b \in Servers |-> IF b \in Q THEN nt ELSE term[b]]
     /\ votedFor' = [b \in Servers |-> IF b \in Q THEN c ELSE votedFor[b]]
@@ -370,28 +463,39 @@ Elect(c, Q, nt) ==
                               ELSE IF b \in Q THEN NoMatch ELSE fortAck[b]]
        ELSE UNCHANGED <<fortEpoch, fortAck>>
     /\ msgs' = LiveMsgs(msgs, term', role')
+    /\ leaderOf' = [b \in Servers |-> IF b \in Q THEN Nobody ELSE leaderOf[b]]
+    /\ auth' = [b \in Servers |-> IF b \in Q THEN NoAuth ELSE auth[b]]
+    \* A leader that votes has stepped down, and waits before it campaigns.
+    /\ downAge' = [b \in Servers |->
+                     IF b = c THEN Old
+                     ELSE IF LeaderBypass /\ b \in Q /\ role[b] = "leader" THEN 0
+                     ELSE downAge[b]]
     /\ UNCHANGED <<log, commit, startAge, restarts, delivered, acked, staleAck, nextId,
                    epoch, sup, supAge, beatMsgs, beats, stalledAge>>
+    /\ UNCHANGED <<stepDowns, seenTerm, seenAge, xfer, voidTerm, xmsgs, transfers,
+                   suspended, sinceWake, suspends>>
 
 \* Hand an append or heartbeat to the network. The stamp is taken here.
 Send(l, f) ==
     /\ ~StoreLeases
-    /\ role[l] = "leader" /\ f # l
+    /\ role[l] = "leader" /\ f # l /\ Up(l)
+    \* A transferring leader sends no heartbeat.
+    /\ xfer[l] # term[l]
     /\ ~\E m \in msgs : m.kind = "app" /\ m.from = l /\ m.to = f
     /\ msgs' = msgs \cup {[kind |-> "app", from |-> l, to |-> f,
                            term |-> term[l], age |-> 0,
                            log |-> log[l], n |-> commit[l]]}
-    /\ UNCHANGED <<groupVars, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<groupVars, restarts, histVars, storeVars, xVars>>
 
 Drop(m) ==
     /\ msgs' = msgs \ {m}
-    /\ UNCHANGED <<groupVars, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<groupVars, restarts, histVars, storeVars, xVars>>
 
 RecvApp(m) ==
     LET f == m.to
         stale == {a \in msgs : a.kind = "ack" /\ a.from = f /\ a.to = m.from}
     IN
-    /\ m.kind = "app" /\ m.term >= term[f]
+    /\ m.kind = "app" /\ m.term >= term[f] /\ Up(f)
     /\ term' = [term EXCEPT ![f] = m.term]
     /\ role' = [role EXCEPT ![f] = "follower"]
     /\ ackAge' = [ackAge EXCEPT ![f] = NoAges]
@@ -405,7 +509,10 @@ RecvApp(m) ==
                                   log |-> <<>>, n |-> Len(m.log)]},
                         term', role')
     /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
+    /\ leaderOf' = [leaderOf EXCEPT ![f] = IF LeaderBypass THEN m.from ELSE Nobody]
     /\ UNCHANGED <<votedFor, startAge, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs,
+                   transfers, suspended, sinceWake, suspends>>
 
 RecvAck(m) ==
     LET l == m.to
@@ -417,7 +524,7 @@ RecvAck(m) ==
                         /\ Majority({l} \cup {g \in Others(l) : newMatch[g] >= i})}
         newCommit == Max({commit[l]} \cup canCommit)
     IN
-    /\ m.kind = "ack" /\ role[l] = "leader" /\ m.term = term[l]
+    /\ m.kind = "ack" /\ role[l] = "leader" /\ m.term = term[l] /\ Up(l)
     /\ ackAge' = [ackAge EXCEPT ![l][f] = Min({@, age})]
     /\ match' = [match EXCEPT ![l] = newMatch]
     /\ commit' = [commit EXCEPT ![l] = newCommit]
@@ -428,10 +535,10 @@ RecvAck(m) ==
                    THEN "commit" ELSE acked[i]]
     /\ msgs' = msgs \ {m}
     /\ UNCHANGED <<term, votedFor, followed, role, log, heardAge, startAge, restarts,
-                   delivered, staleAck, elected, nextId, storeVars>>
+                   delivered, staleAck, elected, nextId, storeVars, xVars>>
 
 ClientWrite(l) ==
-    /\ role[l] = "leader" /\ nextId <= MaxWrites
+    /\ role[l] = "leader" /\ nextId <= MaxWrites /\ Up(l)
     /\ stalledAge[l] = None
     /\ log' = [log EXCEPT ![l] = Append(@, <<term[l], nextId>>)]
     /\ acked' = [acked EXCEPT ![nextId] =
@@ -441,7 +548,7 @@ ClientWrite(l) ==
                           t > term[l] /\ elected[t] # {}))
     /\ nextId' = nextId + 1
     /\ UNCHANGED <<term, votedFor, followed, role, commit, heardAge, startAge, ackAge,
-                   match, msgs, restarts, delivered, elected, storeVars>>
+                   match, msgs, restarts, delivered, elected, storeVars, xVars>>
 
 Deliver(b) ==
     LET i == Len(delivered) + 1 IN
@@ -449,10 +556,10 @@ Deliver(b) ==
     /\ i <= (IF DeliverUncommitted THEN Len(log[b]) ELSE commit[b])
     /\ delivered' = Append(delivered, log[b][i])
     /\ UNCHANGED <<groupVars, msgs, restarts, acked, staleAck, elected,
-                   nextId, storeVars>>
+                   nextId, storeVars, xVars>>
 
 Restart(b) ==
-    /\ restarts < MaxRestarts
+    /\ restarts < MaxRestarts /\ Up(b)
     /\ restarts' = restarts + 1
     /\ ackAge' = [ackAge EXCEPT ![b] = NoAges]
     /\ match' = [match EXCEPT ![b] = NoMatch]
@@ -476,7 +583,15 @@ Restart(b) ==
             /\ startAge' = [startAge EXCEPT ![b] = 0]
             /\ UNCHANGED <<epoch, supAge, fortAck, sup, fortEpoch, beatMsgs>>
     /\ msgs' = LiveMsgs(msgs, term, role')
+    \* Felix's view, the void and a transfer's authorization are in memory.
+    /\ seenTerm' = [seenTerm EXCEPT ![b] = 0]
+    /\ seenAge' = [seenAge EXCEPT ![b] = Old]
+    /\ voidTerm' = [voidTerm EXCEPT ![b] = 0]
+    /\ xfer' = [xfer EXCEPT ![b] = 0]
+    /\ auth' = [auth EXCEPT ![b] = NoAuth]
+    /\ downAge' = [downAge EXCEPT ![b] = Old]
     /\ UNCHANGED <<term, votedFor, followed, log, commit, histVars, beats, stalledAge>>
+    /\ UNCHANGED <<leaderOf, stepDowns, xmsgs, transfers, suspended, sinceWake, suspends>>
 
 (***************************************************************************)
 (* Part 2: liveness heartbeats between stores.                             *)
@@ -504,6 +619,7 @@ Beat(a, f) ==
     /\ beats' = beats + 1
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, epoch, fortEpoch,
                    supAge, fortAck, stalledAge>>
+    /\ UNCHANGED xVars
 
 RecvReply(m) ==
     LET l == m.to IN
@@ -518,11 +634,13 @@ RecvReply(m) ==
     /\ beatMsgs' = LiveBeats(beatMsgs \ {m}, epoch')
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, sup, fortEpoch,
                    fortAck, beats, stalledAge>>
+    /\ UNCHANGED xVars
 
 DropBeat(m) ==
     /\ beatMsgs' = beatMsgs \ {m}
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, epoch, sup, fortEpoch,
                    supAge, fortAck, beats, stalledAge>>
+    /\ UNCHANGED xVars
 
 Withdraw(f, l) ==
     /\ StoreLeases /\ f # l
@@ -534,6 +652,7 @@ Withdraw(f, l) ==
                   left |-> None]]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, epoch, fortEpoch,
                    supAge, fortAck, beatMsgs, beats, stalledAge>>
+    /\ UNCHANGED xVars
 
 \* The disk probe stops finishing. It does not recover in this model.
 Stall(b) ==
@@ -543,6 +662,118 @@ Stall(b) ==
     /\ stalledAge' = [stalledAge EXCEPT ![b] = 0]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, epoch, sup, fortEpoch,
                    supAge, fortAck, beatMsgs, beats>>
+    /\ UNCHANGED xVars
+
+(***************************************************************************)
+(* Issue 2249: late metrics, step-down, transfer, suspend.                 *)
+(***************************************************************************)
+
+\* Felix's metrics watch catches up with openraft.
+Notice(l) ==
+    LET lead == role[l] = "leader"
+        t == IF lead THEN term[l] ELSE 0
+        a == IF lead THEN QAge(l) ELSE Old
+    IN
+    /\ ~RoleSync /\ Up(l)
+    /\ <<seenTerm[l], seenAge[l]>> # <<t, a>>
+    /\ seenTerm' = [seenTerm EXCEPT ![l] = t]
+    /\ seenAge' = [seenAge EXCEPT ![l] = a]
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, xfer, voidTerm, auth, xmsgs, transfers,
+                   suspended, sinceWake, suspends>>
+
+\* The leader learns of a higher term from a candidate that did not win,
+\* for example in an append's answer, and steps down.
+StepDown(l) ==
+    /\ ~StoreLeases /\ stepDowns < MaxStepDowns
+    /\ role[l] = "leader" /\ Up(l)
+    /\ stepDowns' = stepDowns + 1
+    /\ role' = [role EXCEPT ![l] = "follower"]
+    /\ ackAge' = [ackAge EXCEPT ![l] = NoAges]
+    /\ match' = [match EXCEPT ![l] = NoMatch]
+    /\ downAge' = [downAge EXCEPT ![l] = 0]
+    /\ msgs' = LiveMsgs(msgs, term, role')
+    /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
+                   histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs, transfers,
+                   suspended, sinceWake, suspends>>
+
+\* `Group::transfer`: void the lease for the term, then send.
+Transfer(l, to) ==
+    /\ ~StoreLeases /\ transfers < MaxTransfers
+    /\ role[l] = "leader" /\ Up(l) /\ to # l
+    /\ xfer[l] # term[l]
+    /\ transfers' = transfers + 1
+    /\ xfer' = [xfer EXCEPT ![l] = term[l]]
+    /\ voidTerm' = IF TransferVoids /\ VoidBeforeSend
+                   THEN [voidTerm EXCEPT ![l] = term[l]] ELSE voidTerm
+    /\ xmsgs' = xmsgs \cup {[from |-> l, to |-> f, term |-> term[l], target |-> to,
+                             log |-> log[l]] : f \in Others(l)}
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, auth, suspended,
+                   sinceWake, suspends>>
+
+\* The void as a separate step after the send (VoidBeforeSend = FALSE).
+VoidLate(l) ==
+    /\ TransferVoids /\ ~VoidBeforeSend /\ Up(l)
+    /\ xfer[l] # 0 /\ voidTerm[l] # xfer[l]
+    /\ voidTerm' = [voidTerm EXCEPT ![l] = xfer[l]]
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, auth, xmsgs,
+                   transfers, suspended, sinceWake, suspends>>
+
+\* A member whose committed vote is the sender's clears its window; the
+\* target, if its log is up to date, campaigns for the transfer.
+RecvXfer(m) ==
+    LET f == m.to IN
+    /\ Up(f)
+    /\ xmsgs' = xmsgs \ {m}
+    /\ IF term[f] = m.term /\ leaderOf[f] = m.from
+       THEN /\ heardAge' = [heardAge EXCEPT ![f] = Old]
+            /\ auth' = IF f = m.target /\ IsPrefix(m.log, log[f])
+                       THEN [auth EXCEPT ![f] = <<m.from, m.term>>] ELSE auth
+       ELSE UNCHANGED <<heardAge, auth>>
+    /\ UNCHANGED <<term, votedFor, followed, role, log, commit, startAge, ackAge, match,
+                   msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm,
+                   transfers, suspended, sinceWake, suspends>>
+
+DropXfer(m) ==
+    /\ xmsgs' = xmsgs \ {m}
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
+                   transfers, suspended, sinceWake, suspends>>
+
+\* The target did not take over by the deadline: the leader steps down and
+\* campaigns at once. Allowed at any time, which only adds behaviours.
+TransferExpire(l) ==
+    /\ role[l] = "leader" /\ Up(l) /\ xfer[l] = term[l]
+    /\ role' = [role EXCEPT ![l] = "follower"]
+    /\ ackAge' = [ackAge EXCEPT ![l] = NoAges]
+    /\ match' = [match EXCEPT ![l] = NoMatch]
+    /\ downAge' = [downAge EXCEPT ![l] = Old]
+    /\ msgs' = LiveMsgs(msgs, term, role')
+    /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
+                   histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs,
+                   transfers, suspended, sinceWake, suspends>>
+
+Suspend(b) ==
+    /\ suspends < MaxSuspends /\ Up(b)
+    /\ suspends' = suspends + 1
+    /\ suspended' = [suspended EXCEPT ![b] = TRUE]
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
+                   xmsgs, transfers, sinceWake>>
+
+\* Felix sees the boottime jump on waking and refuses for one lease.
+Wake(b) ==
+    /\ suspended[b]
+    /\ suspended' = [suspended EXCEPT ![b] = FALSE]
+    /\ sinceWake' = IF SuspendCheck THEN [sinceWake EXCEPT ![b] = 0] ELSE sinceWake
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
+                   xmsgs, transfers, suspends>>
 
 Next ==
     \/ Tick
@@ -551,6 +782,10 @@ Next ==
     \/ \E m \in msgs : Drop(m) \/ RecvApp(m) \/ RecvAck(m)
     \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
     \/ \E b \in Servers : ClientWrite(b) \/ Deliver(b) \/ Restart(b) \/ Stall(b)
+    \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b) \/ TransferExpire(b)
+                          \/ Suspend(b) \/ Wake(b)
+    \/ \E l, t \in Servers : Transfer(l, t)
+    \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
 
 Spec == Init /\ [][Next]_vars
 
@@ -586,6 +821,18 @@ TypeOK ==
     /\ \A m \in beatMsgs : m.age \in Ages
     /\ beats \in 0..MaxBeats
     /\ stalledAge \in [Servers -> None..Old]
+    /\ leaderOf \in [Servers -> Servers \cup {Nobody}]
+    /\ downAge \in [Servers -> Ages]
+    /\ stepDowns \in 0..MaxStepDowns
+    /\ seenTerm \in [Servers -> 0..MaxTerm]
+    /\ seenAge \in [Servers -> Ages]
+    /\ xfer \in [Servers -> 0..MaxTerm]
+    /\ voidTerm \in [Servers -> 0..MaxTerm]
+    /\ auth \in [Servers -> ({Nobody} \X {0}) \cup (Servers \X (1..MaxTerm))]
+    /\ transfers \in 0..MaxTransfers
+    /\ suspended \in [Servers -> BOOLEAN]
+    /\ sinceWake \in [Servers -> Ages]
+    /\ suspends \in 0..MaxSuspends
 
 LeaseExclusive ==
     \A a, b \in Servers : a # b => ~(LeaseValid(a) /\ LeaseValid(b))
