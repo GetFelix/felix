@@ -19,7 +19,7 @@ use super::commit::{self, Commits};
 use super::lead::{self, Leadership};
 use super::machine::Machine;
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
-use super::propose::{self, Batch, Proposal};
+use super::propose::{self, Batch, Proposal, Unacknowledged};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use crate::engine::{CommitError, EngineHost, Written};
@@ -506,7 +506,7 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
-    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
