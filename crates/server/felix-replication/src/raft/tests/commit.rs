@@ -369,7 +369,8 @@ async fn leaders_that_commit_nothing_open_nothing() {
     cluster.stop().await;
 }
 
-/// A member of group 0 that leads now.
+/// The member of group 0 that leads the highest term now. Two can both
+/// say they lead while appends are lost.
 fn leads(cluster: &Cluster) -> Option<GroupStatus> {
     let statuses = cluster.statuses(0).into_iter();
     statuses
@@ -378,8 +379,9 @@ fn leads(cluster: &Cluster) -> Option<GroupStatus> {
 }
 
 /// Wait for the leader every member follows to open at its own term with
-/// something committed, then check that every host was told of its terms in
-/// order: each opened once, and closed before a later one opened.
+/// something committed and every other host to be closed, then check that
+/// every host was told of its terms in order: each term opened at most once,
+/// and closed before a later one opened.
 async fn opens_at_its_term(cluster: &Cluster, hosts: &HashMap<&'static str, Arc<Told>>) {
     let opened = || {
         let leader = cluster.leader(0)?;
@@ -389,6 +391,14 @@ async fn opens_at_its_term(cluster: &Cluster, hosts: &HashMap<&'static str, Arc<
     };
     let status = eventually(opened).await;
     assert!(status.committed.is_some(), "opened with nothing committed");
+    let others_closed = || {
+        let mut others = hosts
+            .iter()
+            .filter(|(broker, _)| **broker != &*status.member.broker);
+        let open = |told: &Told| told.all().last().is_some_and(|(what, _)| *what == "opened");
+        others.all(|(_, told)| !open(told)).then_some(())
+    };
+    eventually(others_closed).await;
     for (broker, told) in hosts {
         let told = told.all();
         let mut open = None;
