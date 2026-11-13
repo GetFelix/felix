@@ -158,6 +158,10 @@ pub struct GroupStatus {
     /// Timer checks dropped because the group had not taken one by the next
     /// interval. It rises while a group is too busy to look at its timers.
     pub dropped_ticks: u64,
+    /// Calls made to openraft for publishes. Each carries every batch that
+    /// was queued when it was made, so under load this is well below the
+    /// number of batches.
+    pub client_writes: u64,
 }
 
 enum Slot {
@@ -497,7 +501,6 @@ impl GroupRuntime {
         self.inner.registry.ticker_restarts.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
     }
