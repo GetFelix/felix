@@ -165,9 +165,9 @@ impl Hold {
         let asked_at = self.versions.lock().expect("versions lock").epoch();
         // Silence releases a first-conflict mark, so a member that is only
         // slow gets the watch's longer bound before it counts as silent.
-        let answer = match probe(client, base, &Asker::default(), ASK_TIMEOUT).await {
+        let answer = match probe(client, target, base, &Asker::default(), ASK_TIMEOUT).await {
             Some(version) => Some(version),
-            None => probe(client, base, &Asker::default(), PROBE_TIMEOUT).await,
+            None => probe(client, target, base, &Asker::default(), PROBE_TIMEOUT).await,
         };
         self.versions
             .lock()
