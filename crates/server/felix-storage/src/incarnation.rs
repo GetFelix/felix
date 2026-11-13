@@ -247,6 +247,8 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     let Some(name) = dir.file_name() else {
         return Ok(false);
     };
+    // Before the shortcut: a retry after a failed sync finds `dir` gone.
+    crate::run_state::check_records(root, &name.to_string_lossy())?;
     if !crate::fs::exists(dir) {
         return Ok(false);
     }
@@ -265,8 +267,19 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
-    sync_dir(root).map_err(StorageError::Io)?;
-    sync_dir(&deleted).map_err(StorageError::Io)?;
+    // A failed sync here leaves the root's entries in doubt, like a node
+    // record's.
+    let name = name.to_string_lossy();
+    crate::run_state::stop_records_on_sync_failure(
+        root,
+        &name,
+        sync_dir(root).map_err(StorageError::Io),
+    )?;
+    crate::run_state::stop_records_on_sync_failure(
+        &deleted,
+        &name,
+        sync_dir(&deleted).map_err(StorageError::Io),
+    )?;
     purge_in_background(root.to_path_buf());
     Ok(true)
 }

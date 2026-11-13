@@ -565,7 +565,7 @@ impl Writer {
                 true
             }
             Ok(Err(err)) if err.is_sync_failure() => {
-                tracing::error!(error = %err, "a sync of the control-plane view failed; it is not written again until the broker restarts");
+                tracing::error!(error = %err, "the control-plane view could not be synced; it is not written again until the broker restarts");
                 self.stopped = true;
                 false
             }

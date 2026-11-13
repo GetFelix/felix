@@ -233,7 +233,7 @@ fn ready_status(
             }))
             .collect();
         lines.push(
-            "reboot the host before restarting the broker; the broker log names each shard"
+            "reboot the host before restarting the broker; the broker log has the details"
                 .to_string(),
         );
         (

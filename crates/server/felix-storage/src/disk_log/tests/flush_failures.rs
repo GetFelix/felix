@@ -532,3 +532,27 @@ async fn a_failed_node_record_sync_is_not_retried() {
         }
     }
 }
+
+/// The incarnation record is written once and then found in place, so a
+/// retry after a failed sync of it must be refused rather than find it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_incarnation_record_sync_is_not_retried() {
+    use crate::incarnation::marker;
+
+    for skip in 0.. {
+        let sim = Sim::new("in-play", skip);
+        crate::fs::create_dir_all(&sim.0).expect("root");
+        sim_fs::fail_flush(&sim.0, skip).expect("arm");
+        let written = marker::record_in_play(&sim.0);
+        if !sim_fs::flush_failed(&sim.0).expect("disarm") {
+            written.expect("no flush failing");
+            assert!(skip > 0, "no flush");
+            break;
+        }
+        written.expect_err("the failed sync was reported as written");
+        let retried = marker::record_in_play(&sim.0)
+            .err()
+            .unwrap_or_else(|| panic!("flush {skip}: written again"));
+        assert!(retried.is_sync_failure(), "flush {skip}: {retried}");
+    }
+}

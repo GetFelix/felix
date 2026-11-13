@@ -344,10 +344,14 @@ impl Offloader {
                         return Err(StorageError::SyncFailed("injected".to_string()));
                     }
                     crate::io::sync_all(&crate::fs::File::open(&path)?)?;
+                    // The store resolves its prefix, so `path` may spell the
+                    // root differently (a symlink, `/var` on macOS). The climb
+                    // must still stop there, not sync every ancestor.
+                    let top = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
                     let mut dir = path.parent();
                     while let Some(current) = dir {
                         crate::io::sync_dir(current)?;
-                        if current == root {
+                        if current == root || current == top {
                             break;
                         }
                         dir = current.parent();

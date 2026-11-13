@@ -335,7 +335,7 @@ fn a_poisoned_log_makes_the_broker_not_ready() {
             body,
             "a log of tenant t is poisoned: a flush of <shard> failed (EIO)\n\
              a log of tenant t is poisoned: a truncation or reset failed: no space\n\
-             reboot the host before restarting the broker; the broker log names each shard"
+             reboot the host before restarting the broker; the broker log has the details"
         );
     }
 }
@@ -355,7 +355,7 @@ fn a_failed_node_record_makes_the_broker_not_ready() {
         assert_eq!(
             body,
             "a sync of the node record copy-trust failed: durability sync failed: EIO\n\
-             reboot the host before restarting the broker; the broker log names each shard"
+             reboot the host before restarting the broker; the broker log has the details"
         );
     }
 }

@@ -731,34 +731,46 @@ fn write(root: &Path, record: &[u8], durable: bool) -> Result<()> {
 /// sync could then succeed without making any rename durable. See
 /// [`failed_records`].
 pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
-    if durable && let Some(first) = stopped_by(root) {
-        return Err(refused(name, &first));
+    if durable {
+        check_records(root, name)?;
     }
-    let written = replace_file(root, name, bytes, durable);
-    if let Err(err) = &written
+    stop_records_on_sync_failure(root, name, replace_file(root, name, bytes, durable))
+}
+
+/// Refuse a durable change to `name` in `dir` once a sync there has failed.
+/// See [`write_atomically`].
+pub(crate) fn check_records(dir: &Path, name: &str) -> Result<()> {
+    match stopped_by(dir) {
+        Some(first) => Err(refused(name, &first)),
+        None => Ok(()),
+    }
+}
+
+/// Stop durable changes in `dir` if `result` is a failed sync of `name`
+/// there. See [`write_atomically`].
+pub(crate) fn stop_records_on_sync_failure<T>(
+    dir: &Path,
+    name: &str,
+    result: Result<T>,
+) -> Result<T> {
+    if let Err(err) = &result
         && err.is_sync_failure()
     {
-        stop_records(root, name, err);
+        stop_records(dir, name, err);
     }
-    written
+    result
 }
 
 /// Remove the record `name` under `root` durably, under the same stop as
 /// [`write_atomically`].
 pub(crate) fn remove_record(root: &Path, name: &str) -> Result<()> {
-    if let Some(first) = stopped_by(root) {
-        return Err(refused(name, &first));
-    }
+    check_records(root, name)?;
     match crate::fs::remove_file(root.join(name)) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => return Err(err.into()),
     }
-    let synced = sync_dir(root).map_err(StorageError::from);
-    if let Err(err) = &synced {
-        stop_records(root, name, err);
-    }
-    synced
+    stop_records_on_sync_failure(root, name, sync_dir(root).map_err(StorageError::from))
 }
 
 fn refused(name: &str, first: &FailedRecord) -> StorageError {

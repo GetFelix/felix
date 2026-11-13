@@ -663,15 +663,23 @@ Four properties:
 
    The flush thread poisons the log itself, before it replies. A caller
    that stopped waiting on the flush (a dropped future, a runtime shutting
-   down) cannot leave a failed sync unrecorded.
+   down) cannot leave a failed sync unrecorded. The io_uring flusher is the
+   exception for now: there the caller still records the failure, so a
+   dropped flush can lose it
+   ([#2492](https://github.com/GetFelix/felix/issues/2492)).
+
+   Failing to open a directory to sync it is not a failed sync. No sync was
+   issued, so nothing can have been dropped, and the operation just fails.
 
    **The same rule beside the logs.** Three kinds of file outside a log's
    segments are synced too, and each follows the fsyncgate rule its own way:
 
-   - *Node records* under the durable root: the storage id, the
-     registration, `head-trimmed`, `record-headers`, `record-generations`,
-     `replaced-storage`, `lost-copy`, `rotated-ids`, `copy-trust`,
-     `run-token`, and `controlplane.view` (written or removed). There is no
+   - *Node records* under the durable root: the storage id, `run-state`,
+     the registration, `head-trimmed`, `record-headers`,
+     `record-generations`, `replaced-storage`, `lost-copy`, `rotated-ids`,
+     `copy-trust`, `copy-trust-kept`, `run-token`, `controlplane.view`
+     (written or removed), the stream incarnation markers under `.streams/`,
+     and moving a deleted stream's directory into `.deleted/`. There is no
      log to poison, so a
      failed sync of one stops every later durable record in that directory
      for the rest of the process. The write that failed returns
@@ -680,7 +688,9 @@ Four properties:
      copy, the run record stops vouching for the boot, and a stop is not
      clean. `/ready` answers 503 with a line such as `a sync of the node
      record copy-trust failed: (...)`. The control-plane view writer stops
-     writing instead of trying again every tick.
+     writing instead of trying again every tick. Because the run record no
+     longer vouches for the boot, the next start gives the directory a new
+     storage id, and peers send it their copies again.
    - *Offloaded copies* (see "Tiered storage: offload"). A failed sync of an
      uploaded object or of a directory above it, or of the directory a
      retired shard's copy was removed from, stops offloading to that archive
@@ -2227,7 +2237,7 @@ read-only one or a full one never stops a stream log from opening or taking
 publishes. A pass that cannot open the directory or write a copy fails, adds
 to `felix_storage_offload_failures_total` and is tried again on the next tick.
 A failed sync is the exception: it stops offloading to that archive until the
-broker restarts (see "A failed fsync poisons the log").
+broker restarts (see "The same rule beside the logs" under "Recovery").
 The broker logs `offload pass failed` at the first failure and then at most
 every 30 seconds, backing off to every 15 minutes, with the shard, the
 directory and the number of failed passes. When a pass succeeds again it logs
