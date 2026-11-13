@@ -1272,25 +1272,66 @@ way a held `Quorum` batch is released on the hybrid.
 > `offsets_holding_no_record_are_reported_skipped` and
 > `a_shard_bounded_at_every_level_with_no_bounds_shows_nothing`.
 
-Not built yet: the stream's handle and the Raft member do not share one
-log, because nothing routes a shard to the engine, so a follower's history
-reads are bounded but not yet served from the member's log. The routing
-change has to:
+**A stream over the member's log.** `Broker::open_stream_on_engine_log`
+opens a durable stream shard over a log that belongs to its Raft member.
+The broker never appends to that log, and four rules follow from it.
 
-- send every publish and trim of a Raft stream through the engine. The
-  ordinary claim path takes offsets from the broker's own log, and a trim
-  waits at the bound only on a `Quorum` stream;
-- keep the commit hold of a Raft stream on deposition. Everything in it
-  already passed `await_commit`, and the hybrid's "discard what is held"
-  would drop committed records from live delivery;
+- The stream starts at what the engine committed, never at the log's tail.
+  Entries past the commit index may be cut by a later leader, so a reader
+  asking for the latest must not join above them. While the engine cannot
+  say what is committed the stream starts at 0 with an empty replay ring,
+  and readers are served from the log up to the bound. When this broker
+  becomes leader, `Broker::lead_from_tail` moves the stream up to the
+  committed end. It has to run before the first publish of the new term is
+  handed over.
+- Every write that takes its own offsets is refused with
+  `NotOnEngineStream`: an ordinary publish, a conditional or idempotent
+  one, an atomic commit and a head trim. A record the broker appended by
+  itself would be an entry the group never agreed on. Publishes go through
+  `propose_publish` only (#2446 lists what is refused).
+- The commit hold survives deposition. A batch joins the hold only after
+  `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
+  what a deposed leader held, drops nothing here.
+- A broker that runs its durable streams on Raft opens no log of its own
+  for one (`Broker::leave_durable_streams_to_engines`). Registering a
+  stream does not open shard 0, and a request for a shard its group has
+  not opened here is answered `ShardNotOpen` (retry). Opened on first use,
+  as the hybrid does, the shard would be served from an empty log beside
+  the group's.
+
+**Batches waiting for a commit are bounded.** A leader cut off from its
+majority is not deposed, and each batch handed to it waits with its payload
+in memory. `propose_publish` refuses a new batch with `ProposalsStalled`
+while the oldest unsettled one has waited longer than the publish timeout,
+so what is held is at most one timeout's worth of publishes.
+
+**A reader resuming after a batch that was given up on starts above it.**
+The gap that stands in the batch's place carries the end of what the engine
+wrote, and the stream's sequence moves up to it when the ring is emptied.
+A reader that resumes while the ring is empty then reads the batch from the
+log, where it is if it committed, instead of joining live below it.
+
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `it_starts_at_the_committed_end_not_the_tail`,
+> `leading_moves_it_to_the_committed_end`,
+> `every_write_outside_its_engine_is_refused`, `a_head_trim_is_refused`,
+> `a_deposed_leader_still_delivers_what_it_holds` and
+> `a_shard_its_engine_has_not_opened_is_refused`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `an_engine_that_settles_nothing_is_handed_no_more_batches` and
+> `a_reader_resuming_after_a_batch_given_up_on_starts_above_it`.
+
+Not built yet: nothing in the broker service opens a stream this way, so no
+shard runs on Raft. The routing change has to:
+
+- open each Raft shard's member and its stream over one log, and send
+  every publish of the stream through the engine;
 - answer `ReadBounds` from `RaftReads` for Raft shards only and from the
   hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
   refuses any shard it holds no group for;
-- bound the batches waiting for commit. A leader cut off from its majority
-  is not deposed, so each publish leaves a task waiting until the partition
-  heals (#2428);
-- move the ring's start past a gap batch, so a reader resuming while the
-  ring is empty reads that batch from the log instead of missing it (#2428).
+- make sure brokers never disagree on a shard's engine: a peer that does
+  not run Raft is never sent a Raft message, and a log directory written
+  by one engine is refused by the other.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
