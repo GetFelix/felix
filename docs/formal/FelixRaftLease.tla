@@ -188,6 +188,13 @@
 (*                             took its leader's message. A vote given to a*)
 (*                             candidate gets no window, and a restarted   *)
 (*                             leader's own vote is demoted with none.     *)
+(*   RestoreOwnLead         -- a restarted broker whose stored vote is its *)
+(*                             own committed one (`led`), or the only      *)
+(*                             voter, campaigns without the hold.          *)
+(*   RestoreAnyVote         -- the hold is skipped for any stored vote,    *)
+(*                             also one given to another broker.           *)
+(*   HoldExemptsNamed       -- a restarted broker inside its hold grants   *)
+(*                             the candidate its stored vote names.        *)
 (*   DeliverUncommitted     -- the subscriber reads the leader's whole     *)
 (*                             log.                                        *)
 (*   VoidOnHigherTerm = FALSE -- a leader that steps down on a higher term *)
@@ -234,7 +241,8 @@ CONSTANTS
     ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking,
     ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, VoidOnHigherTerm,
     VoidEquality, MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends,
-    SuspendCheck, WakeCheckLate
+    SuspendCheck, WakeCheckLate, RestoreOwnLead, RestoreAnyVote,
+    HoldExemptsNamed
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -248,6 +256,7 @@ ASSUME ElectionTimeoutMin \in 0..ElectionTimeout
 VARIABLES
     term, votedFor, role, log, commit,
     followed,     \* on disk: the stored vote is a leader's whose message it took
+    led,          \* on disk: the stored vote is its own, committed, for the term it led
     heardAge,     \* how long ago a leader's message was last taken
     startAge,     \* how long ago the broker started
     ackAge,       \* leader: per follower, age of the newest hand-off answered
@@ -258,6 +267,7 @@ VARIABLES
     acked,        \* history: per write, "none", "local" or "commit"
     staleAck,     \* history: a local acknowledgement behind a newer leader
     elected,      \* history: who was elected in each term
+    heldGrant,    \* history: a broker inside its hold granted a vote
     \* Part 2
     epoch,        \* store epoch, on disk
     sup,          \* sup[f][l]: f's support for l's store, on disk
@@ -283,10 +293,10 @@ VARIABLES
     suspends,
     woke          \* woken, and Felix has not yet seen the jump (WakeCheckLate)
 
-groupVars == <<term, votedFor, followed, role, log, commit, heardAge, startAge, ackAge,
-              match>>
+groupVars == <<term, votedFor, followed, led, role, log, commit, heardAge, startAge,
+              ackAge, match>>
 storeVars == <<epoch, sup, fortEpoch, supAge, fortAck, beatMsgs, beats, stalledAge>>
-histVars  == <<delivered, acked, staleAck, elected, nextId>>
+histVars  == <<delivered, acked, staleAck, elected, nextId, heldGrant>>
 xVars     == <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
               xmsgs, transfers, suspended, sinceWake, suspends, woke>>
 vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars>>
@@ -377,6 +387,14 @@ InWindow(b) == heardAge[b] < ElectionTimeout
 \* answered a leader before it stopped, so it waits out one election timeout.
 JustStarted(b) == startAge[b] < ElectionTimeout
 
+\* A restarted member may campaign at once when its stored vote is its own
+\* committed one: it took no later leader's message, so it promised nobody,
+\* and its own lease died with the process. Likewise when it is the only
+\* voter. RestoreAnyVote also skips the hold for a vote given to another.
+HoldSkipped(c) ==
+    \/ RestoreOwnLead /\ (led[c] \/ Cardinality(Servers) = 1)
+    \/ RestoreAnyVote /\ votedFor[c] # Nobody
+
 \* A leader's own refusal, as openraft keeps it.
 LeaderHolds(b) ==
     IF StoreLeases THEN StoreLease(b)
@@ -399,7 +417,10 @@ MayGrant(v, c) ==
        ELSE /\ \/ VoteInWindow \/ ~InWindow(v)
                \/ LeaderBypass /\ leaderOf[v] = c
                \/ auth[c] # NoAuth /\ auth[c] = <<leaderOf[v], term[v]>>
-            /\ RestartForgetsWindow \/ ~JustStarted(v)
+            /\ \/ RestartForgetsWindow \/ ~JustStarted(v)
+               \* The stored vote names c only while it is for v's current term:
+               \* a later leader's append replaces it in openraft.
+               \/ HoldExemptsNamed /\ votedFor[v] = c /\ c \in elected[term[v]]
 
 \* The epoch a voter records for the leader it elects: the one it supports
 \* now, or none.
@@ -409,6 +430,7 @@ Init ==
     /\ term = [b \in Servers |-> 0]
     /\ votedFor = [b \in Servers |-> Nobody]
     /\ followed = [b \in Servers |-> FALSE]
+    /\ led = [b \in Servers |-> FALSE]
     /\ role = [b \in Servers |-> "follower"]
     /\ log = [b \in Servers |-> <<>>]
     /\ commit = [b \in Servers |-> 0]
@@ -423,6 +445,7 @@ Init ==
     /\ acked = [i \in 1..MaxWrites |-> "none"]
     /\ staleAck = FALSE
     /\ elected = [t \in 1..MaxTerm |-> {}]
+    /\ heldGrant = FALSE
     /\ epoch = [b \in Servers |-> 1]
     /\ sup = [b \in Servers |-> [l \in Servers |-> NoSup]]
     /\ fortEpoch = [b \in Servers |-> 0]
@@ -469,7 +492,7 @@ Tick ==
         /\ stalledAge' = [b \in Servers |->
                             IF stalledAge[b] = None THEN None
                             ELSE GrowS(stalledAge[b], d[b])]
-        /\ UNCHANGED <<term, votedFor, followed, role, log, commit, match, restarts,
+        /\ UNCHANGED <<term, votedFor, followed, led, role, log, commit, match, restarts,
                        histVars, epoch, fortEpoch, fortAck, beats>>
         /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, xfer, voidTerm, auth, xmsgs,
                        transfers, suspended, suspends, woke>>
@@ -483,13 +506,16 @@ Elect(c, Q, nt) ==
     \* A transfer's target campaigns at once.
     /\ IF StoreLeases THEN ~SupportStands(c)
        ELSE IF auth[c] # NoAuth THEN TRUE
-       ELSE ~InWindow(c) /\ ~JustStarted(c) /\ downAge[c] >= ElectionTimeoutMin
+       ELSE /\ ~InWindow(c) /\ downAge[c] >= ElectionTimeoutMin
+            /\ ~JustStarted(c) \/ HoldSkipped(c)
     /\ \A v \in Q \ {c} : LogOk(c, v) /\ MayGrant(v, c)
     /\ term' = [b \in Servers |-> IF b \in Q THEN nt ELSE term[b]]
     /\ votedFor' = [b \in Servers |-> IF b \in Q THEN c ELSE votedFor[b]]
     \* A vote for a candidate is not committed, and the leader's own does
     \* not count: openraft demotes it at a restart.
     /\ followed' = [b \in Servers |-> b \notin Q /\ followed[b]]
+    \* The winner's own vote is committed by the quorum that granted it.
+    /\ led' = [b \in Servers |-> IF b = c THEN TRUE ELSE b \notin Q /\ led[b]]
     /\ role' = [b \in Servers |->
                   IF b = c THEN "leader"
                   ELSE IF b \in Q THEN "follower" ELSE role[b]]
@@ -498,6 +524,7 @@ Elect(c, Q, nt) ==
     /\ ackAge' = [b \in Servers |-> IF b \in Q THEN NoAges ELSE ackAge[b]]
     /\ match' = [b \in Servers |-> IF b \in Q THEN NoMatch ELSE match[b]]
     /\ elected' = [elected EXCEPT ![nt] = @ \cup {c}]
+    /\ heldGrant' = (heldGrant \/ \E v \in Q \ {c} : JustStarted(v))
     /\ IF StoreLeases
        THEN /\ fortEpoch' = [b \in Servers |->
                                IF b = c THEN 0
@@ -557,6 +584,7 @@ RecvApp(m) ==
                                   log |-> <<>>, n |-> Len(m.log)]},
                         term', role')
     /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
+    /\ led' = [led EXCEPT ![f] = FALSE]
     /\ leaderOf' = [leaderOf EXCEPT ![f] = IF LeaderBypass THEN m.from ELSE Nobody]
     /\ voidTerm' = [voidTerm EXCEPT ![f] = VoidOn(f, m.term)]
     \* openraft's target campaigns the moment it takes `TransferLeader`, so a
@@ -586,8 +614,8 @@ RecvAck(m) ==
                       /\ \E k \in 1..newCommit : log[l][k] = <<term[l], i>>
                    THEN "commit" ELSE acked[i]]
     /\ msgs' = msgs \ {m}
-    /\ UNCHANGED <<term, votedFor, followed, role, log, heardAge, startAge, restarts,
-                   delivered, staleAck, elected, nextId, storeVars, xVars>>
+    /\ UNCHANGED <<term, votedFor, followed, led, role, log, heardAge, startAge, restarts,
+                   delivered, staleAck, elected, nextId, heldGrant, storeVars, xVars>>
 
 ClientWrite(l) ==
     /\ role[l] = "leader" /\ nextId <= MaxWrites /\ Up(l)
@@ -599,15 +627,16 @@ ClientWrite(l) ==
                      (LeaseValid(l) /\ \E t \in 1..MaxTerm :
                           t > term[l] /\ elected[t] # {}))
     /\ nextId' = nextId + 1
-    /\ UNCHANGED <<term, votedFor, followed, role, commit, heardAge, startAge, ackAge,
-                   match, msgs, restarts, delivered, elected, storeVars, xVars>>
+    /\ UNCHANGED <<term, votedFor, followed, led, role, commit, heardAge, startAge, ackAge,
+                   match, msgs, restarts, delivered, elected, heldGrant, storeVars,
+                   xVars>>
 
 Deliver(b) ==
     LET i == Len(delivered) + 1 IN
     /\ Consumer /\ role[b] = "leader"
     /\ i <= (IF DeliverUncommitted THEN Len(log[b]) ELSE commit[b])
     /\ delivered' = Append(delivered, log[b][i])
-    /\ UNCHANGED <<groupVars, msgs, restarts, acked, staleAck, elected,
+    /\ UNCHANGED <<groupVars, msgs, restarts, acked, staleAck, elected, heldGrant,
                    nextId, storeVars, xVars>>
 
 Restart(b) ==
@@ -642,7 +671,7 @@ Restart(b) ==
     /\ xfer' = [xfer EXCEPT ![b] = 0]
     /\ auth' = [auth EXCEPT ![b] = NoAuth]
     /\ downAge' = [downAge EXCEPT ![b] = Old]
-    /\ UNCHANGED <<term, votedFor, followed, log, commit, histVars, beats, stalledAge>>
+    /\ UNCHANGED <<term, votedFor, followed, led, log, commit, histVars, beats, stalledAge>>
     /\ UNCHANGED <<leaderOf, stepDowns, xmsgs, transfers, suspended, sinceWake, suspends,
                    woke>>
 
@@ -748,6 +777,7 @@ StepDown(l) ==
     /\ downAge' = [downAge EXCEPT ![l] = 0]
     /\ voidTerm' = [voidTerm EXCEPT ![l] = VoidOn(l, term[l] + 1)]
     /\ msgs' = LiveMsgs(msgs, term, role')
+    /\ led' = [led EXCEPT ![l] = FALSE]
     /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
                    histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, seenTerm, seenAge, xfer, auth, xmsgs, transfers,
@@ -788,7 +818,7 @@ RecvXfer(m) ==
             /\ auth' = IF f = m.target /\ IsPrefix(m.log, log[f])
                        THEN [auth EXCEPT ![f] = <<m.from, m.term>>] ELSE auth
        ELSE UNCHANGED <<heardAge, auth>>
-    /\ UNCHANGED <<term, votedFor, followed, role, log, commit, startAge, ackAge, match,
+    /\ UNCHANGED <<term, votedFor, followed, led, role, log, commit, startAge, ackAge, match,
                    msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm,
                    transfers, suspended, sinceWake, suspends, woke>>
@@ -808,6 +838,7 @@ TransferExpire(l) ==
     /\ match' = [match EXCEPT ![l] = NoMatch]
     /\ downAge' = [downAge EXCEPT ![l] = Old]
     /\ msgs' = LiveMsgs(msgs, term, role')
+    /\ led' = [led EXCEPT ![l] = FALSE]
     /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
                    histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs,
@@ -868,6 +899,7 @@ TypeOK ==
     /\ term \in [Servers -> 0..MaxTerm]
     /\ votedFor \in [Servers -> Servers \cup {Nobody}]
     /\ followed \in [Servers -> BOOLEAN]
+    /\ led \in [Servers -> BOOLEAN]
     /\ role \in [Servers -> {"follower", "leader"}]
     /\ \A b \in Servers : \A i \in 1..Len(log[b]) : log[b][i] \in Entry
     /\ \A b \in Servers : commit[b] \in 0..Len(log[b])
@@ -880,6 +912,7 @@ TypeOK ==
     /\ nextId \in 1..(MaxWrites + 1)
     /\ acked \in [1..MaxWrites -> {"none", "local", "commit"}]
     /\ staleAck \in BOOLEAN
+    /\ heldGrant \in BOOLEAN
     /\ epoch \in [Servers -> 1..MaxEpoch]
     /\ \A f, l \in Servers : /\ sup[f][l].epoch \in 0..MaxEpoch
                              /\ sup[f][l].left \in None..SupportTime
@@ -957,6 +990,13 @@ NeverFailoverAfterLease ==
         /\ acked[i] = "local"
         /\ \E p \in 1..Len(log[a]) : log[a][p][2] = i /\ log[a][p][1] < term[b]
         /\ LeaseValid(b)
+
+\* A restarted broker leads inside its hold: the hold was skipped.
+NeverHoldSkipped ==
+    ~\E b \in Servers : role[b] = "leader" /\ restarts > 0 /\ JustStarted(b)
+
+\* A broker inside its hold grants a vote.
+NeverHeldGrant == ~heldGrant
 
 \* A broker that voided a term passes the lease check in a later one.
 NeverLeaseAfterVoid ==

@@ -747,6 +747,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
+| `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
+| `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
+| `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (73 distinct states) |
+| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so the whole group can restart, and a broker inside its hold granting the candidate its stored vote names | expected to pass the same; not registered, no result yet |
+| `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
+| `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the hold exempting any candidate | violate `LeaseExclusive` |
 | `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
 | `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
 | `FelixRaftLeaseStepDownNoVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with no void | violate `LeaseExclusive` (issue #2249) |
@@ -3146,6 +3153,32 @@ alone:
 The design does not rest the lease on the engine's rule staying as it is,
 so the gate still waits for the vote hold. Both configurations have one
 restart and two terms.
+
+**Skipping the hold for a restored leader (pull request 2445).** openraft
+restores a member as leader at a start when its stored vote is its own and
+committed. Such a member took no later leader's message, so it promised
+nobody, and its own lease died with the process; the other voters still keep
+their window and their hold. The model keeps that on disk as `led`, and
+`RestoreOwnLead` lets such a member, or the only voter, campaign without the
+hold. It campaigns in a new term rather than resuming the old one, which
+gives it no more than a resumed leader has: no lease until a quorum answers
+again. `FelixRaftLeaseRestoreLed.cfg` passes with three terms and one write,
+and `FelixRaftLeaseReachRestoreLed.cfg` shows the skip is taken.
+`FelixRaftLeaseRestoreAnyVote.cfg`, which also skips the hold for a vote
+given to another broker, fails: a follower that answered the leader just
+before it stopped campaigns at once and a voter outside the leader's window
+elects it.
+
+When the whole group restarts, the holds also drop the old leader's vote
+request. A broker inside its hold may grant the candidate its stored vote
+names (`HoldExemptsNamed`), since it promised that candidate already.
+The stored vote names the candidate only while it is for the broker's
+current term: a later leader's append replaces it. Without that condition
+the model fails `NoAckBehindNewLeader`. `FelixRaftLeaseRestoreNamed.cfg`
+checks the rule with two restarts (no result yet), and
+`FelixRaftLeaseReachHeldGrant.cfg` shows a held broker granting.
+`FelixRaftLeaseRestoreNamedAny.cfg`, where the hold exempts any candidate,
+fails.
 
 **Late metrics, step-down, transfer and suspend (issue #2249).** Felix reads
 openraft's role and `last_quorum_acked` from metrics, which arrive late

@@ -682,6 +682,8 @@ expectations=(
   "FelixRaftLeaseDeliver pass"
   "FelixRaftLeaseRestart pass"
   "FelixRaftLeaseRestartRenews pass"
+  "FelixRaftLeaseRestoreLed pass"
+  "FelixRaftLeaseRestoreSingle pass"
   "FelixRaftLeaseStepDown pass"
   "FelixRaftLeaseStepDownSync pass"
   "FelixRaftLeaseTransfer pass"
@@ -696,6 +698,10 @@ expectations=(
   "FelixRaftLeaseStoreStall pass"
   "FelixRaftLeaseStoreWide pass"
   "FelixRaftLeaseRestartForgets violates LeaseExclusive"
+  "FelixRaftLeaseRestoreAnyVote violates LeaseExclusive"
+  "FelixRaftLeaseReachRestoreLed violates NeverHoldSkipped"
+  "FelixRaftLeaseRestoreNamedAny violates LeaseExclusive"
+  "FelixRaftLeaseReachHeldGrant violates NeverHeldGrant"
   "FelixRaftLeaseStepDownNoVoid violates LeaseExclusive"
   "FelixRaftLeaseTransferKeepsLease violates LeaseExclusive"
   "FelixRaftLeaseTransferVoidLate violates LeaseExclusive"
@@ -866,8 +872,8 @@ fi
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves,
-# FelixRaftLeaseAckWide and FelixRaftLease{TransferWrite,TransferStepDown}
-# are not registered: each is registered once a dispatch run gives its
+# FelixRaftLeaseAckWide, FelixRaftLease{TransferWrite,TransferStepDown} and
+# FelixRaftLeaseRestoreNamed are not registered: each is registered once a dispatch run gives its
 # declared outcome.
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
@@ -1097,6 +1103,7 @@ weights=(
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
   "FelixRaftLeaseRestartRenews 5"
+  "FelixRaftLeaseRestoreLed 12"
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
