@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794555997749,
+  "lastUpdate": 1794556858241,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54288,6 +54288,58 @@ window.BENCHMARK_DATA = {
             "range": "3846.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1188853.04\nmean: 1189115.90\nstdev: 3846.16\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "973b385beca0197c8ea2c7281003254faea2413f",
+          "message": "feat(storage): stream Raft snapshots to a file, with a cap and one install slot (#2364) (#2400)\n\nRaft snapshots are received into a staged file with a byte cap and one install at a time: the receive slot is held for the life of every blocking create and rename, a commit refuses a file that was not read back and checked, reads are piecewise, and a damaged .recv is refused while the old snapshot stays. Closes #2364.\n\nSpec-Unaffected: snapshot transfer and staging only; the log, votes and commit index are unchanged.",
+          "timestamp": "2026-11-13T07:48:53Z",
+          "tree_id": "038cd05d21c7e1c1a4542d8e2001b6ca44260e3d",
+          "url": "https://github.com/GetFelix/felix/commit/973b385beca0197c8ea2c7281003254faea2413f"
+        },
+        "date": 1794556857491,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 617700.8,
+            "range": "29497.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 617700.80\nmean: 632874.25\nstdev: 29497.21\ncv: 4.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 617700.8,
+            "range": "29497.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 617700.80\nmean: 632874.25\nstdev: 29497.21\ncv: 4.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154885.79,
+            "range": "9046.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154885.79\nmean: 149736.51\nstdev: 9046.49\ncv: 6.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1548857.94,
+            "range": "90464.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1548857.94\nmean: 1497365.08\nstdev: 90464.93\ncv: 6.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
