@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794589361440,
+  "lastUpdate": 1794596382620,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69432,6 +69432,72 @@ window.BENCHMARK_DATA = {
             "range": "48.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 365.00\nmean: 373.60\nstdev: 48.23\ncv: 12.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14b110a6ee4a7a9b88da190d58ffe68ffcde83bc",
+          "message": "fix(controlplane): a metadata member answers standing before its node, and only as itself (#2365) (#2421)\n\n* fix(controlplane): a metadata member records with every peer before it first votes (#2374)\n\nMembers vote before the first leader writes an entry, so in a cluster's\nfirst moments every log is empty while votes are out. A member that lost\nits volume then, with FELIX_RAFT_INITIAL_CLUSTER_STATE=new still set, saw\nonly empty answers, formed again and could vote twice in one term.\n\nForming is now mark, then record, then vote. The member writes a forming\nmark to its own store, every peer that answered records its id over\nPOST /internal/raft/forming, and only then does it clear its withheld vote\nand initialize. `standing` reports the recorded ids. A member that a peer\nnames and that holds no mark lost its volume and takes the lost-disk path;\none that holds its mark was interrupted and goes on.\n\nOn redb the mark and the records are two meta keys. On the segment store\nthey are a `formation` file beside the member file, written through\nMemberFile under the store's lock.\n\nA cluster's first start now needs every member on a build with the route.\n\n* spec: the forming record in FelixRaftPlacement (#2374)\n\nForming is Intend (the member's own mark), Announce (another member's\nrecord) and Form (the vote), behind the FormRecord knob. A wipe takes the\nmark and the records the directory held.\n\nFelixRaftPlacementFormEarlyWipe now passes; its Unrecorded twin is the\nsame configuration with FormRecord off and violates AckedHeldSurvive. New:\nFormEarlyWipeFirstBoot, FormEarlyWipeTwo with its twin, and the witness\nReachEarlyWipeVotesAgain.\n\n* test(controlplane): a down member's address stays reserved\n\nclosed_addr() gave its port back, so a member of another test in the same\nprocess could bind it. Both use the same cluster id, token and member ids,\nso that member answered standing or was asked to record, and a first start\ntook the lost-volume path or never elected.\n\n* fix(controlplane): a metadata member answers standing before its Raft node, and only as itself (#2365)\n\nThe peer listener starts before the member's Raft node. Without a node the\nmember answers standing (raft: false) when its store holds no Raft state,\nand 503 on every other route. The node's routes open after the member has\nsettled whether it may vote.\n\nstanding carries the answering member's id. On a first start an empty\nanswer counts only for the member that gave it, so two addresses that\nreach one member no longer count it twice. Every Raft RPC names its target\nin x-felix-raft-target and a member refuses one meant for another id.\n\n* fix(controlplane): standing reads the log's last index from the node, not its metrics\n\n* spec: an answer counted by address in FelixRaftPlacement (#2365)\n\nFormAlias counts an answer for the address it came from. FormAlias.cfg is\nFormAfterWipes with that one knob and loses an acknowledged write.\n\n* fix(controlplane): a member records no forming member before it knows its own group\n\n* test(controlplane): peers enter the group before they record a forming member\n\n* fix(controlplane): withhold the vote before writing it, and count answers only for the member asked\n\nAn empty member entering the group now stops answering votes before it\nwrites the withheld vote, not after: the write awaits on the segment\nstore, and a vote served meanwhile was granted from an empty log (#2417).\nThe raft_core wipe tests now start the wiped member the way the server\ndoes, attaching its node only once it has entered the group.\n\nA version probe whose answer names another member is no answer, so\nadmit() and the replication hold never act on another member's level.\nThe forming announce names its target in x-felix-raft-target, so a\nmember reached at another member's address refuses it instead of\nrecording it.\n\nSpec-Unaffected: the placement model already treats a withheld vote as atomic and each record and level as coming from the member asked; these changes make the code match that.\n\n* spec: FormAlias in #2420's placement configs, FormReached and LogWipes in FormAlias\n\nEach new config sets the other change's constant to the value that keeps\nits meaning: FormAlias FALSE in the log-wipe configs, and FormReached and\nLogWipes FALSE in FormAlias, which keeps the whole-volume wipe it was\nwritten for.\n\n* test(controlplane): fit the member tests to the streamed snapshot install",
+          "timestamp": "2026-11-13T10:48:27-08:00",
+          "tree_id": "c26aea45f1567358d8968c0d4d280993616d5374",
+          "url": "https://github.com/GetFelix/felix/commit/14b110a6ee4a7a9b88da190d58ffe68ffcde83bc"
+        },
+        "date": 1794596372270,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 119,
+            "range": "2.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 117.80\nstdev: 2.39\ncv: 2.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "6.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 178.40\nstdev: 6.19\ncv: 3.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 286,
+            "range": "709.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 662.20\nstdev: 709.02\ncv: 107.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 125.60\nstdev: 1.95\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "24.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 275.80\nstdev: 24.04\ncv: 8.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 387,
+            "range": "803.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 960.40\nstdev: 803.43\ncv: 83.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
