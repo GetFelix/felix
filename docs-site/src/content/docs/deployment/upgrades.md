@@ -782,9 +782,11 @@ one group.
 **What starts over.** Everything the control plane holds: tenants,
 namespaces, streams, caches, consumer checkpoints, signing keys (so every
 issued token stops working) and shard assignments. The brokers' data does
-not carry over safely either. A new group hands out stream incarnations and
-assignment generations from the start again, and a broker that still holds
-the old ones refuses a stream whose incarnation went backwards.
+not carry over either. The new group knows nothing of the old streams and
+caches, so a broker that kept its data directory never serves that data and
+never deletes it: it stays on disk until the directory is wiped. Wipe the
+brokers too. A 0.8 broker does not yet refuse a 0.7 data directory
+([#2438](https://github.com/GetFelix/felix/issues/2438)).
 
 **How to move a cluster to 0.8.**
 
@@ -793,7 +795,8 @@ the old ones refuses a stream whose incarnation went backwards.
 3. Start every control-plane member on 0.8 with an empty
    `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`, as for a
    new cluster.
-4. Start every broker on 0.8 with an empty data directory.
+4. Start every broker on 0.8 with an empty data directory (nothing checks
+   this yet, [#2438](https://github.com/GetFelix/felix/issues/2438)).
 5. Recreate tenants, namespaces, streams and caches, and issue new tokens.
 
 **Going back.** Stop everything and start 0.7 on the directories kept in

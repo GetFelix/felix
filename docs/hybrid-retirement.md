@@ -427,13 +427,22 @@ Each has an issue and blocks what is named.
 
 ### From 0.7
 
-A 0.7 cluster cannot go straight to 0.8.0. The path:
+There is no upgrade from 0.7 data to 0.8. The control plane's metadata
+does not carry over (no conversion from redb;
+[#2234](https://github.com/GetFelix/felix/issues/2234) is not planned for
+0.8), and a broker's 0.7 data would never be served or deleted under the new
+group. Moving to 0.8 means stopping the cluster and starting every
+control-plane member and every broker on an empty data directory (docs-site
+upgrades page, "Control plane metadata in 0.8"). A 0.8 broker does not yet
+refuse a 0.7 data directory
+([#2438](https://github.com/GetFelix/felix/issues/2438)).
 
-1. Roll the cluster to the bridge build. Control-plane metadata does not
-   carry over: there is no conversion from redb
-   ([#2234](https://github.com/GetFelix/felix/issues/2234) is not planned
-   for 0.8), so the control-plane group starts over on empty data
-   directories.
+The rest of this section is the design for switching existing hybrid
+shards in place through a bridge build. It does not apply to moving 0.7 data
+to 0.8, which is not supported; it is kept for a later in-place switch. The
+path it describes:
+
+1. Roll the cluster to the bridge build.
 2. Finalize `record_generations`, then `shard_raft`. Shards switch a few at
    a time. Each is closed for one hybrid promotion plus one Raft election.
 3. When the fleet status shows no shard on the hybrid, finalize

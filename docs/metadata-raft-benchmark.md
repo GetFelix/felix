@@ -20,7 +20,7 @@ behind a load balancer. The code is
 | `placement_update` | Shard assignments rewritten by four proposers, three members | the same |
 | `replica_report` | Replica reports for every shard of one stream from 16 proposers, the steady write load of the log | the same |
 | `failover` | The leader is stopped; the time until a write through a survivor is acknowledged | `p50_ms`, `max_ms`, `rounds` (acknowledged), `failed_rounds` |
-| `snapshot_build/<1MiB,32MiB>` | A snapshot of that much metadata, with a writer running | `build_ms` (the state machine's snapshot call), `longest_write_ms` |
+| `snapshot_build/<1MiB,32MiB>` | A snapshot of that much metadata, with a writer running | `build_ms` (the state machine's snapshot call), `build_idle_ms` (the same call with no writer, just before), `snapshot_bytes`, `longest_write_ms` |
 | `restart_to_ready/<size>` | Stop a member behind that snapshot and start it again; time until it confirms leadership | `ready_ms` |
 | `snapshot_install/<size>` | Add an empty learner to a one-member group whose log is gone behind that snapshot; the time until the learner has restored the snapshot | `install_ms`, `ok` (the learner restored) |
 | `idle/m3` | Three idle members, whole process; runs first so the memory is the process plus the members | `cpu_percent`, `process_rss_mib` (Linux) |

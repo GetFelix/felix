@@ -88,9 +88,10 @@ pub fn decide_start(data_dir: &Path) -> io::Result<Start> {
         io::ErrorKind::InvalidData,
         format!(
             "{} holds a control-plane store from Felix 0.7 or earlier, which this build \
-             cannot read. Nothing was changed. Keep the group on 0.7, or start every member \
-             on an empty data directory, which drops the group's metadata (docs-site \
-             deployment/upgrades, \"Control plane metadata in 0.8\")",
+             cannot read. Nothing was changed. Keep the cluster on 0.7, or start every \
+             control-plane member and every broker on an empty data directory, which drops \
+             the group's metadata (docs-site deployment/upgrades, \"Control plane metadata \
+             in 0.8\")",
             redb.display()
         ),
     ))
