@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794533480683,
+  "lastUpdate": 1794534849523,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53820,6 +53820,58 @@ window.BENCHMARK_DATA = {
             "range": "10241.17",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 836586.42\nmean: 833735.86\nstdev: 10241.17\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dfc18baaf7c9255b1c9a275632c85977f8127c0c",
+          "message": "spec: openraft's start-time window renewal in FelixRaftLease (#2396)\n\nFor #2307: openraft 0.10.0's start-time renewal alone passes LeaseExclusive (FelixRaftLeaseRestartRenews); with neither rule, RestartForgets still violates. Corrects the claim that the engine as it is violates. The node-layer hold and its gate are unchanged.\n\nSpec-Unaffected: no Rust code changes; the spec change is the subject of this PR.",
+          "timestamp": "2026-11-13T01:48:08Z",
+          "tree_id": "7d1e292e04ae9a124bb63133444354c9405c1b3f",
+          "url": "https://github.com/GetFelix/felix/commit/dfc18baaf7c9255b1c9a275632c85977f8127c0c"
+        },
+        "date": 1794534848777,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 501240.7,
+            "range": "21822.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501240.70\nmean: 503937.80\nstdev: 21822.15\ncv: 4.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 501240.7,
+            "range": "21822.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501240.70\nmean: 503937.80\nstdev: 21822.15\ncv: 4.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116682.75,
+            "range": "2542.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116682.75\nmean: 116410.11\nstdev: 2542.27\ncv: 2.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1166827.53,
+            "range": "25422.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1166827.53\nmean: 1164101.15\nstdev: 25422.64\ncv: 2.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
