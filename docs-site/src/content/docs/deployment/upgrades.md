@@ -124,7 +124,7 @@ the older release in between is not detected.
 **A first start of the metadata Raft group.** Members now record each other
 before any of them votes
 ([forming the group](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group)),
-over a new peer route, `POST /internal/raft/forming`. A group that already
+over a new peer route, `POST /internal/raft/v2/forming`. A group that already
 runs never uses it, so upgrading one needs nothing. A group that has not
 formed yet needs every control-plane member on a release with the route: a
 member on an older release answers 404, and the others wait and log

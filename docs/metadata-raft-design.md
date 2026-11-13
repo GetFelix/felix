@@ -150,7 +150,7 @@ majority for a fact that is stale seconds later. The leader keeps the last
 heartbeat per node in memory, aged on its monotonic clock, and answers a
 heartbeat only after a read-index round confirms it still leads, so a
 partitioned ex-leader cannot extend a broker's lease. A follower forwards
-heartbeats to the leader (`/internal/raft/leader`). If the leader is an older
+heartbeats to the leader (`/internal/raft/v2/leader`). If the leader is an older
 build without that route, the follower falls back to the old log command.
 A member that has shut down stops counting itself as leader, even though
 openraft still names it, and refuses leader-only requests at once, so the
@@ -274,12 +274,12 @@ returns. `tests/raft_chaos.rs` reproduces exactly that.
 
 A member that starts with no Raft state therefore withholds its vote: it
 refuses vote requests and does not stand for election. It asks its peers
-(`GET /internal/raft/standing`) which case it is in:
+(`GET /internal/raft/v2/standing`) which case it is in:
 
 - **The group exists**: some peer's log is past the initial membership
   entry. The member follows the leader like a learner: it takes the log or a
   snapshot but has no vote. It asks the leader for its last log index
-  (`GET /internal/raft/catch-up-target`, answered only after a read-index
+  (`GET /internal/raft/v2/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
 - **First boot**: every configured member answers and is empty, *and* the
@@ -351,7 +351,7 @@ sequenceDiagram
 
 1. **Mark.** Every member has answered empty and none names this member. It
    writes a *forming mark* to its own store.
-2. **Record.** It sends `POST /internal/raft/forming` with its id and the
+2. **Record.** It sends `POST /internal/raft/v2/forming` with its id and the
    ids of the group to every member that answered. Each one writes the id to
    its own store and syncs it before it answers. A member records whatever
    its own state is: formed, empty or still withholding its vote. It refuses
