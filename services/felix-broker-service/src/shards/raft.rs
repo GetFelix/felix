@@ -75,8 +75,11 @@ pub(crate) struct RaftShards {
     /// While true, a marker read does not return.
     #[cfg(test)]
     stall_reads: tokio::sync::watch::Sender<bool>,
+    #[cfg(test)]
+    reads_under_lock: AtomicU64,
     /// Held across a whole pass, after its marker reads, and a whole
-    /// close, so a stream's delete never runs between a member's claim of its directory and its open.
+    /// close, so a stream's delete never runs between a member's claim of
+    /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
 }
 
@@ -118,6 +121,8 @@ impl RaftShards {
             off_placement: parking_lot::Mutex::default(),
             #[cfg(test)]
             stall_reads: tokio::sync::watch::Sender::new(false),
+            #[cfg(test)]
+            reads_under_lock: AtomicU64::new(0),
             open: tokio::sync::Mutex::default(),
         });
         shards
@@ -292,12 +297,16 @@ impl RaftShards {
         if self.unclaimed.lock().get(key) == Some(&incarnation) {
             return false;
         }
-        let read = match reads.take(key, incarnation, self.claims.load(Ordering::Acquire)) {
+        let read = match reads.take(key, incarnation) {
             Some(read) => read,
-            // Not read before the lock, or a directory was claimed since the
-            // reads started: an "unmarked" from before that claim may be
-            // stale. Only a close or a pass racing this one gets here.
-            None => self.read_marker(key, incarnation).await,
+            // Not read before the lock, or another pass claimed a directory
+            // while the reads ran: an "unmarked" from before that may be
+            // stale.
+            None => {
+                #[cfg(test)]
+                self.reads_under_lock.fetch_add(1, Ordering::Relaxed);
+                self.read_marker(key, incarnation).await
+            }
         };
         if read.is_ok() {
             self.unreadable.lock().remove(key);
@@ -455,17 +464,18 @@ struct Reads {
 }
 
 impl Reads {
-    /// `key`'s read at `incarnation`, unless a directory was claimed after
-    /// the reads started (`claims` is the count now).
-    fn take(
-        &mut self,
-        key: &ShardKey,
-        incarnation: u64,
-        claims: u64,
-    ) -> Option<anyhow::Result<Option<bool>>> {
+    /// Drops every read if a directory was claimed after the reads started
+    /// (`claims` is the count now). Called once the pass holds `open`: its
+    /// own claims run under it, after `claimed` for the same key, so they
+    /// cannot make another key's read stale.
+    fn check(&mut self, claims: u64) {
         if claims != self.claims {
-            return None;
+            self.read.clear();
         }
+    }
+
+    /// `key`'s read at `incarnation`.
+    fn take(&mut self, key: &ShardKey, incarnation: u64) -> Option<anyhow::Result<Option<bool>>> {
         self.read
             .remove(key)
             .filter(|(read_at, _)| *read_at == incarnation)
@@ -498,6 +508,7 @@ impl EngineShards for RaftShards {
         Box::pin(async move {
             let mut reads = self.read_markers(assignments).await;
             let mut open = self.open.lock().await;
+            reads.check(self.claims.load(Ordering::Acquire));
             let mut taken = Taken::new();
             let streams: Vec<ShardKey> = assignments
                 .keys()

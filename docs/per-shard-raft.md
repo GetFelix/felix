@@ -1522,7 +1522,9 @@ Membership changes are not built yet
   open and keeps voting, and it opens again after a restart: the broker
   reads the `engine` marker of each shard placed elsewhere, and opens the
   ones it marked. The reads run before the routing pass takes the lock that
-  stream deletes wait on, so a slow disk holds up only the pass. A broker that
+  stream deletes wait on, so a slow disk mostly holds up only the pass. A
+  shard is read again under the lock only when another pass claimed a
+  directory meanwhile or the shard was not read beforehand. A broker that
   placement adds opens an empty member that no group knows: it serves
   nothing for the shard and answers "not ready".
 

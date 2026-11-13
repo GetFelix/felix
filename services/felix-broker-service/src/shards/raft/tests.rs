@@ -419,6 +419,54 @@ async fn a_slow_marker_read_does_not_hold_up_other_shards() {
     shards.runtime.shutdown().await;
 }
 
+/// **A pass's own opens keep its marker reads.** Otherwise a restart that
+/// opens members placed here reads every other marker under the lock.
+#[tokio::test]
+async fn a_pass_that_opens_members_reads_no_marker_under_the_lock() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    // Several on each side, so the pass's map order almost always puts an
+    // open before a check of a shard placed elsewhere.
+    let here: Vec<String> = (0..4).map(|n| format!("here-{n}")).collect();
+    let away: Vec<String> = (0..8).map(|n| format!("away-{n}")).collect();
+    for stream in here.iter().chain(&away) {
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                stream,
+                StreamMetadata {
+                    durable: true,
+                    incarnation: INCARNATION,
+                    replication_factor: Some(1),
+                    ..StreamMetadata::default()
+                },
+            )
+            .await
+            .expect("stream");
+    }
+    let shards = shards(&broker);
+    let placed = here
+        .iter()
+        .map(|stream| assigned(key(stream, 0), INCARNATION))
+        .chain(away.iter().map(|stream| {
+            let mut elsewhere = assigned(key(stream, 0), INCARNATION);
+            elsewhere.leader = "broker-b".to_string();
+            elsewhere.replicas = vec!["broker-b".to_string()];
+            elsewhere
+        }));
+
+    shards.take(&mut assignments(placed)).await;
+    for stream in &here {
+        assert!(shards.runtime.status(&key(stream, 0)).is_some());
+    }
+    for stream in &away {
+        assert!(shards.runtime.status(&key(stream, 0)).is_none());
+    }
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// **A marker read as unmarked before a claim is not trusted after it.**
 /// Remembered, it would keep the claimed member closed for good once its
 /// placement dropped this broker.
