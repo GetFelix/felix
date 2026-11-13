@@ -12,9 +12,9 @@
 //! a simulated crash or reboot of the tree gives it up, as a process death
 //! gives up a `flock`.
 //!
-//! As with the metadata store's lock, `flock` is only as good as the
-//! filesystem: on NFS under Linux two opens in one process do not exclude
-//! each other. Keep the data directory on a local disk.
+//! On NFS under Linux `flock` is emulated with byte-range locks, which need
+//! a descriptor open for writing, and a directory cannot be opened that way:
+//! the open fails there. Keep the data directory on a local disk.
 
 use std::collections::HashMap;
 use std::io;

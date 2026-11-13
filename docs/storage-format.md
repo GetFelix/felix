@@ -580,14 +580,16 @@ in eight ways:
 - **One open at a time.** The open takes an exclusive, non-blocking `flock`
   on the log's directory before recovery looks at it, and holds it until
   the log is closed or its last clone is dropped. A second open fails with
-  "resource busy", whether it comes from the same process, another process
-  (a second broker, or a restore tool run against a live one), or through a
-  symlink. The kernel releases the lock when the holder exits, so a crash
-  leaves nothing to clean up. The lock is on the directory itself: no file
+  "resource busy", whether it comes from the same process, another process,
+  or through a symlink. Only a Raft open takes the lock: stream logs and
+  `felix-log-tool` do not check it yet
+  ([#2488](https://github.com/GetFelix/felix/issues/2488)). The kernel
+  releases the lock when the holder exits, so a crash leaves nothing to
+  clean up. The lock is on the directory itself: no file
   is added, and no segment file is opened or resized for it. On the
-  simulator's in-memory filesystem the claim is kept in the process. As
-  with the metadata store's lock (below), Linux NFS does not keep two opens
-  in one process apart.
+  simulator's in-memory filesystem the claim is kept in the process, and a
+  simulated crash gives it up. On Linux NFS, `flock` is emulated with
+  byte-range locks, which a directory cannot take, so the open fails there.
 
 A Raft log's directory also holds `raft-purged` and, when its state machine
 keeps a snapshot there, `raft-snapshot`. Both are described below. The log

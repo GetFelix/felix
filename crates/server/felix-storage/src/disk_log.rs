@@ -191,7 +191,9 @@ impl DiskLog {
     /// A Raft log ([`LogConfig::raft_log`]) locks `dir` until it is closed or
     /// its last clone is dropped. Another open of the directory, from this
     /// process or another, fails with [`std::io::ErrorKind::ResourceBusy`]
-    /// meanwhile. The lock goes with the process.
+    /// meanwhile. The lock goes with the process. To reopen in the same
+    /// process, close the log first: a dropped clone can live on for a moment
+    /// in a background task.
     pub fn open(
         dir: impl Into<PathBuf>,
         label: impl Into<String>,

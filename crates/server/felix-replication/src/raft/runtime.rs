@@ -532,7 +532,8 @@ impl GroupRuntime {
     /// The shard cannot be opened again until the member has stopped: an
     /// open before that is refused with [`OpenError::Closing`]. That holds
     /// even if the caller drops this future. A close that finds an earlier
-    /// one still stopping the member waits for it too, and returns true.
+    /// one still stopping the member waits for it too, and returns true,
+    /// unless [`Self::shutdown`] has taken the member over by then.
     pub async fn close(&self, shard: &ShardKey) -> bool {
         let registry = Arc::clone(&self.inner.registry);
         let (shard, group) = {
