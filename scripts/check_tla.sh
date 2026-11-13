@@ -836,6 +836,8 @@ fi
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
+# FelixRaftPlacementTransferMoveFull is FelixRaftPlacementTransferMove with a
+# write and runs nightly.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
