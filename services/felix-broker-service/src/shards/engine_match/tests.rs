@@ -95,6 +95,9 @@ async fn check(raft: bool, fleet: &[(&str, PeerCapabilities)]) -> Arc<EngineMatc
 
 /// One pass over `orders` and `scratch`, both shared with `broker-b`.
 /// Returns the streams left to this broker's engine.
+///
+/// A pass asks without waiting, so [`settled`] comes between a change in the
+/// fleet and the pass that shows it.
 async fn pass(check: &EngineMatch<Fleet>) -> Vec<String> {
     let mut assignments = HashMap::default();
     for stream in ["orders", "scratch"] {
@@ -111,6 +114,15 @@ async fn pass(check: &EngineMatch<Fleet>) -> Vec<String> {
     left
 }
 
+/// One pass to ask the peers, then wait for what `broker-b` runs to be
+/// known as `raft`.
+async fn settled(check: &EngineMatch<Fleet>, raft: bool) {
+    pass(check).await;
+    while check.engines.lock().get("broker-b") != Some(&raft) {
+        tokio::task::yield_now().await;
+    }
+}
+
 fn refusal(check: &EngineMatch<Fleet>, stream: &str) -> Option<String> {
     match check.dispatch(&key(stream), &|_| None)? {
         Dispatch::Unavailable(Reason::OwnerUnavailable(why)) => Some(why),
@@ -124,6 +136,7 @@ fn refusal(check: &EngineMatch<Fleet>, stream: &str) -> Option<String> {
 #[tokio::test]
 async fn a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker() {
     let check = check(false, &[("broker-b", PeerCapabilities::RAFT)]).await;
+    settled(&check, true).await;
 
     assert_eq!(pass(&check).await, ["scratch"]);
     let why = refusal(&check, "orders").expect("refused");
@@ -137,25 +150,58 @@ async fn a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker() {
 #[tokio::test]
 async fn a_raft_broker_refuses_a_shard_shared_with_a_hybrid_broker() {
     let check = check(true, &[("broker-b", PeerCapabilities::NONE)]).await;
+    settled(&check, false).await;
 
     assert_eq!(pass(&check).await, ["scratch"]);
     let why = refusal(&check, "orders").expect("refused");
     assert!(why.contains("raft here, hybrid on broker-b"), "{why}");
 }
 
-/// **Brokers on one engine refuse nothing, and neither does a broker whose
-/// peer never answered**: a peer that is down says nothing about its engine.
-#[tokio::test(start_paused = true)]
-async fn a_fleet_on_one_engine_or_a_silent_peer_refuses_nothing() {
-    for (raft, fleet) in [
-        (true, vec![("broker-b", PeerCapabilities::RAFT)]),
-        (false, vec![("broker-b", PeerCapabilities::NONE)]),
-        (false, vec![]),
-        (true, vec![]),
+/// **Brokers on one engine refuse nothing.**
+#[tokio::test]
+async fn a_fleet_on_one_engine_refuses_nothing() {
+    for (raft, offered) in [
+        (true, PeerCapabilities::RAFT),
+        (false, PeerCapabilities::NONE),
     ] {
-        let check = check(raft, &fleet).await;
+        let check = check(raft, &[("broker-b", offered)]).await;
+        settled(&check, raft).await;
         assert_eq!(pass(&check).await, ["orders", "scratch"]);
         assert_eq!(refusal(&check, "orders"), None);
+    }
+}
+
+/// **A peer not reached yet refuses nothing, and is asked on every pass
+/// until it answers. The answer runs a pass, and that pass closes the
+/// shard.** A peer that is down says nothing about its engine, and waiting
+/// for it would keep a shard closed through an ordinary broker outage.
+#[tokio::test(start_paused = true)]
+async fn a_peer_reached_late_closes_the_shard_it_shares() {
+    for raft in [false, true] {
+        let check = check(raft, &[]).await;
+        let wake = Arc::new(tokio::sync::Notify::new());
+        check.wake_with(Arc::clone(&wake));
+        assert_eq!(pass(&check).await, ["orders", "scratch"]);
+        assert_eq!(refusal(&check, "orders"), None);
+
+        // The peer comes up on the other engine. The ask already in flight
+        // never returns, so the next one waits for it to give up.
+        tokio::task::yield_now().await;
+        let theirs = if raft {
+            PeerCapabilities::NONE
+        } else {
+            PeerCapabilities::RAFT
+        };
+        check.peers.0.lock().insert("broker-b".to_string(), theirs);
+        tokio::time::sleep(ASK_WITHIN).await;
+        while !check.asking.lock().is_empty() {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(pass(&check).await, ["orders", "scratch"]);
+
+        wake.notified().await;
+        assert_eq!(pass(&check).await, ["scratch"]);
+        assert!(refusal(&check, "orders").is_some());
     }
 }
 
@@ -164,6 +210,7 @@ async fn a_fleet_on_one_engine_or_a_silent_peer_refuses_nothing() {
 #[tokio::test]
 async fn a_refusal_ends_once_the_engines_match() {
     let check = check(false, &[("broker-b", PeerCapabilities::RAFT)]).await;
+    settled(&check, true).await;
     assert_eq!(pass(&check).await, ["scratch"]);
 
     check
@@ -171,11 +218,7 @@ async fn a_refusal_ends_once_the_engines_match() {
         .0
         .lock()
         .insert("broker-b".to_string(), PeerCapabilities::NONE);
-    // The pass after a restart asks again in the background.
-    pass(&check).await;
-    while check.engines.lock().get("broker-b") != Some(&false) {
-        tokio::task::yield_now().await;
-    }
+    settled(&check, false).await;
     assert_eq!(pass(&check).await, ["orders", "scratch"]);
     assert_eq!(refusal(&check, "orders"), None);
 }

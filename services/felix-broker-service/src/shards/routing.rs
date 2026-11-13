@@ -843,6 +843,10 @@ pub trait EngineShards: Send + Sync {
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch>;
 
+    /// Hands over the feed's wake, for an engine that learns something
+    /// between passes that the next pass must act on.
+    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
     /// Stop every member and close its log. The broker calls it once, when
     /// it stops, before storage is flushed.
     fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {

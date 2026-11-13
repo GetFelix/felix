@@ -509,6 +509,9 @@ where
             // fence or a cut-over runs through all three as soon as it is
             // written rather than a tick apart at each hop.
             let assignments_changed = Arc::new(tokio::sync::Notify::new());
+            if let Some(engine_shards) = &engine_shards {
+                engine_shards.wake_with(Arc::clone(&assignments_changed));
+            }
             let routes_changed = Arc::new(tokio::sync::Notify::new());
             // Leaderships the replicas elect, only where this broker checks
             // sets: the routing feed lays them over the control plane's.

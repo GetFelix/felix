@@ -28,9 +28,8 @@ use super::{ShardKey, ShardKind};
 /// `engine`. Counts each shard once per time it becomes refused.
 pub(crate) const REFUSED_TOTAL: &str = "felix_broker_shard_engine_refused_total";
 
-/// How long a feed pass waits to learn a peer's engine the first time it
-/// meets the peer. Later answers arrive in the background.
-const FIRST_ASK: Duration = Duration::from_millis(500);
+/// How long one ask may take, so a peer that never answers is asked again.
+const ASK_WITHIN: Duration = Duration::from_secs(5);
 
 type Addresses = Arc<dyn Fn(&str) -> Option<SocketAddr> + Send + Sync>;
 
@@ -48,8 +47,11 @@ pub(crate) struct EngineMatch<R> {
     /// listener offers no Raft runs the hybrid, which covers a build from
     /// before the choice existed.
     engines: Arc<parking_lot::Mutex<HashMap<String, bool>>>,
-    /// Peers asked at least once, answered or not.
-    asked: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Peers with an ask in flight.
+    asking: Arc<parking_lot::Mutex<HashSet<String>>>,
+    /// Runs a feed pass, so a shard closes when the answer arrives and not a
+    /// tick later.
+    wake: Arc<std::sync::OnceLock<Arc<tokio::sync::Notify>>>,
     refused: parking_lot::Mutex<HashMap<ShardKey, String>>,
     /// Whether `refused` holds anything, so a request does not take its lock
     /// in a fleet that agrees.
@@ -73,33 +75,40 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
             raft,
             inner,
             engines: Arc::default(),
-            asked: Arc::default(),
+            asking: Arc::default(),
+            wake: Arc::default(),
             refused: parking_lot::Mutex::default(),
             any_refused: AtomicBool::new(false),
         })
     }
 
-    /// Ask `peer` which engine it runs. Only the first ask of a peer holds
-    /// the pass, and only briefly: a peer that is down must not slow the
-    /// feed, and an engine never learnt refuses nothing.
-    async fn learn(&self, peer: &str) {
+    /// Ask `peer` which engine it runs, off the pass: a peer that is down
+    /// must not slow the feed. Every pass asks again, so a peer not reached
+    /// yet is learnt once it is up, and one that restarted on the other
+    /// engine is noticed. Until a peer answers, its shards are served.
+    fn ask(&self, peer: &str) {
         let Some(addr) = (self.addresses)(peer) else {
             return;
         };
-        let (peers, engines) = (Arc::clone(&self.peers), Arc::clone(&self.engines));
-        let name = peer.to_string();
-        let ask = async move {
-            if let Ok(offered) = peers.capabilities(&name, addr).await {
-                engines
-                    .lock()
-                    .insert(name, offered.contains(PeerCapabilities::RAFT));
-            }
-        };
-        if self.asked.lock().insert(peer.to_string()) {
-            let _ = tokio::time::timeout(FIRST_ASK, ask).await;
-        } else {
-            tokio::spawn(ask);
+        if !self.asking.lock().insert(peer.to_string()) {
+            return;
         }
+        let (peers, engines) = (Arc::clone(&self.peers), Arc::clone(&self.engines));
+        let (asking, wake) = (Arc::clone(&self.asking), Arc::clone(&self.wake));
+        let name = peer.to_string();
+        tokio::spawn(async move {
+            let answer = tokio::time::timeout(ASK_WITHIN, peers.capabilities(&name, addr)).await;
+            asking.lock().remove(&name);
+            let Ok(Ok(offered)) = answer else {
+                return;
+            };
+            let raft = offered.contains(PeerCapabilities::RAFT);
+            if engines.lock().insert(name, raft) != Some(raft)
+                && let Some(wake) = wake.get()
+            {
+                wake.notify_one();
+            }
+        });
     }
 
     /// The peer of `assignment` known to run the other engine, if any.
@@ -144,7 +153,7 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                 .map(|assignment| assignment.key.clone())
                 .collect();
             for peer in &peers {
-                self.learn(peer).await;
+                self.ask(peer);
             }
 
             let mut refused = HashMap::default();
@@ -211,6 +220,10 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
             ))));
         }
         self.inner.as_ref()?.dispatch(key, nodes)
+    }
+
+    fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
+        let _ = self.wake.set(wake);
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
