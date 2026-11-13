@@ -164,9 +164,9 @@ impl StreamEngine {
             let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
                 AckAt::for_fsync(&storage.config().fsync_mode)
             });
-            // 4e: a `Quorum` stream on a periodic fsync is answered at
-            // `await_quorum_ack`. Until then it waits for the commit, which
-            // is never weaker.
+            // A `Quorum` stream on a periodic fsync waits for the commit,
+            // not `await_quorum_ack`, until a copy whose flush failed cannot
+            // vote with its cut log (#2469). The commit is never weaker.
             Some(
                 raft.publish(broker, handle, shard, Some(term), payloads, ack, timeout)
                     .map(|proposed| RaftPublish(Some(proposed)))

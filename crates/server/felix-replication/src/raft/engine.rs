@@ -5,7 +5,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use super::propose::{self, Batch};
+use super::propose::{self, AckAt, Batch, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
@@ -49,6 +49,17 @@ impl RaftEngine {
         shard: &ShardKey,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let proposed = self.propose_reaching(shard, batch);
+        async move { proposed.await.map_err(|unacked| unacked.error) }
+    }
+
+    /// [`Self::propose`], and on an error how far the batch is known to be
+    /// written.
+    pub(crate) fn propose_reaching(
+        &self,
+        shard: &ShardKey,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let proposed = self
             .runtime
             .group(shard)
@@ -83,6 +94,39 @@ impl RaftEngine {
             .map(|group| group.await_commit(written, timeout))
             .ok_or_else(|| propose::lost(NO_GROUP));
         async move { committed?.await }
+    }
+
+    /// Wait until a `Quorum` write of `written`, as [`Self::propose`]
+    /// returned it, may be acknowledged. `ack` is the batch's.
+    ///
+    /// On a stream that fsyncs on commit ([`AckAt::Flushed`]) this is
+    /// [`Self::await_commit`]. On any other stream it also returns once a
+    /// majority of the shard's voters has written the record, each on its
+    /// own word and before its fsync, when that comes before the commit. It
+    /// can be lost if one of those copies loses power before its fsync and a
+    /// majority then elects without a copy that still holds the record. A
+    /// failed flush counts as a power cut for that copy: its log is cut back
+    /// to the last sync on restart (#2469). Outside that case it survives
+    /// process crashes, a change of leader and a membership change, which
+    /// the model checks to the end; two terms with two writes and a
+    /// membership change across a change of leader have not finished
+    /// (`docs/formal/README.md`).
+    ///
+    /// The first such wait on a shard makes its leader ask the followers
+    /// for their written positions from then on.
+    pub fn await_quorum_ack(
+        &self,
+        shard: &ShardKey,
+        written: Written,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        let acked = self
+            .runtime
+            .group(shard)
+            .map(|group| group.await_quorum(written, ack, timeout))
+            .ok_or_else(|| propose::lost(NO_GROUP));
+        async move { acked?.await }
     }
 
     /// One past the highest offset this broker knows committed, for every

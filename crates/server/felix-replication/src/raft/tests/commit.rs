@@ -93,6 +93,19 @@ impl Led {
         status.expect("status")
     }
 
+    /// One past the commit index as `broker`'s Raft core holds it now.
+    /// `status().committed` cannot stand in for it next to a read bound:
+    /// the core publishes its metrics once per loop, so the state machine
+    /// can apply entries, and move the bound, before they show as committed.
+    pub(super) async fn committed_on(&self, broker: &str) -> u64 {
+        let group = self.cluster.runtime(broker).group(&shard(0));
+        let core = group.expect("group").raft().clone();
+        let committed = core.with_raft_state(|state| state.local_committed().map(|id| id.index));
+        let committed = tokio::time::timeout(PATIENCE, committed).await;
+        let committed = committed.expect("in time").expect("the core answers");
+        committed.map_or(0, |index| index + 1)
+    }
+
     pub(super) fn followers(&self) -> impl Iterator<Item = String> + '_ {
         let others = BROKERS
             .iter()
@@ -119,6 +132,7 @@ impl Led {
         let batch = Batch {
             records: vec![record; records],
             ack: AckAt::Flushed,
+            term: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")
@@ -266,17 +280,15 @@ async fn a_write_whose_index_commits_under_another_term_is_refused() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_read_bound_never_passes_the_commit_index() {
     let mut led = led().await;
+    let leader = led.leader.broker.to_string();
     let follower = led.followers().next().expect("a follower");
-    let follower = RaftEngine::new(led.cluster.runtime(&follower));
+    let on_follower = RaftEngine::new(led.cluster.runtime(&follower));
     let held = led.committed + 1;
     // Read the bound first: the commit index only grows.
-    let within = |engine: &RaftEngine, status: &dyn Fn() -> GroupStatus| {
+    let within = async |engine: &RaftEngine, broker: &str| {
         let bound = engine.read_bound(&shard(0)).expect("bound");
-        let committed = status().committed.expect("committed");
-        assert!(
-            bound <= committed + 1,
-            "bound {bound}, committed {committed}"
-        );
+        let committed = led.committed_on(broker).await;
+        assert!(bound <= committed, "bound {bound}, committed {committed}");
         bound
     };
 
@@ -284,19 +296,15 @@ async fn the_read_bound_never_passes_the_commit_index() {
     let mut end = held;
     for round in 0..6 {
         end = led.propose(round % 3 + 1).await.end;
-        assert_eq!(within(&led.engine, &|| led.status()), held);
+        assert_eq!(within(&led.engine, &leader).await, held);
         let flushed = led.status().flushed.expect("flushed");
         assert_eq!(flushed.index + 1, end, "the leader holds it on disk");
     }
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(held));
 
     led.heal();
-    let status = || {
-        let status = follower_status(&led);
-        status.expect("status")
-    };
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while within(&led.engine, &|| led.status()) < end || within(&follower, &status) < end {
+    while within(&led.engine, &leader).await < end || within(&on_follower, &follower).await < end {
         assert!(tokio::time::Instant::now() < deadline, "never committed");
         tokio::task::yield_now().await;
     }
@@ -305,11 +313,6 @@ async fn the_read_bound_never_passes_the_commit_index() {
     let elsewhere = led.engine.read_bound(&shard(7));
     assert_eq!(elsewhere, Err(Unreadable::NotServed));
     led.cluster.stop().await;
-}
-
-fn follower_status(led: &Led) -> Option<GroupStatus> {
-    let follower = led.followers().next()?;
-    led.cluster.runtime(&follower).status(&shard(0))
 }
 
 /// A member that wins an election has not opened: it opens when the blank
@@ -393,6 +396,7 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
             payload: Bytes::from_static(b"unwritten"),
         }],
         ack: AckAt::Written,
+        term: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert!(refused.is_err(), "written to a closed log: {refused:?}");
@@ -424,9 +428,13 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
             payload: Bytes::from_static(b"unheard"),
         }],
         ack: AckAt::Written,
+        term: Some(led.term),
     };
     let refused = led.engine.propose(&shard(0), batch).await;
-    assert!(refused.is_err(), "written with no majority: {refused:?}");
+    assert_eq!(
+        lost(&refused.map(|_| ())),
+        "no majority has answered this leader lately, so nothing was written"
+    );
     assert!(led.engine.admit_local_ack(&shard(0), led.term).is_err());
     let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
     assert!(
