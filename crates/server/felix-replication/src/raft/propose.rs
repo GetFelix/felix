@@ -95,6 +95,33 @@ pub(crate) fn stopped() -> CommitError {
     lost(STOPPED)
 }
 
+/// Why a publisher has no acknowledgement. Like any error from the
+/// proposer, the outcome is unknown: records of the batch may commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unacknowledged {
+    pub(crate) error: CommitError,
+    /// One past the last offset a record of the batch is known to be
+    /// written at, if one is. Readers resuming below it go to the log.
+    pub(crate) written_end: Option<u64>,
+}
+
+impl Unacknowledged {
+    /// The batch is known to be written up to `end`, whatever else was said.
+    fn reaching(mut self, end: u64) -> Self {
+        self.written_end = Some(self.written_end.map_or(end, |known| known.max(end)));
+        self
+    }
+}
+
+impl From<CommitError> for Unacknowledged {
+    fn from(error: CommitError) -> Self {
+        Self {
+            error,
+            written_end: None,
+        }
+    }
+}
+
 /// Where a batch's first and last record are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Span {
@@ -125,7 +152,7 @@ pub(crate) struct Proposal {
     term: Option<u64>,
     bytes: usize,
     /// Where openraft applied the batch, or why it did not.
-    answer: oneshot::Sender<Result<Span, CommitError>>,
+    answer: oneshot::Sender<Result<Span, Unacknowledged>>,
 }
 
 /// The publisher's side of a queued batch. `W` is a token's future.
@@ -135,7 +162,7 @@ pub(crate) struct Waiting<W = WrittenAt> {
     /// `None` for a batch of one record, where `last` is also the first.
     pub(super) first: Option<W>,
     pub(super) last: W,
-    pub(super) answer: oneshot::Receiver<Result<Span, CommitError>>,
+    pub(super) answer: oneshot::Receiver<Result<Span, Unacknowledged>>,
 }
 
 /// Split `batch` into what is queued and what its publisher waits on.
@@ -193,7 +220,7 @@ pub(super) struct Drain {
     /// The term every batch of the call was admitted at.
     pub(super) term: Option<u64>,
     /// Each batch's record count and where its answer goes.
-    pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+    pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
 }
 
 /// Take `first` and what is queued behind it, up to [`DRAIN_BYTES`] and
@@ -283,7 +310,7 @@ pub(crate) async fn run(
             Err(fatal) => {
                 tracing::warn!(error = %fatal, "a stopped Raft group took no write");
                 for (_, to) in answers {
-                    let _ = to.send(Err(stopped()));
+                    let _ = to.send(Err(stopped().into()));
                 }
             }
         }
@@ -409,7 +436,7 @@ fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
 /// named a term.
 pub(super) async fn answer(
     results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
-    answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+    answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
     bound: bool,
 ) {
     // A group that stops ends the stream early, and openraft's stream must
@@ -417,7 +444,8 @@ pub(super) async fn answer(
     let mut results = results.fuse();
     for (records, to) in answers {
         let mut span: Result<Option<Span>, CommitError> = Ok(None);
-        let mut written = false;
+        // One past the last record of the batch openraft applied.
+        let mut written_end = None;
         for _ in 0..records {
             let applied = match results.next().await {
                 Some(Ok(Ok(applied))) => Ok(LogPoint {
@@ -438,7 +466,9 @@ pub(super) async fn answer(
                 Some(Ok(Err(_))) => Err(lost(DISCARDED)),
                 Some(Err(_)) | None => Err(stopped()),
             };
-            written |= applied.is_ok();
+            if let Ok(at) = applied {
+                written_end = Some(at.index + 1);
+            }
             span = match (span, applied) {
                 (Err(err), _) | (Ok(_), Err(err)) => Err(err),
                 (Ok(None), Ok(at)) => Ok(Some(Span {
@@ -453,13 +483,18 @@ pub(super) async fn answer(
         }
         // Records that name a term are refused one by one, so some of a
         // batch can be in the log when the rest is not. No refusal's
-        // "nothing was written" holds for it.
-        let span = match span {
-            Err(_) if written => Err(lost(IN_PART)),
-            span => span,
+        // "nothing was written" holds for it, and the records that were
+        // applied are committed.
+        let span = match (span, written_end) {
+            (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
+            (Err(_), Some(end)) => Err(Unacknowledged {
+                error: lost(IN_PART),
+                written_end: Some(end),
+            }),
+            (Err(err), None) => Err(err.into()),
         };
         // The publisher may have stopped waiting.
-        let _ = to.send(span.and_then(|span| span.ok_or_else(|| lost(EMPTY))));
+        let _ = to.send(span);
     }
 }
 
@@ -498,13 +533,14 @@ fn unled(why: Lost, unwritten: bool) -> CommitError {
 /// A token has no bound of its own, so every wait here also ends on
 /// openraft's answer, on this member no longer leading, and on `stop`. An
 /// error means the outcome is unknown, never that the batch is absent: it
-/// may be in the log and may commit.
+/// may be in the log and may commit. Once the batch is known written, the
+/// error says how far.
 pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     waiting: Waiting<W>,
     mut positions: watch::Receiver<LogPositions>,
     mut leading: impl Leading,
     stop: CancellationToken,
-) -> Result<Written, CommitError> {
+) -> Result<Written, Unacknowledged> {
     let Waiting {
         ack,
         records,
@@ -514,10 +550,10 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     } = waiting;
     // Applied means committed: on a majority's disks, which is more than
     // either acknowledgement asks of this one.
-    let committed = |answered: Result<Result<Span, CommitError>, oneshot::error::RecvError>| {
-        answered
-            .unwrap_or_else(|_| Err(stopped()))?
-            .written(records)
+    let committed = |answered: Result<Result<Span, Unacknowledged>, oneshot::error::RecvError>|
+     -> Result<Written, Unacknowledged> {
+        let span = answered.unwrap_or_else(|_| Err(stopped().into()))?;
+        Ok(span.written(records)?)
     };
     let written = async {
         let last = last.await?;
@@ -531,8 +567,8 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         biased;
         answered = &mut answer => return committed(answered),
         span = written => span,
-        why = leading.lost(None) => return Err(unled(why, true)),
-        () = stop.cancelled() => return Err(stopped()),
+        why = leading.lost(None) => return Err(unled(why, true).into()),
+        () = stop.cancelled() => return Err(stopped().into()),
     };
     let Some(span) = span else {
         // No append reported the batch: refused, dropped, or its append
@@ -540,8 +576,8 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         return tokio::select! {
             biased;
             answered = &mut answer => committed(answered),
-            why = leading.lost(None) => Err(unled(why, false)),
-            () = stop.cancelled() => Err(stopped()),
+            why = leading.lost(None) => Err(unled(why, false).into()),
+            () = stop.cancelled() => Err(stopped().into()),
         };
     };
     let written = span.written(records)?;
@@ -561,15 +597,16 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         let at = positions.wait_for(reached).await.ok()?;
         at.flushed.map(|flushed| flushed.term)
     };
-    tokio::select! {
+    let flushed = tokio::select! {
         biased;
         answered = &mut answer => committed(answered),
         term = flushed => match term {
             Some(term) if term == last.term => Ok(written),
-            Some(_) => Err(lost(NOT_LEADING)),
-            None => Err(stopped()),
+            Some(_) => Err(lost(NOT_LEADING).into()),
+            None => Err(stopped().into()),
         },
-        why = leading.lost(Some(last.term)) => Err(unled(why, false)),
-        () = stop.cancelled() => Err(stopped()),
-    }
+        why = leading.lost(Some(last.term)) => Err(unled(why, false).into()),
+        () = stop.cancelled() => Err(stopped().into()),
+    };
+    flushed.map_err(|err: Unacknowledged| err.reaching(written.end))
 }

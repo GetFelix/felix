@@ -18,7 +18,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::super::network::Router;
 use super::super::propose::{
-    DRAIN_BYTES, DRAIN_RECORDS, Leading, Lost, Span, Waiting, acknowledged, drain, split,
+    DRAIN_BYTES, DRAIN_RECORDS, Leading, Lost, Span, Unacknowledged, Waiting, acknowledged, drain,
+    split,
 };
 use super::*;
 use crate::engine::{CommitError, Written};
@@ -216,17 +217,21 @@ async fn a_write_after_a_silence_renews_the_lease_first() {
 
 /// With no majority in reach for a whole lease of asking, the write is
 /// sent, openraft refuses it, and nothing is appended. Nobody can reach
-/// anybody here, so no member is elected meanwhile.
+/// anybody here, so no member is elected meanwhile. The write names the
+/// term this member still leads, so only the lease refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_no_majority_answers_refuses_and_appends_nothing() {
     let (mut cluster, leader, engine, committed) = led().await;
+    let term = status(&cluster, &leader).term;
     cluster.net.cut.lock().extend(BROKERS.map(String::from));
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
 
     let asked = tokio::time::Instant::now();
-    let refused = engine
-        .propose(&shard(0), batch(&[b"unheard"], AckAt::Written))
-        .await;
+    let unheard = Batch {
+        ack: AckAt::Written,
+        ..admitted(term, &[b"unheard 0", b"unheard 1"])
+    };
+    let refused = engine.propose(&shard(0), unheard).await;
     assert_eq!(
         lost(&refused),
         "no majority has answered this leader lately, so nothing was written"
@@ -580,7 +585,13 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
     for told in [first_told, second_told] {
         let told = told.await.expect("told");
         assert!(
-            matches!(told, Err(CommitError::LeadershipLost { detail, .. }) if detail == "the shard's group stopped"),
+            matches!(
+                told,
+                Err(Unacknowledged {
+                    error: CommitError::LeadershipLost { detail, .. },
+                    written_end: None,
+                }) if detail == "the shard's group stopped"
+            ),
             "{told:?}"
         );
     }
@@ -613,17 +624,25 @@ async fn a_batch_written_in_part_is_told_so() {
     let (third, third_told) = oneshot::channel();
     let answers = vec![(2, first), (1, second), (1, third)];
     super::super::propose::answer(results.boxed(), answers, true).await;
-    let detail = |told: Result<Span, CommitError>| match told {
-        Err(CommitError::LeadershipLost { detail, .. }) => detail,
+    let detail = |told: Result<Span, Unacknowledged>| match told {
+        Err(Unacknowledged {
+            error: CommitError::LeadershipLost { detail, .. },
+            written_end,
+        }) => (detail, written_end),
         other => panic!("not an unknown outcome: {other:?}"),
     };
+    // The record written is applied, so committed: a reader resuming at it
+    // must be sent to the log.
     assert_eq!(
         detail(first_told.await.expect("told")),
-        "only some of the batch's records were written"
+        ("only some of the batch's records were written", Some(8))
     );
     assert_eq!(
         detail(second_told.await.expect("told")),
-        "this broker does not lead the term the batch was admitted at, so nothing was written"
+        (
+            "this broker does not lead the term the batch was admitted at, so nothing was written",
+            None
+        )
     );
     let at = LogPoint { term: 3, index: 8 };
     let whole = Span {
@@ -631,6 +650,75 @@ async fn a_batch_written_in_part_is_told_so() {
         last: at,
     };
     assert_eq!(third_told.await.expect("told"), Ok(whole));
+}
+
+/// Write `payloads` as the publish task does, the first record at `term`
+/// and the rest at a term this member does not lead, and answer them as one
+/// batch. openraft checks each record on its own, so this is how it
+/// answers a batch whose term moved after its first record.
+pub(super) async fn cut_after_first(
+    raft: &openraft::Raft<ShardTypes, super::super::machine::Machine>,
+    term: u64,
+    payloads: &[&'static [u8]],
+) -> Result<Span, Unacknowledged> {
+    use super::super::propose::{answer, write};
+    use futures::StreamExt;
+    let command = |payload: &&'static [u8]| Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(payload),
+        written: None,
+    };
+    let (first, rest) = payloads.split_first().expect("a record");
+    let first = write(raft, vec![command(first)], Some(term)).await;
+    let rest = write(raft, rest.iter().map(command).collect(), Some(term + 1)).await;
+    let results = first.expect("sent").chain(rest.expect("sent"));
+    let (to, told) = oneshot::channel();
+    answer(results.boxed(), vec![(payloads.len(), to)], true).await;
+    told.await.expect("told")
+}
+
+/// **A batch cut part way is told how far it was written.** Its first
+/// record is appended and commits, the rest are refused. The publisher is
+/// told only some of the batch was written, and where it ends, so readers
+/// resuming at the record are sent to the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_cut_part_way_is_told_how_far_it_was_written() {
+    let (mut cluster, leader, _engine, committed) = led().await;
+    let term = status(&cluster, &leader).term;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let member = member.expect("group");
+
+    let told = cut_after_first(member.raft(), term, &[b"in", b"out 0", b"out 1"]).await;
+    let cut = Unacknowledged {
+        error: CommitError::LeadershipLost {
+            what: "write",
+            detail: "only some of the batch's records were written",
+        },
+        written_end: Some(committed + 2),
+    };
+    assert_eq!(told, Err(cut));
+    cluster.committed_everywhere(0, committed + 1).await;
+    for broker in BROKERS {
+        let held = payloads(&cluster, broker, committed + 1).await;
+        assert_eq!(held, [Bytes::from_static(b"in")], "{broker}");
+    }
+    cluster.stop().await;
+}
+
+/// A batch the tokens report written may still commit after its
+/// publisher is told otherwise. The error says where it ends.
+#[tokio::test]
+async fn a_batch_known_written_says_where_it_ends() {
+    let mut unwritten = waiting(AckAt::Flushed);
+    unwritten.leading.send_replace((false, TERM));
+    let told = unwritten.reached().expect("told");
+    assert_eq!(told.expect_err("not acknowledged").written_end, None);
+
+    let mut unflushed = waiting(AckAt::Flushed);
+    unflushed.written(at(TERM, 5), at(TERM, 7));
+    unflushed.leading.send_replace((false, TERM));
+    let told = unflushed.reached().expect("told");
+    assert_eq!(told.expect_err("not acknowledged").written_end, Some(8));
 }
 
 /// One call names one term, so a batch admitted at another starts the next
@@ -735,11 +823,11 @@ impl Leading for Told {
 struct Signals {
     first: Option<oneshot::Sender<LogPoint>>,
     last: Option<oneshot::Sender<LogPoint>>,
-    answer: Option<oneshot::Sender<Result<Span, CommitError>>>,
+    answer: Option<oneshot::Sender<Result<Span, Unacknowledged>>>,
     positions: watch::Sender<LogPositions>,
     leading: watch::Sender<(bool, u64)>,
     stop: CancellationToken,
-    wait: Pin<Box<dyn Future<Output = Result<Written, CommitError>> + Send>>,
+    wait: Pin<Box<dyn Future<Output = Result<Written, Unacknowledged>> + Send>>,
 }
 
 const TERM: u64 = 3;
@@ -790,6 +878,12 @@ impl Signals {
 
     /// What the wait has answered, if it has.
     fn now(&mut self) -> Option<Result<Written, CommitError>> {
+        let told = self.reached()?;
+        Some(told.map_err(|unacked| unacked.error))
+    }
+
+    /// [`Self::now`], with how far the batch is known written.
+    fn reached(&mut self) -> Option<Result<Written, Unacknowledged>> {
         self.wait.as_mut().now_or_never()
     }
 }
@@ -855,7 +949,7 @@ async fn a_refusal_ends_the_wait() {
         }
         assert_eq!(signals.now(), None);
         let answer = signals.answer.take().expect("once");
-        let _ = answer.send(Err(refusal.clone()));
+        let _ = answer.send(Err(refusal.clone().into()));
         assert_eq!(signals.now(), Some(Err(refusal.clone())));
     }
 }
@@ -925,7 +1019,7 @@ async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
         detail: "refused",
     };
     let answer = dropped.answer.take().expect("once");
-    let _ = answer.send(Err(refusal.clone()));
+    let _ = answer.send(Err(refusal.clone().into()));
     assert_eq!(dropped.now(), Some(Err(refusal)));
 
     for (first, last) in [

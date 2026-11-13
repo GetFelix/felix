@@ -718,18 +718,25 @@ message could not be. openraft checks each record on its own, so:
 
 Neither writes a record at another term. The publisher is told only some
 of the batch was written, which is an unknown outcome like any other: the
-written records may commit. The batch is not delivered live on the
-leader, whose subscribers see its offsets as a drop. Records of it that
-commit are in the log, where a follower's subscribers and a reader
-resuming below the batch read them.
+written records may commit, and the publisher is told where the last of
+them ends. The batch is not delivered live on the leader, whose
+subscribers see its offsets as a drop. The stream's offsets move past the
+written records, so a reader resuming at one of them is sent to the log
+for it instead of joining live above it. A follower's subscribers read
+them from the log too. The same holds for a batch that was written whole
+and then lost its acknowledgement.
 
 A caller that names no term (`None`) gets the unbound call. The broker
 always names one.
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `a_batch_admitted_at_an_earlier_term_is_not_written`,
-> `a_drain_takes_batches_admitted_at_one_term` and
-> `a_batch_written_in_part_is_told_so`.
+> `a_drain_takes_batches_admitted_at_one_term`,
+> `a_batch_written_in_part_is_told_so`,
+> `a_batch_cut_part_way_is_told_how_far_it_was_written` and
+> `a_batch_known_written_says_where_it_ends`.
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_reader_resuming_in_a_batch_written_in_part_goes_to_the_log`.
 
 **openraft's write lease.** At the pinned commit openraft refuses a write
 when no majority has answered the leader for its lease, which is the
