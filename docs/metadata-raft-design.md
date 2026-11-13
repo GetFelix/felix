@@ -359,6 +359,10 @@ sequenceDiagram
    members initialized with different groups can split.
 3. **Vote.** Once every one of them has answered, the member gives back its
    vote and initializes. Until then it votes for nobody and asks again.
+   Between `initialize` and its first vote it writes a *reached* flag to
+   its own store, beside the mark. A member that catches up writes it too,
+   before it votes again, and so does any start that finds Raft state and
+   a vote that is not withheld.
 
 `standing` lists the ids a member has recorded, as `formed`. An empty member
 reads the lists when it starts:
@@ -367,10 +371,16 @@ reads the lists when it starts:
   gone, and that volume may have voted. The member never forms. It keeps its
   vote withheld and catches up with a confirmed leader, like any member that
   rejoins.
-- **Named by a peer, and it holds its mark.** It was stopped between the mark
-  and the vote. The mark is on the same volume as the vote, so that volume
-  has not been lost and has not voted. The member asks for the records again
-  and goes on.
+- **It holds the reached flag.** Its log is blank, so the log was lost after
+  the member may have voted. On the segment store the log is a directory of
+  its own (`store/log/`) and the mark and the flag are beside it, so an
+  emptied log directory keeps both. The member never forms; it catches up
+  like a member that lost its volume.
+- **Named by a peer, and it holds its mark but not the flag.** It was
+  stopped between the mark and its first vote. A crash before `initialize`
+  leaves a blank log and no flag; one after `initialize` leaves a log, and
+  the next start writes the flag. So the member has not voted. It asks for
+  the records again and goes on.
 - **Not named.** A first boot, as above. Members that have already formed do
   not stand in its way: only a record of *this* member counts, so a member
   that starts late forms with the same group, and the others can win its
@@ -386,7 +396,11 @@ still accepts it.
 The model checks the three steps (`docs/formal/FelixRaftPlacementFormEarlyWipe.cfg`,
 `FelixRaftPlacementFormEarlyWipeFirstBoot.cfg`), and shows a member voting
 twice in a term without the record
-(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`).
+(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`). A wipe that takes only
+the log is in `FelixRaftPlacementFormLogWipe.cfg` and
+`FelixRaftPlacementFormLogWipeFirstBoot.cfg`; without the reached flag the
+member forms again on its mark and votes twice
+(`FelixRaftPlacementFormLogWipeUnreached.cfg`).
 
 What it costs:
 
@@ -960,7 +974,8 @@ leader's snapshot as in
   entry does not form again and votes only after it has caught up with a
   leader; two wiped members do not form over a third whose log is empty; a
   late member forms against peers that have formed and have no leader; a
-  member does not vote while one peer has not recorded it; and
+  member does not vote while one peer has not recorded it; on the segment
+  store, a member whose log directory was emptied does not form again; and
   (`raft/join/tests.rs`) members stopped between the records and
   `initialize` form after a restart.
 
@@ -1037,7 +1052,10 @@ vote leaves one, and so does a log directory that was emptied. With a
 snapshot beside it the log was lost, so the open withholds the member's
 vote. With no snapshot the open reports "no Raft state" and the service
 treats the member as one with an empty store: it withholds its vote unless
-it is forming a new cluster.
+it is forming a new cluster. The formation file tells the two cases apart:
+a member that holds the reached flag has voted from this store, so its
+blank log was emptied, and it catches up instead of forming
+([Forming the group](#forming-the-group)).
 
 Rules for the log:
 
