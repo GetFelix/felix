@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794607606350,
+  "lastUpdate": 1794609547834,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55016,6 +55016,58 @@ window.BENCHMARK_DATA = {
             "range": "9284.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1209343.52\nmean: 1208963.59\nstdev: 9284.82\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3483b96a878bfe794a1419dc3bb5f1ffec2d9342",
+          "message": "feat(controlplane): record every broker placed in a shard's epoch (#2419) (#2462)\n\nThe control plane records every broker placed in a shard's epoch (#2419): ShardAssignment::placed = {epoch, brokers}, owned by the store. A shard's first assignment starts the record (metadata level 31), every later write adds the brokers it names, and no write removes one. Snapshots carry it. An import clears every record and the change window's copies, and marks every restored stream and cache so their shards never start a record for that incarnation; the leader settles the mark into the entry, refuses an import below level 31, and a follower forwards imports to the leader. next_epoch(current, dead) is the record minus dead brokers plus the current placement, as in FelixRaftReform. Docs: control-plane.md, per-shard-raft.md, the level table in metadata-raft-design.md (rows 29-31).",
+          "timestamp": "2026-11-13T14:24:12-08:00",
+          "tree_id": "530a31e67db9d69279691e897b6f8ee8b8c6761e",
+          "url": "https://github.com/GetFelix/felix/commit/3483b96a878bfe794a1419dc3bb5f1ffec2d9342"
+        },
+        "date": 1794609546835,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 346704.06,
+            "range": "11027.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346704.06\nmean: 347162.68\nstdev: 11027.91\ncv: 3.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 346704.06,
+            "range": "11027.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 346704.06\nmean: 347162.68\nstdev: 11027.91\ncv: 3.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80504.34,
+            "range": "284.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80504.34\nmean: 80389.82\nstdev: 284.47\ncv: 0.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805043.44,
+            "range": "2844.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805043.44\nmean: 803898.24\nstdev: 2844.70\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
