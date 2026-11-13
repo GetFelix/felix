@@ -233,14 +233,17 @@ pub trait AppStateMachine: Send + Sync + 'static {
 
     /// Settle any field of `command` that depends on the group's level
     /// (`level`, as [`RaftHandle::cluster_version_with_unknown_at`] gives it
-    /// with [`Self::join_floor`]), or return `None` to leave it. Called on
-    /// the leader right before the entry enters the log, like
+    /// with [`Self::join_floor`]): `Ok(Some(_))` to append a rewrite,
+    /// `Ok(None)` to append it as is, or `Err(response)` to refuse it, in
+    /// which case the write answers `response` without appending anything.
+    /// Called on the leader right before the entry enters the log, like
     /// [`Self::restamp`], so the entry says explicitly what every member
     /// applies, whoever proposed it. Asked only for a command
-    /// [`Self::depends_on_level`] names, so others skip the level lookup.
-    fn settle_for_level(&self, command: &[u8], level: u16) -> Option<Vec<u8>> {
+    /// [`Self::depends_on_level`] names, so others skip the level lookup,
+    /// and such a command is only ever appended after this said so.
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
         let _ = (command, level);
-        None
+        Ok(None)
     }
 
     /// Whether `command` has a field [`Self::settle_for_level`] settles.

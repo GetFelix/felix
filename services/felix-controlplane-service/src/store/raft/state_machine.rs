@@ -774,7 +774,7 @@ impl AppStateMachine for MetadataStateMachine {
         crate::store::raft::command::restamp(command, now_millis)
     }
 
-    fn settle_for_level(&self, command: &[u8], level: u16) -> Option<Vec<u8>> {
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
         crate::store::raft::command::settle_for_level(command, level)
     }
 

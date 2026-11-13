@@ -1004,7 +1004,9 @@ an export) adopts the export's identity, `adopts_existing` included, since it
 restores that group. An export that carries none keeps the group's own id
 and sets `adopts_existing` if the import brought streams or caches, so
 brokers that kept their data accept the restored group. Importing one cluster's export into another gives it that cluster's
-group id, so the brokers of both accept it: use import only to restore.
+group id, so the brokers of both accept it: use import only to restore. An
+export that carries an identity needs every member at level 32, and the
+leader refuses its import until then.
 
 ### Shard ownership
 
@@ -1075,10 +1077,11 @@ caller's value is ignored.
   assignment. A shard the export shows unassigned may have been assigned
   since on the live cluster. A stream or cache deleted and created again
   after the import has a new incarnation and starts records as usual. The
-  mark is carried in snapshots. Under Raft the leader decides it from the
-  group's metadata level when the import enters the log: marked from level
-  31, unmarked below, whatever the proposer sent. Every member applies the
-  same mark.
+  mark is carried in snapshots. Under Raft the leader sets the mark when the
+  import enters the log, whatever the proposer sent, so every member applies
+  the same one. Below metadata level 31 an older member cannot read the mark,
+  so the leader refuses the import and asks the operator to finish the
+  control-plane upgrade first.
 
 The record grows with every move for as long as the epoch lasts. No pruning
 rule exists yet, and any rule must be modelled first. Under Raft it is
