@@ -14,12 +14,15 @@ use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use bytes::Bytes;
+
+use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::lead::{self, Leadership};
 use super::machine::{Cache, Machine};
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
-use super::propose::{self, Batch, Proposal};
+use super::propose::{self, Batch, Clock, Proposal, Stamper, Unstamped, Waiting};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use crate::engine::{CommitError, EngineHost, Written};
@@ -36,11 +39,9 @@ pub(crate) struct Group {
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
     /// A cache shard's projection, as this member has applied it.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the cache write and read paths are not built")
-    )]
     cache: Option<Cache>,
+    /// What a cache shard's leader stamps entries and judges expiry by.
+    clock: Clock,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -294,6 +295,16 @@ impl Drop for Dropped<'_> {
     }
 }
 
+/// What a member is told and asks of the broker it runs on.
+pub(crate) struct Host {
+    /// Who is told when the shard opens and closes here.
+    pub(crate) engine: Option<Arc<dyn EngineHost>>,
+    pub(crate) clock: Clock,
+}
+
+/// Expired values deleted by one pass of the expiry task.
+const EXPIRE_AT_ONCE: usize = 256;
+
 impl Group {
     /// Start `member` on `log`. The log decides where the member resumes: an
     /// empty one is a member that has never voted.
@@ -304,8 +315,12 @@ impl Group {
         config: Arc<Config>,
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
-        host: Option<Arc<dyn EngineHost>>,
+        host: Host,
     ) -> Result<Self, OpenError> {
+        let Host {
+            engine: host,
+            clock,
+        } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
         // A stream shard's state is its log, and a cache shard's is its
@@ -340,6 +355,7 @@ impl Group {
             commits,
             leadership,
             cache,
+            clock,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -515,10 +531,17 @@ impl Group {
         &self,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        self.queue(propose::split(batch))
+    }
+
+    fn queue(
+        &self,
+        split: Result<(Proposal, Waiting), CommitError>,
+    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
-            propose::split(batch).and_then(|(proposal, waiting)| {
+            split.and_then(|(proposal, waiting)| {
                 let queued = self.proposer().send(proposal);
                 queued.map(|()| waiting).map_err(|_| propose::stopped())
             })
@@ -567,6 +590,13 @@ impl Group {
     /// lease: neither says another leader exists, and neither closes the
     /// shard.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
+        self.read_index(term).await.map(drop)
+    }
+
+    /// [`Self::confirm_read`], and one past the index a reader must have
+    /// applied before it reads: the leader's commit index when a majority
+    /// confirmed it.
+    async fn read_index(&self, term: u64) -> Result<u64, CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
             detail,
@@ -590,7 +620,9 @@ impl Group {
                 round = self.raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
             };
             let forward = match round {
-                Ok((read, _)) if **read.committed_leader_id() == term => return Ok(()),
+                Ok((read, _)) if **read.committed_leader_id() == term => {
+                    return Ok(read.index() + 1);
+                }
                 Ok(_) => {
                     return Err(lost(
                         "this broker leads a later term than the read began in",
@@ -659,9 +691,200 @@ impl Group {
                     length: Duration::from_millis(timers.election_max),
                     again: Duration::from_millis(timers.heartbeat),
                 },
+                self.cache.clone().map(|cache| Stamper {
+                    cache,
+                    leadership: Arc::clone(&self.leadership),
+                    clock: Arc::clone(&self.clock),
+                    last: 0,
+                }),
             ));
             queue
         })
+    }
+
+    fn cache_group(&self) -> Result<&Cache, CommitError> {
+        self.cache.as_ref().ok_or(CommitError::LeadershipLost {
+            what: "cache request",
+            detail: "the shard is not a cache shard",
+        })
+    }
+
+    /// Stamp `writes`, commit them in order and return once this member
+    /// has applied them. Nothing is written unless it has the shard open.
+    async fn cache_commit(
+        &self,
+        writes: Vec<Unstamped>,
+        timeout: Duration,
+    ) -> Result<(), CommitError> {
+        self.cache_group()?;
+        let written = self.queue(propose::split_cache(writes)).await?;
+        // The state machine folds an entry in before it publishes it.
+        self.await_commit(written, timeout).await
+    }
+
+    /// Commit `command` and return what it answered when it was first
+    /// applied, so a retry gets the first answer. A put with a `ttl`
+    /// (microseconds, zero for none) expires that long after its stamp.
+    ///
+    /// The answer is read after the commit, so a later entry of the same
+    /// producer may already have dropped it (a higher floor, a retire).
+    /// That answers [`Answer::Forgotten`]: the write was applied.
+    pub(crate) async fn cache_write(
+        &self,
+        command: CacheCommand,
+        ttl: u64,
+        timeout: Duration,
+    ) -> Result<Answer, CommitError> {
+        let cache = self.cache_group()?;
+        let request = match &command {
+            CacheCommand::Put { request, .. }
+            | CacheCommand::Delete { request, .. }
+            | CacheCommand::Add { request, .. } => Some(*request),
+            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } => None,
+        };
+        self.cache_commit(vec![Unstamped { command, ttl }], timeout)
+            .await?;
+        let answer = request.and_then(|request| {
+            let cache = cache.read();
+            cache.answer(request.producer, request.sequence)
+        });
+        Ok(answer.unwrap_or(Answer::Forgotten))
+    }
+
+    /// Returns once this member is known to lead and has applied
+    /// everything committed when a majority said so. A read of its state
+    /// taken then misses no acknowledged write.
+    async fn cache_fresh(
+        &self,
+        deadline: tokio::time::Instant,
+        timeout: Duration,
+    ) -> Result<&Cache, CommitError> {
+        let cache = self.cache_group()?;
+        let lost = CommitError::LeadershipLost {
+            what: "read",
+            detail: "this broker does not have the shard open",
+        };
+        let term = self.open_term().ok_or(lost)?;
+        let bound = self.read_index(term).await?;
+        let mut commits = self.commits.clone();
+        let applied = commits.wait_for(|commits| commits.read_bound() >= bound);
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Err(propose::stopped()),
+            applied = applied => applied.map(|_| cache).map_err(|_| propose::stopped()),
+            () = tokio::time::sleep_until(deadline) => Err(CommitError::TimedOut {
+                what: "read",
+                timeout,
+            }),
+        }
+    }
+
+    /// `key`'s value and version, if it has an unexpired one.
+    ///
+    /// Expiry is judged at the later of this leader's clock and the log's
+    /// time. When only the clock says the value expired, the delete is
+    /// committed before the reader is told it is gone, so no later leader
+    /// with a slower clock finds the key again.
+    pub(crate) async fn cache_read(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<(Bytes, u64)>, CommitError> {
+        use super::cache::Read;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let cache = self.cache_fresh(deadline, timeout).await?;
+            let read = cache.read().read(key, (self.clock)());
+            let version = match read {
+                Read::Value { value, version } => return Ok(Some((value, version))),
+                Read::Absent => return Ok(None),
+                Read::Expire { version } => version,
+            };
+            let expire = CacheCommand::Expire {
+                key: key.to_owned(),
+                version,
+            };
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let writes = vec![Unstamped {
+                command: expire,
+                ttl: 0,
+            }];
+            self.cache_commit(writes, left).await?;
+        }
+    }
+
+    /// A counter's sum, if it was ever added to.
+    pub(crate) async fn counter_read(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<i64>, CommitError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let cache = self.cache_fresh(deadline, timeout).await?;
+        Ok(cache.read().sum(key))
+    }
+
+    /// Delete what has expired by this leader's clock, and say how long
+    /// until the next value does. `None` if nothing is waiting to expire
+    /// or this member does not have the shard open.
+    async fn expire(&self) -> Option<Duration> {
+        let cache = self.cache.as_ref()?;
+        self.open_term()?;
+        let timers = self.pace.timers;
+        let due = cache.read().due((self.clock)(), EXPIRE_AT_ONCE);
+        if !due.is_empty() {
+            let writes = due
+                .into_iter()
+                .map(|(key, version)| Unstamped {
+                    command: CacheCommand::Expire { key, version },
+                    ttl: 0,
+                })
+                .collect();
+            let patience = Duration::from_millis(timers.election_max);
+            if self.cache_commit(writes, patience).await.is_err() {
+                // Deposed, or no majority in reach. Look again later.
+                return Some(Duration::from_millis(timers.heartbeat));
+            }
+        }
+        let cache = cache.read();
+        let now = (self.clock)().max(cache.time());
+        let next = cache.next_expiry()?;
+        Some(Duration::from_micros(next.saturating_sub(now)))
+    }
+
+    /// Start a cache shard's expiry task: on the leader, it deletes each
+    /// value when it expires. It wakes when leadership changes, when an
+    /// entry is applied and when the next value is due, so an idle group
+    /// with nothing to expire costs nothing. A stream shard has none.
+    pub(crate) fn start_expiry(self: &Arc<Self>) {
+        if self.cache.is_none() {
+            return;
+        }
+        let group = Arc::downgrade(self);
+        let mut lead = self.leadership.changes();
+        let mut commits = self.commits.clone();
+        let stop = self.stop.clone();
+        self.runtime.spawn(async move {
+            loop {
+                let wait = match group.upgrade() {
+                    Some(group) => group.expire().await,
+                    None => return,
+                };
+                let due = async {
+                    match wait {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return,
+                    changed = lead.changed() => if changed.is_err() { return },
+                    changed = commits.changed() => if changed.is_err() { return },
+                    () = due => {}
+                }
+            }
+        });
     }
 
     /// Stop the member's tasks. Entries and the vote it acknowledged are
@@ -710,6 +933,21 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn leader_gap(&self) -> u64 {
         self.pace.leader_gap(self.pace.timers.now())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn write_in_term(
+        &self,
+        command: super::types::Command,
+        term: u64,
+    ) -> impl Future<Output = bool> + use<> {
+        use futures::StreamExt;
+        let raft = self.raft.clone();
+        async move {
+            let sent = propose::write(&raft, vec![command], Some(term)).await;
+            let mut results = sent.expect("running");
+            matches!(results.next().await, Some(Ok(Ok(_))))
+        }
     }
 
     #[cfg(test)]

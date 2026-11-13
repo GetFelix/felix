@@ -88,6 +88,7 @@ pub(crate) fn stamp(clock: u64, floor: u64) -> u64 {
 /// newest first, the uncommitted entries it inherited included; a blank or
 /// membership entry has no stamp and is `None`. With no stamped entry
 /// there, the floor is its snapshot's time.
+#[cfg(test)]
 pub(crate) fn floor(tail: impl IntoIterator<Item = Option<u64>>, snapshot_time: u64) -> u64 {
     tail.into_iter().flatten().next().unwrap_or(snapshot_time)
 }
@@ -260,6 +261,11 @@ impl CacheState {
             .answers
             .get(&sequence)
             .copied()
+    }
+
+    /// When the first value expires, if any does.
+    pub(crate) fn next_expiry(&self) -> Option<u64> {
+        self.expiring.first().map(|(expires_at, _)| *expires_at)
     }
 
     /// Up to `max` keys whose value has expired on a leader whose clock

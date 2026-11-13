@@ -5,6 +5,9 @@
 use std::future::Future;
 use std::time::Duration;
 
+use bytes::Bytes;
+
+use super::cache::{Answer, CacheCommand};
 use super::propose::{self, Batch};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
@@ -129,6 +132,64 @@ impl RaftEngine {
         shard: &ShardKey,
     ) -> Option<tokio::sync::watch::Receiver<super::commit::Commits>> {
         Some(self.runtime.group(shard)?.commits())
+    }
+
+    // HOOK(#2238 broker routing): the broker's cache and counter paths call
+    // the four below once a shard is routed to Raft.
+
+    /// Commit a cache write on this leader and return what it answered
+    /// when it was first applied. A retry of the same request gets that
+    /// answer and is not applied again. `ttl` is in microseconds and only
+    /// a put has one; zero is none.
+    ///
+    /// An error is an unknown outcome: the write may still commit.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn cache_write(
+        &self,
+        shard: &ShardKey,
+        command: CacheCommand,
+        ttl: u64,
+        timeout: Duration,
+    ) -> Result<Answer, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.cache_write(command, ttl, timeout).await
+    }
+
+    /// `key`'s value and version on this leader, never one that has
+    /// expired by its clock or by the log's time.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn cache_read(
+        &self,
+        shard: &ShardKey,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<(Bytes, u64)>, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.cache_read(key, timeout).await
+    }
+
+    /// A counter's sum on this leader.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn counter_read(
+        &self,
+        shard: &ShardKey,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<i64>, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.counter_read(key, timeout).await
     }
 
     /// The term this broker has `shard` open in, for a reader to take

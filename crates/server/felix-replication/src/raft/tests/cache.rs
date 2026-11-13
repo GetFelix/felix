@@ -148,3 +148,111 @@ async fn a_member_that_installs_a_snapshot_holds_its_state_and_answers() {
     );
     cluster.stop().await;
 }
+
+/// One settable clock for every broker, so whoever leads stamps by it.
+fn clocked(cluster: &Cluster, at: u64) -> Arc<std::sync::atomic::AtomicU64> {
+    let clock = Arc::new(std::sync::atomic::AtomicU64::new(at));
+    for runtime in cluster.runtimes() {
+        let clock = Arc::clone(&clock);
+        runtime.set_clock(Arc::new(move || {
+            clock.load(std::sync::atomic::Ordering::Relaxed)
+        }));
+    }
+    clock
+}
+
+async fn leading(cluster: &Cluster) -> (RaftEngine, Arc<super::super::group::Group>) {
+    let leader = cluster.elected(N).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let group = runtime.group(&shard(N)).expect("group");
+    eventually(|| group.open_term()).await;
+    (RaftEngine::new(runtime), group)
+}
+
+/// A leader whose clock is behind the entries it inherited stamps above
+/// them. The first entry here is written with its stamp given, as another
+/// leader's would arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_new_leader_stamps_above_an_inherited_tail() {
+    let mut cluster = Cluster::new(true);
+    clocked(&cluster, 5);
+    cluster.form(N).await;
+    let (engine, group) = leading(&cluster).await;
+    let inherited = write(&cluster, 1_000, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, inherited).await;
+    let answer = engine
+        .cache_write(&shard(N), put("k", b"two", 2), 0, PATIENCE)
+        .await
+        .expect("write");
+    assert!(matches!(answer, Answer::Written { .. }));
+    assert_eq!(group.cache().read().time(), 1_000);
+    cluster.stop().await;
+}
+
+/// A write stamped while this member led one term is not appended once it
+/// leads another: the leader in between may have written later stamps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (_, group) = leading(&cluster).await;
+    let term = group.open_term().expect("open");
+    let command = |sequence| Command {
+        timestamp_micros: 10,
+        payload: put("k", b"one", sequence).encode(),
+        written: None,
+    };
+    assert!(!group.write_in_term(command(1), term - 1).await);
+    assert!(group.write_in_term(command(2), term).await);
+    assert_eq!(group.cache().read().answer(7, 1), None);
+    assert!(group.cache().read().answer(7, 2).is_some());
+    cluster.stop().await;
+}
+
+/// A value the leader's clock says has expired is not read, and its delete
+/// is committed: a leader with a slower clock does not find it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expired_key_is_deleted_for_every_member_before_it_reads_absent() {
+    let mut cluster = Cluster::new(true);
+    let clock = clocked(&cluster, 100);
+    cluster.form(N).await;
+    let (engine, _) = leading(&cluster).await;
+    engine
+        .cache_write(&shard(N), put("k", b"one", 1), 50, PATIENCE)
+        .await
+        .expect("write");
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert!(read.expect("read").is_some());
+    clock.store(200, std::sync::atomic::Ordering::Relaxed);
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert_eq!(read.expect("read"), None);
+    clock.store(100, std::sync::atomic::Ordering::Relaxed);
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    assert_eq!(read.expect("read"), None);
+    let empty = agreed(&cluster).await;
+    assert_eq!(state(&cluster, BROKERS[0]), empty);
+    cluster.stop().await;
+}
+
+/// The leader deletes an expired value with nobody reading it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_expired_key_is_deleted_with_no_reader() {
+    let mut cluster = Cluster::new(true);
+    let clock = clocked(&cluster, 100);
+    cluster.form(N).await;
+    let (engine, group) = leading(&cluster).await;
+    engine
+        .cache_write(&shard(N), put("k", b"one", 1), 50, PATIENCE)
+        .await
+        .expect("write");
+    clock.store(200, std::sync::atomic::Ordering::Relaxed);
+    // An applied entry wakes the expiry task, as any write would.
+    engine
+        .cache_write(&shard(N), add("n", 1, 2), 0, PATIENCE)
+        .await
+        .expect("write");
+    let sum = engine.counter_read(&shard(N), "n", PATIENCE).await;
+    assert_eq!(sum.expect("read"), Some(1));
+    eventually(|| group.cache().read().next_expiry().is_none().then_some(())).await;
+    cluster.stop().await;
+}

@@ -17,13 +17,16 @@ use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
+use openraft::impls::ProgressResponder;
 use openraft::raft::WriteResult;
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+use super::cache::{self, CacheCommand};
 use super::group::Pace;
-use super::machine::Machine;
+use super::lead::Leadership;
+use super::machine::{Cache, Machine};
 use super::types::{Command, ShardTypes};
 use crate::engine::{CommitError, Written};
 
@@ -111,9 +114,78 @@ impl Span {
     }
 }
 
+/// A cache shard's clock, in microseconds. The wall clock outside tests.
+pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// A cache write that has no stamp yet. It gets one when the publish task
+/// hands it to the group, not when it is queued: see [`Stamper`].
+#[derive(Debug, Clone)]
+pub(crate) struct Unstamped {
+    pub(crate) command: CacheCommand,
+    /// How long after its stamp a put expires, in microseconds. Zero is
+    /// never.
+    pub(crate) ttl: u64,
+}
+
+impl Unstamped {
+    fn encode(mut self, at: u64) -> Bytes {
+        if let CacheCommand::Put { expires_at, .. } = &mut self.command
+            && self.ttl > 0
+        {
+            *expires_at = at.saturating_add(self.ttl);
+        }
+        self.command.encode()
+    }
+}
+
+/// Stamps a cache shard's entries as the publish task writes them.
+///
+/// A stamp is the leader's clock held up to a floor, so stamps never go
+/// back along the log. The floor is the log's time as this member has
+/// applied it, or the last stamp issued here if that is later. A term opens
+/// only once one of its entries is applied, so by then every entry the
+/// leader inherited is applied too, its uncommitted tail included, and
+/// what it wrote since was stamped here.
+///
+/// The write then names the term the floor was read in, and openraft
+/// appends it only if this member still leads that term. A member deposed
+/// and elected again while a write waited would otherwise append a stamp
+/// from below the tail of the leader in between.
+pub(crate) struct Stamper {
+    pub(crate) cache: Cache,
+    pub(crate) leadership: Arc<Leadership>,
+    pub(crate) clock: Clock,
+    /// The last stamp issued. It never goes back, whatever term it was for.
+    pub(crate) last: u64,
+}
+
+impl Stamper {
+    /// Stamp `commands` for the term this member has open and return that
+    /// term. `None` if it has none open: nothing may be written.
+    pub(super) fn stamp(
+        &mut self,
+        commands: &mut [Command],
+        unstamped: Vec<Unstamped>,
+    ) -> Option<u64> {
+        let lead = self.leadership.lead();
+        let term = lead.term.filter(|_| lead.open)?;
+        let mut at = self.last.max(self.cache.read().time());
+        for (command, unstamped) in commands.iter_mut().zip(unstamped) {
+            at = cache::stamp((self.clock)(), at);
+            command.timestamp_micros = at;
+            command.payload = unstamped.encode(at);
+        }
+        self.last = at;
+        Some(term)
+    }
+}
+
 /// A batch on its way to the group.
 pub(crate) struct Proposal {
     commands: Vec<Command>,
+    /// A cache shard's batch: what each command is once it is stamped.
+    /// Empty for a stream's.
+    unstamped: Vec<Unstamped>,
     bytes: usize,
     /// Where openraft applied the batch, or why it did not.
     answer: oneshot::Sender<Result<Span, CommitError>>,
@@ -137,12 +209,8 @@ pub(crate) struct Waiting<W = WrittenAt> {
 /// certain about another's.
 pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     let Batch { records, ack } = batch;
-    let count = records.len();
-    if count == 0 {
-        return Err(lost(EMPTY));
-    }
     let mut bytes = 0;
-    let mut commands: Vec<Command> = records
+    let commands = records
         .into_iter()
         .map(|record| {
             bytes += record.payload.len();
@@ -153,6 +221,33 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             }
         })
         .collect();
+    queued(commands, Vec::new(), bytes, ack)
+}
+
+/// The same for a cache shard's writes. Each is one entry, and the batch
+/// is acknowledged once written: its caller waits for the commit.
+pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting), CommitError> {
+    let commands = writes
+        .iter()
+        .map(|_| Command {
+            timestamp_micros: 0,
+            payload: Bytes::new(),
+            written: None,
+        })
+        .collect();
+    queued(commands, writes, 0, AckAt::Written)
+}
+
+fn queued(
+    mut commands: Vec<Command>,
+    unstamped: Vec<Unstamped>,
+    bytes: usize,
+    ack: AckAt,
+) -> Result<(Proposal, Waiting), CommitError> {
+    let count = commands.len();
+    if count == 0 {
+        return Err(lost(EMPTY));
+    }
     let token = |command: &mut Command| {
         let (token, at) = WrittenToken::channel();
         command.written = Some(token);
@@ -164,6 +259,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     Ok((
         Proposal {
             commands,
+            unstamped,
             bytes,
             answer,
         },
@@ -180,6 +276,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
 /// The batches of one call, in queue order.
 pub(super) struct Drain {
     pub(super) commands: Vec<Command>,
+    pub(super) unstamped: Vec<Unstamped>,
     /// Each batch's record count and where its answer goes.
     pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
 }
@@ -194,6 +291,7 @@ pub(super) fn drain(
 ) -> Drain {
     let mut bytes = first.bytes;
     let mut commands = first.commands;
+    let mut unstamped = first.unstamped;
     let mut answers = vec![(commands.len(), first.answer)];
     while let Ok(next) = queue.try_recv() {
         if bytes + next.bytes > DRAIN_BYTES || commands.len() + next.commands.len() > DRAIN_RECORDS
@@ -204,8 +302,13 @@ pub(super) fn drain(
         bytes += next.bytes;
         answers.push((next.commands.len(), next.answer));
         commands.extend(next.commands);
+        unstamped.extend(next.unstamped);
     }
-    Drain { commands, answers }
+    Drain {
+        commands,
+        unstamped,
+        answers,
+    }
 }
 
 /// Hand a shard's queued batches to its group, in the order they were
@@ -223,6 +326,7 @@ pub(crate) async fn run(
     stop: CancellationToken,
     calls: Arc<AtomicU64>,
     lease: Lease,
+    mut stamper: Option<Stamper>,
 ) {
     let mut answering = FuturesUnordered::new();
     let mut held = None;
@@ -239,7 +343,11 @@ pub(crate) async fn run(
                 },
             },
         };
-        let Drain { commands, answers } = drain(first, &mut queue, &mut held);
+        let Drain {
+            mut commands,
+            unstamped,
+            answers,
+        } = drain(first, &mut queue, &mut held);
         if leads(&raft) {
             pace.wrote();
         }
@@ -249,8 +357,21 @@ pub(crate) async fn run(
         {
             return;
         }
+        // Stamped after the renewal, which can take a whole lease.
+        let term = match &mut stamper {
+            None => None,
+            Some(stamper) => match stamper.stamp(&mut commands, unstamped) {
+                Some(term) => Some(term),
+                None => {
+                    for (_, to) in answers {
+                        let _ = to.send(Err(lost(NOT_LEADING)));
+                    }
+                    continue;
+                }
+            },
+        };
         calls.fetch_add(1, Ordering::Relaxed);
-        let sent = alongside(raft.client_write_many(commands), &mut answering, &stop).await;
+        let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
         let Some(sent) = sent else {
             return;
         };
@@ -264,6 +385,36 @@ pub(crate) async fn run(
             }
         }
     }
+}
+
+/// Hand `commands` to openraft, in order. With a term, each is appended
+/// only if this member still leads that term, which openraft checks as it
+/// appends: what was stamped for one term never lands in another.
+pub(super) async fn write(
+    raft: &Raft<ShardTypes, Machine>,
+    commands: Vec<Command>,
+    term: Option<u64>,
+) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
+{
+    let Some(term) = term else {
+        return raft.client_write_many(commands).await;
+    };
+    let mut answers = Vec::with_capacity(commands.len());
+    for command in commands {
+        let (responder, answered) = ProgressResponder::complete_only();
+        raft.write(command)
+            .with_leader(term)
+            .responder(responder)
+            .await?;
+        answers.push(answered);
+    }
+    let results = futures::stream::iter(answers).then(|answered| async move {
+        match answered.await {
+            Ok(result) => Ok(result.map(Into::into)),
+            Err(_) => Err(Fatal::Stopped),
+        }
+    });
+    Ok(results.boxed())
 }
 
 /// Run `work` until it ends or `stop`, and meanwhile hand on the answers of

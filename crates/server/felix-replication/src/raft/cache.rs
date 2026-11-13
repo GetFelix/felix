@@ -19,7 +19,9 @@ use std::io;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub(crate) use record::{CacheCommand, Request};
-pub(crate) use state::{Answer, CacheState, Read, floor, stamp};
+#[cfg(test)]
+pub(crate) use state::floor;
+pub(crate) use state::{Answer, CacheState, Read, stamp};
 
 use super::codec::invalid;
 

@@ -12,8 +12,9 @@ use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
-use super::group::{Group, Timers};
+use super::group::{self, Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
+use super::propose::Clock;
 use super::ticker;
 use super::types::{GroupId, MemberId};
 use crate::ShardKey;
@@ -55,6 +56,11 @@ impl Default for RuntimeConfig {
             election_max: Duration::from_secs(2),
         }
     }
+}
+
+fn wall_clock_micros() -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.map_or(0, |now| now.as_micros() as u64)
 }
 
 impl RuntimeConfig {
@@ -254,6 +260,8 @@ struct Inner {
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
     host: OnceLock<Arc<dyn EngineHost>>,
+    /// The clock cache shards opened from here on stamp by.
+    clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -291,6 +299,7 @@ impl GroupRuntime {
                 },
                 raft: Arc::new(config.raft()?),
                 transport,
+                clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
@@ -318,6 +327,11 @@ impl GroupRuntime {
         F: WriteFence + ?Sized + 'static,
     {
         self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_clock(&self, clock: Clock) {
+        *self.inner.clock.write() = clock;
     }
 
     pub(crate) fn set_host(&self, host: Arc<dyn EngineHost>) {
@@ -364,6 +378,10 @@ impl GroupRuntime {
             shard: Some(shard),
         };
         let member = MemberId::new(inner.broker.clone(), copy);
+        let host = group::Host {
+            engine: inner.host.get().cloned(),
+            clock: Arc::clone(&inner.clock.read()),
+        };
         let group = Group::open(
             group,
             member,
@@ -371,10 +389,11 @@ impl GroupRuntime {
             Arc::clone(&inner.raft),
             Arc::clone(&inner.transport),
             inner.timers,
-            inner.host.get().cloned(),
+            host,
         )
         .await?;
         let group = Arc::new(group);
+        group.start_expiry();
         let placed = {
             let mut slots = registry.slots.write();
             let placed = !slots.closed;
