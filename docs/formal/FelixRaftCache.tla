@@ -57,6 +57,17 @@
 (*     replayed the log.                                                   *)
 (*   - A put or a delete may name a version (`cond`). It applies only if   *)
 (*     the key holds that version, unexpired; otherwise it is refused.     *)
+(*   - With `Trim`, the table of applied ids is trimmed by entries. Each   *)
+(*     client entry carries its producer's floor: the lowest sequence the  *)
+(*     producer has no answer for yet. Applying it drops the answers below *)
+(*     the floor (never the entry's own). A retry below the floor that is  *)
+(*     no longer in the table answers "forgotten" and is not applied. A    *)
+(*     retire entry, sent once every request is answered, drops the        *)
+(*     producer's answers and raises its floor past its last sequence, so *)
+(*     the floor stays behind as a tombstone. A copy of a request may be   *)
+(*     proposed after its answer came: a retry held in a queue or on the   *)
+(*     network. That is what makes the tombstone necessary: dropping the   *)
+(*     floor too (`RetireDropsFloor`) applies such a copy again.           *)
 (*                                                                         *)
 (* One key and one counter. Seven requests: an add (id 1), a put that      *)
 (* expires one time unit after its stamp (id 2), a put-if-absent (id 3),   *)
@@ -66,7 +77,8 @@
 (* held, expired or not, when the client first sent the request; a retry   *)
 (* names the same one. A configuration picks which requests exist. A       *)
 (* request whose answer has not come may be proposed again: that is a      *)
-(* retry.                                                                  *)
+(* retry. All requests come from one producer, and a request's sequence    *)
+(* is its id.                                                              *)
 (*                                                                         *)
 (* For the implementation:                                                 *)
 (*                                                                         *)
@@ -74,9 +86,10 @@
 (*     leaders. The wire's `request_id` on cache operations is a           *)
 (*     per-connection `Option<u64>`; it needs a producer id and sequence,  *)
 (*     as PublishIdempotent has, behind a negotiated flag.                 *)
-(*   - The table of applied ids may be trimmed only by a rule that is a    *)
-(*     function of the log (an entry, or a bound on applied state), with   *)
-(*     the result in the snapshot. The model never trims it.               *)
+(*   - The table of applied ids is trimmed only by entries (the floor on   *)
+(*     each write, and retire), with the floor and the kept answers in the *)
+(*     snapshot. A retired producer keeps its floor: a retry still in      *)
+(*     flight can commit after the retire entry.                           *)
 (*   - Apply and snapshot building never read a clock.                     *)
 (*                                                                         *)
 (* Checked:                                                                *)
@@ -109,6 +122,10 @@
 (*                       version it named, and that version was unexpired. *)
 (*   LiveReadable     -- a live key's record is in the member's log above  *)
 (*                       its purge point or in its snapshot.               *)
+(*   ForgetsOnlyDone  -- an entry answers "forgotten" only for a request   *)
+(*                       whose answer the producer already had.            *)
+(*   RetriesKeepAnswers -- a later commit of a request that is not         *)
+(*                       forgotten answers what its first commit did.      *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -133,6 +150,13 @@
 (*                         without waiting for its commit index.           *)
 (*   SeesExpired        -- these operations (delete, putAbsent, putIf,     *)
 (*                         deleteIf) treat an expired record as present.   *)
+(*   SnapshotDropsFloor -- the snapshot keeps the answers and leaves out   *)
+(*                         the producer's floor.                           *)
+(*   RetireDropsFloor   -- retire forgets the producer, floor included.    *)
+(*   RetireLocal        -- the leader forgets the producer itself, with no *)
+(*                         entry.                                          *)
+(*   FloorPastUnanswered -- the producer sends its own sequence as the     *)
+(*                         floor, past requests it has no answer for.      *)
 (*                                                                         *)
 (* SnapshotDropsExpired is not a dropped rule. It picks which of two       *)
 (* allowed snapshots a member builds: with it, the snapshot holds live     *)
@@ -164,7 +188,13 @@ CONSTANTS
     ExpiryUnconditional,
     ReadNoApplyWait,
     SeesExpired,        \* a set of operation names
-    SnapshotDropsExpired
+    SnapshotDropsExpired,
+    Trim,               \* entries carry a floor; retire and late copies exist
+    MaxRetires,
+    SnapshotDropsFloor,
+    RetireDropsFloor,
+    RetireLocal,
+    FloorPastUnanswered
 
 VARIABLES
     clog,       \* the committed entries
@@ -185,6 +215,10 @@ vars == <<clog, pend, ldr, clock, applied, st, snap, purged, given, reads, used,
 Symm == Permutations(Servers)
 
 Max2(a, b) == IF a >= b THEN a ELSE b
+Min2(a, b) == IF a <= b THEN a ELSE b
+SetMin(S) == CHOOSE m \in S : \A x \in S : m <= x
+
+TopSeq == CHOOSE m \in Requests : \A r \in Requests : r <= m
 
 Op(r) == CASE r = 1 -> "add" [] r = 2 -> "put" [] r = 3 -> "putAbsent"
            [] r = 4 -> "delete" [] r = 5 -> "put"
@@ -194,11 +228,29 @@ CondOps == {"putIf", "deleteIf"}
 
 NoAns == <<>>
 
-\* `t` is the log's time; `ans` the answer each applied request got.
-Empty == [val |-> 0, ver |-> 0, exp |-> 0, sum |-> 0, t |-> 0,
-          ans |-> [r \in Requests |-> NoAns]]
+Forgotten == <<"forgotten", 0>>
 
-Blank == [rid |-> 0, op |-> "blank", t |-> 0, exp |-> 0, ver |-> 0, cond |-> 0]
+\* `t` is the log's time; `ans` the answer each applied request got that
+\* is still kept; `floor` the producer's floor.
+Empty == [val |-> 0, ver |-> 0, exp |-> 0, sum |-> 0, t |-> 0,
+          ans |-> [r \in Requests |-> NoAns], floor |-> 0]
+
+Blank == [rid |-> 0, op |-> "blank", t |-> 0, exp |-> 0, ver |-> 0, cond |-> 0,
+          floor |-> 0]
+
+\* Raise the floor to f, dropping the answers below it.
+Raise(s, f) ==
+    IF f > s.floor
+    THEN [s EXCEPT !.floor = f,
+                   !.ans = [r \in Requests |-> IF r < f THEN NoAns ELSE s.ans[r]]]
+    ELSE s
+
+\* A client entry whose answer was trimmed: it answers "forgotten".
+Forgot(s, e) ==
+    /\ Trim
+    /\ e.op \notin NotDeduped
+    /\ s.ans[e.rid] = NoAns
+    /\ e.rid < s.floor
 
 \* Present and not expired at time t. exp 0 is "never".
 Live(s, t) == s.val # 0 /\ (s.exp = 0 \/ t < s.exp)
@@ -234,8 +286,13 @@ Step(s, e, i, t) ==
             THEN IF s.val # 0 /\ (ExpiryUnconditional \/ s.ver = e.ver)
                  THEN [s1 EXCEPT !.val = 0, !.ver = i, !.exp = 0]
                  ELSE s1
+            ELSE IF e.op = "retire"
+            THEN IF RetireDropsFloor THEN [s1 EXCEPT !.ans = Empty.ans, !.floor = 0]
+                 ELSE Raise(s1, e.floor)
             ELSE IF e.op \notin NotDeduped /\ s.ans[e.rid] # NoAns THEN s1
-            ELSE Write(s1, e, i, t)
+            ELSE IF Forgot(s, e) THEN s1
+            \* Never past the request itself, whose answer was just kept.
+            ELSE Raise(Write(s1, e, i, t), Min2(e.floor, e.rid))
 
 \* The fold of the committed log, always at the entries' own times.
 RECURSIVE FoldTo(_)
@@ -269,9 +326,10 @@ Init ==
     /\ purged = [s \in Servers |-> 0]
     /\ given = {}
     /\ reads = {}
-    /\ used = [props |-> 0, exps |-> 0, changes |-> 0, crashes |-> 0, reads |-> 0, snaps |-> 0]
+    /\ used = [props |-> 0, exps |-> 0, changes |-> 0, crashes |-> 0, reads |-> 0, snaps |-> 0,
+               retires |-> 0]
     /\ hist = [installed |-> {}, readAfterInstall |-> FALSE, snapFloor |-> FALSE,
-               cond |-> [r \in Requests |-> 0]]
+               cond |-> [r \in Requests |-> 0], floor |-> [r \in Requests |-> 0]]
 
 ----------------------------------------------------------------------------
 
@@ -282,21 +340,33 @@ SnapFloor ==
     /\ \A k \in (purged[ldr] + 1)..Len(All) : All[k].op = "blank"
     /\ snap[ldr].st.t > clock[ldr]
 
+Given(r) == \E g \in given : g.rid = r
+
+\* The floor the producer sends with a request: the lowest sequence it has
+\* no answer for. With FloorPastUnanswered, the request's own sequence.
+ClientFloor(r) ==
+    IF ~Trim THEN 0
+    ELSE IF FloorPastUnanswered THEN r
+    ELSE SetMin({q \in Requests : ~Given(q)} \cup {r})
+
 \* A client request, or a retry of one whose answer has not come. A
 \* conditional write names the version the leader held when the client
-\* first sent it (`hist.cond`), and a retry names the same one.
+\* first sent it (`hist.cond`), and a retry names the same one, with the
+\* same floor. With Trim, a copy sent before the answer came may still be
+\* proposed after it: a retry held in a queue or on the network.
 Propose(r) ==
     LET c == IF Op(r) \notin CondOps THEN 0
              ELSE IF hist.cond[r] # 0 THEN hist.cond[r] ELSE st[ldr].ver
+        f == IF hist.floor[r] # 0 THEN hist.floor[r] ELSE ClientFloor(r)
     IN
-    /\ \A g \in given : g.rid # r
+    /\ ~Given(r) \/ (Trim /\ hist.floor[r] # 0)
     /\ used.props < MaxProposals
     /\ Op(r) \in CondOps => (hist.cond[r] # 0 \/ st[ldr].val # 0)
     /\ pend' = Append(pend, [rid |-> r, op |-> Op(r), t |-> Stamp,
                              exp |-> IF r = 2 THEN Stamp + 1 ELSE 0, ver |-> 0,
-                             cond |-> c])
+                             cond |-> c, floor |-> f])
     /\ used' = [used EXCEPT !.props = @ + 1]
-    /\ hist' = [hist EXCEPT !.snapFloor = @ \/ SnapFloor, !.cond[r] = c]
+    /\ hist' = [hist EXCEPT !.snapFloor = @ \/ SnapFloor, !.cond[r] = c, !.floor[r] = f]
     /\ UNCHANGED <<clog, ldr, clock, applied, st, snap, purged, given, reads>>
 
 \* The leader's expiry timer: the key it applied has expired at its time.
@@ -306,9 +376,24 @@ Expire ==
     IN /\ used.exps < MaxExpiries
        /\ s.val # 0 /\ s.exp # 0 /\ Now >= s.exp
        /\ pend' = Append(pend, [rid |-> 0, op |-> "expire", t |-> Stamp, exp |-> 0,
-                                ver |-> s.ver, cond |-> 0])
+                                ver |-> s.ver, cond |-> 0, floor |-> 0])
        /\ used' = [used EXCEPT !.exps = @ + 1]
        /\ UNCHANGED <<clog, ldr, clock, applied, st, snap, purged, given, reads, hist>>
+
+\* The producer is done: every request has its answer. It retires, so its
+\* answers can go. With RetireLocal the leader drops them itself.
+Retire ==
+    /\ Trim
+    /\ used.retires < MaxRetires
+    /\ \A r \in Requests : Given(r)
+    /\ IF RetireLocal
+       THEN /\ st' = [st EXCEPT ![ldr] = [@ EXCEPT !.ans = Empty.ans, !.floor = 0]]
+            /\ UNCHANGED pend
+       ELSE /\ pend' = Append(pend, [rid |-> 0, op |-> "retire", t |-> Stamp, exp |-> 0,
+                                    ver |-> 0, cond |-> 0, floor |-> TopSeq + 1])
+            /\ UNCHANGED st
+    /\ used' = [used EXCEPT !.retires = @ + 1]
+    /\ UNCHANGED <<clog, ldr, clock, applied, snap, purged, given, reads, hist>>
 
 \* The first pending entry commits.
 Commit ==
@@ -317,12 +402,15 @@ Commit ==
     /\ pend' = Tail(pend)
     /\ UNCHANGED <<ldr, clock, applied, st, snap, purged, given, reads, used, hist>>
 
-\* The leader answers a request it has applied, from its table. A request
-\* that never gets this step had its answer lost.
+\* The leader answers a request it has applied, from its table, or
+\* "forgotten" when the table no longer holds it. A request that never gets
+\* this step had its answer lost. `at` is the log's length then.
 Answer(r) ==
-    /\ \A g \in given : g.rid # r
+    /\ ~Given(r)
     /\ \E i \in 1..applied[ldr] : clog[i].rid = r
-    /\ given' = given \cup {[rid |-> r, ans |-> st[ldr].ans[r]]}
+    /\ given' = given \cup {[rid |-> r, at |-> Len(clog),
+                             ans |-> IF st[ldr].ans[r] = NoAns THEN Forgotten
+                                     ELSE st[ldr].ans[r]]}
     /\ UNCHANGED <<clog, pend, ldr, clock, applied, st, snap, purged, reads, used, hist>>
 
 \* A new leader. It holds every committed entry and the first k of the old
@@ -352,7 +440,8 @@ Apply(s) ==
 \* SnapshotDropsExpired it holds live records only, judged at the log's time.
 BuildSnapshot(s) ==
     LET live == IF SnapshotDropsExpired THEN Obs(st[s]) ELSE st[s]
-        kept == IF SnapshotDropsDedup THEN [live EXCEPT !.ans = Empty.ans] ELSE live
+        dedup == IF SnapshotDropsDedup THEN [live EXCEPT !.ans = Empty.ans] ELSE live
+        kept == IF SnapshotDropsFloor THEN [dedup EXCEPT !.floor = 0] ELSE dedup
     IN /\ applied[s] > snap[s].idx
        /\ used.snaps < MaxSnapshots
        /\ used' = [used EXCEPT !.snaps = @ + 1]
@@ -411,6 +500,7 @@ Read ==
 Next ==
     \/ \E r \in Requests : Propose(r) \/ Answer(r)
     \/ Expire
+    \/ Retire
     \/ Commit
     \/ Read
     \/ \E s \in Servers :
@@ -428,6 +518,7 @@ TypeOK ==
         /\ applied[s] \in 0..Len(clog)
         /\ purged[s] <= snap[s].idx
     /\ \A g \in given : g.rid \in Requests /\ g.ans # NoAns
+    /\ \A s \in Servers : st[s].floor \in 0..(TopSeq + 1)
 
 \* A snapshot that drops expired records leaves members with different
 \* bytes for the same state, so they are compared by what can be observed.
@@ -496,6 +587,23 @@ LiveReadable ==
             \/ st[s].ver > purged[s]
             \/ snap[s].st.val # 0 /\ snap[s].st.ver = st[s].ver
 
+\* Entry j is a client entry that answered "forgotten".
+ForgotAt(j) == clog[j].rid # 0 /\ Forgot(FoldTo(j - 1), clog[j])
+
+\* What entry j answered.
+Reply(j) == IF ForgotAt(j) THEN Forgotten ELSE FoldTo(j).ans[clog[j].rid]
+
+\* "Forgotten" only for a request whose answer reached the producer before
+\* the entry committed.
+ForgetsOnlyDone ==
+    \A j \in 1..Len(clog) :
+        ForgotAt(j) => \E g \in given : g.rid = clog[j].rid /\ g.at < j
+
+RetriesKeepAnswers ==
+    \A j \in 1..Len(clog) :
+        (clog[j].rid # 0 /\ j # First(clog[j].rid) /\ ~ForgotAt(j))
+        => Reply(j) = FoldTo(First(clog[j].rid)).ans[clog[j].rid]
+
 \* Witnesses. Each says something never happens and must be violated.
 
 \* A member that installed a snapshot leads and serves a read.
@@ -561,5 +669,23 @@ NeverCondStale ==
         /\ Live(FoldTo(j - 1), clog[j].t)
         /\ FoldTo(j - 1).ver # clog[j].cond
         /\ FoldTo(j).ans[clog[j].rid][1] = "conflict"
+
+\* A retry below the floor answers "forgotten".
+NeverForgotten == ~ \E j \in 1..Len(clog) : ForgotAt(j)
+
+\* A retry commits after the floor passed another request, and keeps its
+\* answer.
+NeverRetryAboveFloor ==
+    ~ \E j \in 1..Len(clog) :
+        /\ clog[j].rid # 0 /\ j # First(clog[j].rid) /\ ~ForgotAt(j)
+        /\ FoldTo(j - 1).floor > SetMin(Requests)
+
+\* A copy of a request commits after the retire entry.
+NeverRetryAfterRetire ==
+    ~ \E i, j \in 1..Len(clog) : i < j /\ clog[i].op = "retire" /\ clog[j].rid # 0
+
+\* A member installs a snapshot whose floor passed a request.
+NeverInstalledFloor ==
+    ~ \E s \in hist.installed : snap[s].st.floor > SetMin(Requests)
 
 =============================================================================

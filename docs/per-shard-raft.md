@@ -1369,8 +1369,8 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **The snapshot** is the applied state as of one log id: the cache records
   that are unexpired at the log's time, with their values, versions and
   expiries, the counter sums, the
-  log's time (the stamp of the last stamped entry applied) and the table of
-  applied request ids with their answers.
+  log's time (the stamp of the last stamped entry applied) and, per
+  producer, its floor and the answers it still keeps.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
   than the last stamped entry in its log (the uncommitted tail it inherited
   included, blank and membership entries skipped), or the snapshot's time
@@ -1393,6 +1393,15 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **Every write carries a request id** and is applied once. A retry gets the
   answer the first commit gave. The id must name the client across
   connections and leaders (a producer id and a sequence).
+- **The answers are trimmed by the log.** Each write also carries its
+  producer's floor: the lowest sequence the producer has no answer for yet.
+  Applying it drops that producer's answers below the floor. A retry below
+  the floor answers "forgotten" and is not applied; the producer already had
+  its answer. A producer that is done sends a retire entry, which drops its
+  answers but keeps its floor, raised past its last sequence. A retry still
+  in a queue or on the network can commit after the retire, and without the
+  floor it would be applied a second time. The snapshot holds each
+  producer's floor and kept answers.
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").

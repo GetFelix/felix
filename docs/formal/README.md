@@ -855,6 +855,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCacheDeleteSnapshotReachDropped.cfg` | witness: a member restores a snapshot that left out an expired record while another still holds it | violate `NeverDroppedAndKept` |
 | `FelixRaftCacheCondReachApplied.cfg` | witness: a conditional write applies | violate `NeverCondApplied` |
 | `FelixRaftCacheCondReachStale.cfg` | witness: a conditional write is refused because a newer write replaced the version it named | violate `NeverCondStale` |
+| `FelixRaftCacheTrim.cfg` | the applied-id table trimmed by entries: an add and a put from one producer, each entry carrying the producer's floor, one retire, four proposals (retries and late copies included), one leader change, one crash, two snapshots | pass `ForgetsOnlyDone`, `RetriesKeepAnswers`, `AppliedOnce`, `MembersAgree` (STATES distinct states) |
+| `FelixRaftCacheTrimRetireDropsFloor.cfg` | retire forgets the producer, floor included | violate `AppliedOnce`: a late copy of the add commits after the retire and is applied again |
+| `FelixRaftCacheTrimSnapshotDropsFloor.cfg` | the snapshot keeps the answers and leaves out the floor | violate `MembersAgree`: a member that restored it applies a retry that the leader answers "forgotten" |
+| `FelixRaftCacheTrimRetireLocal.cfg` | the leader forgets a retired producer itself, with no entry | violate `MembersAgree` |
+| `FelixRaftCacheTrimFloorPastUnanswered.cfg` | the producer sends its own sequence as the floor, past a request it has no answer for | violate `ForgetsOnlyDone`: that request commits later and is answered "forgotten", never applied |
+| `FelixRaftCacheTrimReachForgotten.cfg` | witness: a late copy below the floor answers "forgotten" | violate `NeverForgotten` |
+| `FelixRaftCacheTrimReachRetryAboveFloor.cfg` | witness: a retry commits after the floor passed the other request and keeps its answer | violate `NeverRetryAboveFloor` |
+| `FelixRaftCacheTrimReachRetryAfterRetire.cfg` | witness: a late copy commits after the retire entry | violate `NeverRetryAfterRetire` |
+| `FelixRaftCacheTrimReachInstalledFloor.cfg` | witness: a member installs a snapshot whose floor passed a request | violate `NeverInstalledFloor` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -3371,6 +3380,16 @@ The rules and their checks:
 - A put or a delete may name a version. It applies only to that version, unexpired
   (`CondExact`).
 - Purge goes up to the member's snapshot and no further (`LiveReadable`).
+- The table of applied ids is trimmed by entries, never by a member on its own. Each write
+  carries its producer's floor, the lowest sequence the producer has no answer for, and
+  applying it drops the answers below that floor. A retry below the floor answers
+  "forgotten" and is not applied, which only happens to a request the producer already has
+  an answer for (`ForgetsOnlyDone`). A retry at or above it gets its first answer
+  (`RetriesKeepAnswers`). The snapshot holds the floor with the kept answers
+  (`MembersAgree`). A retire entry drops a finished producer's answers and keeps its floor,
+  raised past its last sequence: a copy of a request held in a queue or on the network can
+  still commit after the retire, and with the floor gone it would be applied again
+  (`AppliedOnce`). So a retired producer costs one floor in the table, not zero.
 
 Each twin drops one rule and breaks one check; the module header lists them.
 
@@ -3380,9 +3399,9 @@ every read check, which compares a single read with the log before or after it; 
 relates two reads. One expiry delete covers the delete racing a write and a read waiting
 for it. Two expiries of two versions of the key are not explored.
 
-Not modelled: trimming the table of applied request ids (it only grows here; a real trim
-must be a rule over the log, with its result in the snapshot), membership entries (they
-are stampless like the blank entry), more than one key, and the log side of install and
+Not modelled: more than one producer (the floor is per producer, so producers do not
+interact), a producer id used again after its retire, membership entries (they are
+stampless like the blank entry), more than one key, and the log side of install and
 purge (`FelixRaft.tla`'s snapshot configurations).
 
 ## How CI checks the models
