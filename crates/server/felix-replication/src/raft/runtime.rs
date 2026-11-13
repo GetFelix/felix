@@ -42,6 +42,15 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// How long after a majority's last answer a leader still acknowledges
+    /// a `Leader` write on its own log. A follower promises its leader
+    /// `election_max` on its own clock, so the lease must end before that
+    /// on any two clocks within the drift bound:
+    /// `lease * (1 + p) / (1 - p) <= election_max`.
+    pub lease: Duration,
+    /// `p` above, in parts per million: how much faster or slower than real
+    /// time a broker's clock may run.
+    pub clock_drift_ppm: u32,
 }
 
 impl Default for RuntimeConfig {
@@ -53,6 +62,10 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            // A quarter under the follower's promise, which holds for
+            // clocks up to 10% off.
+            lease: Duration::from_millis(1500),
+            clock_drift_ppm: 100_000,
         }
     }
 }
@@ -66,6 +79,12 @@ impl RuntimeConfig {
             return Err(InvalidTimers(
                 "the idle heartbeat is shorter than the heartbeat".into(),
             ));
+        }
+        if !self.lease_fits() {
+            return Err(InvalidTimers(format!(
+                "a lease of {:?} can outlast a follower's promise of {:?} on clocks {} ppm off",
+                self.lease, self.election_max, self.clock_drift_ppm
+            )));
         }
         let millis = |duration: Duration| duration.as_millis() as u64;
         Config {
@@ -93,6 +112,18 @@ impl RuntimeConfig {
         }
         .validate()
         .map_err(|err| InvalidTimers(err.to_string()))
+    }
+}
+
+impl RuntimeConfig {
+    /// `lease * (1 + p) / (1 - p) <= election_max`: the leader's lease on
+    /// a fast clock ends before a follower's promise on a slow one.
+    fn lease_fits(&self) -> bool {
+        const MILLION: u128 = 1_000_000;
+        let drift = u128::from(self.clock_drift_ppm);
+        drift < MILLION
+            && self.lease.as_nanos() * (MILLION + drift)
+                <= self.election_max.as_nanos() * (MILLION - drift)
     }
 }
 
@@ -288,6 +319,7 @@ impl GroupRuntime {
                     idle_after: config.idle_after.as_millis() as u64,
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
+                    lease: config.lease.as_millis() as u64,
                 },
                 raft: Arc::new(config.raft()?),
                 transport,

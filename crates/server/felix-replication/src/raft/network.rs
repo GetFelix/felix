@@ -13,13 +13,14 @@ use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{RPCOption, RaftNetworkFactory};
 use openraft::raft::{
-    AppendEntriesRequest, AppendResult, SnapshotResponse, TransferLeaderRequest,
+    AppendEntriesRequest, AppendError, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use super::group::Pace;
+use super::lease::Lease;
 use super::types::{GroupId, MemberId, ShardTypes};
 
 /// One Raft message for one member of one group. What is in it is this
@@ -164,6 +165,7 @@ impl RaftTransport for AgreeingPeers {
 pub(crate) struct Router {
     transport: Arc<dyn RaftTransport>,
     pace: Arc<Pace>,
+    lease: Arc<Lease>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -171,8 +173,16 @@ pub(crate) struct Router {
 struct WrongReply;
 
 impl Router {
-    pub(crate) fn new(transport: Arc<dyn RaftTransport>, pace: Arc<Pace>) -> Self {
-        Self { transport, pace }
+    pub(crate) fn new(
+        transport: Arc<dyn RaftTransport>,
+        pace: Arc<Pace>,
+        lease: Arc<Lease>,
+    ) -> Self {
+        Self {
+            transport,
+            pace,
+            lease,
+        }
     }
 
     async fn call(
@@ -196,6 +206,12 @@ impl Router {
             Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
             _ => None,
         };
+        // The members that take this stop refusing votes, and the target
+        // stands at once. The lease for the term ends before it leaves.
+        if let Request::TransferLeader(transfer) = &body {
+            self.lease.void_through(term_of(transfer.from_leader()));
+        }
+        let pre_vote = matches!(body, Request::PreVote(_));
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -210,11 +226,34 @@ impl Router {
                 _ => self.pace.unanswered(&to),
             }
         }
+        // Before openraft sees the answer: it adopts the vote and may grant
+        // that candidate at once.
+        if let Ok(Ok(RaftReply(reply))) = &answer
+            && let Some(term) = named(reply, pre_vote)
+        {
+            self.lease.named(term);
+        }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
             Ok(Err(refused)) => Err(Unreachable::new(&refused)),
             Err(elapsed) => Err(Unreachable::new(&elapsed)),
         }
+    }
+}
+
+pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
+    use openraft::vote::RaftLeaderId;
+    vote.leader_id().term()
+}
+
+/// The term of the vote an answer names, when openraft acts on that vote.
+/// A pre-vote's answer changes no vote.
+fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
+    match reply {
+        Reply::Append(Err(AppendError::HigherVote(vote))) => Some(term_of(vote)),
+        Reply::Vote(response) if !pre_vote => Some(term_of(&response.vote)),
+        Reply::Snapshot(response) => Some(term_of(&response.vote)),
+        Reply::Append(_) | Reply::Vote(_) | Reply::TransferLeader(_) => None,
     }
 }
 

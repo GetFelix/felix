@@ -125,7 +125,7 @@ impl Led {
     }
 }
 
-fn lost(result: &Result<(), CommitError>) -> &'static str {
+pub(super) fn lost(result: &Result<(), CommitError>) -> &'static str {
     match result {
         Err(CommitError::LeadershipLost { detail, .. }) => detail,
         other => panic!("not an unknown outcome: {other:?}"),

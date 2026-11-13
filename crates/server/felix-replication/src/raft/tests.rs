@@ -24,6 +24,7 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod lease;
 mod propose;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -91,6 +92,11 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends to this broker are answered with this vote, as a member
+    /// that has voted for a later candidate answers.
+    higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
+    /// While set, every transfer request is lost.
+    lose_transfers: std::sync::atomic::AtomicBool,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -128,8 +134,17 @@ impl RaftTransport for Net {
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+            || (matches!(request.body, Request::TransferLeader(_))
+                && self.lose_transfers.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
+        }
+        if matches!(request.body, Request::Append(_))
+            && let Some((to, vote)) = &*self.higher_vote.lock()
+            && to == broker
+        {
+            let higher = openraft::raft::AppendError::HigherVote(vote.clone());
+            return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
@@ -520,6 +535,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
+        lease: millis(config.lease),
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)

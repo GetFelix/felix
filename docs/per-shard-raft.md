@@ -653,8 +653,9 @@ batch again, because a second attempt could land beside the first. A
 failed flush stops the group in openraft, which reaches the publisher as
 openraft's answer.
 
-`admit_local_ack` always refuses on a Raft shard, so a `Leader` write
-waits for commit after `propose` returns.
+After `propose` returns, a `Leader` write is acknowledged at once if
+`admit_local_ack` passes and waits for commit if it does not
+(`RaftEngine::await_ack`). See "Acknowledging a write".
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `batches_queued_together_go_to_openraft_in_one_call`,
@@ -1044,14 +1045,14 @@ then it is committed. It calls `deposed(shard, term)`, once, for a term it
 opened, when openraft no longer names this member the leader of that term,
 or when the group has stopped. A storage error stops the group.
 
-`RaftEngine::transfer_starting(shard)` is what the transfer code calls
-before it asks openraft for a transfer (issue #2249 adds that single entry
-point). It asks the group's core which term this member leads, not the
-metrics, which can trail an election. The shard is closed when the call
-returns, and that term never opens again, whether or not the transfer goes
-through. The shard opens again in a later term. The call returns the term
-it closed, or nothing when this member leads no term, and then the
-transfer must not be asked for.
+`RaftEngine::transfer(shard, to)` is the one way a transfer is asked for.
+It calls `transfer_starting(shard)` and then asks openraft. That call asks
+the group's core which term this member leads, not the metrics, which can
+trail an election. When it returns, the lease for that term is given up
+and the shard is closed. Neither comes back in that term, whether or not
+the transfer goes through. The shard opens again in a later term. The call
+returns the term it closed, or nothing when this member leads no term, and
+then no transfer is asked for.
 
 Nothing else calls `deposed`. A write openraft refuses because its lease
 lapsed, a refused `admit_local_ack` and a read-index round no majority
@@ -1115,16 +1116,69 @@ passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
 `last_quorum_acked` as an instant; the older `millis_since_quorum_ack` is
 deprecated. The value only moves forward, so a stale read errs toward
 refusing. The lease must satisfy the inequality on the engine page
-(Decisions, 5), with the tick interval and the heartbeat batch window added
-to the left side.
+(Decisions, 5). The tick interval and the heartbeat batch window are not
+added to it: both only make a message or a timeout later, and the lease is
+counted from the hand-off of the message, on a clock read by the check
+itself.
 
 If the check fails, the write waits on `await_commit` like a `Quorum`
 write. Its commit renews the lease, and later writes are local again. The
-shard stays open. The check is turned on by its own pull request, after the
-model's lease configs pass and the vote hold below is built. Until then it
-always refuses and every `Leader` write waits for commit, which is safe and
-slower. The lease rests on openraft's `last_quorum_acked` and on nothing
-else: store liveness is not part of it.
+shard stays open. The lease rests on openraft's `last_quorum_acked` and on
+nothing else: store liveness is not part of it.
+
+**As built.** `RuntimeConfig` has the lease (1.5 s) and the clock drift
+bound `p` (10%, as `clock_drift_ppm`), and refuses to start unless
+`lease * (1 + p) / (1 - p) <= election_max`. `admit_local_ack(shard, term)`
+passes when all of these hold, read in this order:
+
+1. The broker was not suspended less than one lease ago (below).
+2. openraft's metrics say this member leads `term`.
+3. The newest message a majority answered was handed off less than one
+   lease ago. A leader that is the only voter is answered by nobody, so
+   past its first lease its `Leader` writes wait for commit, which needs
+   nobody else.
+4. The term is above the member's void (below).
+
+`RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
+a `Leader` write: it returns at once when the check passes, and otherwise
+when the write is committed.
+
+**Giving the lease up.** openraft's role reaches Felix through its
+metrics, a moment after openraft has changed it. In that moment a leader
+that has just stepped down would still pass the check, and it may already
+have granted another candidate. So each member keeps one number in memory,
+the void: the highest term it has given up. The check refuses every term
+at or below it. The void only grows, and a restart starts it at zero with
+no lease. It is raised where the messages pass, before openraft sees them
+(`raft/network.rs` and `Group::dispatch`):
+
+| Message | The void becomes at least |
+| --- | --- |
+| An append or snapshot request arrives | The term it names, less one |
+| An answer names a vote (an append's `HigherVote`, a vote's or a snapshot's answer) | That vote's term, less one |
+| This member grants a vote | The granted term, less one. Raised on the answer, before it leaves |
+| A `TransferLeader` request leaves, or `transfer_starting` is called | The leader's own term |
+
+A vote request openraft refuses changes no vote and raises nothing, so a
+candidate nobody follows does not cost a healthy leader its lease. A
+pre-vote changes no vote either, granted or not. Giving a term up costs
+the lease for the rest of that term only. The same broker passes the check
+again in a later term.
+
+**Suspend.** openraft measures `last_quorum_acked` on the monotonic clock,
+which stops while the host or VM is suspended. After a wake the last
+answer looks as new as it did before. The check therefore reads the
+monotonic clock and boottime together each time it runs. If boottime has
+moved ahead by more than 10 ms since the last jump, the broker was
+suspended, and the check refuses until the monotonic clock has run one
+more lease. By then every answer from before the suspend is too old on
+its own. A smaller jump is added to the answer's age. The comparison is
+inside the check and not in a background task, which would see the jump
+after the checks it has to stop. Boottime is `CLOCK_BOOTTIME`, on Linux
+only. Elsewhere no clock counts suspended time and a suspend is not seen.
+
+> `crates/server/felix-replication/src/raft/tests/lease.rs`: one test per
+> rule, each named for it. The model is `docs/formal/FelixRaftLease.tla`.
 
 **A restarted member grants no vote at first** (issue #2307). The leader
 lease rests on each follower's promise not to vote for one election
@@ -1151,8 +1205,20 @@ that code staying as it is, so the hold applies to every member whatever
 vote it has stored.
 
 The cost is that a restarted broker cannot help elect for up to two
-seconds. `admit_local_ack` stays off until the hold is built, with a test
-for each kind of stored vote.
+seconds.
+
+**As built.** `Group::open` reads the vote from the log before openraft
+starts. If there is one, the member answers no vote or pre-vote request
+and is not ticked until `election_max` has passed since the open. The
+request is dropped as unreachable, so the candidate asks again. A member
+handed the leadership meanwhile is ticked, so it heartbeats. A member with
+no vote on disk has never taken a message, so it has promised nothing and
+is not held. That is every member of a group being formed.
+
+> `raft/tests/lease.rs`,
+> `a_restarted_member_holds_its_vote_after_a_leaders_term`,
+> `a_restarted_member_holds_its_vote_after_an_election_nobody_won` and
+> `a_restarted_member_is_not_ticked_while_it_holds_its_vote`.
 
 ### Reads
 
@@ -1799,7 +1865,7 @@ and the hybrid is what ships.
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
-| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
+| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write") | 4 | Behind the feature. Needs the model's lease configs first |
 | 6 (#2238) | Cache and counters in one group: state machine, proposed compaction, snapshot | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |

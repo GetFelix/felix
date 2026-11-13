@@ -10,6 +10,7 @@ use std::time::Duration;
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
+use openraft::storage::RaftLogReader;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -17,8 +18,9 @@ use tokio_util::sync::CancellationToken;
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::lead::{self, Leadership};
+use super::lease::{Lease, View};
 use super::machine::Machine;
-use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
+use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router, term_of};
 use super::propose::{self, Batch, Proposal};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
@@ -29,6 +31,11 @@ pub(crate) struct Group {
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
+    lease: Arc<Lease>,
+    /// On the runtime's clock: until then this member takes no vote or
+    /// pre-vote request and is not ticked. Zero for a member that had
+    /// never voted when it started.
+    hold_until: u64,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -68,6 +75,7 @@ pub(crate) struct Timers {
     pub(crate) idle_after: u64,
     pub(crate) election_min: u64,
     pub(crate) election_max: u64,
+    pub(crate) lease: u64,
 }
 
 impl Timers {
@@ -302,14 +310,25 @@ impl Group {
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
+        // A member that has voted may have promised a leader not to vote
+        // again for one election timeout, and that promise was in memory.
+        // It started after the last message it took, so waiting the
+        // timeout out from here covers it, whatever the vote was. A member
+        // with no vote has promised nothing.
+        let voted = RaftLogReader::read_vote(&mut log.reader()).await?.is_some();
+        let hold_until = match voted {
+            true => timers.now() + timers.election_max,
+            false => 0,
+        };
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
         let positions = log.positions();
         let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
+        let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let network = Network {
-            router: Router::new(transport, Arc::clone(&pace)),
+            router: Router::new(transport, Arc::clone(&pace), Arc::clone(&lease)),
             group: id.clone(),
         };
         let raft = Raft::new(member.clone(), config, network, log, machine)
@@ -329,6 +348,8 @@ impl Group {
             member,
             raft,
             pace,
+            lease,
+            hold_until,
             positions,
             commits,
             leadership,
@@ -366,6 +387,12 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
+        // A member that takes no vote does not ask for one. One that was
+        // handed the leadership meanwhile still heartbeats.
+        if self.holds_votes() && !self.leads() {
+            self.pace.due.store(self.hold_until, Ordering::Relaxed);
+            return;
+        }
         self.ticks.fetch_add(1, Ordering::Relaxed);
         let mut dropped = Dropped(Some(&self.dropped_ticks));
         let ticked = self.raft.trigger().tick().await;
@@ -376,6 +403,18 @@ impl Group {
         {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group stopped and is no longer ticked");
         }
+    }
+
+    /// Whether this member started less than one election timeout ago with
+    /// a vote on disk. See `docs/per-shard-raft.md`, "A restarted member
+    /// grants no vote at first".
+    fn holds_votes(&self) -> bool {
+        self.pace.timers.now() < self.hold_until
+    }
+
+    fn leads(&self) -> bool {
+        use openraft::async_runtime::watch::WatchReceiver;
+        self.raft.metrics().borrow_watched().state == ServerState::Leader
     }
 
     /// When a timer check could next find something to do.
@@ -455,19 +494,34 @@ impl Group {
             };
             Refused::Stopped(Box::new(member), reason)
         };
+        if self.holds_votes() && matches!(body, Request::Vote(_) | Request::PreVote(_)) {
+            // Dropped, not refused: the candidate asks again at its next
+            // timeout.
+            return Err(Refused::Unreachable(format!(
+                "{} of {} has just started and takes no vote yet",
+                self.member, self.id
+            )));
+        }
+        // The lease is given up before openraft sees a message it takes,
+        // or on the answer, before that leaves. A refused vote and a
+        // granted pre-vote change no vote and give nothing up.
         match body {
-            Request::Append(rpc) => self
-                .raft
-                .append_entries(rpc)
-                .await
-                .map(Reply::Append)
-                .map_err(|err| stopped(err.to_string())),
-            Request::Vote(rpc) => self
-                .raft
-                .vote(rpc)
-                .await
-                .map(Reply::Vote)
-                .map_err(|err| stopped(err.to_string())),
+            Request::Append(rpc) => {
+                self.lease.named(term_of(&rpc.vote));
+                self.raft
+                    .append_entries(rpc)
+                    .await
+                    .map(Reply::Append)
+                    .map_err(|err| stopped(err.to_string()))
+            }
+            Request::Vote(rpc) => {
+                let answer = self.raft.vote(rpc).await;
+                let answer = answer.map_err(|err| stopped(err.to_string()))?;
+                if answer.vote_granted {
+                    self.lease.named(term_of(&answer.vote));
+                }
+                Ok(Reply::Vote(answer))
+            }
             Request::PreVote(rpc) => self
                 .raft
                 .pre_vote(rpc)
@@ -478,7 +532,8 @@ impl Group {
             // log up to it: the member would drop records it was never
             // sent. Refused until retention says how a member that far
             // behind gets them.
-            Request::Snapshot { meta, .. } => {
+            Request::Snapshot { vote, meta } => {
+                self.lease.named(term_of(&vote));
                 let member = Box::new(Addressee {
                     group: self.id.clone(),
                     to: self.member.clone(),
@@ -612,8 +667,9 @@ impl Group {
     }
 
     /// A transfer of leadership away from this member is about to start.
-    /// Closes the shard for the rest of the term this member leads, before
-    /// it returns that term. `None` if it leads none.
+    /// Gives up the lease and closes the shard for the rest of the term
+    /// this member leads, before it returns that term. `None` if it leads
+    /// none.
     pub(crate) async fn transfer_starting(&self) -> Option<u64> {
         use openraft::vote::RaftLeaderId;
         // Asked of the core, in the queue a transfer request goes through.
@@ -621,8 +677,41 @@ impl Group {
             let leads = state.server_state == ServerState::Leader;
             leads.then(|| state.vote_ref().leader_id().term())
         });
-        self.leadership
-            .transfer_starting(leads.await.ok().flatten())
+        let leads = leads.await.ok().flatten();
+        if let Some(term) = leads {
+            self.lease.void_through(term);
+        }
+        self.leadership.transfer_starting(leads)
+    }
+
+    /// Hand this member's leadership to `to`. The lease is given up and
+    /// the shard closed before openraft is asked. Returns the term given
+    /// up, or `None` if this member leads none, and then nothing is asked.
+    pub(crate) async fn transfer(&self, to: MemberId) -> Option<u64> {
+        let term = self.transfer_starting().await?;
+        // A core that has stopped has nothing to hand over.
+        let _ = self.raft.trigger().transfer_leader(to).await;
+        Some(term)
+    }
+
+    /// Whether a write of `term` may be acknowledged on this member's log
+    /// alone: it leads `term`, a majority answered a message it handed off
+    /// less than one lease ago, it has not given the term up, and it was
+    /// not suspended since.
+    pub(crate) fn admit_local_ack(&self, term: u64) -> Result<(), CommitError> {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        use openraft::vote::RaftLeaderId;
+        let view = || {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            let leads = metrics.state == ServerState::Leader;
+            View {
+                leads: leads.then(|| metrics.vote.leader_id().term()),
+                acked: metrics.last_quorum_acked.map(|acked| acked.elapsed()),
+            }
+        };
+        self.lease.admit(term, view).map_err(propose::lost)
     }
 
     /// The term this member has the shard open in.
@@ -702,6 +791,11 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn leader_gap(&self) -> u64 {
         self.pace.leader_gap(self.pace.timers.now())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lease(&self) -> &Lease {
+        &self.lease
     }
 
     #[cfg(test)]
