@@ -195,6 +195,8 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_peer_requests_shed_total` | counter | - | Requests refused before sending because the peer was at its in-flight limit. Nothing was attempted. |
 | `felix_broker_peer_request_seconds` | histogram | `outcome` | Round-trip latency of a request to a peer. |
 | `felix_broker_peer_served_total` | counter | `outcome` | Requests this broker served for a peer. |
+| `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
+| `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication
@@ -375,7 +377,7 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |
 | `felix_meta_raft_write_timeouts_total` | counter | - | Proposals that ran out their whole budget, which means no leader or no quorum. Alert on this. |
-| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`. |
+| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, or `target` for a request meant for another member. |
 | `felix_meta_raft_unsupported_commands_total` | counter | - | Commands this member's build does not understand. In a mixed-version group the member's state now differs from a newer leader's. |
 
 ## Clients

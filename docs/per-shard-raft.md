@@ -350,9 +350,9 @@ What `plan` works out for one group, and `apply` then does:
    was under way is listed, and so is a voter that was moved away. The
    command asks each listed broker for its copy when it runs. It keeps no
    earlier answer. For each one it shows the copy id, whether the copy
-   rotated, the last log id of the records on its disk, and the newest
-   membership in those records. A broker declared dead is shown as
-   missing. The cost: the list grows with every move for the life of the
+   rotated, the last log id of the records on its disk, the commit index
+   the copy saved, and the newest membership in those records. A broker
+   declared dead is shown as missing. The cost: the list grows with every move for the life of the
    epoch, every broker the group ever sat on in it must answer or be
    declared dead, and the re-form places the removed ones again as
    learners.
@@ -382,16 +382,21 @@ What `plan` works out for one group, and `apply` then does:
    last log id. A rotated copy reports the records it kept. They are
    evidence, not votes.
 4. **Record the base.** The control plane writes, by compare-and-swap on
-   the group epoch: the next epoch, the base (the highest last log id
-   reported), and the voter set, which is exactly the copies whose reports
-   hold the base. Every other listed copy is a learner. The listed brokers
-   start the record of brokers placed in the new epoch.
+   the group epoch: the next epoch, the base, and the voter set, which is
+   exactly the copies whose reports hold the base. The base is the highest
+   last log id reported, if some copy holds the entry the offset floor
+   names. If none does, the base is the longest log a copy can vouch for
+   (see "Offsets are not reused" below). Every other listed copy is a
+   learner. The listed brokers start the record of brokers placed in the
+   new epoch.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 
 **What it keeps and what it loses.** Every record held by a copy the
 command reached is at or below the base, or is cut as uncommitted. What is
-lost is a record that only brokers declared dead held. `plan` marks every
+lost is a record that only brokers declared dead held, and, when no copy
+holds the floor's entry, a record that no copy holding it can vouch for
+(see "Offsets are not reused" below). `plan` marks every
 group where a dead broker was a voter, since those are the groups that may
 have lost something. A crash or a power cut does not rotate ids and never
 needs a re-form.
@@ -426,31 +431,92 @@ the stopped copies in between, the next `plan` leaves it alone, and how
 those copies come back is not decided yet (#2403).
 
 **Offsets are not reused.** The leader's report to the control plane
-("Membership") carries the shard's commit offset, and the control plane
-keeps the highest it has seen. Every re-form starts the new epoch at an
-offset not below that floor. Offsets between the end of the base and the
-floor are never given out again, and a reader sees them as a gap, which is
-how a lost record already shows. The floor is still needed with an
-operator-only re-form, because the one case left, a majority of disks lost
-at once, is exactly the case where the base can end below what was
-acknowledged. The case the model first found, a majority power loss on
-relaxed fsync (issue #2305), cannot happen now that Raft logs are fsync on
-commit. The floor is the last value the control plane stored, so offsets
-acknowledged after it and then lost with a majority of the disks can be
-given out again. That is one report interval while the control plane is
-reachable and the whole outage while it is not, since writes go on without
-it. Brokers batch the floors of their shards into one report, so the
-control plane makes one metadata write per broker per interval, not one
-per shard. The new epoch's log starts above the base with an index gap up
-to the floor, and how the adapter represents that gap is settled in the
-pull request that builds re-forming. See Questions, 13.
+("Membership") carries the log id of its commit: the index, and the epoch
+and term of the entry there. The control plane keeps the highest it has
+seen as the offset floor. Every re-form starts the new epoch at an offset
+not below that floor. Offsets between the end of the base and the floor
+are never given out again, and a reader sees them as a gap, which is how a
+lost record already shows. The floor is still needed with an operator-only
+re-form, because the one case left, a majority of disks lost at once, is
+exactly the case where the base can end below what was acknowledged. The
+case the model first found, a majority power loss on relaxed fsync (issue
+#2305), cannot happen now that Raft logs are fsync on commit. The floor is
+the last value the control plane stored, so offsets acknowledged after it
+and then lost with a majority of the disks can be given out again. That is
+one report interval while the control plane is reachable and the whole
+outage while it is not, since writes go on without it. Brokers batch the
+floors of their shards into one report, so the control plane makes one
+metadata write per broker per interval, not one per shard. The new epoch's
+log starts above the base with an index gap up to the floor, and how the
+adapter represents that gap is settled in the pull request that builds
+re-forming. See Questions, 13.
 
-**Known gap (#2402).** The floor covers offsets above the end of the base,
-not offsets inside it. The base can end in an entry of an older term that
-never committed, held by the one copy whose disk survived, at an offset
-that a later leader acknowledged with another record. The new epoch then
-serves the old entry under that offset
-(`FelixRaftReformTwoRotatedOffsetsTerms.cfg`, pinned).
+**Why the floor is a log id, not an offset (#2402).** An offset alone
+covers offsets above the end of the base, not offsets inside it. Take
+{A, B, C}. A leads term 1 and appends a record that reaches nobody. B
+leads term 2 with C and acknowledges another record at the same offset.
+Then B and C lose their disks. A's log reaches the floor's offset, so
+nothing is padded, and the new epoch would serve A's record under an
+offset that was acknowledged with B's. With the term in the floor, the
+command sees that A does not hold the floor's entry.
+
+If any copy the command reads holds the floor's entry, the highest copy
+does too, and Raft's log matching means its log agrees with every
+committed entry up to the floor. The base is that copy's log, as before.
+If no copy holds it, even the highest log can hold an uncommitted entry at
+an acknowledged offset. So the command keeps, from each copy, only what
+that copy can vouch for as committed:
+
+- **Its whole log, if its last log id has the floor's epoch and term** and
+  its index is not above the floor's. One leader wrote that entry and the
+  floor's entry into one log, so by log matching the copy's log is the
+  start of the log the floor's entry committed in. This is the common
+  case: a follower that was a little behind when the other disks were
+  lost. Its saved commit index can lag what it holds, and the command
+  does not need it.
+- **Its log up to its saved commit index, otherwise.** The log ends in
+  another term, and the command cannot tell a committed entry above the
+  saved index from one that never committed.
+
+The base is the longest log kept that way, padded up to the floor. A
+record is lost only if every copy that holds it has it above its saved
+commit index, in a log that ends in a term other than the floor's.
+
+The model checks each part. With one term every copy can vouch for all it
+holds, and no record a disk holds is lost
+(`FelixRaftReformTwoRotatedOffsets.cfg` passes `LossNeedsLostDisk`).
+Cutting every log to its saved commit index instead loses a record no disk
+lost (`FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg`). With two terms
+no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
+`FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
+floor, does not), and the loss above can happen
+(`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
+
+What the implementation stores for this:
+
+- **Each copy keeps its commit index on disk.** It is the log id openraft
+  passes to `save_committed`, kept in the shard's Raft log next to the
+  records (the segment store's commit offset, with the term of the entry
+  there). It is written behind the call and is not fsynced before the
+  commit or the client's acknowledgement: after a crash it can read back
+  older, never newer, and a stale one only cuts a base shorter. It never
+  names an entry the log does not hold: an open lowers a saved id whose
+  entry a crash took and refuses one whose index holds another term's
+  entry, and the log refuses a cut below it (`BelowCommit`). A rotated
+  copy keeps it with what is left of its records. A member starting a new
+  epoch saves the end of the base (or of its common prefix with the base,
+  for a learner) as its commit index before it takes an append (#2419), so
+  a late append of the old epoch cannot cut the base either. The model's
+  `FelixRaftReformEpochNotChecked.cfg` drops the epoch check on appends
+  and still passes, and it passes only because of this save.
+- **The control plane records the floor as a log id**: index, epoch and
+  term. A report replaces it only with a higher index. A re-form does
+  not change it: a copy whose entry at the floor's index is a gap that a
+  later re-form padded counts as holding the floor's entry, since its
+  log up to there is that epoch's base.
+- **The command reads, from each copy,** its last log id, the epoch and
+  term of the entry at the floor's index, if it holds one, and its saved
+  commit index.
 
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
@@ -1321,18 +1387,6 @@ log, where it is if it committed, instead of joining live below it.
 > `an_engine_that_settles_nothing_is_handed_no_more_batches` and
 > `a_reader_resuming_after_a_batch_given_up_on_starts_above_it`.
 
-Not built yet: nothing in the broker service opens a stream this way, so no
-shard runs on Raft. The routing change has to:
-
-- open each Raft shard's member and its stream over one log, and send
-  every publish of the stream through the engine;
-- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
-  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
-  refuses any shard it holds no group for;
-- make sure brokers never disagree on a shard's engine: a peer that does
-  not run Raft is never sent a Raft message, and a log directory written
-  by one engine is refused by the other.
-
 **How the service routes a Raft shard.** The routes the hybrid publishes
 never hold a shard a Raft group runs, so the service asks the group first.
 On a broker that holds a member:
@@ -1428,9 +1482,109 @@ A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
 every broker: a shard that already holds data cannot change engines yet.
 Publishes, routes, subscribes and a leader stopping are tested across three
-brokers in one process, and the failover test reads every acknowledged
-payload back from the new leader. A cluster of separate broker processes on
-Raft is not tested yet.
+brokers in one process and across three broker processes. Both failover
+tests read every acknowledged payload back from the new leader, and the one
+across processes stops the leader while the control plane is down: the
+group elects without it.
+
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `a_publish_through_any_broker_reaches_a_subscriber`,
+> `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged`.
+
+**Forming a group.** Placement says where a shard's group forms. After
+that the group's members are its own, and placement changes none of them.
+Membership changes are not built yet
+([#2235](https://github.com/GetFelix/felix/issues/2235)), so until they are:
+
+- A group forms only when placement names as many brokers as the stream's
+  replication factor. The control plane can place a shard on the brokers it
+  has and fill the set later. A group of the brokers placed first would
+  acknowledge on its own, and the brokers placed later would form the full
+  set again on empty logs, elect each other and overwrite what the first
+  group acknowledged. On a short set every member waits and the shard
+  answers "not ready". Placement fills a short set only after the shard's
+  leader has reported to it, which a Raft shard does not do, so today a
+  shard placed short stays short: create a stream once as many brokers as
+  its replication factor are registered.
+- One broker forms the group: the one with the lowest id in the set. It
+  first asks every other member whether a group has reached it, with a Raft
+  pre-vote, which changes nothing on the member asked. It forms the group
+  only when each one answers that it holds no vote and no entry. A member
+  that does not answer, or that holds either, stops it, and it asks again
+  on the next routing pass. The other members never form a group. They
+  open on an empty log and join when the leader's first append arrives.
+- A formed group keeps its members. A member that placement drops stays
+  open and keeps voting, and it opens again after a restart. A broker that
+  placement adds opens an empty member that no group knows: it serves
+  nothing for the shard and answers "not ready".
+
+So **moves, drains and replacing a broker are not supported on Raft
+shards.** Placement may still write them, and the group ignores them. A
+broker counts the shards it holds whose voters are not the brokers
+placement names in `felix_broker_raft_shards_off_placement`, and logs each
+one once at warn level. Requests that reach a broker with no formed member
+go to the leader placement names, which is wrong once placement and the
+group differ, so keep placement where the group formed: do not drain or
+remove a broker that holds Raft shards.
+
+Two cases this does not cover. If placement changes a full set while it is
+forming, two brokers can each be the lowest of their own set and form two
+groups that share members. And if placement replaces every member of a
+formed group, the new set finds no member the group reached and forms a
+second one. Both need a placement change the list above already rules out.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_short_placement_forms_no_group`,
+> `a_group_forms_only_when_every_member_answers_the_lowest`,
+> `a_broker_placed_on_a_formed_group_does_not_form_it_again`,
+> `a_member_placement_drops_keeps_serving`,
+> `a_dropped_member_reopens_after_a_restart`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `a_short_placement_acknowledges_nothing`.
+
+**Every broker that holds a shard must run it on the same engine.** A
+hybrid broker placed in a Raft shard would keep a log of its own that no
+quorum covers, and a Raft group would run short of a member that never
+votes. So each broker asks the peers it shares a durable stream shard with
+which engine they run, and refuses the shard when one answers with the
+other engine, whichever side it is on:
+
+- It closes the shard and stops serving it. Nothing is acknowledged.
+- Every request for it is refused with "the shard's brokers run different
+  shard engines", both engines and the name of the odd broker.
+- It logs the refusal once at error level and counts it in
+  `felix_broker_shard_engine_refused_total{engine}`, where `engine` is the
+  refusing broker's own.
+
+The fix is to set `FELIX_SHARD_ENGINE` the same on every broker and restart
+the odd one. The refusal ends on its own once the peers agree. Streams in
+memory, caches and counters are not checked: they run on the hybrid engine
+everywhere.
+
+A broker asks without waiting for the answer, and asks again on every
+routing pass. A peer that has not answered yet refuses nothing, because a
+peer that is down says nothing about its engine and waiting for it would
+keep a shard closed through an ordinary outage. When an answer arrives
+that differs, the shard closes at once.
+
+Until then, a stream acknowledged by a quorum is still safe: a Raft group
+commits on a majority of members, and a hybrid leader's acknowledgement
+needs followers that the Raft brokers never give it. A stream acknowledged
+by its leader alone is not covered in that window. A hybrid broker the
+control plane names as its leader can acknowledge into its own log until a
+Raft peer answers.
+
+A broker restarted on the other engine over its old data does not get this
+far. The shard directory shows which engine wrote it, and the broker
+refuses to open it under the other one.
+
+> `services/felix-broker-service/src/shards/engine_match/tests.rs`,
+> `a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker`,
+> `a_raft_broker_refuses_a_shard_shared_with_a_hybrid_broker`,
+> `a_peer_reached_late_closes_the_shard_it_shares`,
+> `a_refusal_ends_once_the_engines_match`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `brokers_on_different_engines_refuse_their_shared_shard`.
 
 A forwarded publish that reaches a member that does not lead is answered
 with the leader, and the requester sends it there.
@@ -1781,7 +1935,7 @@ off and stays registered as an expected violation.
 | --- | --- | --- | --- |
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact, with one term and with two. The two-term case needs the floor to be a log id and a saved commit index per copy (#2402); a twin with an offset-only floor violates it. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
 | #2311 | The control plane records the target first and keeps every broker placed in the epoch, removed ones included. The command lists all of them and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership config with two lost disks and no client write passes `AckedSurvive` when the target is reached. The same with a move and the move back has not finished a run yet (no violation in the states explored so far). The same with a client write has not finished a run, so nothing is claimed for it yet. Must still fail: the same with the target left off the list, and the two moves with removed brokers left off (`PlacedForgotten`) |
 

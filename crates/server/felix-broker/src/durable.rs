@@ -265,6 +265,27 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// Whether [`Self::claim_for_raft`] has marked this shard's directory,
+    /// on this run or an earlier one. Marks nothing.
+    pub fn claimed_for_raft(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<bool> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        self.provider
+            .claimed_for_raft(&key, incarnation)
+            .map_err(BrokerError::from)
+    }
+
     pub fn open_stream(
         &self,
         tenant: &str,

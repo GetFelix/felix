@@ -138,6 +138,10 @@ impl Broker {
     /// handed over: a batch committed below the new tail and delivered
     /// after it would reach a resuming reader twice.
     ///
+    /// Returns whether the stream now starts at that bound. False when
+    /// nothing could be moved to: the shard is not open here, its engine
+    /// cannot say what is committed yet, or batches are still held.
+    ///
     /// [`BrokerError::ReleaseInFlight`], with nothing changed, if a release
     /// of the shard's held batches is still running after a short wait.
     pub async fn lead_from_tail(
@@ -146,7 +150,7 @@ impl Broker {
         namespace: &str,
         stream: &str,
         shard: u32,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let state = self
             .topics
             .read()
@@ -154,10 +158,10 @@ impl Broker {
             .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
             .cloned();
         let Some(state) = state else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(log) = &state.durable else {
-            return Ok(());
+            return Ok(false);
         };
         // A hold just discarded reads as busy until its release task runs,
         // and `lead_from` skips a busy hold. Bounded because that task may be
@@ -170,14 +174,15 @@ impl Broker {
             return Err(BrokerError::ReleaseInFlight);
         }
         let Some(tail) = visible_end(&state, log).await? else {
-            return Ok(());
+            return Ok(false);
         };
         if tail <= state.tail_seq() {
-            return Ok(());
+            return Ok(true);
         }
         let run = tail - log.event_end(0, tail).await?;
         state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
-        Ok(())
+        // `lead_from` leaves a stream with held batches where it is.
+        Ok(state.tail_seq() >= tail)
     }
 
     pub(super) async fn get_stream_state(

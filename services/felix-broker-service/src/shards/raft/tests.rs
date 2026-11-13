@@ -50,6 +50,11 @@ pub(crate) fn assignments(
 /// A broker that leaves durable streams to their engines, with the durable
 /// stream `orders` at [`INCARNATION`] and the in-memory stream `scratch`.
 pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
+    broker_of(root, 1).await
+}
+
+/// [`broker`], with `orders` asking for `replicas` brokers a shard.
+pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -70,6 +75,7 @@ pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
             StreamMetadata {
                 durable: true,
                 incarnation: INCARNATION,
+                replication_factor: Some(replicas),
                 ..StreamMetadata::default()
             },
         )
@@ -90,7 +96,17 @@ pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
     Arc::new(broker)
 }
 
+/// `broker`'s Raft shards, with its readers bound by them as startup does.
 pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+    let shards = unbound_shards(broker);
+    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        Arc::new(engine(&shards)),
+    )));
+    shards
+}
+
+/// [`shards`] on a broker nothing tells what its groups committed.
+fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
     RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
@@ -208,10 +224,11 @@ async fn a_deleted_stream_closes_its_raft_log_before_the_directory_goes() {
     shards.runtime.shutdown().await;
 }
 
-/// **A shard no longer assigned here is closed, and opens again from its
-/// log when it comes back.**
+/// **A member placement drops keeps running.** Its group counts it as a
+/// voter until a membership change says otherwise, and placement cannot make
+/// one: closing it would take a vote from a group that still needs it.
 #[tokio::test]
-async fn a_shard_no_longer_assigned_is_closed_and_reopens() {
+async fn a_member_placement_drops_keeps_serving() {
     let root = tempfile::tempdir().expect("tempdir");
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
@@ -224,34 +241,224 @@ async fn a_shard_no_longer_assigned_is_closed_and_reopens() {
         shards.leading(&orders).is_some()
     })
     .await;
+    let term = shards.leading(&orders);
 
     // Assigned to another broker only.
     let mut elsewhere = assigned(orders.clone(), INCARNATION);
     elsewhere.leader = "broker-b".to_string();
     elsewhere.replicas = vec!["broker-b".to_string()];
-    let mut left = assignments([elsewhere]);
+    let mut left = assignments([elsewhere.clone()]);
     shards.take(&mut left).await;
 
     assert!(
         left.is_empty(),
         "a Raft shard held elsewhere went to the hybrid"
     );
-    assert!(log.is_closed());
-    assert!(shards.runtime.status(&orders).is_none());
-    assert_eq!(shards.leading(&orders), None);
+    assert!(!log.is_closed(), "the dropped member's log was closed");
+    assert_eq!(shards.leading(&orders), term);
+    assert!(matches!(
+        route(&shards, &orders),
+        Some(Dispatch::Local { .. })
+    ));
+    let placed = BTreeSet::from(["broker-b"]);
+    assert!(
+        shards.off_placement(&orders, &placed),
+        "a group whose voters placement does not name was not reported"
+    );
+    shards.runtime.shutdown().await;
+}
 
+/// **A member opened by an earlier run is opened again, whatever placement
+/// says now.** A dropped voter that restarted would otherwise leave its
+/// group one short for good.
+#[tokio::test]
+async fn a_dropped_member_reopens_after_a_restart() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+    {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        // Never held here: nothing opens.
+        shards.take(&mut assignments([elsewhere.clone()])).await;
+        assert!(shards.runtime.status(&orders).is_none());
+        shards
+            .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+            .await;
+        until("the led term to be served", || {
+            shards.leading(&orders).is_some()
+        })
+        .await;
+        EngineShards::shutdown(&*shards).await;
+    }
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    shards.take(&mut assignments([elsewhere])).await;
+    until("the member to lead again", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+    shards.runtime.shutdown().await;
+}
+
+/// **A led term is not served while the stream could not be moved to the
+/// committed tail.** Here nothing tells the broker what the group committed,
+/// so the move does nothing, and that is not taken for a stream at its tail.
+#[tokio::test]
+async fn a_term_is_not_served_while_nothing_says_what_committed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = unbound_shards(&broker);
+    let orders = key("orders", 0);
     shards
         .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
         .await;
-    assert!(shards.runtime.status(&orders).is_some());
-    assert!(
-        broker
-            .resolve_stream_handle("t1", "ns", "orders", 0)
-            .await
-            .is_ok(),
-        "the stream did not reopen on the member's log"
-    );
+    until("the member to lead its group of one", || {
+        shards.engine.open_term(&orders).is_some()
+    })
+    .await;
+    tokio::time::sleep(LEAD_RETRY * 10).await;
+    assert_eq!(shards.leading(&orders), None);
     shards.runtime.shutdown().await;
+}
+
+/// How long a group that must not form is watched.
+const NOT_FORMED_FOR: Duration = Duration::from_secs(1);
+
+fn formed(member: &Member) -> bool {
+    member
+        .shards
+        .runtime
+        .status(&key("orders", 0))
+        .is_some_and(|status| status.term > 0 || status.last_index.is_some())
+}
+
+/// **A set short of the stream's replica count forms no group, and the
+/// full set forms one.** A group of the one broker placed first would
+/// acknowledge on its own, and the brokers placed later would form the set
+/// again on empty logs and overwrite what it acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_short_placement_forms_no_group() {
+    let net = Arc::new(Loopback::default());
+    let first = Member::start(&net, "broker-a").await;
+    let orders = key("orders", 0);
+    first
+        .shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    assert!(!formed(&first), "one broker of three formed a group");
+    assert_eq!(first.shards.leading(&orders), None);
+    assert_eq!(
+        route(&first.shards, &orders),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+
+    let mut members = vec![first];
+    for name in ["broker-b", "broker-c"] {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    members[0]
+        .shards
+        .take(&mut assignments([replicated()]))
+        .await;
+    let leader = served(&members).await;
+    let term = members[leader].shards.leading(&orders).expect("term");
+    members[leader].publish(term, b"after the set filled").await;
+    stop(&members).await;
+}
+
+/// **Only the lowest broker of the set forms the group, and only once every
+/// other member has answered.** The others never form one, even when every
+/// member answers them: two brokers forming at once could each be the lowest
+/// of a different set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_forms_only_when_every_member_answers_the_lowest() {
+    let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    // The lowest broker still sees the short set, so it is open, answers,
+    // and forms nothing itself.
+    let lowest = Member::start(&net, "broker-a").await;
+    lowest
+        .shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    let mut members = Vec::new();
+    for name in ["broker-b", "broker-c"] {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    assert!(
+        !members.iter().any(formed) && !formed(&lowest),
+        "a broker other than the lowest formed the group"
+    );
+
+    // The lowest broker with one member silent forms nothing either.
+    let silent = net.runtimes.lock().remove("broker-c").expect("runtime");
+    lowest.shards.take(&mut assignments([replicated()])).await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    assert!(!formed(&lowest), "formed with a member that never answered");
+    assert!(!members.iter().any(formed));
+
+    net.runtimes.lock().insert("broker-c".to_string(), silent);
+    lowest.shards.take(&mut assignments([replicated()])).await;
+    members.insert(0, lowest);
+    served(&members).await;
+    stop(&members).await;
+}
+
+/// **A broker placed on a shard whose group has formed does not form it
+/// again.** It is the lowest broker of its set and its log is empty, but
+/// the members it asks hold the group's entries. It serves nothing until a
+/// membership change adds it, and the group keeps the members it formed with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_broker_placed_on_a_formed_group_does_not_form_it_again() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    members[leader].publish(term, b"acknowledged").await;
+
+    // Placement replaces broker-a with a broker that sorts before the rest.
+    let mut replaced = replicated();
+    replaced.leader = "broker-0".to_string();
+    replaced.replicas = vec![
+        "broker-0".to_string(),
+        "broker-b".to_string(),
+        "broker-c".to_string(),
+    ];
+    let late = Member::start(&net, "broker-0").await;
+    late.shards.take(&mut assignments([replaced.clone()])).await;
+    for member in &members {
+        member
+            .shards
+            .take(&mut assignments([replaced.clone()]))
+            .await;
+    }
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+
+    assert!(!formed(&late), "a late broker formed the group again");
+    assert_eq!(
+        route(&late.shards, &orders),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+    for member in &members {
+        assert!(
+            member.shards.runtime.status(&orders).is_some(),
+            "{} closed its member",
+            member.name
+        );
+    }
+    let leader = served(&members).await;
+    let term = members[leader].shards.leading(&orders).expect("term");
+    members[leader].publish(term, b"still one group").await;
+    members.push(late);
+    stop(&members).await;
 }
 
 pub(crate) fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::StreamEngine {
@@ -494,7 +701,7 @@ impl Member {
     /// A broker on `net` whose readers are bound the way startup binds them.
     async fn start(net: &Arc<Loopback>, name: &'static str) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let broker = broker(root.path()).await;
+        let broker = broker_of(root.path(), 3).await;
         let runtime =
             GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
                 .expect("runtime");
@@ -549,11 +756,13 @@ fn replicated() -> ShardAssignment {
 pub(crate) async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
-    for name in BROKERS {
+    // The broker that forms the group last, so every member it asks is up.
+    for name in BROKERS.iter().rev() {
         let member = Member::start(&net, name).await;
         member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
+    members.reverse();
     let leader = served(&members).await;
     (net, members, leader)
 }

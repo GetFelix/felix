@@ -333,6 +333,15 @@ where
     };
     #[cfg(not(feature = "raft"))]
     let raft_shards = cluster::RaftShards::default();
+    let raft_shards = cluster::match_engines(
+        &config,
+        &cluster,
+        &peers,
+        &broker,
+        &engine,
+        shard_engine == crate::config::ShardEngine::Raft,
+        raft_shards,
+    );
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config

@@ -388,6 +388,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                                 retention: None,
                                 incarnation: 0,
                                 mount: None,
+                                replication_factor: None,
                             }),
                             seq: None,
                         }],

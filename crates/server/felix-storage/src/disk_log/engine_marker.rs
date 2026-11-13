@@ -49,6 +49,11 @@ pub fn claim_for_raft(dir: &Path, label: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether [`claim_for_raft`] has marked `dir`.
+pub(super) fn claimed_for_raft(dir: &Path, label: &str) -> Result<bool> {
+    marked_raft(dir, label)
+}
+
 /// Refuse to open `dir` as a hybrid log when a Raft member wrote it.
 pub(super) fn refuse_raft_directory(dir: &Path, label: &str) -> Result<()> {
     if marked_raft(dir, label)? {
