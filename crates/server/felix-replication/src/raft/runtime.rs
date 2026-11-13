@@ -455,6 +455,7 @@ impl GroupRuntime {
                     group: group.id.clone(),
                     to: member.clone(),
                     beat: 0,
+                    report: false,
                     deadline: within,
                     body: Request::PreVote(VoteRequest::new(
                         Vote {
