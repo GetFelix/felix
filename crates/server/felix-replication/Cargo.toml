@@ -20,6 +20,9 @@ publish = false
 raft = ["dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde", "serde/rc"]
 # Entry points for the libFuzzer targets in `fuzz/`. Not an API.
 fuzzing = ["raft"]
+# Test-only entry points, such as opening a Raft member with no copy
+# checks. Not an API.
+testing = ["raft"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -62,7 +65,7 @@ required-features = ["raft"]
 [dev-dependencies]
 # Turns `raft` on for this crate's own tests, so `cargo test` runs the
 # runtime's without a feature flag.
-felix-replication = { path = ".", features = ["raft"] }
+felix-replication = { path = ".", features = ["raft", "testing"] }
 felix-broker = { path = "../felix-broker", version = "0.8.0-preview.0", features = ["fault-injection"] }
 axum = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
