@@ -82,14 +82,15 @@ impl SnapshotData {
         }
     }
 
-    /// The next piece of the data to send, at most `max` bytes, or `None`
-    /// at its end. A staged snapshot is not sent anywhere.
+    /// The next piece of the data, at most `max` bytes, or `None` at its
+    /// end. A stored or staged snapshot reports its end only once its crc
+    /// matched.
     pub async fn next_chunk(&mut self, max: usize) -> io::Result<Option<Bytes>> {
         match self {
             Self::Memory(data) if data.is_empty() => Ok(None),
             Self::Memory(data) => Ok(Some(data.split_to(max.max(1).min(data.len())))),
             Self::Stored(reader) => reader.next_chunk(max).await,
-            Self::Staged(_) => Err(io::Error::other("a received snapshot is not sent on")),
+            Self::Staged(staged) => staged.next_chunk(max).await,
         }
     }
 }
@@ -121,9 +122,24 @@ struct Shared {
     receiving: Arc<tokio::sync::Semaphore>,
     /// Set by a close, so a receive waiting on its sender gives up.
     closing: tokio::sync::watch::Sender<bool>,
+    /// Holds the next receive's blocking file call until the test lets it
+    /// go: (entered, release).
+    #[cfg(test)]
+    gate: parking_lot::Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Makes the next close fail, for tests.
     #[cfg(test)]
     fail_close: std::sync::atomic::AtomicBool,
+}
+
+impl Shared {
+    /// Wait at a test's gate, if one is set. Nothing outside tests.
+    fn pass_gate(&self) {
+        #[cfg(test)]
+        if let Some((entered, release)) = self.gate.lock().take() {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
+    }
 }
 
 impl SnapshotStore {
@@ -146,6 +162,8 @@ impl SnapshotStore {
                 keep_alive: parking_lot::Mutex::new(None),
                 receiving: Arc::new(tokio::sync::Semaphore::new(1)),
                 closing: tokio::sync::watch::Sender::new(false),
+                #[cfg(test)]
+                gate: parking_lot::Mutex::new(None),
                 #[cfg(test)]
                 fail_close: std::sync::atomic::AtomicBool::new(false),
             }),
@@ -211,6 +229,18 @@ impl SnapshotStore {
     /// none. It reads the file it opened, whatever later replaces it.
     pub async fn open_current(&self) -> io::Result<Option<StoredReader>> {
         StoredReader::open(Arc::clone(&self.shared)).await
+    }
+
+    /// Hold the next blocking create or rename of a receive until the
+    /// returned sender is used. The receiver hears when it is reached.
+    #[cfg(test)]
+    pub(crate) fn gate_next_receive_io(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *self.shared.gate.lock() = Some((entered_tx, release_rx));
+        (entered_rx, release_tx)
     }
 
     /// Make the next [`Self::close`] fail without closing anything.

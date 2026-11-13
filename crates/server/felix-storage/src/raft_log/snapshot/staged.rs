@@ -18,7 +18,10 @@ use crate::raft_log::invalid;
 ///
 /// Written in the stored file's format, so committing it is a rename. The
 /// file is deleted when this is dropped without [`Self::commit`], and the
-/// receive slot is let go of only after that.
+/// receive slot is let go of only after that. A blocking call that works on
+/// the file by its name (the create, the rename) holds the slot itself, so
+/// a future dropped mid-call cannot free the name for the next receive
+/// while the call still runs.
 pub struct StagedSnapshot {
     shared: Arc<Shared>,
     file: Option<crate::fs::File>,
@@ -28,9 +31,14 @@ pub struct StagedSnapshot {
     written: u64,
     crc: crc32fast::Hasher,
     finished: bool,
-    committed: bool,
+    /// Set once the file was read back whole and its crc matched.
+    verified: bool,
+    /// The file has been handed to a commit, which deletes it if it does
+    /// not rename it.
+    handed_off: bool,
+    reading: Option<StoredReader>,
     closing: tokio::sync::watch::Receiver<bool>,
-    _slot: tokio::sync::OwnedSemaphorePermit,
+    slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 impl std::fmt::Debug for StagedSnapshot {
@@ -60,39 +68,47 @@ impl StagedSnapshot {
         let mut crc = crc32fast::Hasher::new();
         crc.update(&header[0..36]);
         crc.update(&meta);
-        let dir = shared.dir.clone();
-        let file = felix_common::blocking::spawn(move || {
-            crash_point::reached(&dir)?;
-            // Read too: the install reads the snapshot back through it.
-            let mut file = crate::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(dir.join(RECEIVE_NAME))?;
-            file.write_all(&header)?;
-            file.write_all(&meta)?;
-            Ok::<_, io::Error>(file)
+        let gated = Arc::clone(&shared);
+        let (file, slot) = felix_common::blocking::spawn(move || {
+            gated.pass_gate();
+            let dir = &gated.dir;
+            let created = (|| {
+                crash_point::reached(dir)?;
+                // Read too: the install reads the snapshot back through it.
+                let mut file = crate::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .open(dir.join(RECEIVE_NAME))?;
+                file.write_all(&header)?;
+                file.write_all(&meta)?;
+                Ok::<_, io::Error>(file)
+            })();
+            if created.is_err() {
+                let _ = crate::fs::remove_file(dir.join(RECEIVE_NAME));
+            }
+            (created, slot)
         })
         .await
         .map_err(io::Error::other)?;
+        let file = file?;
         let closing = shared.closing.subscribe();
-        let mut staged = Self {
+        Ok(Self {
             shared,
-            file: None,
+            file: Some(file),
             last,
             header,
             data_len,
             written: 0,
             crc,
             finished: false,
-            committed: false,
+            verified: false,
+            handed_off: false,
+            reading: None,
             closing,
-            _slot: slot,
-        };
-        // Set after `staged` exists, so a failed create is still unlinked.
-        staged.file = Some(file?);
-        Ok(staged)
+            slot: Some(slot),
+        })
     }
 
     /// The last entry the snapshot covers.
@@ -179,7 +195,8 @@ impl StagedSnapshot {
     }
 
     /// The whole snapshot, read back from the file and checked against its
-    /// crc. The one full copy a receive makes.
+    /// crc, in memory. A group that cannot hold its state whole reads it
+    /// with [`Self::next_chunk`] instead.
     pub async fn read(&mut self) -> io::Result<StoredSnapshot> {
         if !self.finished {
             return Err(invalid("snapshot read before it was finished".to_string()));
@@ -197,57 +214,95 @@ impl StagedSnapshot {
         .await
         .map_err(io::Error::other)?;
         self.file = Some(file);
-        decode_owned(Bytes::from(bytes?))
-            .ok_or_else(|| invalid("a received snapshot does not decode".to_string()))
+        let snapshot = decode_owned(Bytes::from(bytes?))
+            .ok_or_else(|| invalid("a received snapshot does not decode".to_string()))?;
+        self.verified = true;
+        Ok(snapshot)
+    }
+
+    /// The next piece of the data, read back from the file, at most `max`
+    /// bytes, or `None` at its end. The end is reported only once the
+    /// file's crc matched, which is what lets [`Self::commit`] go ahead.
+    pub async fn next_chunk(&mut self, max: usize) -> io::Result<Option<Bytes>> {
+        if !self.finished {
+            return Err(invalid("snapshot read before it was finished".to_string()));
+        }
+        if self.reading.is_none() {
+            let path = self.shared.dir.join(RECEIVE_NAME);
+            let reader = felix_common::blocking::spawn(move || StoredReader::open_path(&path))
+                .await
+                .map_err(io::Error::other)??;
+            self.reading = Some(reader.ok_or_else(broken)?);
+        }
+        let reader = self.reading.as_mut().expect("opened above");
+        let chunk = reader.next_chunk(max).await?;
+        if chunk.is_none() {
+            self.verified = true;
+        }
+        Ok(chunk)
     }
 
     /// Make this the stored snapshot. Returns false, and deletes the file,
     /// when the stored one covers a later entry: a snapshot never goes
-    /// back. Fails once the store is closed.
+    /// back. Fails once the store is closed, and fails unless the file was
+    /// read back whole and checked ([`Self::read`] or [`Self::next_chunk`]
+    /// to its end): only a verified file may replace the stored one.
     pub async fn commit(mut self) -> io::Result<bool> {
-        if !self.finished {
+        if !self.verified {
             return Err(invalid(
-                "snapshot committed before it was finished".to_string(),
+                "snapshot committed before it was read back and checked".to_string(),
             ));
         }
         // Closed first, so the rename never replaces a file under an open
         // descriptor on Windows.
         drop(self.file.take());
+        drop(self.reading.take());
         let shared = Arc::clone(&self.shared);
         let last = self.last;
-        let renamed = felix_common::blocking::spawn(move || {
-            let mut stored = shared.stored.lock();
-            if shared.closed.load(Ordering::Acquire) {
-                return Err(closed(&shared.dir));
+        let slot = self.slot.take();
+        // From here the closure owns the file and the slot: dropped while it
+        // runs, this neither deletes the file under the rename nor lets the
+        // next receive create one the rename would move into place.
+        self.handed_off = true;
+        felix_common::blocking::spawn(move || {
+            let _slot = slot;
+            shared.pass_gate();
+            let renamed = (|| {
+                let mut stored = shared.stored.lock();
+                if shared.closed.load(Ordering::Acquire) {
+                    return Err(closed(&shared.dir));
+                }
+                let index = |last: Option<SnapshotId>| last.map(|last| last.index);
+                if stored.is_some_and(|stored| index(stored) > index(last)) {
+                    return Ok(false);
+                }
+                let step = || crash_point::reached(&shared.dir);
+                step()?;
+                crate::fs::rename(shared.dir.join(RECEIVE_NAME), shared.dir.join(FILE_NAME))?;
+                step()?;
+                crate::io::sync_dir(&shared.dir)?;
+                *stored = Some(last);
+                *shared.covered.lock() = last;
+                Ok(true)
+            })();
+            if !matches!(renamed, Ok(true)) {
+                // Best effort: a file left here is deleted by the next open.
+                let _ = crate::fs::remove_file(shared.dir.join(RECEIVE_NAME));
             }
-            let index = |last: Option<SnapshotId>| last.map(|last| last.index);
-            if stored.is_some_and(|stored| index(stored) > index(last)) {
-                return Ok(false);
-            }
-            let step = || crash_point::reached(&shared.dir);
-            step()?;
-            crate::fs::rename(shared.dir.join(RECEIVE_NAME), shared.dir.join(FILE_NAME))?;
-            step()?;
-            crate::io::sync_dir(&shared.dir)?;
-            *stored = Some(last);
-            *shared.covered.lock() = last;
-            Ok(true)
+            renamed
         })
         .await
-        .map_err(io::Error::other)?;
-        if let Ok(true) = renamed {
-            self.committed = true;
-        }
-        renamed
+        .map_err(io::Error::other)?
     }
 }
 
 impl Drop for StagedSnapshot {
     fn drop(&mut self) {
-        if self.committed {
+        if self.handed_off {
             return;
         }
         drop(self.file.take());
+        drop(self.reading.take());
         // Best effort: a file left here is deleted by the next open.
         let _ = crate::fs::remove_file(self.shared.dir.join(RECEIVE_NAME));
     }
@@ -279,37 +334,42 @@ impl StoredReader {
     pub(super) async fn open(shared: Arc<Shared>) -> io::Result<Option<Self>> {
         felix_common::blocking::spawn(move || {
             let _stored = shared.stored.lock();
-            let path = shared.dir.join(FILE_NAME);
-            let mut file = match crate::fs::File::open(&path) {
-                Ok(file) => file,
-                Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
-                Err(err) => return Err(err),
-            };
-            let damaged = || invalid(format!("{} does not decode", path.display()));
-            let mut header = [0u8; HEADER_LEN];
-            file.read_exact(&mut header).map_err(|_| damaged())?;
-            let decoded = decode_header(&header).ok_or_else(damaged)?;
-            let body = decoded.meta_len as u64 + decoded.data_len;
-            if file.metadata()?.len() != HEADER_LEN as u64 + body {
-                return Err(damaged());
-            }
-            let mut meta = vec![0u8; decoded.meta_len];
-            file.read_exact(&mut meta)?;
-            let mut crc = crc32fast::Hasher::new();
-            crc.update(&header[0..36]);
-            crc.update(&meta);
-            Ok(Some(Self {
-                file: Some(file),
-                last: decoded.last,
-                meta: Bytes::from(meta),
-                data_len: decoded.data_len,
-                remaining: decoded.data_len,
-                crc,
-                expected: decoded.crc,
-            }))
+            Self::open_path(&shared.dir.join(FILE_NAME))
         })
         .await
         .map_err(io::Error::other)?
+    }
+
+    /// A reader over the snapshot file at `path`, or `None` when there is
+    /// none. Blocking.
+    fn open_path(path: &Path) -> io::Result<Option<Self>> {
+        let mut file = match crate::fs::File::open(path) {
+            Ok(file) => file,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let damaged = || invalid(format!("{} does not decode", path.display()));
+        let mut header = [0u8; HEADER_LEN];
+        file.read_exact(&mut header).map_err(|_| damaged())?;
+        let decoded = decode_header(&header).ok_or_else(damaged)?;
+        let body = decoded.meta_len as u64 + decoded.data_len;
+        if file.metadata()?.len() != HEADER_LEN as u64 + body {
+            return Err(damaged());
+        }
+        let mut meta = vec![0u8; decoded.meta_len];
+        file.read_exact(&mut meta)?;
+        let mut crc = crc32fast::Hasher::new();
+        crc.update(&header[0..36]);
+        crc.update(&meta);
+        Ok(Some(Self {
+            file: Some(file),
+            last: decoded.last,
+            meta: Bytes::from(meta),
+            data_len: decoded.data_len,
+            remaining: decoded.data_len,
+            crc,
+            expected: decoded.crc,
+        }))
     }
 
     /// The last entry the snapshot covers.

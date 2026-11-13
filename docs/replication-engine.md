@@ -582,9 +582,10 @@ startup purges up to it. The purged id is never past the snapshot.
 
 ### Sending a snapshot
 
-A snapshot that goes to another member is streamed. It is never held whole
-in memory on either side, and neither side gives up on a transfer that is
-still moving. The rules live in `felix-storage` (`raft_log::transfer`), so
+A snapshot that goes to another member is streamed. The transfer never
+holds it whole in memory on either side, and neither side gives up on a
+transfer that is still moving. What the install holds is up to the group,
+below. The rules live in `felix-storage` (`raft_log::transfer`), so
 every group that sends snapshot data follows them. Only the transport
 differs: the control plane uses one HTTP request on `/internal/raft/v2`.
 A stream shard sends no snapshot body at all. Its state is its log, so a
@@ -629,12 +630,23 @@ for example the largest cache shard, not from a fixed number.
 `raft-snapshot.recv` in the stored snapshot's own format while the data
 arrives, keeping the crc as it goes. Bytes past the declared length, a
 missing byte or a wrong crc fail the transfer. When the data is whole, the
-file is synced, and the state machine reads it back once (the one full
-copy a receive makes) and checks it. The file is then renamed over
+file is synced and read back, and its crc is checked. A commit refuses a
+file that was not read back to its end and checked. The file is then renamed over
 `raft-snapshot`, under the same rule as a local install: a snapshot never
 goes back. A receive that fails or is dropped deletes its file. A crash
 before the rename leaves the old snapshot, and the next open deletes the
 leftover.
+
+**Memory at install.** A group can read the staged file back whole
+(`StagedSnapshot::read`) or a piece at a time (`StagedSnapshot::next_chunk`).
+The control plane reads it whole, because its state machine restores from
+one byte slice. So it holds one copy of the snapshot at install, up to the
+cap. A group whose state can be larger than memory, such as a cache group,
+must read in pieces. Its peak is then a piece, not the snapshot.
+
+A blocking call that works on the receive file by its name (the create,
+the rename) holds the receive slot itself. A caller that goes away during
+one cannot free the name for the next receive while the call still runs.
 
 A sender reads the stored file the same way, a piece at a time
 (`SnapshotStore::open_current`). It keeps the descriptor it opened, so an

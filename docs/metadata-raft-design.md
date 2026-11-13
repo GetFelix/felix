@@ -1037,7 +1037,9 @@ snapshot"). The head is JSON: the sender's vote, the snapshot's last log id
 and its membership. The follower answers a stale sender, refuses a length
 over `FELIX_RAFT_SNAPSHOT_MAX_BYTES` (1 GiB by default) and refuses a second
 transfer while one runs, all before reading any data. The data is written
-to a file as it arrives and never held whole in memory, and the transfer
+to a file as it arrives, not buffered by the transfer. The install reads it
+back whole once, because the state machine restores from one slice, so a
+member holds one copy of the snapshot then, at most the cap. The transfer
 fails only when no bytes move for 30 s.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft

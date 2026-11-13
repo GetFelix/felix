@@ -83,7 +83,8 @@ async fn a_refused_snapshot_leaves_no_staged_file() {
         "a dropped receive left its file"
     );
 
-    let behind = stage(&store, &snapshot(3, 12, "twelve")).await;
+    let mut behind = stage(&store, &snapshot(3, 12, "twelve")).await;
+    behind.read().await.expect("read");
     assert!(!behind.commit().await.expect("commit"));
     assert!(
         !receive_file(&dir).exists(),
@@ -224,4 +225,127 @@ async fn a_sender_reads_the_file_it_opened() {
     let mut damaged = store.open_current().await.expect("open").expect("stored");
     while let Ok(Some(_)) = damaged.next_chunk(64).await {}
     damaged.next_chunk(64).await.expect_err("damaged");
+}
+
+/// Only a file read back whole and checked is committed, whether it was
+/// read at once or in pieces. One damaged on disk after it was finished
+/// fails the read and is never committed.
+#[tokio::test]
+async fn a_staged_snapshot_is_committed_only_once_checked() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    let stored = snapshot(1, 5, "five");
+    assert!(store.install(stored.clone()).await.expect("install"));
+    let later = snapshot(2, 9, "nine, received from a peer");
+
+    let unread = stage(&store, &later).await;
+    unread.commit().await.expect_err("committed unread");
+
+    let mut pieces = stage(&store, &later).await;
+    let mut data = Vec::new();
+    while let Some(chunk) = pieces.next_chunk(4).await.expect("read") {
+        data.extend_from_slice(&chunk);
+    }
+    assert_eq!(data, later.data);
+    drop(pieces);
+
+    for whole in [true, false] {
+        let mut damaged = stage(&store, &later).await;
+        let path = receive_file(&dir);
+        let mut bytes = std::fs::read(&path).expect("read");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0x40;
+        std::fs::write(&path, bytes).expect("write");
+        if whole {
+            damaged.read().await.expect_err("damaged");
+        } else {
+            while let Ok(Some(_)) = damaged.next_chunk(8).await {}
+            damaged.next_chunk(8).await.expect_err("damaged");
+        }
+        damaged
+            .commit()
+            .await
+            .expect_err("committed a damaged file");
+    }
+    assert_eq!(store.current().await.expect("read"), Some(stored));
+    assert!(!receive_file(&dir).exists());
+}
+
+/// Wait until a receive can start again.
+async fn slot_frees(store: &SnapshotStore) -> StagedSnapshot {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match store.begin_receive(None, Bytes::new(), 4).await {
+            Ok(staged) => return staged,
+            Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the slot never freed"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(err) => panic!("{err}"),
+        }
+    }
+}
+
+/// A begin whose caller goes away while the file is being created keeps
+/// the slot until the create is done, so the next receive cannot have its
+/// file truncated under it.
+#[tokio::test]
+async fn a_dropped_begin_holds_the_slot_until_its_create_ends() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    let (entered, release) = store.gate_next_receive_io();
+    let begin = {
+        let store = store.clone();
+        tokio::spawn(async move { store.begin_receive(None, Bytes::new(), 4).await.map(drop) })
+    };
+    tokio::task::spawn_blocking(move || entered.recv())
+        .await
+        .expect("join")
+        .expect("the create was not reached");
+    begin.abort();
+    let _ = begin.await;
+    let err = store
+        .begin_receive(None, Bytes::new(), 4)
+        .await
+        .expect_err("a second receive ran beside a create");
+    assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+    release.send(()).expect("release");
+    drop(slot_frees(&store).await);
+}
+
+/// A commit whose caller goes away during the rename keeps the slot, and
+/// the file, until the rename is done: the next receive's partial file can
+/// never be the one moved into place.
+#[tokio::test]
+async fn a_dropped_commit_holds_the_slot_until_its_rename_ends() {
+    let dir = tempdir().expect("dir");
+    let store = SnapshotStore::open(dir.path()).expect("open");
+    assert!(
+        store
+            .install(snapshot(1, 5, "five"))
+            .await
+            .expect("install")
+    );
+    let later = snapshot(2, 9, "nine");
+    let mut staged = stage(&store, &later).await;
+    staged.read().await.expect("read");
+    let (entered, release) = store.gate_next_receive_io();
+    let commit = tokio::spawn(async move { staged.commit().await.map(drop) });
+    tokio::task::spawn_blocking(move || entered.recv())
+        .await
+        .expect("join")
+        .expect("the rename was not reached");
+    commit.abort();
+    let _ = commit.await;
+    let err = store
+        .begin_receive(None, Bytes::new(), 4)
+        .await
+        .expect_err("a second receive ran beside a rename");
+    assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
+    release.send(()).expect("release");
+    drop(slot_frees(&store).await);
+    assert_eq!(store.current().await.expect("read"), Some(later));
 }
