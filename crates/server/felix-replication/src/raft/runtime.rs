@@ -453,6 +453,7 @@ impl GroupRuntime {
             to,
             beat,
             body,
+            ..
         } = request;
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.

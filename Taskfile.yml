@@ -520,6 +520,13 @@ tasks:
           mkdir -p corpus/{{.ITEM}} &&
           cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}} seeds/{{.ITEM}}
           -- -max_total_time={{.SECONDS}}
+      # Raft messages between brokers: bytes from any peer that offered RAFT.
+      - for: ["raft_request", "raft_answer"]
+        cmd: >
+          cd crates/server/felix-replication/fuzz &&
+          mkdir -p corpus/{{.ITEM}} &&
+          cargo +nightly fuzz run {{.ITEM}} corpus/{{.ITEM}}
+          -- -max_total_time={{.SECONDS}}
       - for: ["segment_record", "segment_recovery", "sparse_index",
               "cache_record", "counter_record", "sidecar_state"]
         cmd: >
