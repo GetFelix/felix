@@ -740,15 +740,16 @@ Next ==
         \/ LeaveJoint(s) \/ StepDown(s)
         \/ CpReport(s) \/ CpDoom(s) \/ Wipe(s) \/ Delete(s) \/ VoteAgain(s)
         \/ \E m \in Ids : AddLearner(s, m)
-        \/ \E T \in Targets : Change(s, T) \/ GrowSelf(s, T) \/ Stamp(s, T)
+        \/ \E T \in Targets : Change(s, T)
+        \/ \E T \in Targets : GrowSelf(s, T)
+        \/ \E T \in Targets : Stamp(s, T)
         \/ XferExpire(s) \/ AckInc(s)
     \/ \E i, j \in Up :
         \/ GrantVote(i, j) \/ Heartbeat(i, j) \/ Replicate(i, j) \/ LearnCommit(i, j) \/ Probe(i, j)
         \/ AskTarget(i, j) \/ Transfer(i, j)
     \/ CpRewind
-    \/ \E x \in target :
-        \/ CpRemove(x)
-        \/ \E y \in Brokers : CpMove(x, y)
+    \/ \E x \in target : CpRemove(x)
+    \/ \E x \in target : \E y \in Brokers : CpMove(x, y)
 
 Spec == Init /\ [][Next]_vars
 
