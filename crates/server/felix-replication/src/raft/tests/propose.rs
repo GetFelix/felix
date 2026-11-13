@@ -122,23 +122,14 @@ async fn a_publisher_that_goes_away_keeps_its_place() {
     cluster.stop().await;
 }
 
-/// A leader that was replaced refuses once it has heard of its successor,
-/// and appends nothing. So does a shard with no group here.
+/// A member that does not lead refuses, and appends nothing. So does a
+/// shard with no group here.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_deposed_leader_refuses_and_appends_nothing() {
-    let (mut cluster, old, engine, _) = led().await;
-    let next = BROKERS.iter().find(|broker| ***broker != *old.broker);
-    let next = MemberId::new(*next.expect("a follower"), 1);
-    let leading = cluster
-        .runtime(&old.broker)
-        .group(&shard(0))
-        .expect("group");
-    let handed = leading.raft().trigger().transfer_leader(next.clone()).await;
-    handed.expect("transfer");
-    let new = eventually(|| cluster.leader(0).filter(|leader| *leader != old)).await;
-    let last = cluster.write(0, b"under the new leader").await;
-    cluster.committed_everywhere(0, last).await;
-    eventually(|| (status(&cluster, &old).role == Role::Follower).then_some(())).await;
+async fn a_member_that_does_not_lead_refuses_and_appends_nothing() {
+    let (mut cluster, new, _, _) = led().await;
+    let old = BROKERS.iter().find(|broker| ***broker != *new.broker);
+    let old = MemberId::new(*old.expect("a follower"), 1);
+    let engine = RaftEngine::new(cluster.runtime(&old.broker));
 
     let before = status(&cluster, &old).last_index;
     let refused = engine
@@ -186,6 +177,53 @@ async fn an_ack_follows_the_policy_and_not_the_commit() {
     assert_eq!(now.committed, Some(committed));
 
     assert!(engine.admit_local_ack(&shard(0), term).is_err());
+    cluster.net.cut.lock().clear();
+    cluster.stop().await;
+}
+
+/// openraft refuses a write when no majority has answered the leader for
+/// its lease, and an idle group heartbeats about that far apart. The task
+/// asks for a heartbeat and waits for the answer before it sends the
+/// write, so a write after a silence is written.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_after_a_silence_renews_the_lease_first() {
+    let (mut cluster, leader, engine, committed) = led().await;
+    let term = status(&cluster, &leader).term;
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    // Past the lease, and short of the followers' election timeout.
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    cluster.net.cut.lock().clear();
+
+    let written = engine
+        .propose(&shard(0), batch(&[b"heard"], AckAt::Flushed))
+        .await;
+    let (end, generation) = (committed + 2, term);
+    assert_eq!(written, Ok(Written { end, generation }));
+    cluster.stop().await;
+}
+
+/// With no majority in reach for a whole lease of asking, the write is
+/// sent, openraft refuses it, and nothing is appended. Nobody can reach
+/// anybody here, so no member is elected meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_no_majority_answers_refuses_and_appends_nothing() {
+    let (mut cluster, leader, engine, committed) = led().await;
+    cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+
+    let asked = tokio::time::Instant::now();
+    let refused = engine
+        .propose(&shard(0), batch(&[b"unheard"], AckAt::Written))
+        .await;
+    assert_eq!(
+        lost(&refused),
+        "no majority has answered this leader lately, so nothing was written"
+    );
+    assert!(asked.elapsed() >= timers().election_max, "it did not ask");
+    assert_eq!(status(&cluster, &leader).last_index, Some(committed));
+    assert_eq!(status(&cluster, &leader).role, Role::Leader);
     cluster.net.cut.lock().clear();
     cluster.stop().await;
 }
@@ -331,6 +369,29 @@ async fn a_token_does_not_leave_with_an_append() {
     assert_eq!(wire.appends.load(Relaxed), 1);
     assert!(!wire.token_sent.load(Relaxed), "a token was sent to a peer");
     assert_eq!(written.await, None, "something resolved the token");
+}
+
+/// A group that stops while a call is unanswered ends openraft's stream
+/// with one error. Every batch of the call is told, and the stream is not
+/// read past its end, which would panic the shard's publish task.
+#[tokio::test]
+async fn a_call_cut_short_answers_every_batch_as_stopped() {
+    use futures::StreamExt;
+    use openraft::error::Fatal;
+    // As openraft builds it: one error, then the end, then a panic.
+    let results = futures::stream::unfold(Some(()), |more| async move {
+        more.map(|()| (Err(Fatal::<ShardTypes>::Stopped), None))
+    });
+    let (first, first_told) = oneshot::channel();
+    let (second, second_told) = oneshot::channel();
+    super::super::propose::answer(results.boxed(), vec![(2, first), (3, second)]).await;
+    for told in [first_told, second_told] {
+        let told = told.await.expect("told");
+        assert!(
+            matches!(told, Err(CommitError::LeadershipLost { detail, .. }) if detail == "the shard's group stopped"),
+            "{told:?}"
+        );
+    }
 }
 
 type Token = Pin<Box<dyn Future<Output = Option<LogPoint>> + Send>>;
@@ -524,6 +585,7 @@ async fn a_stopped_groups_publisher_stops_waiting() {
 /// from the one index that is known.
 #[tokio::test]
 async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
+    // Not reported written: openraft's answer says why.
     let mut dropped = waiting(AckAt::Written);
     dropped.first.take();
     dropped
@@ -532,8 +594,14 @@ async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
         .expect("once")
         .send(at(TERM, 7))
         .expect("sent");
-    let told = dropped.now().expect("told");
-    assert_eq!(lost(&told), "the entry was not reported written");
+    assert_eq!(dropped.now(), None);
+    let refusal = CommitError::LeadershipLost {
+        what: "write",
+        detail: "refused",
+    };
+    let answer = dropped.answer.take().expect("once");
+    let _ = answer.send(Err(refusal.clone()));
+    assert_eq!(dropped.now(), Some(Err(refusal)));
 
     for (first, last) in [
         (at(TERM, 4), at(TERM, 7)),

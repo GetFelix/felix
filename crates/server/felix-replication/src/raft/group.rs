@@ -5,6 +5,7 @@ use std::future::Future;
 use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
@@ -469,6 +470,7 @@ impl Group {
     }
 
     fn proposer(&self) -> &mpsc::UnboundedSender<Proposal> {
+        let timers = self.pace.timers;
         self.proposals.get_or_init(|| {
             let (queue, queued) = mpsc::unbounded_channel();
             // Ends on `stop`, or when this group and its queue are dropped.
@@ -478,6 +480,10 @@ impl Group {
                 queued,
                 self.stop.clone(),
                 Arc::clone(&self.client_writes),
+                propose::Lease {
+                    length: Duration::from_millis(timers.election_max),
+                    again: Duration::from_millis(timers.heartbeat),
+                },
             ));
             queue
         })

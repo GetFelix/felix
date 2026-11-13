@@ -9,13 +9,14 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
-use openraft::error::{ClientWriteError, Fatal};
+use openraft::error::{ClientWriteError, Fatal, ForwardReason};
 use openraft::raft::WriteResult;
 use openraft::type_config::alias::WatchReceiverOf;
 use openraft::{Raft, RaftMetrics, ServerState};
@@ -67,6 +68,7 @@ pub struct Batch {
 const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 
 const NOT_LEADING: &str = "this broker does not lead the shard";
+const LEASE_LAPSED: &str = "no majority has answered this leader lately, so nothing was written";
 const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
@@ -186,6 +188,7 @@ pub(crate) async fn run(
     mut queue: mpsc::UnboundedReceiver<Proposal>,
     stop: CancellationToken,
     calls: Arc<AtomicU64>,
+    lease: Lease,
 ) {
     let mut answering = FuturesUnordered::new();
     loop {
@@ -211,6 +214,11 @@ pub(crate) async fn run(
         if leads(&raft) {
             pace.wrote();
         }
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return,
+            () = lease.renew(&raft) => {}
+        }
         calls.fetch_add(1, Ordering::Relaxed);
         let sent = tokio::select! {
             biased;
@@ -229,6 +237,66 @@ pub(crate) async fn run(
     }
 }
 
+/// openraft's write lease, as the publish task has to mind it.
+///
+/// openraft refuses a write when no majority has answered the leader for
+/// its lease, which is the longest election timeout. It does not wait for
+/// commit. An idle group heartbeats about that far apart, so its first
+/// write after a pause could be refused. The task therefore asks for a
+/// heartbeat first and waits for the answer, for up to one lease. The
+/// batches behind wait with it in the queue, so nothing is proposed twice
+/// and nothing changes place. A write that is refused all the same was not
+/// appended. It is not sent again: later calls may be on their way, and it
+/// would land behind them.
+#[derive(Clone, Copy)]
+pub(crate) struct Lease {
+    /// openraft's lease: `election_max`.
+    pub(crate) length: Duration,
+    /// How often the heartbeat is asked for again while no majority has
+    /// answered. One can be lost.
+    pub(crate) again: Duration,
+}
+
+impl Lease {
+    /// Whether a majority's last answer is old enough that a write sent
+    /// now could find the lease lapsed. Half the lease leaves room for the
+    /// write to reach the group. A busy leader is answered every heartbeat
+    /// and never gets here, and a leader that is the only voter needs no
+    /// answer.
+    fn stale(&self, raft: &Raft<ShardTypes, Machine>) -> bool {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = raft.metrics();
+        let metrics = metrics.borrow_watched();
+        if metrics.state != ServerState::Leader {
+            return false;
+        }
+        let voters = metrics.membership_config.membership().voter_ids();
+        if voters.take(2).count() < 2 {
+            return false;
+        }
+        metrics
+            .last_quorum_acked
+            .is_none_or(|acked| acked.elapsed() >= self.length / 2)
+    }
+
+    /// Returns once a majority has answered lately enough, or after one
+    /// lease of asking. The write is sent either way: with no majority in
+    /// reach openraft refuses it, and nothing is appended.
+    async fn renew(&self, raft: &Raft<ShardTypes, Machine>) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let mut metrics = raft.metrics();
+        let answered = async {
+            while self.stale(raft) && raft.trigger().heartbeat().await.is_ok() {
+                let changed =
+                    async { while self.stale(raft) && metrics.changed().await.is_ok() {} };
+                let _ = tokio::time::timeout(self.again, changed).await;
+            }
+        };
+        let _ = tokio::time::timeout(self.length, answered).await;
+    }
+}
+
 fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
     use openraft::async_runtime::watch::WatchReceiver;
     raft.metrics().borrow_watched().state == ServerState::Leader
@@ -236,10 +304,13 @@ fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
 
 /// Tell each batch of one call how openraft answered its records. The
 /// answers come in the order the records went in.
-async fn answer(
-    mut results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
+pub(super) async fn answer(
+    results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
     answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
 ) {
+    // A group that stops ends the stream early, and openraft's stream must
+    // not be polled past its end. The records left are answered as stopped.
+    let mut results = results.fuse();
     for (records, to) in answers {
         let mut span: Result<Option<Span>, CommitError> = Ok(None);
         for _ in 0..records {
@@ -249,7 +320,12 @@ async fn answer(
                     index: applied.log_id.index,
                 }),
                 // Refused before anything was appended.
-                Some(Ok(Err(ClientWriteError::ForwardToLeader(_)))) => Err(lost(NOT_LEADING)),
+                Some(Ok(Err(ClientWriteError::ForwardToLeader(forward)))) => {
+                    Err(lost(match forward.reason {
+                        ForwardReason::LeaseExpired => LEASE_LAPSED,
+                        _ => NOT_LEADING,
+                    }))
+                }
                 Some(Ok(Err(_))) => Err(lost(DISCARDED)),
                 Some(Err(_)) | None => Err(stopped()),
             };
@@ -344,8 +420,16 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         () = leading.lost(None) => return Err(lost(NOT_LEADING)),
         () = stop.cancelled() => return Err(stopped()),
     };
-    // No append reported the batch: refused, dropped, or its append failed.
-    let span = span.ok_or_else(|| lost(UNKNOWN))?;
+    let Some(span) = span else {
+        // No append reported the batch: refused, dropped, or its append
+        // failed. openraft says which, and its task answers every batch.
+        return tokio::select! {
+            biased;
+            answered = &mut answer => committed(answered),
+            () = leading.lost(None) => Err(lost(NOT_LEADING)),
+            () = stop.cancelled() => Err(stopped()),
+        };
+    };
     let written = span.written(records)?;
     if ack == AckAt::Written {
         return Ok(written);

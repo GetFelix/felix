@@ -564,6 +564,20 @@ append, and the group handles no heartbeat or vote while an append runs.
 The queue itself has no limit yet. The publish path bounds what is in
 flight when it is wired to `propose`.
 
+**openraft's write lease.** At the pinned commit openraft refuses a write
+when no majority has answered the leader for its lease, which is the
+longest election timeout (2 s). It does not wait for commit. An idle group
+heartbeats about that far apart, so its first write after a pause could be
+refused. Before a call, the task checks how old the majority's last answer
+is. If it is older than half the lease, the task asks for a heartbeat,
+again every heartbeat interval, and waits up to one lease for a majority
+to answer. The batches behind
+wait in the queue, so nothing is proposed twice and nothing changes
+place. A leader that is the only voter needs no answer and is not held. If
+no majority answers, the write is sent and openraft refuses it, with
+nothing appended. A refused batch is not proposed again by the task:
+later batches may already be on their way, and it would land behind them.
+
 The publisher's future then waits. It puts a fresh token on the first and
 on the last record of its batch, and reads the batch's place from both. It
 does not work the first offset out from the last, and it does not accept
@@ -581,7 +595,8 @@ wait.
 
 A token has no time limit of its own, so every wait also ends when:
 
-- openraft refuses the write. A member that does not lead appends nothing.
+- openraft refuses the write. A member that does not lead, and a leader
+  no majority has answered for its lease, append nothing.
 - This member stops leading, or leads at another term than the one that
   wrote the batch. This is read from openraft's metrics.
 - The flushed position shows a later term. Another leader wrote there, and
@@ -600,8 +615,11 @@ waits for commit after `propose` returns.
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `batches_queued_together_go_to_openraft_in_one_call`,
 > `a_publisher_that_goes_away_keeps_its_place`,
-> `a_deposed_leader_refuses_and_appends_nothing`,
+> `a_member_that_does_not_lead_refuses_and_appends_nothing`,
 > `an_ack_follows_the_policy_and_not_the_commit`,
+> `a_write_after_a_silence_renews_the_lease_first`,
+> `a_leader_no_majority_answers_refuses_and_appends_nothing`,
+> `a_call_cut_short_answers_every_batch_as_stopped`,
 > `a_written_ack_does_not_wait_for_the_flush`,
 > `a_flushed_ack_waits_for_the_fsync`,
 > `a_deposed_leaders_publisher_stops_waiting`,
