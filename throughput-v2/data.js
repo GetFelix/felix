@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794612279044,
+  "lastUpdate": 1794612828758,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55224,6 +55224,58 @@ window.BENCHMARK_DATA = {
             "range": "13916.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1756848.97\nmean: 1761366.80\nstdev: 13916.19\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6fc0dc70ed1823d5e099e9dd5076f4c5d8365945",
+          "message": "chore(hooks): FELIX_PRE_PUSH replaces the pre-push lint command (#2485)\n\nThe pre-push hook runs task lint, a full clippy build, on the machine that\npushes. FELIX_PRE_PUSH lets a contributor run lint elsewhere instead, such as\non a build machine against the tree being pushed. Unset, nothing changes.",
+          "timestamp": "2026-11-13T15:26:22-08:00",
+          "tree_id": "0cf82deeb26f3e7a3cac74b93660f353553b64bb",
+          "url": "https://github.com/GetFelix/felix/commit/6fc0dc70ed1823d5e099e9dd5076f4c5d8365945"
+        },
+        "date": 1794612828025,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 345469.06,
+            "range": "6586.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345469.06\nmean: 348333.01\nstdev: 6586.66\ncv: 1.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 345469.06,
+            "range": "6586.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 345469.06\nmean: 348333.01\nstdev: 6586.66\ncv: 1.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79768.76,
+            "range": "827.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79768.76\nmean: 79840.99\nstdev: 827.85\ncv: 1.04%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797687.59,
+            "range": "8278.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797687.59\nmean: 798409.93\nstdev: 8278.53\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
