@@ -818,6 +818,18 @@ impl DiskLog {
         self.inner.commit_offset.load(Ordering::Acquire)
     }
 
+    /// The commit offset the replica state on disk holds: what a restart
+    /// reads back. At or below [`Self::commit_offset`], which is saved
+    /// behind the caller.
+    pub fn saved_commit_offset(&self) -> Offset {
+        // An open can lower the offset in memory below the saved one, to the
+        // log's end.
+        self.inner
+            .commit_persisted
+            .load(Ordering::Acquire)
+            .min(self.commit_offset())
+    }
+
     /// Record that every record below `offset` is committed.
     ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and

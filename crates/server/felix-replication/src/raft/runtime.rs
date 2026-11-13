@@ -27,6 +27,10 @@ use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
 
+/// How often a kept-copy reclaim that waits only on a commit save looks
+/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
+
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
@@ -454,15 +458,20 @@ impl GroupRuntime {
     }
 
     /// Delete the kept copies the running member already covers. For the
-    /// ones it is behind, a task waits for its committed and flushed indexes to
-    /// reach them and tries again. It ends when the group or the runtime
-    /// stops and never starts a pass after that. Failures are logged: a kept
-    /// copy left on disk is never worse than one deleted early.
+    /// ones it is behind, a task waits for its saved commit and flushed tail
+    /// to reach them and tries again. It ends when the group or the runtime
+    /// stops and never deletes anything after that. Failures are logged: a
+    /// kept copy left on disk is never worse than one deleted early.
     async fn reclaim_kept(&self, shard: &ShardKey, dir: &Path, config: LogConfig) -> KeptReport {
         let Some(group) = self.inner.registry.get(shard) else {
             return KeptReport::default();
         };
-        let report = match reclaim_kept(dir, group.current_copy(), config.clone()).await {
+        let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
+        let halted = {
+            let (stop, stopped) = (stop.clone(), stopped.clone());
+            move || stop.is_cancelled() || stopped.is_cancelled()
+        };
+        let report = match reclaim_kept(dir, group.current_copy(), config.clone(), &halted).await {
             Ok(report) => report,
             Err(err) => {
                 tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
@@ -473,27 +482,37 @@ impl GroupRuntime {
             return report;
         };
         let dir = dir.to_path_buf();
-        let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
         let (mut commits, mut positions) = (group.commits(), group.positions());
         let covers = |group: &Group, wait: u64| {
             let at = group.current_copy();
             at.committed().is_some_and(|at| at >= wait)
                 && at.flushed_last().is_some_and(|at| at >= wait)
         };
+        // The saved commit follows the one in memory with nothing to wake
+        // on, so a wait that lacks only the save polls for it.
+        let saving = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed_in_memory().is_some_and(|at| at >= wait)
+                && !at.committed().is_some_and(|at| at >= wait)
+        };
         tokio::spawn(async move {
             loop {
                 while !covers(&group, wait) {
+                    let poll = saving(&group, wait);
                     tokio::select! {
                         () = stop.cancelled() => return,
                         () = stopped.cancelled() => return,
                         changed = commits.changed() => if changed.is_err() { return },
                         changed = positions.changed() => if changed.is_err() { return },
+                        () = tokio::time::sleep(SAVE_POLL), if poll => {}
                     }
                 }
-                if stop.is_cancelled() || stopped.is_cancelled() {
+                if halted() {
                     return;
                 }
-                let report = match reclaim_kept(&dir, group.current_copy(), config.clone()).await {
+                let report = match reclaim_kept(&dir, group.current_copy(), config.clone(), &halted)
+                    .await
+                {
                     Ok(report) => report,
                     Err(err) => {
                         tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");

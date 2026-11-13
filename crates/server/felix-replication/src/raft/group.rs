@@ -318,12 +318,14 @@ impl Group {
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
         }
         let positions = log.positions();
         let copy = felix_storage::raft_copy::CurrentCopy::new(
             log.disk_log().clone(),
+            copy_id,
             log.first_index_reader(),
         );
         let (machine, commits) = Machine::open(snapshots).await?;

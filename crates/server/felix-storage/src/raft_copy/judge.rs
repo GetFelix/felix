@@ -214,7 +214,7 @@ impl CopyRoot {
             step()?;
             crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
-            super::reclaim::publish_kept_metrics(&parent);
+            crate::incarnation::kept_gauges::refresh(&parent);
             Some(kept)
         };
         step()?;

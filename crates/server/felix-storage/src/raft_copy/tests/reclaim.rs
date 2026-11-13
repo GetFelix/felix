@@ -56,13 +56,19 @@ async fn rotated_purged(root: &Root, last: u64, purge: Option<u64>) -> (CopyRoot
 
 /// `log` as the copy a group runs, whose first index reads `first`.
 fn current(log: &DiskLog, first: u64) -> CurrentCopy {
-    CurrentCopy::new(log.clone(), Arc::new(move || first))
+    CurrentCopy::new(log.clone(), None, Arc::new(move || first))
 }
 
 async fn pass(root: &Root, current: &CurrentCopy) -> KeptReport {
-    reclaim_kept(&root.shard_dir(), current, config())
+    reclaim_kept(&root.shard_dir(), current, config(), &|| false)
         .await
         .expect("reclaim")
+}
+
+/// Commit through `index`, written by `generation`, and wait for the save.
+async fn commit(log: &DiskLog, index: u64, generation: u64) {
+    log.save_committed(index, generation).await.expect("commit");
+    log.commit_offset_persisted().await;
 }
 
 fn kept_dir(root: &Root) -> PathBuf {
@@ -108,12 +114,12 @@ async fn a_kept_copy_is_held_until_the_current_copy_commits_past_it() {
     assert_eq!(report.held, vec![held(Some(2))]);
     assert_eq!(report.wait_for(), Some(2));
 
-    new.log.save_committed(1, 2).await.expect("commit");
+    commit(&new.log, 1, 2).await;
     let report = pass(&root, &copy).await;
     assert_eq!(report.held, vec![held(Some(2))], "one short of it");
     assert!(kept.is_dir());
 
-    new.log.save_committed(2, 2).await.expect("commit");
+    commit(&new.log, 2, 2).await;
     let report = pass(&root, &copy).await;
     assert_eq!(report.reclaimed, vec![kept.clone()]);
     assert!(report.held.is_empty());
@@ -128,7 +134,7 @@ async fn a_kept_copy_is_held_until_the_current_log_has_flushed_it() {
     let root = Root::new();
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
-    new.log.save_committed(10, 2).await.expect("commit");
+    commit(&new.log, 10, 2).await;
     let copy = current(&new.log, 0);
 
     let report = pass(&root, &copy).await;
@@ -153,7 +159,7 @@ async fn a_kept_copy_is_held_when_the_current_log_holds_another_term() {
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
     fill(&new.log, 2, 0, 2).await;
-    new.log.save_committed(20, 3).await.expect("commit");
+    commit(&new.log, 20, 3).await;
 
     let report = pass(&root, &current(&new.log, 0)).await;
     assert_eq!(report.held.len(), 1, "{report:?}");
@@ -170,7 +176,7 @@ async fn a_reopened_copy_reclaims_without_a_new_append() {
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
     fill(&new.log, 1, 0, 2).await;
-    new.log.save_committed(2, 2).await.expect("commit");
+    commit(&new.log, 2, 2).await;
     new.log.close().await.expect("close");
     let reopened = DiskLog::open(root.shard_dir(), "t/ns/orders/0", config()).expect("reopen");
 
@@ -193,7 +199,7 @@ async fn a_kept_copy_that_cannot_be_read_is_held() {
     bytes[at] ^= 0xff;
     std::fs::write(&segment, bytes).expect("write");
     fill(&new.log, 1, 0, 1000).await;
-    new.log.save_committed(1000, 2).await.expect("commit");
+    commit(&new.log, 1000, 2).await;
 
     let report = pass(&root, &current(&new.log, 0)).await;
     assert_eq!(
@@ -217,7 +223,7 @@ async fn a_kept_copy_is_held_when_the_current_log_starts_above_it() {
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
     fill(&new.log, 1, 0, 2).await;
-    new.log.save_committed(20, 2).await.expect("commit");
+    commit(&new.log, 20, 2).await;
 
     let report = pass(&root, &current(&new.log, 11)).await;
     assert_eq!(
@@ -241,7 +247,7 @@ async fn a_kept_copy_purged_mid_segment_is_compared_by_its_segment_base() {
     let (_copies, old, new) = rotated_purged(&root, 5, Some(3)).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
     fill(&new.log, 1, 0, 5).await;
-    new.log.save_committed(20, 2).await.expect("commit");
+    commit(&new.log, 20, 2).await;
 
     // Past the purged id, but inside the segment that still holds 0 to 3.
     let report = pass(&root, &current(&new.log, 2)).await;
@@ -292,4 +298,67 @@ async fn a_held_pass_leaves_the_kept_directory_byte_for_byte() {
     assert_eq!(report.held[0].reason, HeldReason::Behind, "{report:?}");
     snapshot(&kept, &mut after);
     assert_eq!(before, after);
+}
+
+/// The group vouches for a copy's log only up to the commit it saved, which
+/// is what a restart reads back. One still in memory does not cover a kept
+/// copy: a power cut before the save would lose the entries it held.
+#[tokio::test]
+async fn a_kept_copy_is_held_while_the_commit_is_only_in_memory() {
+    let root = Root::new();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    fill(&new.log, 1, 0, 2).await;
+    new.log.move_commit_offset_for_tests(3);
+    let copy = current(&new.log, 0);
+
+    let report = pass(&root, &copy).await;
+    assert_eq!(report.held.len(), 1, "{report:?}");
+    assert_eq!(report.held[0].reason, HeldReason::Behind);
+    assert_eq!(report.wait_for(), Some(2));
+    assert!(kept.is_dir());
+
+    commit(&new.log, 2, 1).await;
+    let report = pass(&root, &copy).await;
+    assert_eq!(report.reclaimed, vec![kept]);
+}
+
+/// A handle to a copy whose directory was itself rotated aside since must
+/// not judge that kept directory: it would find its own log covering it.
+#[tokio::test]
+async fn a_kept_copy_is_never_judged_by_its_own_log() {
+    let root = Root::new();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    fill(&new.log, 1, 0, 2).await;
+    commit(&new.log, 2, 1).await;
+    let stale = CurrentCopy::new(new.log.clone(), Some(old), Arc::new(|| 0));
+
+    let report = pass(&root, &stale).await;
+    assert_eq!(
+        report.held,
+        vec![HeldCopy {
+            path: kept.clone(),
+            copy: Some(old),
+            last_index: None,
+            reason: HeldReason::Itself
+        }]
+    );
+    assert!(kept.is_dir());
+}
+
+/// A pass that finds a copy due deletes nothing once the group has stopped.
+#[tokio::test]
+async fn a_pass_deletes_nothing_once_the_group_has_stopped() {
+    let root = Root::new();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    fill(&new.log, 1, 0, 2).await;
+    commit(&new.log, 2, 1).await;
+
+    let report = reclaim_kept(&root.shard_dir(), &current(&new.log, 0), config(), &|| true)
+        .await
+        .expect("reclaim");
+    assert!(report.reclaimed.is_empty(), "{report:?}");
+    assert!(kept.is_dir());
 }

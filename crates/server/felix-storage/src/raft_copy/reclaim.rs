@@ -2,12 +2,13 @@
 //! them covered.
 //!
 //! A kept directory holding records may go once the copy now in the shard
-//! directory shows all of this in its own log: its committed index (the log's
-//! commit offset, which a snapshot install does not move) is at or above the
-//! kept log's last index, its entry at the kept log's last record has the
-//! same term as the kept one, its flushed tail is at or above the kept log's
-//! last index, and its first index is at or below where the kept log's lowest
-//! segment that holds a record starts.
+//! directory shows all of this in its own log: its committed index (the
+//! commit offset the log has saved to disk, which a snapshot install does not
+//! move and a restart reads back) is at or above the kept log's last index,
+//! its entry at the kept log's last record has the same term as the kept one,
+//! its flushed tail is at or above the kept log's last index, and its first
+//! index is at or below where the kept log's lowest segment that holds a
+//! record starts.
 //!
 //! Every entry the kept directory holds is at or below an index the group has
 //! committed, so a committed one is in the group's log, and an uncommitted
@@ -22,16 +23,15 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
-
-use super::judge::{KeptCopy, kept_copies, parent_of};
-use crate::disk_log::layout::KEPT_DIR;
-use crate::log::LogConfig;
 use std::sync::Arc;
 
+use super::judge::{KeptCopy, kept_copies, parent_of};
 use crate::disk_log::WriterAt;
-use crate::log::UNKNOWN_WRITER;
+use crate::disk_log::layout::KEPT_DIR;
+use crate::incarnation::kept_gauges;
+use crate::log::{LogConfig, UNKNOWN_WRITER};
 use crate::raft_log::held;
-use crate::{DiskLog, metrics_names};
+use crate::{DiskLog, StorageError};
 
 /// What one [`reclaim_kept`] pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -58,7 +58,7 @@ pub struct HeldCopy {
 /// Why a kept directory was left in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeldReason {
-    /// The copy has not yet committed and flushed up to its last index.
+    /// The copy has not yet saved a commit and flushed up to its last index.
     Behind,
     /// The copy holds a different entry at the kept log's last record, so its
     /// log is another branch. Committing past it does not make it the same.
@@ -66,6 +66,9 @@ pub enum HeldReason {
     /// The copy's own log starts above its lowest record, so it does not
     /// hold what the kept one holds, whatever it has committed.
     NotHeld,
+    /// It is the copy doing the judging: that copy's directory was rotated
+    /// aside since, so it no longer speaks for the shard.
+    Itself,
     /// Its segments could not be read.
     Unreadable,
     /// It was due, but deleting it failed.
@@ -85,21 +88,38 @@ impl KeptReport {
     }
 }
 
-/// The copy in a shard directory: its log, and a reader for its first index
-/// that counts a purge held only in memory.
+/// The copy in a shard directory: its log, its copy id, and a reader for its
+/// first index that counts a purge held only in memory.
 #[derive(Clone)]
 pub struct CurrentCopy {
     log: DiskLog,
+    copy: Option<u64>,
     first_index: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
 
 impl CurrentCopy {
-    pub fn new(log: DiskLog, first_index: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
-        Self { log, first_index }
+    pub fn new(
+        log: DiskLog,
+        copy: Option<u64>,
+        first_index: Arc<dyn Fn() -> u64 + Send + Sync>,
+    ) -> Self {
+        Self {
+            log,
+            copy,
+            first_index,
+        }
     }
 
-    /// The committed index the log itself saved.
+    /// The committed index the log has saved to disk. Only that one counts:
+    /// a restart reads it back, and the group vouches for this copy's log up
+    /// to it, so a kept copy deleted on a commit still in memory could lose
+    /// acknowledged entries with the power.
     pub fn committed(&self) -> Option<u64> {
+        self.log.saved_commit_offset().checked_sub(1)
+    }
+
+    /// The committed index in memory, which the saved one follows.
+    pub fn committed_in_memory(&self) -> Option<u64> {
         self.log.commit_offset().checked_sub(1)
     }
 
@@ -111,22 +131,58 @@ impl CurrentCopy {
 }
 
 /// Delete the directories rotations moved aside from `dir` that `current`
-/// covers. `config` sets how the kept logs' segments are scanned.
+/// covers. `config` sets how the kept logs' segments are scanned. A pass
+/// deletes nothing once `stopped` answers true, as it does when the group
+/// that `current` belongs to has shut down. The filesystem work runs on the
+/// blocking pool.
 pub async fn reclaim_kept(
     dir: &Path,
     current: &CurrentCopy,
     config: LogConfig,
+    stopped: &(dyn Fn() -> bool + Sync),
 ) -> io::Result<KeptReport> {
     let parent = parent_of(dir)?;
+    let listed = {
+        let dir = dir.to_path_buf();
+        off_runtime(move || kept_copies(&dir)).await?
+    };
     let mut report = KeptReport::default();
-    for KeptCopy { path, copy } in kept_copies(dir)? {
+    let judged = judge(listed, &parent, current, config, stopped, &mut report).await;
+    if report.reclaimed.is_empty() {
+        kept_gauges::note(&parent);
+        judged?;
+        return Ok(report);
+    }
+    // Synced whatever happened after the deletes, so none comes back.
+    let kept = parent.join(KEPT_DIR);
+    let synced = off_runtime(move || crate::io::sync_dir(&kept)).await;
+    kept_gauges::refresh(&parent);
+    judged?;
+    synced?;
+    Ok(report)
+}
+
+async fn judge(
+    listed: Vec<KeptCopy>,
+    parent: &Path,
+    current: &CurrentCopy,
+    config: LogConfig,
+    stopped: &(dyn Fn() -> bool + Sync),
+    report: &mut KeptReport,
+) -> io::Result<()> {
+    for KeptCopy { path, copy } in listed {
+        if copy.is_some() && copy == current.copy {
+            report.held.push(HeldCopy {
+                path,
+                copy,
+                last_index: None,
+                reason: HeldReason::Itself,
+            });
+            continue;
+        }
         let read = {
             let (path, spacing) = (path.clone(), config.index_spacing_bytes);
-            crate::task::blocking(move || {
-                held::read(&path, &path.display().to_string(), spacing)
-                    .map_err(crate::StorageError::Io)
-            })
-            .await
+            off_runtime(move || held::read(&path, &path.display().to_string(), spacing)).await
         };
         let kept = match read {
             Ok(kept) => kept,
@@ -188,13 +244,22 @@ pub async fn reclaim_kept(
             });
             continue;
         }
-        match crate::incarnation::retire_dir(&parent, &path) {
+        // Checked as late as possible: once the group stops, another member
+        // may own the directory, and this copy's log may be the kept one.
+        if stopped() {
+            return Ok(());
+        }
+        let retired = {
+            let (parent, path) = (parent.to_path_buf(), path.clone());
+            crate::task::blocking(move || crate::incarnation::retire_dir(&parent, &path)).await
+        };
+        match retired {
             Ok(_) => {
                 tracing::info!(
                     path = %path.display(),
                     copy = ?copy.map(|copy| format!("{copy:016x}")),
                     last_index = ?kept.last,
-                    committed = ?current.committed(),
+                    committed = ?committed,
                     "reclaimed a kept shard copy"
                 );
                 report.reclaimed.push(path);
@@ -214,36 +279,19 @@ pub async fn reclaim_kept(
             }
         }
     }
-    if !report.reclaimed.is_empty() {
-        crate::io::sync_dir(&parent.join(KEPT_DIR))?;
-    }
-    publish_kept_metrics(&parent);
-    Ok(report)
+    Ok(())
 }
 
-/// Set the kept-copy gauges from what `parent`'s kept directory holds.
-pub(crate) fn publish_kept_metrics(parent: &Path) {
-    let kept = parent.join(KEPT_DIR);
-    let (mut copies, mut bytes) = (0u64, 0u64);
-    if let Ok(entries) = crate::fs::read_dir(&kept) {
-        for entry in entries.flatten() {
-            copies += 1;
-            bytes += size_of(&entry.path());
-        }
-    }
-    metrics::gauge!(metrics_names::RAFT_KEPT_COPIES).set(copies as f64);
-    metrics::gauge!(metrics_names::RAFT_KEPT_COPY_BYTES).set(bytes as f64);
-}
-
-fn size_of(path: &Path) -> u64 {
-    let Ok(meta) = crate::fs::metadata(path) else {
-        return 0;
-    };
-    if !meta.is_dir() {
-        return meta.len();
-    }
-    let Ok(entries) = crate::fs::read_dir(path) else {
-        return 0;
-    };
-    entries.flatten().map(|entry| size_of(&entry.path())).sum()
+/// Run blocking filesystem work on the blocking pool.
+async fn off_runtime<T, F>(work: F) -> io::Result<T>
+where
+    F: FnOnce() -> io::Result<T> + Send + 'static,
+    T: Send + 'static,
+{
+    crate::task::blocking(move || work().map_err(StorageError::Io))
+        .await
+        .map_err(|err| match err {
+            StorageError::Io(err) => err,
+            other => io::Error::other(other),
+        })
 }
