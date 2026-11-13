@@ -334,29 +334,48 @@ the groups of one broker or the whole cluster, and it has two steps:
 **Declaring a broker dead.** The command never guesses that a broker is
 gone. An operator declares a broker dead in the control plane, as a
 separate and recorded act. The command refuses a group while any broker
-placed for it is unreachable and not declared dead. A broker that was
+placed for it in the epoch is unreachable and not declared dead. A broker that was
 declared dead must not come back with its old data: its data root is
 wiped, or its storage id is rotated, before it starts again, and the
 control plane refuses its old storage id.
 
 What `plan` works out for one group, and `apply` then does:
 
-1. **List.** Every broker the control plane has placed for the group,
-   voter or learner. A broker is placed from the moment the control plane
-   records it as a target, which is before the leader proposes the change
-   ("Membership"), and it stays placed until the leader reports the change
-   that removes it as committed. So the target of a move that was under
-   way is listed. The command asks each listed broker for its copy when it
-   runs. It keeps no earlier answer. For each one it shows the copy id,
-   whether the copy rotated, the last log id of the records on its disk,
-   and the newest membership in those records. A broker declared dead is
-   shown as missing. If a copy's records name a voter that is not on the
-   list, the group is blocked. Declaring the broker of a since-removed
-   voter dead unblocks a lagging copy whose newest membership names it.
+1. **List.** Every broker the control plane placed for the group in its
+   current epoch, voter or learner, including brokers a later change
+   removed. The control plane records a broker as placed in the epoch
+   before the leader sends it anything, and for a move's target before the
+   leader proposes the change ("Membership"). Nothing takes a broker off
+   that record until the next epoch starts (#2419). So the target of a move that
+   was under way is listed, and so is a voter that was moved away. The
+   command asks each listed broker for its copy when it runs. It keeps no
+   earlier answer. For each one it shows the copy id, whether the copy
+   rotated, the last log id of the records on its disk, and the newest
+   membership in those records. A broker declared dead is shown as
+   missing. The cost: the list grows with every move for the life of the
+   epoch, every broker the group ever sat on in it must answer or be
+   declared dead, and the re-form places the removed ones again as
+   learners.
+
+   The removed brokers are on the list because their disks can hold the
+   newest records. Take {A, B, C} moved to {A, B, D} and back to {A, B, C},
+   both changes committed by A and B. C never received anything, and then
+   A and B lose their disks. Every copy of {A, B, C} is empty, and only
+   D's disk holds the acknowledged entries. A list of the brokers placed
+   now leaves D out and re-forms from nothing
+   (`FelixRaftReformStaleMembershipTwoMovesForgotten.cfg`). With D listed,
+   the base comes from D's log, or the group is blocked until D answers
+   or is declared dead.
+
+   If a copy's records name a voter that is not on the list, the group is
+   blocked. With every placed broker recorded this cannot happen, so it
+   only fires when the record is wrong.
 2. **Refuse.** A group is left alone if any reachable copy reports a
-   leader for the epoch, and blocked if a placed broker is unreachable and
+   leader for the epoch, and blocked if a listed broker is unreachable and
    not declared dead.
-3. **Stop the old epoch** (`apply` only). Each reachable copy stops its
+3. **Stop the old epoch** (`apply` only). Before it stops a copy, `apply`
+   asks the listed copies for a leader again, and leaves the group alone
+   if one answers. Each reachable copy stops its
    member of the current epoch and fsyncs a marker in the shard directory
    that says so. A stopped member never votes, acknowledges or appends in
    that epoch again, also after a restart. Only then does it report its
@@ -365,7 +384,8 @@ What `plan` works out for one group, and `apply` then does:
 4. **Record the base.** The control plane writes, by compare-and-swap on
    the group epoch: the next epoch, the base (the highest last log id
    reported), and the voter set, which is exactly the copies whose reports
-   hold the base. Every other listed copy is a learner.
+   hold the base. Every other listed copy is a learner. The listed brokers
+   start the record of brokers placed in the new epoch.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 
@@ -395,13 +415,15 @@ rejoined. No report is stored now: step 1 reads each copy when the command
 runs, step 3 reads it again after it has stopped, and `apply` skips a
 group that changed in between. Issue #2311 was a re-form of {A, B, C}
 while D, the target of a move, held the committed change. What is left of
-it is the rule in step 1: the list is every placed broker, including a
-move's target. D's newer log is in the plan and the base comes from it. If
+it is the rule in step 1: the list is every broker placed in the epoch,
+including a move's target. D's newer log is in the plan and the base comes from it. If
 D is unreachable the group is blocked until D answers or is declared dead,
 and then the plan says that D's records are not counted.
 
 An `apply` that stops copies and then fails before step 4 leaves them
-stopped. Running it again finishes the group.
+stopped. Running it again finishes the group. If the group elects without
+the stopped copies in between, the next `plan` leaves it alone, and how
+those copies come back is not decided yet (#2403).
 
 **Offsets are not reused.** The leader's report to the control plane
 ("Membership") carries the shard's commit offset, and the control plane
@@ -423,14 +445,22 @@ per shard. The new epoch's log starts above the base with an index gap up
 to the floor, and how the adapter represents that gap is settled in the
 pull request that builds re-forming. See Questions, 13.
 
+**Known gap (#2402).** The floor covers offsets above the end of the base,
+not offsets inside it. The base can end in an entry of an older term that
+never committed, held by the one copy whose disk survived, at an offset
+that a later leader acknowledged with another record. The new epoch then
+serves the old entry under that offset
+(`FelixRaftReformTwoRotatedOffsetsTerms.cfg`, pinned).
+
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
 its records (the root was restored from a backup, or failed the restore
-check) and the control plane still places only that broker for the shard,
-the copy restarts as the single voter of the next epoch without the
-command. It is a re-form of one: the same compare-and-swap on the epoch,
-its own last log id as the base, and the offset floor. What is lost is
-what the restore lost. If a move was under way, a second broker is placed,
+check) and that broker is the only one the control plane placed for the
+shard in the epoch, the copy restarts as the single voter of the next
+epoch without the command. It is a re-form of one: the same
+compare-and-swap on the epoch, its own last log id as the base, and the
+offset floor. What is lost is what the restore lost. If the shard was
+moved in this epoch, or a move is under way, a second broker was placed,
 and the shard waits for the command like any other group. An RF 1 shard
 whose copy is gone or empty is re-formed empty by the command. See
 Questions, 10.
@@ -1605,9 +1635,9 @@ off and stays registered as an expected violation.
 | --- | --- | --- | --- |
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
-| #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
+| #2311 | The control plane records the target first and keeps every broker placed in the epoch, removed ones included. The command lists all of them and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership config with two lost disks and no client write passes `AckedSurvive` when the target is reached. The same with a move and the move back has not finished a run yet (no violation in the states explored so far). The same with a client write has not finished a run, so nothing is claimed for it yet. Must still fail: the same with the target left off the list, and the two moves with removed brokers left off (`PlacedForgotten`) |
 
 **Placement and lost disks.** `FelixRaftPlacement.tla` puts the control
 plane in front of the membership model: it moves a seat, removes one, and
@@ -2259,11 +2289,12 @@ ones settled by the decisions of issue #2167 say so.
     triggers it. This reverses the earlier recommendation. A group that
     lost a majority of its voters stays unavailable until the command is
     run. It is one bulk command for a broker or the cluster, with a dry
-    run. It lists every placed broker with what it holds, refuses while a
-    placed broker is unreachable and not declared dead, leaves a group
+    run. It lists every broker placed in the epoch, removed ones included,
+    with what it holds, refuses while one of them is unreachable and not
+    declared dead, leaves a group
     with a leader alone, and stops the reachable copies durably
     ("Re-forming a group"). The one exception is a restored RF 1 copy
-    that the control plane still places alone, which restarts as its
+    that is the only broker placed in the epoch, which restarts as its
     single voter.
 
 11. **Is the per-shard log mark exact, or a floor that trails?** A shard
