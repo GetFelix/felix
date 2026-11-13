@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794555266746,
+  "lastUpdate": 1794555997749,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54236,6 +54236,58 @@ window.BENCHMARK_DATA = {
             "range": "10970.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810624.48\nmean: 809099.57\nstdev: 10970.95\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f293907ceb38b6d2011c83ebd10a1c6231a321d6",
+          "message": "fix(controlplane): a member that has voted never forms again after its log is emptied (#2420)\n\nA member writes a durable reached flag (segment store formation-file bit 1, redb meta key) before it ever votes; decide answers Lost for a reached member with a blank log, so a member whose log directory alone was emptied catches up instead of forming again and voting twice in a term. FelixRaftPlacement adds LogWipes and FormReached (FormLogWipe, FormLogWipeFirstBoot pass; FormLogWipeUnreached violates AckedHeldSurvive). Closes #2407.",
+          "timestamp": "2026-11-13T07:41:22Z",
+          "tree_id": "2708fa4b088594b2cf877f4d7d07d19b46a30b0c",
+          "url": "https://github.com/GetFelix/felix/commit/f293907ceb38b6d2011c83ebd10a1c6231a321d6"
+        },
+        "date": 1794555996980,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 506898.09,
+            "range": "36196.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 506898.09\nmean: 521196.90\nstdev: 36196.05\ncv: 6.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 506898.09,
+            "range": "36196.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 506898.09\nmean: 521196.90\nstdev: 36196.05\ncv: 6.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118885.3,
+            "range": "384.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118885.30\nmean: 118911.59\nstdev: 384.62\ncv: 0.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1188853.04,
+            "range": "3846.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1188853.04\nmean: 1189115.90\nstdev: 3846.16\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
