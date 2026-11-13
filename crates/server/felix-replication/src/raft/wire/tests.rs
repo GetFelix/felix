@@ -76,6 +76,7 @@ fn every_request() -> Vec<RaftRequest> {
             Command {
                 timestamp_micros: 99,
                 payload: Bytes::from_static(b"a record"),
+                written: None,
             },
         ),
         EntryOf::<ShardTypes>::new_membership(log_id(2, 7), membership()),
@@ -351,6 +352,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    written: None,
                 },
             )
         })
@@ -395,6 +397,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    written: None,
                 },
             )
         })

@@ -432,6 +432,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                 Command {
                     timestamp_micros,
                     payload,
+                    written: None,
                 },
             )
         }
