@@ -105,11 +105,12 @@ async fn every_rpc_names_the_member_it_is_for() {
 
     let _: Reply = network.send("vote", &serde_json::json!({})).await;
     let _: Reply = network.send("append-entries", &serde_json::json!({})).await;
-    #[cfg(felix_segment_store)]
-    let _ = network.send_snapshot(Vec::new()).await;
+    // The streamed snapshot send goes through the same `answer`.
+    let _: Reply = network
+        .send("install-snapshot", &serde_json::json!({}))
+        .await;
     let seen = seen.lock().expect("seen");
-    let rpcs = if cfg!(felix_segment_store) { 3 } else { 2 };
-    assert_eq!(*seen, vec![Some("9".to_string()); rpcs]);
+    assert_eq!(*seen, vec![Some("9".to_string()); 3]);
 }
 
 /// A 2xx that is not a raft reply is a fault in the peer, not an outage.
