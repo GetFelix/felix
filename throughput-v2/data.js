@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794556858241,
+  "lastUpdate": 1794558919765,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54340,6 +54340,58 @@ window.BENCHMARK_DATA = {
             "range": "90464.93",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1548857.94\nmean: 1497365.08\nstdev: 90464.93\ncv: 6.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5204c5d2d26d1b019bd7f0d55009ebcda05008de",
+          "message": "deps(replication): openraft at 30c947ef38: idle members fit the memory budget (#2409)\n\nMoves the openraft and openraft-multi pin from 8fd649442f to 30c947ef38 (openraft#2313 idle memory, openraft#2314 queues start at 64 slots). raft_memory is no longer ignored and runs in the coverage job: about 142 KB live per idle member against the 256 KB budget; a 1,500-group broker stays flat at about 222 MB over 10 idle minutes. The state-machine worker now merges contiguous queued applies into one apply() call; Felix's three apply() implementations loop per entry and keep no per-call state. Full-scale bench: no regression beyond noise. The 8,192-slot client responder queue and memory under a write burst are tracked in #2415. Refs #2335.\n\nSpec-Unaffected: openraft upgrade within the same release line; vote/log persistence, snapshot, membership, election and lease code paths unchanged upstream.",
+          "timestamp": "2026-11-13T00:28:47-08:00",
+          "tree_id": "4ab71976385ac9985686ec562503876fce58e435",
+          "url": "https://github.com/GetFelix/felix/commit/5204c5d2d26d1b019bd7f0d55009ebcda05008de"
+        },
+        "date": 1794558918970,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 527714.23,
+            "range": "32102.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527714.23\nmean: 537914.82\nstdev: 32102.36\ncv: 5.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 527714.23,
+            "range": "32102.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527714.23\nmean: 537914.82\nstdev: 32102.36\ncv: 5.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 128071.19,
+            "range": "1033.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 128071.19\nmean: 127940.28\nstdev: 1033.67\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1280711.87,
+            "range": "10336.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1280711.87\nmean: 1279402.82\nstdev: 10336.68\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
