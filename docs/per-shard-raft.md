@@ -471,12 +471,36 @@ same entries:
   rest on this one. A power cut cannot shorten what a peer counted.
 - **Written at index.** As soon as the records are written to the log,
   before the fsync, the adapter publishes the shard's written position:
-  the index one past the last record and its term. `client_write` cannot
-  give this, because it answers only when an entry is applied. So each
-  proposed batch carries a token in memory, which is never encoded, and
-  when the adapter's `append` meets the token it resolves it with the
-  index the batch landed at. That is the `Written` that `propose`
-  returns.
+  the index and term of the last record. `client_write` cannot give a
+  proposer this, because it answers only when an entry is applied. So a
+  proposed command carries a token (`raft_log::WrittenToken`), and when
+  the adapter's `append` has written the entry it resolves the token with
+  the entry's index and term. `propose` will put one on the last record
+  of a batch, which gives it the `Written` it returns.
+
+**The token is a field of the command, and it is never stored or sent.**
+The shard's command has a `written` field that serde skips and the codec
+does not encode. The codec hands the token to the adapter through
+`EntryCodec::written_token`. openraft moves the proposer's command from
+`client_write` into the leader's own `append` as it is, so the token
+arrives with the entry it belongs to. A follower's copy came over the
+wire or out of the log, so it has no token. The alternative was a table
+beside the log, keyed by the order of proposals. It was dropped because
+the adapter would have to match appends to proposals, and a refused
+proposal or a follower's append would shift the match.
+
+What a token says, and what it does not:
+
+- It resolves once, after the whole `append` is written and after the
+  written position has moved, so a proposer that wakes on it finds the
+  position at or past its record.
+- An `append` that fails resolves none of its tokens, and a command
+  dropped before it reached the log resolves none either. The proposer
+  reads that as an unknown outcome.
+- Written is not flushed and not committed. A power cut can take the
+  record, and a later leader can cut it and give the index to another
+  record. That is why the token carries the term: `await_commit` checks
+  the term at that index again.
 
 `propose` returns on the signal the stream's policy asks for. On a stream
 with fsync on commit it waits for the flush. On a `Periodic` stream it
@@ -707,6 +731,9 @@ open:
   append". The adapter moves `written` as soon as an append has handed its
   entries to the log and `flushed` once they are fsynced, and a truncation
   moves both back. The publish path that waits on them is #2233.
+- A command may carry a `WrittenToken`. The leader's `append` resolves it
+  with the record's index and term once the record is written. Nothing
+  sets one yet: `propose` is the next pull request of #2233.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
