@@ -16,6 +16,8 @@
 //! - [`nemesis`]: the faults, drawn from the seed.
 //! - [`client`]: logical clients, and the history they record.
 //! - [`check`]: checks on the live cluster, and how to add one.
+//! - `raft` (feature `raft`): groups of the per-shard Raft engine on the same
+//!   clock, with no broker service around them.
 //! - [`run`]: one seed start to finish. [`run::run_seed`] is the entry point;
 //!   `tests/seeds.rs` shows it used.
 
@@ -27,4 +29,6 @@ pub mod controlplane;
 pub mod link;
 pub mod nemesis;
 pub mod net;
+#[cfg(feature = "raft")]
+pub mod raft;
 pub mod run;

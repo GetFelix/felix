@@ -56,6 +56,8 @@ pub(crate) struct RaftShards {
     /// Shards whose forming was put off, so the reason is logged once, not
     /// on every pass.
     put_off: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose marker could not be read, logged once while it stays so.
+    unreadable: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Shards not placed here whose directory was found unmarked, by
     /// incarnation: only this module marks one, so it is read once.
     unclaimed: parking_lot::Mutex<HashMap<ShardKey, u64>>,
@@ -99,6 +101,7 @@ impl RaftShards {
             placed: parking_lot::Mutex::default(),
             forming: parking_lot::Mutex::default(),
             put_off: parking_lot::Mutex::default(),
+            unreadable: parking_lot::Mutex::default(),
             unclaimed: parking_lot::Mutex::default(),
             off_placement: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
@@ -223,6 +226,9 @@ impl RaftShards {
         .await
         .context("read task")
         .and_then(|read| read);
+        if read.is_ok() {
+            self.unreadable.lock().remove(key);
+        }
         match read {
             Ok(Some(true)) => true,
             Ok(Some(false)) => {
@@ -230,6 +236,10 @@ impl RaftShards {
                 false
             }
             Ok(None) => false,
+            Err(err) if !self.unreadable.lock().insert(key.clone()) => {
+                tracing::debug!(shard = ?key, error = %format!("{err:#}"), "could not read whether this broker held a Raft member of the shard");
+                false
+            }
             Err(err) => {
                 tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not read whether this broker held a Raft member of the shard");
                 false
@@ -423,6 +433,7 @@ impl EngineShards for RaftShards {
             *self.placed.lock() = placed;
             self.unclaimed.lock().retain(|key, _| fed.contains_key(key));
             self.put_off.lock().retain(|key| fed.contains_key(key));
+            self.unreadable.lock().retain(|key| fed.contains_key(key));
             self.off_placement
                 .lock()
                 .retain(|key| fed.contains_key(key));

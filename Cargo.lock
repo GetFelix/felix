@@ -1346,6 +1346,7 @@ dependencies = [
  "felix-controlplane-service",
  "felix-replication",
  "felix-router",
+ "felix-sim",
  "felix-storage",
  "felix-wire",
  "parking_lot 0.13.0",
