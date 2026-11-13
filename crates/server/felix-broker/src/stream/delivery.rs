@@ -61,6 +61,8 @@ impl DeliveryEnvelope {
                 enqueued_at: Instant::now(),
                 encoded: Default::default(),
                 encoded_headers: OnceLock::new(),
+                #[cfg(test)]
+                encodes: AtomicUsize::new(0),
             }),
         }
     }
@@ -230,6 +232,8 @@ impl DeliveryEnvelope {
         if let Some(frame) = cached.as_ref() {
             return Ok(frame.clone());
         }
+        #[cfg(test)]
+        batch.encodes.fetch_add(1, Ordering::Relaxed);
         let frame = if slot == 0 && headers.is_none() {
             felix_wire::binary::encode_shared_event_batch_bytes(&batch.payloads)?
         } else {
@@ -247,6 +251,18 @@ impl DeliveryEnvelope {
         };
         *cached = Some(frame.clone());
         Ok(frame)
+    }
+
+    /// How many frames this batch has encoded, of any shape.
+    #[cfg(test)]
+    pub(crate) fn encodes(&self) -> usize {
+        self.inner.encodes.load(Ordering::Relaxed)
+    }
+
+    /// Whether `other` is this same batch, not a copy of it.
+    #[cfg(test)]
+    pub(crate) fn same_batch(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// When the batch was built, for measuring how long it waited in a queue.
@@ -305,6 +321,8 @@ struct DeliveryBatch {
     /// The same twelve for subscribers that negotiated headers, made on first
     /// use and only for a batch that has some.
     encoded_headers: OnceLock<Box<[Mutex<Option<Bytes>>; 12]>>,
+    #[cfg(test)]
+    encodes: AtomicUsize,
 }
 
 #[derive(Debug)]

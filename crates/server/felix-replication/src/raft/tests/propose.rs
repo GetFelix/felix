@@ -13,11 +13,13 @@ use openraft::network::RPCOption;
 use openraft::raft::AppendEntriesRequest;
 use openraft::type_config::alias::{EntryOf, LogIdOf};
 use openraft_multi::GroupRouter;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::super::network::Router;
-use super::super::propose::{Leading, Span, Waiting, acknowledged};
+use super::super::propose::{
+    DRAIN_BYTES, DRAIN_RECORDS, Leading, Lost, Span, Waiting, acknowledged, drain, split,
+};
 use super::*;
 use crate::engine::{CommitError, Written};
 
@@ -228,6 +230,187 @@ async fn a_leader_no_majority_answers_refuses_and_appends_nothing() {
     cluster.stop().await;
 }
 
+/// A leader that has been deposed and has heard of its successor refuses,
+/// and appends nothing anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_deposed_leaders_propose_returns_leadership_lost_and_appends_nothing() {
+    let (mut cluster, old, engine, _) = led().await;
+    let broker = old.broker.to_string();
+    cluster.net.cut.lock().insert(broker.clone());
+    cluster.net.muted.lock().insert(broker.clone());
+    let new = cluster.elected(0).await;
+    assert_ne!(new, old);
+    let term = status(&cluster, &new).term;
+    cluster.net.cut.lock().clear();
+    cluster.net.muted.lock().clear();
+    eventually(|| {
+        let now = status(&cluster, &old);
+        let caught_up = now.last_index == status(&cluster, &new).last_index;
+        (now.role == Role::Follower && now.term == term && caught_up).then_some(())
+    })
+    .await;
+
+    let before = status(&cluster, &new).last_index;
+    let refused = engine
+        .propose(&shard(0), batch(&[b"late"], AckAt::Written))
+        .await;
+    assert_eq!(lost(&refused), "this broker does not lead the shard");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    for member in [&old, &new] {
+        assert_eq!(status(&cluster, member).last_index, before, "{member}");
+    }
+    cluster.stop().await;
+}
+
+/// openraft's answer to one call is handed on while the task renews the
+/// lease for the next call, which takes a whole lease when no majority
+/// answers. On one thread the task has taken the second batch before
+/// openraft has answered the first.
+#[tokio::test]
+async fn an_answer_is_not_held_behind_the_next_calls_lease() {
+    let (mut cluster, _, engine, _) = led().await;
+    cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+
+    let asked = tokio::time::Instant::now();
+    let first = tokio::spawn(engine.propose(&shard(0), batch(&[b"first"], AckAt::Written)));
+    // The task is renewing the lease for the first batch's call.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let second = engine.propose(&shard(0), batch(&[b"second"], AckAt::Written));
+    let refused = first.await.expect("joined");
+    let lapsed = "no majority has answered this leader lately, so nothing was written";
+    assert_eq!(lost(&refused), lapsed);
+    let lease = timers().election_max;
+    let took = asked.elapsed();
+    assert!(took < lease + lease / 2, "the first answer took {took:?}");
+    assert_eq!(lost(&second.await), lapsed);
+    cluster.net.cut.lock().clear();
+    cluster.stop().await;
+}
+
+/// One call takes no batch that would bring it past the byte or the record
+/// bound, so batches with no payload are bounded too. A batch past a bound
+/// on its own goes alone, and the batch behind it starts the next call.
+#[test]
+fn a_drain_stops_at_its_bounds() {
+    let sized = |records: usize, bytes: usize| Batch {
+        records: (0..records)
+            .map(|_| Record {
+                timestamp_micros: 1,
+                payload: Bytes::from(vec![0; bytes]),
+            })
+            .collect(),
+        ack: AckAt::Written,
+    };
+    // The batches each drain takes.
+    let drains = |batches: Vec<Batch>| {
+        let (queue, mut queued) = mpsc::unbounded_channel();
+        let mut waiting = Vec::new();
+        for batch in batches {
+            let (proposal, wait) = split(batch).expect("split");
+            assert!(queue.send(proposal).is_ok(), "not queued");
+            waiting.push(wait);
+        }
+        let (mut held, mut drains) = (None, Vec::new());
+        while let Some(first) = held.take().or_else(|| queued.try_recv().ok()) {
+            drains.push(drain(first, &mut queued, &mut held).answers.len());
+        }
+        drains
+    };
+    let mib = 1 << 20;
+    let empty = (0..5).map(|_| sized(DRAIN_RECORDS / 4, 0)).collect();
+    assert_eq!(drains(empty), [4, 1]);
+    let many = vec![sized(DRAIN_RECORDS + 1, 0), sized(1, 0)];
+    assert_eq!(drains(many), [1, 1]);
+    let large = vec![sized(1, 3 * mib), sized(1, 3 * mib), sized(1, mib)];
+    assert_eq!(drains(large), [1, 2]);
+    let huge = vec![sized(1, DRAIN_BYTES + 1), sized(1, 0)];
+    assert_eq!(drains(huge), [1, 1]);
+}
+
+/// The publish task runs where the group does. A first publisher on a
+/// runtime that then ends does not take the task with it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_publish_task_outlives_the_first_publishers_runtime() {
+    let (mut cluster, _, engine, committed) = led().await;
+    let elsewhere = engine.clone();
+    let first = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let written = runtime.block_on(async {
+            elsewhere
+                .propose(&shard(0), batch(&[b"first"], AckAt::Flushed))
+                .await
+        });
+        drop(runtime);
+        written
+    });
+    let first = first.join().expect("joined").expect("written");
+    assert_eq!(first.end, committed + 2);
+
+    let second = engine
+        .propose(&shard(0), batch(&[b"second"], AckAt::Flushed))
+        .await;
+    assert_eq!(second.map(|written| written.end), Ok(committed + 3));
+    cluster.stop().await;
+}
+
+/// A member standing for election may win and append what it was sent,
+/// so its publisher is told the batch may still be written. Votes are lost
+/// here, so the followers stand and none wins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_candidates_publisher_is_told_the_batch_may_still_be_written() {
+    let (mut cluster, leader, _, _) = led().await;
+    let standing = BROKERS.iter().find(|broker| ***broker != *leader.broker);
+    let standing = MemberId::new(*standing.expect("a follower"), 1);
+    let engine = RaftEngine::new(cluster.runtime(&standing.broker));
+    cluster.net.muted.lock().insert(leader.broker.to_string());
+    cluster.net.lose_votes.store(true, Relaxed);
+
+    let electing = "this broker is standing for election, so the batch may still be written";
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never told while standing"
+        );
+        eventually(|| (status(&cluster, &standing).role == Role::Candidate).then_some(())).await;
+        let told = engine
+            .propose(&shard(0), batch(&[b"standing"], AckAt::Written))
+            .await;
+        // openraft's refusal can come first, or the member may have
+        // stopped standing between the two looks.
+        if lost(&told) == electing {
+            break;
+        }
+    }
+    cluster.net.lose_votes.store(false, Relaxed);
+    cluster.net.muted.lock().clear();
+    cluster.stop().await;
+}
+
+/// A group whose core stops without being closed, as on a storage error,
+/// tells its publisher it stopped. On one thread the publisher looks before
+/// the task has made the call.
+#[tokio::test]
+async fn a_publisher_is_told_when_the_groups_core_stops() {
+    let (mut cluster, leader, engine, _) = led().await;
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    member.raft().shutdown().await.expect("shut down");
+
+    let told = engine
+        .propose(&shard(0), batch(&[b"x"], AckAt::Flushed))
+        .await;
+    assert_eq!(lost(&told), "the shard's group stopped");
+    drop(member);
+    cluster.stop().await;
+}
+
 /// The fsync policy places the acknowledgement: only fsync on commit waits
 /// for the flush.
 #[test]
@@ -400,9 +583,10 @@ type Token = Pin<Box<dyn Future<Output = Option<LogPoint>> + Send>>;
 struct Told(watch::Receiver<(bool, u64)>);
 
 impl Leading for Told {
-    async fn lost(&mut self, term: Option<u64>) {
+    async fn lost(&mut self, term: Option<u64>) -> Lost {
         let lost = |&(leads, at): &(bool, u64)| !leads || term.is_some_and(|term| term != at);
         let _ = self.0.wait_for(lost).await;
+        Lost::Deposed
     }
 }
 

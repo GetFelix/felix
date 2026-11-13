@@ -123,6 +123,14 @@ impl RaftEngine {
         self.runtime.group(shard)?.transfer_starting().await
     }
 
+    /// `shard`'s commit table on this broker, if it holds a member.
+    pub(crate) fn commits(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<tokio::sync::watch::Receiver<super::commit::Commits>> {
+        Some(self.runtime.group(shard)?.commits())
+    }
+
     /// The term this broker has `shard` open in, for a reader to take
     /// before it reads state and hand to [`Self::confirm_read`].
     pub fn open_term(&self, shard: &ShardKey) -> Option<u64> {

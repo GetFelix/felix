@@ -16,7 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::commit::Commits;
 use super::machine::Machine;
-use super::propose::Leading;
+use super::propose::{Leading, Lost};
 use super::types::ShardTypes;
 use crate::ShardKey;
 use crate::engine::EngineHost;
@@ -32,6 +32,9 @@ pub(crate) struct Lead {
     pub(crate) open: bool,
     /// The term a transfer started in. It never opens again.
     void: Option<u64>,
+    /// The watcher has ended: the group's core stopped, or the member was
+    /// told to stop.
+    gone: bool,
 }
 
 pub(crate) struct Leadership {
@@ -84,8 +87,8 @@ impl Leadership {
     }
 
     /// openraft says this member leads `leads`, and the last applied entry
-    /// has term `committed`.
-    fn observe(&self, leads: Option<u64>, committed: Option<u64>) {
+    /// has term `committed`. `gone` is the watcher's last look.
+    fn observe(&self, leads: Option<u64>, committed: Option<u64>, gone: bool) {
         let _changing = self.changing.lock();
         let was = self.lead();
         let term = leads.filter(|term| was.void != Some(*term));
@@ -111,6 +114,7 @@ impl Leadership {
             term,
             open,
             void: was.void,
+            gone: was.gone || gone,
         };
         self.lead.send_if_modified(|lead| {
             let changed = *lead != now;
@@ -131,7 +135,7 @@ impl Leadership {
             let _changing = self.changing.lock();
             self.lead.send_modify(|lead| lead.void = Some(term));
         }
-        self.observe(leads, None);
+        self.observe(leads, None, false);
         Some(term)
     }
 }
@@ -156,7 +160,7 @@ pub(crate) async fn run(
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let leads = leading_term(&server);
         let committed = commits.borrow_and_update().applied().map(|at| at.term);
-        leadership.observe(leads, committed);
+        leadership.observe(leads, committed, false);
         // The commit table moves with every write. It is watched only
         // while a term waits to open.
         // A term a transfer started in never opens, so it is not waited on.
@@ -181,7 +185,8 @@ pub(crate) async fn run(
             break;
         }
     }
-    leadership.observe(None, None);
+    // One change, so no publisher reads the close without the reason.
+    leadership.observe(None, None, true);
 }
 
 /// Returns once a majority's last answer to this leader is newer than it
@@ -203,7 +208,7 @@ pub(crate) struct Watched {
 }
 
 impl Leading for Watched {
-    async fn lost(&mut self, term: Option<u64>) {
+    async fn lost(&mut self, term: Option<u64>) -> Lost {
         use openraft::async_runtime::watch::WatchReceiver;
         loop {
             let lead = *self.lead.borrow_and_update();
@@ -214,7 +219,12 @@ impl Leading for Watched {
             // alone. A transfer is the watcher's to say.
             let elected = leading_term(&self.server).filter(|term| lead.void != Some(*term));
             if !held(lead.term) && !held(elected) {
-                return;
+                return match self.server.borrow_watched().state {
+                    _ if lead.gone => Lost::Stopped,
+                    ServerState::Shutdown => Lost::Stopped,
+                    ServerState::Candidate => Lost::Electing,
+                    _ => Lost::Deposed,
+                };
             }
             // Either can move without the other: openraft can win and lose
             // a term between two looks of the watcher.
@@ -222,8 +232,9 @@ impl Leading for Watched {
                 moved = self.lead.changed() => moved.is_ok(),
                 moved = self.server.changed() => moved.is_ok(),
             };
+            // The watcher or the core is gone.
             if !moved {
-                return;
+                return Lost::Stopped;
             }
         }
     }
