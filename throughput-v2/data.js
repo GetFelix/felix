@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794532083313,
+  "lastUpdate": 1794532339192,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53716,6 +53716,58 @@ window.BENCHMARK_DATA = {
             "range": "74276.73",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1206429.87\nmean: 1180611.88\nstdev: 74276.73\ncv: 6.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d46dbcaa6721a0bf421144a2dc36525d8132889",
+          "message": "fix(controlplane): close the metadata store on every failed start path (#2392)\n\nCloses #2373. Failed group entry stops the member, a snapshot close error no longer leaves the log open, failed-start paths are tested through the fault seam.\n\nSpec-Unaffected: closes stores on error paths only; no protocol or model change.",
+          "timestamp": "2026-11-13T00:58:42Z",
+          "tree_id": "117ad9d692673330d9c0e181df00b6ce093c0215",
+          "url": "https://github.com/GetFelix/felix/commit/3d46dbcaa6721a0bf421144a2dc36525d8132889"
+        },
+        "date": 1794532338620,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 479261.8,
+            "range": "33966.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479261.80\nmean: 488388.63\nstdev: 33966.10\ncv: 6.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 479261.8,
+            "range": "33966.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 479261.80\nmean: 488388.63\nstdev: 33966.10\ncv: 6.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122189.05,
+            "range": "3476.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122189.05\nmean: 121052.62\nstdev: 3476.02\ncv: 2.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1221890.5,
+            "range": "34760.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1221890.50\nmean: 1210526.20\nstdev: 34760.21\ncv: 2.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
