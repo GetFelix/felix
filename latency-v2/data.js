@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794535322725,
+  "lastUpdate": 1794540744767,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68442,6 +68442,72 @@ window.BENCHMARK_DATA = {
             "range": "842.42",
             "unit": "us",
             "extra": "trials: 5\nmedian: 568.00\nmean: 1006.00\nstdev: 842.42\ncv: 83.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54a81af0e6b41c349c3e6955c2da93d50c399244",
+          "message": "fix(controlplane): a metadata member records with every peer before its first vote (#2386)\n\nCloses #2374. Forming is mark, record, vote: a member marks itself, every peer durably records its id (POST {prefix}/forming), then it clears its withheld vote and initializes. A named member that holds no mark takes the lost-disk path. standing gains formed. The segment store keeps the mark in a separate formation file.\n\nFelixRaftPlacement: FormRecord on Form; FormEarlyWipe now passes, its Unrecorded twin violates AckedHeldSurvive; FirstBoot, Two and ReachEarlyWipeVotesAgain added. Residual for the segment store build: #2407.",
+          "timestamp": "2026-11-12T19:26:43-08:00",
+          "tree_id": "0ce9feb15475b5a7cb3affc698c316f7320aa896",
+          "url": "https://github.com/GetFelix/felix/commit/54a81af0e6b41c349c3e6955c2da93d50c399244"
+        },
+        "date": 1794540737906,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 67,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 67.00\nmean: 67.20\nstdev: 0.84\ncv: 1.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 108,
+            "range": "36.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 115.40\nstdev: 36.68\ncv: 31.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 169,
+            "range": "56.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 169.40\nstdev: 56.13\ncv: 33.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 0.45\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "34.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 218.60\nstdev: 34.94\ncv: 15.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2071,
+            "range": "1091.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2071.00\nmean: 1487.60\nstdev: 1091.39\ncv: 73.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
