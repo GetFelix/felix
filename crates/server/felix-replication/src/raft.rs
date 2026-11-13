@@ -17,6 +17,9 @@
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
 mod codec;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 mod group;
 mod machine;
 mod network;

@@ -1160,6 +1160,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 | --- | --- |
 | layout | `u8`, 1. A reader refuses any other |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer |
+| deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
@@ -1206,11 +1207,19 @@ bytes left can hold is refused before anything is sized from it, and so are
 trailing bytes. Records in an append stay slices of the received frame. A
 membership entry with no voters is refused.
 
-An append carries at most 32 MiB of records, at least one record whatever
-its size. The sender cuts a longer one, and openraft takes the answer as a
-partial acknowledgement and sends the rest next. Raft calls have an in-flight
-budget per peer of their own (`FELIX_INTERNAL_MAX_INFLIGHT`), so groups waiting
-on a slow peer cannot take the permits its pings and fences need.
+An append carries what crosses a 1 Gbit/s link in a quarter of its deadline:
+about 6 MB at the 200 ms heartbeat, never more than 32 MiB, and at least one
+record whatever its size. The rest of the deadline is for the follower's
+fsync and the answer. The sender cuts a longer append, and openraft takes the
+answer as a partial acknowledgement and sends the rest next. An append that
+could not arrive in time would be cut the same way on every retry, so a
+follower far behind would never catch up.
+
+Raft calls have in-flight budgets per peer of their own
+(`FELIX_INTERNAL_MAX_INFLIGHT` each), so groups waiting on a slow peer cannot
+take the permits its pings and fences need. Appends that carry entries have
+one budget and every other Raft message another, so appends stalled on a slow
+follower cannot shed other groups' heartbeats and votes.
 
 An append with entries goes on the replication streams. Every other Raft
 message goes on the control stream, so a heartbeat or a vote never waits
@@ -1219,6 +1228,10 @@ answers each `Raft` as it finishes, matched by correlation id, like the
 control requests: an append waits for an fsync that a vote behind it should
 not. At most 1,024 Raft messages run per stream; past that one is refused
 with `ReplicateError` `Overload`, and the sender treats it as unreachable.
+The listener reads the deadline from bytes 2 to 6 without decoding the rest,
+and gives up on a message at that deadline, or at 10 s if it names longer,
+answering `ReplicateError` `Unavailable`. The sender has given up by then, so a
+member stuck on storage cannot hold the stream's permits.
 
 ## Errors
 

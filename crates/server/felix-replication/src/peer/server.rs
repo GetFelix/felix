@@ -784,14 +784,30 @@ async fn serve_connection(
                             });
                             continue;
                         };
+                        // Bounded by the sender's own deadline: past it the
+                        // sender has given up, and a member stuck on storage
+                        // would otherwise hold the permit for good. The
+                        // refusal clears the sender's waiter.
+                        let deadline = super::raft_deadline(&call.body);
                         let send = Arc::clone(&send);
                         app.spawn(async move {
                             let _running = running;
+                            let correlation_id = call.correlation_id;
                             answer_out_of_order(&send, offered_by, async move {
-                                InternalMessage::RaftAnswer(RaftAnswer {
-                                    correlation_id: call.correlation_id,
-                                    body: raft.answer(call.body).await,
-                                })
+                                match tokio::time::timeout(deadline, raft.answer(call.body)).await {
+                                    Ok(body) => InternalMessage::RaftAnswer(RaftAnswer {
+                                        correlation_id,
+                                        body,
+                                    }),
+                                    Err(_) => InternalMessage::ReplicateError(ReplicateError {
+                                        correlation_id,
+                                        code: ErrorCode::Unavailable,
+                                        expected_offset: 0,
+                                        detail: "the Raft message was not answered in time"
+                                            .to_string(),
+                                        reason: None,
+                                    }),
+                                }
                             })
                             .await;
                         });

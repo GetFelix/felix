@@ -18,6 +18,8 @@ publish = false
 # broker, driven by one ticker. No release enables it, and nothing in the
 # broker calls it yet. See docs/per-shard-raft.md.
 raft = ["dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde", "serde/rc"]
+# Entry points for the libFuzzer targets in `fuzz/`. Not an API.
+fuzzing = ["raft"]
 
 [dependencies]
 ahash = { workspace = true }

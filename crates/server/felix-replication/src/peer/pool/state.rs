@@ -24,8 +24,12 @@ pub(super) struct Peer {
     pub(super) inflight: Arc<Semaphore>,
     pub(super) replication_inflight: Arc<Semaphore>,
     /// Raft messages have their own, so thousands of groups waiting on a slow
-    /// follower cannot take the budget its pings and fences need.
-    pub(super) raft_inflight: Arc<Semaphore>,
+    /// follower cannot take the budget its pings and fences need. Appends
+    /// that carry entries are bounded apart from heartbeats and votes, so
+    /// appends stalled on a slow disk cannot shed the heartbeats that keep
+    /// other groups' leaders in place.
+    pub(super) raft_entries_inflight: Arc<Semaphore>,
+    pub(super) raft_control_inflight: Arc<Semaphore>,
 }
 
 impl Peer {
@@ -35,7 +39,8 @@ impl Peer {
             state: tokio::sync::Mutex::new(PeerState::default()),
             inflight: Arc::new(Semaphore::new(max_inflight)),
             replication_inflight: Arc::new(Semaphore::new(max_inflight)),
-            raft_inflight: Arc::new(Semaphore::new(max_inflight)),
+            raft_entries_inflight: Arc::new(Semaphore::new(max_inflight)),
+            raft_control_inflight: Arc::new(Semaphore::new(max_inflight)),
         }
     }
 

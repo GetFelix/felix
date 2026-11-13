@@ -63,6 +63,7 @@ fn request(body: Request) -> RaftRequest {
         group: group(),
         to: member("b"),
         beat: 2_000,
+        deadline: std::time::Duration::from_millis(200),
         body,
     }
 }
@@ -236,6 +237,8 @@ fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
         &[1, 3][..],
+        // the deadline: 200 ms
+        &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
         &[0, 1, b't'][..],
         &[0, 2, b'n', b's'][..],
@@ -377,6 +380,88 @@ fn a_large_append_is_cut_to_fit_a_frame() {
         unreachable!()
     };
     assert_eq!(rpc.entries.len(), 1);
+}
+
+/// An append is cut to what crosses a 1 Gbit/s link in a quarter of its
+/// deadline, so a cut plus a follower's fsync fits the deadline. A 32 MiB
+/// cut takes about 270 ms on that link, past the 200 ms heartbeat.
+#[test]
+fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
+    let record = Bytes::from(vec![7u8; 1024 * 1024]);
+    let entries: Vec<_> = (1..=100)
+        .map(|index| {
+            EntryOf::<ShardTypes>::new_normal(
+                log_id(2, index),
+                Command {
+                    timestamp_micros: 1,
+                    payload: record.clone(),
+                },
+            )
+        })
+        .collect();
+    let append = |deadline| {
+        let mut written = request(Request::Append(AppendEntriesRequest {
+            vote: vote(2, true),
+            prev_log_id: None,
+            entries: entries.clone(),
+            leader_commit: None,
+        }));
+        written.deadline = deadline;
+        fit(&mut written);
+        encode_request(&written).expect("encode").len()
+    };
+    let heartbeat = std::time::Duration::from_millis(200);
+    let on_the_wire = append(heartbeat) as f64 / 125_000_000.0;
+    assert!(on_the_wire <= 0.05, "{on_the_wire} s of a 0.2 s deadline");
+    // However long the deadline, the cut stays inside a frame.
+    let long = append(std::time::Duration::from_secs(3600));
+    assert!(
+        long < felix_wire::internal::MAX_BODY_BYTES as usize,
+        "{long}"
+    );
+}
+
+/// The listener reads the sender's deadline from fixed bytes, without
+/// decoding the message, and holds it to its own limit.
+#[test]
+fn the_listener_reads_the_deadline_where_it_is() {
+    for written in every_request() {
+        let mut written = written;
+        written.deadline = std::time::Duration::from_millis(1234);
+        let bytes = encode_request(&written).expect("encode");
+        assert_eq!(
+            crate::peer::raft_deadline(&bytes),
+            std::time::Duration::from_millis(1234)
+        );
+        let read = decode_request(bytes).expect("decode");
+        assert_eq!(read.deadline, written.deadline);
+    }
+    let mut forever = every_request().remove(0);
+    forever.deadline = std::time::Duration::from_secs(u64::MAX / 2000);
+    let bytes = encode_request(&forever).expect("encode");
+    assert_eq!(
+        crate::peer::raft_deadline(&bytes),
+        crate::peer::RAFT_MAX_DEADLINE
+    );
+    assert_eq!(
+        crate::peer::raft_deadline(b"\x01\x01"),
+        crate::peer::RAFT_MAX_DEADLINE
+    );
+}
+
+/// A forged entry count passes the check against the bytes left whenever
+/// each entry could be 17 bytes, but an entry in memory is larger, so room
+/// for the count is held to what the bytes left would take in memory.
+#[test]
+fn room_for_entries_is_held_to_the_bytes_left() {
+    let left = 32 * 1024 * 1024;
+    let forged = left / MIN_ENTRY_BYTES;
+    let room = entry_room(forged, left);
+    assert!(
+        room * size_of::<EntryOf<ShardTypes>>() <= left,
+        "{room} entries reserved from {left} bytes"
+    );
+    assert_eq!(entry_room(3, left), 3);
 }
 
 #[test]

@@ -260,7 +260,8 @@ impl PeerPool {
         // covers every exit below including a timeout.
         let class = LaneClass::of(&message);
         let budget = match (&message, class) {
-            (InternalMessage::Raft(_), _) => &peer.raft_inflight,
+            (InternalMessage::Raft(_), LaneClass::Replication) => &peer.raft_entries_inflight,
+            (InternalMessage::Raft(_), _) => &peer.raft_control_inflight,
             (_, LaneClass::Forward) => &peer.inflight,
             _ => &peer.replication_inflight,
         };

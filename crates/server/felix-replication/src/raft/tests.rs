@@ -78,12 +78,20 @@ struct Net {
     /// The only broker they are lost on the way to, if one is named.
     lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
+    /// Cut appends as the peer transport does, and hold each for as long as
+    /// its bytes take on a 1 Gbit/s link.
+    gigabit: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
 impl RaftTransport for Net {
-    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+    async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
+        if self.gigabit.load(Relaxed) {
+            super::wire::fit(&mut request);
+            let bytes = super::wire::encode_request(&request).expect("encode").len();
+            tokio::time::sleep(Duration::from_secs_f64(bytes as f64 / 125_000_000.0)).await;
+        }
         let broker: &str = &request.to().broker;
         let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
         if request.beat > timers().heartbeat.as_millis() as u64
@@ -1131,6 +1139,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
@@ -1149,6 +1158,57 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
     for log in cluster.logs.values() {
         assert_eq!(log.base_offset(), 0, "a member is missing records");
     }
+    cluster.stop().await;
+}
+
+/// A follower far behind must catch up over a 1 Gbit/s link. Each append
+/// has one heartbeat interval before the leader gives up on it, and the
+/// leader cuts the next the same way, so an append that cannot cross the
+/// link and be fsynced in that time is never acknowledged.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let first = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, first).await;
+    let leader = cluster.elected(0).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+
+    cluster.net.cut.lock().insert(behind.into());
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let record = Bytes::from(vec![7u8; 1024 * 1024]);
+    let mut last = first;
+    for _ in 0..48 {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: record.clone(),
+        };
+        last = member
+            .raft()
+            .client_write(command)
+            .await
+            .expect("write")
+            .log_id
+            .index;
+    }
+
+    cluster
+        .net
+        .gigabit
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    cluster.net.cut.lock().clear();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        cluster.committed_everywhere(0, last),
+    )
+    .await
+    .expect("the follower did not catch up");
     cluster.stop().await;
 }
 
@@ -1224,6 +1284,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: vote(),
     };
 

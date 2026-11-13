@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::io;
+use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use felix_wire::internal::MAX_IDENT_BYTES;
@@ -61,15 +62,33 @@ const MIN_ENTRY_BYTES: usize = 17;
 /// takes the shorter append as a partial acknowledgement and sends the rest
 /// next, so a follower far behind still catches up.
 const MAX_APPEND_BYTES: usize = 32 * 1024 * 1024;
+/// The link an append is sized for: 1 Gbit/s, in bytes a second.
+const LINK_BYTES_PER_SEC: u128 = 125_000_000;
+/// The share of its deadline an append may spend on that link. The rest is
+/// for the follower's fsync, queueing, and the answer.
+const WIRE_SHARE_OF_DEADLINE: u128 = 4;
+/// The least an append is cut to, so a very short deadline still moves.
+const MIN_APPEND_BYTES: usize = 256 * 1024;
 /// What an entry costs on the wire besides its record.
 const ENTRY_OVERHEAD: usize = 64;
 
 /// Smallest encoded log id in a conflict hint.
 const LOG_ID_BYTES: usize = 16;
 
-/// Cut an append's entries to what fits in [`MAX_APPEND_BYTES`], keeping at
-/// least one.
+/// The record bytes an append with this deadline carries: what crosses a
+/// 1 Gbit/s link in a quarter of it. An append that cannot arrive in time
+/// is cut the same way on every retry, so a follower far behind would never
+/// catch up.
+pub(crate) fn append_budget(deadline: Duration) -> usize {
+    let bytes = deadline.as_millis() * LINK_BYTES_PER_SEC / 1000 / WIRE_SHARE_OF_DEADLINE;
+    usize::try_from(bytes)
+        .unwrap_or(usize::MAX)
+        .clamp(MIN_APPEND_BYTES, MAX_APPEND_BYTES)
+}
+
+/// Cut an append's entries to its [`append_budget`], keeping at least one.
 pub(crate) fn fit(request: &mut RaftRequest) {
+    let budget = append_budget(request.deadline);
     let Request::Append(rpc) = &mut request.body else {
         return;
     };
@@ -83,7 +102,7 @@ pub(crate) fn fit(request: &mut RaftRequest) {
                     EntryPayload::Normal(command) => command.payload.len(),
                     _ => 0,
                 };
-            bytes > MAX_APPEND_BYTES
+            bytes > budget
         })
         .unwrap_or(rpc.entries.len())
         .max(1);
@@ -101,6 +120,8 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
         Request::Snapshot { .. } => SNAPSHOT,
         Request::TransferLeader(_) => TRANSFER_LEADER,
     });
+    // At a fixed place, so a listener reads it without reading the rest.
+    buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat);
@@ -145,6 +166,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
 pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     expect_layout(&mut buf)?;
     let tag = take_u8(&mut buf)?;
+    let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let group = take_group(&mut buf)?;
     let to = take_member(&mut buf)?;
     let beat = take_u64(&mut buf)?;
@@ -159,7 +181,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
                 if count == 0 {
                     return Err(invalid("an append that carries entries names none".into()));
                 }
-                entries.reserve(count);
+                entries.reserve(entry_room(count, buf.remaining()));
                 for _ in 0..count {
                     entries.push(take_entry(&mut buf)?);
                 }
@@ -216,6 +238,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
         group,
         to,
         beat,
+        deadline,
         body,
     })
 }
@@ -637,6 +660,14 @@ fn take_count(buf: &mut Bytes, min: usize) -> io::Result<usize> {
         )));
     }
     Ok(count)
+}
+
+/// Room for `count` entries read from `left` bytes, held to what those bytes
+/// would take in memory. An entry in memory is larger than its smallest
+/// encoding, so a forged count would otherwise reserve several times the
+/// frame before the first entry fails to read.
+fn entry_room(count: usize, left: usize) -> usize {
+    count.min(left / size_of::<EntryOf<ShardTypes>>())
 }
 
 fn len_u32(len: usize) -> io::Result<u32> {
