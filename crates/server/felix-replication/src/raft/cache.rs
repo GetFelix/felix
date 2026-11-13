@@ -8,6 +8,8 @@
 //! state. `docs/formal/FelixRaftCache.tla` is the model, and
 //! `docs/per-shard-raft.md`, "Cache and counters", the design.
 
+#[cfg(test)]
+mod measure;
 mod record;
 mod snapshot;
 mod state;

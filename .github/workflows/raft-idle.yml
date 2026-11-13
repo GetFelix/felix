@@ -1,77 +1,63 @@
 name: Raft idle groups
 
-# What idle per-shard Raft groups cost one broker in CPU and memory
-# (crates/server/felix-replication/tests/raft_idle_cpu.rs). Two runs:
-# 5,000 groups led by one runtime whose peers are stubs, the worst case for one
-# broker, and three runtimes in one process joined by the real peer transport
-# on loopback. A report, not a gate: nothing waits on it, and until idle groups
-# sleep it shows the cost of ticking every group.
+# Scratch branch: cache read-path before/after for PR #2482. Not for merge.
 
 on:
-  schedule:
-    # Every night at 06:23 UTC, after the scale run.
-    - cron: "23 6 * * *"
   workflow_dispatch:
     inputs:
       groups:
-        description: "Groups in the stub-peer run"
         required: false
         default: "5000"
       transport_groups:
-        description: "Groups in the transport run, each with a member on all three runtimes"
         required: false
         default: "1700"
 
 permissions:
   contents: read
 
-concurrency:
-  group: raft-idle-${{ github.ref }}
-  cancel-in-progress: true
-
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   idle:
-    name: Raft idle groups
+    name: Cache read path
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
-      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: raft-idle
+      - name: Base tree
+        run: |
+          set -euo pipefail
+          git worktree add "$RUNNER_TEMP/base" f8422f87f
+          f=crates/server/felix-replication/src/raft/cache
+          cp "$f/measure.rs" "$RUNNER_TEMP/base/$f/measure.rs"
+          printf '#[cfg(test)]\nmod measure;\n' >> "$RUNNER_TEMP/base/$f.rs"
       - name: Build
-        run: cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu --no-run
-      - name: Stub peers
-        env:
-          RAFT_IDLE_GROUPS: ${{ inputs.groups || '5000' }}
         run: |
-          set -o pipefail
-          ulimit -n "$(ulimit -Hn)"
-          cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
-            -- --ignored --nocapture 2>&1 | tee raft-idle-stub.log
-      - name: Real peer transport
-        if: always()
-        env:
-          RAFT_IDLE_GROUPS: ${{ inputs.transport_groups || '1700' }}
-          RAFT_IDLE_PEERS: transport
+          set -euo pipefail
+          for d in "$GITHUB_WORKSPACE" "$RUNNER_TEMP/base"; do
+            (cd "$d" && cargo test --locked --release -p felix-replication --features raft --lib --no-run)
+          done
+      - name: Measure
         run: |
-          set -o pipefail
-          ulimit -n "$(ulimit -Hn)"
-          cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
-            -- --ignored --nocapture 2>&1 | tee raft-idle-transport.log
-      - name: Summary
-        if: always()
-        run: |
-          {
-            echo "### Raft idle groups"
-            echo
-            grep -hE 'idle groups|test result' raft-idle-stub.log raft-idle-transport.log || echo "no result"
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          nproc; free -m
+          run() {
+            (cd "$1" && MEASURE_KEYS=$3 MEASURE_LABEL=$2 cargo test --locked --release -q -p felix-replication \
+              --features raft --lib raft::cache::measure -- --ignored --nocapture 2>&1 | grep '^cache_read_path')
+          }
+          for round in 1 2 3 4; do
+            for keys in 1000 1000000; do
+              if [ $((round % 2)) = 1 ]; then
+                run "$RUNNER_TEMP/base" before $keys; run "$GITHUB_WORKSPACE" after $keys
+              else
+                run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before $keys
+              fi
+            done
+          done | tee measure.log
