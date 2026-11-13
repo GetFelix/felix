@@ -578,6 +578,7 @@ expectations=(
   "FelixRaftPlacementStaleWipeRewind pass"
   "FelixRaftPlacementStaleWipeRewindSameInc violates AckedOnDisk"
   "FelixRaftPlacementStaleWipeRewindNoAck violates AckedOnDisk"
+  "FelixRaftPlacementRewindSpareCommitted violates AckedOnDisk"
   "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"

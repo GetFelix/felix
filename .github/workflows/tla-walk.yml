@@ -201,7 +201,7 @@ jobs:
           - FelixShardUnifiedReadmitFull
           - FelixShardUnifiedDropEvidencedFull
           - FelixRaftPlacementFull
-          - FelixRaftPlacementTransferMoveFull
+          - FelixRaftPlacementRewindSpare
     steps:
       - name: Checkout
         uses: actions/checkout@v7
