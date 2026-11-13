@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig};
-use felix_storage::raft_log::EntryCodec;
+use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use openraft::raft::VoteRequest;
 use openraft::type_config::alias::{LeaderIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
@@ -260,6 +260,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                written: None,
             };
             match member.raft().client_write(command).await {
                 Ok(written) => return written.log_id.index,
@@ -287,6 +288,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    written: None,
                 })
             });
             for written in futures::future::join_all(writes)
@@ -817,6 +819,82 @@ async fn a_write_is_reported_written_and_flushed() {
         assert_eq!(status.flushed, status.written, "{}", status.member);
     }
     cluster.stop().await;
+}
+
+/// A proposer's token comes back from the leader's own append with the
+/// record's index and term, while the record cannot commit: both followers
+/// are cut off, so `client_write` has nothing to answer with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proposed_record_is_reported_written_before_it_commits() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let before = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let member = runtime.group(&shard(0)).expect("group");
+    let term = runtime.status(&shard(0)).expect("status").term;
+
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    let (token, written) = WrittenToken::channel();
+    let command = Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"proposed"),
+        written: Some(token),
+    };
+    let raft = member.raft().clone();
+    let mut write = tokio::spawn(async move { raft.client_write(command).await });
+
+    let at = tokio::time::timeout(PATIENCE, written)
+        .await
+        .expect("the token resolves")
+        .expect("written");
+    assert_eq!(
+        at,
+        LogPoint {
+            term,
+            index: before + 1
+        }
+    );
+    let status = runtime.status(&shard(0)).expect("status");
+    assert_eq!(status.committed, Some(before));
+    assert!(
+        status
+            .written
+            .is_some_and(|written| written.index >= at.index)
+    );
+    // A leader deposed meanwhile refuses the write. It never reports it done.
+    assert!(
+        !matches!(
+            futures::FutureExt::now_or_never(&mut write),
+            Some(Ok(Ok(_)))
+        ),
+        "the write was answered with no follower reachable"
+    );
+    cluster.net.cut.lock().clear();
+    write.abort();
+    cluster.stop().await;
+}
+
+/// The token is not part of what a peer is sent.
+#[test]
+fn a_commands_token_is_not_serialized() {
+    let (token, _written) = WrittenToken::channel();
+    let command = Command {
+        timestamp_micros: 7,
+        payload: Bytes::from_static(b"p"),
+        written: Some(token),
+    };
+    let sent = serde_json::to_value(&command).expect("json");
+    assert_eq!(
+        sent.as_object().expect("object").keys().collect::<Vec<_>>(),
+        ["payload", "timestamp_micros"]
+    );
+    let received: Command = serde_json::from_value(sent).expect("json");
+    assert!(received.written.is_none());
+    assert_eq!(received, command);
 }
 
 /// A group whose queue is full takes no timer check. Its checks are dropped

@@ -43,6 +43,7 @@ mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
 mod writer;
+mod written;
 
 pub use codec::EntryCodec;
 /// The leader id in a log id: for this log, the term. Named in the bounds
@@ -50,6 +51,7 @@ pub use codec::EntryCodec;
 pub use openraft::type_config::alias::CommittedLeaderIdOf;
 pub use reader::LogReader;
 pub use snapshot::{SnapshotId, SnapshotStore, StoredSnapshot};
+pub use written::{WrittenAt, WrittenToken};
 
 use std::io;
 use std::ops::Deref;

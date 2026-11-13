@@ -9,7 +9,7 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use openraft::OptionalSend;
-use openraft::entry::RaftEntry;
+use openraft::entry::{EntryPayload, RaftEntry};
 use openraft::storage::{IOFlushed, LogState, RaftLogStorage};
 use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
@@ -128,12 +128,20 @@ where
         let mut batch = Batch::default();
         let mut next = None;
         let mut last = None;
+        // Proposers waiting to hear where their entry was written.
+        let mut tokens = Vec::new();
         for entry in entries {
             let index = entry.index();
-            last = Some(LogPoint {
+            let point = LogPoint {
                 term: **entry.log_id().committed_leader_id(),
                 index,
-            });
+            };
+            last = Some(point);
+            if let EntryPayload::Normal(data) = &entry.payload
+                && let Some(token) = shared.codec.written_token(data)
+            {
+                tokens.push((token, point));
+            }
             if next.is_some_and(|next| next != index) {
                 return Err(invalid(format!(
                     "{}: an append skips to index {index}",
@@ -223,6 +231,11 @@ where
         // Written, not yet on disk: the signal an acknowledgement that does
         // not wait for the fsync goes by.
         shared.positions.send_modify(|at| at.written = last);
+        // After the position, so a proposer woken here finds it moved. A
+        // write that failed returned above and dropped its tokens unresolved.
+        for (token, at) in tokens {
+            token.resolve(at);
+        }
 
         // A flush covers a prefix of the log, so the last batch's wait
         // stands for the append.

@@ -1,13 +1,13 @@
 //! `AckedHeldByLeader`: whoever serves a shard holds every record a client was
 //! told a quorum has.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use felix_cluster::history::model::{Action, AppendOutcome, Element, History};
 
 use super::{CheckContext, Checker, Digest, Finding, Point, seen_by_all};
-use crate::client::{list_name, read_log};
+use crate::client::{forget_abandoned, list_name, read_log};
 use crate::cluster::{SimCluster, describe, stream_key};
 
 /// How many shards print a census; the rest are counted.
@@ -55,6 +55,14 @@ pub(crate) fn unheld(acked: &[Acked], held: &[Element]) -> Vec<Acked> {
         })
         .copied()
         .collect()
+}
+
+/// The acknowledged appends of `ctx.history`, less what logs abandoned since
+/// the snapshot gave up.
+fn acked_now(ctx: &CheckContext) -> BTreeMap<u32, Vec<Acked>> {
+    let mut history = ctx.history.clone();
+    forget_abandoned(&mut history, &ctx.recorder.abandoned_lists());
+    acked_by_shard(&history, ctx.cluster.config.shards)
 }
 
 /// One serving broker's view of a shard: who, at what generation, its quorum
@@ -241,18 +249,26 @@ impl Checker for AckedHeldByLeader {
 
     async fn check(&mut self, ctx: &CheckContext) -> Vec<Finding> {
         let cluster = &ctx.cluster;
-        let mut waiting = acked_by_shard(&ctx.history, cluster.config.shards);
+        let mut waiting: BTreeSet<u32> = acked_by_shard(&ctx.history, cluster.config.shards)
+            .into_keys()
+            .collect();
         let mut findings = Vec::new();
         let deadline = ctx.healed_at + cluster.config.settle_within;
         // After the heal, give the shards the time `ElectionSettles` does to
         // find a leader; at the end they either have one or are reported.
         loop {
-            let mut pending = BTreeMap::new();
-            for (shard, acked) in waiting {
-                match self.look(cluster, ctx.point, shard, &acked).await {
+            // An operator may abandon a log while this polls, and the
+            // snapshot in `ctx` predates it.
+            let acked = acked_now(ctx);
+            let mut pending = BTreeSet::new();
+            for shard in waiting {
+                let Some(acked) = acked.get(&shard) else {
+                    continue;
+                };
+                match self.look(cluster, ctx.point, shard, acked).await {
                     Some(found) => findings.extend(found),
                     None => {
-                        pending.insert(shard, acked);
+                        pending.insert(shard);
                     }
                 }
             }

@@ -416,12 +416,13 @@ async fn drive(
         tokio::spawn(async move { nemesis.run_clocks(&clocks).await });
     }
     let context = {
-        let (cluster, plan) = (cluster.clone(), plan.clone());
+        let (cluster, plan, recorder) = (cluster.clone(), plan.clone(), recorder.clone());
         move |point, healed_at, history| CheckContext {
             cluster: cluster.clone(),
             point,
             healed_at,
             history,
+            recorder: recorder.clone(),
             plan: plan.clone(),
         }
     };
