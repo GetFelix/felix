@@ -1164,7 +1164,9 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
 /// A follower far behind must catch up over a 1 Gbit/s link. Each append
 /// has one heartbeat interval before the leader gives up on it, and the
 /// leader cuts the next the same way, so an append that cannot cross the
-/// link and be fsynced in that time is never acknowledged.
+/// link and be fsynced in that time is never acknowledged. The log reader
+/// already hands openraft about 4 MiB at a time; `wire::fit` is the bound
+/// that holds whatever the reader does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
     let mut cluster = Cluster::new(true);
