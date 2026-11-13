@@ -597,8 +597,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
-| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
-| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue #2303). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
+| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts. The machine stayed up, so the run witness holds the root sequence | pass the same (1.6M distinct states) |
+| `FelixRaftIdentityRootRestoreNoWitness.cfg` | the same after a machine restart, so no witness is left: the root goes back after the control plane heard its last sequence | pass the same (8.7M distinct states) |
+| `FelixRaftIdentityRootRestoreBatched.cfg` | the same-run restore with a witness and the batched log mark, a mark interval after the last append | pass the same (11.8M distinct states) |
+| `FelixRaftIdentityWipeThenRootRestore.cfg` | two faults on one broker: the directory is emptied, then the root goes back to a backup taken in the same run, before the wipe or after it. The new copy stays a learner, so this shows the votes since the backup are caught, not the new copy's own mark write | pass the same (7.4M distinct states) |
+| `FelixRaftIdentityRootRestoreNoSequence.cfg` | the gate does not compare the root sequence: a backup of the current run reads as a crash and its copy votes twice in a term | violate `OneLeaderPerTerm` (issue #2303) |
+| `FelixRaftIdentityRootRestoreUnheard.cfg` | no witness, and the root goes back before the control plane heard its last sequence | violate `OneLeaderPerTerm`: the residual the design names (issue #2303, Questions, 12) |
+| `FelixRaftIdentityRootRestoreYoung.cfg` | a witness, the batched log mark, and the root goes back inside the mark interval | violate `AckedHeldByLeader`: the residual the design names (Questions, 11) |
 | `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
 | `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
 | `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
@@ -613,6 +619,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreSameRunCaught.cfg` | witness: with no restart, a root restored in its own run is caught by the root sequence and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreNoWitnessCaught.cfg` | witness: the same with no run witness, so the control plane's copy of the sequence caught it | violate `NeverRotates` |
 | `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
 | `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
 | `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
@@ -645,8 +653,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementPlaceDoomed.cfg` | the same where the control plane may place an id it told to delete | violate `AckedOnDisk` |
 | `FelixRaftPlacementStaleWipe.cfg` | `FelixRaftPlacementStale.cfg` with one lost disk, every rule on: a leader on the replaced target gives a copy its vote back after the control plane told its broker to delete it | violate `AckedOnDisk`: an acknowledged write is on no disk. Pinned finding, #2385 |
 | `FelixRaftPlacementReachAck.cfg` | witness: three brokers whose membership is given at the start elect a leader and acknowledge a write | violate `NeverAcks` |
-| `FelixRaftPlacementForm.cfg` | a first start of the metadata group: three empty members withhold their votes and each forms only when every other member answers empty; two terms, one write, one volume lost after the first commit | pass every check but `OffsetNeverReused`, which one write cannot fail (98K distinct states) |
-| `FelixRaftPlacementFormWaiver.cfg` | the same with one slot waived (`form-without`) and its machine never started: two members form and run as two of three | pass the same (334 distinct states) |
+| `FelixRaftPlacementForm.cfg` | a first start of the metadata group: three empty members withhold their votes and each forms only when every other member answers empty and has recorded it; two terms, one write, one volume lost after the first commit | pass every check but `OffsetNeverReused`, which one write cannot fail (379K distinct states) |
+| `FelixRaftPlacementFormWaiver.cfg` | the same with one slot waived (`form-without`) and its machine never started: two members form and run as two of three | pass the same (345 distinct states) |
 | `FelixRaftPlacementFormSilent.cfg` | a member never starts and no waiver names it | pass `NobodyForms`. One state, since the rule's guard is what is checked |
 | `FelixRaftPlacementFormWaiverMany.cfg` | the waiver names two of three slots and neither machine starts | pass `NobodyForms`: the empty answers are not a majority. One state |
 | `FelixRaftPlacementFormWaiverAnyNumber.cfg` | the same where a waiver may name a majority | violate `NobodyForms` |
@@ -655,39 +663,58 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementFormAfterWipes.cfg` | a group that exists, three terms, one write, one volume lost after the first commit: the wiped member takes the first-start step again and cannot form over a member that holds the log | pass the same checks (1.9M distinct states) |
 | `FelixRaftPlacementFormTwoWipes.cfg` | the same with two terms and two lost volumes: two wiped members do not form over a third that holds the log | pass `AckedHeldSurvive` only, since two lost volumes of three is past what the group survives (1.3M distinct states) |
 | `FelixRaftPlacementFormMajority.cfg` | the same where a majority of empty answers is enough and silence is skipped, the rule before #2371 | violate `AckedHeldSurvive` |
-| `FelixRaftPlacementFormEarlyWipe.cfg` | `FelixRaftPlacementFormAfterWipes.cfg` with two terms and a volume lost before the first commit: every answer is empty, the member forms again and votes in a term it forgot | violate `AckedHeldSurvive`. Pinned finding, #2374 |
+| `FelixRaftPlacementFormEarlyWipe.cfg` | a group that exists, two terms, one write, one volume lost at any time, also before the first commit (#2374): the other members hold a record that the wiped member set out to form, so it does not form again | pass the same checks as `Form` (105K distinct states) |
+| `FelixRaftPlacementFormEarlyWipeUnrecorded.cfg` | the same without the record (`FormRecord = FALSE`): every answer is empty, the member forms again and votes in a term it forgot | violate `AckedHeldSurvive` |
+| `FelixRaftPlacementFormEarlyWipeFirstBoot.cfg` | `FormEarlyWipe` from a first start, so the volume can be lost between a member's mark, the others' records and its first vote | pass the same checks (991K distinct states) |
+| `FelixRaftPlacementFormEarlyWipeTwo.cfg` | `FormEarlyWipe` with two lost volumes: the third member names both, and neither forms again | pass `OneLeaderPerTerm`, `LogMatching`, `AckedHeldSurvive`, `DeliveredAgree` (568K distinct states) |
+| `FelixRaftPlacementFormEarlyWipeTwoUnrecorded.cfg` | the same without the record | violate `OneLeaderPerTerm` |
 | `FelixRaftPlacementReachForm.cfg` | witness: three empty members form under the rule, elect a leader and acknowledge a write | violate `NeverAcks` |
 | `FelixRaftPlacementReachFormWaiver.cfg` | witness: two members form with the third waived and never started | violate `NeverAcks` |
-| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
+| `FelixRaftPlacementReachEarlyWipeVotesAgain.cfg` | witness: a member that lost its volume before the first commit catches up and votes again, and a write is acknowledged | violate `NeverEarlyWipedVotesAgain` |
+| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters, the command plans, stops them, reads them again and writes epoch 1; two writes, one restart, one late append, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (4.0M distinct states) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
-| `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
-| `FelixRaftReformTwoRotated.cfg` | relaxed fsync, two of three copies rotate with any prefix of their logs, one write | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (9.2M distinct states) |
-| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same, on two rules the design does not have yet (issue #2304) (107M distinct states, 112 min in CI) |
+| `FelixRaftReformTwoRotated.cfg` | two of three disks lost or restored, each copy left with any prefix of its log, one write; rotated copies are listed and read | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (2.1M distinct states) |
+| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same (28.7M distinct states) |
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
-| `FelixRaftReformTwoRotatedOffsets.cfg` | the same without the exception for a documented loss | violate `OffsetNeverReused`: the relaxed fsync loss, pinned (issue #2305) |
-| `FelixRaftReformRejoin.cfg` | a retired copy rotates and rejoins as a learner after announcing its new id; two more rotations, one term per epoch | pass the same as `FelixRaftReformTwoRotated.cfg`, on two rules the design does not have yet (issue #2304) (0.73M distinct states) |
-| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass the same, on two rules the design does not have yet (issue #2304) (33.9M distinct states, 34 min in CI) |
-| `FelixRaftReformRejoinHappens.cfg` | a witness: a retired copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
-| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, the control plane's record possibly stale, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.7M distinct states) |
-| `FelixRaftReformStaleMembership.cfg` | the same with one directory lost or restored to any prefix, which covers a relaxed fsync crash | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304) (23.2M distinct states, 40 min in CI) |
-| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the design as written: the same with two directories lost or restored to before the change, so both copies rotate with empty logs, no report names d and d's disk holds the entry | violate `AckedSurvive` (issue #2311) |
-| `FelixRaftReformStaleMembershipFull.cfg` | the same with a client write; not registered | violate `AckedSurvive` in a dispatch run, as the row above |
-| `FelixRaftReformStaleMembershipRelaxed.cfg` | two copies rotate on relaxed fsync, which keeps the synced membership entries, so their reports name d; no client write; not registered, run by dispatch | expected to pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on two rules the design does not have yet (issue #2304). Not shown yet: no violation in the first 20M distinct states of a ten minute local run |
-| `FelixRaftReformStaleMembershipPlaced.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with the rule issue #2311 proposes: the control plane waits for every broker placed in the epoch; not registered, run by dispatch | expected to pass the same on that rule and the two of issue #2304, none of them in the design yet. Not shown yet |
-| `FelixRaftReformLearnerHolds.cfg` | the design as written: three voters and a learner d that no membership names; d holds a record that a and b lose on relaxed fsync, and d is not waited for | violate `AckedSurvive` (issue #2311) |
-| `FelixRaftReformLearnerWaited.cfg` | the same with the rule issue #2311 proposes | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` on that rule and the two of issue #2304, none of them in the design yet (6.2M distinct states) |
+| `FelixRaftReformTwoRotatedOffsets.cfg` | the offset floor: two disks lost with acknowledged records on them, two writes, one term, the floor exact | pass `AckedSurvive`, `OffsetNeverReused` (0.19M distinct states) |
+| `FelixRaftReformTwoRotatedOffsetsPads.cfg` | a witness: a base ends below the floor and is padded with a gap | violate `NeverPads` |
+| `FelixRaftReformTwoRotatedOffsetsTrailing.cfg` | the same with the floor of the design, the last offset a leader reported | violate `OffsetNeverReused`: the accepted residual, pinned (issue #2305, Questions 13) |
+| `FelixRaftReformTwoRotatedOffsetsNoFloor.cfg` | the same with no floor | violate `OffsetNeverReused` |
+| `FelixRaftReformTwoRotatedOffsetsTerms.cfg` | the exact floor with two terms: the base is a log that ends in an uncommitted entry of the older term | violate `OffsetNeverReused`. Pinned finding, #2402 |
+| `FelixRaftReformRejoin.cfg` | an apply stops one copy and does not finish, the group elects, and the copy rejoins as a learner under a new id; two disks lost, a second plan, one term per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `ElectedGroupLeftAlone` (0.21M distinct states) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (13.1M distinct states) |
+| `FelixRaftReformRejoinHappens.cfg` | a witness: a stopped copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
+| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, d placed before the leader proposes, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.04M distinct states) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one disk lost or restored to any prefix | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (0.79M distinct states) |
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
-| `FelixRaftReformOneReplica.cfg` | one voter whose copy rotates, re-formed from its own report, twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `SlowGroupLeftAlone` on two rules the design does not have yet (issue #2304) (7.5M distinct states) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed; once the change completes, c is still listed because it was placed in the epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.5M distinct states) |
+| `FelixRaftReformStaleMembershipTwoMoves.cfg` | the same with a move and the move back: {a, b, c} to {a, b, d} and back to {a, b, c}; d is unplaced and can hold every entry while the copies of a, b and c are empty; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 6.7M distinct states on the build box |
+| `FelixRaftReformStaleMembershipTwoMovesForgotten.cfg` | the same with the list cut to the brokers placed now: d drops off when the move back commits, the empty copies name {a, b, c}, and the group re-forms from an empty base while d's disk holds the acknowledged entries | violate `AckedSurvive` |
+| `FelixRaftReformStaleMembershipTwoRotatedUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformStaleMembershipFull.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with a client write; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 59M distinct states of a run on the build box, which stopped under it |
+| `FelixRaftReformStaleMembershipFullUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311). Its passing side is the row above, which is not shown yet |
+| `FelixRaftReformLearnerWaited.cfg` | three voters and a placed learner d that no membership names; d holds a record that a and b lose with their disks | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.0M distinct states) |
+| `FelixRaftReformLearnerHolds.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
+| `FelixRaftReformLearnerHoldsHappens.cfg` | a witness: the learner holds a record | violate `NeverLearnerHolds` |
+| `FelixRaftReformOneReplica.cfg` | one voter whose disk is restored: with records it starts by itself, empty it is re-formed by the command; twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.6M distinct states) |
 | `FelixRaftReformOneReplicaCommits.cfg` | a witness: the re-formed single voter commits | violate `NeverCommitsAfterReform` |
-| `FelixRaftReformBeforeAll.cfg` | the control plane re-forms before every voter has reported | violate `AckedSurvive` |
+| `FelixRaftReformOneReplicaSelfStarts.cfg` | a witness: the restored copy starts by itself, with no plan, and commits | violate `NeverSelfStarts` |
+| `FelixRaftReformOneReplicaLearner.cfg` | one voter and a placed learner d: the restored copy does not start by itself, and the command reads both | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (0.02M distinct states) |
+| `FelixRaftReformOneReplicaSoloPlacedTwo.cfg` | the same where the restored copy starts by itself although d is placed | violate `AckedSurvive` |
+| `FelixRaftReformDead.cfg` | one broker declared dead and gone, one more disk may be lost; the command re-forms from the two it reaches | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.5M distinct states) |
+| `FelixRaftReformDeadReforms.cfg` | a witness: the group re-forms without the dead broker and commits | violate `NeverReformsWithoutDead` |
+| `FelixRaftReformDeadLoses.cfg` | a witness: a record only the dead broker held is lost | violate `NothingLost` |
+| `FelixRaftReformWrongDeclaration.cfg` | two brokers declared dead are alive, and elect and acknowledge in the old epoch after the third re-formed | violate `AckedSurvive`: what the command cannot protect against, pinned |
+| `FelixRaftReformBeforeAll.cfg` | the command goes on while a placed broker has not answered and is not declared dead | violate `AckedSurvive` |
 | `FelixRaftReformEpochNotChecked.cfg` | a late append from the old epoch is taken by a new-epoch voter and cuts the base out of its log | violate `AckedSurvive` |
-| `FelixRaftReformReportNotPromise.cfg` | three intact voters report without retiring, and the old epoch acknowledges a record the base lacks | violate `AckedSurvive` |
-| `FelixRaftReformOwnMembershipOnly.cfg` | the control plane waits only for its own stale {a, b, c} while d holds the committed entry | violate `AckedSurvive` |
-| `FelixRaftReformRetireNotDurable.cfg` | two retired voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
-| `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter report | violate `AckedSurvive` |
-| `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
-| `FelixRaftReformRotatedNotWaited.cfg` | the design as written: a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
-| `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformReportNotPromise.cfg` | the copies are read without being stopped, and the old epoch acknowledges a record the base lacks | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformPlanNotRechecked.cfg` | apply stops the copies and uses what the plan read instead of reading them again | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformRetireNotDurable.cfg` | two stopped voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
+| `FelixRaftReformTwoRestarts.cfg` | the same bounds with the marker durable: one write, two restarts, two stopped voters restart and stay stopped | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (0.10M distinct states) |
+| `FelixRaftReformStopNotRechecked.cfg` | the group elects after the plan and apply stops its leader | violate `ElectedGroupLeftAlone` |
+| `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter log | violate `AckedSurvive` |
+| `FelixRaftReformRotatedNotWaited.cfg` | a rotated copy is not read, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
+| `FelixRaftReformNoCas.cfg` | one replica; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.1M distinct states) |
@@ -2544,7 +2571,9 @@ identity". It is the model's side of #1331. A member id is a broker and a
 copy id. The copy id lives in the shard directory with the storage id it was
 minted under. The data root holds the storage id and, per shard, a mark of
 the highest vote and last log id, with the copy id the marks belong to. The
-vote is always synced.
+vote is always synced. The root also holds a sequence number that rises with
+every synced mark write. The run witness holds a copy of it while the machine
+stays up, and the control plane holds the one it last heard in a heartbeat.
 
 A member that opens its directory rotates its copy (new id, never voted, an
 empty Raft log, a learner) when the directory is empty, was minted under
@@ -2559,6 +2588,16 @@ from a backup, and one shard directory restored under a running root. The
 log mark is exact (written with every append) or batched (a separate step,
 so it trails).
 
+A restored root gets a new storage id, which rotates every copy in it, when
+its incarnation is behind the control plane's or its sequence is below the
+witness's copy or the control plane's. A backup taken in the run the restore
+interrupts carries the current incarnation, so only the sequence catches it
+(`RootRestoreSameRun`). `WitnessLost` is a machine restart with the restore.
+Two windows stay open, as the design says: a root that goes back before the
+control plane heard its last sequence when no witness is left
+(`RestoreUnheard`), and one that goes back inside a mark interval of the
+batched log mark (`RestoreYoung`).
+
 Checked: `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety` (no
 two leaders commit different entries at one index), `AckedSurvive` (no set
 of copies that could elect a leader lacks an acknowledged record, which
@@ -2568,7 +2607,8 @@ leader is elected without a record acknowledged in an earlier term).
 Each knob drops one rule: `WipeKeepsId`, `NoRestoreCheck` (no gate in front
 of Raft), `NoStorageIdCheck` (a directory is not compared with the root's
 storage id), `NoVoteMark`, `VoteBeforeMark` (the vote is answered before its
-mark is synced) and `MarkForgetsCopy` (the marks do not name a copy id).
+mark is synced), `MarkForgetsCopy` (the marks do not name a copy id) and
+`NoRootSequence` (the gate does not compare the root sequence).
 `ExactMark = FALSE` with `RestoreYoung` is the fallback of Questions, 11.
 
 Abstracted: the log is durable when appended (`FelixRaft.tla` has the fsync
@@ -2576,7 +2616,12 @@ rules), messages are atomic steps, a learner needs no membership entry,
 nothing is purged, a rotated copy starts from an empty log, and the leader
 that stops on a follower going backwards is left out. A follower cuts and
 appends in one step, so its last log id never goes down; an implementation
-that syncs the mark between the two must not read a cut as a restore.
+that syncs the mark between the two must not read a cut as a restore. The
+witness is written in the same step as the mark, and the sequence is counted
+only for the broker that has a backup, from the backup on: an earlier write
+is in the backup. After a restore the witness is taken to hold the restored
+sequence, where a real one keeps the higher value. No configuration depends
+on that: a second restore of the same root is behind on its incarnation.
 
 ### Placement, lost disks and the voter set
 
@@ -2739,14 +2784,57 @@ stops. `FelixRaftPlacementFormSilent.cfg` and
 reason. `OffsetNeverReused` is not listed on any of these: they have one
 write.
 
-The rule has a gap (#2374). An answer shows the log and not the vote. A
-volume lost after a vote and before the group's first log entry meets only
-empty answers, so the member forms again and votes for a candidate of an
-older term than the one it forgot. Both lead, and the older leader
-acknowledges a write the newer one lacks.
-`FelixRaftPlacementFormEarlyWipe.cfg` is pinned on it. The passing
-configurations above set `EarlyWipes = FALSE`, which keeps the lost volume
-until the group has committed an entry.
+The answers alone leave a gap (#2374). An answer shows the log and not the
+vote. A volume lost after a vote and before the group's first log entry
+meets only empty answers, so the member forms again and votes for a
+candidate of an older term than the one it forgot. Both lead, and the older
+leader acknowledges a write the newer one lacks
+(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`).
+
+The forming record closes it (`FormRecord`). Forming is three steps, each on
+disk before the next:
+
+1. `Intend`: the answers allow forming and none names this member. It
+   writes its own mark.
+2. `Announce`: another member records that this one set out to form,
+   whatever its own state.
+3. `Form`: the member votes once every member that answers holds the
+   record.
+
+A wipe takes the mark and the records the directory held. A member that is
+named and holds no mark lost a volume that may have voted, so it never
+forms: it votes again only by catching up with a confirmed leader. A group
+that starts formed starts with every mark and record written.
+
+- `FelixRaftPlacementFormEarlyWipe.cfg` is a group that exists and one
+  volume lost at any time. The wiped member is named, so `Intend` never
+  fires and it comes back only through `VoteAgain`.
+  `FelixRaftPlacementReachEarlyWipeVotesAgain.cfg` shows it does come back
+  after a volume lost before the first commit, and
+  `FelixRaftPlacementFormEarlyWipeUnrecorded.cfg` is the same configuration
+  with `FormRecord = FALSE`.
+- `FelixRaftPlacementFormEarlyWipeFirstBoot.cfg` starts from three empty
+  members, so the volume can be lost between a member's mark, the others'
+  records and its first vote. Here all three steps fire. A member that
+  keeps its mark goes on although the others name it, and a member that
+  starts late forms beside members that already vote.
+- `FelixRaftPlacementFormEarlyWipeTwo.cfg` loses two volumes. The third
+  member still names both. `FelixRaftPlacementFormEarlyWipeTwoUnrecorded.cfg`
+  is its twin: without the record one of them votes twice in a term.
+
+The first-start configurations above (`FirstBoot`) run with the record. The
+ones for a group that exists (`FelixRaftPlacementFormAfterWipes.cfg`,
+`FelixRaftPlacementFormTwoWipes.cfg`, the waiver pair and their twins) set
+`FormRecord = FALSE` and `EarlyWipes = FALSE`: they check the answers rule by
+itself, for a volume lost after the group has committed an entry. With the
+record on, one lost volume could not tell the two rules apart, since the
+other members name the wiped one whatever they answer.
+
+What the record leaves unmodelled: a `forming` request is one atomic step,
+so a record is written or not asked for. `Form` does not read the answers
+again, which allows more than the metadata group does. A member's check
+that the forming member names its own group is not modelled, and neither is
+a restart, since every step here is on disk.
 
 The configurations without `Forming` are given their membership at the start
 and are unchanged by it; `FelixRaftPlacementReachAck.cfg` shows they elect a
@@ -2758,126 +2846,176 @@ modelled either. The shard rule it copies is here (`Rotate = TRUE`,
 
 ### Re-forming a group
 
-`FelixRaftReform.tla` models the path in
+`FelixRaftReform.tla` models the operator's command in
 [per-shard-raft.md](../per-shard-raft.md#re-forming-a-group) that gives a
-Raft group a new epoch when it can no longer elect.
+Raft group a new epoch when it can no longer elect. Nothing in the model
+starts a re-form by itself, except the restored copy of a shard with one
+replica. Nothing is built yet.
 
-In 0.8 a re-form starts only from an operator's command, one bulk command
-with a dry run, and nothing starts one automatically (decided in issue
-#2167). The model's first two steps are the automatic trigger, so they
-describe a design that is not shipping. So do `SlowGroupLeftAlone` and
-`FelixRaftReformSlow.cfg`, which are about when step 2 fires. Steps 3 to 5
-are what the command still has to do. It stands where `AskRetire` does, and
-it must list every placed broker, a move's target included, which is
-`WaitPlaced` below (issue #2311).
+A group id carries an epoch that starts at 0. A member id is a broker and a
+copy id. A copy whose disk was lost or restored rotates: it has a new id
+that never voted and keeps what is left of its log as plain records. A
+power cut does not rotate a copy, since Raft logs are fsync on commit.
+Membership changes inside an epoch go through a joint configuration, and a
+member uses the newest membership in its log, committed or not.
 
-The design page now has a rule for each hole this model found, in its table
-"Rules the model found" (issues #2304, #2305 and #2311). They are rules for
-the operator's command, and they are not the two rules of issue #2304 that
-the passing configurations here run with: the command stores no report, so
-nothing is left to drop. The model has not been moved to them yet. Where a
-row, a header or the text below says the design lacks a rule, or calls
-something the design as written, it means the automatic design this module
-models. Nothing is built either way.
+The control plane keeps three things the command needs:
 
-A group id carries an
-epoch that starts at 0. A member id is a broker and a copy id. A copy that
-rotates has a new id that never voted and keeps what is left of its log as
-plain records. Membership changes inside an epoch go through a joint
-configuration, and a member uses the newest membership in its log,
-committed or not.
+- `placed`: the brokers placed for the group. `Place` records a learner
+  before the leader sends it anything, and a move's target before the
+  leader proposes the change. `Unplace` removes a broker when the leader
+  reports the membership that drops it as committed.
+- `everPlaced`: every broker placed in the current epoch. `Unplace` does
+  not remove one; a re-form starts the record again with the brokers the
+  new epoch places.
+- `dead`: the brokers an operator declared dead (`DeclareDead`).
+- `cpFloor`: the highest commit offset a leader reported (`ReportFloor`).
 
-The five steps are five actions. `FirstReport` promises nothing.
-`AskRetire` fires only when every voter's broker reported the group
-leaderless or a majority of some voter set has rotated. `Retire` sets a
-durable marker and then reports the log and the membership. `Reform` waits
-for every voter of every membership any report names, takes the highest
-reported last log id as the base and the copies whose reports hold it as
-the voters, and writes the next epoch by compare-and-swap. `StartEpoch`
-starts a member at the new epoch from the base. A group with one replica
-is the same model with one voter.
+The command is three actions:
+
+- `Plan` is the dry run. It lists every broker placed in the epoch
+  (`everPlaced`) and reads every copy that is not declared dead: copy id,
+  last log id, newest membership. It refuses while a listed copy leads,
+  and while a copy names a voter that is neither listed nor declared dead.
+  It changes nothing.
+- `Stop` sets a durable marker. A stopped member does not vote, acknowledge
+  or append in that epoch again, also after a restart. `Stop` asks for a
+  leader again first, and does nothing while a listed copy leads.
+- `Reform` needs every listed copy that is not dead to be stopped, reads
+  each again, and goes on only if what they hold is what the plan showed.
+  It takes the highest last log id as the base, pads it with a gap up to
+  the floor, makes the copies that hold the base the voters, and writes the
+  next epoch by compare-and-swap.
+
+`StartEpoch` starts a member at the new epoch from the base. `SelfStart` is
+the one re-form without the command: a rotated copy that kept records, in a
+group where no other broker was placed in the epoch, writes the next epoch
+with itself as the single voter.
+
+No answer of a copy is kept between runs. A plan holds what the operator
+saw, and `Reform` uses only what it reads after the stop.
+
+The first voters of an epoch are in the control plane: it writes the first
+member set of a new group, the voters of a switch, and the voters of every
+re-form. The model keeps them in `boot`, per broker, and a lost disk does
+not clear it. `BootIsRecorded` checks that `boot` never holds anything
+else.
+
+The list is every broker placed in the epoch, not only the ones placed now,
+because a removed voter's disk can hold the newest records. In
+`FelixRaftReformStaleMembershipTwoMoves.cfg` the group moves from {a, b, c}
+to {a, b, d} and back, both changes committed by a and b, and a and b then
+lose their disks. The copies of {a, b, c} are empty and name {a, b, c}, so
+nothing on them points at d. Only the record of every placed broker does.
+With the list cut to the brokers placed now
+(`FelixRaftReformStaleMembershipTwoMovesForgotten.cfg`) the group re-forms
+from an empty base while d's disk holds the acknowledged entries. With
+that record, the check that a copy names no voter off the list never
+refuses; it stays as a guard against a wrong record.
 
 What is checked:
 
 - `AckedSurvive`: an acknowledged record is in the base of every later
   epoch and in the log of every later leader. One loss is allowed, the one
-  the design documents: at the re-form no disk held the record, a voter's
-  or not. The model records those in `lost` and excuses nothing else.
+  the design documents: at the re-form no disk held the record any more,
+  not counting the disks of brokers declared dead. A record gets there
+  through lost disks or through a declaration. The model records those in
+  `lost`; it does not check how each disk lost the record. A disk that is
+  not on the command's list still counts as holding its records.
 - `StateMachineSafety`: no index is committed with two different entries,
   in one epoch or across epochs, except over a documented loss.
 - `OneLeaderPerTerm`, per epoch.
-- `NothingLost` and `OffsetNeverReused`, in the configs where no copy
-  rotates. That is fsync on commit, and a re-form then loses nothing and
-  reuses no offset.
-- `SlowGroupLeftAlone`: with no copy rotated and a voter that has not
-  reported, nothing is retired.
+- `NothingLost`, in the configs where no disk is lost and no broker is
+  declared dead.
+- `OffsetNeverReused`: no offset is given out with two records. A gap is
+  not a record.
+- `ElectedGroupLeftAlone`: no copy is stopped while a broker leads its
+  epoch. A group that elected after the plan is skipped by `apply`. It is
+  an action property, checked in `FelixRaftReform.cfg`,
+  `FelixRaftReformTwoRestarts.cfg` and `FelixRaftReformRejoin.cfg`, and
+  `FelixRaftReformStopNotRechecked.cfg` violates it. It says nothing about
+  a copy stopped just before the election: that one stays stopped (#2403).
+- `BootIsRecorded` and `PlacedIsRecorded`, in every passing config. The
+  second says every broker a membership of the current epoch names is in
+  `everPlaced`.
 
-Each knob drops one rule: `ReformBeforeAll` (re-form from the reports at
-hand), `EpochNotChecked` (a member takes an append from another epoch),
-`ReportNotPromise` (report without retiring), `OwnMembershipOnly` (wait
-only for the control plane's own record of the membership),
-`RetireNotDurable` (a restart forgets the marker), `BaseNotHighest`,
-`NoCas`, `RotatedNotWaited` (a voter known to have rotated counts as done
-before it has reported its records) and `JoinKeepsReport` (a copy that
-rotates after it reported joins as a learner while the control plane still
-holds its old report).
+Each knob drops one rule: `ReformBeforeAll` (go on while a placed broker
+has not answered and is not declared dead), `EpochNotChecked` (a member
+takes an append from another epoch), `ReportNotPromise` (read the copies
+without stopping them), `PlanNotRechecked` (apply uses the list and the
+answers of the plan and does not read the copies again), `RotatedNotWaited`
+(a rotated copy is not read), `RetireNotDurable` (a restart forgets the
+stop marker), `BaseNotHighest`, `NoCas`, `SoloPlacedTwo` (a restored copy
+starts by itself although a second broker is placed), `StopNotRechecked`
+(apply stops a copy although a listed copy leads) and `PlacedForgotten`
+(the list is the brokers placed now, so a removed broker drops off).
+`RetireNotDurable` needs two restarts to fail, and
+`FelixRaftReformTwoRestarts.cfg` is the same bounds with the rule on.
 
-The last two are rules the design page does not state. Step 4 says a voter
-is done when it "has retired and reported, or is known to have rotated".
-Read as two separate ways to be done, a rotated copy's records are never
-collected, and `FelixRaftReformRotatedNotWaited.cfg` loses a record its
-disk holds. The page also lets a retired copy rotate and rejoin as a
-learner. Its old report stays with the control plane, the learner takes
-newer records, and `FelixRaftReformJoinKeepsReport.cfg` loses one of them.
-The passing configs run with both knobs off, which is two rules the design
-does not have yet: a rotated voter still sends a retire report, and a new
-copy tells the control plane its id before it joins, so that the control
-plane drops the report of the copy it replaces. Every configuration that
-passes with a rotation or a rejoin passes on those rules, and its row and
-header say so. They show the rules are enough, not that the design as
-written is safe (issue #2304).
+Three constants are not knobs. `WaitPlaced` is the command's list: on, the
+placed brokers; off, the voters in the control plane's own record of the
+membership, which leaves out a move's target and a learner. `Floor` is
+`"trailing"` for the design (the last offset a leader reported), `"exact"`
+for a floor that hears of every commit at once, and `"none"`. `DeadRuns`
+says whether a broker declared dead is gone or still running.
 
-Two constants are not knobs. `DirLost` says what a rotation leaves. Off, it
-is a relaxed fsync run that lost power: the tail may be gone, but membership
-entries are synced in every fsync mode, so the log keeps everything up to
-its newest membership entry. On, it is a directory that was lost or restored
-from an older copy, and any prefix is left. `WaitPlaced` is the rule issue
-#2311 proposes: the control plane records the target of a membership change
-before the leader proposes it, and step 4 waits for a retire report from
-every broker placed in the epoch, voter or not. Every broker of the model
-counts as placed. Off is the design as written.
+How the three issues the first version of this module found are covered:
 
-The stale-membership case of the design page, {a, b, c} changing to
-{a, b, d}, splits on those two constants. With a and b rotating on relaxed
-fsync and no client write, their reports still name d;
-`FelixRaftReformStaleMembershipRelaxed.cfg` checks that and is run by
-dispatch. With the two directories lost, no report names d and
-`FelixRaftReformStaleMembershipTwoRotated.cfg` loses an entry d's disk
-holds. The same gap needs no change and no lost directory:
-`FelixRaftReformLearnerHolds.cfg` has three voters and a learner d, and
-loses a record that a and b lose on relaxed fsync and only d still holds,
-because no membership names d. A voter that a change removed is in the same
-position. Both are the design as written and are pinned as expected
-violations (issue #2311). `FelixRaftReformLearnerWaited.cfg` passes with
-`WaitPlaced` on.
+- **#2304**, a re-form resting on a stored report. No report is stored.
+  `FelixRaftReformRejoin.cfg` stops a copy in an apply that does not
+  finish, lets the group elect without it and brings the copy back as a
+  learner under a new id; the plan no longer matches and a second plan
+  re-forms the group. `FelixRaftReformReportNotPromise.cfg` (read without
+  stopping), `FelixRaftReformPlanNotRechecked.cfg` (use the plan's answers)
+  and `FelixRaftReformRotatedNotWaited.cfg` (skip a rotated copy) each lose
+  a record a disk holds.
+- **#2305**, offsets reused after a majority of disks is lost.
+  `FelixRaftReformTwoRotatedOffsets.cfg` passes `OffsetNeverReused` with an
+  exact floor and one term. With no floor it fails. With the trailing floor
+  of the design it fails too: that is the residual of Questions, 13, pinned
+  as `FelixRaftReformTwoRotatedOffsetsTrailing.cfg`.
+- **#2311**, a broker no copy names.
+  `FelixRaftReformStaleMembershipTwoRotated.cfg` has {a, b, c} changing to
+  {a, b, d} and the disks of a and b lost
+  (`FelixRaftReformStaleMembershipFull.cfg` adds a client write and has not
+  finished a run yet), and
+  `FelixRaftReformLearnerWaited.cfg` has a learner d holding a record a and
+  b lose. The two that have run pass because d is placed and so listed. The same
+  configurations with d left off the list (`...Unlisted`,
+  `FelixRaftReformLearnerHolds.cfg`) lose what d's disk holds.
 
-After a relaxed fsync loss the offsets of the lost records are above the
-base and the new epoch gives them out again.
-`FelixRaftReformTwoRotatedOffsets.cfg` pins that.
+A declaration can be wrong. In `FelixRaftReformWrongDeclaration.cfg` two
+brokers declared dead are alive, elect and acknowledge a write in the old
+epoch after the third has re-formed without them. The design names this as
+what the command cannot protect against, and the violation is pinned.
 
-Abstracted: storage is a log and a rotation that cuts it to a prefix
-(`FelixRaft.tla` has the fsync rules). A membership entry is synced when
-it is appended. An election is one step over a
+Abstracted: storage is a log and a rotation that cuts it to any prefix
+(`FelixRaft.tla` has the fsync rules). An election is one step over a
 quorum. An append is one step between two brokers, plus a bounded set of
-in-flight appends that can arrive late and more than once. A report
-carries the whole log where the design sends its last log id. A leader
-does not propose its own removal. A leader replicates to any broker of the
-model: one that no membership names is a learner.
+in-flight appends that can arrive late and more than once. A leader can
+step down at any step and does not propose its own removal. It sends to the
+brokers its newest membership names and to placed brokers that no
+membership of the epoch has named, which are learners. The command reads
+whole logs where the design reads last log ids. The read after the stop and
+the write of the base are one step, so a disk lost between the two is not
+modelled. A removed copy keeps its directory; its deletion is in
+`FelixRaftPlacement.tla`. An unreachable broker is one that takes no step,
+and the command's scope is one group.
 
-Not modelled: the operator's command itself. Step 2 fires only under the
-automatic conditions, so a command given to a group that can still elect is
-not covered. Neither is its refusal while a placed broker is unreachable
-and not declared dead, nor a re-form that goes on without a dead broker.
+Not modelled: moving a shard with one replica, since the model's leader
+never removes itself, so the second placed broker of the self-start rule is
+always a learner here. And a group whose placed brokers are all declared
+dead: the command needs one copy to read.
+
+Two findings of this module are open. The floor does not cover an
+uncommitted entry inside the base:
+`FelixRaftReformTwoRotatedOffsetsTerms.cfg` has the exact floor and two
+terms, and the new epoch serves a stale entry at an offset that was
+acknowledged with another record (#2402, pinned). And the design does not
+say how a copy comes back after an apply stopped it, did not finish, and
+the group elected without it (#2403). The model has it rotate and rejoin as
+a learner (`RetiredRejoins`), which is an assumption, not a rule of the
+page.
 
 ### The switch from the hybrid to Raft
 
@@ -3221,10 +3359,10 @@ runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
 changes. A pull request checks the registered configurations that take ten
 minutes or less (`TLA_QUICK=1`), plus `FelixShard.cfg`, the base
 configuration, whatever its time, and any whose own `.cfg` it changes. A
-changed configuration of 30 minutes or less runs in the twenty shards with the
+changed configuration of 30 minutes or less runs in the thirty shards with the
 quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
 `formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
-to main checks every registered configuration. The shards are twenty jobs, on a pull request and on main,
+to main checks every registered configuration. The shards are thirty jobs, on a pull request and on main,
 filled by each configuration's measured time. Main's shards share a
 concurrency group per shard: one run proceeds and only the newest later push
 waits, so a burst of merges does not queue hours of runner time. A slow configuration that a

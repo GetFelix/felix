@@ -118,6 +118,18 @@ that lost their volumes wait for the group instead of quietly starting an
 empty control plane, so set `new` for the cluster's first start and nothing
 else.
 
+Before a member casts its first vote it has every other member write down
+that it set out to form the group. A member that loses its volume in the
+cluster's first moments, before any leader has written an entry, is then
+recognised by its peers and does not form a second time: it waits for a
+leader, catches up and votes again. A member also records, before it
+votes, that it has voted; one that finds that record and an empty log lost
+its log, and catches up the same way. For that, a first start needs every
+member on a release that can take the record. A member on an older release
+blocks the first start, and the others log which one it is. A group that
+already runs is not affected. The steps are in
+[the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group).
+
 If a member's machine is lost for good before the group has ever formed,
 stop the others and run this on each, naming the absent member's
 `FELIX_RAFT_NODE_ID`:

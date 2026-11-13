@@ -17,6 +17,18 @@
 //!   gone for good ([`super::waiver`]);
 //! - otherwise it asks again.
 //!
+//! An empty log does not show that nobody has voted: votes are granted
+//! before the first leader writes an entry. So forming takes three durable
+//! steps, in this order: the member writes its own mark, every member that
+//! answered records the member's id, and only then does it vote. A member
+//! that a peer has recorded, and that holds no mark, lost a volume that may
+//! have voted. It never forms; it waits for a leader and catches up.
+//!
+//! The mark does not show the log survived: the segment store keeps the
+//! vote in `store/log/` and the mark beside it. So a member also records,
+//! before it first votes, that it reached the vote. One that holds that
+//! record and finds its log blank lost its log, and catches up too.
+//!
 //! Peers answer only requests carrying this cluster's id and peer token, so
 //! a member of some other group is never counted either way.
 //!
@@ -41,6 +53,27 @@ pub(super) struct Standing {
     /// predates it, which reads as 0.
     #[serde(default)]
     pub(super) version: u16,
+    /// The members this one recorded as having set out to form the group.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) formed: Vec<NodeId>,
+}
+
+/// What a member that set out to form the group asks every peer to record,
+/// before it votes.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct Forming {
+    pub(super) member: NodeId,
+    /// The group it is about to initialize.
+    pub(super) members: BTreeSet<NodeId>,
+}
+
+/// Why a peer did not record a forming member.
+#[derive(Debug)]
+pub(super) enum NotRecorded {
+    /// The request does not fit this member's configuration.
+    Refused(String),
+    /// The record could not be written.
+    Failed(anyhow::Error),
 }
 
 /// The leader's answer to a rejoining member: apply up to here, then vote.
@@ -59,6 +92,9 @@ pub(super) enum Answer {
     /// membership at index 0 does not count: every first-boot member has
     /// those before anyone leads.
     Exists,
+    /// Its log is empty, and it recorded that this member set out to form
+    /// the group.
+    NamesMe,
     /// Nothing there: the connection failed or timed out.
     Unreachable(String),
     /// Something is there and its answer cannot be used: a refusal, such as
@@ -67,13 +103,28 @@ pub(super) enum Answer {
     Unreadable(String),
 }
 
+/// What an empty member's own store says about forming.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Mark {
+    /// It set out to form the group from this store.
+    pub(super) forming: bool,
+    /// It reached the vote from this store. Its log is blank, so the log
+    /// was emptied after it may have voted.
+    pub(super) reached: bool,
+}
+
 /// What an empty member does with its peers' answers.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum Decision {
     /// Catch up with the group that exists.
     Exists,
-    /// Every member is empty, so this is a first boot.
-    Form,
+    /// A peer recorded this member, which holds no mark of its own, or this
+    /// member recorded that it reached the vote and its log is blank: what
+    /// held its vote was lost. Catch up, never form.
+    Lost,
+    /// Every member is empty, so this is a first boot. These members
+    /// answered, and each must record this one before it votes.
+    Form(BTreeSet<NodeId>),
     /// Ask again; these are the answers in the way.
     Wait(Vec<String>),
 }
@@ -83,25 +134,39 @@ pub(super) enum Decision {
 /// Silence is never read as empty, except from a slot the operator `waived`,
 /// and then only while the members that do answer empty, this one included,
 /// are a majority. A waiver never excuses an answer that was given.
+///
+/// `mark` is what this member's own store says about forming. With the
+/// mark and without `reached`, a peer naming this member only shows an
+/// earlier start got that far and stopped before it voted.
 pub(super) fn decide(
     answers: &BTreeMap<NodeId, Answer>,
     waived: &BTreeSet<NodeId>,
     members: usize,
+    mark: Mark,
 ) -> Decision {
     if answers.values().any(|answer| *answer == Answer::Exists) {
         return Decision::Exists;
     }
-    let mut empty = 1; // this member
+    if mark.reached {
+        return Decision::Lost;
+    }
+    if !mark.forming && answers.values().any(|answer| *answer == Answer::NamesMe) {
+        return Decision::Lost;
+    }
+    let mut answered = BTreeSet::new();
     let mut waiting = Vec::new();
     for (id, answer) in answers {
         match answer {
-            Answer::Empty => empty += 1,
+            Answer::Empty | Answer::NamesMe => {
+                answered.insert(*id);
+            }
             Answer::Unreachable(_) if waived.contains(id) => {}
             Answer::Unreachable(why) => waiting.push(format!("member {id} is unreachable: {why}")),
             Answer::Unreadable(why) => waiting.push(format!("member {id}: {why}")),
             Answer::Exists => unreachable!("returned above"),
         }
     }
+    let empty = answered.len() + 1; // and this member
     if waiting.is_empty() && empty <= members / 2 {
         waiting.push(format!(
             "only {empty} of {members} members answer empty, which is not a majority; \
@@ -109,13 +174,13 @@ pub(super) fn decide(
         ));
     }
     if waiting.is_empty() {
-        Decision::Form
+        Decision::Form(answered)
     } else {
         Decision::Wait(waiting)
     }
 }
 
-async fn probe(client: &reqwest::Client, base: Option<&str>) -> Answer {
+async fn probe(client: &reqwest::Client, me: NodeId, base: Option<&str>) -> Answer {
     let Some(base) = base else {
         return Answer::Unreachable("no address configured".to_string());
     };
@@ -142,9 +207,33 @@ async fn probe(client: &reqwest::Client, base: Option<&str>) -> Answer {
             last_log_index: Some(index),
             ..
         }) if index >= 1 => Answer::Exists,
+        Ok(standing) if standing.formed.contains(&me) => Answer::NamesMe,
         Ok(_) => Answer::Empty,
         Err(err) => Answer::Unreadable(format!("its answer did not decode: {err}")),
     }
+}
+
+/// Ask the member at `base` to record `forming`. Anything but a 2xx is no
+/// record.
+async fn announce(client: &reqwest::Client, base: &str, forming: &Forming) -> Result<(), String> {
+    let response = client
+        .post(format!("{base}{}", super::peer_route("forming")))
+        .json(forming)
+        .send()
+        .await
+        .map_err(|err| format!("the request failed: {err:#}"))?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(format!(
+            "answered {status}: it runs a build without the forming route, and a first start \
+             needs every member on a build that has it"
+        ));
+    }
+    let why = response.text().await.unwrap_or_default();
+    Err(format!("answered {status}: {why}"))
 }
 
 /// Whether a request failed in TLS: the peer's certificate was not
@@ -186,6 +275,7 @@ impl RaftHandle {
         initial: InitialClusterState,
         shutdown: CancellationToken,
     ) -> anyhow::Result<()> {
+        let _ = self.configured.set(peers.keys().copied().collect());
         let holds_state = self.member.holds_state()?;
         let waived = if holds_state {
             self.drop_waiver("this member holds raft state");
@@ -209,6 +299,13 @@ impl RaftHandle {
             }
         });
         Ok(())
+    }
+
+    async fn mark(&self) -> anyhow::Result<Mark> {
+        Ok(Mark {
+            forming: self.member.forming_mark().await?,
+            reached: self.member.reached().await?,
+        })
     }
 
     /// The slots a `form-without` waiver in the data directory names.
@@ -258,20 +355,74 @@ impl RaftHandle {
 
         // Holding state while withholding the vote means an earlier catch-up
         // was interrupted; the group exists, so there is nothing to decide.
+        let mut why = "the raft group exists";
         if !self.member.holds_state().unwrap_or(true) {
+            let mut mark = match self.mark().await {
+                Ok(mark) => mark,
+                Err(err) => {
+                    tracing::error!(error = %err, "cannot read this member's forming mark");
+                    return;
+                }
+            };
+            let forming = Forming {
+                member: self.id,
+                members: peers.keys().copied().collect(),
+            };
             loop {
                 let mut answers = BTreeMap::new();
                 for (id, base) in &others {
-                    answers.insert(*id, probe(&client, base.as_deref()).await);
+                    answers.insert(*id, probe(&client, self.id, base.as_deref()).await);
                 }
                 let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
-                match decide(&answers, &waived, peers.len()) {
+                match decide(&answers, &waived, peers.len(), mark) {
                     Decision::Exists => break,
-                    Decision::Form if initial == InitialClusterState::New => {
-                        self.form_group(peers).await;
-                        return;
+                    Decision::Lost if mark.reached => {
+                        why = "this member recorded that it reached the vote, and its raft \
+                               log is blank: the log was lost";
+                        break;
                     }
-                    Decision::Form if due => {
+                    Decision::Lost => {
+                        why = "a member recorded that this one set out to form the group, and \
+                               this one holds no mark of it: its volume was lost";
+                        break;
+                    }
+                    Decision::Form(answered) if initial == InitialClusterState::New => {
+                        // Mark, then record, then vote: each on disk before
+                        // the next.
+                        if !mark.forming {
+                            if let Err(err) = self.member.mark_forming().await {
+                                tracing::error!(
+                                    error = %err,
+                                    "could not write the forming mark; not forming"
+                                );
+                                return;
+                            }
+                            mark.forming = true;
+                        }
+                        let mut waiting = Vec::new();
+                        for (id, base) in &others {
+                            // A waived slot that did not answer is not asked.
+                            if let (true, Some(base)) = (answered.contains(id), base)
+                                && let Err(why) = announce(&client, base, &forming).await
+                            {
+                                waiting.push(format!("member {id} {why}"));
+                            }
+                        }
+                        if waiting.is_empty() {
+                            self.form_group(peers).await;
+                            return;
+                        }
+                        if due {
+                            tracing::warn!(
+                                ?waiting,
+                                "not forming the raft group yet: every member that answered \
+                                 must record that this member set out to form it, before this \
+                                 member votes"
+                            );
+                            last_waiting_log = Some(tokio::time::Instant::now());
+                        }
+                    }
+                    Decision::Form(_) if due => {
                         tracing::warn!(
                             members = peers.len(),
                             "every raft member is empty and none holds the group; not forming \
@@ -290,17 +441,22 @@ impl RaftHandle {
                         );
                         last_waiting_log = Some(tokio::time::Instant::now());
                     }
-                    Decision::Form | Decision::Wait(_) => {}
+                    Decision::Form(_) | Decision::Wait(_) => {}
                 }
                 tokio::time::sleep(RETRY_INTERVAL).await;
             }
         }
-        self.drop_waiver("the raft group exists");
+        self.drop_waiver(why);
         let others: Vec<String> = others.into_iter().filter_map(|(_, base)| base).collect();
-        tracing::info!("raft group exists; catching up before this member votes");
+        tracing::info!(
+            why,
+            "catching up with a raft leader before this member votes"
+        );
         self.catch_up(&client, &others).await;
     }
 
+    /// The last step of forming: the vote. Call only once every member that
+    /// answered has recorded this one.
     async fn form_group(&self, peers: BTreeMap<NodeId, String>) {
         // The waiver goes first, so it can never outlive the start it was
         // written for. A crash after this leaves an empty member with no
@@ -319,9 +475,9 @@ impl RaftHandle {
             tracing::error!(error = %err, "could not record that this member may vote");
             return;
         }
-        self.allow_votes();
         #[cfg(test)]
-        if self.faults.stop_before_initialize {
+        if let Some(stopped) = self.faults.stop_before_initialize {
+            stopped.fetch_add(1, Ordering::SeqCst);
             return;
         }
         // A peer may have initialized first with the same configuration;
@@ -329,6 +485,15 @@ impl RaftHandle {
         if let Err(err) = self.initialize(peers).await {
             tracing::info!(error = %err, "raft group not initialized here (a peer was first)");
         }
+        // After initialize, so a crash before it leaves a blank log without
+        // the flag and the member forms again: it has not voted. A crash
+        // after initialize leaves a log, and the next start writes the flag.
+        // Votes are still refused here.
+        if let Err(err) = self.member.mark_reached().await {
+            tracing::error!(error = %err, "could not record that this member reached the vote");
+            return;
+        }
+        self.allow_votes();
     }
 
     async fn catch_up(&self, client: &reqwest::Client, others: &[String]) {
@@ -358,6 +523,10 @@ impl RaftHandle {
                     .map(|log_id| log_id.index)
                     .unwrap_or(0);
                 if applied >= target {
+                    if let Err(err) = self.member.mark_reached().await {
+                        tracing::error!(error = %err, "could not record that this member reached the vote");
+                        return;
+                    }
                     if let Err(err) = self.member.set_vote_withheld(false).await {
                         tracing::error!(error = %err, "could not record that this member may vote");
                         return;
@@ -415,11 +584,43 @@ impl RaftHandle {
         }
     }
 
-    pub(super) fn standing(&self) -> Standing {
-        Standing {
+    /// Fails when the store cannot be read: an answer without the record
+    /// would read as "nobody set out to form".
+    pub(super) async fn standing(&self) -> anyhow::Result<Standing> {
+        let formed = self.member.formed().await?;
+        Ok(Standing {
             last_log_index: self.raft.metrics().borrow_watched().last_log_index,
             version: self.app.version(),
+            formed: formed.into_iter().collect(),
+        })
+    }
+
+    /// A peer's side of forming: record that `forming.member` set out to
+    /// form the group, on disk before this returns. Whatever this member's
+    /// own state is, it records; the forming member votes on the strength
+    /// of it.
+    ///
+    /// Refused when the group it names is not the one this member is
+    /// configured with: members initialized with different groups can
+    /// split.
+    pub(super) async fn record_forming(&self, forming: &Forming) -> Result<(), NotRecorded> {
+        let Forming { member, members } = forming;
+        if *member == self.id || !members.contains(member) {
+            return Err(NotRecorded::Refused(format!(
+                "member {member} is not another member of the group {members:?}"
+            )));
         }
+        if let Some(configured) = self.configured.get().filter(|mine| *mine != members) {
+            return Err(NotRecorded::Refused(format!(
+                "member {member} would form the group {members:?}, and this member is \
+                 configured with {configured:?}; FELIX_RAFT_PEERS must name the same members \
+                 everywhere"
+            )));
+        }
+        self.member
+            .record_formed(*member)
+            .await
+            .map_err(NotRecorded::Failed)
     }
 }
 

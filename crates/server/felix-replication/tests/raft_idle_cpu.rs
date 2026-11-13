@@ -7,6 +7,9 @@
 //!   all three, each leading a third. A broker then pays for the groups it
 //!   leads and for answering the heartbeats of the ones it follows. The
 //!   process's CPU is divided by three. There is no network in it.
+//! - `RAFT_IDLE_PEERS=transport`: the same three runtimes, each sending
+//!   through its own peer pool to the others' peer listeners on loopback, so
+//!   the figure includes framing, QUIC and the listener.
 //!
 //! Ignored by default, since it is a measurement. Run it optimised:
 //!
@@ -24,17 +27,20 @@
 //! figure to take off: what is left is what Raft adds.
 
 use std::collections::{BTreeSet, HashMap};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use felix_replication::peer::{PeerPool, PeerServer, PeerTransportConfig, UnavailableHandler};
 use felix_replication::raft::{
-    AgreeingPeers, GroupId, GroupRuntime, MemberId, RaftReply, RaftRequest, RaftTransport, Refused,
-    Role, RuntimeConfig,
+    AgreeingPeers, GroupId, GroupRuntime, MemberId, PeerAddresses, PeerTransport, RaftReply,
+    RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, RecordMark};
+use tokio_util::sync::CancellationToken;
 
 fn shard(n: u32) -> ShardKey {
     ShardKey {
@@ -117,6 +123,33 @@ impl RaftTransport for Net {
     }
 }
 
+/// Three runtimes joined by real peer pools and listeners on loopback.
+async fn over_the_transport(timers: &RuntimeConfig, stop: &CancellationToken) -> Vec<GroupRuntime> {
+    let config = PeerTransportConfig {
+        bind: "127.0.0.1:0".parse().expect("addr"),
+        ..Default::default()
+    };
+    let book: Arc<parking_lot::Mutex<HashMap<String, SocketAddr>>> = Arc::default();
+    let mut runtimes = Vec::new();
+    for broker in BROKERS {
+        let pool = PeerPool::new(broker.into(), config.clone(), stop.clone()).expect("pool");
+        let addresses: Arc<dyn PeerAddresses> = {
+            let book = Arc::clone(&book);
+            Arc::new(move |broker: &str| book.lock().get(broker).copied())
+        };
+        let transport = Arc::new(PeerTransport::new(pool, addresses));
+        let runtime = GroupRuntime::start(broker, timers.clone(), transport).expect("timers");
+        let server = PeerServer::bind(broker.into(), &config, Arc::new(UnavailableHandler))
+            .expect("bind")
+            .with_raft(Arc::new(runtime.clone()));
+        book.lock()
+            .insert(broker.into(), server.local_addr().expect("addr"));
+        tokio::spawn(server.serve(stop.clone()));
+        runtimes.push(runtime);
+    }
+    runtimes
+}
+
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
     std::env::var(name)
         .ok()
@@ -127,7 +160,9 @@ fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
 #[ignore = "a measurement; see the module docs"]
 async fn idle_groups_cost_little_cpu() {
     let groups: u32 = env("RAFT_IDLE_GROUPS").unwrap_or(1500);
-    let real = std::env::var("RAFT_IDLE_PEERS").as_deref() == Ok("real");
+    let peers = std::env::var("RAFT_IDLE_PEERS").unwrap_or_default();
+    let transport = peers == "transport";
+    let real = peers == "real" || transport;
     let mut timers = RuntimeConfig::default();
     if let Some(millis) = env("RAFT_IDLE_HEARTBEAT_MS") {
         timers.idle_heartbeat = Duration::from_millis(millis);
@@ -143,18 +178,24 @@ async fn idle_groups_cost_little_cpu() {
     let root = tempfile::tempdir().expect("dir");
     let net = Arc::new(Net::default());
     let brokers: &[&str] = if real { &BROKERS } else { &BROKERS[..1] };
-    let runtimes: Vec<GroupRuntime> = brokers
-        .iter()
-        .map(|broker| {
-            let transport: Arc<dyn RaftTransport> = match real {
-                true => net.clone(),
-                false => Arc::new(AgreeingPeers),
-            };
-            let runtime = GroupRuntime::start(*broker, timers.clone(), transport).expect("timers");
-            net.brokers.lock().insert((*broker).into(), runtime.clone());
-            runtime
-        })
-        .collect();
+    let stop = CancellationToken::new();
+    let runtimes: Vec<GroupRuntime> = if transport {
+        over_the_transport(&timers, &stop).await
+    } else {
+        brokers
+            .iter()
+            .map(|broker| {
+                let transport: Arc<dyn RaftTransport> = match real {
+                    true => net.clone(),
+                    false => Arc::new(AgreeingPeers),
+                };
+                let runtime =
+                    GroupRuntime::start(*broker, timers.clone(), transport).expect("timers");
+                net.brokers.lock().insert((*broker).into(), runtime.clone());
+                runtime
+            })
+            .collect()
+    };
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
@@ -226,7 +267,13 @@ async fn idle_groups_cost_little_cpu() {
     println!(
         "{groups} idle groups, {} peers, idle heartbeat {:?}, leaders per broker {before:?}: \
          {:.2}% of one core per broker, {:.0} timer checks a second per broker",
-        if real { "real" } else { "stub" },
+        if transport {
+            "transport"
+        } else if real {
+            "real"
+        } else {
+            "stub"
+        },
         timers.idle_heartbeat,
         100.0 * used.as_secs_f64() / window.as_secs_f64() / each,
         sent as f64 / window.as_secs_f64() / each,
@@ -244,4 +291,5 @@ async fn idle_groups_cost_little_cpu() {
     for runtime in &runtimes {
         runtime.shutdown().await;
     }
+    stop.cancel();
 }

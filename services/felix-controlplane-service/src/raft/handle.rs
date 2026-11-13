@@ -38,6 +38,9 @@ pub struct RaftHandle {
     pub(super) member: store::MemberState,
     /// Where the store lives, and the `form-without` waiver beside it.
     pub(super) data_dir: Arc<std::path::PathBuf>,
+    /// The member ids [`RaftHandle::enter_group`] was given: the group this
+    /// member would form, and the only one it records a peer as forming.
+    pub(super) configured: Arc<std::sync::OnceLock<std::collections::BTreeSet<NodeId>>>,
     /// False while this member withholds its vote (`super::join`): vote
     /// requests are refused and it does not stand for election.
     pub(super) may_vote: Arc<AtomicBool>,
@@ -54,6 +57,14 @@ pub struct RaftHandle {
     /// ([`super::chunks`]).
     #[cfg(not(felix_segment_store))]
     pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
+    /// The one snapshot install this member runs at a time, ranked by the
+    /// sender's vote.
+    #[cfg(felix_segment_store)]
+    pub(super) install_slot:
+        Arc<felix_storage::raft_log::transfer::InstallSlot<super::types::Vote>>,
+    /// The largest snapshot this member accepts.
+    #[cfg(felix_segment_store)]
+    pub(super) snapshot_max_bytes: u64,
 }
 
 /// How long a failed start waits for the node to stop. Short under test so
@@ -235,6 +246,7 @@ impl RaftHandle {
             app,
             member,
             data_dir: Arc::new(settings.data_dir),
+            configured: Arc::default(),
             may_vote: Arc::new(AtomicBool::new(may_vote)),
             leader_service: Arc::new(std::sync::OnceLock::new()),
             versions,
@@ -242,6 +254,10 @@ impl RaftHandle {
             stopped: Arc::default(),
             #[cfg(not(felix_segment_store))]
             receiving: Arc::default(),
+            #[cfg(felix_segment_store)]
+            install_slot: Arc::default(),
+            #[cfg(felix_segment_store)]
+            snapshot_max_bytes: settings.snapshot_max_bytes,
         };
         tokio::spawn(handle.clone().watch_versions());
         Ok(handle)

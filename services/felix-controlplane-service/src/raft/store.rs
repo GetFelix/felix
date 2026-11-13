@@ -22,6 +22,7 @@
 //! durability obligation, which is what lets #338 plug the in-memory
 //! metadata store in unchanged.
 
+use std::collections::BTreeSet;
 use std::io::{self, Cursor};
 use std::ops::RangeBounds;
 use std::path::Path;
@@ -57,6 +58,16 @@ const KEY_SNAPSHOT_DATA: &str = "snapshot_data";
 const KEY_VOTE_WITHHELD: &str = "vote_withheld";
 /// The cluster this data dir belongs to (`FELIX_RAFT_CLUSTER_ID`).
 const KEY_CLUSTER_ID: &str = "cluster_id";
+/// This member's own mark that it set out to form the group: the cluster
+/// id it set out under (`super::join`). Never cleared.
+const KEY_FORMING: &str = "forming";
+/// The ids of the members that asked this one to record that they set out
+/// to form the group. Neither key counts as consensus state.
+const KEY_FORMED: &str = "formed";
+/// Set once the member may vote from this store. Kept in step with the
+/// segment store's formation file; here the log is in the same file, so a
+/// blank log beside it cannot happen.
+const KEY_REACHED: &str = "reached";
 /// Where a `--cfg felix_segment_store` build keeps its state
 /// (`felix_storage::metadata_store::STORE_DIR`, not a dependency of this
 /// build).
@@ -83,6 +94,10 @@ pub(super) async fn open_member(
     std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
     let db = open(&settings.data_dir.join("raft.redb"))?;
     claim_cluster_id(&db, &settings.security.cluster_id)?;
+    if holds_state(&db)? && !vote_withheld(&db)? {
+        write_meta(&db, KEY_REACHED, &true)
+            .map_err(|err| anyhow::anyhow!("write the reached flag: {err}"))?;
+    }
     Ok(Opened {
         log_store: LogStore::new(Arc::clone(&db)),
         state_machine: StateMachineStore::open(Arc::clone(&db), app).await?,
@@ -118,6 +133,73 @@ impl MemberState {
     /// Durable before it returns.
     pub(super) async fn set_vote_withheld(&self, withheld: bool) -> Result<()> {
         set_vote_withheld(&*self.db()?, withheld)
+    }
+
+    /// Whether this store holds the member's own mark that it set out to
+    /// form the group.
+    pub(super) async fn forming_mark(&self) -> Result<bool> {
+        let db = self.db()?;
+        let read = |key| read_meta::<String>(&db, key).context("read the forming mark");
+        let mark = read(KEY_FORMING)?;
+        Ok(mark.is_some() && mark == read(KEY_CLUSTER_ID)?)
+    }
+
+    /// Set that mark. Durable before it returns.
+    pub(super) async fn mark_forming(&self) -> Result<()> {
+        blocking_write(&self.db()?, |db| {
+            let cluster_id = read_meta::<String>(db, KEY_CLUSTER_ID)?
+                .ok_or_else(|| io::Error::other("the store names no cluster"))?;
+            write_meta(db, KEY_FORMING, &cluster_id)
+        })
+        .await
+        .context("write the forming mark")
+    }
+
+    /// Whether this store records that the member has voted from it.
+    pub(super) async fn reached(&self) -> Result<bool> {
+        Ok(read_meta::<bool>(&*self.db()?, KEY_REACHED)
+            .context("read the reached flag")?
+            .unwrap_or(false))
+    }
+
+    /// Record that the member may vote from this store. Durable before it
+    /// returns.
+    pub(super) async fn mark_reached(&self) -> Result<()> {
+        blocking_write(&self.db()?, |db| write_meta(db, KEY_REACHED, &true))
+            .await
+            .context("write the reached flag")
+    }
+
+    /// The members this one recorded as having set out to form the group.
+    pub(super) async fn formed(&self) -> Result<BTreeSet<super::NodeId>> {
+        Ok(read_meta(&*self.db()?, KEY_FORMED)
+            .context("read the formation record")?
+            .unwrap_or_default())
+    }
+
+    /// Record that `member` set out to form the group. Durable before it
+    /// returns.
+    pub(super) async fn record_formed(&self, member: super::NodeId) -> Result<()> {
+        blocking_write(&self.db()?, move |db| {
+            // One write transaction, so two records at once both land.
+            let txn = db.begin_write().map_err(io_err)?;
+            {
+                let mut table = txn.open_table(META).map_err(io_err)?;
+                let mut formed: BTreeSet<super::NodeId> =
+                    match table.get(KEY_FORMED).map_err(io_err)? {
+                        Some(stored) => serde_json::from_slice(stored.value()).map_err(io_err)?,
+                        None => BTreeSet::new(),
+                    };
+                if !formed.insert(member) {
+                    return Ok(());
+                }
+                let bytes = serde_json::to_vec(&formed).map_err(io_err)?;
+                table.insert(KEY_FORMED, bytes.as_slice()).map_err(io_err)?;
+            }
+            txn.commit().map_err(io_err)
+        })
+        .await
+        .context("write the formation record")
     }
 
     /// The node has stopped. The file closes when its last user is dropped.

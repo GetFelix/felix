@@ -119,6 +119,10 @@ pub struct RaftSettings {
     /// config change rather than a membership change. Empty means the
     /// recorded addresses are used as they are.
     pub peer_addrs: BTreeMap<NodeId, String>,
+    /// The largest snapshot this member accepts from a peer, in bytes. A
+    /// snapshot over it can never be installed here, so building one past
+    /// half of it is logged as an error.
+    pub snapshot_max_bytes: u64,
     #[cfg(test)]
     pub(crate) faults: Faults,
 }
@@ -139,9 +143,12 @@ pub(crate) struct Faults {
     /// Counts the stops a failed start asks for.
     pub(crate) stop_probe: Option<&'static std::sync::atomic::AtomicUsize>,
     /// A member forming the group stops short of `initialize`, as a crash
-    /// there would.
-    pub(crate) stop_before_initialize: bool,
+    /// there would, and counts itself here.
+    pub(crate) stop_before_initialize: Option<&'static std::sync::atomic::AtomicUsize>,
 }
+
+/// 1 GiB: far above any real metadata state.
+pub(crate) const DEFAULT_SNAPSHOT_MAX_BYTES: u64 = 1 << 30;
 
 impl RaftSettings {
     /// Defaults sized for a three-instance metadata group: elections settle
@@ -158,6 +165,7 @@ impl RaftSettings {
             snapshot_logs_since_last: 500,
             logs_kept_behind_snapshot: 100,
             write_timeout: Duration::from_secs(10),
+            snapshot_max_bytes: DEFAULT_SNAPSHOT_MAX_BYTES,
             #[cfg(test)]
             faults: Faults::default(),
         }
