@@ -750,8 +750,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
 | `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
 | `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
-| `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (73 distinct states) |
-| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so the whole group can restart, and a broker inside its hold granting the candidate its stored vote names | expected to pass the same; not registered, no result yet |
+| `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
+| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so the whole group can restart, and a broker inside its hold granting the candidate its stored vote names while that vote is for its current term | pass the same (15.4M distinct states) |
 | `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
 | `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the hold exempting any candidate | violate `LeaseExclusive` |
 | `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
@@ -766,9 +766,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseTransferVoidLate.cfg` | the same with the void a separate later step | violate `LeaseExclusive` |
 | `FelixRaftLeaseTransferThreeTerms.cfg` | the transfer at lease 1 against an election timeout of 1, three terms: a broker that voided term 1 is elected in term 2 and votes in term 3 | pass `LeaseExclusive`, `OneLeaderPerTerm` (6.1M distinct states) |
 | `FelixRaftLeaseTransferVoidEquality.cfg` | the same with the void one term, overwritten by the next and compared by equality | violate `LeaseExclusive` |
-| `FelixRaftLeaseTransferStepDown.cfg` | `FelixRaftLeaseTransferThreeTerms.cfg` with `ElectionTimeoutMin` = 0 and one step-down as well; not registered, run by dispatch | expected to pass `LeaseExclusive`, `OneLeaderPerTerm`; no result yet (12M distinct states in 20 min on 16 workers, still running) |
+| `FelixRaftLeaseTransferStepDown.cfg` | `FelixRaftLeaseTransferThreeTerms.cfg` with `ElectionTimeoutMin` = 0 and one step-down as well; not registered, run by dispatch | expected to pass `LeaseExclusive`, `OneLeaderPerTerm`; no result yet (12M distinct states in 20 min on the build box, unfinished) |
 | `FelixRaftLeaseTransferStepDownNoVoid.cfg` | the same with no void on a higher term | violate `LeaseExclusive` |
-| `FelixRaftLeaseTransferWrite.cfg` | the transfer at lease 1 against an election timeout of 1, two terms and one write; not registered, run by dispatch | expected to pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety`; no result yet (17.7M distinct states in 40 min on 10 workers, still running) |
+| `FelixRaftLeaseTransferWrite.cfg` | the transfer at lease 1 against an election timeout of 1, two terms and one write | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (19.9M distinct states, 40 min on a CI runner) |
 | `FelixRaftLeaseTransferDrift.cfg` | `FelixRaftLeaseTransferWrite.cfg` with no write and clocks gaining 1 or 2 a tick, lease 1 against an election timeout of 2 | pass the same (4.4M distinct states) |
 | `FelixRaftLeaseSuspend.cfg` | lease 2 against an election timeout of 2, no drift, one suspend: the clock stops, the broker takes no step, and on waking it refuses for one lease | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.38M distinct states) |
 | `FelixRaftLeaseSuspendUnchecked.cfg` | the same with no wake check (also a VM pause) | violate `LeaseExclusive` |
@@ -3175,7 +3175,7 @@ names (`HoldExemptsNamed`), since it promised that candidate already.
 The stored vote names the candidate only while it is for the broker's
 current term: a later leader's append replaces it. Without that condition
 the model fails `NoAckBehindNewLeader`. `FelixRaftLeaseRestoreNamed.cfg`
-checks the rule with two restarts (no result yet), and
+passes with the rule and two restarts, and
 `FelixRaftLeaseReachHeldGrant.cfg` shows a held broker granting.
 `FelixRaftLeaseRestoreNamedAny.cfg`, where the hold exempts any candidate,
 fails.
