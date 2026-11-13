@@ -10,7 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, ProposalCommitted, ProposedPublish, ReadBound, StreamHandle,
+    Broker, BrokerError, ProposalCommitted, ProposalFailed, ProposedPublish, ReadBound,
+    StreamHandle,
 };
 use tokio::task::JoinHandle;
 
@@ -32,6 +33,9 @@ impl RaftEngine {
     /// leadership or a stopped group gives the place up. Such a batch may
     /// still have committed; live subscribers then see its offsets as a
     /// drop, and a reader resuming below it is served from the log.
+    ///
+    /// [`BrokerError::ProposalsStalled`], with nothing proposed, while the
+    /// oldest batch still waiting for its commit has waited past `timeout`.
     pub fn publish(
         &self,
         broker: &Broker,
@@ -42,7 +46,10 @@ impl RaftEngine {
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
-        let proposed = broker.propose_publish(stream, payloads, |timestamp_micros| {
+        // A leader cut off from its majority is not deposed, and every batch
+        // it is handed waits, payload in hand, until the partition heals.
+        // Refusing once the oldest has waited out its timeout bounds them.
+        let proposed = broker.propose_publish(stream, payloads, timeout, |timestamp_micros| {
             let count = records.len() as u64;
             let records = records
                 .into_iter()
@@ -55,7 +62,7 @@ impl RaftEngine {
             let engine = self.clone();
             let shard = shard.clone();
             async move {
-                let written = written.await?;
+                let written = written.await.map_err(ProposalFailed::unwritten)?;
                 // The publisher's own wait is bounded by `answer_within`.
                 // Delivery is not: a batch skipped here and committed later
                 // would reach no live subscriber, while the one behind it
@@ -63,7 +70,10 @@ impl RaftEngine {
                 loop {
                     match engine.await_commit(&shard, written, timeout).await {
                         Err(CommitError::TimedOut { .. }) => continue,
-                        outcome => break outcome?,
+                        outcome => {
+                            break outcome
+                                .map_err(|err| ProposalFailed::written(err, written.end))?;
+                        }
                     }
                 }
                 // Everything below the batch is applied, so its run of
