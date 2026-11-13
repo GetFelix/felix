@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794612275112,
+  "lastUpdate": 1794612824192,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70092,6 +70092,72 @@ window.BENCHMARK_DATA = {
             "range": "1037.13",
             "unit": "us",
             "extra": "trials: 5\nmedian: 341.00\nmean: 850.80\nstdev: 1037.13\ncv: 121.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6fc0dc70ed1823d5e099e9dd5076f4c5d8365945",
+          "message": "chore(hooks): FELIX_PRE_PUSH replaces the pre-push lint command (#2485)\n\nThe pre-push hook runs task lint, a full clippy build, on the machine that\npushes. FELIX_PRE_PUSH lets a contributor run lint elsewhere instead, such as\non a build machine against the tree being pushed. Unset, nothing changes.",
+          "timestamp": "2026-11-13T15:26:22-08:00",
+          "tree_id": "0cf82deeb26f3e7a3cac74b93660f353553b64bb",
+          "url": "https://github.com/GetFelix/felix/commit/6fc0dc70ed1823d5e099e9dd5076f4c5d8365945"
+        },
+        "date": 1794612813417,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.60\nstdev: 2.07\ncv: 1.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 212,
+            "range": "19.23",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 215.80\nstdev: 19.23\ncv: 8.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 260,
+            "range": "603.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 528.60\nstdev: 603.96\ncv: 114.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 198.80\nstdev: 1.92\ncv: 0.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "18.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 397.60\nstdev: 18.12\ncv: 4.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1548,
+            "range": "799.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1548.00\nmean: 1316.00\nstdev: 799.07\ncv: 60.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
