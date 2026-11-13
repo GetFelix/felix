@@ -1241,7 +1241,12 @@ change has to:
   would drop committed records from live delivery;
 - answer `ReadBounds` from `RaftReads` for Raft shards only and from the
   hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
-  refuses any shard it holds no group for.
+  refuses any shard it holds no group for;
+- bound the batches waiting for commit. A leader cut off from its majority
+  is not deposed, so each publish leaves a task waiting until the partition
+  heals (#2428);
+- move the ring's start past a gap batch, so a reader resuming while the
+  ring is empty reads that batch from the log instead of missing it (#2428).
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
