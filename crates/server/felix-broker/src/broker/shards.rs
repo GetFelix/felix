@@ -24,6 +24,22 @@ const HYDRATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// callers retry on a later pass.
 const RELEASE_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The logs an engine opened itself and gave to
+/// [`Broker::open_stream_on_engine_log`]. The storage provider does not
+/// know them, so it cannot close them when their stream goes.
+pub trait EngineLogs: Send + Sync + std::fmt::Debug {
+    /// Stop the engine's members of every shard of the stream at
+    /// incarnation `through` or an earlier one, and close their logs. The
+    /// broker closes or deletes those directories as soon as this returns.
+    fn close_through<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        through: u64,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
 /// A record's payload and headers block, the bytes the replay ring holds for it.
 fn record_bytes(record: &felix_storage::log::LogRecord) -> usize {
     record.payload.len() + record.headers.as_deref().map_or(0, bytes::Bytes::len)

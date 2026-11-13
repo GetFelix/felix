@@ -132,10 +132,7 @@ impl std::fmt::Display for Reason {
 /// the hot path for a lookup that is two loads.
 pub type ServableShards = HashMap<ShardKey, u64>;
 
-/// Felix's replication protocol, read against how this broker serves each
-/// shard. What the stream write and read paths hold in place of the marks and
-/// the router.
-pub type StreamEngine = felix_replication::engine::Hybrid<IngressRouter>;
+pub use super::engine::StreamEngine;
 
 /// Resolves ingress requests against cluster ownership.
 ///

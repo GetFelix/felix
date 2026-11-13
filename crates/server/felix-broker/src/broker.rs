@@ -35,7 +35,7 @@ pub use publish::{
 };
 pub use read::ReadPage;
 pub use shard_logs::LogKind;
-pub use shards::StreamHandle;
+pub use shards::{EngineLogs, StreamHandle};
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
 pub use trim::{TrimOutcome, TrimStep};
 
@@ -167,6 +167,9 @@ pub struct Broker {
     read_bounds: Arc<std::sync::OnceLock<Arc<dyn crate::stream::ReadBounds>>>,
     /// Durable stream shards are opened only by [`Self::open_stream_on_engine_log`].
     engine_streams: std::sync::atomic::AtomicBool,
+    /// Closes the logs an engine opened itself, before their stream's
+    /// directories are closed or deleted.
+    engine_logs: std::sync::OnceLock<Arc<dyn EngineLogs>>,
     /// How long a head trim waits on the mark or the ring.
     pub(crate) trim_wait: std::time::Duration,
     /// Whether head trims are allowed, once the node says. Unset refuses
@@ -255,6 +258,7 @@ impl Broker {
             appended: Arc::default(),
             read_bounds: Arc::default(),
             engine_streams: std::sync::atomic::AtomicBool::new(false),
+            engine_logs: std::sync::OnceLock::new(),
             head_trims: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             head_trim_marking: tokio::sync::Mutex::new(()),
@@ -469,6 +473,20 @@ impl Broker {
     pub fn leave_durable_streams_to_engines(&self) {
         self.engine_streams
             .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Ask `logs` to close an engine's own logs of a stream before this
+    /// broker closes or deletes the stream's directories. Only the first
+    /// call counts.
+    pub fn set_engine_logs(&self, logs: Arc<dyn EngineLogs>) {
+        let _ = self.engine_logs.set(logs);
+    }
+
+    pub(crate) async fn close_engine_logs(&self, key: &StreamKey, through: u64) {
+        if let Some(logs) = self.engine_logs.get() {
+            logs.close_through(&key.tenant_id, &key.namespace, &key.stream, through)
+                .await;
+        }
     }
 
     pub(crate) fn engines_open_durable_streams(&self) -> bool {

@@ -6,12 +6,17 @@
 //! is open, and only at the generation the control plane currently names.
 //! [`routing`] answers the question every publish asks first: is this shard
 //! mine, should it be forwarded, or can nobody serve it right now?
+//! `engine` is which replication engine a shard's writes go to, and `raft`
+//! holds this broker's Raft members of the shards a group runs.
 //!
 //! [`ShardKey`] and [`ShardKind`] are re-exported here because all three use
 //! them; they are defined in `felix-replication`, which keys on them too.
 
 mod confirmed;
+mod engine;
 pub mod lifecycle;
+#[cfg(feature = "raft")]
+pub(crate) mod raft;
 pub mod routing;
 pub mod watch;
 

@@ -118,7 +118,7 @@ where
             durable_storage: durable_config.is_some(),
         }
         .missing();
-        // 4h: start the group runtime here instead once shards route to it.
+        // Its members are started below, but no publish reaches them yet.
         anyhow::bail!(
             "FELIX_SHARD_ENGINE=raft is refused: {}",
             missing.unwrap_or("no build routes a shard to Raft yet")
@@ -327,6 +327,14 @@ where
     if shard_engine == crate::config::ShardEngine::Raft {
         broker.leave_durable_streams_to_engines();
     }
+    #[cfg(feature = "raft")]
+    let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
+        cluster::start_raft_shards(&config, &cluster, &peers, &broker, &engine)?
+    } else {
+        cluster::RaftShards::default()
+    };
+    #[cfg(not(feature = "raft"))]
+    let raft_shards = cluster::RaftShards::default();
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -581,6 +589,7 @@ where
         // for the shards it leads instead of waiting on it. After a start from
         // the view that lasts until it has registered.
         gate_readiness_on_sync.then_some(&clients),
+        raft_shards.handler,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -605,6 +614,7 @@ where
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
+        engine_shards: raft_shards.engine_shards,
         sync_shutdown: &sync_shutdown,
     });
 
