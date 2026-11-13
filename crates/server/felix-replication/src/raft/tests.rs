@@ -10,7 +10,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig};
-use felix_storage::raft_log::EntryCodec;
+use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use openraft::raft::VoteRequest;
 use openraft::type_config::alias::{LeaderIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
@@ -78,12 +78,20 @@ struct Net {
     /// The only broker they are lost on the way to, if one is named.
     lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
+    /// Cut appends as the peer transport does, and hold each for as long as
+    /// its bytes take on a 1 Gbit/s link.
+    gigabit: std::sync::atomic::AtomicBool,
 }
 
 #[async_trait]
 impl RaftTransport for Net {
-    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+    async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
+        if self.gigabit.load(Relaxed) {
+            super::wire::fit(&mut request);
+            let bytes = super::wire::encode_request(&request).expect("encode").len();
+            tokio::time::sleep(Duration::from_secs_f64(bytes as f64 / 125_000_000.0)).await;
+        }
         let broker: &str = &request.to().broker;
         let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
         if request.beat > timers().heartbeat.as_millis() as u64
@@ -252,6 +260,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                written: None,
             };
             match member.raft().client_write(command).await {
                 Ok(written) => return written.log_id.index,
@@ -279,6 +288,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    written: None,
                 })
             });
             for written in futures::future::join_all(writes)
@@ -811,6 +821,82 @@ async fn a_write_is_reported_written_and_flushed() {
     cluster.stop().await;
 }
 
+/// A proposer's token comes back from the leader's own append with the
+/// record's index and term, while the record cannot commit: both followers
+/// are cut off, so `client_write` has nothing to answer with.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_proposed_record_is_reported_written_before_it_commits() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let before = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let member = runtime.group(&shard(0)).expect("group");
+    let term = runtime.status(&shard(0)).expect("status").term;
+
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    let (token, written) = WrittenToken::channel();
+    let command = Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"proposed"),
+        written: Some(token),
+    };
+    let raft = member.raft().clone();
+    let mut write = tokio::spawn(async move { raft.client_write(command).await });
+
+    let at = tokio::time::timeout(PATIENCE, written)
+        .await
+        .expect("the token resolves")
+        .expect("written");
+    assert_eq!(
+        at,
+        LogPoint {
+            term,
+            index: before + 1
+        }
+    );
+    let status = runtime.status(&shard(0)).expect("status");
+    assert_eq!(status.committed, Some(before));
+    assert!(
+        status
+            .written
+            .is_some_and(|written| written.index >= at.index)
+    );
+    // A leader deposed meanwhile refuses the write. It never reports it done.
+    assert!(
+        !matches!(
+            futures::FutureExt::now_or_never(&mut write),
+            Some(Ok(Ok(_)))
+        ),
+        "the write was answered with no follower reachable"
+    );
+    cluster.net.cut.lock().clear();
+    write.abort();
+    cluster.stop().await;
+}
+
+/// The token is not part of what a peer is sent.
+#[test]
+fn a_commands_token_is_not_serialized() {
+    let (token, _written) = WrittenToken::channel();
+    let command = Command {
+        timestamp_micros: 7,
+        payload: Bytes::from_static(b"p"),
+        written: Some(token),
+    };
+    let sent = serde_json::to_value(&command).expect("json");
+    assert_eq!(
+        sent.as_object().expect("object").keys().collect::<Vec<_>>(),
+        ["payload", "timestamp_micros"]
+    );
+    let received: Command = serde_json::from_value(sent).expect("json");
+    assert!(received.written.is_none());
+    assert_eq!(received, command);
+}
+
 /// A group whose queue is full takes no timer check. Its checks are dropped
 /// and counted, and the other groups on the broker still get theirs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1131,6 +1217,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
@@ -1149,6 +1236,60 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
     for log in cluster.logs.values() {
         assert_eq!(log.base_offset(), 0, "a member is missing records");
     }
+    cluster.stop().await;
+}
+
+/// A follower far behind must catch up over a 1 Gbit/s link. Each append
+/// has one heartbeat interval before the leader gives up on it, and the
+/// leader cuts the next the same way, so an append that cannot cross the
+/// link and be fsynced in that time is never acknowledged. The log reader
+/// already hands openraft about 4 MiB at a time; `wire::fit` is the bound
+/// that holds whatever the reader does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let first = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, first).await;
+    let leader = cluster.elected(0).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+
+    cluster.net.cut.lock().insert(behind.into());
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let record = Bytes::from(vec![7u8; 1024 * 1024]);
+    let mut last = first;
+    for _ in 0..48 {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: record.clone(),
+            written: None,
+        };
+        last = member
+            .raft()
+            .client_write(command)
+            .await
+            .expect("write")
+            .log_id
+            .index;
+    }
+
+    cluster
+        .net
+        .gigabit
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    cluster.net.cut.lock().clear();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        cluster.committed_everywhere(0, last),
+    )
+    .await
+    .expect("the follower did not catch up");
     cluster.stop().await;
 }
 
@@ -1224,6 +1365,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: vote(),
     };
 
@@ -1311,4 +1453,24 @@ fn a_member_id_round_trips_through_the_ballot() {
     }
     assert!(ShardCodec.decode_node_id("broker-1").is_err());
     assert!(ShardCodec.decode_node_id("broker-1#x").is_err());
+}
+
+/// A dropped timer check is counted on the group and in one counter for the
+/// broker, with no label per group.
+#[test]
+fn a_dropped_tick_is_counted_for_the_broker() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let count = std::sync::atomic::AtomicU64::new(0);
+    drop(super::group::Dropped(Some(&count)));
+    drop(super::group::Dropped(Some(&count)));
+    // A check the group took is not counted.
+    drop(super::group::Dropped(None));
+    assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(&format!("{} 2", super::group::DROPPED_TICKS_TOTAL)),
+        "{rendered}"
+    );
 }

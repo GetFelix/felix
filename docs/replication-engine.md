@@ -366,6 +366,26 @@ cut can still take, so an entry could commit on fewer than a majority of
 disks. A flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
 
+**A proposer can hear where its entry was written.** openraft answers a
+write only once the entry is applied. A caller that acknowledges earlier
+puts a `WrittenToken` on its command, and the codec hands it over through
+`EntryCodec::written_token`. Once the whole append is written, and before
+the flush, the adapter moves the log's written position and then resolves
+each token with its own entry's index and term. The token lives in memory
+only: the codec does not encode it, so an entry read back, or one a
+follower was sent, has none. An append that fails resolves no token, which
+the caller reads as an unknown outcome. Written is not durable: a power
+cut after the token resolved can take the entry. Only an acknowledgement
+that the stream's fsync policy allows may rest on it. Votes, a follower's
+answer and the commit index wait for the callback. How the publish path
+uses the token is in `per-shard-raft.md`, "Writing through openraft".
+
+> `raft_log/tests/written.rs`,
+> `a_token_resolves_once_written_and_before_the_flush`,
+> `a_token_on_an_append_of_several_batches_resolves_with_its_own_index`,
+> `a_failed_append_resolves_no_token_as_written`, `a_token_is_never_stored`
+> and `a_cut_after_written_and_before_the_flush_can_take_the_entry`.
+
 **One task per log waits for flushes.** An append that has to wait puts
 its callback on the log's flush queue (`raft_log/flush_queue.rs`) and
 returns. One task per log takes everything queued, waits once for the

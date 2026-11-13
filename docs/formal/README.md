@@ -597,8 +597,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
-| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.7M distinct states) |
-| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts | violate `OneLeaderPerTerm`: a design hole, pinned (issue #2303). Neither the incarnation check nor the run witness tells this backup from a crash, and the marks go back with the root (issue #2303) |
+| `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
+| `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts. The machine stayed up, so the run witness holds the root sequence | pass the same (1.6M distinct states) |
+| `FelixRaftIdentityRootRestoreNoWitness.cfg` | the same after a machine restart, so no witness is left: the root goes back after the control plane heard its last sequence | pass the same (8.7M distinct states) |
+| `FelixRaftIdentityRootRestoreBatched.cfg` | the same-run restore with a witness and the batched log mark, a mark interval after the last append | pass the same (11.8M distinct states) |
+| `FelixRaftIdentityWipeThenRootRestore.cfg` | two faults on one broker: the directory is emptied, then the root goes back to a backup taken in the same run, before the wipe or after it. The new copy stays a learner, so this shows the votes since the backup are caught, not the new copy's own mark write | pass the same (7.4M distinct states) |
+| `FelixRaftIdentityRootRestoreNoSequence.cfg` | the gate does not compare the root sequence: a backup of the current run reads as a crash and its copy votes twice in a term | violate `OneLeaderPerTerm` (issue #2303) |
+| `FelixRaftIdentityRootRestoreUnheard.cfg` | no witness, and the root goes back before the control plane heard its last sequence | violate `OneLeaderPerTerm`: the residual the design names (issue #2303, Questions, 12) |
+| `FelixRaftIdentityRootRestoreYoung.cfg` | a witness, the batched log mark, and the root goes back inside the mark interval | violate `AckedHeldByLeader`: the residual the design names (Questions, 11) |
 | `FelixRaftIdentityDirRestore.cfg` | one shard directory goes back, older log or vote or both, a mark interval after the last append, batched mark | pass the same (2.2M distinct states) |
 | `FelixRaftIdentityMarkExact.cfg` | one shard directory goes back at any time, exact mark | pass the same (0.6M distinct states) |
 | `FelixRaftIdentityMarkBatched.cfg` | the same bounds with the batched mark: the copy votes for a candidate that lacks an acknowledged record | violate `AckedHeldByLeader` |
@@ -613,6 +619,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRejoinLeads.cfg` | witness: a rotated copy, a voter again, wins an election | violate `NeverRotatedLeads` |
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreSameRunCaught.cfg` | witness: with no restart, a root restored in its own run is caught by the root sequence and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreNoWitnessCaught.cfg` | witness: the same with no run witness, so the control plane's copy of the sequence caught it | violate `NeverRotates` |
 | `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
 | `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
 | `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
@@ -723,8 +731,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule that is not built and openraft 0.10.0 lacks (issue #2307), so it does not yet gate the lease pull request |
-| `FelixRaftLeaseRestartForgets.cfg` | the design as written and the engine as it is: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
+| `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
 | `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
@@ -2517,7 +2526,9 @@ identity". It is the model's side of #1331. A member id is a broker and a
 copy id. The copy id lives in the shard directory with the storage id it was
 minted under. The data root holds the storage id and, per shard, a mark of
 the highest vote and last log id, with the copy id the marks belong to. The
-vote is always synced.
+vote is always synced. The root also holds a sequence number that rises with
+every synced mark write. The run witness holds a copy of it while the machine
+stays up, and the control plane holds the one it last heard in a heartbeat.
 
 A member that opens its directory rotates its copy (new id, never voted, an
 empty Raft log, a learner) when the directory is empty, was minted under
@@ -2532,6 +2543,16 @@ from a backup, and one shard directory restored under a running root. The
 log mark is exact (written with every append) or batched (a separate step,
 so it trails).
 
+A restored root gets a new storage id, which rotates every copy in it, when
+its incarnation is behind the control plane's or its sequence is below the
+witness's copy or the control plane's. A backup taken in the run the restore
+interrupts carries the current incarnation, so only the sequence catches it
+(`RootRestoreSameRun`). `WitnessLost` is a machine restart with the restore.
+Two windows stay open, as the design says: a root that goes back before the
+control plane heard its last sequence when no witness is left
+(`RestoreUnheard`), and one that goes back inside a mark interval of the
+batched log mark (`RestoreYoung`).
+
 Checked: `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety` (no
 two leaders commit different entries at one index), `AckedSurvive` (no set
 of copies that could elect a leader lacks an acknowledged record, which
@@ -2541,7 +2562,8 @@ leader is elected without a record acknowledged in an earlier term).
 Each knob drops one rule: `WipeKeepsId`, `NoRestoreCheck` (no gate in front
 of Raft), `NoStorageIdCheck` (a directory is not compared with the root's
 storage id), `NoVoteMark`, `VoteBeforeMark` (the vote is answered before its
-mark is synced) and `MarkForgetsCopy` (the marks do not name a copy id).
+mark is synced), `MarkForgetsCopy` (the marks do not name a copy id) and
+`NoRootSequence` (the gate does not compare the root sequence).
 `ExactMark = FALSE` with `RestoreYoung` is the fallback of Questions, 11.
 
 Abstracted: the log is durable when appended (`FelixRaft.tla` has the fsync
@@ -2549,7 +2571,12 @@ rules), messages are atomic steps, a learner needs no membership entry,
 nothing is purged, a rotated copy starts from an empty log, and the leader
 that stops on a follower going backwards is left out. A follower cuts and
 appends in one step, so its last log id never goes down; an implementation
-that syncs the mark between the two must not read a cut as a restore.
+that syncs the mark between the two must not read a cut as a restore. The
+witness is written in the same step as the mark, and the sequence is counted
+only for the broker that has a backup, from the backup on: an earlier write
+is in the backup. After a restore the witness is taken to hold the restored
+sequence, where a real one keeps the higher value. No configuration depends
+on that: a second restore of the same root is behind on its incarnation.
 
 ### Placement, lost disks and the voter set
 
@@ -2978,8 +3005,11 @@ acknowledged on local durability, as
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
 `admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that is not built and that
-openraft 0.10.0 lacks (issue #2307, under "A restarted follower" below). The
+ones either have no restart or pass on a rule that is not built (issue
+#2307, under "A restarted follower" below).
+`FelixRaftLeaseRestartRenews` passes on openraft's own start-time renewal,
+but only if `save_vote` is durable when it returns, which waits on the Raft
+engine. The
 module has two parts. The first is the lease the first
 version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
 later design in "Leases that survive sleep" and is not in the first version.
@@ -3014,19 +3044,31 @@ Checked:
   `DeliveredNeverReplaced`: what the subscriber was given is what every
   broker has committed at that offset.
 
-**A restarted follower.** The refusal window lives in memory. openraft 0.10.0
-builds the stored vote with a zero lease at startup, so a follower that
-answers the leader, restarts and is then asked for a vote grants it at once.
-`FelixRaftLeaseRestartForgets.cfg` shows the old leader still passing the
-lease check when the new one is elected. The design's hold on a restarted
-member stops it campaigning, and the model keeps that hold; it does not stop
-it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
-rule that closes it: a restarted broker refuses votes for one election
-timeout from its start. The design page now has this rule, as the vote hold
-(issue #2307). openraft 0.10.0 does not, and it is not built. Until it is
-built, `FelixRaftLeaseRestart.cfg`
-passing says only that the rule would be enough, and
-`FelixRaftLeaseRestartForgets.cfg` is what the engine does.
+**A restarted follower.** The refusal window lives in memory, so a follower
+that answers the leader, restarts and is then asked for a vote must not
+grant it at once. `FelixRaftLeaseRestartForgets.cfg` has no rule for that
+and shows the old leader still passing the lease check when the new one is
+elected. The design's hold on a restarted member stops it campaigning, and
+the model keeps that hold; it does not stop it granting a vote to a broker
+that never heard the leader. Two rules close it, and the model checks each
+alone:
+
+- The node layer's vote hold (issue #2307): a restarted broker refuses votes
+  for one election timeout from its start, whatever vote it stored.
+  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule.
+  It is not built.
+- openraft 0.10.0's renewal (`RestartRenewsFollowed`): `Engine::startup`
+  renews the window for one election timeout when the stored vote is
+  committed and another broker's, which is the vote of a follower that took
+  its leader's message. A vote given to a candidate gets no window, and a
+  restarted leader's own vote is demoted with none.
+  `FelixRaftLeaseRestartRenews.cfg` passes on it with the hold off. The
+  members a lease counts on have all taken the leader's message, so the
+  votes that get no window are not ones the lease rests on.
+
+The design does not rest the lease on the engine's rule staying as it is,
+so the gate still waits for the vote hold. Both configurations have one
+restart and two terms.
 
 **Store-liveness leases (later design).** The group sends nothing of its own.
 Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's

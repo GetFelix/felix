@@ -123,6 +123,7 @@ never have dialled the one that shipped to it.
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
+| `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
 
 #### Storage identity
 
@@ -1138,6 +1139,100 @@ in the follower's heartbeat, and the control plane promotes once a majority of
 the set names it. See `docs/replication-design.md`, "Failover on the
 followers' word".
 
+### Raft messages
+
+A broker that runs per-shard Raft groups (`docs/per-shard-raft.md`) sends its
+members' messages to the other members' brokers as `Raft` (kind 57), answered
+with `RaftAnswer` (kind 58). Both go only between peers that offered `RAFT`.
+A sender whose peer did not offer it sends nothing and tells Raft the member
+was unreachable, so a rolling upgrade looks like a peer that is down, and
+Raft tries again later.
+
+Each body is the correlation id, then a Raft body laid out by the
+replication crate (`crates/server/felix-replication/src/raft/wire.rs`). The
+frame layer reads only the correlation id. The Raft body is Felix's own
+layout, written field by field, not openraft's serde output, so upgrading
+openraft cannot change the bytes. Integers are big-endian. A name is a `u16`
+length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
+1 present) followed by the value.
+
+| Field | Layout |
+| --- | --- |
+| layout | `u8`, 1. A reader refuses any other |
+| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer |
+| deadline | `u32`: how long the sender waits for the answer, in milliseconds |
+| group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
+| member | broker (name), copy id `u64` |
+| beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
+| vote | term `u64`, the member voted for, committed `u8` |
+| log id | term `u64`, index `u64` |
+
+After the beat comes the message:
+
+- **Append**: the leader's vote, the previous log id (optional), the
+  leader's commit (optional), and for message 2 a `u32` count and that many
+  entries. An entry is its log id and a payload: `u8` 0 for a blank entry,
+  1 for a record (append time `u64`, `u32` length, the bytes), 2 for a
+  membership.
+- **Vote and pre-vote**: the candidate's vote, its last log id (optional),
+  and the vote of the leader that asked for the election (optional), which
+  is present only when a leader hands over leadership.
+- **Snapshot**: the leader's vote, the last log id the snapshot covers
+  (optional), and its membership with that membership's log id (optional).
+  It carries no data. A stream shard's state is its log, so no member takes
+  a snapshot: each answers `NoSnapshots`, and a member that is behind is
+  sent entries.
+- **Leader transfer**: the leader's vote, the member to take over, and the
+  leader's last log id (optional).
+
+A membership is a `u8` count of voter sets (two during a joint change), each
+a `u8` count and that many members, then the members that are not voters the
+same way. At most 64 members in a set.
+
+The answer has the same first byte, then:
+
+| Message | Then |
+| --- | --- |
+| 1 appended | `u8` 0 and the last log id accepted (optional); 1 a conflict at a log id, then an optional hint (a `u32` count and that many log ids); 2 a higher vote |
+| 2 voted | the voter's vote, granted `u8`, its last log id (optional) |
+| 3 snapshot | the member's vote |
+| 4 transferred | `u8` 0 accepted; 1 the vote changed (expected and actual votes); 2 the log is not flushed yet (expected and actual last log ids, optional) |
+| 16 unreachable | a reason (name layout, up to 1,024 bytes) |
+| 17 no such member | the group and member. The broker holds no member for that copy and epoch |
+| 18 stopped | the group and member, and a reason |
+| 19 no snapshots | the group and member |
+
+A body that does not read is answered as unreachable. A count larger than the
+bytes left can hold is refused before anything is sized from it, and so are
+trailing bytes. Records in an append stay slices of the received frame. A
+membership entry with no voters is refused.
+
+An append carries what crosses a 1 Gbit/s link in a quarter of its deadline:
+about 6 MB at the 200 ms heartbeat, never more than 32 MiB, and at least one
+record whatever its size. The rest of the deadline is for the follower's
+fsync and the answer. The sender cuts a longer append, and openraft takes the
+answer as a partial acknowledgement and sends the rest next. An append that
+could not arrive in time would be cut the same way on every retry, so a
+follower far behind would never catch up.
+
+Raft calls have in-flight budgets per peer of their own
+(`FELIX_INTERNAL_MAX_INFLIGHT` each), so groups waiting on a slow peer cannot
+take the permits its pings and fences need. Appends that carry entries have
+one budget and every other Raft message another, so appends stalled on a slow
+follower cannot shed other groups' heartbeats and votes.
+
+An append with entries goes on the replication streams. Every other Raft
+message goes on the control stream, so a heartbeat or a vote never waits
+behind records. The pool picks the stream from the message byte. A listener
+answers each `Raft` as it finishes, matched by correlation id, like the
+control requests: an append waits for an fsync that a vote behind it should
+not. At most 1,024 Raft messages run per stream; past that one is refused
+with `ReplicateError` `Overload`, and the sender treats it as unreachable.
+The listener reads the deadline from bytes 2 to 6 without decoding the rest,
+and gives up on a message at that deadline, or at 10 s if it names longer,
+answering `ReplicateError` `Unavailable`. The sender has given up by then, so a
+member stuck on storage cannot hold the stream's permits.
+
 ## Errors
 
 Typed, because they need different responses:
@@ -1192,8 +1287,8 @@ back to the detail whenever the fields are absent.
 `ElectionKeptFence` 48, `ReplicateHeaderedRecords` 49,
 `ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
-`FenceAttestedOk` 54, `ReplicateStampedRecords` 55 and
-`ReplicateStampedFetch` 56. A peer
+`FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
+`ReplicateStampedFetch` 56, `Raft` 57 and `RaftAnswer` 58. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -1324,9 +1419,9 @@ goes on its own class's streams:
 
 | Class | Streams | Carries |
 | --- | --- | --- |
-| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping` |
+| Control | 1 | `Hello`, `Fence`, `ReplicateFetch`, `PreVote`, `Ping`, and `Raft` that carries no entries |
 | Forward | `FELIX_INTERNAL_STREAMS_PER_CONN` | `ForwardPublish`, `ForwardCacheOp` |
-| Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log |
+| Replication | `FELIX_INTERNAL_STREAMS_PER_CONN` | every other `Replicate*` request, for every log, and `Raft` appends with entries |
 
 A forwarded `Quorum` publish is answered only after the owner's quorum wait,
 and that wait ends when the owner's replication to the other replicas is

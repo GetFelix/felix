@@ -476,12 +476,36 @@ same entries:
   rest on this one. A power cut cannot shorten what a peer counted.
 - **Written at index.** As soon as the records are written to the log,
   before the fsync, the adapter publishes the shard's written position:
-  the index one past the last record and its term. `client_write` cannot
-  give this, because it answers only when an entry is applied. So each
-  proposed batch carries a token in memory, which is never encoded, and
-  when the adapter's `append` meets the token it resolves it with the
-  index the batch landed at. That is the `Written` that `propose`
-  returns.
+  the index and term of the last record. `client_write` cannot give a
+  proposer this, because it answers only when an entry is applied. So a
+  proposed command carries a token (`raft_log::WrittenToken`), and when
+  the adapter's `append` has written the entry it resolves the token with
+  the entry's index and term. `propose` will put one on the last record
+  of a batch, which gives it the `Written` it returns.
+
+**The token is a field of the command, and it is never stored or sent.**
+The shard's command has a `written` field that serde skips and the codec
+does not encode. The codec hands the token to the adapter through
+`EntryCodec::written_token`. openraft moves the proposer's command from
+`client_write` into the leader's own `append` as it is, so the token
+arrives with the entry it belongs to. A follower's copy came over the
+wire or out of the log, so it has no token. The alternative was a table
+beside the log, keyed by the order of proposals. It was dropped because
+the adapter would have to match appends to proposals, and a refused
+proposal or a follower's append would shift the match.
+
+What a token says, and what it does not:
+
+- It resolves once, after the whole `append` is written and after the
+  written position has moved. At that moment the position is at or past
+  the record. A truncation after it can move the position back.
+- An `append` that fails resolves none of its tokens, and a command
+  dropped before it reached the log resolves none either. The proposer
+  reads that as an unknown outcome.
+- Written is not flushed and not committed. A power cut can take the
+  record, and a later leader can cut it and give the index to another
+  record. That is why the token carries the term: `await_commit` checks
+  the term at that index again.
 
 `propose` returns on the signal the stream's policy asks for. On a stream
 with fsync on commit it waits for the flush. On a `Periodic` stream it
@@ -544,8 +568,10 @@ Rules for the ticker:
   It spawns nothing per tick.
 - **Drop, never queue.** A tick still waiting when the next interval starts
   is dropped. openraft reads the clock when it handles a tick, so a late tick
-  sends one heartbeat and a dropped tick loses nothing. The ticker counts
-  dropped ticks per group as a metric.
+  sends one heartbeat and a dropped tick loses nothing. Each group counts its
+  dropped ticks (`GroupStatus::dropped_ticks`), and the broker counts them all
+  in one metric, `felix_broker_raft_dropped_ticks_total`. A label per group
+  would be a label per shard.
 - **Only due groups.** Decided (issue #2167). The ticker keeps, for each
   group, the time its next tick is due, and ticks only the groups that
   are due. A leader is due when its next heartbeat is. A follower is due
@@ -712,14 +738,24 @@ open:
   append". The adapter moves `written` as soon as an append has handed its
   entries to the log and `flushed` once they are fsynced, and a truncation
   moves both back. The publish path that waits on them is #2233.
+- A command may carry a `WrittenToken`. The leader's `append` resolves it
+  with the record's index and term once the record is written. Nothing
+  sets one yet: `propose` is the next pull request of #2233.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
 `GroupRouter`, which is the seam the upstream heartbeat coalescing wraps.
-The tests join three runtimes with a transport that calls `handle`
-directly. The transport over the broker's peer connections, and the
-capability a peer must offer before it is sent a Raft message, are not
-built yet (#2314).
+`PeerTransport` is the one over the broker's peer connections: it sends
+each message through the peer pool as an internal `Raft` frame, and a
+listener given the runtime (`PeerServer::with_raft`) hands it to `handle`
+and sends back the answer. Only a listener that runs the runtime offers the
+`RAFT` capability, and a broker that has not offered it is never sent a
+Raft message: the transport answers `Unreachable` without sending. The
+bytes are Felix's own layout, not openraft's serde output
+(`docs/internal-protocol.md`, "Raft messages"). Nothing in the broker
+builds the runtime yet, so no shipping broker offers the capability. The
+unit tests join three runtimes with a transport that calls `handle`
+directly; one test forms a group over real listeners on loopback.
 
 A leader's messages carry the gap described in "Idle groups", which is
 how idle groups slow down.
@@ -740,6 +776,14 @@ holds none. Two settings keep that true until retention is designed:
   to it, so a member behind its leader would drop records it was never
   sent. The member answers `NoSnapshots` and logs an error. A leader keeps
   its whole log, so a member that is behind is sent the entries.
+
+So the snapshot message between brokers carries only its metadata. A
+stream shard that needs more than entries, a learner started below the
+switch's base, is caught up by copying segments from a starting offset, as a
+rebuild does. A cache group's snapshot does carry data (#2238). That body
+will use the staged receive, framing, size cap and install slot that
+`felix-storage` shares with the control plane's group (#2364), sent as its
+own streamed message rather than inside one frame.
 
 Each group has a small state machine that keeps the last applied entry and
 the membership in memory. A shard's state is its log. A membership record's
@@ -1254,7 +1298,7 @@ off and stays registered as an expected violation.
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
 | #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
-| #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with it on. That twin has to be checked again against openraft 0.10.0, which renews the window for a committed stored vote, so the trace it shows must go through a vote that is not committed |
+| #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
 | #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
 
 **Placement and lost disks.** `FelixRaftPlacement.tla` puts the control
@@ -1362,6 +1406,14 @@ upstream asks are on issue #2215.
 10,000 members is a stress run. Its numbers go upstream and nothing passes
 or fails on it.
 
+The `Raft idle groups` workflow (`.github/workflows/raft-idle.yml`) runs
+the measurement every night and on demand, and puts the numbers in the run's
+summary. It runs twice: 5,000 groups led by one runtime whose peers are
+stubs, the worst case for one broker, and three runtimes in one process
+joined by the real peer transport on loopback (`RAFT_IDLE_PEERS=transport`),
+so the figure includes framing, QUIC and the listener. Until idle groups
+sleep, both report what ticking every group costs; nothing waits on them.
+
 Memory is the tight one, and it does not fit yet. The design assumed
 180 KB per leader member and 145 KB per follower. The runtime's memory test
 (Linux, release build, 120 idle members, a third leading) measures 436 KB
@@ -1414,7 +1466,7 @@ and the hybrid is what ships.
 | --- | --- | --- | --- |
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
-| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind a negotiated capability, follow in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
+| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
