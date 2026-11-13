@@ -346,7 +346,7 @@ What `plan` works out for one group, and `apply` then does:
    removed. The control plane records a broker as placed in the epoch
    before the leader sends it anything, and for a move's target before the
    leader proposes the change ("Membership"). Nothing takes a broker off
-   that record until the next epoch starts (#2419). So the target of a move that
+   that record until the next epoch starts. So the target of a move that
    was under way is listed, and so is a voter that was moved away. The
    command asks each listed broker for its copy when it runs. It keeps no
    earlier answer. For each one it shows the copy id, whether the copy
@@ -370,6 +370,19 @@ What `plan` works out for one group, and `apply` then does:
    If a copy's records name a voter that is not on the list, the group is
    blocked. With every placed broker recorded this cannot happen, so it
    only fires when the record is wrong.
+
+   The record is the shard assignment's `placed` field
+   (`docs/control-plane.md`, "Shard ownership"): the group epoch and the
+   brokers. The store adds a broker in the same write that first names it
+   and never removes one. The shard's first assignment starts it, and so
+   must the switch from the hybrid and each re-form, for the epoch they
+   begin. A group whose shard has no record (first assigned below metadata
+   level 31, or of a stream or cache restored from an export, even one first
+   assigned after the import) is blocked: no list of its brokers can be
+   trusted. In code,
+   `PlacedInEpoch::unaccounted` gives the brokers that block a group,
+   `off_record` the voters a copy names off the record, `only` the RF 1
+   test below, and `next_epoch` the record a re-form writes.
 2. **Refuse.** A group is left alone if any reachable copy reports a
    leader for the epoch, and blocked if a listed broker is unreachable and
    not declared dead.
@@ -387,8 +400,8 @@ What `plan` works out for one group, and `apply` then does:
    last log id reported, if some copy holds the entry the offset floor
    names. If none does, the base is the longest log a copy can vouch for
    (see "Offsets are not reused" below). Every other listed copy is a
-   learner. The listed brokers start the record of brokers placed in the
-   new epoch.
+   learner. The record of brokers placed in the new epoch starts with the
+   brokers placed now and every listed broker, voter or learner.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 

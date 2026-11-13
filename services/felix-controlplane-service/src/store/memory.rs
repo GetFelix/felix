@@ -330,6 +330,7 @@ impl InMemoryStore {
             shards: Arc::new(RwLock::new(ShardState {
                 records: HashMap::default(),
                 changes: ChangeLog::new(capacity),
+                unplaced: Default::default(),
                 placement: PlacementState::default(),
             })),
             replica_reports: Arc::new(RwLock::new(HashMap::default())),
@@ -635,7 +636,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        shards::put_shard_assignment(self, assignment, true).await
+        shards::put_shard_assignment(self, assignment, true, true).await
     }
 
     async fn put_shard_assignment_at_least(
@@ -652,6 +653,7 @@ impl ControlPlaneStore for InMemoryStore {
             Some(fence),
             true,
             at_least,
+            true,
             true,
         )
         .await
@@ -1165,6 +1167,9 @@ impl NodeState {
 struct ShardState {
     records: HashMap<ShardKey, ShardAssignment>,
     changes: ChangeLog<ShardAssignmentChange>,
+    /// The streams and caches an import restored: see
+    /// [`ExportedState::forget_placed`](crate::store::export::ExportedState::forget_placed).
+    unplaced: std::collections::BTreeSet<crate::model::ShardOwner>,
     /// Under the same lock as the records, so a fenced write checks and
     /// advances the token in the same step as it writes.
     placement: PlacementState,

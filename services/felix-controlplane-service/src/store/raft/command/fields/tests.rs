@@ -196,6 +196,10 @@ fn assignment() -> ShardAssignment {
             generation: 1,
             offset: 1,
         }],
+        placed: Some(crate::model::PlacedInEpoch {
+            epoch: 1,
+            brokers: BTreeSet::from([s("b")]),
+        }),
     }
 }
 
@@ -313,6 +317,7 @@ fn exported() -> ExportedState {
     ExportedState {
         deleted_stream_names: vec![stream_key()],
         deleted_cache_names: vec![cache_key()],
+        unplaced: [shard_key().owner(1)].into(),
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],
@@ -479,6 +484,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::PutShardAssignment {
             seq_generation: true,
             assignment: assignment(),
+            start_placed: true,
         },
         MetaCommand::PutShardAssignmentIf {
             seq_generation: true,
@@ -492,6 +498,7 @@ fn commands() -> Vec<MetaCommand> {
             fence: 1,
             at_least: 3,
             record_previous: true,
+            start_placed: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),
@@ -578,6 +585,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::ImportState {
             state: Box::new(exported()),
             overwrite: true,
+            mark_unplaced: true,
         },
         MetaCommand::InsertRefreshToken {
             token: refresh_token(),
