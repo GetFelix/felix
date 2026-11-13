@@ -89,7 +89,7 @@ pub(crate) async fn list_streams(
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix or is set on a stream that is not durable", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Stream already exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, a stream of this name was deleted before the fleet finalized `stream_incarnations`, `mount` overlaps the mount of another stream of the tenant, or a mount needs a newer metadata level than the group has reached", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry; or `not_ready`: the Raft group has not recorded its identity yet, retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_stream(

@@ -166,6 +166,7 @@ async fn an_identity_recorded_over_streams_adopts_existing_data() {
             namespace: namespace("t-a", "ns-1"),
         },
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream("t-a", "ns-1", "s"),
             incarnations: false,
@@ -179,4 +180,119 @@ async fn an_identity_recorded_over_streams_adopts_existing_data() {
     let restored = machine();
     restored.restore(&upgraded.snapshot().await).await;
     assert_eq!(restored.store().recorded_identity().await, Some(recorded));
+}
+
+/// Restoring an export taken before the identity existed brings back
+/// streams that brokers already hold, so the group adopts them under its own
+/// id rather than leaving wiping every broker as the only way out.
+#[tokio::test]
+async fn an_import_with_no_identity_over_streams_adopts_existing_data() {
+    let source = machine();
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+        MetaCommand::CreateStream {
+            needs_identity: false,
+            names: false,
+            stream: stream("t-a", "ns-1", "s"),
+            incarnations: false,
+        },
+    ] {
+        source.dispatch(command).await.expect("create");
+    }
+    let without = source.store().export_state().await;
+
+    let target = machine();
+    assert!(
+        !answer(&target, record("g-new", "hybrid"))
+            .await
+            .adopts_existing
+    );
+    target
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(without),
+            overwrite: true,
+        })
+        .await
+        .expect("import without identity");
+    assert_eq!(
+        target.store().recorded_identity().await,
+        Some(ClusterIdentity {
+            adopts_existing: true,
+            ..identity("g-new", "hybrid")
+        })
+    );
+}
+
+/// A create proposed at level 32 that reaches the log before the record is
+/// refused on every member and changes nothing. One proposed below 32
+/// carries no mark and applies as before, so older members agree.
+#[tokio::test]
+async fn a_create_marked_for_the_identity_waits_for_the_record() {
+    let machine = machine_with_tenant().await;
+    let marked = [
+        MetaCommand::CreateStream {
+            needs_identity: true,
+            names: false,
+            stream: stream("t-a", "ns-1", "s"),
+            incarnations: false,
+        },
+        MetaCommand::CreateCache {
+            needs_identity: true,
+            names: false,
+            cache: cache("t-a", "ns-1", "c"),
+            incarnations: false,
+        },
+        MetaCommand::CreateResources {
+            needs_identity: true,
+            names: false,
+            streams: vec![stream("t-a", "ns-1", "r")],
+            caches: vec![],
+            incarnations: false,
+        },
+    ];
+    for command in marked.clone() {
+        let err = machine.dispatch(command).await.expect_err("refused");
+        assert!(matches!(err, MetaError::IdentityPending(_)), "{err:?}");
+    }
+    assert!(!machine.store().held_data_catalog().await);
+
+    machine_with_tenant()
+        .await
+        .dispatch(MetaCommand::CreateStream {
+            needs_identity: false,
+            names: false,
+            stream: stream("t-a", "ns-1", "s"),
+            incarnations: false,
+        })
+        .await
+        .expect("an entry from below level 32 applies");
+
+    assert!(
+        !answer(&machine, record("g-1", "hybrid"))
+            .await
+            .adopts_existing
+    );
+    for command in marked {
+        machine.dispatch(command).await.expect("created");
+    }
+}
+
+async fn machine_with_tenant() -> MetadataStateMachine {
+    let machine = machine();
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+    ] {
+        machine.dispatch(command).await.expect("create");
+    }
+    machine
 }

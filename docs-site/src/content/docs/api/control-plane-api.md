@@ -584,7 +584,8 @@ does: a policy granting the cluster actions to a role, and an exchange.
 A create, update or delete of a tenant, namespace, stream or cache can answer
 `503`. Code `unavailable` means no Raft quorum committed the write in time and
 it may still land, so a retried create can answer `409` and a retried delete
-`404`.
+`404`. A stream or cache create answers `503` `not_ready` under Raft until the
+group has recorded its identity, which takes a few seconds after it forms.
 
 #### Creating several at once
 
@@ -613,6 +614,7 @@ Content-Type: application/json
 | `409` | an item exists with a different configuration (the message names it), `jump_hash` routing before the finalize, or a `mount` that overlaps another stream's | nothing |
 | `503` | `upgrade_in_progress`: a Raft member has not been upgraded yet | nothing |
 | `503` | `unavailable`: no quorum committed the write in time; it may still land | unknown |
+| `503` | `not_ready`: the Raft group has not recorded its identity yet; retry | nothing |
 
 A success lists every item in request order with `"status": "created"` or
 `"unchanged"`, so a caller that failed part-way sends the same batch again.

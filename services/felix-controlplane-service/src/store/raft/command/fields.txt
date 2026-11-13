@@ -1253,6 +1253,9 @@
 0 upsert_idp_issuer.issuer.issuer
 0 upsert_idp_issuer.issuer.jwks_url
 0 upsert_idp_issuer.tenant_id
+32 create_cache.needs_identity
+32 create_resources.needs_identity
+32 create_stream.needs_identity
 32 record_cluster_identity
 32 record_cluster_identity.group_id
 32 record_cluster_identity.shard_engine

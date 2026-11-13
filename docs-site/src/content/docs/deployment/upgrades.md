@@ -763,8 +763,10 @@ A broker refuses to start when:
 
 If the control plane lost its volumes, first restore its metadata from its
 latest export with `import` (see [backup and restore](/deployment/backup-and-restore/#restoring)).
-The export carries the old group id, so the brokers accept it and keep their
-data. Only if there is no export: stop each broker, wipe its whole data
+An export carries the old group id, so the brokers accept it and keep their
+data. An export taken before group ids existed has none: the control plane
+keeps its new id but records that it adopts existing data, so the brokers
+accept it too. Only if there is no export: stop each broker, wipe its whole data
 directory, and start it again. It joins as a new, empty broker and takes its
 shards from the others.
 

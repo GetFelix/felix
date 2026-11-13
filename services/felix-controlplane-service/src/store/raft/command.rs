@@ -115,6 +115,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     PatchStream {
         key: StreamKey,
@@ -152,6 +156,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     PatchCache {
         key: CacheKey,
@@ -455,6 +463,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     /// Revoke principals' broker tokens issued at or before `revoked_at`,
     /// which the proposer decided. Level 7.
@@ -734,6 +746,9 @@ pub enum MetaError {
     /// does not know. Fatal to serve from, never silently skipped.
     #[error("unsupported command: {0}")]
     Unsupported(String),
+    /// A create refused because the group has not recorded its identity.
+    #[error("{0}")]
+    IdentityPending(String),
 }
 
 impl From<StoreError> for MetaError {
@@ -753,6 +768,9 @@ impl From<MetaError> for StoreError {
             MetaError::Conflict(what) => StoreError::Conflict(what),
             MetaError::Internal(msg) | MetaError::Unsupported(msg) => {
                 StoreError::Unexpected(anyhow::anyhow!(msg))
+            }
+            MetaError::IdentityPending(_) => {
+                StoreError::Unexpected(crate::store::identity::IdentityPending.into())
             }
         }
     }

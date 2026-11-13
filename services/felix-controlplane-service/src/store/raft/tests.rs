@@ -10,7 +10,20 @@ use super::*;
 use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
 use crate::store::StoreConfig;
 
+/// A formed single-member group with its identity in place, so stream and
+/// cache creates go through. Set on the applied state rather than through the
+/// log: a level-32 entry would hold back the older members many tests add.
 pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
+    let store = unrecorded_store(dir).await;
+    store
+        .local()
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
+        .await;
+    store
+}
+
+/// A formed single-member group with no identity recorded yet.
+async fn unrecorded_store(dir: &std::path::Path) -> Arc<RaftStore> {
     let inner = Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: 100,
         change_retention_max_rows: Some(1_000),
@@ -3963,7 +3976,8 @@ async fn a_mount_waits_for_every_member() {
         .create_stream(mounted("orders", "orders/"))
         .await
         .expect("mounted");
-    assert_eq!(store.machine.levels_used(), super::MOUNT_LEVEL);
+    // A create at 32 also carries the identity flag.
+    assert_eq!(store.machine.levels_used(), super::IDENTITY_LEVEL);
     let err = store
         .create_stream(mounted("returns", "orders/returns/"))
         .await
@@ -4088,7 +4102,7 @@ async fn recorded(store: &RaftStore) -> crate::store::identity::ClusterIdentity 
 #[tokio::test]
 async fn a_formed_group_records_one_identity_and_keeps_it() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = single_node_store(dir.path()).await;
+    let store = unrecorded_store(dir.path()).await;
     assert_eq!(
         store.group_identity().await.expect("identity"),
         crate::store::identity::GroupIdentity::Pending
@@ -4123,7 +4137,7 @@ async fn a_formed_group_records_one_identity_and_keeps_it() {
 #[tokio::test]
 async fn the_identity_recorder_stops_on_shutdown() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let store = single_node_store(dir.path()).await;
+    let store = unrecorded_store(dir.path()).await;
     // Below the level the command needs, so it can only retry.
     let version = Arc::new(std::sync::atomic::AtomicU16::new(31));
     let addr = stub_member(Arc::clone(&version)).await;
@@ -4145,4 +4159,60 @@ async fn the_identity_recorder_stops_on_shutdown() {
         .await
         .expect("stopped")
         .expect("join");
+}
+
+/// Until the group records its identity, stream and cache creates are
+/// refused before they reach the log, as 503 `not_ready`: one created first
+/// would make a new group's record adopt brokers' data.
+#[tokio::test]
+async fn creates_wait_for_the_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < super::IDENTITY_LEVEL {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    let applied = store.handle.status().last_applied_index;
+    let stream = || routed_stream("orders", crate::model::StreamRouting::Modulo);
+    let refusals = [
+        store.create_stream(stream()).await.map(drop),
+        store.create_cache(incarnated_cache("c", 0)).await.map(drop),
+        store
+            .create_resources(vec![stream()], vec![])
+            .await
+            .map(drop),
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("refused");
+        let api = crate::api::error::api_internal("failed to create", &err);
+        assert_eq!(api.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(api.body.code, "not_ready");
+    }
+    assert_eq!(store.handle.status().last_applied_index, applied);
+
+    store
+        .propose(MetaCommand::RecordClusterIdentity {
+            group_id: "g-1".to_string(),
+            shard_engine: "hybrid".to_string(),
+        })
+        .await
+        .expect("record");
+    assert!(!recorded(&store).await.adopts_existing);
+    store.create_stream(stream()).await.expect("created");
 }

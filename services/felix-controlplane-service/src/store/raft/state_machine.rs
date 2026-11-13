@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use crate::raft::AppStateMachine;
 use crate::store::memory::{Decide, FleetRule, InMemoryStore, ShardCleanup};
 use crate::store::raft::command::{
-    MetaCommand, MetaResponse, MetaResult, decode_command_with_level, encode_result,
+    MetaCommand, MetaError, MetaResponse, MetaResult, decode_command_with_level, encode_result,
 };
 use crate::store::{AssignmentWrite, AuthStore, ControlPlaneStore};
 
@@ -175,6 +175,18 @@ impl MetadataStateMachine {
             .fetch_max(level, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// A create proposed at level 32 is refused until the identity is
+    /// recorded, so it cannot make the record adopt brokers' data. Only such
+    /// an entry carries `needs`, so a member below 32 never sees one.
+    async fn require_identity(&self, needs: bool) -> Result<(), MetaError> {
+        if needs && self.store.recorded_identity().await.is_none() {
+            return Err(MetaError::IdentityPending(
+                crate::store::identity::IdentityPending.to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Apply one already-decoded command. Public for the determinism
     /// harness; the Raft path arrives through [`AppStateMachine::apply`].
     pub async fn dispatch(&self, command: MetaCommand) -> MetaResult {
@@ -224,11 +236,15 @@ impl MetadataStateMachine {
                 stream,
                 incarnations,
                 names,
-            } => store
-                .apply_create_stream(stream, decide(incarnations, names))
-                .await
-                .map(|stream| MetaResponse::Stream { stream })
-                .map_err(Into::into),
+                needs_identity,
+            } => {
+                self.require_identity(needs_identity).await?;
+                store
+                    .apply_create_stream(stream, decide(incarnations, names))
+                    .await
+                    .map(|stream| MetaResponse::Stream { stream })
+                    .map_err(Into::into)
+            }
             MetaCommand::PatchStream { key, patch, fence } => store
                 .apply_patch_stream(&key, patch, fence)
                 .await
@@ -253,11 +269,15 @@ impl MetadataStateMachine {
                 cache,
                 incarnations,
                 names,
-            } => store
-                .apply_create_cache(cache, decide(incarnations, names))
-                .await
-                .map(|cache| MetaResponse::Cache { cache })
-                .map_err(Into::into),
+                needs_identity,
+            } => {
+                self.require_identity(needs_identity).await?;
+                store
+                    .apply_create_cache(cache, decide(incarnations, names))
+                    .await
+                    .map(|cache| MetaResponse::Cache { cache })
+                    .map_err(Into::into)
+            }
             MetaCommand::PatchCache { key, patch } => store
                 .patch_cache(&key, patch)
                 .await
@@ -299,19 +319,23 @@ impl MetadataStateMachine {
                 caches,
                 incarnations,
                 names,
-            } => store
-                .apply_create_resources(streams, caches, decide(incarnations, names))
-                .await
-                .map(|(streams, caches)| {
-                    if caches.iter().any(|cache| cache.incarnation != 0) {
-                        MetaResponse::Resources { streams, caches }
-                    } else if streams.iter().any(|stream| stream.incarnation != 0) {
-                        MetaResponse::Streams { streams }
-                    } else {
-                        MetaResponse::Unit
-                    }
-                })
-                .map_err(Into::into),
+                needs_identity,
+            } => {
+                self.require_identity(needs_identity).await?;
+                store
+                    .apply_create_resources(streams, caches, decide(incarnations, names))
+                    .await
+                    .map(|(streams, caches)| {
+                        if caches.iter().any(|cache| cache.incarnation != 0) {
+                            MetaResponse::Resources { streams, caches }
+                        } else if streams.iter().any(|stream| stream.incarnation != 0) {
+                            MetaResponse::Streams { streams }
+                        } else {
+                            MetaResponse::Unit
+                        }
+                    })
+                    .map_err(Into::into)
+            }
             MetaCommand::FinalizeFleetFeature { feature } => {
                 let level = MetaCommand::FinalizeFleetFeature {
                     feature: feature.clone(),
@@ -630,13 +654,20 @@ impl MetadataStateMachine {
                 // A restore from an export is a restore of that group, so it
                 // adopts the export's identity. An export with none (taken
                 // before one was recorded, or from a memory store) keeps the
-                // identity the group already has.
+                // group's id, and adopts brokers' data if the import brought
+                // streams or caches, as an in-place upgrade would.
                 let kept = store.recorded_identity().await;
                 let mut state = *state;
                 state.forget_placed();
                 store.import_state(state).await?;
                 if let Some(identity) = kept {
-                    store.apply_record_identity(identity).await;
+                    let adopts_existing = store.held_data_catalog().await;
+                    store
+                        .apply_record_identity(crate::store::identity::ClusterIdentity {
+                            adopts_existing,
+                            ..identity
+                        })
+                        .await;
                 }
                 self.recompute_floor().await;
                 self.node_reset(None);

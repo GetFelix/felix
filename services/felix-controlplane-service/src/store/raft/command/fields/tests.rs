@@ -433,6 +433,7 @@ fn commands() -> Vec<MetaCommand> {
             incarnations: true,
         },
         MetaCommand::CreateStream {
+            needs_identity: true,
             names: true,
             stream: stream(),
             incarnations: true,
@@ -450,6 +451,7 @@ fn commands() -> Vec<MetaCommand> {
             incarnations: true,
         },
         MetaCommand::CreateCache {
+            needs_identity: true,
             names: true,
             cache: cache(),
             incarnations: true,
@@ -627,6 +629,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RegisterNodeInFleet { node: node() },
         MetaCommand::FinalizeFleetFeature { feature: s("f") },
         MetaCommand::CreateResources {
+            needs_identity: true,
             names: true,
             streams: vec![stream()],
             caches: vec![cache()],
@@ -842,6 +845,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     plain.mount = None;
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: plain,
             incarnations: false
@@ -853,6 +857,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     unmounted.mount = None;
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: unmounted,
             incarnations: false
@@ -862,6 +867,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     );
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream(),
             incarnations: false

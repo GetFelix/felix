@@ -30,6 +30,12 @@ impl ClusterIdentity {
     }
 }
 
+/// A stream or cache create refused while the group has not recorded its
+/// identity: created first, it would make the record adopt brokers' data.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("the metadata group has not recorded its identity yet; retry shortly")]
+pub struct IdentityPending;
+
 /// What a store knows of its group's identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GroupIdentity {

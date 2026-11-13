@@ -49,6 +49,7 @@ async fn a_stale_conditional_assignment_write_is_answered_not_applied() {
             namespace: namespace("t1", "ns"),
         },
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
@@ -284,6 +285,7 @@ async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
 
     let mut envelope: serde_json::Value =
         serde_json::from_slice(&encode_command(&MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
@@ -375,11 +377,13 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             namespace: namespace("t1", "ns"),
         },
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream("t1", "ns", "orders"),
             incarnations: false,
         },
         MetaCommand::CreateCache {
+            needs_identity: false,
             names: false,
             cache: cache("t1", "ns", "orders"),
             incarnations: false,

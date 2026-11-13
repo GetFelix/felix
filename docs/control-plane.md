@@ -981,6 +981,10 @@ in place has it set, and a broker whose data directory holds data but no group
 record adopts such a group instead of refusing. A group formed on an empty
 store does not, and such a broker is refused.
 
+Until the record exists, a group at level 32 refuses stream and cache creates
+with 503 `not_ready`, so nothing created in that window can set
+`adopts_existing` on a new group.
+
 `GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
 "hybrid"}`, plus `"adopts_existing": true` when set. Every snapshot and every
 change-feed page (tenants, namespaces, streams, caches) carries `group_id`, so
@@ -995,8 +999,9 @@ warning and keeps running. The record wins.
 
 The identity is part of the Raft snapshot. An `ImportState` (a restore from
 an export) adopts the export's identity, `adopts_existing` included, since it
-restores that group. An export that carries none leaves the group's own in
-place. Importing one cluster's export into another gives it that cluster's
+restores that group. An export that carries none keeps the group's own id
+and sets `adopts_existing` if the import brought streams or caches, so
+brokers that kept their data accept the restored group. Importing one cluster's export into another gives it that cluster's
 group id, so the brokers of both accept it: use import only to restore.
 
 ### Shard ownership

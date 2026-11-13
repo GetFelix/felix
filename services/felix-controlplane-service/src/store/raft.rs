@@ -127,6 +127,10 @@ const READMITTED_LEVEL: u16 = 30;
 /// in a shard's epoch (`ShardAssignment::placed`).
 const PLACED_LEVEL: u16 = 31;
 
+/// The metadata level whose members record the group's identity, and refuse
+/// stream and cache creates until it is recorded.
+const IDENTITY_LEVEL: u16 = 32;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -176,6 +180,21 @@ impl RaftStore {
         self.handle
             .cluster_version_with_unknown_at(self.machine.join_floor())
             .await
+    }
+
+    /// Whether a create at `level` must wait for the identity. Refused here
+    /// while the record is missing, and marked so the apply refuses it too
+    /// if it reaches the log first.
+    async fn needs_identity(&self, level: u16) -> StoreResult<bool> {
+        if level < IDENTITY_LEVEL {
+            return Ok(false);
+        }
+        if self.local().recorded_identity().await.is_none() {
+            return Err(StoreError::Unexpected(
+                crate::store::identity::IdentityPending.into(),
+            ));
+        }
+        Ok(true)
     }
 
     /// A mount is refused below [`MOUNT_LEVEL`] rather than dropped: a member
@@ -448,6 +467,7 @@ impl ControlPlaneStore for RaftStore {
     async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
         let level = self.group_level().await;
         Self::require_mount_level(level, stream.mount.is_some())?;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::decides_at(level);
         if incarnations && stream.incarnation == 0 {
             stream.incarnation = crate::model::proposed_incarnation();
@@ -459,6 +479,7 @@ impl ControlPlaneStore for RaftStore {
                     stream,
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -543,6 +564,7 @@ impl ControlPlaneStore for RaftStore {
 
     async fn create_cache(&self, mut cache: Cache) -> StoreResult<Cache> {
         let level = self.group_level().await;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, std::slice::from_ref(&cache));
         if incarnations && cache.incarnation == 0 {
             cache.incarnation = crate::model::proposed_incarnation();
@@ -554,6 +576,7 @@ impl ControlPlaneStore for RaftStore {
                     cache,
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -619,6 +642,7 @@ impl ControlPlaneStore for RaftStore {
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
         let level = self.group_level().await;
         Self::require_mount_level(level, streams.iter().any(|s| s.mount.is_some()))?;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, &caches);
         let (mut streams, mut caches) = (streams, caches);
         if incarnations {
@@ -648,6 +672,7 @@ impl ControlPlaneStore for RaftStore {
                     caches: caches.clone(),
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -688,6 +713,7 @@ impl ControlPlaneStore for RaftStore {
             caches: Vec::new(),
             incarnations: false,
             names: false,
+            needs_identity: false,
         }
         .version();
         self.group_level().await >= needs

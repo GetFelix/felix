@@ -153,6 +153,18 @@ fn an_upgraded_group_adopts_a_directory_with_data_and_no_record() {
     assert_eq!(read(dir.path()).expect("read").as_deref(), Some("g-1"));
 }
 
+/// The control plane lost its volumes, re-formed on an empty catalog, and
+/// then restored an export taken before identities existed. It keeps its new
+/// id but now adopts, so a broker refused before the restore starts after it.
+#[test]
+fn a_restore_of_an_export_without_identity_lets_a_refused_directory_adopt() {
+    let dir = used();
+    admit(dir.path(), &identity(Some("g-new"), "hybrid")).expect_err("refused before");
+    let group = admit(dir.path(), &upgraded("g-new")).expect("adopted after the restore");
+    assert_eq!(group.as_deref(), Some("g-new"));
+    assert_eq!(read(dir.path()).expect("read").as_deref(), Some("g-new"));
+}
+
 /// The flag never overrides a record of another group.
 #[test]
 fn an_upgraded_group_still_refuses_another_groups_record() {
