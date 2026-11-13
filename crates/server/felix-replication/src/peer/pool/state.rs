@@ -23,6 +23,9 @@ pub(super) struct Peer {
     /// that ends those waits would be shed.
     pub(super) inflight: Arc<Semaphore>,
     pub(super) replication_inflight: Arc<Semaphore>,
+    /// Raft messages have their own, so thousands of groups waiting on a slow
+    /// follower cannot take the budget its pings and fences need.
+    pub(super) raft_inflight: Arc<Semaphore>,
 }
 
 impl Peer {
@@ -32,6 +35,7 @@ impl Peer {
             state: tokio::sync::Mutex::new(PeerState::default()),
             inflight: Arc::new(Semaphore::new(max_inflight)),
             replication_inflight: Arc::new(Semaphore::new(max_inflight)),
+            raft_inflight: Arc::new(Semaphore::new(max_inflight)),
         }
     }
 

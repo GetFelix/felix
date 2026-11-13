@@ -175,3 +175,55 @@ async fn a_silent_peer_times_out() {
     pool.shutdown().await;
     listener.stop().await;
 }
+
+/// Raft calls have a budget of their own: groups waiting on a slow peer
+/// cannot take the permits its pings need.
+#[tokio::test]
+async fn raft_calls_do_not_take_the_budget_pings_need() {
+    struct Slow;
+    #[async_trait::async_trait]
+    impl crate::peer::RaftHandler for Slow {
+        async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            body
+        }
+    }
+    let config = PeerTransportConfig {
+        max_inflight_per_peer: 2,
+        request_timeout: Duration::from_secs(10),
+        ..config()
+    };
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config)
+        .await
+        .with_raft(Arc::new(Slow));
+    let addr = server.local_addr().expect("addr");
+    let stop = CancellationToken::new();
+    tokio::spawn(server.serve(stop.clone()));
+    let pool = pool(config);
+
+    let mut inflight = Vec::new();
+    for _ in 0..2 {
+        let pool = Arc::clone(&pool);
+        inflight.push(tokio::spawn(async move {
+            let call = InternalMessage::Raft(felix_wire::internal::RaftCall {
+                correlation_id: 0,
+                body: bytes::Bytes::from_static(b"\x01\x03"),
+            });
+            pool.request(PEER, addr, call).await
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let ping = InternalMessage::Ping(felix_wire::internal::Ping { correlation_id: 0 });
+    let answer = tokio::time::timeout(Duration::from_secs(2), pool.request(PEER, addr, ping))
+        .await
+        .expect("the ping waited")
+        .expect("the ping was shed");
+    assert!(matches!(answer, InternalMessage::Pong(_)), "{answer:?}");
+
+    pool.shutdown().await;
+    stop.cancel();
+    for task in inflight {
+        task.abort();
+    }
+}

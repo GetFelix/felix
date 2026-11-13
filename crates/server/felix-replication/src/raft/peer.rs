@@ -53,7 +53,7 @@ impl<R> RaftTransport for PeerTransport<R>
 where
     R: PeerRequester + Send + Sync + 'static,
 {
-    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+    async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         let broker = Arc::clone(&request.to().broker);
         let unreachable =
             |detail: String| Refused::Unreachable(format!("broker {broker}: {detail}"));
@@ -71,6 +71,7 @@ where
         if !offered.contains(PeerCapabilities::RAFT) {
             return Err(unreachable("it has not offered Raft".into()));
         }
+        wire::fit(&mut request);
         let body = wire::encode_request(&request).map_err(|err| unreachable(err.to_string()))?;
         let call = InternalMessage::Raft(RaftCall {
             correlation_id: 0,

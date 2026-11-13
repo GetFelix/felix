@@ -259,8 +259,9 @@ impl PeerPool {
         // without being dialled. Dropping the permit is what releases it, which
         // covers every exit below including a timeout.
         let class = LaneClass::of(&message);
-        let budget = match class {
-            LaneClass::Forward => &peer.inflight,
+        let budget = match (&message, class) {
+            (InternalMessage::Raft(_), _) => &peer.raft_inflight,
+            (_, LaneClass::Forward) => &peer.inflight,
             _ => &peer.replication_inflight,
         };
         let Ok(_permit) = Arc::clone(budget).try_acquire_owned() else {

@@ -335,3 +335,75 @@ fn the_pool_reads_the_append_entries_tag_where_it_is() {
     let heartbeat = encode_request(&every_request()[0]).expect("encode");
     assert_ne!(heartbeat[1], crate::peer::RAFT_APPEND_ENTRIES);
 }
+
+/// An append too big for one frame is cut, and openraft sends the rest
+/// next: without the cut it would fail to encode on every retry.
+#[test]
+fn a_large_append_is_cut_to_fit_a_frame() {
+    let record = Bytes::from(vec![7u8; 1024 * 1024]);
+    let entries = (1..=100)
+        .map(|index| {
+            EntryOf::<ShardTypes>::new_normal(
+                log_id(2, index),
+                Command {
+                    timestamp_micros: 1,
+                    payload: record.clone(),
+                },
+            )
+        })
+        .collect();
+    let mut written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries,
+        leader_commit: None,
+    }));
+    fit(&mut written);
+    let Request::Append(rpc) = &written.body else {
+        unreachable!()
+    };
+    assert!(
+        (1..100).contains(&rpc.entries.len()),
+        "{}",
+        rpc.entries.len()
+    );
+    let encoded = encode_request(&written).expect("encode");
+    assert!(encoded.len() < felix_wire::internal::MAX_BODY_BYTES as usize);
+
+    // One record is always sent, however large.
+    let mut one = written.clone_append(1);
+    fit(&mut one);
+    let Request::Append(rpc) = &one.body else {
+        unreachable!()
+    };
+    assert_eq!(rpc.entries.len(), 1);
+}
+
+#[test]
+fn a_membership_entry_with_no_voters_is_refused() {
+    let empty = Membership::new_with_defaults(vec![BTreeSet::new()], BTreeSet::new());
+    let written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_membership(log_id(2, 1), empty)],
+        leader_commit: None,
+    }));
+    let bytes = encode_request(&written).expect("encode");
+    let refused = decode_request(bytes).expect_err("refused");
+    assert!(refused.to_string().contains("no voters"), "{refused}");
+}
+
+impl RaftRequest {
+    /// The first `n` entries of an append, with the rest of the request.
+    fn clone_append(&self, n: usize) -> RaftRequest {
+        let Request::Append(rpc) = &self.body else {
+            unreachable!()
+        };
+        request(Request::Append(AppendEntriesRequest {
+            vote: rpc.vote.clone(),
+            prev_log_id: rpc.prev_log_id.clone(),
+            entries: rpc.entries[..n].to_vec(),
+            leader_commit: rpc.leader_commit.clone(),
+        }))
+    }
+}

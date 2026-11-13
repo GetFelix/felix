@@ -57,8 +57,38 @@ const MAX_CONFIGS: usize = 2;
 const MAX_REASON_BYTES: usize = 1024;
 /// Smallest encoded entry: a log id and a payload tag.
 const MIN_ENTRY_BYTES: usize = 17;
+/// Most record bytes one append carries, well inside a frame. openraft
+/// takes the shorter append as a partial acknowledgement and sends the rest
+/// next, so a follower far behind still catches up.
+const MAX_APPEND_BYTES: usize = 32 * 1024 * 1024;
+/// What an entry costs on the wire besides its record.
+const ENTRY_OVERHEAD: usize = 64;
+
 /// Smallest encoded log id in a conflict hint.
 const LOG_ID_BYTES: usize = 16;
+
+/// Cut an append's entries to what fits in [`MAX_APPEND_BYTES`], keeping at
+/// least one.
+pub(crate) fn fit(request: &mut RaftRequest) {
+    let Request::Append(rpc) = &mut request.body else {
+        return;
+    };
+    let mut bytes = 0;
+    let keep = rpc
+        .entries
+        .iter()
+        .position(|entry| {
+            bytes += ENTRY_OVERHEAD
+                + match &entry.payload {
+                    EntryPayload::Normal(command) => command.payload.len(),
+                    _ => 0,
+                };
+            bytes > MAX_APPEND_BYTES
+        })
+        .unwrap_or(rpc.entries.len())
+        .max(1);
+    rpc.entries.truncate(keep);
+}
 
 pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     let mut buf = BytesMut::new();
@@ -382,7 +412,16 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                 },
             )
         }
-        2 => EntryOf::<ShardTypes>::new_membership(log_id, take_membership(buf)?),
+        2 => {
+            // A config with no voters would let a joint quorum pass with no
+            // votes. Only a snapshot's default membership is empty.
+            let membership = take_membership(buf)?;
+            let configs = membership.get_joint_config();
+            if configs.is_empty() || configs.iter().any(BTreeSet::is_empty) {
+                return Err(invalid("a membership entry names no voters".into()));
+            }
+            EntryOf::<ShardTypes>::new_membership(log_id, membership)
+        }
         other => return Err(invalid(format!("{other} is not an entry payload"))),
     })
 }
