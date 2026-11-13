@@ -1282,8 +1282,9 @@ What an operator can do:
 
 Under the simulator boottime is the simulator's clock while the
 monotonic side is tokio's, so the two drift apart and the check may
-refuse for good. Raft groups do not run under the simulator yet; when
-they do, both sides must read one clock.
+refuse for good. The simulator's Raft groups never ask the check, since
+nothing acknowledges on the lease yet (issue #2436); before one does,
+both sides must read one clock.
 
 > `crates/server/felix-replication/src/raft/tests/lease.rs`: one test per
 > rule, each named for it. The model is `docs/formal/FelixRaftLease.tla`.
