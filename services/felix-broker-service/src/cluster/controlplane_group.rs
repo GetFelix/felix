@@ -137,9 +137,10 @@ pub(crate) fn write(root: &Path, id: &str) -> Result<()> {
 
 /// What to do about a refusal: restoring the control plane comes first.
 pub(crate) const RECOVER: &str = "If the control plane lost its volumes, restore its latest export \
-     with `import` and restart the broker: an export with a group id brings that id back, and one \
-     taken before group ids existed makes the control plane adopt the brokers' data. Only if no \
-     export exists: stop the broker, wipe its whole data directory and start it again";
+     with `import` and restart the broker: an export with a group id brings that id back. An \
+     export without one only lets the control plane adopt brokers that have no group record yet; a \
+     broker that already names another group needs an export carrying that group's id. Otherwise \
+     stop the broker, wipe its whole data directory and start it again";
 
 /// The refusal for a directory written under another group.
 pub(crate) fn other_group_message(stored: &str, current: &str) -> String {

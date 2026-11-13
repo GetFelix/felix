@@ -765,9 +765,10 @@ If the control plane lost its volumes, first restore its metadata from its
 latest export with `import` (see [backup and restore](/deployment/backup-and-restore/#restoring)).
 An export carries the old group id, so the brokers accept it and keep their
 data. An export taken before group ids existed has none: the control plane
-keeps its new id but records that it adopts existing data, so the brokers
-accept it too. Only if there is no export: stop each broker, wipe its whole data
-directory, and start it again. It joins as a new, empty broker and takes its
+keeps its new id and adopts brokers that have no group record yet. A broker
+that already names a group needs an export carrying that group's id, so take
+an export after the upgrade records the identity. Otherwise stop the broker,
+wipe its whole data directory, and start it again. It joins as a new, empty broker and takes its
 shards from the others.
 
 A broker that is already running when the control plane is recreated refuses
@@ -788,7 +789,8 @@ Existing broker data directories name no group id, and they keep their data:
    all members run the new release (metadata level 32) and a leader exists.
    Because it already holds streams, it records that the id was taken over an
    existing catalog. `GET /v1/cluster/identity` then answers with
-   `"adopts_existing": true`.
+   `"adopts_existing": true`. Until every member has reported its version
+   once, stream and cache creates answer `503`.
 2. Then roll the brokers as usual. Each one finds data and no group id, sees
    `adopts_existing`, records the group id and starts. Nothing is wiped.
 

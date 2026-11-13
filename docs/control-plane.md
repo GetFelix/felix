@@ -1002,8 +1002,11 @@ warning and keeps running. The record wins.
 The identity is part of the Raft snapshot. An `ImportState` (a restore from
 an export) adopts the export's identity, `adopts_existing` included, since it
 restores that group. An export that carries none keeps the group's own id
-and sets `adopts_existing` if the import brought streams or caches, so
-brokers that kept their data accept the restored group. Importing one cluster's export into another gives it that cluster's
+and sets `adopts_existing` if the import brought streams or caches. That
+lets brokers with no group record accept the restored group; a broker that
+already names another group still refuses it and needs an export carrying its
+group's id, or its data wiped. Take an export after the upgrade records the
+identity. Importing one cluster's export into another gives it that cluster's
 group id, so the brokers of both accept it: use import only to restore. An
 export that carries an identity needs every member at level 32, and the
 leader refuses its import until then.

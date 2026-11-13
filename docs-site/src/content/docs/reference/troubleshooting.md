@@ -140,11 +140,11 @@ another group refuses it, counts it in
 `felix_broker_controlplane_group_mismatch_total` and stops.
 
 If the control plane lost its volumes, restore its latest export with `import`
-first: that brings back the old group id, or, for an export taken before group
-ids existed, makes the control plane adopt the brokers' data. Either way the
-brokers keep their data. Only if
-there is no export, stop the broker, wipe its whole data directory and start
-it again. It joins as a new, empty broker and takes its shards from the
+first: that brings back the old group id. An export taken before group ids
+existed only lets the control plane adopt brokers that have no group record
+yet. A broker that already names a group needs an export carrying that group's
+id, so take an export after the upgrade records the identity. Otherwise stop
+the broker, wipe its whole data directory and start it again. It joins as a new, empty broker and takes its shards from the
 others. See [upgrades](/deployment/upgrades/#a-recreated-control-plane).
 
 ### The broker waits for the control plane's identity
