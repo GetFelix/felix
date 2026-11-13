@@ -107,6 +107,22 @@ where
     {
         peer.unified_fence = false;
     }
+    // Before anything opens: a broker asked for Raft shards that came up as
+    // a hybrid one would write a shard its peers run under Raft.
+    if crate::config::shard_engine()? == crate::config::ShardEngine::Raft {
+        let missing = crate::config::RaftPrerequisites {
+            compiled: cfg!(feature = "raft"),
+            membership: config.membership.is_some(),
+            peer_transport: config.peer_transport.is_some(),
+            durable_storage: durable_config.is_some(),
+        }
+        .missing();
+        // 4h: start the group runtime here instead once shards route to it.
+        anyhow::bail!(
+            "FELIX_SHARD_ENGINE=raft is refused: {}",
+            missing.unwrap_or("no build routes a shard to Raft yet")
+        );
+    }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
