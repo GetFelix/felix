@@ -383,6 +383,11 @@ second vote to contradict. Neither the mark nor the records are Raft state:
 a member that holds only those still counts as empty, and `form-without`
 still accepts it.
 
+The model checks the three steps (`docs/formal/FelixRaftPlacementFormEarlyWipe.cfg`,
+`FelixRaftPlacementFormEarlyWipeFirstBoot.cfg`), and shows a member voting
+twice in a term without the record
+(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`).
+
 What it costs:
 
 - **A first start needs every member on a build that has the route.** A
