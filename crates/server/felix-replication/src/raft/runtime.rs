@@ -104,6 +104,10 @@ impl RuntimeConfig {
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
+            // A restarted leader would stand for the next term as it
+            // starts. A restarted member waits out `election_max` first,
+            // as the members that promised it do.
+            enable_leader_restore: Some(false),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.

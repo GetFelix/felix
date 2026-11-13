@@ -1162,8 +1162,8 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.start(true);
     cluster.open(0).await;
 
-    // What each member read back from its log. The old leader's vote is
-    // still its own, so it may lead again at once and add an entry.
+    // What each member read back from its log. Nobody stands until the
+    // vote hold ends, and the leader elected then adds an entry.
     for runtime in cluster.runtimes() {
         let status = eventually(|| {
             runtime

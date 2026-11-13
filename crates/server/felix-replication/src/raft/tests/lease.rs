@@ -4,7 +4,7 @@
 
 use std::sync::atomic::Ordering::Relaxed;
 
-use openraft::raft::AppendEntriesRequest;
+use openraft::raft::{AppendEntriesRequest, VoteResponse};
 
 use super::super::lease::{self, Lease, View, Wake};
 use super::super::network::Reply;
@@ -172,6 +172,16 @@ async fn an_answer_naming_a_higher_vote_voids_the_lease() {
     led.cluster.stop().await;
 }
 
+/// **The answer to a pre-vote this member asked for gives nothing up**,
+/// whatever vote it names: a member that only asked has changed no vote.
+#[test]
+fn a_pre_votes_answer_voids_nothing() {
+    use super::super::network::named;
+    let answer = Reply::Vote(VoteResponse::new(vote_of(9, "c", false), None, false));
+    assert_eq!(named(&answer, true), None);
+    assert_eq!(named(&answer, false), Some(9));
+}
+
 /// **A vote it grants gives the lease up, on the answer. A pre-vote it
 /// would grant changes no vote and gives nothing up.**
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -254,6 +264,8 @@ async fn a_transfer_voids_the_leaders_term_before_it_is_asked_for() {
 async fn a_transfer_request_voids_the_term_before_it_leaves() {
     let mut led = Led::leased().await;
     led.cluster.net.lose_transfers.store(true, Relaxed);
+    // No vote is answered either, so nothing else names a later term.
+    led.cluster.net.lose_votes.store(true, Relaxed);
     let target = MemberId::new(led.followers().next().expect("a follower"), 1);
     let member = led.member();
     let asked = member.raft().trigger().transfer_leader(target).await;
@@ -346,8 +358,9 @@ fn a_lease_that_can_outlast_a_followers_promise_is_refused() {
 }
 
 /// **A restarted member takes no vote and no pre-vote for one election
-/// timeout, whatever vote it stored.** Here: a leader's own vote and its
-/// followers' votes for it.
+/// timeout, whatever vote it stored, and does not stand.** Here: a
+/// leader's own vote and its followers' votes for it. The old leader
+/// comes back in the term it led, not as a candidate for the next.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     let mut cluster = Cluster::new(true);
@@ -368,7 +381,9 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
                 "{broker} took a vote request just after it started"
             );
         }
-        assert_eq!(runtime.status(&shard(0)).expect("status").term, term);
+        let status = runtime.status(&shard(0)).expect("status");
+        assert_eq!(status.term, term, "{broker} stood as it started");
+        assert_ne!(status.role, Role::Candidate);
     }
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
     for broker in BROKERS {

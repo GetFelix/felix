@@ -655,7 +655,9 @@ openraft's answer.
 
 After `propose` returns, a `Leader` write is acknowledged at once if
 `admit_local_ack` passes and waits for commit if it does not
-(`RaftEngine::await_ack`). See "Acknowledging a write".
+(`RaftEngine::await_ack`). See "Acknowledging a write". The publish path
+does not call it yet: `RaftEngine::publish` answers every publisher at
+commit (issue #2436).
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `batches_queued_together_go_to_openraft_in_one_call`,
@@ -1141,7 +1143,8 @@ passes when all of these hold, read in this order:
 
 `RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
 a `Leader` write: it returns at once when the check passes, and otherwise
-when the write is committed.
+when the write is committed. `RaftEngine::publish` does not use it yet
+(issue #2436).
 
 **Giving the lease up.** openraft's role reaches Felix through its
 metrics, a moment after openraft has changed it. In that moment a leader
@@ -1194,9 +1197,11 @@ Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
 
-The campaign side does rest on openraft: `Engine::startup`
-(engine_impl.rs:195-200) keeps a restarted member from campaigning
-early. openraft 0.10.0 also does part of the vote side. At start it renews the window
+A restarted member does not campaign early either. A held member is not
+ticked, so no timeout makes it stand. openraft would have a restarted
+leader stand for the next term as it starts (`enable_leader_restore`), and
+Felix turns that off: the old leader comes back as a follower in the term
+it led. openraft 0.10.0 also does part of the vote side. At start it renews the window
 for a full `election_timeout_max` when the stored vote is committed, which
 is the vote of a follower that took a leader's message
 (`Engine::startup`). A stored vote that is not committed gets no window.
@@ -1205,12 +1210,15 @@ that code staying as it is, so the hold applies to every member whatever
 vote it has stored.
 
 The cost is that a restarted broker cannot help elect for up to two
-seconds.
+seconds, and a group whose members all restart together has no leader
+for that long plus one election timeout.
 
 **As built.** `Group::open` reads the vote from the log before openraft
 starts. If there is one, the member answers no vote or pre-vote request
 and is not ticked until `election_max` has passed since the open. The
 request is dropped as unreachable, so the candidate asks again. A member
+that led when it stopped does not stand as it starts
+(`enable_leader_restore` is off). A member
 handed the leadership meanwhile is ticked, so it heartbeats. A member with
 no vote on disk has never taken a message, so it has promised nothing and
 is not held. That is every member of a group being formed.

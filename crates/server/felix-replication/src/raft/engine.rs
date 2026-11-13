@@ -74,6 +74,7 @@ impl RaftEngine {
     /// The acknowledgement of a `Leader` write that [`Self::propose`]
     /// returned as `written`: at once while the lease holds, and otherwise
     /// when the write is committed, as [`Self::await_commit`] says it.
+    /// [`Self::publish`] does not use it yet and answers at commit.
     pub fn await_ack(
         &self,
         shard: &ShardKey,

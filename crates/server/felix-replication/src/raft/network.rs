@@ -248,7 +248,7 @@ pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
 
 /// The term of the vote an answer names, when openraft acts on that vote.
 /// A pre-vote's answer changes no vote.
-fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
+pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
     match reply {
         Reply::Append(Err(AppendError::HigherVote(vote))) => Some(term_of(vote)),
         Reply::Vote(response) if !pre_vote => Some(term_of(&response.vote)),

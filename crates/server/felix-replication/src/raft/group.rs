@@ -503,8 +503,8 @@ impl Group {
             )));
         }
         // The lease is given up before openraft sees a message it takes,
-        // or on the answer, before that leaves. A refused vote and a
-        // granted pre-vote change no vote and give nothing up.
+        // or on the answer, before that leaves. A pre-vote changes no
+        // vote and gives nothing up.
         match body {
             Request::Append(rpc) => {
                 self.lease.named(term_of(&rpc.vote));
@@ -517,9 +517,9 @@ impl Group {
             Request::Vote(rpc) => {
                 let answer = self.raft.vote(rpc).await;
                 let answer = answer.map_err(|err| stopped(err.to_string()))?;
-                if answer.vote_granted {
-                    self.lease.named(term_of(&answer.vote));
-                }
+                // The vote this member holds now: the candidate's if it
+                // granted, and still its own if it refused.
+                self.lease.named(term_of(&answer.vote));
                 Ok(Reply::Vote(answer))
             }
             Request::PreVote(rpc) => self
