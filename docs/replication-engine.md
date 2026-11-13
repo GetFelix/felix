@@ -711,17 +711,25 @@ used by every shard group and by the control plane, tested once.
 
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
-`[workspace.dependencies]` pins one commit of openraft's main branch, two
-changes past the 0.10.0 tag (2026-11-11), because the node ticker needs
-`Trigger::tick()` and that ships in 0.10.1 (`docs/per-shard-raft.md`, "One
-timer for every group"). The two changes are that call and a
-`#[non_exhaustive]` on some name enums. `openraft-multi` is pinned to the
+`[workspace.dependencies]` pins one commit of openraft's main branch,
+`30c947ef38` (2026-11-12), past the 0.10.0 tag, for changes that ship
+in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
+"One timer for every group"). openraft#2313 (issue #2312) resets a drained
+queue to its start, so an idle member stops touching every page of its
+queues, and openraft#2314 starts those queues at 64 slots instead of
+reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
+resident memory stays small. The others are a `#[non_exhaustive]` on some name enums,
+benchmark changes, and one change to the state-machine worker: it merges
+`Apply` commands that are already queued into one `apply()` call. That
+call still gets the committed entries in log order, each once, with each
+entry's responder, which is all `apply()` in Felix relies on.
+`openraft-multi` is pinned to the
 same commit, and `deny.toml` allows that one git source. `felix-storage` and
 `felix-replication` use the pin behind their `raft` features, and the
 control plane uses it too
 (`services/felix-controlplane-service/Cargo.toml:61`), so the workspace has
 one openraft. The pin goes back to a released version, `=0.10.1`, when that
-is out (#2313). A version change is a reviewed update, never a side effect of
+is out. A version change is a reviewed update, never a side effect of
 refreshing the lockfile.
 
 **Release rule (decided).** A Felix release ships a control plane on 0.10
