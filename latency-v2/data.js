@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794600243429,
+  "lastUpdate": 1794600723046,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69696,6 +69696,72 @@ window.BENCHMARK_DATA = {
             "range": "37.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 299.00\nmean: 309.80\nstdev: 37.78\ncv: 12.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "adeaa92a1e3b0e82de1f8ad2fa42bc4d763f49bd",
+          "message": "test(sim): groups of the per-shard Raft engine on virtual time (#2233) (#2439)\n\nTrack 4 PR 4g (#2233), test-only: felix_sim::raft simulates groups of the per-shard Raft engine on virtual time and checks their histories.\n\n- Three or five members, simulated link faults, a fixed member set, no restarts and no control plane; modes `off` and `clocks` (each member's timers scaled 0.8x to 1.2x).\n- Checks: the history checker over Quorum appends and reads; an ack or delivery only for a record a majority holds (same record, flushed past it); one leader per term and a read bound that never goes back or past the majority, sampled each second; recovery after the heal; live subscribers per member and shard; the final log as ground truth.\n- A seed fails unless it saw leader changes, deliveries, acks, reads and faults above stated floors; a stall ends the run with the phase or seed named.\n- Revert checks: read bound at the written position 8/8 seeds fail, ack before commit 8/8, commit wait without the term check and deposed exit 7/8.\n- Two pinned seeds run in the non-blocking sim-seeds job until runs replay exactly (#2449); Raft seeds as a nightly mode is #2450. Broker-level runs come with the routing work (#2448).\n\nSpec-Unaffected: test harness only",
+          "timestamp": "2026-11-13T11:52:21-08:00",
+          "tree_id": "3f428e022f74465380831494969ab3123599802f",
+          "url": "https://github.com/GetFelix/felix/commit/adeaa92a1e3b0e82de1f8ad2fa42bc4d763f49bd"
+        },
+        "date": 1794600714088,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.80\nstdev: 0.84\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 127.80\nstdev: 2.28\ncv: 1.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "18.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 178.60\nstdev: 18.04\ncv: 10.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.80\nstdev: 0.45\ncv: 0.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 252,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 252.00\nmean: 253.60\nstdev: 3.21\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 346,
+            "range": "32.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 346.00\nmean: 358.60\nstdev: 32.04\ncv: 8.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
