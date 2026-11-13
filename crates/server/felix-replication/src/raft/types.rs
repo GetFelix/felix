@@ -95,7 +95,13 @@ pub(crate) struct Command {
 /// The same record, whoever waits on it.
 impl PartialEq for Command {
     fn eq(&self, other: &Self) -> bool {
-        self.timestamp_micros == other.timestamp_micros && self.payload == other.payload
+        // Destructured so a new field has to be placed here.
+        let Self {
+            timestamp_micros,
+            payload,
+            written: _,
+        } = self;
+        *timestamp_micros == other.timestamp_micros && *payload == other.payload
     }
 }
 

@@ -378,12 +378,15 @@ the caller reads as an unknown outcome. Written is not durable: a power
 cut after the token resolved can take the entry. Only an acknowledgement
 that the stream's fsync policy allows may rest on it. Votes, a follower's
 answer and the commit index wait for the callback. How the publish path
-uses the token is in `per-shard-raft.md`, "Writing through openraft".
+uses the token is in `per-shard-raft.md`, "Writing through openraft". An
+append reports all of its entries or none: when a later batch of a large
+append fails, the tokens on the batches already written stay unresolved.
 
 > `raft_log/tests/written.rs`,
 > `a_token_resolves_once_written_and_before_the_flush`,
 > `a_token_on_an_append_of_several_batches_resolves_with_its_own_index`,
-> `a_failed_append_resolves_no_token_as_written`, `a_token_is_never_stored`
+> `a_failed_append_resolves_no_token_as_written`,
+> `a_failure_on_a_later_batch_resolves_no_token`, `a_token_is_never_stored`
 > and `a_cut_after_written_and_before_the_flush_can_take_the_entry`.
 
 **One task per log waits for flushes.** An append that has to wait puts

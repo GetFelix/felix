@@ -535,6 +535,85 @@ future. A publisher that goes away cannot leave a batch half proposed, and
 the batch behind it keeps its place. The outcome is unknown to that
 publisher, as today.
 
+**`propose` as built** (`raft::RaftEngine::propose`, in
+`crates/server/felix-replication/src/raft/propose.rs`). It is on the Raft
+engine only. The `Engine` trait gains it with the commit index, when the
+Raft engine can answer the rest of the trait.
+
+A batch is a list of records and where its acknowledgement waits: `Written`
+or `Flushed`. `AckAt::for_fsync` picks `Flushed` for a stream that fsyncs
+on commit and `Written` for any other.
+
+Each shard has a queue, and the queue is the shard's commit order. Under
+Raft a record has no offset until openraft gives it one, so there is no
+offset to order by before the write. The order is the order of the calls:
+
+1. `propose` puts the batch on the queue before it returns its future.
+   Dropping the future takes nothing back.
+2. One task per shard takes everything queued and makes one
+   `client_write_many` call for all of it, one entry per record. Batches
+   that arrive while an append runs go down together in the next call. The
+   task starts with the shard's first publish, so a shard that takes none
+   has no task.
+3. The task does not wait for a call to commit before it makes the next.
+   openraft takes calls in the order they are made, so offsets follow the
+   queue.
+
+A call takes batches until it holds 4 MiB of payload. One call is one
+append, and the group handles no heartbeat or vote while an append runs.
+The queue itself has no limit yet. The publish path bounds what is in
+flight when it is wired to `propose`.
+
+The publisher's future then waits. It puts a fresh token on the first and
+on the last record of its batch, and reads the batch's place from both. It
+does not work the first offset out from the last, and it does not accept
+two tokens that are not one run of the batch's length in one term.
+
+| The publisher waits for | It ends on |
+| --- | --- |
+| `Written`: both tokens | The tokens, or openraft's answer |
+| `Flushed`: both tokens, then the flushed position at or past the last record in the same term | The flush, or openraft's answer |
+
+openraft answers a write when it is applied, which is after it committed.
+A committed record is fsynced on a majority, which is more than either
+acknowledgement asks of the leader's own disk, so an answer ends either
+wait.
+
+A token has no time limit of its own, so every wait also ends when:
+
+- openraft refuses the write. A member that does not lead appends nothing.
+- This member stops leading, or leads at another term than the one that
+  wrote the batch. This is read from openraft's metrics.
+- The flushed position shows a later term. Another leader wrote there, and
+  whether the batch is still under it is not known.
+- The group is closed or the runtime shuts down.
+
+Each of those is an unknown outcome, never "not written": the batch may be
+in the log and may commit. `propose` makes one attempt and never proposes a
+batch again, because a second attempt could land beside the first. A
+failed flush stops the group in openraft, which reaches the publisher as
+openraft's answer.
+
+`admit_local_ack` always refuses on a Raft shard, so a `Leader` write
+waits for commit after `propose` returns.
+
+> `crates/server/felix-replication/src/raft/tests/propose.rs`,
+> `batches_queued_together_go_to_openraft_in_one_call`,
+> `a_publisher_that_goes_away_keeps_its_place`,
+> `a_deposed_leader_refuses_and_appends_nothing`,
+> `an_ack_follows_the_policy_and_not_the_commit`,
+> `a_written_ack_does_not_wait_for_the_flush`,
+> `a_flushed_ack_waits_for_the_fsync`,
+> `a_deposed_leaders_publisher_stops_waiting`,
+> `a_stopped_groups_publisher_stops_waiting` and
+> `a_batch_not_reported_whole_is_an_unknown_outcome`.
+
+**A token never leaves the broker.** The codec does not encode it, and the
+router clears it from every append it sends. A transport inside one
+process hands a message over as it is. A token that went with it would be
+resolved by the follower's append, and the publisher would read that as
+the leader's write.
+
 The cost is on the hot path: each batch crosses into the Raft task before
 it reaches the disk, and the payload moves into an entry on the way. The
 single-node and RF 3 steady cells at 1 KiB price it against the hybrid. A
@@ -645,7 +724,9 @@ Nothing is negotiated. Each side acts only on what it has seen:
 - A leader goes on heartbeating at the short interval, naming the idle gap,
   until every follower has answered a message that named it. Only then
   does it slow down. Sending an entry voids those answers and makes the
-  next heartbeat due within 200 ms.
+  next heartbeat due within 200 ms. A publish does the same when it hands
+  its batch to the group, before anything is sent. So a group with one
+  member, or with no follower in reach, is fast again on its first write.
 - A follower that restarts has forgotten the gap and may stand as soon as
   openraft lets it. So a message a follower does not take, because it was
   lost, refused or rejected, voids that follower's answer too. The leader
@@ -737,8 +818,11 @@ open:
   entries to the log and `flushed` once they are fsynced, and a truncation
   moves both back. The publish path that waits on them is #2233.
 - A command may carry a `WrittenToken`. The leader's `append` resolves it
-  with the record's index and term once the record is written. Nothing
-  sets one yet: `propose` is the next pull request of #2233.
+  with the record's index and term once the record is written.
+  `RaftEngine::propose` sets them ("Writing through openraft").
+- `status(shard)` also counts `client_writes`: the calls made to openraft
+  for publishes. Each carries every batch that was queued when it was
+  made, so under load the count is well below the number of batches.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`

@@ -7,6 +7,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use openraft::EntryPayload;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{RPCOption, RaftNetworkFactory};
@@ -174,9 +175,19 @@ impl Router {
         &self,
         to: MemberId,
         group: GroupId,
-        body: Request,
+        mut body: Request,
         option: &RPCOption,
     ) -> Result<Reply, Unreachable<ShardTypes>> {
+        // A transport inside one process hands the message over as it is.
+        // A token that went with it would be resolved by the follower's
+        // append and tell the publisher the leader had written.
+        if let Request::Append(rpc) = &mut body {
+            for entry in &mut rpc.entries {
+                if let EntryPayload::Normal(command) = &mut entry.payload {
+                    command.written = None;
+                }
+            }
+        }
         let sent = match &body {
             Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
             _ => None,
