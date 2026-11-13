@@ -148,11 +148,21 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
                 None => buf.put_u8(0),
             }
         }
-        Request::Snapshot { vote, meta } => {
+        Request::Snapshot {
+            vote,
+            meta,
+            data_len,
+            offset,
+            data,
+        } => {
             put_vote(&mut buf, vote)?;
             put_opt_log_id(&mut buf, meta.last_log_id.as_ref());
             put_opt_log_id(&mut buf, meta.last_membership.log_id().as_ref());
             put_membership(&mut buf, meta.last_membership.membership())?;
+            buf.put_u64(*data_len);
+            buf.put_u64(*offset);
+            buf.put_u32(len_u32(data.len())?);
+            buf.extend_from_slice(data);
         }
         Request::TransferLeader(rpc) => {
             put_vote(&mut buf, rpc.from_leader())?;
@@ -217,12 +227,21 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
             let last_log_id = take_opt_log_id(&mut buf)?;
             let membership_log_id = take_opt_log_id(&mut buf)?;
             let membership = take_membership(&mut buf)?;
+            let data_len = take_u64(&mut buf)?;
+            let offset = take_u64(&mut buf)?;
+            let len = take_u32(&mut buf)? as usize;
+            if buf.remaining() < len {
+                return Err(short());
+            }
             Request::Snapshot {
                 vote,
                 meta: SnapshotMetaOf::<ShardTypes> {
                     last_log_id,
                     last_membership: StoredMembership::new(membership_log_id, membership),
                 },
+                data_len,
+                offset,
+                data: buf.split_to(len),
             }
         }
         TRANSFER_LEADER => {

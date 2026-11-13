@@ -1179,9 +1179,12 @@ After the beat comes the message:
   is present only when a leader hands over leadership.
 - **Snapshot**: the leader's vote, the last log id the snapshot covers
   (optional), and its membership with that membership's log id (optional).
-  It carries no data. A stream shard's state is its log, so no member takes
-  a snapshot: each answers `NoSnapshots`, and a member that is behind is
-  sent entries.
+  Then one piece of the snapshot's data: the whole snapshot's length
+  (`u64`), where this piece starts in it (`u64`), and the piece (`u32`
+  length, then the bytes). A cache shard's member keeps the pieces in order
+  and installs the snapshot at the last. A stream shard's snapshot has no
+  data, and its state is its log, so no member takes one: each answers
+  `NoSnapshots`, and a member that is behind is sent entries.
 - **Leader transfer**: the leader's vote, the member to take over, and the
   leader's last log id (optional).
 

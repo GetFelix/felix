@@ -30,6 +30,7 @@ mod engine;
 #[doc(hidden)]
 pub mod fuzzing;
 mod group;
+mod install;
 mod lead;
 mod machine;
 mod network;

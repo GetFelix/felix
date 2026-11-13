@@ -17,10 +17,10 @@ use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::propose::Clock;
 use super::ticker;
 use super::types::{GroupId, MemberId};
-use crate::ShardKey;
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
+use crate::{ShardKey, ShardKind};
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +43,14 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// A cache shard snapshots its state each time this many entries have
+    /// committed since its last snapshot. Zero never snapshots, and the
+    /// shard's log then grows without bound.
+    pub cache_snapshot_every: u64,
+    /// How many of the entries under a cache shard's snapshot stay in its
+    /// log, so a member a little behind catches up from the log and only
+    /// one further behind is sent the snapshot.
+    pub cache_log_keep: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -54,9 +62,15 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            cache_snapshot_every: 16_384,
+            cache_log_keep: 1_024,
         }
     }
 }
+
+/// How long one piece of a snapshot may take to send and be answered. The
+/// last piece's answer waits for the install as well.
+const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
 
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
@@ -64,7 +78,7 @@ fn wall_clock_micros() -> u64 {
 }
 
 impl RuntimeConfig {
-    pub(crate) fn raft(&self) -> Result<Config, InvalidTimers> {
+    pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
         }
@@ -82,12 +96,25 @@ impl RuntimeConfig {
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,
-            // A shard's log is its data. Entries leave it by retention,
-            // never because a snapshot was taken.
-            snapshot_policy: SnapshotPolicy::Never,
-            // A snapshot that is taken anyway purges nothing. The default
-            // keeps only the last 1,000 entries under one.
-            max_in_snapshot_log_to_keep: u64::MAX,
+            // A stream shard's log is its data. Entries leave it by
+            // retention, never because a snapshot was taken. A cache
+            // shard's state is in its snapshot, so its log is cut to it.
+            // openraft checks the policy after each batch of messages, not
+            // on its tick, which is off.
+            snapshot_policy: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => {
+                    SnapshotPolicy::LogsSinceLast(self.cache_snapshot_every)
+                }
+                _ => SnapshotPolicy::Never,
+            },
+            // For a stream shard a snapshot that is taken anyway purges
+            // nothing. The default keeps only the last 1,000 entries.
+            max_in_snapshot_log_to_keep: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => self.cache_log_keep,
+                _ => u64::MAX,
+            },
+            // The deadline of one piece of a snapshot, which also sizes it.
+            install_snapshot_timeout: SNAPSHOT_PIECE_MILLIS,
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
@@ -256,6 +283,8 @@ struct Inner {
     tick: Duration,
     timers: Timers,
     raft: Arc<Config>,
+    /// What a cache shard's member runs on: it snapshots and purges.
+    raft_cache: Arc<Config>,
     transport: Arc<dyn RaftTransport>,
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
@@ -297,7 +326,8 @@ impl GroupRuntime {
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
                 },
-                raft: Arc::new(config.raft()?),
+                raft: Arc::new(config.raft(ShardKind::Stream)?),
+                raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
                 transport,
                 clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
@@ -382,11 +412,15 @@ impl GroupRuntime {
             engine: inner.host.get().cloned(),
             clock: Arc::clone(&inner.clock.read()),
         };
+        let raft = match group.shard.kind {
+            ShardKind::Stream => &inner.raft,
+            ShardKind::Cache => &inner.raft_cache,
+        };
         let group = Group::open(
             group,
             member,
             log,
-            Arc::clone(&inner.raft),
+            Arc::clone(raft),
             Arc::clone(&inner.transport),
             inner.timers,
             host,

@@ -916,12 +916,12 @@ A leader's messages carry the gap described in "Idle groups", which is
 how idle groups slow down.
 
 What the runtime sets in openraft: the timers from Questions, 4;
-`enable_tick` off; no snapshot policy, since a shard's records leave by
-retention and never because a snapshot was taken; and `allow_log_reversion`
-off (Questions, 2). Every log is opened with `purge_within`, so a purge
+`enable_tick` off; no snapshot policy for a stream shard, since its records
+leave by retention and never because a snapshot was taken; and
+`allow_log_reversion` off (Questions, 2). Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
 
-A snapshot must not cost a record either, and a shard group's snapshot
+A snapshot must not cost a record either, and a stream shard's snapshot
 holds none. Two settings keep that true until retention is designed:
 
 - `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
@@ -935,10 +935,24 @@ holds none. Two settings keep that true until retention is designed:
 So the snapshot message between brokers carries only its metadata. A
 stream shard that needs more than entries, a learner started below the
 switch's base, is caught up by copying segments from a starting offset, as a
-rebuild does. A cache group's snapshot does carry data (#2238). That body
-will use the staged receive, framing, size cap and install slot that
-`felix-storage` shares with the control plane's group (#2364), sent as its
-own streamed message rather than inside one frame.
+rebuild does.
+
+A cache shard is the other way round. Its state is its snapshot plus the
+entries above it, so its log is cut to the snapshot:
+
+- Each member snapshots by itself once `cache_snapshot_every` entries
+  (16,384) have committed since its last snapshot. openraft checks that
+  after each batch of messages, so it needs no tick.
+- The member then purges the entries the snapshot covers, except the newest
+  `cache_log_keep` (1,024). A member a little behind still catches up from
+  the log.
+- A member behind its leader's purge is sent the leader's snapshot and
+  installs it. The snapshot goes in pieces, each sized like an append, and
+  the member installs it when the last piece arrives. How it is bounded is
+  in [the replication engine](replication-engine.md), "Sending a snapshot".
+
+A shard's log therefore holds at most about `cache_snapshot_every` plus
+`cache_log_keep` entries, whatever the shard has written.
 
 Each group has a small state machine that keeps the last applied entry and
 the membership in memory. A shard's state is its log. A membership record's

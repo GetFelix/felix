@@ -10,6 +10,8 @@ use std::time::Duration;
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
+use openraft::raft::SnapshotResponse;
+use openraft::storage::Snapshot;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -19,12 +21,14 @@ use bytes::Bytes;
 use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
+use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::machine::{Cache, Machine};
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
 use super::propose::{self, Batch, Clock, Proposal, Stamper, Unstamped, Waiting};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
+use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
 
 pub(crate) struct Group {
@@ -40,6 +44,8 @@ pub(crate) struct Group {
     leadership: Arc<Leadership>,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// The snapshot a cache shard's member is being sent.
+    incoming: Arc<Incoming>,
     /// What a cache shard's leader stamps entries and judges expiry by.
     clock: Clock,
     #[cfg(test)]
@@ -361,6 +367,7 @@ impl Group {
             commits,
             leadership,
             cache,
+            incoming: Arc::default(),
             clock,
             #[cfg(test)]
             gate: Arc::default(),
@@ -508,10 +515,40 @@ impl Group {
                 .await
                 .map(Reply::Vote)
                 .map_err(|err| stopped(err.to_string())),
-            // A snapshot carries no records, and installing one purges the
-            // log up to it: the member would drop records it was never
-            // sent. Refused until retention says how a member that far
-            // behind gets them.
+            Request::Snapshot {
+                vote,
+                meta,
+                data_len,
+                offset,
+                data,
+            } if self.id.shard.kind == ShardKind::Cache => {
+                // A sender this member has outvoted is told so before any
+                // of its snapshot is kept.
+                use openraft::async_runtime::watch::WatchReceiver;
+                let mine = self.raft.metrics().borrow_watched().vote.clone();
+                if vote < mine {
+                    return Ok(Reply::Snapshot(SnapshotResponse::new(mine)));
+                }
+                let piece = self.incoming.take(&vote, &meta, data_len, offset, &data);
+                match piece.map_err(Refused::Unreachable)? {
+                    Piece::More => {
+                        if offset == 0 {
+                            self.drop_incoming_when_idle();
+                        }
+                        Ok(Reply::Snapshot(SnapshotResponse::new(vote)))
+                    }
+                    Piece::Whole(snapshot) => self
+                        .raft
+                        .install_full_snapshot(vote, Snapshot { meta, snapshot })
+                        .await
+                        .map(Reply::Snapshot)
+                        .map_err(|err| stopped(err.to_string())),
+                }
+            }
+            // A stream group's snapshot carries no records, and installing
+            // one purges the log up to it: the member would drop records it
+            // was never sent. Refused until retention says how a member
+            // that far behind gets them.
             Request::Snapshot { meta, .. } => {
                 let member = Box::new(Addressee {
                     group: self.id.clone(),
@@ -894,6 +931,28 @@ impl Group {
                     changed = lead.changed() => if changed.is_err() { return },
                     changed = commits.changed() => if changed.is_err() { return },
                     () = due => {}
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incoming(&self) -> &Incoming {
+        &self.incoming
+    }
+
+    /// A sender that goes away part way must not leave its pieces held.
+    fn drop_incoming_when_idle(&self) {
+        let incoming = Arc::clone(&self.incoming);
+        let stop = self.stop.clone();
+        self.runtime.spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(install::IDLE) => {}
+                }
+                if incoming.settled() {
+                    return;
                 }
             }
         });

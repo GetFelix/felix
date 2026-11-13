@@ -109,6 +109,9 @@ fn every_request() -> Vec<RaftRequest> {
                 last_log_id: Some(log_id(2, 7)),
                 last_membership: StoredMembership::new(Some(log_id(2, 7)), membership()),
             },
+            data_len: 9,
+            offset: 4,
+            data: Bytes::from_static(b"state"),
         }),
         request(Request::TransferLeader(TransferLeaderRequest::new(
             vote(2, true),

@@ -470,6 +470,162 @@ async fn a_purge_stops_at_the_snapshot_and_a_restart_restores_it() {
     cluster.stop().await;
 }
 
+/// A cluster whose cache shards snapshot every eight entries and keep two
+/// under the snapshot.
+fn snapshotting() -> Cluster {
+    Cluster::with(
+        RuntimeConfig {
+            cache_snapshot_every: 8,
+            cache_log_keep: 2,
+            ..timers()
+        },
+        true,
+    )
+}
+
+/// A cache shard's log does not grow with its writes: every member
+/// snapshots by itself and drops the entries its snapshot covers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cache_shards_log_is_cut_to_its_snapshot() {
+    let mut cluster = snapshotting();
+    cluster.form(N).await;
+    let mut last = 0;
+    for sequence in 1..=40 {
+        last = write(&cluster, 10 * sequence, add("n", 1, sequence)).await;
+    }
+    cluster.committed_everywhere(N, last).await;
+    for broker in BROKERS {
+        let purged = eventually(|| {
+            cluster
+                .purged(broker, N)
+                .filter(|purged| *purged + 12 >= last)
+        });
+        assert!(purged.await < last);
+    }
+    agreed(&cluster).await;
+    cluster.stop().await;
+}
+
+/// A member cut off until its leader has purged the entries it lacks gets
+/// the leader's snapshot from the leader, over the transport, and then
+/// holds what the others hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_behind_the_purge_catches_up_by_snapshot() {
+    let mut cluster = snapshotting();
+    cluster.form(N).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let leader = cluster.elected(N).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+    cut_off(&cluster, behind);
+    for sequence in 2..=40 {
+        write(&cluster, 10 * sequence, add("n", 1, sequence)).await;
+    }
+    let leader = cluster.elected(N).await;
+    eventually(|| {
+        cluster
+            .purged(&leader.broker, N)
+            .filter(|purged| *purged > first + 8)
+    })
+    .await;
+    assert_ne!(state(&cluster, behind), state(&cluster, &leader.broker));
+
+    joined(&cluster, behind);
+    let after = write(&cluster, 500, put("k", b"two", 41)).await;
+    cluster.committed_everywhere(N, after).await;
+    agreed(&cluster).await;
+    let member = cluster.runtime(behind).group(&shard(N)).expect("group");
+    assert_eq!(member.cache().read().answer(7, 40), Some(Answer::Sum(39)));
+    // It was sent the state, not the entries: its own log starts past them.
+    assert!(
+        cluster
+            .purged(behind, N)
+            .is_some_and(|purged| purged > first)
+    );
+    cluster.stop().await;
+}
+
+/// A snapshot arrives in pieces and is installed at the last. A piece from
+/// a sender the member has outvoted is answered with the member's vote and
+/// not kept, one over the cap is refused at its first piece, and one that
+/// skips ahead is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_snapshot_in_pieces_is_installed_at_the_last() {
+    use super::super::install::MAX_SNAPSHOT_BYTES;
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let leader = cluster.elected(N).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+    cut_off(&cluster, behind);
+    let last = write(&cluster, 30, put("k", b"two", 2)).await;
+    let leader = cluster.elected(N).await;
+    cluster.snapshot(&leader.broker, N, last).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(N))
+        .expect("group");
+    let snapshot = leading.raft().get_snapshot().await.expect("read");
+    let snapshot = snapshot.expect("snapshot");
+    let data = Bytes::from(snapshot.snapshot.clone());
+    let term = leading.status().term;
+    let vote = |term| {
+        let leads = LeaderIdOf::<ShardTypes>::new(term, leader.clone());
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true)
+    };
+    let member = cluster.runtime(behind).group(&shard(N)).expect("group");
+    let runtime = cluster.runtime(behind);
+    let piece = |term, data_len: u64, offset: usize, data: Bytes| {
+        let request = RaftRequest {
+            group: group(N),
+            to: MemberId::new(behind, 1),
+            beat: 0,
+            deadline: Duration::from_secs(10),
+            body: super::super::network::Request::Snapshot {
+                vote: vote(term),
+                meta: snapshot.meta.clone(),
+                data_len,
+                offset: offset as u64,
+                data,
+            },
+        };
+        runtime.handle(request)
+    };
+    let whole = data.len() as u64;
+    let half = data.len() / 2;
+
+    let stale = piece(term - 1, whole, 0, data.slice(..half)).await;
+    let Ok(RaftReply(super::super::network::Reply::Snapshot(answer))) = stale else {
+        panic!("a stale sender was not answered");
+    };
+    assert_eq!(answer.vote, vote(term));
+    assert_eq!(member.incoming().held(), None);
+
+    let over = piece(term, MAX_SNAPSHOT_BYTES + 1, 0, data.slice(..half)).await;
+    assert!(matches!(over, Err(Refused::Unreachable(_))));
+    assert_eq!(member.incoming().held(), None);
+
+    assert!(piece(term, whole, 0, data.slice(..half)).await.is_ok());
+    assert_eq!(member.incoming().held(), Some(half));
+    let skipped = piece(term, whole, half + 1, data.slice(half + 1..)).await;
+    assert!(matches!(skipped, Err(Refused::Unreachable(_))));
+    assert_ne!(state(&cluster, behind), data);
+
+    // The sender starts again, which replaces what was held.
+    assert!(piece(term, whole, 0, data.slice(..half)).await.is_ok());
+    assert!(piece(term, whole, half, data.slice(half..)).await.is_ok());
+    assert_eq!(member.incoming().held(), None);
+    eventually(|| (state(&cluster, behind) == data).then_some(())).await;
+    cluster.stop().await;
+}
+
 /// A measurement, not a check: what one openraft call per cache entry
 /// costs next to one call for the whole drain. Run it alone with
 /// `--ignored --nocapture`; only the ratio means anything.
