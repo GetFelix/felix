@@ -97,6 +97,8 @@ struct Net {
     higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
     /// While set, every transfer request is lost.
     lose_transfers: std::sync::atomic::AtomicBool,
+    /// How long an append's answer takes to come back.
+    answer_after: parking_lot::Mutex<Option<Duration>>,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -150,10 +152,18 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
-        match runtime {
+        let slow = match request.body {
+            Request::Append(_) => *self.answer_after.lock(),
+            _ => None,
+        };
+        let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
+        };
+        if let Some(slow) = slow {
+            tokio::time::sleep(slow).await;
         }
+        answer
     }
 }
 

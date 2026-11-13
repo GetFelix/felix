@@ -11,6 +11,7 @@ use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::storage::RaftLogReader;
+use openraft::type_config::alias::VoteOf;
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
@@ -33,10 +34,9 @@ pub(crate) struct Group {
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
-    /// On the runtime's clock: until then this member takes no vote or
-    /// pre-vote request and is not ticked. Zero for a member that had
-    /// promised nobody when it started, and for a sole voter.
-    hold_until: u64,
+    /// Empty for a member that had promised nobody when it started, and
+    /// for a sole voter.
+    hold: Hold,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -280,6 +280,47 @@ impl Pace {
     }
 }
 
+/// The vote hold of a member that started with a vote on disk it may have
+/// promised a leader on. See `docs/per-shard-raft.md`, "A restarted member
+/// grants no vote at first".
+#[derive(Default)]
+struct Hold {
+    /// On the runtime's clock: until then this member takes no vote or
+    /// pre-vote request, but for the one below, and is not ticked.
+    until: u64,
+    /// The stored vote, if it was committed and nothing can have replaced
+    /// it since. It names the leader this member followed, and that one
+    /// candidate is let through once: the promise was made to it. A vote
+    /// that is not committed may name a candidate that never led, and
+    /// lets nobody through.
+    follows: parking_lot::Mutex<Option<VoteOf<ShardTypes>>>,
+}
+
+impl Hold {
+    /// Whether the candidate asking with `vote` is the leader the stored
+    /// vote names. Once: granting replaces the stored vote with one that
+    /// is not committed.
+    fn lets_through(&self, vote: &VoteOf<ShardTypes>) -> bool {
+        let mut follows = self.follows.lock();
+        let named = follows
+            .as_ref()
+            .is_some_and(|stored| stored.leader_id().node_id() == vote.leader_id().node_id());
+        if named {
+            *follows = None;
+        }
+        named
+    }
+
+    /// openraft is about to take a message that can replace the stored
+    /// vote: an append under `vote`, or one that has this member stand.
+    fn vote_may_change(&self, vote: Option<&VoteOf<ShardTypes>>) {
+        let mut follows = self.follows.lock();
+        if follows.as_ref() != vote {
+            *follows = None;
+        }
+    }
+}
+
 /// Timer checks dropped on this broker because a group had not taken one by
 /// the next interval, across every group: a label per group would be a label
 /// per shard.
@@ -318,8 +359,12 @@ impl Group {
         // promised nothing, and neither has one whose vote is its own
         // committed one: it took no later leader's message, and openraft
         // has it stand again as it starts.
-        let promised = RaftLogReader::read_vote(&mut log.reader())
-            .await?
+        //
+        // The vote on disk, not openraft's: at a start openraft demotes
+        // its own committed vote in memory.
+        let stored = RaftLogReader::read_vote(&mut log.reader()).await?;
+        let promised = stored
+            .as_ref()
             .is_some_and(|vote| !(vote.is_committed() && vote.leader_id().node_id() == &member));
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
@@ -335,14 +380,26 @@ impl Group {
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
-        // A sole voter's promise binds nobody else.
+        // A sole voter's promise binds nobody else. The newest set must
+        // name this member alone, and the committed one no other voter:
+        // while a change down to one voter is not committed, the others
+        // still vote. The committed set is empty when the log holds only
+        // the group's first set.
+        let voter = member.clone();
         let sole_voter = raft
-            .with_raft_state(|state| state.membership_state.effective().voter_ids().count() == 1)
+            .with_raft_state(move |state| {
+                let sets = &state.membership_state;
+                sets.effective().voter_ids().eq([voter.clone()])
+                    && sets.committed().voter_ids().all(|id| id == voter)
+            })
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
-        let hold_until = match promised && !sole_voter {
-            true => timers.now() + timers.election_max,
-            false => 0,
+        let hold = match promised && !sole_voter {
+            true => Hold {
+                until: timers.now() + timers.election_max,
+                follows: parking_lot::Mutex::new(stored.filter(|vote| vote.is_committed())),
+            },
+            false => Hold::default(),
         };
         let stop = CancellationToken::new();
         let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
@@ -359,7 +416,7 @@ impl Group {
             raft,
             pace,
             lease,
-            hold_until,
+            hold,
             positions,
             commits,
             leadership,
@@ -400,7 +457,7 @@ impl Group {
         // A member that takes no vote does not ask for one. One that was
         // handed the leadership meanwhile still heartbeats.
         if self.holds_votes() && !self.leads() {
-            self.pace.due.store(self.hold_until, Ordering::Relaxed);
+            self.pace.due.store(self.hold.until, Ordering::Relaxed);
             return;
         }
         self.ticks.fetch_add(1, Ordering::Relaxed);
@@ -419,7 +476,7 @@ impl Group {
     /// a vote on disk. See `docs/per-shard-raft.md`, "A restarted member
     /// grants no vote at first".
     fn holds_votes(&self) -> bool {
-        self.pace.timers.now() < self.hold_until
+        self.pace.timers.now() < self.hold.until
     }
 
     fn leads(&self) -> bool {
@@ -504,7 +561,22 @@ impl Group {
             };
             Refused::Stopped(Box::new(member), reason)
         };
-        if self.holds_votes() && matches!(body, Request::Vote(_) | Request::PreVote(_)) {
+        let held = self.holds_votes();
+        let asks = match &body {
+            Request::Vote(rpc) => !(held && self.hold.lets_through(&rpc.vote)),
+            Request::PreVote(_) => true,
+            // Anything else openraft takes may replace the stored vote.
+            Request::Append(rpc) => {
+                self.hold.vote_may_change(Some(&rpc.vote));
+                false
+            }
+            Request::TransferLeader(_) => {
+                self.hold.vote_may_change(None);
+                false
+            }
+            Request::Snapshot { .. } => false,
+        };
+        if held && asks {
             // Dropped, not refused: the candidate asks again at its next
             // timeout.
             return Err(Refused::Unreachable(format!(

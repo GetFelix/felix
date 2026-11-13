@@ -1246,6 +1246,40 @@ its own. A smaller jump is added to the answer's age. The comparison is
 inside the check and not in a background task, which would see the jump
 after the checks it has to stop. Boottime is `CLOCK_BOOTTIME`, on Linux
 only. Elsewhere no clock counts suspended time and a suspend is not seen.
+
+**A paused VM is not seen.** The check sees a suspend of the machine the
+broker's kernel runs on: a laptop lid, `systemctl suspend`. It does not
+see the hypervisor stopping the VM under that kernel: a paused guest, a
+snapshot that freezes it, or the blackout of a live migration. The guest's
+monotonic clock and its boottime stop together and start together, so
+they never move apart, and to the broker no time has passed. A leader
+paused that way for longer than the slack below wakes with a lease that
+looks fresh, while its followers, which kept running, may have elected
+another leader. Until it hears of that leader it acknowledges `Leader`
+writes that the new leader's log will replace. This is the case
+`FelixRaftLeaseSuspendUnchecked.cfg` fails on, and on Linux VMs it is an
+assumption, not a rule the code keeps: **a broker's VM is not paused for
+longer than the slack**.
+
+The slack is what the inequality leaves between the end of the lease and
+the end of a follower's promise: `election_max / (1 + p) - lease / (1 - p)`
+of real time. With the shipped timers that is 0.15 s at the drift bound
+and 0.5 s on exact clocks. A live migration's blackout is often shorter,
+and is not bounded.
+
+What an operator can do:
+
+- Keep brokers on hosts that are not paused: no VM snapshots with memory,
+  no `virsh suspend`, and a host-maintenance policy that stops and
+  restarts the instance, where the provider offers one, in place of live
+  migration. A restart is safe: the lease dies with the process.
+- Where that cannot be had, run with `RuntimeConfig::lease` at zero. The
+  check then never passes, and every `Leader` write waits for its commit
+  like a `Quorum` write. No broker setting exposes the lease yet. Nothing
+  acknowledges on the lease yet either (issue #2436), so no shipped broker
+  is exposed today, and the setting has to exist before one is.
+- `Quorum` streams never use the lease and are not affected.
+
 Under the simulator boottime is the simulator's clock while the
 monotonic side is tokio's, so the two drift apart and the check may
 refuse for good. Raft groups do not run under the simulator yet; when
@@ -1259,11 +1293,12 @@ lease rests on each follower's promise not to vote for one election
 timeout after it took the leader's message. openraft keeps that window in
 memory. Decided (issue #2167): `Leader` streams keep the local
 acknowledgement, and the window is waited out after a restart, not
-stored. The node layer drops every vote and pre-vote request for a group,
-before it reaches openraft, until `election_timeout_max` has passed on the
+stored. The node layer drops vote and pre-vote requests for a group, before
+they reach openraft, until `election_timeout_max` has passed on the
 monotonic clock since that member started, not since the process started.
 The member started after the last message the old one took, so the wait
-covers the promise. A held member is not ticked.
+covers the promise. A held member is not ticked. One request is let
+through (below).
 Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
@@ -1274,10 +1309,49 @@ later term saves that term's vote before it is answered, so this member
 took none, and no follower can have promised it anything it would now
 break. openraft has it stand for the next term as it starts
 (`enable_leader_restore`), and its followers grant the vote of the leader
-they follow. The other is a sole voter: a promise binds nobody else.
-This rule waits on the model: `docs/formal/FelixRaftLease.tla` holds
-every restarted member today, and the knob that lets a leader's own vote
-through is being added to it.
+they follow. The other is a sole voter: a promise binds nobody else. The
+member's newest set must name it as the only voter, and the committed set
+must name no other. While a change down to one voter is not committed,
+the other voters still follow a leader, and the member is held. A learner
+beside a sole voter is held.
+`FelixRaftLeaseRestoreLed.cfg` and `FelixRaftLeaseRestoreSingle.cfg`
+check both.
+
+**A held member grants the leader it followed.** When every member
+restarts together, the old leader stands at once and its followers are
+inside their hold. Dropping its request would leave the group with no
+leader until the holds end. A held member's promise was made to one
+leader, and granting that leader breaks nothing. So a held member lets
+one vote request through to openraft: the first from the candidate its
+stored vote names, and only if that vote is committed.
+
+| The vote on disk when the member started | Let through |
+| --- | --- |
+| Committed, names member L | L's first vote request |
+| Not committed (a vote granted to a candidate, a higher vote adopted from an answer, its own candidacy) | Nobody's |
+
+A committed vote names a leader that was elected and whose message this
+member took. A vote that is not committed can name a candidate that never
+led: a leader that adopts a candidate's higher vote and restarts has that
+candidate on disk, and whatever it promised, it promised somebody else.
+The vote is read from the log, not from openraft, which at a start
+demotes a member's own committed vote in memory.
+
+The stored vote stops counting once anything can have replaced it: an
+append under another vote, a `TransferLeader` request (the member may
+stand), and the grant itself, after which the vote on disk is the
+candidate's new one and is not committed. A second request from the same
+leader is dropped like any other. Only a vote request is let through,
+never a pre-vote: openraft refuses a pre-vote inside the window whoever
+sends it, so letting one through gains nothing. openraft then decides
+the request as it decides any, and grants it because the candidate is
+the leader the member follows.
+
+This is the model's `HoldExemptsNamed`, in the narrower form its
+`StoredLeader` comment gives. `FelixRaftLeaseRestoreNamed.cfg` passes
+with two of three members inside their hold, and
+`FelixRaftLeaseRestoreNamedAny.cfg`, where the stored vote lets any
+candidate through, fails.
 
 A held member does not campaign early either. It is not ticked, so no
 timeout makes it stand. openraft 0.10.0 also does part of the vote side.
@@ -1288,18 +1362,23 @@ not rest the lease on that code staying as it is, so the hold applies to
 every member that may have promised.
 
 The cost: a leader restarted alone leads again within one vote round. A
-restarted follower cannot help elect for up to two seconds. When every
-member restarts together, the old leader stands at once, but its
-followers drop its request until their hold ends, so the group has no
-leader for about that long plus one election timeout.
+restarted follower cannot help elect anyone but the leader it followed
+for up to two seconds. When every member restarts together, the old
+leader stands as it starts. If a follower is already open it grants, and
+the group has its leader back within one vote round: 16 ms in the
+runtime's tests, against 2.1 to 3.2 s when the followers dropped the
+request. If the leader opens first, its request finds nobody, and it asks
+again at its next election timeout: 1.3 to 2.1 s over five runs.
 
 **As built.** `Group::open` reads the vote from the log before openraft
 starts, and the voters once it has. Unless the vote is the member's own
-committed one or the member is the only voter, the member answers no
-vote or pre-vote request and is not ticked until `election_max` has
-passed since the open. The request is dropped as unreachable, so the
-candidate asks again. A member handed the leadership meanwhile is
-ticked, so it heartbeats. A member with no vote on disk has never taken
+committed one or the member is the only voter, the member is not ticked
+until `election_max` has passed since the open, and answers no pre-vote
+request and no vote request but the one above. A request is dropped as
+unreachable, so the candidate asks again. A held member that receives
+`TransferLeader` from the leader it follows stands, if it has taken an
+append from that leader since it started: openraft ignores the request
+otherwise. Once it leads it is ticked, so it heartbeats. A member with no vote on disk has never taken
 a message, so it has promised nothing and is not held. That is every
 member of a group being formed.
 
@@ -1307,8 +1386,14 @@ member of a group being formed.
 > `a_restarted_member_holds_its_vote_after_a_leaders_term`,
 > `a_restarted_member_holds_its_vote_after_an_election_nobody_won`,
 > `a_restarted_member_is_not_ticked_while_it_holds_its_vote`,
-> `a_restarted_leader_leads_again_within_one_vote_round` and
-> `a_restarted_sole_voter_is_not_held`.
+> `a_restarted_leader_leads_again_within_one_vote_round`,
+> `a_restarted_sole_voter_is_not_held`,
+> `a_restarted_learner_beside_a_sole_voter_is_held`,
+> `a_restarted_member_alone_in_a_set_not_committed_is_held`,
+> `a_held_member_grants_the_leader_its_stored_vote_names`,
+> `a_later_leaders_append_ends_what_the_stored_vote_lets_through`,
+> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round` and
+> `a_held_member_handed_the_leadership_stands_and_is_ticked`.
 
 ### Reads
 
