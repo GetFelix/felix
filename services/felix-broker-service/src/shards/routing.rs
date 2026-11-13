@@ -790,6 +790,20 @@ fn newly_named<'a>(
         .map(|assignment| (to_router_key(&assignment.key), assignment.incarnation))
 }
 
+/// Shards an engine other than the hybrid runs on this broker.
+pub trait EngineShards: Send + Sync {
+    /// Take this engine's shards out of `assignments` and bring its members
+    /// here in line with them. What is left is the hybrid's.
+    ///
+    /// The feed calls it first in every pass, so the hybrid lifecycle, its
+    /// replica handler and the routes never see a shard taken here: one
+    /// shard is never opened by two engines.
+    fn take<'a>(
+        &'a self,
+        assignments: &'a mut HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
 /// The cluster state one task keeps in step. Grouped because they are only ever
 /// used together, and only in the order this feed applies them.
 pub struct FeedState {
@@ -820,6 +834,8 @@ pub struct FeedState {
     /// Node addresses to route by until the first catalog read lands: those
     /// a start from the control-plane view kept. Empty otherwise.
     pub nodes: HashMap<String, felix_router::NodeRef>,
+    /// Whoever runs the shards the hybrid does not. `None` when it runs all.
+    pub engine_shards: Option<Arc<dyn EngineShards>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -865,6 +881,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         prefetch,
         elections,
         nodes,
+        engine_shards,
     } = state;
     // Seeded with the kept addresses, so a first read that fails still leaves
     // the feed something to route by.
@@ -918,7 +935,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
             let joint = joint_fence
                 .as_ref()
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
-            let (assignments, renewals, priors, as_of, checkpoint) = {
+            let (mut assignments, renewals, priors, as_of, checkpoint) = {
                 let owned = ownership.read().await;
                 (
                     owned.assignments().clone(),
@@ -932,6 +949,9 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                     owned.checkpoint(),
                 )
             };
+            if let Some(engine_shards) = &engine_shards {
+                engine_shards.take(&mut assignments).await;
+            }
             let assignments = match &elections {
                 Some(elections) => with_elected(assignments, elections),
                 None => assignments,

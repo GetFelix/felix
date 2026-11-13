@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use felix_common::random::HashMap;
 
-use super::{DiskLog, layout};
+use super::{DiskLog, engine_marker, layout};
 use crate::incarnation::{self, Incarnations};
 use crate::log::{BoxFuture, LogConfig, LogProvider, Offset, Retention, RetentionHold, ShardKey};
 use crate::shard_slots::ShardSlots;
@@ -140,6 +140,25 @@ impl DiskLogProvider {
         incarnation: u64,
     ) -> Result<DiskLog> {
         self.open_with(shard, base_offset, Some(incarnation))
+    }
+
+    /// Mark the directory [`Self::open_incarnation`] opens for `shard` as a
+    /// Raft member's log and return it with the log's label, without opening
+    /// it. See [`engine_marker::claim_for_raft`].
+    ///
+    /// For an engine that opens the log itself. This provider refuses to open
+    /// the shard from then on, so the log never has two writers.
+    pub fn claim_for_raft(&self, shard: &ShardKey, incarnation: u64) -> Result<(PathBuf, String)> {
+        let label = layout::shard_label(shard);
+        if self.incarnation_of(shard) != Some(incarnation) {
+            return Err(StorageError::Closed(label));
+        }
+        // Noted first, as an open does, so a retire finds the directory.
+        self.dirs
+            .created(&layout::incarnation_dir_name(shard, incarnation));
+        let dir = layout::incarnation_dir(&self.root, shard, incarnation);
+        engine_marker::claim_for_raft(&dir, &label)?;
+        Ok((dir, label))
     }
 
     /// What [`Self::open_incarnation`] would return, when the log is open

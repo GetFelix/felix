@@ -452,6 +452,8 @@ where
                     prefetch,
                     elections,
                     nodes,
+                    // 4h: the Raft shards, once node.rs starts their runtime.
+                    engine_shards: None,
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),

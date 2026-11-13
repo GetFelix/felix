@@ -109,7 +109,8 @@ where
     }
     // Before anything opens: a broker asked for Raft shards that came up as
     // a hybrid one would write a shard its peers run under Raft.
-    if crate::config::shard_engine()? == crate::config::ShardEngine::Raft {
+    let shard_engine = crate::config::shard_engine()?;
+    if shard_engine == crate::config::ShardEngine::Raft {
         let missing = crate::config::RaftPrerequisites {
             compiled: cfg!(feature = "raft"),
             membership: config.membership.is_some(),
@@ -320,6 +321,12 @@ where
         storage_id,
         unclean,
     } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
+    // Before the catalog, the view or a peer registers a stream: one
+    // registered earlier would have its shard 0 opened by the broker itself,
+    // beside the log its Raft member opens.
+    if shard_engine == crate::config::ShardEngine::Raft {
+        broker.leave_durable_streams_to_engines();
+    }
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config

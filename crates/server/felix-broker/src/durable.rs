@@ -242,6 +242,29 @@ impl DurableStorage {
         Ok(StreamLog { log })
     }
 
+    /// Mark the directory [`DurableStorage::open_stream_for`] would open as
+    /// a Raft member's log and return it with the log's label, without
+    /// opening it, for an engine that opens the log itself. See
+    /// `DiskLogProvider::claim_for_raft`.
+    pub fn claim_for_raft(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        incarnation: u64,
+    ) -> Result<(std::path::PathBuf, String)> {
+        let key = ShardKey {
+            tenant: tenant.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+        };
+        self.provider
+            .claim_for_raft(&key, incarnation)
+            .map_err(BrokerError::from)
+    }
+
     pub fn open_stream(
         &self,
         tenant: &str,

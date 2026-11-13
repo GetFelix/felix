@@ -430,6 +430,7 @@ mod feed {
                 prefetch: None,
                 elections: None,
                 nodes: HashMap::default(),
+                engine_shards: None,
             },
             router,
         )
@@ -463,6 +464,59 @@ mod feed {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
         })
         .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// Takes shard 1 and records that it did.
+    #[derive(Default)]
+    struct TakesShardOne {
+        taken: std::sync::Mutex<Vec<ShardAssignment>>,
+    }
+
+    impl EngineShards for TakesShardOne {
+        fn take<'a>(
+            &'a self,
+            assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                if let Some(assignment) = assignments.remove(&key(1)) {
+                    *self.taken.lock().expect("lock") = vec![assignment];
+                }
+            })
+        }
+    }
+
+    /// **A shard another engine took is never opened or routed by the
+    /// hybrid**, or one shard would have two engines writing it.
+    #[tokio::test]
+    async fn a_shard_another_engine_took_is_left_alone() {
+        let (mut state, _router) =
+            state(&[assignment(0, "broker-a", 1), assignment(1, "broker-a", 1)]);
+        let engine = Arc::new(TakesShardOne::default());
+        state.engine_shards = Some(Arc::clone(&engine) as Arc<dyn EngineShards>);
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        // Shard 0 is opened in the same pass, after the take.
+        until("the hybrid's shard to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
+        })
+        .await;
+        assert_eq!(engine.taken.lock().expect("lock").len(), 1);
+        assert!(!matches!(ingress.dispatch(&key(1)), Dispatch::Local { .. }));
+        let lifecycle = lifecycle.lock().await;
+        assert!(lifecycle.generation(&key(0)).is_some());
+        assert!(lifecycle.generation(&key(1)).is_none());
+        drop(lifecycle);
 
         shutdown.cancel();
         let _ = feed.await;
