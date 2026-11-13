@@ -115,10 +115,53 @@ async fn start_gated(
     addr: Option<SocketAddr>,
     gate: Arc<Gate>,
 ) -> TestNode {
+    start_with(dir, settings, addr, gate, None).await
+}
+
+/// Start a member and enter the group before its routes serve, as the
+/// service does: served first, an empty member can grant a vote before it
+/// starts withholding it.
+async fn start_entering(
+    dir: PathBuf,
+    settings: RaftSettings,
+    addr: Option<SocketAddr>,
+    members: &BTreeMap<NodeId, String>,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> TestNode {
+    start_with(
+        dir,
+        settings,
+        addr,
+        Arc::default(),
+        Some((members, shutdown)),
+    )
+    .await
+}
+
+async fn start_with(
+    dir: PathBuf,
+    settings: RaftSettings,
+    addr: Option<SocketAddr>,
+    gate: Arc<Gate>,
+    enter: Option<(
+        &BTreeMap<NodeId, String>,
+        &tokio_util::sync::CancellationToken,
+    )>,
+) -> TestNode {
     let app = Arc::new(KvApp::default());
     let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
         .await
         .expect("start raft node");
+    if let Some((members, shutdown)) = enter {
+        handle
+            .enter_group(
+                members.clone(),
+                felix_controlplane_service::raft::InitialClusterState::New,
+                shutdown.clone(),
+            )
+            .await
+            .expect("enter group");
+    }
     // A node restarting on its predecessor's address can race the aborted
     // server task still holding the socket; retry briefly rather than flake.
     let bind_addr = addr.unwrap_or("127.0.0.1:0".parse().expect("addr"));
@@ -968,19 +1011,18 @@ async fn wipe_and_restart(
     members: &BTreeMap<NodeId, String>,
     shutdown: &tokio_util::sync::CancellationToken,
 ) -> TestNode {
-    use felix_controlplane_service::raft::InitialClusterState;
-
     let (id, addr) = (node.handle.status().id, node.addr);
     node.stop().await;
     drop(node);
     let dir: PathBuf = dir.path().into();
-    let wiped = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
-    wiped
-        .handle
-        .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
-        .await
-        .expect("enter group");
-    wiped
+    start_entering(
+        dir.clone(),
+        settings(id, dir),
+        Some(addr),
+        members,
+        shutdown,
+    )
+    .await
 }
 
 /// Whether `node` refuses a vote request the way a member withholding its
@@ -1093,8 +1135,6 @@ async fn a_member_wiped_before_the_first_entry_does_not_form_again() {
 /// on forming and could vote twice in a term; now it catches up instead.
 #[tokio::test]
 async fn a_member_whose_log_was_emptied_does_not_form_again() {
-    use felix_controlplane_service::raft::InitialClusterState;
-
     let dirs: Vec<tempfile::TempDir> = (0..3)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
@@ -1119,12 +1159,14 @@ async fn a_member_whose_log_was_emptied_does_not_form_again() {
     );
 
     let dir: PathBuf = dirs[2].path().into();
-    let emptied = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
-    emptied
-        .handle
-        .enter_group(members, InitialClusterState::New, shutdown.clone())
-        .await
-        .expect("enter group");
+    let emptied = start_entering(
+        dir.clone(),
+        settings(id, dir),
+        Some(addr),
+        &members,
+        &shutdown,
+    )
+    .await;
     assert_stays_withheld(&[&emptied], &[&nodes[0], &nodes[1], &emptied]).await;
 
     shutdown.cancel();
