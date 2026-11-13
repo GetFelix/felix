@@ -3419,9 +3419,9 @@ acknowledged on local durability, as
 [Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
-`admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that is not built (issue
-#2307, under "A restarted follower" below).
+`admit_local_ack`. The ones with a restart pass on the node layer's vote
+hold (issue #2307, under "A restarted follower" below), which is built in
+`raft/group.rs`.
 `FelixRaftLeaseRestartRenews` passes on openraft's own start-time renewal,
 but only if `save_vote` is durable when it returns, which waits on the Raft
 engine. The
@@ -3470,8 +3470,9 @@ alone:
 
 - The node layer's vote hold (issue #2307): a restarted broker refuses votes
   for one election timeout from its start, whatever vote it stored.
-  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule.
-  It is not built.
+  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule,
+  and `Group::open` and `Group::dispatch` (`raft/group.rs`) build it, with
+  the two exemptions the `FelixRaftLeaseRestore*` configurations check.
 - openraft 0.10.0's renewal (`RestartRenewsFollowed`): `Engine::startup`
   renews the window for one election timeout when the stored vote is
   committed and another broker's, which is the vote of a follower that took
@@ -3482,8 +3483,8 @@ alone:
   votes that get no window are not ones the lease rests on.
 
 The design does not rest the lease on the engine's rule staying as it is,
-so the gate still waits for the vote hold. Both configurations have one
-restart and two terms.
+so the lease rests on the vote hold. Both configurations have one restart
+and two terms.
 
 **Skipping the hold for a restored leader (pull request 2445).** openraft
 restores a member as leader at a start when its stored vote is its own and
