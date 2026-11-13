@@ -21,6 +21,13 @@
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
+// Built and tested on its own first. The group's state machine takes it in
+// the next step, and nothing routes a cache shard here yet.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, unused_imports, reason = "not yet wired to a group")
+)]
+mod cache;
 mod codec;
 mod commit;
 mod deliver;
