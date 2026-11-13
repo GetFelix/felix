@@ -585,8 +585,11 @@ hold:
   nothing about what the log holds below it, however high its index.
 - **A voter.** Only voters of the leader's effective membership count,
   read from a state of the leader's log that already holds the record. A
-  joint membership needs a majority of both halves. A learner never counts,
-  and a leader that is not a voter does not count itself.
+  joint membership needs a majority of both halves. openraft goes through
+  one only when a majority of the old voters could miss every majority of
+  the new ones; otherwise the log holds one voter set and that set is
+  counted. A learner never counts, and a leader that is not a voter does
+  not count itself.
 
 The leader counts itself, since `propose` returned once its own copy was
 written. A member that no longer leads the record's term acknowledges
@@ -1158,8 +1161,9 @@ the log except through openraft ("Writing through openraft").
 A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
-it: the publish path calls `await_quorum_ack`, which is `await_commit`
-raced with the written count ("Two signals from one append"). If
+it: `await_quorum_ack` is `await_commit` raced with the written count
+("Two signals from one append"). The publish path does not call it yet
+and answers every publisher at the commit. If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
@@ -1368,7 +1372,10 @@ change has to:
   is not deposed, so each publish leaves a task waiting until the partition
   heals (#2428);
 - move the ring's start past a gap batch, so a reader resuming while the
-  ring is empty reads that batch from the log instead of missing it (#2428).
+  ring is empty reads that batch from the log instead of missing it (#2428);
+- answer a `Quorum` publisher on a stream that does not fsync on commit
+  from `await_quorum_ack`. `propose_publish` answers at the commit today,
+  and live delivery stays at the commit either way.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
@@ -1693,6 +1700,9 @@ term, one half of a joint configuration taken as enough, and the commit
 index counting written reports. One expected violation is pinned: every
 rule on and one power cut, which is the loss "Two signals from one append"
 states.
+The one-term configurations run to the end. The pass configurations with
+a second term or the joint change have found no violation but have not
+finished (`docs/formal/README.md`).
 
 **Leader leases.** Add a clock per broker with bounded drift, the leader's
 lease from the send time of its last majority-acknowledged message, and the

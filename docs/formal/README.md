@@ -595,10 +595,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachMove.cfg` | witness: a whole move commits and an old voter is out | violate `NeverMoves` |
 | `FelixRaftMembershipReachStepDown.cfg` | witness: a leader moved out of the voter set steps down | violate `NeverRemovedLeaderStepsDown` |
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
-| `FelixRaftWritten.cfg` | `FelixRaftWritten.tla`: three voters, two terms, one write, one power cut, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld` (N_BASE) |
-| `FelixRaftWrittenCrash.cfg` | a process crash in place of the power cut | pass the same and `AckedNeverLost` (N_CRASH) |
-| `FelixRaftWrittenTerms.cfg` | two writes and no crash: a deposed leader's tail at or past the new leader's record | pass the same and `AckedNeverLost` (N_TERMS) |
-| `FelixRaftWrittenJoint.cfg` | three voters and a learner, one swap through a joint configuration, one write | pass the same and `AckedNeverLost` (N_JOINT) |
+| `FelixRaftWritten.cfg` | `FelixRaftWritten.tla`: three voters, one term, two writes, one process crash, one power cut, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld` (4.3M distinct states) |
+| `FelixRaftWrittenCrash.cfg` | two process crashes and no power cut | pass the same and `AckedNeverLost` (0.6M distinct states) |
+| `FelixRaftWrittenFailover.cfg` | two terms, one write, one power cut | pass the same as `FelixRaftWritten.cfg`; not registered: no violation in 20.4M distinct states and 12 minutes on a 32-core machine, unfinished |
+| `FelixRaftWrittenTerms.cfg` | two terms, two writes and no crash: a deposed leader's tail at or past the new leader's record | pass the same and `AckedNeverLost`; not registered: no violation in 21.2M distinct states and 10 minutes on a 32-core machine, unfinished |
+| `FelixRaftWrittenJoint.cfg` | three voters and a learner, one swap through a joint configuration, one write | pass the same and `AckedNeverLost`; not registered: no violation in 48.4M distinct states and 40 minutes on a 32-core machine, unfinished. `FelixRaftWrittenJointOneHalf.cfg` and `FelixRaftWrittenLearnerCounts.cfg` violate within seconds on the same model |
+| `FelixRaftWrittenJointFailover.cfg` | the same across a change of leader | pass the same and `AckedNeverLost`; not registered: larger than `FelixRaftWrittenJoint.cfg` and not run yet |
 | `FelixRaftWrittenLearnerCounts.cfg` | a learner's written report counts | violate `AckedHeld` |
 | `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
@@ -2576,10 +2578,18 @@ What the acknowledgement promises:
   acknowledged record, unless a power cut took that record from a copy before
   its fsync and the record was never committed. "Could still win" is the same
   test as `AckedSurvive` in `FelixRaftMembership.tla`.
-- `AckedNeverLost`: the same with no exception. It passes when no broker loses
-  power, with process crashes, changes of leader and the membership change.
+- `AckedNeverLost`: the same with no exception. It is checked wherever no
+  broker loses power.
 - `CommittedHeld`: no broker that could still win an election lacks a
   committed entry, power cuts included.
+
+What has run to the end: one term with two writes, a process crash and a
+power cut (`FelixRaftWritten.cfg`), and the same with two crashes and no power
+cut, where `AckedNeverLost` passes too (`FelixRaftWrittenCrash.cfg`). The
+configurations with a second term or the membership change found no violation
+but did not finish in the time they were given; the table above has how far
+each got. Every twin below, the joint and second-term ones included, fails
+within seconds.
 
 So the loss this acknowledgement leaves open is exactly one: a copy that held
 the record loses power before its fsync, and a majority then elects without a

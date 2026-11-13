@@ -242,7 +242,7 @@ async fn led_with_a_learner() -> (Led, &'static str) {
     }
     let leads = |broker: &&str| {
         let status = cluster.runtime(broker).status(&shard(0))?;
-        (status.role == Role::Leader).then(|| status.member)
+        (status.role == Role::Leader).then_some(status.member)
     };
     let leader = eventually(|| ["a", "b"].iter().find_map(leads)).await;
     let other = if &*leader.broker == "a" { "b" } else { "a" };
@@ -337,19 +337,26 @@ async fn a_learner_that_has_written_does_not_make_a_majority() {
     led.cluster.stop().await;
 }
 
-/// The membership is joint: the old voters are the leader and one more, the
-/// new ones the leader and the former learner. The new half has written the
-/// record and the old half has not, so nothing is acknowledged.
+/// The membership is joint: the old voters are all three, the new one is
+/// the leader alone. The new half has written the record and the old half
+/// has not, so nothing is acknowledged. openraft goes through a joint
+/// membership only when a majority of the old voters could miss every
+/// majority of the new ones, which shrinking three voters to one does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_majority_of_one_half_of_a_joint_membership_is_not_enough() {
-    let (mut led, other) = led_with_a_learner().await;
+    let mut led = led().await;
     led.prime().await;
+    let others = led.others();
 
-    // The joint entry cannot commit without the old half's other voter.
-    led.cluster.net.cut.lock().insert(other.into());
+    // The joint entry cannot commit without one more of the old voters.
+    led.cluster
+        .net
+        .cut
+        .lock()
+        .extend(others.iter().map(|broker| broker.to_string()));
     let raft = led.group().raft().clone();
-    let new: BTreeSet<MemberId> = [led.leader.clone(), member("c")].into();
-    let change = tokio::spawn(async move { raft.change_membership(new, false).await });
+    let new: BTreeSet<MemberId> = [led.leader.clone()].into();
+    let mut change = tokio::spawn(async move { raft.change_membership(new, true).await });
     let group = led.group();
     let joint = || {
         let metrics = group.raft().metrics();
@@ -357,16 +364,15 @@ async fn a_majority_of_one_half_of_a_joint_membership_is_not_enough() {
         let sets = metrics.membership_config.membership().get_joint_config();
         (sets.len() == 2).then_some(())
     };
-    eventually(joint).await;
+    tokio::select! {
+        ended = &mut change => panic!("the change ended before it was joint: {ended:?}"),
+        () = eventually(joint) => {}
+    }
 
-    let log = led.cluster.logs[&("c".to_string(), 0)].clone();
-    let held = log.hold_flushes().await;
     let written = led.propose().await;
-    led.told_by("c", written).await;
     led.not_acked(written).await;
 
     led.cluster.net.cut.lock().clear();
-    drop(held);
     let acked = led.acked(written, AckAt::Written).await;
     acked.expect("acknowledged");
     let changed = tokio::time::timeout(PATIENCE, change).await;
