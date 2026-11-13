@@ -409,14 +409,37 @@ impl Group {
 
     /// `beat` is the gap a leader's append named. Taking the append or
     /// granting a vote restarts this member's election timer.
-    pub(crate) async fn handle(&self, body: Request, beat: u64) -> Result<Reply, Refused> {
-        let reply = self.dispatch(body).await?;
-        match &reply {
-            Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
-            Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
-            _ => {}
+    ///
+    /// The timer restarts even if the caller stops waiting: openraft
+    /// persists the append or vote either way, and a follower that keeps
+    /// answering past the sender's deadline would otherwise stand for
+    /// election while it still hears its leader.
+    pub(crate) async fn handle(
+        self: &Arc<Self>,
+        body: Request,
+        beat: u64,
+    ) -> Result<Reply, Refused> {
+        let group = Arc::clone(self);
+        let handled = tokio::spawn(async move {
+            let reply = group.dispatch(body).await?;
+            match &reply {
+                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
+                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                _ => {}
+            }
+            Ok(reply)
+        });
+        match handled.await {
+            Ok(reply) => reply,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(Refused::Stopped(
+                Box::new(Addressee {
+                    group: self.id.clone(),
+                    to: self.member.clone(),
+                }),
+                err.to_string(),
+            )),
         }
-        Ok(reply)
     }
 
     async fn dispatch(&self, body: Request) -> Result<Reply, Refused> {
