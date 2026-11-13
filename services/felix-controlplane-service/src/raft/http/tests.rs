@@ -21,13 +21,14 @@ const OTHER_PREFIX: &str = if cfg!(felix_segment_store) {
     "/internal/raft/v2"
 };
 
-const ROUTES: [(Method, &str); 7] = [
+const ROUTES: [(Method, &str); 8] = [
     (Method::POST, "append-entries"),
     (Method::POST, "vote"),
     (Method::POST, "install-snapshot"),
     (Method::POST, "propose"),
     (Method::POST, "leader"),
     (Method::GET, "standing"),
+    (Method::POST, "forming"),
     (Method::GET, "catch-up-target"),
 ];
 

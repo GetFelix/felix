@@ -4,7 +4,8 @@
 //! A member's data directory holds `store/`: the Raft log in `store/log/`,
 //! the snapshot in `store/raft-snapshot` ([`SnapshotStore`], shared with
 //! every other Raft group), the member file in `store/member`
-//! ([`MemberFile`]) and the lock file `store/lock`. [`MetadataStore::open`]
+//! ([`MemberFile`]), the formation file in `store/formation`
+//! ([`Formation`]) and the lock file `store/lock`. [`MetadataStore::open`]
 //! is the one way to open them together. A directory an older release wrote
 //! holds `raft.redb` instead. The design is in `docs/metadata-raft-design.md`, "Moving to the
 //! segment store"; the byte formats are in `docs/storage-format.md`.
@@ -13,12 +14,14 @@
 //! `raft.redb` and never writes, so a refusal leaves the directory as it
 //! was found.
 
+mod formation;
 mod lock;
 mod member;
 mod store;
 #[cfg(test)]
 mod tests;
 
+pub use formation::Formation;
 pub use member::{Member, MemberFile, Started};
 pub use store::MetadataStore;
 

@@ -2,8 +2,8 @@
 //! RPC to the local node and answering in Felix's peer format
 //! ([`super::wire`]), the shape [`super::network`] and a member on a release
 //! that ran openraft 0.9 both expect, plus the
-//! proposal route, the leader-only route ([`super::leader`]), and the two a
-//! member uses to enter the group ([`super::join`]).
+//! proposal route, the leader-only route ([`super::leader`]), and the three
+//! a member uses to enter the group ([`super::join`]).
 //!
 //! Every route is under [`super::PEER_PREFIX`], which differs between a
 //! member on redb and one on the segment store, so neither answers the
@@ -39,6 +39,7 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
             post(leader_request),
         )
         .route(&peer_route("standing"), get(standing))
+        .route(&peer_route("forming"), post(forming))
         .route(&peer_route("catch-up-target"), get(catch_up_target))
         // Axum's default body limit (2MB) is below openraft's default
         // snapshot chunk (3MB); a snapshot install crossing that line would
@@ -143,9 +144,28 @@ async fn vote(
 async fn standing(
     State(handle): State<super::RaftHandle>,
     axum::extract::Query(asker): axum::extract::Query<super::version::Asker>,
-) -> Json<super::join::Standing> {
+) -> Response {
     handle.note_asker(asker);
-    Json(handle.standing())
+    match handle.standing().await {
+        Ok(standing) => Json(standing).into_response(),
+        Err(err) => stopped(err),
+    }
+}
+
+/// A member that set out to form the group asks to be recorded. The record
+/// is on disk before the 204: the member votes once every peer has given
+/// one. 409 for a group other than this member's own.
+async fn forming(
+    State(handle): State<super::RaftHandle>,
+    Json(forming): Json<super::join::Forming>,
+) -> Response {
+    use super::join::NotRecorded;
+
+    match handle.record_forming(&forming).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(NotRecorded::Refused(why)) => (StatusCode::CONFLICT, why).into_response(),
+        Err(NotRecorded::Failed(err)) => stopped(err),
+    }
 }
 
 /// 503 from anything but a confirmed leader.

@@ -44,6 +44,8 @@ mod correlation {
             InternalMessage::PreVoteAnswer(m) => m.correlation_id,
             InternalMessage::LeaseForwardCacheOp(m) => m.correlation_id,
             InternalMessage::LeaseForwardCacheOk(m) => m.correlation_id,
+            InternalMessage::Raft(m) => m.correlation_id,
+            InternalMessage::RaftAnswer(m) => m.correlation_id,
         }
     }
 
@@ -61,6 +63,18 @@ mod correlation {
     /// Every variant, each carrying the caller's id.
     fn every_variant() -> Vec<InternalMessage> {
         vec![
+            InternalMessage::Raft(RaftCall {
+                correlation_id: 7,
+                body: Bytes::from_static(b"\x01\x03"),
+            }),
+            InternalMessage::Raft(RaftCall {
+                correlation_id: 7,
+                body: Bytes::from_static(b"\x01\x02"),
+            }),
+            InternalMessage::RaftAnswer(RaftAnswer {
+                correlation_id: 7,
+                body: Bytes::new(),
+            }),
             InternalMessage::Ping(Ping { correlation_id: 7 }),
             InternalMessage::Pong(Pong { correlation_id: 7 }),
             InternalMessage::PreVote(PreVote {
@@ -269,6 +283,12 @@ mod correlation {
                 | InternalMessage::Ping(_) => {
                     assert_eq!(class, LaneClass::Control, "{:?}", message.kind())
                 }
+                // An append with entries goes with the records; anything else
+                // Raft sends goes with the pings.
+                InternalMessage::Raft(call) if call.body[1] == crate::peer::RAFT_APPEND_ENTRIES => {
+                    assert_eq!(class, LaneClass::Replication)
+                }
+                InternalMessage::Raft(_) => assert_eq!(class, LaneClass::Control),
                 other => assert_eq!(class, LaneClass::Replication, "{:?}", other.kind()),
             }
         }

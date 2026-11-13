@@ -17,9 +17,17 @@
 (*     vmark   -- high-water mark of the shard's vote.                     *)
 (*     lmark   -- high-water mark of the shard's last log id.              *)
 (*     rcopy   -- the copy id the marks belong to.                         *)
+(*     rseq    -- the root sequence. It rises with every synced write of   *)
+(*                a mark.                                                  *)
 (*   Outside the root                                                      *)
 (*     reg     -- the incarnation the control plane holds. Every start     *)
 (*                takes a new one and records it at the root.              *)
+(*     cseq    -- the root sequence the control plane last heard in a      *)
+(*                heartbeat. It trails.                                    *)
+(*     The run witness holds the root sequence too. It is written with     *)
+(*     every mark write and is in memory, so while the machine stays up    *)
+(*     it holds what the root held before a restore, and after a machine   *)
+(*     restart it holds nothing (WitnessLost).                             *)
 (*                                                                         *)
 (* When a member opens its directory the copy is rotated (new copy id,     *)
 (* never voted, empty Raft log, a learner until a membership change swaps  *)
@@ -38,10 +46,13 @@
 (*                of Raft compares the root's incarnation with the control *)
 (*                plane's, and a root that is behind gets a new storage    *)
 (*                id. A backup taken in the run the restore interrupts     *)
-(*                carries the current incarnation (and the current run     *)
-(*                token), so neither the incarnation check nor the run     *)
-(*                witness can tell it from a crash: RootRestoreSameRun     *)
-(*                lets the model try that.                                 *)
+(*                carries the current incarnation and run token            *)
+(*                (RootRestoreSameRun lets the model try that), so the     *)
+(*                gate also fails a root whose sequence is below the       *)
+(*                witness's copy or the control plane's. RestoreUnheard    *)
+(*                lets a root with no witness go back before the control   *)
+(*                plane heard its last sequence. RestoreYoung lets a root  *)
+(*                go back while the batched log mark trails the log.       *)
 (*   "dir"     -- one shard directory goes back to a backup under a        *)
 (*                running root. RestoreYoung lets it happen while the      *)
 (*                batched log mark still trails the log.                   *)
@@ -85,6 +96,7 @@
 (*   MarkForgetsCopy  -- the marks do not name the copy id, so they are    *)
 (*                       reset at a rotation and an older directory with   *)
 (*                       the old copy id passes them.                      *)
+(*   NoRootSequence   -- the gate does not compare the root sequence.      *)
 (*                                                                         *)
 (* Abstracted: the log is on disk when it is appended (FelixRaft.tla has   *)
 (* the adapter's fsync rules), a message is one atomic step, a learner     *)
@@ -109,12 +121,15 @@ CONSTANTS
     ExactMark,
     RestoreYoung,
     RootRestoreSameRun,
+    WitnessLost,
+    RestoreUnheard,
     WipeKeepsId,
     NoRestoreCheck,
     NoStorageIdCheck,
     NoVoteMark,
     VoteBeforeMark,
-    MarkForgetsCopy
+    MarkForgetsCopy,
+    NoRootSequence
 
 VARIABLES
     role,     \* "follower", "candidate" or "leader"
@@ -129,6 +144,8 @@ VARIABLES
     vmark,    \* the root's vote mark for the shard
     lmark,    \* the root's last log id mark for the shard
     rcopy,    \* the copy id the marks belong to
+    rseq,     \* the root sequence
+    cseq,     \* the root sequence the control plane last heard
     reg,      \* the incarnation the control plane holds for the broker
     nxt,      \* history: the next unused copy id and storage id per broker
     bak,      \* one backup of one broker's root and shard directory
@@ -136,7 +153,7 @@ VARIABLES
     used      \* budgets spent, and the one broker faults hit
 
 vars == <<role, vote, granted, elected, log, match, copy, minted, sid, vmark, lmark,
-          rcopy, reg, nxt, bak, commits, used>>
+          rcopy, rseq, cseq, reg, nxt, bak, commits, used>>
 
 Symm == Permutations(Servers)
 
@@ -204,6 +221,8 @@ Init ==
     /\ vmark = [s \in Servers |-> NoVote]
     /\ lmark = [s \in Servers |-> NoId]
     /\ rcopy = [s \in Servers |-> 0]
+    /\ rseq = [s \in Servers |-> 0]
+    /\ cseq = [s \in Servers |-> 0]
     /\ reg = [s \in Servers |-> 0]
     /\ nxt = [s \in Servers |-> [copy |-> 1, sid |-> 1]]
     /\ bak = NoBackup
@@ -211,6 +230,16 @@ Init ==
     /\ used = [writes |-> 0, changes |-> 0, faults |-> 0, restarts |-> 0, faulty |-> Nobody]
 
 identity == <<copy, minted, sid, rcopy, reg, nxt, bak>>
+
+\* Broker `s` syncs `n` mark writes at its root. Only a restored root is
+\* compared with the sequence, and a write before the backup is in the
+\* backup, so only the backed-up broker's later writes are counted.
+Counted(s) == bak.who = s /\ "root" \in Faults
+MarkWrites(s, n) ==
+    /\ rseq' = [rseq EXCEPT ![s] = IF Counted(s) THEN @ + n ELSE @]
+    /\ UNCHANGED cseq
+VoteWrites == IF VoteBeforeMark THEN 0 ELSE 1
+LogWrites == IF ExactMark THEN 1 ELSE 0
 
 \* `save_vote`: the mark is synced at the root before it returns.
 SaveVote(s, v) ==
@@ -221,6 +250,7 @@ SyncVoteMark(s) ==
     /\ VoteBeforeMark
     /\ vmark[s] # vote[s]
     /\ vmark' = [vmark EXCEPT ![s] = vote[s]]
+    /\ MarkWrites(s, 1)
     /\ UNCHANGED <<role, vote, granted, elected, log, match, lmark, identity, commits, used>>
 
 \* The exact mark rides the flush that makes the append durable.
@@ -236,13 +266,25 @@ MarkLog(s) ==
     /\ bak.who = s
     /\ lmark[s] # LastId(log[s])
     /\ lmark' = [lmark EXCEPT ![s] = LastId(log[s])]
+    /\ MarkWrites(s, 1)
     /\ UNCHANGED <<role, vote, granted, elected, log, match, vmark, identity, commits, used>>
+
+\* The control plane hears the broker's last synced sequence. Its copy is
+\* never above the witness's, so it decides nothing while there is one.
+Heartbeat(s) ==
+    /\ Counted(s)
+    /\ WitnessLost
+    /\ cseq[s] # rseq[s]
+    /\ cseq' = [cseq EXCEPT ![s] = rseq[s]]
+    /\ UNCHANGED <<role, vote, granted, elected, log, match, vmark, lmark, rseq, identity,
+                   commits, used>>
 
 Campaign(c) ==
     /\ role[c] # "leader"
     /\ IsVoter(c)
     /\ vote[c].term < MaxTerm
     /\ SaveVote(c, [term |-> vote[c].term + 1, node |-> Me(c), committed |-> FALSE])
+    /\ MarkWrites(c, VoteWrites)
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {Me(c)}]
     /\ UNCHANGED <<elected, log, match, lmark, identity, commits, used>>
@@ -256,6 +298,7 @@ GrantVote(s, c) ==
     /\ VoteGE(vote[c], vote[s])
     /\ ~IdBelow(LastId(log[c]), LastId(log[s]))
     /\ SaveVote(s, vote[c])
+    /\ MarkWrites(s, VoteWrites)
     /\ role' = [role EXCEPT ![s] = IF vote[s].term < vote[c].term THEN "follower" ELSE @]
     /\ granted' = [granted EXCEPT ![c] = @ \cup {Me(s)},
                                   ![s] = IF vote[s].term < vote[c].term THEN {} ELSE @]
@@ -265,6 +308,7 @@ BecomeLeader(c) ==
     /\ role[c] = "candidate"
     /\ QuorumIn(Cfg(c), granted[c])
     /\ SaveVote(c, [vote[c] EXCEPT !.committed = TRUE])
+    /\ MarkWrites(c, VoteWrites + LogWrites)
     /\ role' = [role EXCEPT ![c] = "leader"]
     /\ elected' = elected \cup {<<vote[c].term, Me(c)>>}
     /\ SetLog(c, Append(log[c], Entry(vote[c].term, "blank", 0, NoCfg)))
@@ -278,6 +322,7 @@ AcceptLeader(i, j) ==
     /\ vote[j] # vote[i]
     /\ VoteGE(vote[i], vote[j])
     /\ SaveVote(j, vote[i])
+    /\ MarkWrites(j, VoteWrites)
     /\ role' = [role EXCEPT ![j] = "follower"]
     /\ granted' = [granted EXCEPT ![j] = {}]
     /\ UNCHANGED <<elected, log, match, lmark, identity, commits, used>>
@@ -285,6 +330,7 @@ AcceptLeader(i, j) ==
 LeaderAppend(i, e) ==
     /\ role[i] = "leader"
     /\ SetLog(i, Append(log[i], e))
+    /\ MarkWrites(i, LogWrites)
     /\ UNCHANGED <<role, vote, granted, elected, match, vmark, identity, commits>>
 
 AppendRecord(i) ==
@@ -302,6 +348,7 @@ Replicate(i, j) ==
        IN /\ p < Len(log[i])
           /\ SetLog(j, Append(SubSeq(log[j], 1, p), log[i][p + 1]))
           /\ match' = [match EXCEPT ![i][Me(j)] = p + 1]
+    /\ MarkWrites(j, LogWrites)
     /\ UNCHANGED <<role, vote, granted, elected, vmark, identity, commits, used>>
 
 \* The leader counts the answers it has, whatever became of the copies
@@ -312,7 +359,8 @@ Commit(i) ==
            fresh == {c \in new : ~\E d \in commits : d.idx = c.idx /\ d.e = c.e}
        IN /\ fresh # {}
           /\ commits' = commits \cup fresh
-    /\ UNCHANGED <<role, vote, granted, elected, log, match, vmark, lmark, identity, used>>
+    /\ UNCHANGED <<role, vote, granted, elected, log, match, vmark, lmark, rseq, cseq,
+                   identity, used>>
 
 \* The joint entry that swaps a rotated copy's old id for its new one. The
 \* new copy has caught up, the last membership is committed, and so is an
@@ -351,7 +399,8 @@ MayFail(s, kind) ==
 Empty == [empty |-> TRUE, copy |-> 0, minted |-> 0, vote |-> NoVote, log |-> <<>>]
 Dir(s) == [empty |-> FALSE, copy |-> copy[s], minted |-> minted[s], vote |-> vote[s],
            log |-> log[s]]
-Root(s) == [sid |-> sid[s], vmark |-> vmark[s], lmark |-> lmark[s], rcopy |-> rcopy[s]]
+Root(s) == [sid |-> sid[s], vmark |-> vmark[s], lmark |-> lmark[s], rcopy |-> rcopy[s],
+            seq |-> rseq[s]]
 
 MustRotate(d, r) ==
     \/ d.empty
@@ -361,13 +410,17 @@ MustRotate(d, r) ==
     \/ IdBelow(LastId(d.log), r.lmark)
 
 \* Broker `s` opens directory `d` under root `r` after a fault. A new copy
-\* id and its storage id are written together, with fresh marks.
+\* id and its storage id are written together, with fresh marks, which is a
+\* mark write. The control plane keeps a sequence per storage id.
 Open(s, d, r) ==
     LET keep == d.empty /\ WipeKeepsId
         rotate == MustRotate(d, r) /\ ~keep
         fresh == keep \/ rotate
         id == IF rotate THEN nxt[s].copy ELSE IF keep THEN copy[s] ELSE d.copy
+        seq == IF fresh /\ Counted(s) THEN r.seq + 1 ELSE r.seq
     IN /\ copy' = [copy EXCEPT ![s] = id]
+       /\ rseq' = [rseq EXCEPT ![s] = seq]
+       /\ cseq' = [cseq EXCEPT ![s] = IF r.sid # sid[s] THEN seq ELSE @]
        /\ minted' = [minted EXCEPT ![s] = IF fresh THEN r.sid ELSE d.minted]
        /\ vote' = [vote EXCEPT ![s] = IF fresh THEN NoVote ELSE d.vote]
        /\ log' = [log EXCEPT ![s] = IF fresh THEN <<>> ELSE d.log]
@@ -389,7 +442,8 @@ Wipe(s) ==
 
 LoseRoot(s) ==
     /\ MayFail(s, "lose")
-    /\ Open(s, Empty, [sid |-> nxt[s].sid, vmark |-> NoVote, lmark |-> NoId, rcopy |-> 0])
+    /\ Open(s, Empty, [sid |-> nxt[s].sid, vmark |-> NoVote, lmark |-> NoId, rcopy |-> 0,
+                       seq |-> 0])
     /\ reg' = [reg EXCEPT ![s] = @ + 1]
     /\ UNCHANGED bak
 
@@ -412,7 +466,7 @@ Backup(s) ==
     /\ used.faulty \in {Nobody, s}
     /\ bak' = [who |-> s, dir |-> Dir(s), root |-> Root(s), inc |-> reg[s]]
     /\ UNCHANGED <<role, vote, granted, elected, log, match, copy, minted, sid, vmark,
-                   lmark, rcopy, reg, nxt, commits, used>>
+                   lmark, rcopy, rseq, cseq, reg, nxt, commits, used>>
 
 \* A clean stop and start, so that a backup can be from an earlier run.
 Restart(s) ==
@@ -424,16 +478,24 @@ Restart(s) ==
     /\ granted' = [granted EXCEPT ![s] = {}]
     /\ used' = [used EXCEPT !.restarts = @ + 1]
     /\ UNCHANGED <<vote, elected, log, match, copy, minted, sid, vmark, lmark, rcopy,
-                   nxt, bak, commits>>
+                   rseq, cseq, nxt, bak, commits>>
 
 \* The gate: a root whose recorded incarnation is behind the control
-\* plane's gets a new storage id, and every directory is judged against it.
+\* plane's, or whose sequence is below the witness's copy or the control
+\* plane's, gets a new storage id, and every directory is judged against it.
+\* Until the restore the witness holds what the root holds. Unless
+\* RestoreYoung, a mark interval has passed since the last append; unless
+\* RestoreUnheard, a root with no witness goes back only after a heartbeat.
 RootRestore(s) ==
     /\ MayFail(s, "root")
     /\ bak # NoBackup
     /\ bak.who = s
     /\ RootRestoreSameRun \/ bak.inc < reg[s]
-    /\ LET caught == ~NoRestoreCheck /\ bak.inc < reg[s]
+    /\ RestoreYoung \/ lmark[s] = LastId(log[s])
+    /\ ~WitnessLost \/ RestoreUnheard \/ cseq[s] = rseq[s]
+    /\ LET behind == \/ bak.root.seq < cseq[s]
+                     \/ ~WitnessLost /\ bak.root.seq < rseq[s]
+           caught == ~NoRestoreCheck /\ (bak.inc < reg[s] \/ (~NoRootSequence /\ behind))
        IN Open(s, bak.dir, [bak.root EXCEPT !.sid = IF caught THEN nxt[s].sid ELSE @])
     /\ reg' = [reg EXCEPT ![s] = @ + 1]
     /\ UNCHANGED bak
@@ -458,6 +520,7 @@ Next ==
         \/ Finalize(s)
         \/ SyncVoteMark(s)
         \/ MarkLog(s)
+        \/ Heartbeat(s)
         \/ Wipe(s)
         \/ LoseRoot(s)
         \/ RelaxedCrash(s)
@@ -494,6 +557,8 @@ TypeOK ==
     /\ rcopy \in [Servers -> 0..MaxFaults]
     /\ minted \in [Servers -> Nat]
     /\ sid \in [Servers -> Nat]
+    /\ rseq \in [Servers -> Nat]
+    /\ cseq \in [Servers -> Nat]
     /\ reg \in [Servers -> Nat]
     /\ bak.who \in Servers \cup {Nobody}
     /\ used.faulty \in Servers \cup {Nobody}

@@ -1,0 +1,3 @@
+- Per-shard Raft messages travel between brokers over the internal transport (#2314), behind the `raft` feature that no release enables.
+  Two new internal kinds, `Raft` (57) and `RaftAnswer` (58), carry them in Felix's own byte layout, and only to a peer that offered the new `RAFT` capability (bit 23). A broker that does not run the group runtime never offers it, so it is never sent one, and frames between other peers are unchanged.
+  The broker also counts dropped Raft timer checks in `felix_broker_raft_dropped_ticks_total`, and a nightly workflow measures what idle groups cost over the real transport.

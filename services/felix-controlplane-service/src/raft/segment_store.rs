@@ -197,6 +197,45 @@ impl MemberState {
         store.as_ref().map(|store| store.snapshots().clone())
     }
 
+    /// Whether this store holds the member's own mark that it set out to
+    /// form the group.
+    pub(super) async fn forming_mark(&self) -> Result<bool> {
+        Ok(self.formation().await?.forming)
+    }
+
+    /// Set that mark. Durable before it returns.
+    pub(super) async fn mark_forming(&self) -> Result<()> {
+        // The store stays locked to the end of the write, so a stop waits
+        // for it and nothing is written into a store that has closed.
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().mark_forming().await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    /// The members this one recorded as having set out to form the group.
+    pub(super) async fn formed(&self) -> Result<std::collections::BTreeSet<super::NodeId>> {
+        Ok(self.formation().await?.formed)
+    }
+
+    /// Record that `member` set out to form the group. Durable before it
+    /// returns.
+    pub(super) async fn record_formed(&self, member: super::NodeId) -> Result<()> {
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().record_formed(member).await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    async fn formation(&self) -> Result<felix_storage::metadata_store::Formation> {
+        match self.store.lock().await.as_ref() {
+            Some(store) => Ok(store.member_file().formation()),
+            None => anyhow::bail!("raft node has stopped"),
+        }
+    }
+
     /// The node has stopped: flush and close the log.
     pub(super) async fn close(&self) -> Result<()> {
         let store = self.store.lock().await.take();

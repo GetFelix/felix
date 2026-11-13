@@ -5,6 +5,7 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
@@ -28,6 +29,9 @@ pub struct RaftRequest {
     /// On a leader's append: the longest the leader may now stay silent,
     /// in milliseconds. Zero on every other message.
     pub(crate) beat: u64,
+    /// How long the sender waits for the answer. The receiver drops an
+    /// answer it cannot give in time, so a stuck member holds nothing.
+    pub(crate) deadline: Duration,
     pub(crate) body: Request,
 }
 
@@ -185,6 +189,7 @@ impl Router {
             group,
             to: to.clone(),
             beat: sent.as_ref().map_or(0, |sent| sent.gap),
+            deadline: option.hard_ttl(),
             body,
         };
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
