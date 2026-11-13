@@ -25,6 +25,9 @@ pub(crate) struct Held {
     /// The last record it holds, or the purged id if that is higher. None for
     /// a directory with neither.
     pub(crate) last: Option<Offset>,
+    /// The last record and the generation stamped on it, None when it is
+    /// unstamped. None for a directory with no record.
+    pub(crate) last_record: Option<(Offset, Option<u64>)>,
 }
 
 /// What the directory `dir` holds, read off its segments and its purged id.
@@ -66,14 +69,16 @@ pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Res
     }
     let mut last = None;
     for (id, path) in segments.iter().rev() {
-        if let Some(offset) = scan(*id, path)?.last_offset() {
-            last = Some(offset);
+        let scanned = scan(*id, path)?;
+        if let Some(offset) = scanned.last_offset() {
+            last = Some((offset, scanned.last_generation));
             break;
         }
     }
     let purged = purged.map(|purged| purged.index);
     Ok(Held {
         lowest,
-        last: last.max(purged),
+        last: last.map(|(offset, _)| offset).max(purged),
+        last_record: last,
     })
 }

@@ -451,7 +451,7 @@ impl GroupRuntime {
     }
 
     /// Delete the kept copies the running member already covers. For the
-    /// ones it is behind, a task waits for its applied and flushed indexes to
+    /// ones it is behind, a task waits for its committed and flushed indexes to
     /// reach them and tries again. It ends when the group or the runtime
     /// stops and never starts a pass after that. Failures are logged: a kept
     /// copy left on disk is never worse than one deleted early.

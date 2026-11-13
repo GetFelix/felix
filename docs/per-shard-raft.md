@@ -341,27 +341,38 @@ rebooted host holds.
 ### Reclaiming kept copies
 
 A kept directory that holds records is deleted once the copy now in the
-shard directory has all three: its flushed last index is at or above the kept
-log's last index, its first index is at or below the kept log's lowest
-record, and its committed index is at or above the kept log's last index.
+shard directory shows all four of these in its own log:
+
+- its committed index, the log's commit offset, is at or above the kept
+  log's last index. A snapshot install does not move it, and the state
+  machine's applied index, which an install publishes early, is not used;
+- its entry at the kept log's last record has the same term as the kept
+  log's entry there, read from both logs. A missing or purged entry holds;
+- its flushed tail, the last index on disk, is at or above the kept log's
+  last index;
+- its first index is at or below where the kept log's lowest segment that
+  holds a record starts, read after the term.
+
 Every entry the kept directory holds is at or below an index the group has
 committed, so a committed one is in the group's log, and an uncommitted one
-was never acknowledged. The first two make the third enough. A commit index
-can be saved before its entry is flushed, and a snapshot carries no records,
-so a copy that caught up by snapshot, or purged its log, has committed past
-the kept directory without holding what is in it. The current copy must hold
-the records itself, on disk. The lowest record is where the kept directory's
-lowest segment starts, not the purged id plus one: a purge drops whole
-segments, so the segment holding the purged id keeps the records below it.
-A kept directory with no records at all is covered by the committed index
-alone. Only that evidence counts: no age and no timer.
+was never acknowledged. Two logs with the same index and term at one entry
+hold the same entries below it, so the matching term makes the current
+copy's prefix the kept one's, and a deposed leader's other branch does not
+pass. The flushed tail and first index make the copy hold those entries
+itself, on disk: a commit index can be saved before its entry is flushed, and
+a snapshot carries no records. The lowest record is where the kept
+directory's lowest segment starts, not the purged id plus one: a purge drops
+whole segments, so the segment holding the purged id keeps the records below
+it. A kept directory with no records is covered by the committed index alone.
+Only that evidence counts: no age and no timer.
 
-The pass takes the copy's first and flushed indexes from the running member,
-so a purge held only in memory counts. A kept directory is read without
-opening it for writing, so a held directory is left byte for byte as it was,
-and its segments are scanned up to the durable mark an open would use, so an
-unsynced tail does not make it unreadable. A directory that cannot be read,
-a damaged segment for one, is held and logged.
+The first index comes from the running member, so a purge held only in memory
+counts. The flushed tail is read from the log's durable offset, so a copy
+that restarted and has not appended since is not stuck. A kept directory is
+read without opening it for writing, so a held directory is left byte for
+byte as it was, and its segments are scanned up to the durable mark an open
+would use, so an unsynced tail does not make it unreadable. A directory that
+cannot be read, a damaged segment for one, is held and logged.
 
 `GroupRuntime::open_copy` runs the pass after the member starts, which covers
 a restart after the copy caught up. If a kept directory is ahead of the copy,
