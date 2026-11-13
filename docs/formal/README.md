@@ -676,7 +676,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
 | `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.5M distinct states) |
 | `FelixRaftReformStaleMembershipTwoRotatedUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
-| `FelixRaftReformStaleMembershipFull.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with a client write; not registered, run by dispatch | pass the same |
+| `FelixRaftReformStaleMembershipFull.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with a client write; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 47M distinct states of a run on the build box |
 | `FelixRaftReformStaleMembershipFullUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
 | `FelixRaftReformLearnerWaited.cfg` | three voters and a placed learner d that no membership names; d holds a record that a and b lose with their disks | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.1M distinct states) |
 | `FelixRaftReformLearnerHolds.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
@@ -2785,10 +2785,11 @@ What is checked:
 
 - `AckedSurvive`: an acknowledged record is in the base of every later
   epoch and in the log of every later leader. One loss is allowed, the one
-  the design documents: at the re-form no disk held the record except
-  those of brokers declared dead. The model records those in `lost` and
-  excuses nothing else. A disk that is not on the command's list still
-  counts as holding its records.
+  the design documents: at the re-form no disk held the record any more,
+  not counting the disks of brokers declared dead. A record gets there
+  through lost disks or through a declaration. The model records those in
+  `lost`; it does not check how each disk lost the record. A disk that is
+  not on the command's list still counts as holding its records.
 - `StateMachineSafety`: no index is committed with two different entries,
   in one epoch or across epochs, except over a documented loss.
 - `OneLeaderPerTerm`, per epoch.
@@ -2829,11 +2830,13 @@ How the three issues the first version of this module found are covered:
   exact floor and one term. With no floor it fails. With the trailing floor
   of the design it fails too: that is the residual of Questions, 13, pinned
   as `FelixRaftReformTwoRotatedOffsetsTrailing.cfg`.
-- **#2311**, a broker no copy names. `FelixRaftReformStaleMembershipTwoRotated.cfg`
-  and `FelixRaftReformStaleMembershipFull.cfg` have {a, b, c} changing to
-  {a, b, d} and the disks of a and b lost, and
+- **#2311**, a broker no copy names.
+  `FelixRaftReformStaleMembershipTwoRotated.cfg` has {a, b, c} changing to
+  {a, b, d} and the disks of a and b lost
+  (`FelixRaftReformStaleMembershipFull.cfg` adds a client write and has not
+  finished a run yet), and
   `FelixRaftReformLearnerWaited.cfg` has a learner d holding a record a and
-  b lose. They pass because d is placed and so listed. The same
+  b lose. The two that have run pass because d is placed and so listed. The same
   configurations with d left off the list (`...Unlisted`,
   `FelixRaftReformLearnerHolds.cfg`) lose what d's disk holds.
 
@@ -2846,13 +2849,19 @@ Abstracted: storage is a log and a rotation that cuts it to any prefix
 (`FelixRaft.tla` has the fsync rules). An election is one step over a
 quorum. An append is one step between two brokers, plus a bounded set of
 in-flight appends that can arrive late and more than once. A leader can
-step down at any step and does not propose its own removal. It sends to the brokers its newest membership
-names and to placed brokers that no membership of the epoch has named,
-which are learners. The command reads whole logs where the design reads
-last log ids. The read after the stop and the write of the base are one
-step, so a disk lost between the two is not modelled. A removed copy keeps
-its directory; its deletion is in `FelixRaftPlacement.tla`. An unreachable
-broker is one that takes no step, and the command's scope is one group.
+step down at any step and does not propose its own removal. It sends to the
+brokers its newest membership names and to placed brokers that no
+membership of the epoch has named, which are learners. The command reads
+whole logs where the design reads last log ids. The read after the stop and
+the write of the base are one step, so a disk lost between the two is not
+modelled. A removed copy keeps its directory; its deletion is in
+`FelixRaftPlacement.tla`. An unreachable broker is one that takes no step,
+and the command's scope is one group.
+
+Not modelled: moving a shard with one replica, since the model's leader
+never removes itself, so the second placed broker of the self-start rule is
+always a learner here. And a group whose placed brokers are all declared
+dead: the command needs one copy to read.
 
 Two findings of this module are open. The floor does not cover an
 uncommitted entry inside the base:

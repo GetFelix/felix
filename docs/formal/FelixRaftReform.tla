@@ -49,8 +49,9 @@
 (*   AckedSurvive       -- an acknowledged record is in the base of every  *)
 (*                         later epoch and in the log of every later       *)
 (*                         leader, unless it is a documented loss: at the  *)
-(*                         re-form no disk held it but those of brokers    *)
-(*                         declared dead.                                  *)
+(*                         re-form no disk held it any more, not counting  *)
+(*                         the disks of brokers declared dead. Lost disks  *)
+(*                         and dead brokers are the two ways to get there. *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -160,7 +161,7 @@ VARIABLES
     plans,      \* dry runs: epoch, and what each copy read held
     forms,      \* epochs written: epoch, base, voters
     acked,      \* history: entries committed, by epoch, term and index
-    lost,       \* history: acknowledged entries only dead disks held at a re-form
+    lost,       \* history: acknowledged entries no live disk held at a re-form
     elected,    \* history: epoch, term, broker
     writes, steps, places, rotations, rejoins, restarts
 
@@ -301,7 +302,9 @@ ClientWrite(l) ==
 
 \* One joint change: old set, then old and new, then new. The next step
 \* waits for the previous membership entry to commit. The control plane has
-\* recorded the target before the leader proposes.
+\* recorded the target before the leader proposes. The target has started
+\* the leader's epoch: a bound of the model, since changes are only
+\* configured in epoch 0.
 ProposeChange(l) ==
     /\ Leads(l)
     /\ steps < MaxChangeSteps
@@ -645,7 +648,8 @@ OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
 
 \* An acknowledged record outlives its epoch. The only loss allowed is the
-\* one the design documents: only disks of brokers declared dead held it.
+\* one the design documents: no disk held it any more, not counting the
+\* disks of brokers declared dead.
 AckedSurvive ==
     \A x \in acked \ lost :
         /\ \A f \in forms : f.e > x.e => Has(f.base, x)
