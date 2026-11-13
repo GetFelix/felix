@@ -5,7 +5,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use super::propose::{self, Batch};
+use super::propose::{self, Batch, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
@@ -49,6 +49,17 @@ impl RaftEngine {
         shard: &ShardKey,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let proposed = self.propose_reaching(shard, batch);
+        async move { proposed.await.map_err(|unacked| unacked.error) }
+    }
+
+    /// [`Self::propose`], and on an error how far the batch is known to be
+    /// written.
+    pub(crate) fn propose_reaching(
+        &self,
+        shard: &ShardKey,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let proposed = self
             .runtime
             .group(shard)
