@@ -601,7 +601,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRootRestoreSameRun.cfg` | the same, and the backup may be from the run the restore interrupts. The machine stayed up, so the run witness holds the root sequence | pass the same (1.6M distinct states) |
 | `FelixRaftIdentityRootRestoreNoWitness.cfg` | the same after a machine restart, so no witness is left: the root goes back after the control plane heard its last sequence | pass the same (8.7M distinct states) |
 | `FelixRaftIdentityRootRestoreBatched.cfg` | the same-run restore with a witness and the batched log mark, a mark interval after the last append | pass the same (11.8M distinct states) |
-| `FelixRaftIdentityWipeThenRootRestore.cfg` | two faults on one broker: the directory is emptied, then the root goes back to a backup taken in the same run, before the wipe or after it | pass the same (7.4M distinct states) |
+| `FelixRaftIdentityWipeThenRootRestore.cfg` | two faults on one broker: the directory is emptied, then the root goes back to a backup taken in the same run, before the wipe or after it. The new copy stays a learner, so this shows the votes since the backup are caught, not the new copy's own mark write | pass the same (7.4M distinct states) |
 | `FelixRaftIdentityRootRestoreNoSequence.cfg` | the gate does not compare the root sequence: a backup of the current run reads as a crash and its copy votes twice in a term | violate `OneLeaderPerTerm` (issue #2303) |
 | `FelixRaftIdentityRootRestoreUnheard.cfg` | no witness, and the root goes back before the control plane heard its last sequence | violate `OneLeaderPerTerm`: the residual the design names (issue #2303, Questions, 12) |
 | `FelixRaftIdentityRootRestoreYoung.cfg` | a witness, the batched log mark, and the root goes back inside the mark interval | violate `AckedHeldByLeader`: the residual the design names (Questions, 11) |
@@ -620,6 +620,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRestoreCaught.cfg` | witness: a restored directory is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreSameRunCaught.cfg` | witness: with no restart, a root restored in its own run is caught by the root sequence and rotated | violate `NeverRotates` |
+| `FelixRaftIdentityRootRestoreNoWitnessCaught.cfg` | witness: the same with no run witness, so the control plane's copy of the sequence caught it | violate `NeverRotates` |
 | `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
 | `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
 | `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
@@ -2553,7 +2554,9 @@ appends in one step, so its last log id never goes down; an implementation
 that syncs the mark between the two must not read a cut as a restore. The
 witness is written in the same step as the mark, and the sequence is counted
 only for the broker that has a backup, from the backup on: an earlier write
-is in the backup.
+is in the backup. After a restore the witness is taken to hold the restored
+sequence, where a real one keeps the higher value. No configuration depends
+on that: a second restore of the same root is behind on its incarnation.
 
 ### Placement, lost disks and the voter set
 

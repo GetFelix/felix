@@ -557,6 +557,7 @@ expectations=(
   "FelixRaftIdentityRestoreCaught violates NeverRotates"
   "FelixRaftIdentityRootRestoreCaught violates NeverRotates"
   "FelixRaftIdentityRootRestoreSameRunCaught violates NeverRotates"
+  "FelixRaftIdentityRootRestoreNoWitnessCaught violates NeverRotates"
   "FelixRaftPlacement pass"
   "FelixRaftPlacementFailover pass"
   "FelixRaftPlacementReseat pass"
