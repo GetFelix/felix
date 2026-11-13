@@ -85,11 +85,11 @@ impl LogInner {
         #[cfg(not(target_os = "linux"))]
         let via_uring: Option<std::io::Result<()>> = None;
 
-        #[cfg(test)]
+        #[cfg(any(test, feature = "fault-injection"))]
         let injected = self
             .fail_next_flush
             .swap(false, std::sync::atomic::Ordering::AcqRel);
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "fault-injection")))]
         let injected = false;
         let injected_failure = move || {
             if injected {

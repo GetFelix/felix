@@ -371,11 +371,23 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
 /// written again for real. The mode is the poisoned run's, from the marker.
 /// The small state files are written again too. The marker goes last, so a
 /// crash part way repeats all of this.
+///
+/// A Raft copy's directory is refused, and the marker stays. A peer may have
+/// counted records past the mark, so the copy must not come back under its
+/// id without them: `CopyRoot::open_copy` rotates it before opening the log.
 pub(super) fn after_poison(
     dir: &Path,
     label: &str,
     marker: Option<durable_mark::Poison>,
 ) -> Result<()> {
+    if crate::fs::try_exists(dir.join(super::RAFT_COPY_FILE))? {
+        return Err(std::io::Error::other(format!(
+            "{label}: {} holds a Raft copy whose log was poisoned; it opens only \
+             through its copy root, which gives it a new copy id",
+            dir.display()
+        ))
+        .into());
+    }
     match marker {
         Some(poison) if poison.on_commit => cut_to_mark(dir, label, poison.mark)?,
         Some(poison) => rewrite_past_mark(dir, label, poison.mark)?,

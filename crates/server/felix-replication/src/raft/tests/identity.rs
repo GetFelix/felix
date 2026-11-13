@@ -150,6 +150,158 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     }
 }
 
+/// A follower writes a record and its flush fails. Restarted, its log would
+/// be cut back to the last sync, without the record. It comes back under a
+/// new id instead, the old id answers no vote request, and the new copy is
+/// not a voter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+
+    let leader = cluster.elected(0).await;
+    let failing = *BROKERS
+        .iter()
+        .find(|broker| **broker != &*leader.broker)
+        .expect("a follower");
+    let old = cluster
+        .runtime(failing)
+        .status(&shard(0))
+        .expect("status")
+        .member;
+    let log = logs.remove(failing).expect("log");
+    // Nothing left to flush, so the failure lands on the next append.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while log.durable_offset() < log.tail_offset().await.expect("tail") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never synced"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    log.fail_next_flush();
+    let acked = cluster.write(0, b"acked").await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while !log.is_poisoned() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the flush never failed"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        log.tail_offset().await.expect("tail") > log.durable_offset(),
+        "the record was written past the last sync"
+    );
+
+    cluster.net.cut.lock().insert(failing.into());
+    assert!(cluster.runtime(failing).close(&shard(0)).await);
+    // A poisoned log has nothing left to flush, so its close may fail.
+    let _ = log.close().await;
+    let reopened = cluster
+        .runtime(failing)
+        .open_copy(
+            group(0),
+            &roots.shard_dir(failing),
+            log_config(),
+            &roots.roots[failing],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(
+        reopened.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::Poisoned)
+    );
+    let new = reopened.member.clone();
+    assert_eq!(new.broker, old.broker);
+    assert_ne!(new.copy, old.copy);
+
+    let request = RaftRequest {
+        group: group(0),
+        to: old.clone(),
+        beat: 0,
+        deadline: Duration::from_secs(1),
+        body: {
+            let candidate = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("b", 1));
+            let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
+            Request::Vote(VoteRequest::new(vote, None))
+        },
+    };
+    assert!(matches!(
+        cluster.runtime(failing).handle(request).await,
+        Err(Refused::NoSuchMember(_))
+    ));
+
+    // The two copies that synced the record go on, and the new copy is not
+    // a voter.
+    let after = cluster.write(0, b"after").await;
+    assert!(after > acked);
+    let leader = cluster.elected(0).await;
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let voters: BTreeSet<MemberId> = member
+        .raft()
+        .metrics()
+        .borrow_watched()
+        .membership_config
+        .membership()
+        .voter_ids()
+        .collect();
+    assert!(
+        voters.contains(&old) && !voters.contains(&new),
+        "{voters:?}"
+    );
+    // Reachable again, the new copy is still asked for nothing: the group
+    // sends to the old id, which the broker refuses.
+    cluster.net.cut.lock().remove(failing);
+    let command = Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"reachable"),
+        written: None,
+    };
+    member
+        .raft()
+        .client_write(command)
+        .await
+        .expect("a write with the new copy reachable");
+    let status = cluster.runtime(failing).status(&shard(0)).expect("status");
+    assert_eq!(status.member, new);
+    assert_eq!(status.role, Role::Learner);
+    assert_eq!(status.term, 0, "the new copy voted");
+
+    reopened.log.close().await.ok();
+    cluster.stop().await;
+    for (_, log) in logs {
+        log.close().await.ok();
+    }
+}
+
 /// The marks' name is on disk: it stays the same across builds, and a `/`
 /// in a user's name cannot make two shards share one.
 #[test]

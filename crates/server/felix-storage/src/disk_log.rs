@@ -52,6 +52,8 @@ mod append;
 mod ballot;
 pub(crate) mod crash_point;
 mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) use durable_mark::left_poisoned;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -100,6 +102,9 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// fsynced on commit. Its records are written behind too, so an offset that
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The file that makes a shard directory a Raft copy (`raft_copy`).
+pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
 
 /// Set the first time any log in this process is poisoned, and never
 /// cleared. A log closed since still counts: whatever it acknowledged may not
@@ -1234,7 +1239,7 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
@@ -1390,17 +1395,21 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Fail this log's next flush, as a failed fsync would: the log is
+    /// poisoned and leaves its marker. For tests, in this crate and outside.
+    pub fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+}
+
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
     /// Hold every flush until the guard is dropped.
     pub(crate) async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.inner.durability.lock_flushes().await
-    }
-
-    /// Fail the next flush, as a failed fsync would.
-    pub(crate) fn fail_next_flush(&self) {
-        self.inner.fail_next_flush.store(true, Ordering::Release);
     }
 
     /// Wait until the commit offset in memory is the one on disk.
@@ -1958,7 +1967,7 @@ struct LogInner {
     #[cfg(test)]
     extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]

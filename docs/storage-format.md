@@ -1699,6 +1699,11 @@ way it writes the state files again and removes `poisoned` last. A file that
 does not decode cuts and rewrites nothing, logs a warning, and still triggers
 the rewrite of the state files.
 
+A directory that also holds a `raft-copy` file is not opened this way. The
+open is refused and `poisoned` stays, and the copy root moves the directory
+aside and starts a new copy (`docs/per-shard-raft.md`, "A poisoned log"
+under "Group and member identity").
+
 ## `storage-id`: the data directory's identity
 
 One file at the durable root, beside the shard directories, holding 16 random

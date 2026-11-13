@@ -402,8 +402,9 @@ impl GroupRuntime {
     ///
     /// The directory keeps its copy id only if it may: an empty directory,
     /// one minted under another storage id, one whose copy the root's marks
-    /// do not name, or one whose vote or log is below its marks gets a new
-    /// copy id that never voted and an empty log. The member id is this
+    /// do not name, one whose vote or log is below its marks, or one whose
+    /// log was poisoned in its last run gets a new copy id that never voted and an
+    /// empty log. The member id is this
     /// broker and the copy id in the directory. From here on the vote mark
     /// is synced before a vote is answered and the log mark follows the log
     /// as [`RuntimeConfig::log_mark`] says. See `docs/per-shard-raft.md`,
