@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794532079381,
+  "lastUpdate": 1794532334305,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68178,6 +68178,72 @@ window.BENCHMARK_DATA = {
             "range": "1066.73",
             "unit": "us",
             "extra": "trials: 5\nmedian: 377.00\nmean: 1007.80\nstdev: 1066.73\ncv: 105.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3d46dbcaa6721a0bf421144a2dc36525d8132889",
+          "message": "fix(controlplane): close the metadata store on every failed start path (#2392)\n\nCloses #2373. Failed group entry stops the member, a snapshot close error no longer leaves the log open, failed-start paths are tested through the fault seam.\n\nSpec-Unaffected: closes stores on error paths only; no protocol or model change.",
+          "timestamp": "2026-11-13T00:58:42Z",
+          "tree_id": "117ad9d692673330d9c0e181df00b6ce093c0215",
+          "url": "https://github.com/GetFelix/felix/commit/3d46dbcaa6721a0bf421144a2dc36525d8132889"
+        },
+        "date": 1794532326126,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 98.00\nstdev: 1.00\ncv: 1.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.60\nstdev: 2.70\ncv: 2.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 176,
+            "range": "162.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 253.00\nstdev: 162.20\ncv: 64.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.00\nstdev: 1.58\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "6.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 269.00\nstdev: 6.16\ncv: 2.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 571,
+            "range": "687.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 571.00\nmean: 978.80\nstdev: 687.49\ncv: 70.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
