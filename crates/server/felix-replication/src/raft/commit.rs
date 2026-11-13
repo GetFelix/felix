@@ -13,7 +13,7 @@ use felix_storage::raft_log::LogPoint;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use super::propose::{self, Leading};
+use super::propose::{self, Leading, Lost};
 use crate::engine::{CommitError, Written};
 
 /// Changes of term remembered. A wait asks about a record written moments
@@ -125,7 +125,10 @@ pub(crate) async fn committed(
             Some(TermAt::Forgotten) => Err(propose::lost(FORGOTTEN)),
             Some(TermAt::Pending) | None => Err(propose::stopped()),
         },
-        () = leading.lost(Some(term)) => Err(propose::lost(NOT_LEADING)),
+        why = leading.lost(Some(term)) => Err(match why {
+            Lost::Stopped => propose::stopped(),
+            Lost::Deposed | Lost::Electing => propose::lost(NOT_LEADING),
+        }),
         () = stop.cancelled() => Err(propose::stopped()),
         () = tokio::time::sleep(timeout) => Err(CommitError::TimedOut {
             what: "batch",

@@ -556,15 +556,18 @@ offset to order by before the write. The order is the order of the calls:
    `client_write_many` call for all of it, one entry per record. Batches
    that arrive while an append runs go down together in the next call. The
    task starts with the shard's first publish, so a shard that takes none
-   has no task.
+   has no task. It runs on the runtime the group was opened on, not on the
+   first publisher's, so it lasts as long as the group.
 3. The task does not wait for a call to commit before it makes the next.
    openraft takes calls in the order they are made, so offsets follow the
    queue.
 
-A call takes batches until it holds 4 MiB of payload. One call is one
-append, and the group handles no heartbeat or vote while an append runs.
-The queue itself has no limit yet. The publish path bounds what is in
-flight when it is wired to `propose`.
+A call takes no batch that would bring it past 4 MiB of payload or 4096
+records, so batches with empty payloads are bounded too. A batch past
+either limit on its own goes down alone, and the batch behind it starts the
+next call. One call is one append, and the group handles no heartbeat or
+vote while an append runs. The queue itself has no limit yet. The publish
+path bounds what is in flight when it is wired to `propose`.
 
 **openraft's write lease.** At the pinned commit openraft refuses a write
 when no majority has answered the leader for its lease, which is the
@@ -579,6 +582,9 @@ place. A leader that is the only voter needs no answer and is not held. If
 no majority answers, the write is sent and openraft refuses it, with
 nothing appended. A refused batch is not proposed again by the task:
 later batches may already be on their way, and it would land behind them.
+While the task waits on the lease for the next call, it still hands on
+openraft's answers to the calls it already made, so a refused publisher
+hears within one lease, not two.
 
 The publisher's future then waits. It puts a fresh token on the first and
 on the last record of its batch, and reads the batch's place from both. It
@@ -598,9 +604,15 @@ wait.
 A token has no time limit of its own, so every wait also ends when:
 
 - openraft refuses the write. A member that does not lead, and a leader
-  no majority has answered for its lease, append nothing.
+  no majority has answered for its lease, append nothing. openraft gives
+  this refusal only before an append: an appended entry is answered when
+  it is applied, or as discarded when it is cut, never on a step-down.
 - This member stops leading, or leads at another term than the one that
-  wrote the batch. The group's role watcher says so ("When it closes").
+  wrote the batch. The group's role watcher says so ("When it closes"). A
+  member standing for election says the batch may still be written,
+  because if it wins it appends what it was sent.
+- The group's core stops, as it does on a storage error. The publisher is
+  told the group stopped.
 - The flushed position shows a later term. Another leader wrote there, and
   whether the batch is still under it is not known.
 - The group is closed or the runtime shuts down.
@@ -618,6 +630,12 @@ waits for commit after `propose` returns.
 > `batches_queued_together_go_to_openraft_in_one_call`,
 > `a_publisher_that_goes_away_keeps_its_place`,
 > `a_member_that_does_not_lead_refuses_and_appends_nothing`,
+> `a_deposed_leaders_propose_returns_leadership_lost_and_appends_nothing`,
+> `a_drain_stops_at_its_bounds`,
+> `the_publish_task_outlives_the_first_publishers_runtime`,
+> `an_answer_is_not_held_behind_the_next_calls_lease`,
+> `a_candidates_publisher_is_told_the_batch_may_still_be_written`,
+> `a_publisher_is_told_when_the_groups_core_stops`,
 > `an_ack_follows_the_policy_and_not_the_commit`,
 > `a_write_after_a_silence_renews_the_lease_first`,
 > `a_leader_no_majority_answers_refuses_and_appends_nothing`,
