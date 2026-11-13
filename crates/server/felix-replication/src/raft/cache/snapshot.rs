@@ -54,8 +54,17 @@ fn answer(fields: &mut Fields<'_>) -> io::Result<Answer> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Snapshots encoded on this thread, so a test can tell where the
+    /// encoding ran.
+    pub(crate) static ENCODED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl CacheState {
     pub(crate) fn snapshot(&self) -> Bytes {
+        #[cfg(test)]
+        ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
         let mut buf = BytesMut::new();
         buf.put_u8(VERSION);
         buf.put_u64_le(self.time);

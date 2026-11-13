@@ -68,10 +68,8 @@ impl Machine {
             ShardKind::Stream => None,
             ShardKind::Cache => {
                 let data = stored.map(|stored| stored.data).unwrap_or_default();
-                Some(Arc::new(parking_lot::RwLock::new(CacheState::restore(
-                    &data,
-                    state.last_applied.is_some(),
-                )?)))
+                let restored = restore(data, state.last_applied.is_some()).await?;
+                Some(Arc::new(parking_lot::RwLock::new(restored)))
             }
         };
         let commits = Commits::resumed(state.last_applied.as_ref().map(point));
@@ -97,6 +95,31 @@ impl Machine {
             moved
         });
     }
+}
+
+/// A snapshot's data as openraft carries it.
+pub(crate) struct SnapshotData {
+    pub(crate) bytes: Bytes,
+    /// The state `bytes` hold, when a receiver has already parsed them.
+    /// Install takes it instead of parsing a second time.
+    pub(crate) restored: Option<CacheState>,
+}
+
+impl SnapshotData {
+    fn bytes(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            restored: None,
+        }
+    }
+}
+
+/// Parse a cache snapshot on the blocking pool: near the size cap it is
+/// seconds of work that would otherwise hold a runtime thread.
+pub(crate) async fn restore(data: Bytes, applied: bool) -> io::Result<CacheState> {
+    felix_common::blocking::spawn(move || CacheState::restore(&data, applied))
+        .await
+        .map_err(io::Error::other)?
 }
 
 fn point(id: &LogIdOf<ShardTypes>) -> LogPoint {
@@ -173,25 +196,32 @@ fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
 pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
-    /// The projection as of `state.last_applied`.
-    data: Bytes,
+    /// The projection as of `state.last_applied`. A clone that shares the
+    /// live one's nodes, so apply goes on while this is encoded.
+    cache: Option<CacheState>,
 }
 
 impl RaftSnapshotBuilder<ShardTypes> for Builder {
-    type SnapshotData = Vec<u8>;
+    type SnapshotData = SnapshotData;
 
-    async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, Vec<u8>>> {
+    async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
         let meta = meta(&self.state);
-        store(&self.snapshots, &meta, self.data.clone()).await?;
-        Ok(SnapshotOf::<ShardTypes, Vec<u8>> {
+        let data = match self.cache.take() {
+            Some(cache) => felix_common::blocking::spawn(move || cache.snapshot())
+                .await
+                .map_err(io::Error::other)?,
+            None => Bytes::new(),
+        };
+        store(&self.snapshots, &meta, data.clone()).await?;
+        Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
-            snapshot: self.data.to_vec(),
+            snapshot: SnapshotData::bytes(data),
         })
     }
 }
 
 impl RaftStateMachine<ShardTypes> for Machine {
-    type SnapshotData = Vec<u8>;
+    type SnapshotData = SnapshotData;
     type SnapshotBuilder = Builder;
 
     async fn applied_state(
@@ -252,32 +282,33 @@ impl RaftStateMachine<ShardTypes> for Machine {
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        // The data and the id it is as of are taken in one step, here,
+        // The state and the id it is as of are taken in one step, here,
         // where no entry is being applied. Taken when the snapshot is built,
-        // the data could hold entries past the id, and a member that
-        // restored it would apply them twice.
+        // the state could hold entries past the id, and a member that
+        // restored it would apply them twice. The clone is cheap; encoding
+        // it is not, and happens in the build, off this task.
         Builder {
             snapshots: self.snapshots.clone(),
             state: self.state.clone(),
-            data: self
-                .cache
-                .as_ref()
-                .map(|cache| cache.read().snapshot())
-                .unwrap_or_default(),
+            cache: self.cache.as_ref().map(|cache| cache.read().clone()),
         }
     }
 
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMetaOf<ShardTypes>,
-        snapshot: Vec<u8>,
+        snapshot: SnapshotData,
     ) -> io::Result<()> {
-        let data = Bytes::from(snapshot);
+        let SnapshotData {
+            bytes: data,
+            restored,
+        } = snapshot;
         // Read before it is stored: a snapshot that does not parse must not
         // become the one this member restarts from.
-        let restored = match &self.cache {
-            Some(_) => Some(CacheState::restore(&data, meta.last_log_id.is_some())?),
-            None => None,
+        let restored = match (&self.cache, restored) {
+            (Some(_), Some(restored)) => Some(restored),
+            (Some(_), None) => Some(restore(data.clone(), meta.last_log_id.is_some()).await?),
+            (None, _) => None,
         };
         store(&self.snapshots, meta, data).await?;
         if let (Some(cache), Some(restored)) = (&self.cache, restored) {
@@ -298,14 +329,14 @@ impl RaftStateMachine<ShardTypes> for Machine {
 
     async fn get_current_snapshot(
         &mut self,
-    ) -> io::Result<Option<SnapshotOf<ShardTypes, Vec<u8>>>> {
+    ) -> io::Result<Option<SnapshotOf<ShardTypes, SnapshotData>>> {
         let Some(stored) = self.snapshots.current().await? else {
             return Ok(None);
         };
         let state = StoredMeta::state(&stored.meta)?;
-        Ok(Some(SnapshotOf::<ShardTypes, Vec<u8>> {
+        Ok(Some(SnapshotOf::<ShardTypes, SnapshotData> {
             meta: meta(&state),
-            snapshot: stored.data.to_vec(),
+            snapshot: SnapshotData::bytes(stored.data),
         }))
     }
 }
