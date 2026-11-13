@@ -87,15 +87,7 @@ impl RoutingTable {
             // every shard, and a publish must still resolve keys against the
             // stream's real width or the same key would move as placement
             // catches up.
-            let stream_id = stream_id(key.kind, &key.tenant_id, &key.namespace, &key.stream);
-            let placement = placements.entry(stream_id).or_default();
-            placement.shards = placement.shards.max(key.shard + 1);
-            // Every assignment of a stream carries the same routing. Letting
-            // jump hash win keeps the answer independent of iteration order
-            // should a feed ever disagree with itself.
-            if !routing.is_modulo() {
-                placement.routing = routing;
-            }
+            place(&mut placements, &key, routing);
             let leader_ref = nodes
                 .get(&leader)
                 .cloned()
@@ -145,6 +137,20 @@ impl RoutingTable {
     /// the control plane's assignments change.
     pub fn with_priors(mut self, priors: impl IntoIterator<Item = (ShardKey, PriorSet)>) -> Self {
         self.priors = priors.into_iter().collect();
+        self
+    }
+
+    /// This table, also knowing the width and key mapping of streams whose
+    /// shards it has no route for, because another engine routes them. A
+    /// key of such a stream resolves to its shard, and nothing here can be
+    /// read as a route to serve it by.
+    pub fn with_placed_elsewhere(
+        mut self,
+        placed: impl IntoIterator<Item = (ShardKey, ShardRouting)>,
+    ) -> Self {
+        for (key, routing) in placed {
+            place(&mut self.placements, &key, routing);
+        }
         self
     }
 
@@ -405,6 +411,19 @@ pub struct Placed {
 pub struct StreamPlacement {
     pub shards: u32,
     pub routing: ShardRouting,
+}
+
+/// Count `key` toward its stream's placement.
+fn place(placements: &mut HashMap<String, StreamPlacement>, key: &ShardKey, routing: ShardRouting) {
+    let stream_id = stream_id(key.kind, &key.tenant_id, &key.namespace, &key.stream);
+    let placement = placements.entry(stream_id).or_default();
+    placement.shards = placement.shards.max(key.shard + 1);
+    // Every assignment of a stream carries the same routing. Letting jump
+    // hash win keeps the answer independent of iteration order should a feed
+    // ever disagree with itself.
+    if !routing.is_modulo() {
+        placement.routing = routing;
+    }
 }
 
 /// The key `placements` is built and looked up under.

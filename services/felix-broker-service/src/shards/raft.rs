@@ -21,7 +21,7 @@ use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 
-use super::routing::{Dispatch, EngineShards, Reason};
+use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 
@@ -241,9 +241,10 @@ impl EngineShards for RaftShards {
     fn take<'a>(
         &'a self,
         assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
-    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
         Box::pin(async move {
             let mut open = self.open.lock().await;
+            let mut taken = Taken::new();
             let streams: Vec<ShardKey> = assignments
                 .keys()
                 .filter(|key| key.kind == ShardKind::Stream)
@@ -272,6 +273,7 @@ impl EngineShards for RaftShards {
                 let Some(assignment) = assignments.remove(&key) else {
                     continue;
                 };
+                taken.push((key.clone(), assignment.routing));
                 placed.insert(key.clone(), assignment.leader.clone());
                 if assignment.leader == self.local || assignment.replicas.contains(&self.local) {
                     held.insert(key, assignment);
@@ -320,6 +322,7 @@ impl EngineShards for RaftShards {
                     }
                 }
             }
+            taken
         })
     }
 
