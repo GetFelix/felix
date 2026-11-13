@@ -405,8 +405,9 @@ impl GroupRuntime {
     ///
     /// Nothing here checks that the directory may still hold copy `copy`,
     /// and no marks are kept. A shard is meant to open through
-    /// [`Self::open_copy`]; the broker opens its groups here until it opens
-    /// them through the gate (#2441).
+    /// [`Self::open_copy`]. The broker opening its groups here is interim:
+    /// it runs without the copy and restore check until it opens them
+    /// through the gate (#2441).
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
