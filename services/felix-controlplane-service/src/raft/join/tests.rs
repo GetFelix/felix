@@ -406,6 +406,12 @@ async fn a_peer_records_only_its_own_group() {
         );
     }
 
+    // Until it has entered the group it does not know its own, and a
+    // record now could be of another group's member.
+    let early = handle.record_forming(&forming(2, &[1, 2, 3])).await;
+    assert!(matches!(early, Err(NotRecorded::Failed(_))), "{early:?}");
+    assert!(handle.standing().await.expect("standing").formed.is_empty());
+
     let peers: BTreeMap<NodeId, String> = (1..=3).map(|id| (id, "127.0.0.1:1".into())).collect();
     handle
         .enter_group(

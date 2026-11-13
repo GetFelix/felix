@@ -595,7 +595,14 @@ impl RaftHandle {
                 "member {member} is not another member of the group {members:?}"
             )));
         }
-        if let Some(configured) = self.configured.get().filter(|mine| *mine != members) {
+        // Before this member knows its own group it cannot tell another
+        // group's member from its own, so it records nobody.
+        let Some(configured) = self.configured.get() else {
+            return Err(NotRecorded::Failed(anyhow::anyhow!(
+                "this member has not entered the group yet"
+            )));
+        };
+        if configured != members {
             return Err(NotRecorded::Refused(format!(
                 "member {member} would form the group {members:?}, and this member is \
                  configured with {configured:?}; FELIX_RAFT_PEERS must name the same members \
