@@ -754,6 +754,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseStoreStalledAsks.cfg` | a broker with a stalled disk keeps sending liveness heartbeats | violate `StalledLeaseLapses` |
 | `FelixRaftLeaseStoreReachLocalAck.cfg` | witness: the first write after sleep acknowledged locally with no group message | violate `NeverLocalAck` |
 | `FelixRaftLeaseStoreReachFailover.cfg` | witness: a failover after support was withdrawn, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftLeaseSleep.cfg` | `FelixRaftLease.cfg` with sleep (issue #2239): up to two wakes not caused by the leader start a vote hold that may end early; ending it ends only the hold, and a sleep answer renews nothing | pass `LeaseExclusive` |
+| `FelixRaftLeaseSleepHoldEndClearsWindow.cfg` | the hold's early end also clears openraft's refusal window | violate `LeaseExclusive` |
+| `FelixRaftLeaseSleepAnswerRenews.cfg` | a sleep answer renews the lease, though the follower's window did not restart | violate `LeaseExclusive` |
 | `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
 | `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
 | `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
@@ -775,6 +778,35 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSleepAskLost.cfg` | Design as written: the ask after a false alarm is lost, the hold runs out and the follower deposes a healthy leader | violate `NoNeedlessDeposal` (issue #2320) |
 | `FelixRaftSleepReachWakeOnWrite.cfg` | Witness: a group sleeps, wakes on a write and sleeps again | violate `NeverWakesOnWrite` |
 | `FelixRaftSleepReachAuditElection.cfg` | Witness: an election through the audit alone | violate `NeverElectsAfterDyingAsleep` |
+| `FelixRaftSleepWake.cfg` | The second design on issue #2239, every rule on: pre-vote, the vote hold after a wake, the request to a left-out member, the waking refusal, the audit that asks first, a lease that lapses in sleep. One write, one sleep, one lost audit heartbeat, one false alarm, one restart | pass |
+| `FelixRaftSleepWakeWrite.cfg` | A write reaches a sleeping leader whose lease lapsed; it waits for a heartbeat round | pass `NoWriteRefused`, `QuiescentLevel` |
+| `FelixRaftSleepAuditLost.cfg` | A lost audit heartbeat fires a follower's audit under a healthy leader; it asks first | pass `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAsked.cfg` | `FelixRaftSleepFalseAlarmFollower.cfg` with the second design's rules | pass `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLost.cfg` | the same with one request or answer lost, so the left-out member stays awake under a sleeping leader | pass `NoNeedlessDeposal`: its pre-vote wakes the others, who hold |
+| `FelixRaftSleepFalseAlarmFollowerBehindAsked.cfg` | `FelixRaftSleepFalseAlarmFollowerBehind.cfg` with the second design's rules | pass `AsleepIsLevelCounted`, `QuiescentLevel` |
+| `FelixRaftSleepTtl.cfg` | A cache group's expiry timer wakes a sleeping leader, which proposes the delete; no audit | pass `QuiescentTtl` |
+| `FelixRaftSleepMidHandshake.cfg` | The leader's broker restarts or dies during the handshake, one request or answer lost | pass |
+| `FelixRaftSleepWriteBeforeRound.cfg` | `FelixRaftSleepWakeWrite.cfg` with the write proposed at once after the wake; openraft refuses it (LeaseExpired) | violate `NoWriteRefused` |
+| `FelixRaftSleepAuditCampaigns.cfg` | `FelixRaftSleepAuditLost.cfg` with a follower that ticks at once after its audit | pass: the vote hold drops its pre-vote. The ask saves a round; the hold keeps the leader |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostDroppedPreVoteGrants.cfg` | a pre-vote the hold drops counts as granted, as openraft's default `pre_vote` answers | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoVoteHold.cfg` | no vote hold: a sleeper woken by a pre-vote grants it | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoPreVote.cfg` | no pre-vote: the member raises its term | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoLeftOutAsked.cfg` | no request to the left-out member | pass: the vote hold keeps the leader |
+| `FelixRaftSleepFalseAlarmFollowerBehindAskedNoRefusalWakes.cfg` | a refusal does not wake the leader | pass: the left-out member is caught up later |
+| `FelixRaftSleepNoTtlWake.cfg` | `FelixRaftSleepTtl.cfg` with a timer that does not wake the leader | violate `QuiescentTtl` |
+| `FelixRaftSleepReachMidHandshake.cfg` | Witness for `FelixRaftSleepMidHandshake.cfg` | violate `NeverElectedMidHandshake`: a leader is elected with the old one's request still out |
+| `FelixRaftCache.cfg` | `FelixRaftCache.tla`: the cache shard's state machine (issue #2238), two members, three proposals with retries, one leader change, one crash, two snapshots, one read, no clock | pass |
+| `FelixRaftCacheClock.cfg` | expiry, with clocks 0..2 that differ by member; no snapshot | pass |
+| `FelixRaftCacheNoRequestId.cfg` | an add carries no request id | violate `SumExact`: a retry counts twice |
+| `FelixRaftCacheSnapshotDropsDedup.cfg` | the snapshot leaves out the applied request ids | violate `SumExact` |
+| `FelixRaftCacheSnapshotIdAhead.cfg` | the snapshot's id is read after its state | violate `MembersAgree` |
+| `FelixRaftCacheReadNoApplyWait.cfg` | a read is answered before the leader applied its commit index | violate `ReadsFresh` |
+| `FelixRaftCacheClockApplyLocalClock.cfg` | apply checks expiry on the member's clock | violate `MembersAgree` |
+| `FelixRaftCacheClockReadsLocalClock.cfg` | a read checks expiry on the leader's clock | violate `OneClock` |
+| `FelixRaftCacheClockStampNotMonotone.cfg` | a leader stamps its own clock even when behind | violate `OneClock` |
+| `FelixRaftCacheReachInstallRead.cfg` | witness: a member installs the leader's snapshot, then leads and serves a read | violate `NeverReadAfterInstall` |
+| `FelixRaftCacheReachRetry.cfg` | witness: a retried add is committed twice and applied | violate `NeverRetryApplied` |
+| `FelixRaftCacheClockReachExpiry.cfg` | witness: a read finds the key expired, then a put-if-absent takes it | violate `NeverExpiredThenTaken` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -3173,9 +3205,32 @@ that does not also need the third gap. `FelixRaftSleepLeaderSleepsFirst.cfg` rea
 needless deposal, not a member left behind for good. All the harms in this module are
 availability: the safety checks pass with members asleep in any state.
 
+The second design on issue #2239 closes the third gap with five rules, each a knob:
+`PreVote`, `VoteHold` (a vote or pre-vote that wakes a member is dropped and the member
+holds), `LeftOutAsked` (the request also goes to a left-out member), `RefusalWakes` (a
+refused request wakes the leader) and `AuditAsks` (a follower woken by its audit asks
+first). `LeaseLapses` makes the first write after a wake wait for a heartbeat round, and
+`MaxTtlWakes` lets a cache group's expiry timer wake its leader. The `FelixRaftSleepWake`
+family runs with all of them on. Dropping pre-vote or the hold, or counting a dropped
+pre-vote as granted, deposes a healthy leader. Dropping `LeftOutAsked`, `RefusalWakes` or
+`AuditAsks` does not: the hold alone keeps the leader, and those three only save a
+pre-vote round or catch a member up sooner. Their configurations are registered as
+passing to record that.
+
 Not modelled: storage (an append is durable), snapshots, membership changes, read rounds,
-leases, pre-vote, ranked starts and the per-tick election cap. Messages are atomic steps
-except the sleep request. Only a leader's broker dies, and a disk stall counts as a death.
+ranked starts and the per-tick election cap. Messages are atomic steps except the sleep
+request. Only a leader's broker dies, and a disk stall counts as a death.
+
+### Raft cache state machine
+
+`FelixRaftCache.tla` models a cache shard's Raft group as the second design on issue #2238
+has it: one log of cache puts and counter adds that every member applies to an in-memory
+projection, with each member snapshotting that projection on its own. Raft itself is
+abstracted to one committed sequence, which `FelixRaft.tla` already checks. The checks are
+`MembersAgree` and `ProjectionIsFold` (apply is deterministic), `SumExact` (a retried add
+counts once), `ReadsFresh` (a read waits until the leader applied its commit index) and
+`OneClock` (expiry is read at the log's time, which the leader stamps and never moves
+back). Each twin drops one rule and breaks one check; the module header lists them.
 
 ## Which configurations run where
 
