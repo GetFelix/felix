@@ -385,7 +385,7 @@ What `plan` works out for one group, and `apply` then does:
    the group epoch: the next epoch, the base, and the voter set, which is
    exactly the copies whose reports hold the base. The base is the highest
    last log id reported, if some copy holds the entry the offset floor
-   names. If none does, the base is the highest commit index a copy saved
+   names. If none does, the base is the longest log a copy can vouch for
    (see "Offsets are not reused" below). Every other listed copy is a
    learner. The listed brokers start the record of brokers placed in the
    new epoch.
@@ -395,8 +395,8 @@ What `plan` works out for one group, and `apply` then does:
 **What it keeps and what it loses.** Every record held by a copy the
 command reached is at or below the base, or is cut as uncommitted. What is
 lost is a record that only brokers declared dead held, and, when no copy
-holds the floor's entry, a record above every commit index the copies
-saved. `plan` marks every
+holds the floor's entry, a record that no copy holding it can vouch for
+(see "Offsets are not reused" below). `plan` marks every
 group where a dead broker was a voter, since those are the groups that may
 have lost something. A crash or a power cut does not rotate ids and never
 needs a re-form.
@@ -464,14 +464,33 @@ If any copy the command reads holds the floor's entry, the highest copy
 does too, and Raft's log matching means its log agrees with every
 committed entry up to the floor. The base is that copy's log, as before.
 If no copy holds it, even the highest log can hold an uncommitted entry at
-an acknowledged offset, and the command cannot tell which of its entries
-those are. So it keeps only what a copy knows is committed: the base is
-the copy with the highest saved commit index, cut there, and padded up to
-the floor. A record above that index is lost, even if a copy holds it:
-the copy could not tell it from one that never committed. The model
-checks both halves (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
+an acknowledged offset. So the command keeps, from each copy, only what
+that copy can vouch for as committed:
+
+- **Its whole log, if its last log id has the floor's epoch and term** and
+  its index is not above the floor's. One leader wrote that entry and the
+  floor's entry into one log, so by log matching the copy's log is the
+  start of the log the floor's entry committed in. This is the common
+  case: a follower that was a little behind when the other disks were
+  lost. Its saved commit index can lag what it holds, and the command
+  does not need it.
+- **Its log up to its saved commit index, otherwise.** The log ends in
+  another term, and the command cannot tell a committed entry above the
+  saved index from one that never committed.
+
+The base is the longest log kept that way, padded up to the floor. A
+record is lost only if every copy that holds it has it above its saved
+commit index, in a log that ends in a term other than the floor's.
+
+The model checks each part. With one term every copy can vouch for all it
+holds, and no record a disk holds is lost
+(`FelixRaftReformTwoRotatedOffsets.cfg` passes `LossNeedsLostDisk`).
+Cutting every log to its saved commit index instead loses a record no disk
+lost (`FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg`). With two terms
+no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
 `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
-floor, does not).
+floor, does not), and the loss above can happen
+(`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
 
 What the implementation stores for this:
 
@@ -486,8 +505,10 @@ What the implementation stores for this:
   entry, and the log refuses a cut below it (`BelowCommit`). A rotated
   copy keeps it with what is left of its records. A member starting a new
   epoch saves the end of the base (or of its common prefix with the base,
-  for a learner) as its commit index before it takes an append, so a late
-  append of the old epoch cannot cut the base either.
+  for a learner) as its commit index before it takes an append (#2419), so
+  a late append of the old epoch cannot cut the base either. The model's
+  `FelixRaftReformEpochNotChecked.cfg` drops the epoch check on appends
+  and still passes, and it passes only because of this save.
 - **The control plane records the floor as a log id**: index, epoch and
   term. A report replaces it only with a higher index. A re-form does
   not change it: a copy whose entry at the floor's index is a gap that a

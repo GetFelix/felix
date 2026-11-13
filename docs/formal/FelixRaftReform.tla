@@ -26,8 +26,10 @@
 (*                 epoch by compare-and-swap: the base is the highest last *)
 (*                 log id read, padded with a gap up to the offset floor,  *)
 (*                 and the voters are the copies that hold the base. When  *)
-(*                 no copy read holds the floor's log id, the base is cut  *)
-(*                 to the highest commit index a copy saved, and padded.   *)
+(*                 no copy read holds the floor's log id, the base is the  *)
+(*                 longest log a copy can vouch for, and padded: a copy's  *)
+(*                 whole log if its last log id has the floor's epoch and  *)
+(*                 term, else its log up to the commit index it saved.     *)
 (*   StartEpoch -- members start at the new epoch from the base. Messages  *)
 (*                 carry the epoch.                                        *)
 (*                                                                         *)
@@ -54,6 +56,12 @@
 (* committed. If any copy read holds the floor's entry, the highest copy   *)
 (* does too, and it agrees with every committed entry up to the floor.     *)
 (*                                                                         *)
+(* A saved commit index can lag, so cutting every log there would lose     *)
+(* records a copy still holds. A log that ends below the floor's index in  *)
+(* an entry of the floor's epoch and term is kept whole: one leader wrote  *)
+(* both entries into one log, so by log matching the copy's log is a       *)
+(* prefix of the log the floor's entry committed in.                       *)
+(*                                                                         *)
 (* A restored copy of a shard with one replica starts by itself            *)
 (* (SelfStart): it is the only placed broker, so no other disk can hold a  *)
 (* newer record.                                                           *)
@@ -67,10 +75,10 @@
 (*                         later epoch and in the log of every later       *)
 (*                         leader, unless it is a documented loss: at the  *)
 (*                         re-form no disk held it any more, not counting  *)
-(*                         the disks of brokers declared dead, or the base *)
-(*                         was cut and it is above every commit index a    *)
-(*                         copy read had saved. Lost disks and dead        *)
-(*                         brokers are the two ways to get there.          *)
+(*                         the disks of brokers declared dead, or no copy  *)
+(*                         held the floor's entry and no disk that held    *)
+(*                         the record could vouch for it. Lost disks and   *)
+(*                         dead brokers are the two ways to get there.     *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -83,6 +91,9 @@
 (*   ElectedGroupLeftAlone -- no copy is stopped while a broker leads its  *)
 (*                         epoch: apply skips a group that elected after   *)
 (*                         the plan.                                       *)
+(*   LossNeedsLostDisk  -- a re-form loses a record only if no disk held   *)
+(*                         it. Holds with one term: there a copy can vouch *)
+(*                         for everything it holds.                        *)
 (*   BootIsRecorded     -- the first voters a member has for its epoch are *)
 (*                         the ones the control plane recorded for it.     *)
 (*   PlacedIsRecorded   -- every broker a membership of the current epoch  *)
@@ -110,6 +121,9 @@
 (*                         commits.                                        *)
 (*   FloorIndexOnly     -- the floor is an offset with no term, and a base *)
 (*                         is never cut (issue 2402).                      *)
+(*   CutToCommit        -- a cut base ends at the saved commit index even  *)
+(*                         on a copy whose last log id has the floor's     *)
+(*                         epoch and term.                                 *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -174,7 +188,8 @@ CONSTANTS
     SoloPlacedTwo,
     StopNotRechecked,
     PlacedForgotten,
-    FloorIndexOnly
+    FloorIndexOnly,
+    CutToCommit
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -565,6 +580,15 @@ DeclareDead(b) ==
 --------------------------------------------------------------------------------
 \* The command.
 
+\* How much of its log a copy can vouch for as committed when no copy read
+\* holds the floor's entry. A log that ends at or below the floor's index in
+\* an entry of the floor's epoch and term is a prefix of the log that entry
+\* committed in (log matching). Any other log is known only up to the commit
+\* index saved with it.
+Vouches(b) ==
+    IF LastKey(log[b]) = <<cpFloor.e, cpFloor.t>> /\ Len(log[b]) <= cpFloor.i
+    THEN Len(log[b]) ELSE commit[b]
+
 \* The brokers placed in the epoch. Leaving out the removed ones loses what a
 \* removed voter's disk holds when the copies left are empty (PlacedForgotten).
 Placed == IF PlacedForgotten THEN placed ELSE everPlaced
@@ -624,8 +648,9 @@ Pad(base, e) ==
     IF Floor = "none" \/ cpFloor.i <= Len(base) THEN base
     ELSE base \o [j \in 1..(cpFloor.i - Len(base)) |-> Gap(e)]
 
-\* The compare-and-swap is the caller's guard on e. A base cut to a saved
-\* commit index loses what was acknowledged above it.
+\* The compare-and-swap is the caller's guard on e. A record is a documented
+\* loss if no disk holds it, or the base was cut and no disk that holds it
+\* can vouch for it.
 WriteEpoch(e, base, voters, cut) ==
     LET f == [e |-> e + 1, base |-> Pad(base, e + 1), voters |-> voters, cut |-> cut]
     IN /\ f \notin forms
@@ -637,12 +662,13 @@ WriteEpoch(e, base, voters, cut) ==
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
        /\ lost' = lost \cup
             {x \in acked : /\ x.e <= e
-                           /\ \/ \A b \in Brokers \ dead : ~Has(log[b], x)
-                              \/ cut /\ x.i > Len(base)}
+                           /\ \A b \in Brokers \ dead :
+                                \/ ~Has(log[b], x)
+                                \/ cut /\ x.i > Vouches(b)}
 
 \* No copy read holds the floor's entry. Then even the highest log can hold
 \* an uncommitted entry at an offset acknowledged with another record, and
-\* only what a copy saved as committed is kept.
+\* only what a copy can vouch for is kept.
 Cut(S) ==
     /\ ~FloorIndexOnly
     /\ Floor # "none"
@@ -653,8 +679,9 @@ Reform(p, pick) ==
         S == DOMAIN p.facts
         F == IF PlanNotRechecked THEN p.facts ELSE [b \in S |-> Fact(b)]
         cut == Cut(S)
-        base == SubSeq(log[pick], 1,
-                       IF cut THEN Min(commit[pick], F[pick].len) ELSE F[pick].len)
+        Keep(b) == IF ~cut THEN F[b].len
+                   ELSE Min(IF CutToCommit THEN commit[b] ELSE Vouches(b), F[b].len)
+        base == SubSeq(log[pick], 1, Keep(pick))
         voters == {<<b, F[b].cid>> : b \in {x \in S : IsPrefix(base, log[x])}}
     IN /\ e < MaxEpoch
        /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
@@ -665,7 +692,7 @@ Reform(p, pick) ==
        /\ ReportNotPromise \/ \A b \in S : retired[b] /\ ep[b] = e
        /\ Len(log[pick]) >= F[pick].len
        /\ BaseNotHighest \/
-            IF cut THEN \A b \in S : commit[b] <= commit[pick]
+            IF cut THEN \A b \in S : Keep(b) <= Keep(pick)
             ELSE \A b \in S : Higher(F[pick], F[b])
        /\ WriteEpoch(e, base, voters, cut)
        \* Every listed copy is a voter or a learner of the new epoch.
@@ -772,6 +799,10 @@ NothingLost == lost = {}
 ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>
             \A l \in Brokers : ~(Leads(l) /\ ep[l] = ep[b])]_vars
+
+\* No record is lost while a disk that is not declared dead holds it.
+LossNeedsLostDisk ==
+    [][\A x \in lost' \ lost : \A b \in Brokers \ dead : ~Has(log[b], x)]_vars
 
 BootIsRecorded ==
     \A b \in Brokers :

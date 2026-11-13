@@ -667,6 +667,8 @@ expectations=(
   "FelixRaftReformTwoRotatedOffsetsNoFloor violates OffsetNeverReused"
   "FelixRaftReformTwoRotatedOffsetsTermsIndexOnly violates OffsetNeverReused"
   "FelixRaftReformTwoRotatedOffsetsTermsCuts violates NeverCuts"
+  "FelixRaftReformTwoRotatedOffsetsTermsUnvouched violates LossNeedsLostDisk"
+  "FelixRaftReformTwoRotatedOffsetsCutToCommit violates AckedSurvive"
   "FelixRaftReformCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaSelfStarts violates NeverSelfStarts"

@@ -671,29 +671,33 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementReachForm.cfg` | witness: three empty members form under the rule, elect a leader and acknowledge a write | violate `NeverAcks` |
 | `FelixRaftPlacementReachFormWaiver.cfg` | witness: two members form with the third waived and never started | violate `NeverAcks` |
 | `FelixRaftPlacementReachEarlyWipeVotesAgain.cfg` | witness: a member that lost its volume before the first commit catches up and votes again, and a write is acknowledged | violate `NeverEarlyWipedVotesAgain` |
-| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters, the command plans, stops them, reads them again and writes epoch 1; two writes, one restart, one late append, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (4.0M distinct states) |
+| `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters, the command plans, stops them, reads them again and writes epoch 1; two writes, one restart, one late append, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (6.0M distinct states) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
-| `FelixRaftReformTwoRotated.cfg` | two of three disks lost or restored, each copy left with any prefix of its log, one write; rotated copies are listed and read | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (2.1M distinct states) |
-| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same (28.7M distinct states) |
+| `FelixRaftReformTwoRotated.cfg` | two of three disks lost or restored, each copy left with any prefix of its log, one write; rotated copies are listed and read | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (2.4M distinct states) |
+| `FelixRaftReformTwoRotatedFull.cfg` | the same with two writes | pass the same (40.6M distinct states) |
 | `FelixRaftReformTwoRotatedOneVoter.cfg` | a witness: the group re-forms with one voter, which commits | violate `NeverOneVoterCommits` |
-| `FelixRaftReformTwoRotatedOffsets.cfg` | the offset floor: two disks lost with acknowledged records on them, two writes, one term, the floor exact | pass `AckedSurvive`, `OffsetNeverReused` (0.19M distinct states) |
+| `FelixRaftReformTwoRotatedOffsets.cfg` | the offset floor: two disks lost with acknowledged records on them, two writes, one term, the floor exact. When no copy holds the floor's entry, a copy whose saved commit index lags keeps its whole log, since its last log id has the floor's term | pass `AckedSurvive`, `OffsetNeverReused`, `LossNeedsLostDisk` (0.27M distinct states) |
+| `FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg` | the same where every log is cut to its saved commit index when no copy holds the floor's entry: a follower holds two acknowledged records with a lagging commit index and the base loses one, though no disk lost it | violate `AckedSurvive` (#2402) |
 | `FelixRaftReformTwoRotatedOffsetsPads.cfg` | a witness: a base ends below the floor and is padded with a gap | violate `NeverPads` |
 | `FelixRaftReformTwoRotatedOffsetsTrailing.cfg` | the same with the floor of the design, the last offset a leader reported | violate `OffsetNeverReused`: the accepted residual, pinned (issue #2305, Questions 13) |
 | `FelixRaftReformTwoRotatedOffsetsNoFloor.cfg` | the same with no floor | violate `OffsetNeverReused` |
-| `FelixRaftReformTwoRotatedOffsetsTerms.cfg` | the exact floor with two terms: the base is a log that ends in an uncommitted entry of the older term | violate `OffsetNeverReused`. Pinned finding, #2402 |
-| `FelixRaftReformRejoin.cfg` | an apply stops one copy and does not finish, the group elects, and the copy rejoins as a learner under a new id; two disks lost, a second plan, one term per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `ElectedGroupLeftAlone` (0.21M distinct states) |
-| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (13.1M distinct states) |
+| `FelixRaftReformTwoRotatedOffsetsTerms.cfg` | the exact floor with two terms: the copy left ends in an uncommitted entry of the older term, at an offset the floor's term acknowledged with another record. The floor is a log id, no copy holds its entry, and the base is what the copy can vouch for | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `OffsetNeverReused` (17.0M distinct states) |
+| `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg` | the same with the floor an offset with no term, and the base never cut | violate `OffsetNeverReused` (#2402) |
+| `FelixRaftReformTwoRotatedOffsetsTermsCuts.cfg` | a witness: no copy holds the floor's entry and the base is cut | violate `NeverCuts` |
+| `FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg` | a witness: the copy left holds a committed record of the older term above its saved commit index, cannot tell it from an uncommitted one, and the record is lost | violate `LossNeedsLostDisk` |
+| `FelixRaftReformRejoin.cfg` | an apply stops one copy and does not finish, the group elects, and the copy rejoins as a learner under a new id; two disks lost, a second plan, one term per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `ElectedGroupLeftAlone` (0.25M distinct states) |
+| `FelixRaftReformRejoinFull.cfg` | the same with two terms per epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (14.4M distinct states) |
 | `FelixRaftReformRejoinHappens.cfg` | a witness: a stopped copy rotates and takes an append as a learner | violate `NeverRetiredRejoins` |
-| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, d placed before the leader proposes, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.04M distinct states) |
-| `FelixRaftReformStaleMembership.cfg` | the same with one disk lost or restored to any prefix | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (0.79M distinct states) |
+| `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, d placed before the leader proposes, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.08M distinct states) |
+| `FelixRaftReformStaleMembership.cfg` | the same with one disk lost or restored to any prefix | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.4M distinct states) |
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
-| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed; once the change completes, c is still listed because it was placed in the epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.5M distinct states) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed; once the change completes, c is still listed because it was placed in the epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (12.4M distinct states) |
 | `FelixRaftReformStaleMembershipTwoMoves.cfg` | the same with a move and the move back: {a, b, c} to {a, b, d} and back to {a, b, c}; d is unplaced and can hold every entry while the copies of a, b and c are empty; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 6.7M distinct states on the build box |
 | `FelixRaftReformStaleMembershipTwoMovesForgotten.cfg` | the same with the list cut to the brokers placed now: d drops off when the move back commits, the empty copies name {a, b, c}, and the group re-forms from an empty base while d's disk holds the acknowledged entries | violate `AckedSurvive` |
 | `FelixRaftReformStaleMembershipTwoRotatedUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
 | `FelixRaftReformStaleMembershipFull.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with a client write; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 59M distinct states of a run on the build box, which stopped under it |
 | `FelixRaftReformStaleMembershipFullUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311). Its passing side is the row above, which is not shown yet |
-| `FelixRaftReformLearnerWaited.cfg` | three voters and a placed learner d that no membership names; d holds a record that a and b lose with their disks | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.0M distinct states) |
+| `FelixRaftReformLearnerWaited.cfg` | three voters and a placed learner d that no membership names; d holds a record that a and b lose with their disks | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.3M distinct states) |
 | `FelixRaftReformLearnerHolds.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
 | `FelixRaftReformLearnerHoldsHappens.cfg` | a witness: the learner holds a record | violate `NeverLearnerHolds` |
 | `FelixRaftReformOneReplica.cfg` | one voter whose disk is restored: with records it starts by itself, empty it is re-formed by the command; twice, with a restart and a late append | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.6M distinct states) |
@@ -701,16 +705,16 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformOneReplicaSelfStarts.cfg` | a witness: the restored copy starts by itself, with no plan, and commits | violate `NeverSelfStarts` |
 | `FelixRaftReformOneReplicaLearner.cfg` | one voter and a placed learner d: the restored copy does not start by itself, and the command reads both | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (0.02M distinct states) |
 | `FelixRaftReformOneReplicaSoloPlacedTwo.cfg` | the same where the restored copy starts by itself although d is placed | violate `AckedSurvive` |
-| `FelixRaftReformDead.cfg` | one broker declared dead and gone, one more disk may be lost; the command re-forms from the two it reaches | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.5M distinct states) |
+| `FelixRaftReformDead.cfg` | one broker declared dead and gone, one more disk may be lost; the command re-forms from the two it reaches | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.8M distinct states) |
 | `FelixRaftReformDeadReforms.cfg` | a witness: the group re-forms without the dead broker and commits | violate `NeverReformsWithoutDead` |
 | `FelixRaftReformDeadLoses.cfg` | a witness: a record only the dead broker held is lost | violate `NothingLost` |
 | `FelixRaftReformWrongDeclaration.cfg` | two brokers declared dead are alive, and elect and acknowledge in the old epoch after the third re-formed | violate `AckedSurvive`: what the command cannot protect against, pinned |
 | `FelixRaftReformBeforeAll.cfg` | the command goes on while a placed broker has not answered and is not declared dead | violate `AckedSurvive` |
-| `FelixRaftReformEpochNotChecked.cfg` | a late append from the old epoch is taken by a new-epoch voter and cuts the base out of its log | violate `AckedSurvive` |
+| `FelixRaftReformEpochNotChecked.cfg` | a member takes a late append from the old epoch. It cannot cut the base out of the log: a member starting the new epoch saves the end of the base as its commit index before it takes any append (#2419), and the log refuses a cut below that | pass `AckedSurvive` (3.0M distinct states). It rests on that save alone, so the epoch check on appends is a second guard |
 | `FelixRaftReformReportNotPromise.cfg` | the copies are read without being stopped, and the old epoch acknowledges a record the base lacks | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftReformPlanNotRechecked.cfg` | apply stops the copies and uses what the plan read instead of reading them again | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftReformRetireNotDurable.cfg` | two stopped voters restart, elect and acknowledge in the old epoch | violate `AckedSurvive` |
-| `FelixRaftReformTwoRestarts.cfg` | the same bounds with the marker durable: one write, two restarts, two stopped voters restart and stay stopped | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (0.10M distinct states) |
+| `FelixRaftReformTwoRestarts.cfg` | the same bounds with the marker durable: one write, two restarts, two stopped voters restart and stay stopped | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `ElectedGroupLeftAlone` (0.13M distinct states) |
 | `FelixRaftReformStopNotRechecked.cfg` | the group elects after the plan and apply stops its leader | violate `ElectedGroupLeftAlone` |
 | `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter log | violate `AckedSurvive` |
 | `FelixRaftReformRotatedNotWaited.cfg` | a rotated copy is not read, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
@@ -2837,7 +2841,11 @@ The control plane keeps three things the command needs:
   not remove one; a re-form starts the record again with the brokers the
   new epoch places.
 - `dead`: the brokers an operator declared dead (`DeclareDead`).
-- `cpFloor`: the highest commit offset a leader reported (`ReportFloor`).
+- `cpFloor`: the log id of the highest commit a leader reported
+  (`ReportFloor`): the index, and the epoch and term of the entry there.
+- `commit`: each copy's commit index, saved on its disk. It can lag the
+  leader's and never passes it, and a copy takes no append that would cut
+  its log below it (`KeepsCommit`).
 
 The command is three actions:
 
@@ -2853,7 +2861,9 @@ The command is three actions:
   each again, and goes on only if what they hold is what the plan showed.
   It takes the highest last log id as the base, pads it with a gap up to
   the floor, makes the copies that hold the base the voters, and writes the
-  next epoch by compare-and-swap.
+  next epoch by compare-and-swap. When no copy read holds the floor's
+  entry, the base is instead the longest log a copy can vouch for (#2402,
+  below).
 
 `StartEpoch` starts a member at the new epoch from the base. `SelfStart` is
 the one re-form without the command: a rotated copy that kept records, in a
@@ -2884,12 +2894,16 @@ refuses; it stays as a guard against a wrong record.
 What is checked:
 
 - `AckedSurvive`: an acknowledged record is in the base of every later
-  epoch and in the log of every later leader. One loss is allowed, the one
-  the design documents: at the re-form no disk held the record any more,
-  not counting the disks of brokers declared dead. A record gets there
-  through lost disks or through a declaration. The model records those in
-  `lost`; it does not check how each disk lost the record. A disk that is
-  not on the command's list still counts as holding its records.
+  epoch and in the log of every later leader. The losses allowed are the
+  ones the design documents. At the re-form no disk held the record any
+  more, not counting the disks of brokers declared dead. Or no copy held
+  the floor's entry, and no disk that held the record could vouch for it
+  (#2402, below). A record gets there through lost disks or through a
+  declaration. The model records those in `lost`; it does not check how
+  each disk lost the record. A disk that is not on the command's list
+  still counts as holding its records.
+- `LossNeedsLostDisk`: the first of those losses is the only one. An
+  action property, checked where every record has one term.
 - `StateMachineSafety`: no index is committed with two different entries,
   in one epoch or across epochs, except over a documented loss.
 - `OneLeaderPerTerm`, per epoch.
@@ -2915,8 +2929,11 @@ answers of the plan and does not read the copies again), `RotatedNotWaited`
 (a rotated copy is not read), `RetireNotDurable` (a restart forgets the
 stop marker), `BaseNotHighest`, `NoCas`, `SoloPlacedTwo` (a restored copy
 starts by itself although a second broker is placed), `StopNotRechecked`
-(apply stops a copy although a listed copy leads) and `PlacedForgotten`
-(the list is the brokers placed now, so a removed broker drops off).
+(apply stops a copy although a listed copy leads), `PlacedForgotten`
+(the list is the brokers placed now, so a removed broker drops off),
+`FloorIndexOnly` (the floor is an offset with no term, and a base is never
+cut) and `CutToCommit` (a cut base ends at the saved commit index on every
+copy).
 `RetireNotDurable` needs two restarts to fail, and
 `FelixRaftReformTwoRestarts.cfg` is the same bounds with the rule on.
 
@@ -2975,14 +2992,31 @@ never removes itself, so the second placed broker of the self-start rule is
 always a learner here. And a group whose placed brokers are all declared
 dead: the command needs one copy to read.
 
-Two findings of this module are open. The floor does not cover an
-uncommitted entry inside the base:
-`FelixRaftReformTwoRotatedOffsetsTerms.cfg` has the exact floor and two
-terms, and the new epoch serves a stale entry at an offset that was
-acknowledged with another record (#2402, pinned). And the design does not
-say how a copy comes back after an apply stopped it, did not finish, and
-the group elected without it (#2403). The model has it rotate and rejoin as
-a learner (`RetiredRejoins`), which is an assumption, not a rule of the
+**#2402**, an uncommitted entry inside the base. An offset-only floor does
+not cover it: in `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg` the
+new epoch serves a stale entry at an offset that was acknowledged with
+another record. The floor is a log id, and every copy saves its commit
+index. When no copy read holds the floor's entry, the base is the longest
+log a copy can vouch for (`Vouches`): the whole log of a copy whose last
+log id has the floor's epoch and term and is not above its index, and the
+log up to the saved commit index of any other copy.
+`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes with that rule.
+
+`AckedSurvive` allows a loss in two cases only: no disk holds the record,
+not counting brokers declared dead, or no copy held the floor's entry and
+no disk that holds the record can vouch for it. `LossNeedsLostDisk` is the
+first case alone. It holds with one term
+(`FelixRaftReformTwoRotatedOffsets.cfg`), where a copy can vouch for all
+it holds, and the second case needs two terms
+(`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`). A saved commit
+index that only lags is not a loss: the twin that cuts every log to it
+(`CutToCommit`, `FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg`) violates
+`AckedSurvive` with no disk lost beyond the tails.
+
+One finding of this module is open. The design does not say how a copy
+comes back after an apply stopped it, did not finish, and the group
+elected without it (#2403). The model has it rotate and rejoin as a
+learner (`RetiredRejoins`), which is an assumption, not a rule of the
 page.
 
 ### The switch from the hybrid to Raft
