@@ -468,6 +468,40 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     cluster.stop().await;
 }
 
+/// The member that forms a group asks the others first. Only answers of
+/// "no vote, no entry" from every one of them let it form; silence does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let (a, key) = (cluster.runtime("a"), shard(0));
+    let within = Duration::from_secs(5);
+    a.peers_blank(&key, &members(), within)
+        .await
+        .expect("every member is blank");
+    // The question is a pre-vote: it leaves the members asked as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(member, MemberId::new("c", 1)),
+        other => panic!("a silent member counted as blank: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    a.initialize(&key, members()).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    let b = cluster.runtime("b");
+    match b.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+}
+
 /// The ticker asks a group for a timer check only when its timer can have
 /// run out: a leader once per heartbeat, a follower that hears its leader
 /// never.
