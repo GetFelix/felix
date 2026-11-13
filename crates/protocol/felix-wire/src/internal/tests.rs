@@ -11,6 +11,7 @@ mod fence;
 mod forward;
 mod framing;
 mod golden;
+mod raft;
 mod replicate;
 
 use bytes::{BufMut, Bytes, BytesMut};

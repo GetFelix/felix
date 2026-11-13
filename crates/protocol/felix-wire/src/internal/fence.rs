@@ -154,6 +154,10 @@ impl PeerCapabilities {
     /// `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`, since a
     /// stamped batch travels on the headered layout.
     pub const WRITER_GENERATIONS: Self = Self(1 << 22);
+    /// Answers [`RaftCall`](super::RaftCall) for the per-shard Raft groups
+    /// it holds. Offered only by a broker that runs the group runtime; a
+    /// peer without it is never sent a Raft message.
+    pub const RAFT: Self = Self(1 << 23);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
