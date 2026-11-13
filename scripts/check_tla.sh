@@ -690,6 +690,7 @@ expectations=(
   "FelixRaftLeaseTransfer pass"
   "FelixRaftLeaseTransferThreeTerms pass"
   "FelixRaftLeaseTransferWrite pass"
+  "FelixRaftLeaseTransferStepDown pass"
   "FelixRaftLeaseSuspend pass"
   "FelixRaftLeaseStepDownWrite pass"
   "FelixRaftLeaseSuspendRoleLate pass"
@@ -874,8 +875,8 @@ fi
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves,
-# FelixRaftLeaseAckWide and FelixRaftLeaseTransferStepDown are not registered:
-# each is registered once a dispatch run gives its declared outcome.
+# FelixRaftLeaseAckWide is not registered: it is registered once a dispatch
+# run gives its declared outcome.
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1124,6 +1125,7 @@ weights=(
   "FelixRaftLeaseTransferThreeTerms 12"
   "FelixRaftLeaseTransferVoidEquality 4"
   "FelixRaftLeaseTransferVoidLate 2"
+  "FelixRaftLeaseTransferStepDown 38"
   "FelixRaftLeaseTransferWrite 40"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"

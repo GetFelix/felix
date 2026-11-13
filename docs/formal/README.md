@@ -766,7 +766,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseTransferVoidLate.cfg` | the same with the void a separate later step | violate `LeaseExclusive` |
 | `FelixRaftLeaseTransferThreeTerms.cfg` | the transfer at lease 1 against an election timeout of 1, three terms: a broker that voided term 1 is elected in term 2 and votes in term 3 | pass `LeaseExclusive`, `OneLeaderPerTerm` (6.1M distinct states) |
 | `FelixRaftLeaseTransferVoidEquality.cfg` | the same with the void one term, overwritten by the next and compared by equality | violate `LeaseExclusive` |
-| `FelixRaftLeaseTransferStepDown.cfg` | `FelixRaftLeaseTransferThreeTerms.cfg` with `ElectionTimeoutMin` = 0 and one step-down as well; not registered, run by dispatch | expected to pass `LeaseExclusive`, `OneLeaderPerTerm`; no result yet (12M distinct states in 20 min on the build box, unfinished) |
+| `FelixRaftLeaseTransferStepDown.cfg` | `FelixRaftLeaseTransferThreeTerms.cfg` with `ElectionTimeoutMin` = 0 and one step-down as well | pass `LeaseExclusive`, `OneLeaderPerTerm` (16.8M distinct states, 38 min on a CI runner) |
 | `FelixRaftLeaseTransferStepDownNoVoid.cfg` | the same with no void on a higher term | violate `LeaseExclusive` |
 | `FelixRaftLeaseTransferWrite.cfg` | the transfer at lease 1 against an election timeout of 1, two terms and one write | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (19.9M distinct states, 40 min on a CI runner) |
 | `FelixRaftLeaseTransferDrift.cfg` | `FelixRaftLeaseTransferWrite.cfg` with no write and clocks gaining 1 or 2 a tick, lease 1 against an election timeout of 2 | pass the same (4.4M distinct states) |
