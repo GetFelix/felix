@@ -63,6 +63,7 @@ fn request(body: Request) -> RaftRequest {
         group: group(),
         to: member("b"),
         beat: 2_000,
+        report: false,
         deadline: std::time::Duration::from_millis(200),
         body,
     }
@@ -115,6 +116,19 @@ fn every_request() -> Vec<RaftRequest> {
             member("c"),
             Some(log_id(2, 7)),
         ))),
+        request(Request::Written {
+            from: member("c"),
+            at: LogPoint { term: 2, index: 7 },
+        }),
+        RaftRequest {
+            report: true,
+            ..request(Request::Append(AppendEntriesRequest {
+                vote: vote(2, true),
+                prev_log_id: Some(log_id(2, 7)),
+                entries: vec![EntryOf::<ShardTypes>::new_blank(log_id(2, 8))],
+                leader_commit: None,
+            }))
+        },
     ]
 }
 
@@ -161,6 +175,7 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
                 actual: None,
             },
         )))),
+        Ok(RaftReply(Reply::Written)),
         Err(Refused::Unreachable("down".into())),
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
@@ -178,6 +193,7 @@ fn every_request_reads_back_as_written() {
         assert_eq!(read.group, written.group);
         assert_eq!(read.to, written.to);
         assert_eq!(read.beat, written.beat);
+        assert_eq!(read.report, written.report);
         assert_eq!(format!("{read:?}"), format!("{written:?}"));
         assert_eq!(encode_request(&read).expect("encode"), bytes, "{written:?}");
     }
@@ -226,6 +242,7 @@ fn every_reply_reads_back_as_written() {
             (Ok(RaftReply(Reply::TransferLeader(a))), Ok(RaftReply(Reply::TransferLeader(b)))) => {
                 assert_eq!(a, b)
             }
+            (Ok(RaftReply(Reply::Written)), Ok(RaftReply(Reply::Written))) => {}
             (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
             _ => panic!("an answer read back as another kind"),
         }
@@ -253,6 +270,8 @@ fn a_vote_matches_its_golden_vector() {
         &[0, 0, 0, 0, 0, 0, 0, 11][..],
         // the beat
         &[0, 0, 0, 0, 0, 0, 0x07, 0xD0][..],
+        // no report asked for
+        &[0][..],
         // the vote: term, voted for, committed
         &[0, 0, 0, 0, 0, 0, 0, 3][..],
         &[0, 1, b'a'][..],

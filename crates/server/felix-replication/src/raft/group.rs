@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use felix_storage::DiskLog;
-use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
+use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
@@ -18,10 +18,13 @@ use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::lead::{self, Leadership};
 use super::machine::Machine;
-use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
-use super::propose::{self, Batch, Proposal};
+use super::network::{
+    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router,
+};
+use super::propose::{self, AckAt, Batch, Proposal};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
+use super::written::Reports;
 use crate::engine::{CommitError, EngineHost, Written};
 
 pub(crate) struct Group {
@@ -29,6 +32,10 @@ pub(crate) struct Group {
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
+    /// Carries this member's written position to its leader.
+    transport: Arc<dyn RaftTransport>,
+    /// The written positions other members told this one.
+    reports: Arc<Reports>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -304,8 +311,13 @@ impl Group {
         let positions = log.positions();
         let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
+        let reports = Arc::new(Reports::new());
         let network = Network {
-            router: Router::new(transport, Arc::clone(&pace)),
+            router: Router::new(
+                Arc::clone(&transport),
+                Arc::clone(&pace),
+                Arc::clone(&reports),
+            ),
             group: id.clone(),
         };
         let raft = Raft::new(member.clone(), config, network, log, machine)
@@ -325,6 +337,8 @@ impl Group {
             member,
             raft,
             pace,
+            transport,
+            reports,
             positions,
             commits,
             leadership,
@@ -408,15 +422,81 @@ impl Group {
     }
 
     /// `beat` is the gap a leader's append named. Taking the append or
-    /// granting a vote restarts this member's election timer.
-    pub(crate) async fn handle(&self, body: Request, beat: u64) -> Result<Reply, Refused> {
-        let reply = self.dispatch(body).await?;
+    /// granting a vote restarts this member's election timer. `report` is
+    /// the leader asking to be told once the append's entries are written.
+    pub(crate) async fn handle(
+        &self,
+        body: Request,
+        beat: u64,
+        report: bool,
+    ) -> Result<Reply, Refused> {
+        use openraft::entry::RaftEntry;
+        use openraft::vote::RaftLeaderId;
+        let asked = match &body {
+            Request::Append(rpc) if report => rpc.entries.last().map(|last| {
+                let last = last.log_id();
+                let at = LogPoint {
+                    term: last.leader_id.term,
+                    index: last.index,
+                };
+                (rpc.vote.leader_id().node_id().clone(), at)
+            }),
+            _ => None,
+        };
+        let reply = match asked {
+            // openraft answers an append once it is fsynced. The report
+            // goes out as soon as it is written, while that answer waits,
+            // and is dropped if the answer is ready first.
+            Some((leader, last)) => {
+                let answer = self.dispatch(body);
+                let tell = self.tell_written(leader, last);
+                tokio::pin!(answer, tell);
+                let mut told = false;
+                loop {
+                    tokio::select! {
+                        biased;
+                        reply = &mut answer => break reply,
+                        () = &mut tell, if !told => told = true,
+                    }
+                }
+            }
+            None => self.dispatch(body).await,
+        }?;
         match &reply {
             Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
             Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
             _ => {}
         }
         Ok(reply)
+    }
+
+    /// Tell `leader` this member's written position once it holds the
+    /// leader's entry `last`: the id of the last entry the log has taken,
+    /// before its fsync. A log that never gets there says nothing.
+    async fn tell_written(&self, leader: MemberId, last: LogPoint) {
+        let mut positions = self.positions.clone();
+        let holds = |at: &LogPositions| {
+            let written = at.written;
+            written.is_some_and(|at| at.term == last.term && at.index >= last.index)
+        };
+        let Some(at) = positions.wait_for(holds).await.ok().and_then(|at| at.written) else {
+            return;
+        };
+        let deadline = Duration::from_millis(self.pace.timers.heartbeat);
+        let request = RaftRequest {
+            group: self.id.clone(),
+            to: leader,
+            beat: 0,
+            report: false,
+            deadline,
+            body: Request::Written {
+                from: self.member.clone(),
+                at,
+            },
+        };
+        // A lost report costs nothing but the early acknowledgement: the
+        // leader counts silence as not written and waits for the commit.
+        let _ = tokio::time::timeout(deadline, self.transport.send(request)).await;
     }
 
     async fn dispatch(&self, body: Request) -> Result<Reply, Refused> {
@@ -464,6 +544,12 @@ impl Group {
                 .await
                 .map(Reply::TransferLeader)
                 .map_err(|err| stopped(err.to_string())),
+            // Kept whatever this member's role is now: the count checks the
+            // term on the log id, not when the report came.
+            Request::Written { from, at } => {
+                self.reports.heard(from, at);
+                Ok(Reply::Written)
+            }
         }
     }
 
@@ -514,6 +600,42 @@ impl Group {
             self.stop.clone(),
             timeout,
         )
+    }
+
+    /// Wait until a `Quorum` write may be acknowledged. With `AckAt::Flushed`
+    /// that is its commit. With `AckAt::Written` it is the commit or a
+    /// majority of the voters having written it, whichever is first. The
+    /// written count acknowledges and does nothing else: the commit index
+    /// and the read bound do not move on it.
+    pub(crate) fn await_quorum(
+        &self,
+        written: Written,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        let commit = self.await_commit(written, timeout);
+        let early = (ack == AckAt::Written)
+            .then(|| written.end.checked_sub(1))
+            .flatten()
+            .map(|index| LogPoint {
+                term: written.generation,
+                index,
+            });
+        let reports = Arc::clone(&self.reports);
+        let raft = self.raft.clone();
+        let me = self.member.clone();
+        async move {
+            let Some(at) = early else {
+                return commit.await;
+            };
+            tokio::select! {
+                biased;
+                // First, so a member that no longer leads is refused even
+                // with a majority's reports in hand.
+                committed = commit => committed,
+                () = reports.majority(&raft, &me, at) => Ok(()),
+            }
+        }
     }
 
     /// Confirm by a read-index round that this member still leads `term`,
@@ -669,6 +791,11 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn leader_gap(&self) -> u64 {
         self.pace.leader_gap(self.pace.timers.now())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reports(&self) -> &Reports {
+        &self.reports
     }
 
     #[cfg(test)]

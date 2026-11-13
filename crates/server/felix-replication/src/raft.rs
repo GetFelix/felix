@@ -38,6 +38,7 @@ mod tests;
 mod ticker;
 mod types;
 mod wire;
+mod written;
 
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};

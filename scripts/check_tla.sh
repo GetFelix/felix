@@ -111,6 +111,7 @@ tlc() {
     FelixRaftLease*) module="FelixRaftLease" ;;
     FelixRaftSleep*) module="FelixRaftSleep" ;;
     FelixRaftSwitch*) module="FelixRaftSwitch" ;;
+    FelixRaftWritten*) module="FelixRaftWritten" ;;
     FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
     FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;

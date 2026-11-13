@@ -5,7 +5,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use super::propose::{self, Batch};
+use super::propose::{self, AckAt, Batch};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
@@ -83,6 +83,35 @@ impl RaftEngine {
             .map(|group| group.await_commit(written, timeout))
             .ok_or_else(|| propose::lost(NO_GROUP));
         async move { committed?.await }
+    }
+
+    /// Wait until a `Quorum` write of `written`, as [`Self::propose`]
+    /// returned it, may be acknowledged. `ack` is the batch's.
+    ///
+    /// On a stream that fsyncs on commit ([`AckAt::Flushed`]) this is
+    /// [`Self::await_commit`]. On any other stream it also returns once a
+    /// majority of the shard's voters has written the record, each on its
+    /// own word and before its fsync, when that comes before the commit. A
+    /// record acknowledged that way survives every crash and change of
+    /// leader with no power cut. It can be lost if one of those copies
+    /// loses power before its fsync and a majority then elects without a
+    /// copy that still holds the record.
+    ///
+    /// The first such wait on a shard makes its leader ask the followers
+    /// for their written positions from then on.
+    pub fn await_quorum_ack(
+        &self,
+        shard: &ShardKey,
+        written: Written,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        let acked = self
+            .runtime
+            .group(shard)
+            .map(|group| group.await_quorum(written, ack, timeout))
+            .ok_or_else(|| propose::lost(NO_GROUP));
+        async move { acked?.await }
     }
 
     /// One past the highest offset this broker knows committed, for every

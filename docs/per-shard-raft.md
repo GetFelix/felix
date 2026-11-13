@@ -517,7 +517,83 @@ already documents. Nothing else changes with the policy: the log is still
 fsynced under group commit, the commit index counts fsynced copies only,
 and subscribers are still fed up to `read_bound`.
 
-**`Quorum` on a `Periodic` stream.** Decided (issue #2167): the acknowledgement waits until a majority has written the record, or until it is committed, whichever is first. Each follower's node layer sends the leader its written position (last log id) after the adapter's `append` has handed the records to the kernel. The leader counts a member when that log id carries the leader's own term and is at or past the record, and counts itself at its own written position. The majority is of the voters of the effective membership, both halves of a joint one, never learners. This count releases the publisher's acknowledgement and nothing else. The commit index, votes, `read_bound`, apply, the offset floor and the root's log marks use fsynced positions only, so no member can come to hold a different record at a committed offset. With no power cut, an acknowledged record is in every later leader's log. It can be lost only if a copy that held it loses power before its fsync and a majority then elects without a copy that still holds it. At RF 3 that is one follower's power cut and then the leader failing before it re-replicates. The window is one group-commit fsync. The offset is then given to another record, which no subscriber saw. On a stream with fsync on commit, `Quorum` waits for the commit index.
+**`Quorum` on a `Periodic` stream.** Decided (issue #2167): the
+acknowledgement waits until a majority has written the record, or until it
+is committed, whichever is first. This count releases the publisher's
+acknowledgement and nothing else. The commit index, votes, `read_bound`,
+apply, the offset floor and the root's log marks use fsynced positions
+only, so no member can come to hold a different record at a committed
+offset. On a stream with fsync on commit, `Quorum` waits for the commit
+index.
+
+A follower's answer to an append comes after its fsync, so its written
+position travels in a message of its own (`raft::RaftEngine::await_quorum_ack`,
+`crates/server/felix-replication/src/raft/written.rs`):
+
+1. A leader's append that carries entries asks the follower for a report.
+   It asks only once a publisher on the shard has waited on the written
+   count, so a shard whose writes never do costs its followers no message.
+   The first such wait finds no report and ends at the commit.
+2. The follower hands the append to openraft and watches its log's written
+   position while openraft's answer waits for the fsync. Once the log holds
+   the append's last entry, the follower sends the leader its member id and
+   the id (term and index) of the last entry it has written. If the fsync
+   is done first, the append's answer already says more, and no report is
+   sent.
+3. The leader keeps the furthest position each member has named.
+
+The leader counts a member as having written a record when all of these
+hold:
+
+- **Its own word.** The report names the member. Nothing is inferred for a
+  member that has said nothing, and a lost report only means the write
+  waits for the commit.
+- **The leader's term.** The log id in the report carries the term the
+  record was written in, and its index is at or past the record. An entry
+  of a term comes from that term's one leader, so such a log matches the
+  leader's up to there. A log id of another term, older or newer, says
+  nothing about what the log holds below it, however high its index.
+- **A voter.** Only voters of the leader's effective membership count,
+  read from a state of the leader's log that already holds the record. A
+  joint membership needs a majority of both halves. A learner never counts,
+  and a leader that is not a voter does not count itself.
+
+The leader counts itself, since `propose` returned once its own copy was
+written. A member that no longer leads the record's term acknowledges
+nothing this way: the commit wait refuses it first.
+
+What the acknowledgement promises, and what it does not
+(`docs/formal/FelixRaftWritten.tla`):
+
+- With no power cut, an acknowledged record is in every later leader's
+  log. Process crashes, changes of leader and a membership change lose
+  nothing: a killed broker keeps what it wrote.
+- It can be lost only if a copy that held it loses power before its fsync
+  and a majority then elects without a copy that still holds it. At RF 3
+  one power cut is enough. The leader and one follower hold the record. One
+  of the two loses power and comes back without it, and it and the third
+  broker elect a leader while the last copy is unreachable. The copy that
+  loses power can be the leader's own. The window is one group-commit
+  fsync. The offset is then given to another record, which no subscriber
+  saw, because subscribers are fed committed records only.
+- 0.7 does not lose the record in that case. Its follower comes back from
+  a machine crash under a new storage identity and is not counted, so the
+  shard stays closed until the copy that holds the record returns
+  ([Replication design](replication-design.md), "Storage identities").
+  Under Raft a power cut rotates nothing, and the group elects.
+
+> `crates/server/felix-replication/src/raft/tests/written.rs`,
+> `a_quorum_write_is_acknowledged_once_a_majority_has_written_it`,
+> `a_learner_that_has_written_does_not_make_a_majority`,
+> `a_majority_of_one_half_of_a_joint_membership_is_not_enough`,
+> `a_report_from_another_term_does_not_make_a_majority`,
+> `a_deposed_leader_acknowledges_nothing_on_reports`,
+> `a_majority_is_the_leader_and_the_voters_that_said_so`,
+> `a_learners_report_is_not_counted`,
+> `a_leader_outside_the_voters_does_not_count_itself`,
+> `a_joint_membership_needs_both_halves`,
+> `a_report_at_another_term_is_not_counted` and
+> `the_furthest_report_of_each_sender_is_kept`.
 
 Only openraft writes to a Raft shard's log. The blank entry, membership
 entries and publishes all get their index from openraft, so they cannot

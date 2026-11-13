@@ -24,6 +24,7 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod propose;
+mod written;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
@@ -97,6 +98,7 @@ fn sender(request: &Request) -> Option<&str> {
         Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
         Request::Snapshot { vote, .. } => vote,
         Request::TransferLeader(_) => return None,
+        Request::Written { from, .. } => return Some(&from.broker),
     };
     Some(&vote.leader_id().node_id().broker)
 }
@@ -1240,6 +1242,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
@@ -1388,6 +1391,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: vote(),
     };
