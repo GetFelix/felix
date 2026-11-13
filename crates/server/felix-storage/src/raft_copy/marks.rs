@@ -451,13 +451,19 @@ impl MarkLog {
             std::mem::take(&mut queue.updates)
         };
         writer.taken = ticket + 1;
+        // From here the batch's callers are answered from `writer`, so a
+        // taker that stops before its write returns Ok must leave it failed.
+        let mut taken = Taken {
+            log: self,
+            writer,
+            ticket,
+            done: false,
+        };
         #[cfg(test)]
         drop(inner.stall.read().await);
-        let written = self.write(&mut writer, batch).await;
-        if written.is_err() {
-            writer.failed_from = Some(ticket);
-        }
-        written
+        self.write(&mut taken.writer, batch).await?;
+        taken.done = true;
+        Ok(())
     }
 
     async fn write(&self, writer: &mut Writer, batch: Vec<Queued>) -> io::Result<()> {
@@ -599,6 +605,32 @@ impl MarkLog {
         if writer.failed.is_none() {
             let _ = self.fail(&mut writer, err);
         }
+    }
+}
+
+/// A write taken from the queue. Unless it finishes, dropping it fails
+/// the writer from its ticket on, so a taker that errors, panics or is
+/// aborted (its runtime shut down part way, say) answers its batch with
+/// an error instead of an unsynced Ok.
+struct Taken<'a> {
+    log: &'a MarkLog,
+    writer: tokio::sync::MutexGuard<'a, Writer>,
+    ticket: u64,
+    done: bool,
+}
+
+impl Drop for Taken<'_> {
+    fn drop(&mut self) {
+        if self.done {
+            return;
+        }
+        if self.writer.failed.is_none() {
+            let _ = self.log.fail(
+                &mut self.writer,
+                io::Error::other("the write stopped before it finished"),
+            );
+        }
+        self.writer.failed_from.get_or_insert(self.ticket);
     }
 }
 

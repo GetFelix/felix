@@ -212,6 +212,15 @@ every start on a host with no witness directory (anything but Linux with
 control plane down still works. What waits is the restarted broker's own
 vote.
 
+One more case holds until then. The witness keeps a root's sequence under
+its storage id. If the id changes anywhere but the gate's own rotation (a
+start after a crash or a restore, `felix-broker restore-point`, or a restore the
+cluster's registration reveals), or the broker crashes after the gate
+rotates the id but before it records the witness, the witness has nothing
+under the new id. A root with marks then reads as Unchecked on the next
+start and holds. That is safe, since a hold never lets a copy vote twice,
+but the broker waits for the control plane's copy like a rebooted one.
+
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
 carries both, so on their own they read it as a crash, and its copies

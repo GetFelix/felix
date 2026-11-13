@@ -281,3 +281,52 @@ async fn a_cancelled_writer_answers_nobody_before_the_sync() {
         vote(3, "x#1", false)
     );
 }
+
+/// A taker that dies part way (here its runtime shuts down) fails the
+/// batch it took: a caller in that batch gets an error, not an Ok for a
+/// mark that never reached the disk, and later writes fail too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_taker_fails_its_batch() {
+    let root = Root::new();
+    let log = open(&root);
+    for shard in ["a", "b"] {
+        log.fresh(Arc::from(shard), 1).await.expect("fresh");
+    }
+    let other = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .expect("runtime");
+    let held = log.hold_writer().await;
+    let first = log.for_copy(Arc::from("a"), 1);
+    other.spawn(async move { first.vote(vote(2, "x#1", false)).await });
+    while log.queued() < 1 {
+        tokio::task::yield_now().await;
+    }
+    // Let its taker reach the writer lock first, so it takes the batch.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let second = log.for_copy(Arc::from("b"), 1);
+    let answered = tokio::spawn(async move { second.vote(vote(2, "y#1", false)).await });
+    while log.queued() < 2 {
+        tokio::task::yield_now().await;
+    }
+    let taken = log.writes_taken();
+    let stalled = log.stall_writes().await;
+    drop(held);
+    // The first caller's taker, on `other`, takes both changes and stops
+    // before the file.
+    while log.writes_taken() == taken {
+        tokio::task::yield_now().await;
+    }
+    tokio::task::spawn_blocking(move || drop(other))
+        .await
+        .expect("shut down");
+    drop(stalled);
+    answered
+        .await
+        .expect("task")
+        .expect_err("a batched vote answered Ok without a sync");
+    log.for_copy(Arc::from("a"), 1)
+        .vote(vote(3, "x#1", false))
+        .await
+        .expect_err("a write after the abandoned one");
+}
