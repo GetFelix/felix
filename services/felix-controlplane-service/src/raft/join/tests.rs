@@ -419,7 +419,7 @@ async fn a_404_on_forming_blocks_the_vote() {
     let old = listener.local_addr().expect("addr");
     let router = axum::Router::new().route(
         &crate::raft::peer_route("standing"),
-        axum::routing::get(|| async { r#"{"last_log_index":null}"# }),
+        axum::routing::get(|| async { r#"{"last_log_index":null,"member":2}"# }),
     );
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -447,6 +447,59 @@ async fn a_404_on_forming_blocks_the_vote() {
     server.abort();
 }
 
+/// The address configured for member 3 can reach member 2. The announce
+/// asks member 3 to record, so member 2 refuses it instead of recording a
+/// member that member 3 never heard from.
+#[tokio::test]
+async fn an_announce_is_recorded_only_by_the_member_it_is_for() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let second = Served::start(member_settings(2, dir.path()), None).await;
+    let peers: BTreeMap<NodeId, String> = (1..=3).map(|id| (id, "127.0.0.1:1".into())).collect();
+    second
+        .handle
+        .enter_group(
+            peers,
+            InitialClusterState::Existing,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("enter group");
+    let client = second
+        .handle
+        .security
+        .client(Duration::from_secs(5))
+        .expect("client");
+    let base = format!("http://{}", second.addr);
+    let forming = Forming {
+        member: 1,
+        members: BTreeSet::from([1, 2, 3]),
+    };
+
+    let refused = announce(&client, 3, &base, &forming)
+        .await
+        .expect_err("recorded by the wrong member");
+    assert!(refused.contains("503"), "{refused}");
+    assert!(
+        second
+            .handle
+            .standing()
+            .await
+            .expect("standing")
+            .formed
+            .is_empty(),
+        "member 2 recorded an announce meant for member 3"
+    );
+
+    announce(&client, 2, &base, &forming)
+        .await
+        .expect("recorded");
+    assert_eq!(
+        second.handle.standing().await.expect("standing").formed,
+        [1]
+    );
+    second.stop().await;
+}
+
 /// A peer records a forming member only for the group it is configured
 /// with itself, and never itself or a member outside the group.
 #[tokio::test]
@@ -466,6 +519,12 @@ async fn a_peer_records_only_its_own_group() {
             "{refused:?}"
         );
     }
+
+    // Until it has entered the group it does not know its own, and a
+    // record now could be of another group's member.
+    let early = handle.record_forming(&forming(2, &[1, 2, 3])).await;
+    assert!(matches!(early, Err(NotRecorded::Failed(_))), "{early:?}");
+    assert!(handle.standing().await.expect("standing").formed.is_empty());
 
     let peers: BTreeMap<NodeId, String> = (1..=3).map(|id| (id, "127.0.0.1:1".into())).collect();
     handle
@@ -505,4 +564,58 @@ async fn a_peer_records_only_its_own_group() {
     assert!(handle.member.forming_mark().await.expect("mark"));
     assert!(!handle.member.holds_state().expect("state"));
     handle.shutdown().await.expect("shutdown");
+}
+
+/// Something at an address that answers `standing` with `body`.
+async fn answering(body: &'static str) -> (String, tokio::task::JoinHandle<()>) {
+    let listener = bind(None).await;
+    let base = format!("http://{}", listener.local_addr().expect("addr"));
+    let route = crate::raft::peer_route("standing");
+    let router = axum::Router::new().route(&route, axum::routing::get(move || async move { body }));
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    (base, server)
+}
+
+/// An empty answer counts for the member that gave it and no other. The
+/// address configured for member 3 may reach member 2, and then member 3
+/// has not been asked. An answer that names nobody counts for nobody.
+#[tokio::test]
+async fn an_empty_answer_counts_only_for_the_member_that_gave_it() {
+    let client = reqwest::Client::new();
+    let (second, server) = answering(r#"{"last_log_index":null,"member":2}"#).await;
+    assert_eq!(probe(&client, 1, 2, Some(&second)).await, Answer::Empty);
+    let misdirected = probe(&client, 1, 3, Some(&second)).await;
+    assert!(
+        matches!(&misdirected, Answer::Unreadable(why) if why.contains("answered by member 2")),
+        "{misdirected:?}"
+    );
+    server.abort();
+
+    // This member's own answer, at another member's address.
+    let (mine, server) = answering(r#"{"last_log_index":null,"member":1}"#).await;
+    let own = probe(&client, 1, 2, Some(&mine)).await;
+    assert!(matches!(own, Answer::Unreadable(_)), "{own:?}");
+    server.abort();
+
+    let (unnamed, server) = answering(r#"{"last_log_index":null}"#).await;
+    let nobody = probe(&client, 1, 2, Some(&unnamed)).await;
+    assert!(
+        matches!(&nobody, Answer::Unreadable(why) if why.contains("which member")),
+        "{nobody:?}"
+    );
+    server.abort();
+
+    // A record of this member is not one the asked member holds.
+    let (named, server) = answering(r#"{"last_log_index":null,"formed":[1],"member":2}"#).await;
+    assert_eq!(probe(&client, 1, 2, Some(&named)).await, Answer::NamesMe);
+    let other = probe(&client, 1, 3, Some(&named)).await;
+    assert!(matches!(other, Answer::Unreadable(_)), "{other:?}");
+    server.abort();
+
+    // A log shows the group exists, whoever holds it.
+    let (holder, server) = answering(r#"{"last_log_index":4}"#).await;
+    assert_eq!(probe(&client, 1, 3, Some(&holder)).await, Answer::Exists);
+    server.abort();
 }
