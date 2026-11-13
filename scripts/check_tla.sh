@@ -781,10 +781,12 @@ expectations=(
   "FelixRaftCacheDeleteSnapshot pass"
   "FelixRaftCacheCond pass"
   "FelixRaftCachePutAbsentSnapshot pass"
+  "FelixRaftCacheCondSnapshot pass"
   "FelixRaftCacheDeleteSeesExpired violates OneClock"
   "FelixRaftCacheDeleteSnapshotSeesExpired violates AnswersKept"
   "FelixRaftCachePutAbsentSnapshotSeesExpired violates MembersAgree"
   "FelixRaftCacheCondSeesExpired violates OneClock"
+  "FelixRaftCacheCondSnapshotSeesExpired violates AnswersKept"
   "FelixRaftCacheDeleteReachExpired violates NeverDeleteOfExpired"
   "FelixRaftCacheDeleteSnapshotReachDropped violates NeverDroppedAndKept"
   "FelixRaftCacheCondReachApplied violates NeverCondApplied"
@@ -1153,6 +1155,7 @@ weights=(
   "FelixRaftCacheCond 3"
   "FelixRaftCacheDeleteSnapshot 50"
   "FelixRaftCachePutAbsentSnapshot 45"
+  "FelixRaftCacheCondSnapshot 33"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
   "FelixRaftSleepMidHandshake 87"
@@ -1282,6 +1285,7 @@ pr_minutes=(
   "FelixRaftCacheDelete 13"
   "FelixRaftCacheDeleteSnapshot 72"
   "FelixRaftCachePutAbsentSnapshot 65"
+  "FelixRaftCacheCondSnapshot 47"
 )
 
 weight_of() {
