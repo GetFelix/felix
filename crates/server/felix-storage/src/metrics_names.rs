@@ -67,6 +67,11 @@ pub const SEGMENT_RESERVE_FAILED_TOTAL: &str = "felix_storage_segment_reserve_fa
 pub const SEGMENT_ROLL_DISCARDED_TOTAL: &str = "felix_storage_segment_roll_discarded_total";
 /// Segments currently on disk for a shard.
 pub const SEGMENT_COUNT: &str = "felix_storage_segment_count";
+/// Shard directories a Raft rotation moved aside that are still on disk, per
+/// data root. Rises on a rotation and falls when a kept copy is reclaimed.
+pub const RAFT_KEPT_COPIES: &str = "felix_storage_raft_kept_copies";
+/// Bytes those directories hold.
+pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
 /// Sealed segments whose file and index are open, across every log. Bounded
 /// by `LogConfig::max_open_sealed_segments` per storage root.
 pub const OPEN_SEALED_SEGMENTS: &str = "felix_storage_open_sealed_segments";

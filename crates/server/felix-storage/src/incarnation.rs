@@ -194,6 +194,26 @@ impl DirIndex {
                 self.removed(&name);
             }
         }
+        // Copies a rotation moved aside outlive their live directory, and
+        // are not in the index, which holds live directories only.
+        let kept = root.join(layout::KEPT_DIR);
+        let entries = match crate::fs::read_dir(&kept) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(StorageError::Io(err)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(StorageError::Io)?;
+            let owned = entry
+                .file_name()
+                .to_str()
+                .and_then(layout::kept_of)
+                .and_then(|(name, _)| layout::stream_shard_of(name, tenant, namespace, stream))
+                .is_some_and(|(_, held)| held == incarnation);
+            if owned {
+                retire_dir(root, &entry.path())?;
+            }
+        }
         Ok(())
     }
 }

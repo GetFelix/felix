@@ -1,7 +1,7 @@
 //! Members opened as copies of their shard directories, through a root that
 //! passed the gate.
 
-use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check};
+use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check, kept_copies};
 use felix_storage::storage_identity;
 use openraft::async_runtime::watch::WatchReceiver;
 
@@ -174,4 +174,65 @@ fn the_mark_name_is_stable_and_unambiguous() {
         mark_name(&key("a/b", "c", "d", ShardKind::Stream)),
         mark_name(&key("a", "b/c", "d", ShardKind::Stream))
     );
+}
+
+/// A rotated copy's kept directory is held while the new copy has committed
+/// less than it holds, and deleted once the group commits past it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_copy_is_reclaimed_once_the_new_copy_commits_past_it() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let dir = roots.shard_dir("a");
+    let open = |cluster: &Cluster| {
+        cluster
+            .runtime("a")
+            .open_copy(group(0), &dir, log_config(), &roots.roots["a"])
+    };
+
+    let first = open(&cluster).await.expect("open copy");
+    let set = BTreeSet::from([first.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    let mut last = 0;
+    for _ in 0..5 {
+        last = cluster.write(0, b"before").await;
+    }
+    assert!(cluster.runtime("a").close(&shard(0)).await);
+    first.log.close().await.expect("close");
+
+    // Marks for another copy: the next open rotates, keeping these records.
+    roots.roots["a"]
+        .mark_log()
+        .fresh(
+            std::sync::Arc::from(super::super::runtime::mark_name(&shard(0))),
+            0xdead,
+        )
+        .await
+        .expect("marks");
+    let second = open(&cluster).await.expect("reopen");
+    assert_eq!(
+        second.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::OtherCopy)
+    );
+    assert_eq!(second.kept.reclaimed, Vec::<std::path::PathBuf>::new());
+    assert_eq!(second.kept.held.len(), 1, "{:?}", second.kept);
+    assert!(second.kept.wait_for().is_some_and(|held| held >= 5));
+    assert_eq!(kept_copies(&dir).expect("kept").len(), 1);
+
+    let set = BTreeSet::from([second.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    while last < second.kept.wait_for().expect("held") + 1 {
+        last = cluster.write(0, b"after").await;
+    }
+    eventually(|| kept_copies(&dir).expect("kept").is_empty().then_some(())).await;
+
+    second.log.close().await.ok();
+    cluster.stop().await;
 }

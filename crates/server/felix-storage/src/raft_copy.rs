@@ -24,6 +24,7 @@ mod copy_file;
 mod gate;
 mod judge;
 mod marks;
+mod reclaim;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -31,6 +32,7 @@ pub use copy_file::CopyFile;
 pub use gate::{Behind, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, kept_copies};
 pub use marks::{CopyMarks, MarkLog};
+pub use reclaim::{HeldCopy, KeptReport, reclaim_kept};
 
 use std::sync::Arc;
 use std::time::Duration;

@@ -11,11 +11,14 @@ use std::path::Path;
 
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
-use felix_storage::raft_copy::{CopyMarks, CopyRoot, LogMarkMode, Rotation};
+use felix_storage::raft_copy::{
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
+};
 use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
+use super::commit::Commits;
 use super::group::{Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::ticker;
@@ -146,6 +149,9 @@ pub struct OpenedMember {
     pub log: DiskLog,
     /// Set when the directory's copy was rotated.
     pub rotation: Option<Rotation>,
+    /// What reclaiming the copies earlier rotations kept did at open. The
+    /// ones it held are tried again as the group commits.
+    pub kept: KeptReport,
 }
 
 /// The name a shard's marks go by at the data root. It is on disk, so it
@@ -416,6 +422,8 @@ impl GroupRuntime {
         root: &CopyRoot,
     ) -> Result<OpenedMember, OpenError> {
         let reserved = self.reserve(&group)?;
+        let kept_config = config.clone();
+        let shard = group.shard.clone();
         let opened = root
             .open_copy(&mark_name(&group.shard), dir, group.to_string(), config)
             .await?;
@@ -434,11 +442,72 @@ impl GroupRuntime {
             let _ = log.close().await;
             return Err(err);
         }
+        let kept = self.reclaim_kept(&shard, dir, &log, kept_config).await;
         Ok(OpenedMember {
             member,
             log,
             rotation: opened.rotation,
+            kept,
         })
+    }
+
+    /// Delete the kept copies the shard's committed index already covers.
+    /// For the ones it does not, a task waits for the group to apply that
+    /// far and tries again. Failures are logged: a kept copy left on disk is
+    /// never worse than one deleted early.
+    async fn reclaim_kept(
+        &self,
+        shard: &ShardKey,
+        dir: &Path,
+        log: &DiskLog,
+        config: LogConfig,
+    ) -> KeptReport {
+        let report = match reclaim_kept(dir, log, config.clone()).await {
+            Ok(report) => report,
+            Err(err) => {
+                tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                return KeptReport::default();
+            }
+        };
+        let (Some(mut wait), Some(group)) = (report.wait_for(), self.inner.registry.get(shard))
+        else {
+            return report;
+        };
+        let (dir, log, stop) = (dir.to_path_buf(), log.clone(), self.inner.stop.clone());
+        let mut commits = group.commits();
+        tokio::spawn(async move {
+            loop {
+                let applied = |commits: &tokio::sync::watch::Receiver<Commits>| {
+                    commits.borrow().applied().map(|point| point.index)
+                };
+                while applied(&commits).is_none_or(|applied| applied < wait) {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                    }
+                }
+                let report = match reclaim_kept(&dir, &log, config.clone()).await {
+                    Ok(report) => report,
+                    Err(err) => {
+                        tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                        return;
+                    }
+                };
+                let Some(next) = report.wait_for() else {
+                    return;
+                };
+                // Applied reached the mark but the log's commit index has
+                // not: wait for the next advance.
+                if applied(&commits).is_some_and(|applied| applied >= next) {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                    }
+                }
+                wait = next;
+            }
+        });
+        report
     }
 
     /// Hold `group`'s shard while a member starts on it.

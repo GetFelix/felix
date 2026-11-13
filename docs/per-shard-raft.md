@@ -323,8 +323,9 @@ second time on an empty log.
 each shard directory and the marks at the data root, in one append-only
 file whose writes are group-committed, so many groups voting at once share
 one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
-directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
-re-form reads, and a new directory gets a new copy id. A directory holding
+directory is renamed into `.kept/` beside it as `<name>.<copy id>` (a number
+follows if that name is taken), which is the record a re-form reads, and a new
+directory gets a new copy id. A directory holding
 only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
 only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
 root that passed, or `Behind::rotate` returns after giving the root a new
@@ -336,6 +337,35 @@ Not built yet (issue #2441): the control plane's copy of the root
 sequence, and the broker opening its Raft groups through all this. Until
 the first lands, a root with marks passes only on a witness record, so a
 rebooted host holds.
+
+### Reclaiming kept copies
+
+A kept directory is deleted once the copy now in the shard directory has a
+committed index at or above the kept log's last index. Every entry the kept
+directory holds is at or below an index the group has committed. A committed
+entry is in the group's log, so it is in the current copy's log or snapshot,
+and an uncommitted one was never acknowledged. Only that evidence counts: no
+age and no timer. A kept directory whose last index cannot be read, a damaged
+segment for one, is held and logged.
+
+`GroupRuntime::open_copy` runs the pass after the member starts, which covers
+a restart after the copy caught up. If a kept directory is ahead of the copy,
+one task per group waits for the group's applied index to reach it and tries
+again, and ends when the group closes. Deleting a stream deletes the kept
+copies of that stream's incarnation too, even when the live directory is gone.
+
+A re-form that starts a copy at a base without the base's records must not
+count that as holding them (issue #2441): the rule above reads the copy's
+committed index, so such a copy has to carry the base's records, or hold the
+kept directories until it does.
+
+`felix_storage_raft_kept_copies` and `felix_storage_raft_kept_copy_bytes` give
+the directories still on disk and what they hold. There is no `felixctl`
+command for this yet. By hand: stop the broker, or confirm that the group has
+a leader and that this copy's committed index is past the kept directory's
+records in the broker status, then delete `<root>/.kept/<name>.<copy id>`.
+Deleting one while a re-form may still need the copy can lose acknowledged
+records.
 
 ### Re-forming a group
 
