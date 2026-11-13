@@ -26,7 +26,12 @@ pub use config::PeerTransportConfig;
 pub(crate) use identity::{Incarnation, PeerIdentity};
 pub(crate) use partition::PartitionInjector;
 pub use pool::{PeerError, PeerPool, PeerRequester};
-pub use server::{PeerRequestHandler, PeerServer, UnavailableHandler};
+pub use server::{PeerRequestHandler, PeerServer, RaftHandler, UnavailableHandler};
+
+/// The second byte of a Raft body for an append that carries entries (see
+/// `raft/wire.rs`). The pool sends one on a replication stream, so a
+/// heartbeat or vote on the control stream never waits behind its records.
+pub(crate) const RAFT_APPEND_ENTRIES: u8 = 2;
 
 #[cfg(test)]
 mod tests;

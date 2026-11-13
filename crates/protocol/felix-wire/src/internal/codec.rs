@@ -14,9 +14,9 @@ use super::{
     HelloOk, InternalHeader, InternalMessage, Kind, LeaseForwardCacheOk, MAX_BATCH_PAYLOADS,
     MAX_BODY_BYTES, MAX_CREDENTIAL_BYTES, MAX_ENVELOPE_BYTES, MAX_IDENT_BYTES,
     MAX_INNER_BODY_BYTES, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, NotLeader, PeerCapabilities, Ping,
-    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, RefusalReason, ReplicaLog, ReplicaSetView,
-    ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild,
-    ReplicateRecords, SetMember, ShardRef,
+    Pong, PreVote, PreVoteAnswer, PreVoteRefusal, RaftAnswer, RaftCall, RefusalReason, ReplicaLog,
+    ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
+    ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
 use crate::error::{Error, Result};
 
@@ -217,6 +217,17 @@ impl InternalMessage {
             }
             Self::Ping(Ping { correlation_id }) | Self::Pong(Pong { correlation_id }) => {
                 body.put_u64(*correlation_id);
+            }
+            Self::Raft(RaftCall {
+                correlation_id,
+                body: raft,
+            })
+            | Self::RaftAnswer(RaftAnswer {
+                correlation_id,
+                body: raft,
+            }) => {
+                body.put_u64(*correlation_id);
+                body.extend_from_slice(raft);
             }
             Self::FenceOk(m) => {
                 body.put_u64(m.correlation_id);
@@ -832,6 +843,22 @@ impl InternalMessage {
                 };
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
+            }
+            // The rest of the frame is the replication crate's to read, and
+            // stays a slice of it.
+            Kind::Raft | Kind::RaftAnswer => {
+                let correlation_id = take_u64(&mut body)?;
+                Ok(if kind == Kind::Raft {
+                    Self::Raft(RaftCall {
+                        correlation_id,
+                        body,
+                    })
+                } else {
+                    Self::RaftAnswer(RaftAnswer {
+                        correlation_id,
+                        body,
+                    })
+                })
             }
             Kind::Ping | Kind::Pong => {
                 let correlation_id = take_u64(&mut body)?;

@@ -473,14 +473,16 @@ impl Drop for PeerConnection {
 /// follower and log, so round-robin within a class cannot reorder a shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneClass {
-    /// The handshake, fences, tail fetches, pre-votes and pings: one stream
+    /// The handshake, fences, tail fetches, pre-votes, pings, and Raft
+    /// messages that carry no entries: one stream
     /// no forward shares, since a ping queued behind one would read as a dead
     /// leader. The listener answers these as they finish, so a slow fence does
     /// not hold up the rest either.
     Control,
     /// Forwarded publishes and cache operations.
     Forward,
-    /// Everything else: records, bootstraps and rebuilds for every log.
+    /// Everything else: records, bootstraps and rebuilds for every log, and
+    /// Raft appends that carry entries.
     Replication,
 }
 
@@ -492,6 +494,12 @@ impl LaneClass {
             | InternalMessage::PreVote(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::Ping(_) => Self::Control,
+            InternalMessage::Raft(call)
+                if call.body.get(1) == Some(&super::super::RAFT_APPEND_ENTRIES) =>
+            {
+                Self::Replication
+            }
+            InternalMessage::Raft(_) => Self::Control,
             InternalMessage::ForwardPublish(_)
             | InternalMessage::ForwardCacheOp(_)
             | InternalMessage::LeaseForwardCacheOp(_) => Self::Forward,
@@ -663,6 +671,14 @@ pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) ->
                 ..m
             })
         }
+        InternalMessage::Raft(m) => InternalMessage::Raft(RaftCall {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::RaftAnswer(m) => InternalMessage::RaftAnswer(RaftAnswer {
+            correlation_id,
+            ..m
+        }),
     }
 }
 

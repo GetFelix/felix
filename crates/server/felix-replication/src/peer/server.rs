@@ -21,7 +21,7 @@ use felix_storage::StorageId;
 use felix_transport::{QuicConnection, QuicServer};
 use felix_wire::internal::{
     ErrorCode, ForwardCacheError, ForwardPublishError, HelloOk, InternalMessage, PeerCapabilities,
-    Pong, ReplicateError,
+    Pong, RaftAnswer, ReplicateError,
 };
 use futures::FutureExt;
 use tokio::sync::Semaphore;
@@ -42,6 +42,10 @@ const MAX_CONCURRENT_FORWARDS_PER_STREAM: usize = 256;
 /// as the requester's default in-flight limit per peer, so a requester at its
 /// defaults reaches it only with requests it timed out on still running here.
 pub(super) const MAX_CONTROLS_PER_STREAM: usize = 1024;
+
+/// Raft messages one stream may have being answered at once. Past it a
+/// message is refused, and Raft sends it again.
+const MAX_RAFT_PER_STREAM: usize = 1024;
 
 /// Of those, tail fetches that may run at once. Each answer holds up to 4 MiB
 /// of records until it is written; the rest wait their turn off the stream.
@@ -97,6 +101,16 @@ pub trait PeerRequestHandler: Send + Sync + 'static {
         let _ = (peer, caller);
         self.handle(request).await
     }
+}
+
+/// What answers a peer's Raft messages: the broker's group runtime.
+///
+/// Given to [`PeerServer::with_raft`]. A listener without one does not offer
+/// [`PeerCapabilities::RAFT`], so no peer sends it a Raft message.
+#[async_trait::async_trait]
+pub trait RaftHandler: Send + Sync + 'static {
+    /// Answer one `Raft` frame's body with the body of its `RaftAnswer`.
+    async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes;
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -213,6 +227,7 @@ pub struct PeerServer {
     incarnation: Option<tokio::sync::watch::Receiver<Option<u64>>>,
     /// Cancelled once this broker serves clients. `None` serves from the start.
     serving: Option<CancellationToken>,
+    raft: Option<Arc<dyn RaftHandler>>,
 }
 
 impl PeerServer {
@@ -262,6 +277,7 @@ impl PeerServer {
             identity: None,
             incarnation: None,
             serving: None,
+            raft: None,
         })
     }
 
@@ -301,6 +317,14 @@ impl PeerServer {
     /// with nobody serving them.
     pub fn with_serving(mut self, serving: CancellationToken) -> Self {
         self.serving = Some(serving);
+        self
+    }
+
+    /// Answer peers' Raft messages with `raft`, and offer
+    /// [`PeerCapabilities::RAFT`] so they send them.
+    pub fn with_raft(mut self, raft: Arc<dyn RaftHandler>) -> Self {
+        self.capabilities = self.capabilities.union(PeerCapabilities::RAFT);
+        self.raft = Some(raft);
         self
     }
 
@@ -394,6 +418,7 @@ impl PeerServer {
                 served_forwards: Arc::clone(&self.served_forwards),
                 served_batches: Arc::clone(&self.served_batches),
                 peer_batches: Arc::clone(&self.peer_batches),
+                raft: self.raft.clone(),
             };
             connection.spawn_pump(async move {
                 // The guard lives as long as the connection is served, and
@@ -423,6 +448,7 @@ struct Offered {
     served_batches: Arc<Semaphore>,
     /// Record batches being stored, by the node that sent them.
     peer_batches: PeerBatches,
+    raft: Option<Arc<dyn RaftHandler>>,
 }
 
 /// Serve every stream a peer opens on one connection.
@@ -480,6 +506,7 @@ async fn serve_connection(
             let controls = Arc::new(Semaphore::new(MAX_CONTROLS_PER_STREAM));
             let fetches = Arc::new(Semaphore::new(MAX_CONCURRENT_FETCHES_PER_STREAM));
             let batches = Arc::new(Semaphore::new(MAX_CONCURRENT_BATCHES_PER_STREAM));
+            let rafts = Arc::new(Semaphore::new(MAX_RAFT_PER_STREAM));
             // Cancelled when a batch's handler overran or panicked: the
             // stream is given up as a request answered in turn would be.
             let given_up = CancellationToken::new();
@@ -734,6 +761,42 @@ async fn serve_connection(
                         });
                         continue;
                     }
+                    // Raft messages are answered as they finish. openraft
+                    // matches each answer to its own call and never relies
+                    // on a stream's order, and an append can wait out an
+                    // fsync that a vote or heartbeat behind it should not.
+                    InternalMessage::Raft(call) => {
+                        let (Some(raft), Ok(running)) =
+                            (offered.raft.clone(), Arc::clone(&rafts).try_acquire_owned())
+                        else {
+                            metrics::record_served(metrics::OUTCOME_REFUSED);
+                            let refusal = InternalMessage::ReplicateError(ReplicateError {
+                                correlation_id: call.correlation_id,
+                                code: ErrorCode::Overload,
+                                expected_offset: 0,
+                                detail: "this broker is answering as many Raft messages as it allows"
+                                    .to_string(),
+                                reason: None,
+                            });
+                            let send = Arc::clone(&send);
+                            app.spawn(async move {
+                                answer_out_of_order(&send, offered_by, async { refusal }).await;
+                            });
+                            continue;
+                        };
+                        let send = Arc::clone(&send);
+                        app.spawn(async move {
+                            let _running = running;
+                            answer_out_of_order(&send, offered_by, async move {
+                                InternalMessage::RaftAnswer(RaftAnswer {
+                                    correlation_id: call.correlation_id,
+                                    body: raft.answer(call.body).await,
+                                })
+                            })
+                            .await;
+                        });
+                        continue;
+                    }
                     // A forward can sit out a whole quorum wait, and that wait
                     // may need replication a peer has queued behind it on this
                     // stream (#1458). So forwards are answered as they finish,
@@ -899,6 +962,7 @@ async fn serve_connection(
                         forwards.acquire_many(MAX_CONCURRENT_FORWARDS_PER_STREAM as u32),
                         controls.acquire_many(MAX_CONTROLS_PER_STREAM as u32),
                         batches.acquire_many(MAX_CONCURRENT_BATCHES_PER_STREAM as u32),
+                        rafts.acquire_many(MAX_RAFT_PER_STREAM as u32),
                     )
                 } => {}
             }

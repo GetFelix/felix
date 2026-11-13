@@ -1312,3 +1312,23 @@ fn a_member_id_round_trips_through_the_ballot() {
     assert!(ShardCodec.decode_node_id("broker-1").is_err());
     assert!(ShardCodec.decode_node_id("broker-1#x").is_err());
 }
+
+/// A dropped timer check is counted on the group and in one counter for the
+/// broker, with no label per group.
+#[test]
+fn a_dropped_tick_is_counted_for_the_broker() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let count = std::sync::atomic::AtomicU64::new(0);
+    drop(super::group::Dropped(Some(&count)));
+    drop(super::group::Dropped(Some(&count)));
+    // A check the group took is not counted.
+    drop(super::group::Dropped(None));
+    assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(&format!("{} 2", super::group::DROPPED_TICKS_TOTAL)),
+        "{rendered}"
+    );
+}
