@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554592437,
+  "lastUpdate": 1794555266746,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54184,6 +54184,58 @@ window.BENCHMARK_DATA = {
             "range": "4872.82",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 920442.79\nmean: 920448.56\nstdev: 4872.82\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c3673ca89fdedc8aad8acfde113efb2a78f8ebd8",
+          "message": "fix(replication): an answer past the listener's deadline still restarts the election timer (#2405)\n\nWhen the listener dropped an inbound Raft request at its deadline, the election-timer restart was skipped although openraft had taken the append or vote. The call and the pace update now run in a spawned task. Closes #2405.\n\nSpec-Unaffected: the restart condition (accepted append, granted vote) and what is persisted are unchanged.",
+          "timestamp": "2026-11-13T07:20:42Z",
+          "tree_id": "2a21672441ccf477315a60247c16b3f1a4148c23",
+          "url": "https://github.com/GetFelix/felix/commit/c3673ca89fdedc8aad8acfde113efb2a78f8ebd8"
+        },
+        "date": 1794555266240,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347731.26,
+            "range": "18669.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347731.26\nmean: 357225.29\nstdev: 18669.79\ncv: 5.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347731.26,
+            "range": "18669.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347731.26\nmean: 357225.29\nstdev: 18669.79\ncv: 5.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81062.45,
+            "range": "1097.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81062.45\nmean: 80909.96\nstdev: 1097.10\ncv: 1.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810624.48,
+            "range": "10970.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810624.48\nmean: 809099.57\nstdev: 10970.95\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
