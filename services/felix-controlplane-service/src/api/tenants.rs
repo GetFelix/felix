@@ -158,6 +158,7 @@ pub(crate) async fn tenant_snapshot(
     Ok(Json(TenantSnapshotResponse {
         items: snapshot.items,
         next_seq: snapshot.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }
 
@@ -192,5 +193,6 @@ pub(crate) async fn tenant_changes(
     Ok(Json(TenantChangesResponse {
         items: changes.items,
         next_seq: changes.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }

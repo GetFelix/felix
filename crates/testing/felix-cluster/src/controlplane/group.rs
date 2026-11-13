@@ -249,7 +249,39 @@ impl Group {
                 .context("form the metadata group")?;
         }
         group.wait_for_leader(Duration::from_secs(30)).await?;
+        group.wait_for_identity(Duration::from_secs(30)).await?;
         Ok(group)
+    }
+
+    /// Stream and cache creates are refused until the group records its
+    /// identity, and any member may take one, so wait for all of them.
+    async fn wait_for_identity(&self, within: Duration) -> Result<()> {
+        let deadline = Instant::now() + within;
+        loop {
+            let stores: Vec<_> = self
+                .live
+                .lock()
+                .expect("live lock")
+                .iter()
+                .flatten()
+                .map(|(_, _, store, _)| Arc::clone(store))
+                .collect();
+            let mut recorded = true;
+            for store in stores {
+                recorded &= matches!(
+                    store.group_identity().await,
+                    Ok(felix_controlplane_service::store::identity::GroupIdentity::Recorded(_))
+                );
+            }
+            if recorded {
+                return Ok(());
+            }
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "the metadata group never recorded its identity"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// The store of a running member, for the harness's own reads and writes:
@@ -326,6 +358,7 @@ impl Group {
                 let store = Arc::new(RaftStore::new(handle.clone(), machine));
                 let stop = CancellationToken::new();
                 let mut tasks = Vec::new();
+                tasks.push(store.spawn_identity_recorder("hybrid".to_string(), stop.clone()));
 
                 let peers = tokio::net::TcpListener::bind(peer)
                     .await

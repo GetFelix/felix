@@ -15,6 +15,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(TenantSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -24,6 +25,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(NamespaceSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -31,6 +33,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -41,6 +44,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -65,7 +69,11 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                                 seq: None,
                             }]
                         };
-                        Json(TenantChangesResponse { items, next_seq: 2 })
+                        Json(TenantChangesResponse {
+                            items,
+                            next_seq: 2,
+                            group_id: None,
+                        })
                     }
                 }),
             )
@@ -86,6 +94,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -95,6 +104,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -104,6 +114,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             );
@@ -117,6 +128,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
             None,
             None,
             Provisional::default(),
+            None,
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
