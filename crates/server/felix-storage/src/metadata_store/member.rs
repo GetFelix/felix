@@ -160,6 +160,13 @@ impl MemberFile {
             .await
     }
 
+    /// Record that the member may vote from this store, on disk before
+    /// this returns. Never cleared: a blank log beside it was emptied.
+    pub async fn mark_reached(&self) -> io::Result<()> {
+        self.change_formation(|formation| formation.reached = true)
+            .await
+    }
+
     /// Record that `member` set out to form the group, on disk before this
     /// returns.
     pub async fn record_formed(&self, member: u64) -> io::Result<()> {

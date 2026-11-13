@@ -119,6 +119,15 @@ async fn start(
     let started = store.mark_started().await.context("set the started mark")?;
     // The mark of this store, not of some other one.
     started.check(&data_dir.join(STORE_DIR))?;
+    // A member that votes from here on has the flag on disk first, whatever
+    // path brought it here (a crash after `initialize`, a converted store).
+    let member = store.member_file();
+    if store.has_raft_state() && !member.member().vote_withheld {
+        member
+            .mark_reached()
+            .await
+            .context("write the formation file")?;
+    }
     let committed = store
         .log()
         .read_committed()
@@ -199,6 +208,21 @@ impl MemberState {
         // for it and nothing is written into a store that has closed.
         let written = match self.store.lock().await.as_ref() {
             Some(store) => store.member_file().mark_forming().await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    /// Whether this store records that the member has voted from it.
+    pub(super) async fn reached(&self) -> Result<bool> {
+        Ok(self.formation().await?.reached)
+    }
+
+    /// Record that the member may vote from this store. Durable before it
+    /// returns.
+    pub(super) async fn mark_reached(&self) -> Result<()> {
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().mark_reached().await,
             None => anyhow::bail!("raft node has stopped"),
         };
         written.context("write the formation file")
