@@ -3205,6 +3205,9 @@ For the implementation:
 - The network adapter raises it before openraft sees the message, on the
   messages above. `Group::transfer` raises it to its own term before the
   send.
+- A granted pre-vote changes no vote and must not void. Felix refuses
+  snapshots before openraft sees them (`raft/group.rs`), so openraft accepts
+  none today; voiding on one anyway is safe.
 - The wake check compares the monotonic clock with boottime inside
   `admit_local_ack`, not in a background task.
 - The config refuses a lease unless
