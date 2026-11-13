@@ -474,8 +474,8 @@ impl GroupRuntime {
         let (mut commits, mut positions) = (group.commits(), group.positions());
         let covers = |group: &Group, wait: u64| {
             let at = group.current_copy();
-            at.committed.is_some_and(|at| at >= wait)
-                && at.flushed_last.is_some_and(|at| at >= wait)
+            at.committed().is_some_and(|at| at >= wait)
+                && at.flushed_last().is_some_and(|at| at >= wait)
         };
         tokio::spawn(async move {
             loop {
