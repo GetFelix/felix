@@ -319,6 +319,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         election_max: at(shipped.election_max),
         lease: at(shipped.lease),
         clock_drift_ppm: shipped.clock_drift_ppm,
+        log_mark: shipped.log_mark,
     }
 }
 
