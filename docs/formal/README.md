@@ -3262,7 +3262,8 @@ A pull request checks only the configurations its diff can affect. The
 | a `.cfg` | that configuration |
 | a `.tla` | every configuration of that module and of each module that `EXTENDS` or `INSTANCE`s it, transitively |
 | a registration line in `check_tla.sh` (`expectations`, `walks`, `weights`, `pr_minutes`) | the configuration that line names |
-| any other code line in `check_tla.sh` | all of them |
+| a `Pattern) echo Module ;;` line of `module_of` in `check_tla.sh`, added, changed or removed | the configurations its old and new patterns match, plus those of the module and its dependents, as for a `.tla` |
+| any other code line in `check_tla.sh`, the `module_of` default branch included | all of them |
 | `ci.yml` before `jobs:`, or in the `changes`, `formal*` or `ci-ok` jobs | all of them |
 | comments, blank lines, the README, anything else | nothing |
 
