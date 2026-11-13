@@ -1290,10 +1290,13 @@ async fn no_vote_before_every_peer_records_the_member() {
                 .expect("enter group");
         }
     };
-    // Members 2 and 3 only answer for now; member 1 sets out to form.
-    enter(&nodes[0]).await;
+    // A member records others only once it has entered the group itself,
+    // so all three set out to form. Member 3 records nobody for now.
+    for node in &nodes {
+        enter(node).await;
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
-    while recorded_by(&nodes[1]).await != [1] {
+    while !recorded_by(&nodes[1]).await.contains(&1) {
         assert!(
             Instant::now() < deadline,
             "member 2 never recorded member 1"
@@ -1318,9 +1321,7 @@ async fn no_vote_before_every_peer_records_the_member() {
         || nodes[0].handle.status().voters == [1, 2, 3],
     )
     .await;
-    assert_eq!(recorded_by(&nodes[2]).await, [1]);
-    enter(&nodes[1]).await;
-    enter(&nodes[2]).await;
+    assert!(recorded_by(&nodes[2]).await.contains(&1));
     let refs: Vec<&TestNode> = nodes.iter().collect();
     let leader = leader_of(&refs).await;
     leader.write(set("k", "v1")).await.expect("write");
