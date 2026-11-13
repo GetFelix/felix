@@ -798,6 +798,36 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
+| `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
+| `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
+| `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
+| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so two of the three brokers (a quorum) can be inside their hold at once, and a broker inside its hold granting the candidate its stored vote names: the leader of its current term | pass the same (15.4M distinct states) |
+| `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
+| `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the stored vote exempting any candidate, not only the leader it names (`HoldExemptsAny`) | violate `LeaseExclusive` |
+| `FelixRaftLeaseRestoreTransferStepDown.cfg` | `FelixRaftLeaseTransferStepDown.cfg` with both restart fast paths, one restart, two terms, no write and `ElectionTimeoutMin` = 1 (the parent has 0, so a stepped-down leader campaigning in the same tick is not checked): a leader that authorized a transfer restarts with its own vote stored and its transfer wiped, and campaigns at once | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.8M distinct states) |
+| `FelixRaftLeaseRestoreStepDown.cfg` | the same with three terms and no transfer (`ElectionTimeoutMin` = 1 as well): a leader that voided a term restarts with its void wiped and campaigns in a third term | pass `LeaseExclusive`, `OneLeaderPerTerm` (2.6M distinct states) |
+| `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
+| `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
+| `FelixRaftLeaseStepDownNoVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with no void | violate `LeaseExclusive` (issue #2249) |
+| `FelixRaftLeaseStepDownSync.cfg` | the same with no void and the role read when the check runs | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.39M distinct states) |
+| `FelixRaftLeaseStepDownWrite.cfg` | lease 1 against an election timeout of 1, `ElectionTimeoutMin` = 0 (the stepped-down leader campaigns in the same tick), two terms, two step-downs and one write | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (2.0M distinct states) |
+| `FelixRaftLeaseReachStepDownLocalAck.cfg` | a witness for `FelixRaftLeaseStepDownWrite.cfg` | violate `NeverLocalAck`: a write is acknowledged on local durability |
+| `FelixRaftLeaseStepDownDrift.cfg` | `FelixRaftLeaseStepDownWrite.cfg` with no write and clocks gaining 1 or 2 a tick, lease 1 against an election timeout of 2 | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.46M distinct states) |
+| `FelixRaftLeaseTransfer.cfg` | lease 2 against an election timeout of 2, no drift, `ElectionTimeoutMin` = 1, the role read late and one transfer: heartbeats stop, followers that take it clear their window, the target campaigns at once, the transfer may expire; Felix voids the lease before the send | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.0M distinct states) |
+| `FelixRaftLeaseTransferKeepsLease.cfg` | the same with no void | violate `LeaseExclusive` |
+| `FelixRaftLeaseTransferVoidLate.cfg` | the same with the void a separate later step | violate `LeaseExclusive` |
+| `FelixRaftLeaseTransferThreeTerms.cfg` | the transfer at lease 1 against an election timeout of 1, three terms: a broker that voided term 1 is elected in term 2 and votes in term 3 | pass `LeaseExclusive`, `OneLeaderPerTerm` (6.1M distinct states) |
+| `FelixRaftLeaseTransferVoidEquality.cfg` | the same with the void one term, overwritten by the next and compared by equality | violate `LeaseExclusive` |
+| `FelixRaftLeaseTransferStepDown.cfg` | `FelixRaftLeaseTransferThreeTerms.cfg` with `ElectionTimeoutMin` = 0 and one step-down as well | pass `LeaseExclusive`, `OneLeaderPerTerm` (16.8M distinct states, 38 min on a CI runner) |
+| `FelixRaftLeaseTransferStepDownNoVoid.cfg` | the same with no void on a higher term | violate `LeaseExclusive` |
+| `FelixRaftLeaseTransferWrite.cfg` | the transfer at lease 1 against an election timeout of 1, two terms and one write | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (19.9M distinct states, 40 min on a CI runner) |
+| `FelixRaftLeaseTransferDrift.cfg` | `FelixRaftLeaseTransferWrite.cfg` with no write and clocks gaining 1 or 2 a tick, lease 1 against an election timeout of 2 | pass the same (4.4M distinct states) |
+| `FelixRaftLeaseSuspend.cfg` | lease 2 against an election timeout of 2, no drift, one suspend: the clock stops, the broker takes no step, and on waking it refuses for one lease | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.38M distinct states) |
+| `FelixRaftLeaseSuspendUnchecked.cfg` | the same with no wake check (also a VM pause) | violate `LeaseExclusive` |
+| `FelixRaftLeaseSuspendLateCheck.cfg` | the same with the jump seen by its own step after the wake, as a background watch would | violate `LeaseExclusive` |
+| `FelixRaftLeaseSuspendRoleLate.cfg` | the suspend at lease 1 against an election timeout of 1, the role read late and one write | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (8.4M distinct states) |
+| `FelixRaftLeaseSuspendDrift.cfg` | `FelixRaftLeaseSuspendRoleLate.cfg` with no write and clocks gaining 1 or 2 a tick, lease 1 against an election timeout of 2 | pass the same (2.8M distinct states) |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
 | `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
@@ -3455,6 +3485,129 @@ The design does not rest the lease on the engine's rule staying as it is,
 so the gate still waits for the vote hold. Both configurations have one
 restart and two terms.
 
+**Skipping the hold for a restored leader (pull request 2445).** openraft
+restores a member as leader at a start when its stored vote is its own and
+committed. Such a member took no later leader's message, so it promised
+nobody, and its own lease died with the process; the other voters still keep
+their window and their hold. The model keeps that on disk as `led`, and
+`RestoreOwnLead` lets such a member, or the only voter, campaign without the
+hold. It campaigns in a new term rather than resuming the old one, which
+gives it no more than a resumed leader has: no lease until a quorum answers
+again. `FelixRaftLeaseRestoreLed.cfg` passes with three terms and one write,
+and `FelixRaftLeaseReachRestoreLed.cfg` shows the skip is taken.
+`FelixRaftLeaseRestoreAnyVote.cfg`, which also skips the hold for a vote
+given to another broker, fails: a follower that answered the leader just
+before it stopped campaigns at once and a voter outside the leader's window
+elects it.
+
+When a quorum restarts together, the holds also drop the old leader's vote
+request. A broker inside its hold may grant the candidate its stored vote
+names (`HoldExemptsNamed`), since it promised that candidate already.
+The model grants inside the hold only to the leader of the broker's current
+term. openraft stores one vote, and a vote grant, adopting a higher vote and
+an accepted append all replace it, so the stored vote can name a candidate
+that never led: a leads term 1, adopts c's term 2 vote and restarts, and its
+disk holds term 2, c, uncommitted. The rule Felix implements needs only the
+vote record: grant c inside the hold if and only if the stored vote is
+committed and names c, and an uncommitted vote exempts nobody. A committed
+vote names the leader of its term, so this grants a strict subset of what
+the model allows. The leader's own fast path (`RestoreOwnLead`) is the same
+test with the broker itself: committed and naming itself.
+`FelixRaftLeaseRestoreNamed.cfg` passes with the rule and two restarts (two
+of the three brokers), and `FelixRaftLeaseReachHeldGrant.cfg` shows a held
+broker granting. `FelixRaftLeaseRestoreNamedAny.cfg`, where the stored vote
+exempts any candidate, fails. `FelixRaftLeaseRestoreTransferStepDown.cfg`
+runs both fast paths with a transfer and a step-down: a leader that
+authorized a transfer restarts with its own vote and campaigns at once.
+`FelixRaftLeaseRestoreStepDown.cfg` does the same after a void, which needs
+a third term. Both leave out the write, and the first has two terms and the
+second no transfer, so each finishes in CI; with all of them the run does
+not finish in 40 minutes. Both also set `ElectionTimeoutMin` to 1 where
+`FelixRaftLeaseTransferStepDown.cfg` has 0, so a stepped-down leader that
+campaigns in the same tick is not checked with a restart. Nothing checks a
+restart with a write together with a step-down, a transfer or a void
+(`FelixRaftLeaseRestoreNamed.cfg` has the write but reads the role in sync,
+with no bypass, step-down, transfer or void), nor a restart with a transfer
+in three terms. Issue #2471 tracks both.
+
+**Late metrics, step-down, transfer and suspend (issue #2249).** Felix reads
+openraft's role and `last_quorum_acked` from metrics, which arrive late
+(`RoleSync` off: Felix's check runs on the term and age it last saw). Three
+paths let a new leader be elected inside the old leader's window, and the
+model has each:
+
+- A leader that takes an append's answer naming a candidate's higher term
+  adopts that vote (openraft's `HigherVote`). The vote is not committed, so
+  it grants the candidate at once, and the candidate wins with it while
+  Felix's late view of the old leader still passes, however short the lease.
+  Later the stepped-down leader campaigns and the followers it led grant it
+  inside their window (`from_leased_leader`). The node layer voids every
+  term below the one a message names, before openraft sees it.
+  `FelixRaftLeaseStepDown.cfg` passes with the void and `ElectionTimeoutMin`
+  below the lease, so the void does the work, not a bound on the lease.
+  `FelixRaftLeaseStepDownWrite.cfg` adds a write with `ElectionTimeoutMin`
+  = 0.
+  `FelixRaftLeaseStepDownNoVoid.cfg` fails without it.
+  `FelixRaftLeaseStepDownSync.cfg` passes without it when the role is read
+  when the check runs, the fix the design does not take.
+- A transfer stops heartbeats, clears the window of every follower that takes
+  the `TransferLeader` message, and lets the target's voters grant inside it.
+  A transfer that does not finish makes the leader step down and campaign.
+  Felix voids its lease for the term before the message leaves.
+  openraft's target campaigns the moment it takes the message, so a target
+  that first follows a leader of a later term no longer campaigns for the
+  old transfer.
+  `FelixRaftLeaseTransfer.cfg` passes; with no void
+  (`FelixRaftLeaseTransferKeepsLease.cfg`) or the void as a later step
+  (`FelixRaftLeaseTransferVoidLate.cfg`) it fails.
+- A suspended broker's monotonic clock stops while real time runs. Felix
+  compares it with boottime inside the check and refuses local acks for one
+  more lease. `FelixRaftLeaseSuspend.cfg` passes, and
+  `FelixRaftLeaseSuspendRoleLate.cfg` passes with the role read late. With
+  no wake check (`FelixRaftLeaseSuspendUnchecked.cfg`) it fails. That twin
+  is also a VM pause, which stops both clocks, and a platform with no clock
+  that counts suspended time: the design states both as assumptions. With
+  the jump seen by a background watch after the wake
+  (`FelixRaftLeaseSuspendLateCheck.cfg`) it fails too.
+
+The void only grows. A broker that voided term 1 for a transfer can be
+elected again in term 2 and then vote in term 3; a void kept as one term and
+compared by equality lets the vote's void of term 2 lift the transfer's void
+of term 1, and Felix's late view of term 1 passes beside the term 3 leader
+(`FelixRaftLeaseTransferVoidEquality.cfg`). `FelixRaftLeaseTransferThreeTerms.cfg`
+passes with the void kept as the highest term voided.
+
+Each path has a configuration at lease 2, where the lease spans ticks. The
+ones that add a write, a third term, both paths at once or drift use a lease
+of 1 so they finish. The void refuses whole terms, so what it does does not
+depend on how long the lease is.
+
+Only messages openraft accepts raise the void: append and snapshot requests,
+answers naming a higher vote, and votes it grants, where the void is taken
+on the outgoing answer before it leaves. A vote request openraft refuses
+changes nothing in openraft, so no new leader can use it, and the model has
+no void for it. Voiding on it would let one partitioned candidate take local
+acks from a stable leader for the rest of its term. The cost of a void that
+does happen is the rest of that term:
+`FelixRaftLeaseReachLeaseAfterVoid.cfg` shows the same broker passing the
+check again once it is elected in a later term.
+
+For the implementation:
+
+- The void is one number per group, in memory, that only grows.
+  `admit_local_ack` (`raft/engine.rs`) refuses every term at or below it. A
+  restart starts with no lease, so it need not be kept.
+- The network adapter raises it before openraft sees the message, on the
+  messages above. `Group::transfer` raises it to its own term before the
+  send.
+- A granted pre-vote changes no vote and must not void. Felix refuses
+  snapshots before openraft sees them (`raft/group.rs`), so openraft accepts
+  none today; voiding on one anyway is safe.
+- The wake check compares the monotonic clock with boottime inside
+  `admit_local_ack`, not in a background task.
+- The config refuses a lease unless
+  `lease * (1 + p) / (1 - p) <= election_timeout_max` (`raft/runtime.rs`).
+
 **Store-liveness leases (later design).** The group sends nothing of its own.
 Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's
 store support for an epoch until an expiry on its own clock, keeps that on
@@ -3491,7 +3644,8 @@ has no upper bound in the model, and a timeout noticed at the next tick is a
 vote or campaign taken later than allowed. Neither can break a check. The
 lease check must read the clock when it runs; a check that used a value
 cached at the last tick would add the tick to the lease. No blank entries,
-membership changes, snapshots, pre-vote or leadership transfer.
+membership changes, snapshots or pre-vote. A campaign that does not win is
+not a step; `StepDown` stands for the leader learning of its higher term.
 
 ### Raft sleep and wake
 
