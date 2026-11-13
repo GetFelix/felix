@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794527623016,
+  "lastUpdate": 1794530386302,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53456,6 +53456,58 @@ window.BENCHMARK_DATA = {
             "range": "9012.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803666.73\nmean: 799843.11\nstdev: 9012.22\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5f16996fd56ea28faefb3b23af3fb31fc0e77e12",
+          "message": "test(controlplane): wait for the leader's first commit before add_learner (#2384) (#2387)\n\nA single member elects itself before its blank entry commits, and openraft\nrefuses membership changes until it does. The helper now waits for the entry\nto apply, so a test that adds a learner right away no longer races it.\nThe refusal is correct product behaviour; callers retry.",
+          "timestamp": "2026-11-13T00:32:02Z",
+          "tree_id": "2922a115c6eb650f24b6aef7d62017d0c2fce686",
+          "url": "https://github.com/GetFelix/felix/commit/5f16996fd56ea28faefb3b23af3fb31fc0e77e12"
+        },
+        "date": 1794530385516,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 335722.35,
+            "range": "29753.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335722.35\nmean: 346280.88\nstdev: 29753.47\ncv: 8.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 335722.35,
+            "range": "29753.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 335722.35\nmean: 346280.88\nstdev: 29753.47\ncv: 8.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80573.36,
+            "range": "4639.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80573.36\nmean: 78286.46\nstdev: 4639.13\ncv: 5.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805733.61,
+            "range": "46391.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805733.61\nmean: 782864.54\nstdev: 46391.35\ncv: 5.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
