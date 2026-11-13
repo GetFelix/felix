@@ -153,30 +153,32 @@ async fn a_record_a_later_leader_replaced_reaches_no_subscriber() {
 async fn a_followers_readers_stop_at_what_it_applied() {
     let mut led = led().await;
     let follower = led.followers().next().expect("a follower");
-    let runtime = led.cluster.runtime(&follower);
-    let engine = RaftEngine::new(runtime.clone());
+    let engine = RaftEngine::new(led.cluster.runtime(&follower));
     let (_broker, handle) = broker_on(&engine).await;
     let applied = |handle: &StreamHandle| match handle.read_bound() {
         ReadBound::Committed(bound) => bound,
         other => panic!("not bounded by the commit index: {other:?}"),
     };
-    let within = |handle: &StreamHandle| {
+    let within = async |handle: &StreamHandle| {
         let bound = applied(handle);
-        let leader = led.status().committed.map_or(0, |index| index + 1);
-        let status = runtime.status(&shard(0)).expect("status");
-        let here = status.committed.map_or(0, |index| index + 1);
+        let leader = led.committed_on(&led.leader.broker).await;
+        let here = led.committed_on(&follower).await;
         assert!(bound <= leader, "bound {bound} past the leader's {leader}");
         assert!(bound <= here, "bound {bound} past this member's {here}");
         bound
     };
-    eventually(|| (within(&handle) == led.committed + 1).then_some(())).await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while within(&handle).await != led.committed + 1 {
+        assert!(tokio::time::Instant::now() < deadline, "never applied");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     // The leader's log runs ahead of every follower's.
     led.cut_followers();
     let mut end = 0;
     for round in 0..4 {
         end = led.propose(round % 3 + 1).await.end;
-        assert_eq!(within(&handle), led.committed + 1);
+        assert_eq!(within(&handle).await, led.committed + 1);
     }
 
     let appended = handle.appended();
@@ -187,7 +189,7 @@ async fn a_followers_readers_stop_at_what_it_applied() {
     // Sampled while the follower stores, flushes and applies, racing the
     // leader's commit: the bound never runs ahead of either.
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while within(&handle) < end {
+    while within(&handle).await < end {
         assert!(tokio::time::Instant::now() < deadline, "never applied");
         tokio::task::yield_now().await;
     }
