@@ -19,6 +19,13 @@ use crate::storage_identity;
 
 pub(crate) const SHARD: &str = "t/ns/orders/0/Stream";
 
+/// A start that knows nothing from outside the root.
+pub(crate) const NO_EVIDENCE: Evidence<'static> = Evidence {
+    witness_dir: None,
+    control_plane: None,
+    restored: false,
+};
+
 /// A data root with a storage id and a place for the run witness.
 pub(crate) struct Root {
     dir: TempDir,
@@ -48,11 +55,21 @@ impl Root {
             self.path(),
             Evidence {
                 witness_dir: Some(self.shm.path()),
-                control_plane,
+                control_plane: control_plane.map(|sequence| self.copy(sequence)),
                 restored: false,
             },
         )
         .expect("gate")
+    }
+
+    /// A control-plane copy of `sequence` under the root's current id.
+    pub(crate) fn copy(&self, sequence: u64) -> ControlPlaneCopy {
+        ControlPlaneCopy {
+            storage_id: storage_identity::load(self.path())
+                .expect("id")
+                .expect("an id"),
+            sequence,
+        }
     }
 
     /// The root as a start opens it, through a gate that must pass.

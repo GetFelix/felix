@@ -108,6 +108,11 @@ pub struct ExportedState {
     /// while empty, as for `moves_paused`.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub(super) unplaced: std::collections::BTreeSet<crate::model::ShardOwner>,
+    /// Each node's highest root sequence (`ControlPlaneStore::root_sequence`).
+    /// Absent from older snapshots and left out while empty, as for
+    /// `moves_paused`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) root_sequences: Vec<(String, crate::model::RootSequence)>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -376,6 +381,7 @@ pub async fn export_state_from(
         },
         // An import marks every stream and cache it restores anyway.
         unplaced: Default::default(),
+        root_sequences: store.root_sequences().await?,
     })
 }
 

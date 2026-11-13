@@ -479,6 +479,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
                 crate::cluster::controlplane_view::ViewFile::new(storage.root().to_path_buf())
             }),
             None,
+            Default::default(),
             &shutdown,
         );
         let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {

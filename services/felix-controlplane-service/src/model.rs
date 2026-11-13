@@ -24,7 +24,7 @@ pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey}
 pub(crate) use node::validate_storage_id;
 pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
-    NodeStatus, NodeSuspicion, NodeValidationError,
+    NodeStatus, NodeSuspicion, NodeValidationError, RootSequence,
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, Readmitted, ReplicaReport,

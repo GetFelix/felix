@@ -169,6 +169,9 @@ pub struct InMemoryStore {
     revocations: Arc<RwLock<revocations::Revocations>>,
     /// The group's recorded identity; see `store::identity`.
     identity: Arc<RwLock<Option<crate::store::identity::ClusterIdentity>>>,
+    /// Each node's highest root sequence; see
+    /// `ControlPlaneStore::root_sequence`.
+    root_sequences: Arc<RwLock<std::collections::BTreeMap<String, crate::model::RootSequence>>>,
     /// The engine this instance is configured for, reported where no group
     /// records one.
     shard_engine: String,
@@ -386,6 +389,7 @@ impl InMemoryStore {
             moves_paused: Arc::new(RwLock::new(false)),
             revocations: Arc::new(RwLock::new(Default::default())),
             identity: Default::default(),
+            root_sequences: Default::default(),
             shard_engine: "hybrid".to_string(),
         }
     }
@@ -814,6 +818,36 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
         Ok(self.suspicions.read().await.values().cloned().collect())
+    }
+
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        Ok(self.root_sequences.read().await.get(node_id).cloned())
+    }
+
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let mut held = self.root_sequences.write().await;
+        if !crate::model::RootSequence::moved_by(held.get(node_id), &heard) {
+            return Ok(false);
+        }
+        held.insert(node_id.to_string(), heard);
+        Ok(true)
+    }
+
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        Ok(self
+            .root_sequences
+            .read()
+            .await
+            .iter()
+            .map(|(node, held)| (node.clone(), held.clone()))
+            .collect())
     }
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {

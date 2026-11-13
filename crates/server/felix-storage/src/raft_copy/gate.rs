@@ -17,23 +17,34 @@ use std::path::Path;
 
 use super::marks::MarkLog;
 use crate::run_state::{copy_trust, witness};
-use crate::storage_identity;
+use crate::storage_identity::{self, StorageId};
 
-/// What a start knows about its data root from outside it.
-#[derive(Debug, Clone, Copy, Default)]
+/// What a start knows about its data root from outside it. Every field is
+/// named by the caller: there is no default, so a start cannot leave one
+/// out by accident.
+#[derive(Debug, Clone, Copy)]
 pub struct Evidence<'a> {
     /// Where the run witness is kept ([`witness::default_dir`]). `None` on
     /// a host that has none.
     pub witness_dir: Option<&'a Path>,
-    /// The last root sequence the control plane heard for this storage id.
-    /// The control plane does not keep it yet (issue #2441), so today this
-    /// is always `None`.
-    pub control_plane: Option<u64>,
+    /// The highest root sequence the control plane holds for this node,
+    /// with the storage id it holds it for. `None` when it holds none or did
+    /// not answer; either way no copy, never a zero. A copy under another
+    /// storage id than the root's is not compared.
+    pub control_plane: Option<ControlPlaneCopy>,
     /// The start's incarnation verdict: the control plane registered this
     /// node after the root last recorded a registration
     /// ([`crate::run_state::Recorded::behind`]), so the root is from before
     /// then.
     pub restored: bool,
+}
+
+/// The control plane's copy of a root sequence: the highest a heartbeat
+/// carried, under the storage id it was carried for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlPlaneCopy {
+    pub storage_id: StorageId,
+    pub sequence: u64,
 }
 
 /// What the gate found.
@@ -88,14 +99,17 @@ pub struct Unchecked {
 impl Behind {
     /// Give the checked root the storage id `fresh`, through
     /// [`copy_trust::rotate_storage_id`], so every copy in it rotates when
-    /// it opens. The witness records the root's sequence under the new id,
-    /// and the root passes.
+    /// it opens. The rotation starts the mark log over, so the root passes
+    /// at sequence 0, and the witness records that under the new id.
     pub fn rotate(self, fresh: [u8; 16]) -> io::Result<GatePassed> {
-        let root = self.marks.root();
-        let id = copy_trust::rotate_storage_id(root, fresh).map_err(io::Error::other)?;
-        self.marks.set_storage_id(id);
-        self.marks.record_witness();
-        Ok(GatePassed { marks: self.marks })
+        let root = self.marks.root().to_path_buf();
+        let witness = self.marks.witness_dir().map(Path::to_path_buf);
+        // The rotation removes the mark log, so this one must be closed.
+        drop(self.marks);
+        let id = copy_trust::rotate_storage_id(&root, fresh).map_err(io::Error::other)?;
+        let marks = MarkLog::open(&root, id, witness)?;
+        marks.record_witness();
+        Ok(GatePassed { marks })
     }
 }
 
@@ -132,7 +146,10 @@ pub fn check(root: &Path, evidence: Evidence<'_>) -> io::Result<Gate> {
     let witnessed = witness::recorded_sequence(root, evidence.witness_dir)
         .filter(|(recorded, _)| *recorded == id)
         .map(|(_, sequence)| sequence);
-    let control_plane = evidence.control_plane;
+    let control_plane = evidence
+        .control_plane
+        .filter(|copy| copy.storage_id == id)
+        .map(|copy| copy.sequence);
     let behind = evidence.restored
         || witnessed.is_some_and(|copy| sequence < copy)
         || control_plane.is_some_and(|copy| sequence < copy);

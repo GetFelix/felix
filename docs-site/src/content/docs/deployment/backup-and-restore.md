@@ -203,6 +203,25 @@ is still required in every other case:
 Deleting the file is always safe. It costs one full copy of each shard the
 broker follows. When in doubt, delete it.
 
+`felix-broker rotate-storage-id` does the same with the broker stopped. It
+gives the directory a new storage id and starts its per-shard Raft marks
+over, so every copy on it, Raft members included, starts as a new one:
+
+```bash
+felix-broker rotate-storage-id --dir /var/lib/felix
+```
+
+```text
+/var/lib/felix: storage id 3f2a6c0e9b1d4e7a8c5f2b0d6e1ac901 -> 8b17d2e4a6c84f0b9e3d5a7c1f2b04de
+```
+
+Without `--dir` it uses `FELIX_DURABLE_STORAGE_DIR`. For Raft shards this is
+the supported way to restore a snapshot taken while the broker ran. A broker
+compares its Raft data root with the last root sequence the control plane
+heard from it, but a snapshot newer than that value, as one taken while the
+control plane was down can be, passes the comparison and could vote twice in
+one term.
+
 With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
 control plane is down runs from the control-plane view in its data directory
 only if a file the last start on that machine left in `/dev/shm` names the

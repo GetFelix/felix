@@ -130,6 +130,19 @@ latest report says `by_round` (`docs/replication-design.md`, "Failover on the
 followers' word").
 A record that cannot be stored is logged and does not fail the heartbeat.
 
+A broker whose per-shard Raft data root is open also sends
+`"root": {"storage_id": "...", "sequence": 42}`, the root's storage id and
+its last synced root sequence. The control plane keeps the highest sequence
+per broker for that storage id; a report under another storage id replaces
+it. It proposes a metadata write only when the value moved, so a steady
+broker costs none. `GET /v1/nodes/{node_id}` returns what it holds as
+`root_sequence`, which the broker's Raft restore gate compares its root
+against at start (`docs/per-shard-raft.md`, "The root sequence"). Keeping
+it needs every member at metadata level 33; below that nothing is stored and
+`root_sequence` stays absent. A value that cannot be stored is logged and
+does not fail the heartbeat either. It is part of the Raft snapshot and of
+an export.
+
 Four rules, each of which exists for a reason:
 
 - **The recorded time is the control plane's own clock.** A broker that could

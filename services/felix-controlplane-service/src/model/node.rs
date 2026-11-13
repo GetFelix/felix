@@ -250,6 +250,31 @@ pub struct NodeStatus {
     pub storage_id: Option<String>,
 }
 
+/// The highest root sequence a broker's heartbeat carried for its data
+/// root, under the storage id it was carried for.
+///
+/// The per-shard Raft gate compares a root against it at start: a root whose
+/// sequence is below it was put back from a copy. One per node; a report
+/// under another storage id replaces it, because a rotation starts the
+/// root's comparison over. See `docs/per-shard-raft.md`, "The root
+/// sequence".
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct RootSequence {
+    /// The data root's storage id, as 32 lowercase hex digits.
+    pub storage_id: String,
+    pub sequence: u64,
+}
+
+impl RootSequence {
+    /// Whether `heard` changes what is held: a higher sequence under the same
+    /// storage id, or any sequence under another.
+    pub fn moved_by(held: Option<&RootSequence>, heard: &RootSequence) -> bool {
+        held.is_none_or(|held| {
+            held.storage_id != heard.storage_id || held.sequence < heard.sequence
+        })
+    }
+}
+
 /// The leaders a broker last said it cannot reach, from its heartbeat.
 ///
 /// Soft state, like a heartbeat: placement acts on it only while it is

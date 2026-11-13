@@ -342,6 +342,11 @@ pub struct NodeHeartbeatRequest {
     /// does not need it, or predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub want_assignment_seq: bool,
+    /// The broker's data root and its last synced root sequence, for the
+    /// per-shard Raft restore gate. Absent from a broker that runs no Raft
+    /// groups, or predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<crate::model::RootSequence>,
 }
 
 /// What the control plane tells a broker in return.
@@ -485,6 +490,11 @@ pub struct NodePlacement {
 pub struct NodeView {
     pub node: crate::model::Node,
     pub placement: NodePlacement,
+    /// The highest root sequence the node's heartbeats carried, with the
+    /// storage id it was carried for. Only on a single node's detail, and
+    /// absent while none is held.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_sequence: Option<crate::model::RootSequence>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

@@ -133,6 +133,7 @@ fn a_directory_older_than_the_last_registration_rotates_the_storage_id() {
 
 fn registered_as(id: Option<StorageId>) -> Registered {
     Registered {
+        root_sequence: None,
         incarnation: 0,
         storage_id: id.map(|id| id.to_hex()),
     }
@@ -231,6 +232,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     mark_clean_stop(root.path(), id).expect("clean stop");
     let restored = |id: StorageId| Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
@@ -297,6 +299,7 @@ fn only_a_crash_that_keeps_every_ballot_records_the_id_it_rotated() {
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     mark_clean_stop(root.path(), id).expect("clean stop");
     let restored = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
@@ -378,6 +381,7 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     let restored = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
@@ -460,6 +464,7 @@ fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
         deferred: true,
     };
     let record = |storage_id: Option<&str>| Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: storage_id.map(str::to_owned),
     };

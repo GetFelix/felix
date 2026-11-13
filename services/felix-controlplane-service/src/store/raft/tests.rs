@@ -67,7 +67,8 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
-    crate::store::contract::suspicions::run_suspicion_contract(store).await;
+    crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
 }
 
 #[tokio::test]
@@ -4410,4 +4411,42 @@ async fn creates_wait_while_a_member_level_is_unknown() {
         .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
         .await;
     store.create_stream(stream("audit")).await.expect("created");
+}
+
+/// A member below level 33 could not apply the entry, so nothing is kept
+/// and the read stays empty: a broker's gate then has no control-plane copy,
+/// which holds a root rather than passes it. Kept once the member is there.
+#[tokio::test]
+async fn a_root_sequence_is_kept_only_at_level_33() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), ROOT_SEQUENCE_LEVEL - 1).await;
+    let heard = crate::model::RootSequence {
+        storage_id: "a".repeat(32),
+        sequence: 4,
+    };
+    assert!(
+        !store
+            .record_root_sequence("broker-a", heard.clone())
+            .await
+            .expect("record")
+    );
+    assert_eq!(store.root_sequence("broker-a").await.expect("read"), None);
+
+    version.store(ROOT_SEQUENCE_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store
+        .record_root_sequence("broker-a", heard.clone())
+        .await
+        .expect("record")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never kept at level 33"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        store.root_sequence("broker-a").await.expect("read"),
+        Some(heard)
+    );
 }

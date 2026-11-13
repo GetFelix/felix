@@ -131,6 +131,10 @@ const PLACED_LEVEL: u16 = 31;
 /// stream and cache creates until it is recorded.
 const IDENTITY_LEVEL: u16 = 32;
 
+/// The metadata level whose members keep each broker's root sequence
+/// (`ControlPlaneStore::root_sequence`).
+const ROOT_SEQUENCE_LEVEL: u16 = 33;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -1307,6 +1311,45 @@ impl ControlPlaneStore for RaftStore {
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
         Ok(self.identity().await)
+    }
+
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        self.local().root_sequence(node_id).await
+    }
+
+    /// One entry per heartbeat in which the sequence moved: what the local
+    /// copy already holds is not proposed again. Below level 33 nothing is
+    /// kept, and the broker's gate then has no control-plane copy, which
+    /// holds rather than passes a root nothing else vouches for.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let held = self.local().root_sequence(node_id).await?;
+        if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
+            return Ok(false);
+        }
+        if self.group_level().await < ROOT_SEQUENCE_LEVEL {
+            return Ok(false);
+        }
+        match self
+            .propose(MetaCommand::RecordRootSequence {
+                node_id: node_id.to_string(),
+                heard,
+            })
+            .await?
+        {
+            MetaResponse::Unit => Ok(true),
+            _ => Err(unexpected_shape("unit")),
+        }
+    }
+
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        self.local().root_sequences().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

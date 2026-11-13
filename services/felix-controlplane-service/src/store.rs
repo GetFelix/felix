@@ -489,6 +489,33 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Every suspicion held, fresh or not; the reader judges freshness.
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
 
+    /// The highest root sequence `node_id`'s heartbeats carried, under the
+    /// storage id they carried it for. `None` when none is held, which the
+    /// broker's gate reads as no copy at all, never as a zero.
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        let _ = node_id;
+        Ok(None)
+    }
+    /// Keep `heard` for `node_id` if it moves what is held
+    /// ([`crate::model::RootSequence::moved_by`]). Returns whether it did.
+    /// The default keeps nothing, which leaves a broker that cannot vouch
+    /// for its root by other means holding its Raft groups.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let _ = (node_id, heard);
+        Ok(false)
+    }
+    /// Every root sequence held, by node, for an export.
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        Ok(Vec::new())
+    }
+
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.
     async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {

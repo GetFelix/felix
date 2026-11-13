@@ -26,6 +26,7 @@ mod commit;
 mod deliver;
 mod identity;
 mod propose;
+mod root;
 mod written;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];

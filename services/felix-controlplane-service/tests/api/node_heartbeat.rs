@@ -1029,3 +1029,66 @@ async fn a_store_whose_brokers_registered_before_is_not_finalized() {
     let enabled = register_current(&app, &token, "broker-a", 7000).await;
     assert_eq!(enabled, serde_json::json!([]));
 }
+
+/// A heartbeat's root sequence is kept per node at its highest, and the
+/// node's detail serves it back: what a broker's per-shard Raft gate compares
+/// its data root against at start. A late beat carrying a lower sequence
+/// does not lower it.
+#[tokio::test]
+async fn a_heartbeat_keeps_the_highest_root_sequence_and_the_detail_serves_it() {
+    let store = store();
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("register");
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec![
+            "node.manage:cluster:*".to_string(),
+            "node.view:cluster:*".to_string(),
+        ],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let id = "ab".repeat(16);
+    let send = |method: &'static str, uri: &'static str, body: serde_json::Value| {
+        let (store, token) = (Arc::clone(&store), token.clone());
+        async move {
+            let response = app_with(store)
+                .await
+                .oneshot(authed(&token, method, uri, body))
+                .await
+                .expect("request");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = read_json(response).await;
+            body
+        }
+    };
+    let detail = send("GET", "/v1/nodes/broker-a", serde_json::Value::Null).await;
+    assert!(detail.get("root_sequence").is_none(), "{detail}");
+
+    for sequence in [7, 4] {
+        send(
+            "POST",
+            "/v1/nodes/broker-a/heartbeat",
+            serde_json::json!({
+                "incarnation": 0,
+                "root": { "storage_id": id, "sequence": sequence },
+            }),
+        )
+        .await;
+    }
+    let detail = send("GET", "/v1/nodes/broker-a", serde_json::Value::Null).await;
+    assert_eq!(
+        detail["root_sequence"],
+        serde_json::json!({ "storage_id": id, "sequence": 7 })
+    );
+}

@@ -63,6 +63,7 @@ pub(crate) async fn list_nodes(
         .map(|node| NodeView {
             placement: placement_for(&node, now, expiry),
             node,
+            root_sequence: None,
         })
         .collect();
 
@@ -102,7 +103,16 @@ pub(crate) async fn get_node(
         })?;
 
     let placement = placement_for(&node, now_millis(), state.node_liveness.expiry_timeout_ms);
-    Ok(Json(NodeView { node, placement }))
+    let root_sequence = state
+        .store
+        .root_sequence(&node_id)
+        .await
+        .map_err(|ref err| api_internal("read the node's root sequence", err))?;
+    Ok(Json(NodeView {
+        node,
+        placement,
+        root_sequence,
+    }))
 }
 
 /// Filters accepted by the node listing.

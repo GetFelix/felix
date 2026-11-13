@@ -306,6 +306,13 @@ fn refresh_token() -> RefreshToken {
     }
 }
 
+fn root_sequence() -> crate::model::RootSequence {
+    crate::model::RootSequence {
+        storage_id: s("0123456789abcdef0123456789abcdef"),
+        sequence: 1,
+    }
+}
+
 fn log<T>(item: T) -> ExportedLog<T> {
     ExportedLog {
         next_seq: 1,
@@ -323,6 +330,7 @@ fn exported() -> ExportedState {
             adopts_existing: true,
         }),
         unplaced: [shard_key().owner(1)].into(),
+        root_sequences: vec![(s("b"), root_sequence())],
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],
@@ -531,6 +539,10 @@ fn commands() -> Vec<MetaCommand> {
             group_id: s("g"),
             shard_engine: s("hybrid"),
         },
+        MetaCommand::RecordRootSequence {
+            node_id: s("b"),
+            heard: root_sequence(),
+        },
         MetaCommand::UpsertIdpIssuer {
             tenant_id: s("t"),
             issuer: issuer(),
@@ -710,6 +722,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordReplicaReport { .. } => "record_replica_report",
         MetaCommand::SetMovesPaused { .. } => "set_moves_paused",
         MetaCommand::RecordClusterIdentity { .. } => "record_cluster_identity",
+        MetaCommand::RecordRootSequence { .. } => "record_root_sequence",
         MetaCommand::UpsertIdpIssuer { .. } => "upsert_idp_issuer",
         MetaCommand::DeleteIdpIssuer { .. } => "delete_idp_issuer",
         MetaCommand::AddRbacPolicy { .. } => "add_rbac_policy",

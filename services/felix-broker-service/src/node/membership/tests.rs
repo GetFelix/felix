@@ -306,6 +306,7 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
     });
     assert!(attested.lock().expect("lock").is_empty());
     let record = membership::Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some("00ff".to_owned()),
     };

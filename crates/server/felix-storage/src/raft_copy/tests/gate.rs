@@ -53,9 +53,61 @@ async fn a_root_behind_the_witness_fails_the_gate_and_rotates() {
     assert_eq!(after, StorageId::from_bytes([9; 16]));
     let copies = CopyRoot::open(root.path(), passed, minter());
     assert_eq!(copies.storage_id(), after);
+    // The rotation started the mark log over.
+    assert_eq!(copies.mark_log().sequence(), 0);
+    assert_eq!(copies.mark_log().marks(SHARD), None);
     drop(copies);
-    // The rotation recorded the root's sequence under the new id.
     assert!(matches!(root.gate(None), Gate::Passed(_)));
+    // And it passes after a reboot too, with no witness and no control-plane
+    // copy: a rotated root has nothing a copy could vote from.
+    root.forget_witness();
+    assert!(matches!(
+        check(root.path(), NO_EVIDENCE).expect("gate"),
+        Gate::Passed(_)
+    ));
+}
+
+/// The rotations outside the gate (a restore, a crash under relaxed fsync,
+/// the operator's command) start the mark log over too. Kept, its sequence
+/// would have no copy under the new id, and a reboot would hold the root for
+/// good.
+#[tokio::test]
+async fn a_rotation_outside_the_gate_starts_the_mark_log_over() {
+    let root = Root::new();
+    three_writes(&root).await;
+    crate::run_state::copy_trust::rotate_storage_id(root.path(), [8; 16]).expect("rotate");
+    assert!(!marks_file(&root).exists());
+    root.forget_witness();
+    match check(root.path(), NO_EVIDENCE).expect("gate") {
+        Gate::Passed(passed) => assert_eq!(format!("{passed:?}"), "GatePassed { sequence: 0 }"),
+        other => panic!("a rotated root was not passed: {other:?}"),
+    }
+}
+
+/// The control plane holds its copy per storage id. One under another id is
+/// from before a rotation and is not compared, so it neither fails a root
+/// nor vouches for one.
+#[tokio::test]
+async fn a_control_plane_copy_of_another_storage_id_is_not_compared() {
+    let root = Root::new();
+    three_writes(&root).await;
+    root.forget_witness();
+    let other = |sequence| ControlPlaneCopy {
+        storage_id: StorageId::from_bytes([7; 16]),
+        sequence,
+    };
+    for copy in [other(100), other(3)] {
+        let gate = check(
+            root.path(),
+            Evidence {
+                witness_dir: Some(root.shm.path()),
+                control_plane: Some(copy),
+                restored: false,
+            },
+        )
+        .expect("gate");
+        assert!(matches!(gate, Gate::Unchecked(_)), "{gate:?}");
+    }
 }
 
 #[tokio::test]
@@ -65,8 +117,9 @@ async fn a_root_behind_the_control_plane_fails_the_gate() {
     let gate = check(
         root.path(),
         Evidence {
-            control_plane: Some(4),
-            ..Evidence::default()
+            witness_dir: None,
+            control_plane: Some(root.copy(4)),
+            restored: false,
         },
     )
     .expect("gate");
@@ -127,7 +180,7 @@ async fn a_rebooted_root_with_marks_and_no_copy_of_its_sequence_is_unchecked() {
     }
     // The same on a host with no witness at all.
     assert!(matches!(
-        check(root.path(), Evidence::default()).expect("gate"),
+        check(root.path(), NO_EVIDENCE).expect("gate"),
         Gate::Unchecked(_)
     ));
     // A control-plane copy it is not behind lets it pass.
@@ -139,7 +192,7 @@ async fn a_rebooted_root_with_marks_and_no_copy_of_its_sequence_is_unchecked() {
 fn a_root_with_no_marks_passes_without_a_copy() {
     let root = Root::new();
     assert!(matches!(
-        check(root.path(), Evidence::default()).expect("gate"),
+        check(root.path(), NO_EVIDENCE).expect("gate"),
         Gate::Passed(_)
     ));
 }
@@ -154,7 +207,7 @@ async fn a_root_behind_the_incarnation_is_behind() {
         root.path(),
         Evidence {
             witness_dir: Some(root.shm.path()),
-            control_plane: Some(3),
+            control_plane: Some(root.copy(3)),
             restored: true,
         },
     )
@@ -168,6 +221,6 @@ async fn a_root_behind_the_incarnation_is_behind() {
 #[test]
 fn a_root_with_no_storage_id_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
-    let err = check(dir.path(), Evidence::default()).expect_err("no id");
+    let err = check(dir.path(), NO_EVIDENCE).expect_err("no id");
     assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
 }

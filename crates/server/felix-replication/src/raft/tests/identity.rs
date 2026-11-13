@@ -21,7 +21,15 @@ impl Roots {
             let root = dir.path().join(broker);
             std::fs::create_dir_all(&root).expect("root");
             storage_identity::load_or_create(&root, || [n as u8 + 1; 16]).expect("id");
-            let Gate::Passed(passed) = check(&root, Evidence::default()).expect("gate") else {
+            let Gate::Passed(passed) = check(
+                &root,
+                Evidence {
+                    witness_dir: None,
+                    control_plane: None,
+                    restored: false,
+                },
+            )
+            .expect("gate") else {
                 panic!("a new root did not pass");
             };
             let next = std::sync::atomic::AtomicU64::new(100 * (n as u64 + 1));

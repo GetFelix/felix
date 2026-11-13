@@ -234,12 +234,18 @@ hold a copy of it:
   before the vote is answered. The witness is in memory, so this adds no
   fsync. For as long as the machine stays up it is exact for votes, and
   for the log it trails by up to one mark interval, like the log mark.
-- **The control plane.** The broker's heartbeat carries the last synced
-  sequence, never one whose write is still in flight, and the control
-  plane stores the highest it has seen for that storage id. The stored
-  value survives a machine restart, a replaced machine and a VM rollback,
-  none of which leave a witness. It is one metadata write per broker per
-  heartbeat in which the sequence changed.
+- **The control plane.** The broker's heartbeat carries the root's storage
+  id and its last synced sequence, never one whose write is still in
+  flight, and the control plane stores the highest it has seen for that
+  storage id, one record per broker. A report under another storage id
+  replaces the record, because a rotation starts the comparison over. The
+  stored value survives a machine restart, a replaced machine and a VM
+  rollback, none of which leave a witness. It is one metadata write per
+  broker per heartbeat in which the sequence changed, and it needs every
+  control-plane member at metadata level 33. Below that nothing is stored,
+  so a rebooted broker holds its root as it would with no copy. The
+  broker reads the value back from its node's detail
+  (`GET /v1/nodes/{node_id}`, `root_sequence`).
 
 The gate fails a root whose sequence is below either copy, and its copy
 ids rotate. A root that is ahead of a copy crashed between the two writes
@@ -264,9 +270,18 @@ What the gate cannot see:
   restore to the copy pass the gate when the control plane returns holding
   7, and the broker votes again in the same term.
 
-So restoring a live snapshot is supported only after an operator command
-that rotates the storage id, and the operations docs say so. See
-Questions, 12.
+So restoring a live snapshot is supported only after the operator command
+that rotates the storage id, `felix-broker rotate-storage-id`, run with the
+broker stopped, and the operations docs say so. See Questions, 12.
+
+**A rotation starts the mark log over.** Every rotation of the storage id,
+by the gate or any other path (a restore, a crash under relaxed fsync, the
+operator command), removes the root's mark log before it writes the new
+id. Every shard directory minted under the old id rotates when it opens,
+so the old marks protect nothing. Kept, they would carry a sequence that
+no copy outside the root names under the new id, and the root would be
+held after the next reboot. A crash between the removal and the new id
+leaves the old id with no marks, which rotates every directory too.
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -332,10 +347,13 @@ storage id. An unchecked root yields none, so no member opens on it. `GroupRunti
 member that way. The log mark is exact by default (`LogMarkMode::Exact`,
 synced before the flush is reported to Raft) and can be batched
 (`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
-Not built yet (issue #2441): the control plane's copy of the root
-sequence, and the broker opening its Raft groups through all this. Until
-the first lands, a root with marks passes only on a witness record, so a
-rebooted host holds.
+`felix_replication::raft::open_root` runs the gate for a broker: it asks
+the control plane for its copy, rotates a root that is behind, and checks a
+held root again every interval until a copy arrives or the broker stops.
+The broker's heartbeat reports the open root through a slot the Raft engine
+sets (`RootSequenceSlot`). The broker routes no shard to Raft yet; the
+engine that does opens its root through `open_root` and its members through
+`GroupRuntime::open_copy`.
 
 ### Re-forming a group
 
@@ -2652,6 +2670,8 @@ ones settled by the decisions of issue #2167 say so.
     one heartbeat normally, the whole outage when the control plane was
     down while the broker voted. (b) makes safety rest on an operator
     remembering a step every time, and a miss is two leaders in one term.
+    Decided (issue #2441): (a), and the command is
+    `felix-broker rotate-storage-id`.
 
 13. **Is the trailing offset floor enough?** After a majority of a group's
     disks is lost at once, offsets acknowledged since the last floor the

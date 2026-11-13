@@ -130,6 +130,13 @@ impl InMemoryStore {
             deleted_cache_names: super::caches::deleted_cache_names(self).await,
             cluster_identity: self.identity.read().await.clone(),
             unplaced,
+            root_sequences: self
+                .root_sequences
+                .read()
+                .await
+                .iter()
+                .map(|(node, held)| (node.clone(), held.clone()))
+                .collect(),
         }
     }
 
@@ -209,6 +216,7 @@ impl InMemoryStore {
         *self.auth_bootstrapped.write().await = state.auth_bootstrapped.into_iter().collect();
         *self.moves_paused.write().await = state.moves_paused;
         *self.identity.write().await = state.cluster_identity;
+        *self.root_sequences.write().await = state.root_sequences.into_iter().collect();
         *self.replica_reports.write().await = state
             .replica_reports
             .into_iter()

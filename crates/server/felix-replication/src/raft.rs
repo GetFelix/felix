@@ -34,6 +34,7 @@ mod machine;
 mod network;
 mod peer;
 mod propose;
+mod root;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -47,6 +48,7 @@ pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, Batch, Record};
+pub use root::{RootReport, open_root};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, OpenedMember, Role,
     RuntimeConfig,

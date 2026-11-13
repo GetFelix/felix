@@ -556,6 +556,9 @@ where
                 marks.set_kept_ballots(kept.ballots);
             })
         }),
+        // The Raft engine sets it once its data root opens through the
+        // restore gate (`felix_replication::raft::open_root`).
+        crate::cluster::membership::RootSequenceSlot::default(),
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
