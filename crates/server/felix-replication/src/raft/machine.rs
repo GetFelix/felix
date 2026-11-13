@@ -9,7 +9,8 @@
 //! projection as of the snapshot's last entry.
 
 use std::io;
-use std::sync::Arc;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, LazyLock};
 
 use bytes::Bytes;
 
@@ -19,7 +20,7 @@ use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf};
 use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
 use super::cache::{CacheCommand, CacheState};
 use super::codec::{StoredMembership, invalid};
@@ -117,9 +118,45 @@ impl SnapshotData {
 /// Parse a cache snapshot on the blocking pool: near the size cap it is
 /// seconds of work that would otherwise hold a runtime thread.
 pub(crate) async fn restore(data: Bytes, applied: bool) -> io::Result<CacheState> {
-    felix_common::blocking::spawn(move || CacheState::restore(&data, applied))
-        .await
-        .map_err(io::Error::other)?
+    cpu(move || CacheState::restore(&data, applied)).await?
+}
+
+/// How many snapshot encodes and parses run at once, across every group.
+#[cfg(test)]
+pub(crate) fn cpu_jobs() -> usize {
+    CPU_JOBS.1
+}
+
+static CPU_JOBS: LazyLock<(Arc<Semaphore>, usize)> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    let jobs = (cores / 2).max(1);
+    (Arc::new(Semaphore::new(jobs)), jobs)
+});
+
+/// Run CPU-bound snapshot work on the blocking pool, at most
+/// [`cpu_jobs`] at a time. Hundreds of groups restarting or snapshotting
+/// together would otherwise fill the pool that disk flushes wait on.
+pub(crate) async fn cpu<F, R>(work: F) -> io::Result<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    // Under the simulator the work runs on the runtime, and a bound taken
+    // from this machine's core count would change a seed's schedule.
+    let permit = if felix_common::blocking::on_runtime() {
+        None
+    } else {
+        let jobs = Arc::clone(&CPU_JOBS.0);
+        Some(jobs.acquire_owned().await.map_err(io::Error::other)?)
+    };
+    // The permit goes with the work, so a caller that stops waiting does
+    // not free a slot the work still uses.
+    felix_common::blocking::spawn(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(io::Error::other)
 }
 
 fn point(id: &LogIdOf<ShardTypes>) -> LogPoint {
@@ -206,10 +243,11 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
 
     async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
         let meta = meta(&self.state);
+        // A panic or JoinError in the encode fails the build, which stops
+        // the member. A receiver whose parse fails in `Group::dispatch`
+        // refuses the snapshot and keeps running.
         let data = match self.cache.take() {
-            Some(cache) => felix_common::blocking::spawn(move || cache.snapshot())
-                .await
-                .map_err(io::Error::other)?,
+            Some(cache) => cpu(move || cache.snapshot()).await?,
             None => Bytes::new(),
         };
         store(&self.snapshots, &meta, data.clone()).await?;

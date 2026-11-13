@@ -948,8 +948,13 @@ entries above it, so its log is cut to the snapshot:
   is kept in persistent maps that share their nodes with the copy. The copy
   is encoded and written on a blocking thread while apply goes on. A node
   that apply changes during the build is copied first, so a build costs
-  memory in proportion to what apply changes while it runs. The snapshot is exactly the state as
-  of its last entry, never a mix of that and later writes.
+  memory in proportion to what apply changes while it runs. The snapshot
+  is exactly the state as of its last entry, never a mix of that and later
+  writes.
+- Encoding a snapshot and parsing one are CPU work. Across all groups on a
+  broker, at most half the cores (at least one) do it at once. The rest
+  wait, so many groups snapshotting or restarting together do not take
+  the blocking threads that disk flushes need.
 - The member then purges the entries the snapshot covers, except the newest
   `cache_log_keep` (1,024). A member a little behind still catches up from
   the log.

@@ -507,11 +507,20 @@ async fn writes_during_a_snapshot_build_leave_it_exact_at_its_entry() {
         entries(first, first + 249, |index| keyed(index, 2_000))
     };
     machine.apply(overwrite(0)).await.expect("apply");
-    let build = tokio::spawn(async move { builder.build_snapshot().await });
-    for run in 1..20 {
-        machine.apply(overwrite(run)).await.expect("apply");
-    }
-    let built = build.await.expect("task").expect("build");
+    // The build is polled on this thread, so an encode on the task that
+    // awaits it would count here.
+    let writes = async {
+        for run in 1..20 {
+            machine.apply(overwrite(run)).await.expect("apply");
+        }
+    };
+    let (built, ()) = tokio::join!(builder.build_snapshot(), writes);
+    let built = built.expect("build");
+    assert_eq!(
+        ENCODED.with(std::cell::Cell::get),
+        encoded,
+        "the snapshot was encoded on the task that awaits the build"
+    );
 
     assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(named_at));
     // Not assert_eq: the bytes are too many to print.
@@ -523,6 +532,36 @@ async fn writes_during_a_snapshot_build_leave_it_exact_at_its_entry() {
     assert_ne!(restored, *cache.read(), "the later writes were applied");
     let stored = machine.get_current_snapshot().await.expect("read");
     assert!(stored.expect("stored").snapshot.bytes == named);
+}
+
+/// Snapshot encodes and parses share a few blocking threads, however
+/// many groups ask at once, so disk flushes still find the pool free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_work_runs_at_most_its_share_of_the_blocking_pool_at_once() {
+    use super::super::machine::{cpu, cpu_jobs};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let limit = cpu_jobs();
+    let running = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let jobs: Vec<_> = (0..limit * 4)
+        .map(|_| {
+            let (running, most) = (Arc::clone(&running), Arc::clone(&most));
+            tokio::spawn(cpu(move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }))
+        })
+        .collect();
+    for job in jobs {
+        job.await.expect("task").expect("job");
+    }
+    let most = most.load(Ordering::SeqCst);
+    assert!(
+        (1..=limit).contains(&most),
+        "{most} ran at once, limit {limit}"
+    );
 }
 
 /// A member that received a snapshot parsed it to check it can read it.
@@ -680,7 +719,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     use super::super::install::MAX_SNAPSHOT_BYTES;
     let mut cluster = Cluster::new(true);
     cluster.form(N).await;
-    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    let first = write(&cluster, 10, put("installed-in-pieces", b"one", 1)).await;
     cluster.committed_everywhere(N, first).await;
     let leader = cluster.elected(N).await;
     let behind = *BROKERS
@@ -688,7 +727,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
         .find(|broker| ***broker != *leader.broker)
         .expect("a follower");
     cut_off(&cluster, behind);
-    let last = write(&cluster, 30, put("k", b"two", 2)).await;
+    let last = write(&cluster, 30, put("installed-in-pieces", b"two", 2)).await;
     let leader = cluster.elected(N).await;
     cluster.snapshot(&leader.broker, N, last).await;
     let leading = cluster
@@ -746,6 +785,8 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     assert!(piece(term, whole, half, data.slice(half..)).await.is_ok());
     assert_eq!(member.incoming().held(), None);
     eventually(|| (state(&cluster, behind) == data).then_some(())).await;
+    // Read once, where it was received; the install takes that state.
+    assert_eq!(super::super::cache::restores_of(&data), 1);
     cluster.stop().await;
 }
 
