@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794544551208,
+  "lastUpdate": 1794554243007,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68640,6 +68640,72 @@ window.BENCHMARK_DATA = {
             "range": "818.05",
             "unit": "us",
             "extra": "trials: 5\nmedian: 545.00\nmean: 832.40\nstdev: 818.05\ncv: 98.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "376c343a09838e8a827b996c4029a8c87ab85a11",
+          "message": "test(wire): the internal fuzz target knows which kinds need which capability (#2412)\n\nThe internal_message fuzz target checks each kind against a table of the capabilities it must and may report, so the stamped replicate kinds (WRITER_GENERATIONS, plus ELECTION with a set generation) no longer trip the catch-all. A committed seed reproduces the old panic. Closes #2401.\n\nSpec-Unaffected: fuzz target and seed only.",
+          "timestamp": "2026-11-13T07:09:54Z",
+          "tree_id": "4e64721b5f5c164b036ce9fda53c64025ce9cdaa",
+          "url": "https://github.com/GetFelix/felix/commit/376c343a09838e8a827b996c4029a8c87ab85a11"
+        },
+        "date": 1794554234538,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 98.00\nstdev: 0.71\ncv: 0.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 134,
+            "range": "29.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 147.00\nstdev: 29.28\ncv: 19.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 210,
+            "range": "671.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 517.40\nstdev: 671.03\ncv: 129.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 133.60\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 275,
+            "range": "9.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 270.00\nstdev: 9.75\ncv: 3.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 809,
+            "range": "524.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 809.00\nmean: 985.40\nstdev: 524.28\ncv: 53.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
