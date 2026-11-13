@@ -62,6 +62,9 @@ pub(super) struct Completion {
     /// Where a released batch's offsets start. A claimed batch reads them
     /// from its claim instead.
     released_at: Option<u64>,
+    /// Offsets just below a released batch that hold no record, as its
+    /// engine counted them.
+    skipped_before: u64,
 }
 
 /// A batch in the ring, part way through its fanout.
@@ -122,6 +125,7 @@ impl Completion {
             replication,
             delivery: None,
             released_at: None,
+            skipped_before: 0,
         }
     }
 
@@ -143,6 +147,7 @@ impl Completion {
             replication: Arc::default(),
             delivery: None,
             released_at: Some(batch.first_offset),
+            skipped_before: batch.skipped_before,
         }
     }
 
@@ -199,8 +204,8 @@ impl Completion {
         let state = &self.handle.state;
         let first_offset = claimed.pending.first_offset();
         let end = first_offset + self.payloads.len() as u64;
-        // A `Leader` stream with nothing held never asks for a bound, so it
-        // costs one atomic load here.
+        // A `Leader` stream with nothing held never asks for a bound unless
+        // its shard is bounded at every level, so it costs an atomic load here.
         if !state.held.is_busy() && state.read_bound().covers(end) {
             return Ok(None);
         }
@@ -219,6 +224,8 @@ impl Completion {
             commit: self.commit.take(),
             trim: self.trim,
             trim_applied: self.trim_applied.take(),
+            skipped_before: 0,
+            gap: false,
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -330,6 +337,7 @@ impl Completion {
             .ok_or(BrokerError::PublishSuperseded {
                 first_offset: first_offset.unwrap_or_default(),
             })?;
+        let skipped_before = skipped_before.max(self.skipped_before);
         if let Some(start) = append_start {
             let append_ns = start.elapsed().as_nanos() as u64;
             timings::record_append_ns(append_ns);
@@ -567,6 +575,10 @@ async fn release(handle: StreamHandle) {
             }
         };
         for batch in ready {
+            if batch.gap {
+                state.restart_ring();
+                continue;
+            }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if let Some(floor) = completion.trim {
                 let _ = completion.apply_trim(floor);

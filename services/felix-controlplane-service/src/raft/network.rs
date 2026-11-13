@@ -3,7 +3,7 @@
 //! The wire format is Felix's ([`super::wire`]): on redb, the requests and
 //! responses openraft 0.9 serialized, snapshots in chunks included, so
 //! members on either side of the 0.10 upgrade talk to each other. On the
-//! segment store a snapshot goes in one request. A peer's refusal
+//! segment store a snapshot is streamed in one request. A peer's refusal
 //! comes back as the `Err` half of its answer and is reported as
 //! `Unreachable`, like a transport failure that will not fix itself.
 //!
@@ -27,6 +27,9 @@ use openraft::raft::{
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+#[cfg(felix_segment_store)]
+use felix_storage::raft_log::transfer;
 
 use super::hold::Hold;
 use super::types::{Snapshot, TypeConfig, Vote};
@@ -142,9 +145,11 @@ impl std::fmt::Display for PeerRefused {
 
 impl std::error::Error for PeerRefused {}
 
-/// How long one snapshot request may take, sending and installing included.
+/// The client's own timeout is sized for a heartbeat. A snapshot is bounded
+/// by its progress instead ([`transfer::Progress`]), so this only has to be
+/// longer than any transfer that keeps moving.
 #[cfg(felix_segment_store)]
-const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
+const NO_TOTAL_LIMIT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Keep error messages to one readable line, whatever the peer sent.
 const BODY_EXCERPT: usize = 200;
@@ -182,21 +187,6 @@ impl HttpNetwork {
     {
         let url = format!("{}{}", self.base, super::peer_route(path));
         self.answer(self.client.post(url).json(request)).await
-    }
-
-    /// A whole snapshot as one request. The client's timeout is sized for a
-    /// heartbeat or a batch of entries, so this one has its own.
-    #[cfg(felix_segment_store)]
-    async fn send_snapshot(
-        &self,
-        body: Vec<u8>,
-    ) -> Result<wire::InstallSnapshotResponse, RPCError<TypeConfig>> {
-        let url = format!("{}{}", self.base, super::peer_route("install-snapshot"));
-        let request = self.client.post(url).timeout(SNAPSHOT_TIMEOUT).body(body);
-        match self.answer(request).await? {
-            wire::Reply::Ok(response) => Ok(response),
-            wire::Reply::Err(err) => Err(refused(err)),
-        }
     }
 
     async fn answer<Resp>(
@@ -277,6 +267,50 @@ impl HttpNetwork {
 
 fn refused(err: serde_json::Value) -> RPCError<TypeConfig> {
     RPCError::Unreachable(Unreachable::new(&PeerRefused(err)))
+}
+
+/// A snapshot request's body: the head, the data a piece at a time, then
+/// the crc, in `transfer`'s framing. Each piece counts as progress.
+#[cfg(felix_segment_store)]
+fn snapshot_body(
+    head: &wire::SnapshotHead,
+    data: super::types::SnapshotData,
+    progress: transfer::Progress,
+) -> impl futures_util::Stream<Item = std::io::Result<bytes::Bytes>> + Send + 'static {
+    enum Next {
+        Start(bytes::Bytes),
+        Data,
+        Done,
+    }
+    let start = transfer::encode_start(&head.encode(), data.data_len());
+    let state = (Next::Start(start), data, transfer::DataCrc::default());
+    futures_util::stream::unfold(state, move |(next, mut data, mut crc)| {
+        let progress = progress.clone();
+        async move {
+            let piece = match next {
+                Next::Done => return None,
+                Next::Start(start) => Ok((start, Next::Data)),
+                Next::Data => match data.next_chunk(transfer::CHUNK).await {
+                    Ok(Some(chunk)) => {
+                        crc.update(&chunk);
+                        Ok((chunk, Next::Data))
+                    }
+                    Ok(None) => {
+                        progress.all_sent();
+                        Ok((crc.trailer(), Next::Done))
+                    }
+                    Err(err) => Err(err),
+                },
+            };
+            match piece {
+                Ok((piece, next)) => {
+                    progress.moved(piece.len());
+                    Some((Ok(piece), (next, data, crc)))
+                }
+                Err(err) => Some((Err(err), (Next::Done, data, crc))),
+            }
+        }
+    })
 }
 
 fn streaming(err: RPCError<TypeConfig>) -> StreamingError<TypeConfig> {
@@ -377,7 +411,12 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
         ))
     }
 
-    /// Sent whole, in one request.
+    /// Sent as one streamed request: the head, then the data read from the
+    /// snapshot's file a piece at a time. Bounded by progress, not by a
+    /// total: it fails only when no bytes move for `transfer::IDLE`, or the
+    /// receiver takes longer than `transfer::install_bound` after the last.
+    /// openraft does not enforce `option`'s ttl itself, and a fixed one
+    /// would cut a large snapshot that is still moving.
     #[cfg(felix_segment_store)]
     async fn full_snapshot(
         &mut self,
@@ -392,11 +431,26 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
             meta: (&snapshot.meta).into(),
         };
         let last = head.meta.last_log_id.map(|log_id| log_id.index);
-        let body = wire::snapshot_body(&head, &snapshot.snapshot.into_inner());
-        let sent = self.send_snapshot(body);
+        let data_len = snapshot.snapshot.data_len();
+        let progress = transfer::Progress::new(data_len);
+        let body = snapshot_body(&head, snapshot.snapshot, progress.clone());
+        let url = format!("{}{}", self.base, super::peer_route("install-snapshot"));
+        let request = self
+            .client
+            .post(url)
+            .timeout(NO_TOTAL_LIMIT)
+            .body(reqwest::Body::wrap_stream(body));
+        let sent = self.answer::<wire::InstallSnapshotResponse>(request);
         let response = tokio::select! {
             closed = cancel => return Err(closed.into()),
-            response = sent => response.map_err(streaming)?,
+            expired = progress.expired() => {
+                tracing::warn!(target = self.target, error = %expired, "snapshot send gave up");
+                return Err(StreamingError::Unreachable(Unreachable::new(&expired)));
+            }
+            response = sent => match response.map_err(streaming)? {
+                wire::Reply::Ok(response) => response,
+                wire::Reply::Err(err) => return Err(streaming(refused(err))),
+            },
         };
         let theirs = Vote::from(response.vote);
         // A member that has moved on to a newer leader says so, and has not

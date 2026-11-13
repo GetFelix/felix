@@ -1,5 +1,5 @@
 //! The ids and the snapshot form of a member on the segment store: a log id
-//! is a term and an index, and a snapshot travels in one request.
+//! is a term and an index, and a snapshot travels as one streamed request.
 use serde::{Deserialize, Serialize};
 
 use super::{StoredMembership, lib_log_id, log_id};
@@ -25,32 +25,23 @@ pub(in crate::raft) struct SnapshotMeta {
     pub(in crate::raft) last_membership: StoredMembership,
 }
 
-/// What comes before the data in a snapshot request.
+/// The head of a snapshot request, before its data. The body around it is
+/// `felix_storage::raft_log::transfer`'s framing.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::raft) struct SnapshotHead {
     pub(in crate::raft) vote: Vote,
     pub(in crate::raft) meta: SnapshotMeta,
 }
 
-/// A snapshot request's body: the head's length as four big-endian bytes,
-/// the head as JSON, then the snapshot's data as it is.
-pub(in crate::raft) fn snapshot_body(head: &SnapshotHead, data: &[u8]) -> Vec<u8> {
-    let head = serde_json::to_vec(head).expect("a snapshot head is plain data");
-    let len = u32::try_from(head.len()).expect("a snapshot head is far below 4 GiB");
-    let mut body = Vec::with_capacity(4 + head.len() + data.len());
-    body.extend_from_slice(&len.to_be_bytes());
-    body.extend_from_slice(&head);
-    body.extend_from_slice(data);
-    body
-}
+impl SnapshotHead {
+    pub(in crate::raft) fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a snapshot head is plain data")
+    }
 
-/// The head and the data of a snapshot request's body, or `None` when it is
-/// not one.
-pub(in crate::raft) fn parse_snapshot_body(body: &[u8]) -> Option<(SnapshotHead, &[u8])> {
-    let (len, rest) = body.split_first_chunk::<4>()?;
-    let len = usize::try_from(u32::from_be_bytes(*len)).ok()?;
-    let (head, data) = rest.split_at_checked(len)?;
-    Some((serde_json::from_slice(head).ok()?, data))
+    /// `None` when `bytes` is not a head.
+    pub(in crate::raft) fn decode(bytes: &[u8]) -> Option<Self> {
+        serde_json::from_slice(bytes).ok()
+    }
 }
 
 impl From<&types::Vote> for Vote {

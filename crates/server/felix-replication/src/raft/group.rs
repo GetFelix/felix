@@ -51,6 +51,10 @@ pub(crate) struct Group {
     /// Cancelled when the member is told to stop. Ends the publish task and
     /// every publisher's wait.
     stop: CancellationToken,
+    /// The runtime the group was opened on, where its openraft core runs.
+    /// The publish task starts there, not on the first publisher's runtime,
+    /// which may end while the group lives on.
+    runtime: tokio::runtime::Handle,
 }
 
 /// The runtime's clock and timers, as a group needs them to say when its
@@ -334,6 +338,7 @@ impl Group {
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
+            runtime: tokio::runtime::Handle::current(),
         })
     }
 
@@ -516,6 +521,11 @@ impl Group {
         async move { propose::acknowledged(waiting?, positions, leading, stop).await }
     }
 
+    /// The commit table as the state machine publishes it.
+    pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
+        self.commits.clone()
+    }
+
     /// One past the last offset this member knows committed. It moves when
     /// the state machine applies an entry, so it never passes the commit
     /// index, on a leader or a follower.
@@ -631,7 +641,7 @@ impl Group {
         self.proposals.get_or_init(|| {
             let (queue, queued) = mpsc::unbounded_channel();
             // Ends on `stop`, or when this group and its queue are dropped.
-            tokio::spawn(propose::run(
+            self.runtime.spawn(propose::run(
                 self.raft.clone(),
                 Arc::clone(&self.pace),
                 queued,

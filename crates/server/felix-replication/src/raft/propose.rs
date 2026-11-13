@@ -62,11 +62,15 @@ pub struct Batch {
     pub ack: AckAt,
 }
 
-/// A drain stops taking batches once it holds this many payload bytes. One
-/// drain is one append, and the group handles nothing else while it runs.
-const DRAIN_BYTES: usize = 4 * 1024 * 1024;
+/// A drain takes no batch that would bring it past this many payload bytes
+/// or this many records. One drain is one append, and the group handles
+/// nothing else while it runs. A batch past either on its own is drained
+/// alone.
+pub(super) const DRAIN_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const DRAIN_RECORDS: usize = 4096;
 
 const NOT_LEADING: &str = "this broker does not lead the shard";
+const ELECTING: &str = "this broker is standing for election, so the batch may still be written";
 const LEASE_LAPSED: &str = "no majority has answered this leader lately, so nothing was written";
 const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
@@ -173,14 +177,45 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     ))
 }
 
+/// The batches of one call, in queue order.
+pub(super) struct Drain {
+    pub(super) commands: Vec<Command>,
+    /// Each batch's record count and where its answer goes.
+    pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+}
+
+/// Take `first` and what is queued behind it, up to [`DRAIN_BYTES`] and
+/// [`DRAIN_RECORDS`]. A batch that would pass either is left in `held`, to
+/// start the next drain, so it keeps its place.
+pub(super) fn drain(
+    first: Proposal,
+    queue: &mut mpsc::UnboundedReceiver<Proposal>,
+    held: &mut Option<Proposal>,
+) -> Drain {
+    let mut bytes = first.bytes;
+    let mut commands = first.commands;
+    let mut answers = vec![(commands.len(), first.answer)];
+    while let Ok(next) = queue.try_recv() {
+        if bytes + next.bytes > DRAIN_BYTES || commands.len() + next.commands.len() > DRAIN_RECORDS
+        {
+            *held = Some(next);
+            break;
+        }
+        bytes += next.bytes;
+        answers.push((next.commands.len(), next.answer));
+        commands.extend(next.commands);
+    }
+    Drain { commands, answers }
+}
+
 /// Hand a shard's queued batches to its group, in the order they were
 /// queued, until `stop` or until the queue's sender is gone.
 ///
 /// Everything queued when the task looks goes down as one
-/// `client_write_many`, so batches that arrive while an append runs share
-/// the next one. The task does not wait for a call's entries to commit
-/// before it makes the next: openraft takes calls in the order they are
-/// made.
+/// `client_write_many`, up to the drain bounds, so batches that arrive
+/// while an append runs share the next one. The task does not wait for a
+/// call's entries to commit before it makes the next: openraft takes calls
+/// in the order they are made.
 pub(crate) async fn run(
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
@@ -190,39 +225,34 @@ pub(crate) async fn run(
     lease: Lease,
 ) {
     let mut answering = FuturesUnordered::new();
+    let mut held = None;
     loop {
-        let first = tokio::select! {
-            biased;
-            () = stop.cancelled() => return,
-            Some(()) = answering.next(), if !answering.is_empty() => continue,
-            next = queue.recv() => match next {
-                Some(proposal) => proposal,
-                None => return,
+        let first = match held.take() {
+            Some(first) => first,
+            None => tokio::select! {
+                biased;
+                () = stop.cancelled() => return,
+                Some(()) = answering.next(), if !answering.is_empty() => continue,
+                next = queue.recv() => match next {
+                    Some(proposal) => proposal,
+                    None => return,
+                },
             },
         };
-        let mut bytes = first.bytes;
-        let mut commands = first.commands;
-        let mut answers = vec![(commands.len(), first.answer)];
-        while bytes < DRAIN_BYTES
-            && let Ok(next) = queue.try_recv()
-        {
-            bytes += next.bytes;
-            answers.push((next.commands.len(), next.answer));
-            commands.extend(next.commands);
-        }
+        let Drain { commands, answers } = drain(first, &mut queue, &mut held);
         if leads(&raft) {
             pace.wrote();
         }
-        tokio::select! {
-            biased;
-            () = stop.cancelled() => return,
-            () = lease.renew(&raft) => {}
+        if alongside(lease.renew(&raft), &mut answering, &stop)
+            .await
+            .is_none()
+        {
+            return;
         }
         calls.fetch_add(1, Ordering::Relaxed);
-        let sent = tokio::select! {
-            biased;
-            () = stop.cancelled() => return,
-            sent = raft.client_write_many(commands) => sent,
+        let sent = alongside(raft.client_write_many(commands), &mut answering, &stop).await;
+        let Some(sent) = sent else {
+            return;
         };
         match sent {
             Ok(results) => answering.push(answer(results, answers)),
@@ -232,6 +262,25 @@ pub(crate) async fn run(
                     let _ = to.send(Err(stopped()));
                 }
             }
+        }
+    }
+}
+
+/// Run `work` until it ends or `stop`, and meanwhile hand on the answers of
+/// calls already made. A publisher whose call openraft has answered is not
+/// held for the next call's lease renewal, which can take a whole lease.
+async fn alongside<T>(
+    work: impl Future<Output = T>,
+    answering: &mut FuturesUnordered<impl Future<Output = ()>>,
+    stop: &CancellationToken,
+) -> Option<T> {
+    let mut work = std::pin::pin!(work);
+    loop {
+        tokio::select! {
+            biased;
+            () = stop.cancelled() => return None,
+            done = &mut work => return Some(done),
+            Some(()) = answering.next(), if !answering.is_empty() => {}
         }
     }
 }
@@ -318,7 +367,10 @@ pub(super) async fn answer(
                     term: **applied.log_id.committed_leader_id(),
                     index: applied.log_id.index,
                 }),
-                // Refused before anything was appended.
+                // Refused before anything was appended: openraft answers
+                // an appended entry only when it is applied, or with
+                // `LogEntryDiscarded` when it is cut or purged, never on
+                // a step-down.
                 Some(Ok(Err(ClientWriteError::ForwardToLeader(forward)))) => {
                     Err(lost(match forward.reason {
                         ForwardReason::LeaseExpired => LEASE_LAPSED,
@@ -345,11 +397,34 @@ pub(super) async fn answer(
     }
 }
 
+/// Why this member no longer leads as a waiting publisher needs it to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Lost {
+    /// Another member leads, or this one leads another term.
+    Deposed,
+    /// This member is standing for election. If it wins, it still appends
+    /// what it was sent before.
+    Electing,
+    /// The group's core has stopped, as it does on a storage error.
+    Stopped,
+}
+
 /// Whether this member still leads, as a waiting publisher asks it.
 pub(crate) trait Leading: Send {
     /// Returns once this member is not the leader, or, with a term, not the
-    /// leader of that term.
-    fn lost(&mut self, term: Option<u64>) -> impl Future<Output = ()> + Send;
+    /// leader of that term, and says why.
+    fn lost(&mut self, term: Option<u64>) -> impl Future<Output = Lost> + Send;
+}
+
+/// What a publisher is told when its member stops leading, while a batch
+/// openraft has not answered may still be appended (`unwritten`) or after
+/// it was written.
+fn unled(why: Lost, unwritten: bool) -> CommitError {
+    match why {
+        Lost::Stopped => stopped(),
+        Lost::Electing if unwritten => lost(ELECTING),
+        Lost::Deposed | Lost::Electing => lost(NOT_LEADING),
+    }
 }
 
 /// Wait for what `waiting.ack` asks for and say where the batch landed.
@@ -390,7 +465,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         biased;
         answered = &mut answer => return committed(answered),
         span = written => span,
-        () = leading.lost(None) => return Err(lost(NOT_LEADING)),
+        why = leading.lost(None) => return Err(unled(why, true)),
         () = stop.cancelled() => return Err(stopped()),
     };
     let Some(span) = span else {
@@ -399,7 +474,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         return tokio::select! {
             biased;
             answered = &mut answer => committed(answered),
-            () = leading.lost(None) => Err(lost(NOT_LEADING)),
+            why = leading.lost(None) => Err(unled(why, false)),
             () = stop.cancelled() => Err(stopped()),
         };
     };
@@ -428,7 +503,7 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
             Some(_) => Err(lost(NOT_LEADING)),
             None => Err(stopped()),
         },
-        () = leading.lost(Some(last.term)) => Err(lost(NOT_LEADING)),
+        why = leading.lost(Some(last.term)) => Err(unled(why, false)),
         () = stop.cancelled() => Err(stopped()),
     }
 }

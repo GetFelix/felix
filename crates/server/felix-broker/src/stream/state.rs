@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use super::budget::{QueueBytes, SubscriberBytes};
-use super::committed::{CommitHold, ReadBound};
+use super::committed::{CommitHold, ProposalOrder, ReadBound};
 use super::delivery::{QueuedDelivery, SubQueuePolicy, queue_metrics};
 use super::producers::ProducerTable;
 use super::ring::{LogEntry, Ring, RingBytes};
@@ -74,6 +74,9 @@ pub(crate) struct StreamState {
     /// Durable batches past the committed mark, kept from the ring and from
     /// subscribers until it passes them. Empty unless the stream is `Quorum`.
     pub(crate) held: CommitHold,
+    /// The order publishes were handed to an engine that gives them their
+    /// offsets. Unused unless the shard runs on one.
+    pub(crate) proposals: ProposalOrder,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -172,6 +175,7 @@ impl StreamState {
             appended: Arc::new(tokio::sync::Notify::new()),
             append_slot: 0,
             held: CommitHold::default(),
+            proposals: ProposalOrder::default(),
             commits: CommitScan::default(),
         }
     }
@@ -193,13 +197,22 @@ impl StreamState {
             .store(consistency.as_u8(), Ordering::Release);
     }
 
-    /// How far readers of this shard may see. Only a `Quorum` stream asks the
-    /// service; everything else is bounded by local durability alone, which
-    /// matters once a failed flush poisons the log with a failed batch at its
-    /// tail.
+    /// How far readers of this shard may see. Only a `Quorum` stream, or a
+    /// shard bounded at every level, asks the service; everything else is
+    /// bounded by local durability alone, which matters once a failed flush
+    /// poisons the log with a failed batch at its tail. A shard bounded at
+    /// every level is held to both.
     pub(crate) fn read_bound(&self) -> ReadBound {
+        let poisoned = || self.durable.as_ref().and_then(StreamLog::poisoned_read_end);
+        if self.held.bounds_every_level() {
+            return match (self.held.bound(), poisoned()) {
+                (ReadBound::Unbounded, Some(end)) => ReadBound::Committed(end),
+                (ReadBound::Committed(mark), Some(end)) => ReadBound::Committed(mark.min(end)),
+                (bound, _) => bound,
+            };
+        }
         if self.consistency() != ConsistencyLevel::Quorum {
-            return match self.durable.as_ref().and_then(StreamLog::poisoned_read_end) {
+            return match poisoned() {
                 Some(end) => ReadBound::Committed(end),
                 None => ReadBound::Unbounded,
             };
@@ -219,6 +232,13 @@ impl StreamState {
             state.log.clear();
         }
         dropped
+    }
+
+    /// Empty the replay ring, keeping `next_seq`, so the next batch
+    /// appended starts it and a reader below that is served from the log.
+    /// For a batch whose outcome is unknown, in its place in the order.
+    pub(crate) fn restart_ring(&self) {
+        self.log_state.lock().log.clear();
     }
 
     pub(crate) fn deactivate(&self) {

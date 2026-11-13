@@ -232,5 +232,8 @@ fn raft_settings(raft_cfg: &RaftBackendConfig) -> RaftSettings {
     if let Some(ms) = raft_cfg.write_timeout_ms {
         settings.write_timeout = Duration::from_millis(ms);
     }
+    if let Some(bytes) = raft_cfg.snapshot_max_bytes {
+        settings.snapshot_max_bytes = bytes;
+    }
     settings
 }

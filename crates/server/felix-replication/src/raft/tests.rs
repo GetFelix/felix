@@ -23,6 +23,7 @@ use super::*;
 use crate::{ShardKey, ShardKind};
 
 mod commit;
+mod deliver;
 mod propose;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -85,6 +86,8 @@ struct Net {
     muted: parking_lot::Mutex<HashSet<String>>,
     /// While set, every append is lost. Votes still go through.
     lose_appends: std::sync::atomic::AtomicBool,
+    /// While set, every vote request is lost. Pre-votes still go through.
+    lose_votes: std::sync::atomic::AtomicBool,
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
@@ -124,6 +127,7 @@ impl RaftTransport for Net {
         }
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
+            || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
         }
