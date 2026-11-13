@@ -22,6 +22,10 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod commit;
+mod deliver;
+mod propose;
+
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -78,9 +82,26 @@ struct Net {
     /// The only broker they are lost on the way to, if one is named.
     lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
+    /// Brokers nothing is heard from: what they send is lost.
+    muted: parking_lot::Mutex<HashSet<String>>,
+    /// While set, every append is lost. Votes still go through.
+    lose_appends: std::sync::atomic::AtomicBool,
+    /// While set, every vote request is lost. Pre-votes still go through.
+    lose_votes: std::sync::atomic::AtomicBool,
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+}
+
+/// The broker that sent `request`, when it is a leader's or a candidate's.
+fn sender(request: &Request) -> Option<&str> {
+    let vote = match request {
+        Request::Append(rpc) => &rpc.vote,
+        Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
+        Request::Snapshot { vote, .. } => vote,
+        Request::TransferLeader(_) => return None,
+    };
+    Some(&vote.leader_id().node_id().broker)
 }
 
 #[async_trait]
@@ -102,6 +123,12 @@ impl RaftTransport for Net {
                 .is_ok()
         {
             self.lost_idle.fetch_add(1, Relaxed);
+            return Err(Refused::Unreachable("lost".into()));
+        }
+        if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
+            || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
+            || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+        {
             return Err(Refused::Unreachable("lost".into()));
         }
         let runtime = match self.cut.lock().contains(broker) {
@@ -1386,6 +1413,44 @@ async fn a_message_for_another_member_is_refused() {
         .await
         .expect("handled");
     eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
+    cluster.stop().await;
+}
+
+/// A vote the sender stopped waiting for is still granted once the member
+/// takes it, and granting it pushes the member's election back (#2405).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let runtime = cluster.runtime("a");
+    let member = runtime.group(&shard(0)).expect("group");
+    assert_eq!(member.due_at(), 0);
+
+    // Park the core so the vote cannot be answered before the deadline.
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    member
+        .raft()
+        .external_request(move |_| {
+            let _ = parked.recv();
+        })
+        .await
+        .expect("park");
+    let candidate = LeaderIdOf::<ShardTypes>::new(5, MemberId::new("b", 1));
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
+    let request = RaftRequest {
+        group: group(0),
+        to: MemberId::new("a", 1),
+        beat: 0,
+        deadline: Duration::from_millis(50),
+        body: Request::Vote(VoteRequest::new(vote, None)),
+    };
+    let answered = tokio::time::timeout(Duration::from_millis(50), runtime.handle(request)).await;
+    assert!(answered.is_err(), "the parked member answered");
+
+    release.send(()).expect("release");
+    eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
+    let election_min = cluster.timers.election_min.as_millis() as u64;
+    eventually(|| (member.due_at() >= election_min).then_some(())).await;
     cluster.stop().await;
 }
 

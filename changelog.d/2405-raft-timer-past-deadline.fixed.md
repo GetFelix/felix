@@ -1,0 +1,1 @@
+- A Raft member whose inbound append or vote was answered after the listener's deadline now still restarts its election timer, so a slow core no longer leads to a needless election (#2405). Behind the `raft` feature.

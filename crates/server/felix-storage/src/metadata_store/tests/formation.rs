@@ -1,4 +1,5 @@
-//! The formation file: this member's own mark and the members it recorded.
+//! The formation file: this member's own mark, whether it has voted, and
+//! the members it recorded.
 
 use std::collections::BTreeSet;
 
@@ -20,9 +21,21 @@ const FIXTURE: [u8; 30] = [
 fn fixture() -> Formation {
     Formation {
         forming: true,
+        reached: false,
         formed: BTreeSet::from([2, 3]),
     }
 }
+
+/// The same with the reached flag: bit 1, and its own checksum.
+const REACHED_FIXTURE: [u8; 30] = [
+    0x46, 0x4C, 0x46, 0x4D, // "FLFM"
+    0x00, 0x01, // version
+    0x00, 0x03, // flags: forming, reached
+    0x00, 0x02, // id count
+    0x00, 0x00, 0x00, 0x00, // crc, filled in by the test
+    0, 0, 0, 0, 0, 0, 0, 2, // member 2
+    0, 0, 0, 0, 0, 0, 0, 3, // member 3
+];
 
 fn resealed(mut bytes: Vec<u8>) -> Vec<u8> {
     let crc = crate::segment::format::crc32(&[&bytes[..10], &bytes[14..]]);
@@ -35,6 +48,37 @@ fn resealed(mut bytes: Vec<u8>) -> Vec<u8> {
 fn the_format_is_pinned_by_bytes() {
     assert_eq!(encode(&fixture()).expect("encode"), FIXTURE);
     assert_eq!(decode(&FIXTURE), Ok(fixture()));
+
+    let reached = Formation {
+        reached: true,
+        ..fixture()
+    };
+    let bytes = resealed(REACHED_FIXTURE.to_vec());
+    assert_eq!(encode(&reached).expect("encode"), bytes);
+    assert_eq!(decode(&bytes), Ok(reached));
+}
+
+/// The reached flag is written on its own, survives a reopen, and a second
+/// call does not write.
+#[tokio::test]
+async fn the_reached_flag_reads_back_after_a_reopen() {
+    let dir = tempdir().expect("dir");
+    let store = dir.path().join(STORE_DIR);
+    let file = MemberFile::open(&store, CLUSTER).expect("open");
+    file.mark_reached().await.expect("reached");
+    let expected = Formation {
+        reached: true,
+        ..Formation::default()
+    };
+    assert_eq!(file.formation(), expected);
+
+    crash_point::watch(&store, None);
+    file.mark_reached().await.expect("again");
+    assert_eq!(crash_point::unwatch(&store), 0);
+    drop(file);
+
+    let file = MemberFile::open(&store, CLUSTER).expect("reopen");
+    assert_eq!(file.formation(), expected);
 }
 
 /// A new store has no formation file. The mark and each record are in the
@@ -94,7 +138,7 @@ async fn a_damaged_file_is_not_read_as_no_record() {
     let why = decode(&resealed(version)).expect_err("another version");
     assert!(why.contains("format version 2"), "{why}");
     let mut flag = FIXTURE.to_vec();
-    flag[7] |= 0x02;
+    flag[7] |= 0x04;
     let why = decode(&resealed(flag)).expect_err("unknown flag");
     assert!(why.contains("flags this build does not know"), "{why}");
     for second in [1, 2] {

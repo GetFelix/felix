@@ -1126,7 +1126,11 @@ snapshot may be purged, so it cannot be read as "no snapshot". The same
 goes for a file of another format version or with its reserved bytes set,
 even with a correct checksum. A
 `raft-snapshot.tmp` left by a crash is never read, and the next open deletes
-it.
+it. A snapshot received from another member is written to
+`raft-snapshot.recv`, in this same format, and renamed over `raft-snapshot`
+once it is whole and its checksum matches. It has its own name because a
+local build can finish while a receive is in flight. The open deletes a
+`raft-snapshot.recv` a crash left, and it is never read.
 
 ## `member`: a metadata store's member file
 
@@ -1203,15 +1207,18 @@ read, and the next open deletes it.
 
 Before a member casts its first vote in a new group, it writes a mark to its
 own store and every other member records its id. A member that a peer has
-recorded and that holds no mark has lost its volume. The rule is in
+recorded and that holds no mark has lost its volume. Before it votes it also
+sets the reached flag, so a member that holds the flag and has a blank log
+lost its log, which is a directory of its own. The rules are in
 [metadata-raft-design.md](metadata-raft-design.md#forming-the-group). On
-this store the mark and the records live in one file beside the member
-file:
+this store the mark, the flag and the records live in one file beside the
+member file:
 
 ```text
  0   4  magic     u32  "FLFM"
  4   2  version   u16  1
  6   2  flags     u16  bit 0  forming: this member's own mark
+                         bit 1  reached: the member has voted from this store
  8   2  id count  u16
 10   4  crc       u32  crc32 over bytes 0..10 and the ids
 14      ids, u64 each, ascending, no repeats: the members this one recorded
@@ -1220,8 +1227,8 @@ file:
 A new store has no such file, which reads as no mark and no records. The
 first mark or record creates it. It is written like the member file, under
 the same lock: a temporary (`formation.tmp`), an fsync, a rename and a
-directory sync before the change returns. The mark is never cleared and an
-id is never removed.
+directory sync before the change returns. Neither flag is ever cleared and
+an id is never removed.
 
 A file that fails its checksum, has another length than its count says, is
 another version, sets an unknown flag or lists its ids out of order fails
@@ -1229,8 +1236,9 @@ the open. Read as "no file", it would forget a record that another member's
 vote depends on. A failed write of this file or of the member file stops
 every later change of both.
 
-On redb the same two values are the `forming` and `formed` keys of the
-store's meta table.
+On redb the same values are the `forming`, `formed` and `reached` keys of
+the store's meta table. There the log is in the same file, so the reached
+flag is kept in step but a blank log beside it cannot happen.
 
 ### `lock`: one holder at a time
 

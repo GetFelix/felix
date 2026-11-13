@@ -334,29 +334,48 @@ the groups of one broker or the whole cluster, and it has two steps:
 **Declaring a broker dead.** The command never guesses that a broker is
 gone. An operator declares a broker dead in the control plane, as a
 separate and recorded act. The command refuses a group while any broker
-placed for it is unreachable and not declared dead. A broker that was
+placed for it in the epoch is unreachable and not declared dead. A broker that was
 declared dead must not come back with its old data: its data root is
 wiped, or its storage id is rotated, before it starts again, and the
 control plane refuses its old storage id.
 
 What `plan` works out for one group, and `apply` then does:
 
-1. **List.** Every broker the control plane has placed for the group,
-   voter or learner. A broker is placed from the moment the control plane
-   records it as a target, which is before the leader proposes the change
-   ("Membership"), and it stays placed until the leader reports the change
-   that removes it as committed. So the target of a move that was under
-   way is listed. The command asks each listed broker for its copy when it
-   runs. It keeps no earlier answer. For each one it shows the copy id,
-   whether the copy rotated, the last log id of the records on its disk,
-   and the newest membership in those records. A broker declared dead is
-   shown as missing. If a copy's records name a voter that is not on the
-   list, the group is blocked. Declaring the broker of a since-removed
-   voter dead unblocks a lagging copy whose newest membership names it.
+1. **List.** Every broker the control plane placed for the group in its
+   current epoch, voter or learner, including brokers a later change
+   removed. The control plane records a broker as placed in the epoch
+   before the leader sends it anything, and for a move's target before the
+   leader proposes the change ("Membership"). Nothing takes a broker off
+   that record until the next epoch starts (#2419). So the target of a move that
+   was under way is listed, and so is a voter that was moved away. The
+   command asks each listed broker for its copy when it runs. It keeps no
+   earlier answer. For each one it shows the copy id, whether the copy
+   rotated, the last log id of the records on its disk, and the newest
+   membership in those records. A broker declared dead is shown as
+   missing. The cost: the list grows with every move for the life of the
+   epoch, every broker the group ever sat on in it must answer or be
+   declared dead, and the re-form places the removed ones again as
+   learners.
+
+   The removed brokers are on the list because their disks can hold the
+   newest records. Take {A, B, C} moved to {A, B, D} and back to {A, B, C},
+   both changes committed by A and B. C never received anything, and then
+   A and B lose their disks. Every copy of {A, B, C} is empty, and only
+   D's disk holds the acknowledged entries. A list of the brokers placed
+   now leaves D out and re-forms from nothing
+   (`FelixRaftReformStaleMembershipTwoMovesForgotten.cfg`). With D listed,
+   the base comes from D's log, or the group is blocked until D answers
+   or is declared dead.
+
+   If a copy's records name a voter that is not on the list, the group is
+   blocked. With every placed broker recorded this cannot happen, so it
+   only fires when the record is wrong.
 2. **Refuse.** A group is left alone if any reachable copy reports a
-   leader for the epoch, and blocked if a placed broker is unreachable and
+   leader for the epoch, and blocked if a listed broker is unreachable and
    not declared dead.
-3. **Stop the old epoch** (`apply` only). Each reachable copy stops its
+3. **Stop the old epoch** (`apply` only). Before it stops a copy, `apply`
+   asks the listed copies for a leader again, and leaves the group alone
+   if one answers. Each reachable copy stops its
    member of the current epoch and fsyncs a marker in the shard directory
    that says so. A stopped member never votes, acknowledges or appends in
    that epoch again, also after a restart. Only then does it report its
@@ -365,7 +384,8 @@ What `plan` works out for one group, and `apply` then does:
 4. **Record the base.** The control plane writes, by compare-and-swap on
    the group epoch: the next epoch, the base (the highest last log id
    reported), and the voter set, which is exactly the copies whose reports
-   hold the base. Every other listed copy is a learner.
+   hold the base. Every other listed copy is a learner. The listed brokers
+   start the record of brokers placed in the new epoch.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 
@@ -395,13 +415,15 @@ rejoined. No report is stored now: step 1 reads each copy when the command
 runs, step 3 reads it again after it has stopped, and `apply` skips a
 group that changed in between. Issue #2311 was a re-form of {A, B, C}
 while D, the target of a move, held the committed change. What is left of
-it is the rule in step 1: the list is every placed broker, including a
-move's target. D's newer log is in the plan and the base comes from it. If
+it is the rule in step 1: the list is every broker placed in the epoch,
+including a move's target. D's newer log is in the plan and the base comes from it. If
 D is unreachable the group is blocked until D answers or is declared dead,
 and then the plan says that D's records are not counted.
 
 An `apply` that stops copies and then fails before step 4 leaves them
-stopped. Running it again finishes the group.
+stopped. Running it again finishes the group. If the group elects without
+the stopped copies in between, the next `plan` leaves it alone, and how
+those copies come back is not decided yet (#2403).
 
 **Offsets are not reused.** The leader's report to the control plane
 ("Membership") carries the shard's commit offset, and the control plane
@@ -423,14 +445,22 @@ per shard. The new epoch's log starts above the base with an index gap up
 to the floor, and how the adapter represents that gap is settled in the
 pull request that builds re-forming. See Questions, 13.
 
+**Known gap (#2402).** The floor covers offsets above the end of the base,
+not offsets inside it. The base can end in an entry of an older term that
+never committed, held by the one copy whose disk survived, at an offset
+that a later leader acknowledged with another record. The new epoch then
+serves the old entry under that offset
+(`FelixRaftReformTwoRotatedOffsetsTerms.cfg`, pinned).
+
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
 its records (the root was restored from a backup, or failed the restore
-check) and the control plane still places only that broker for the shard,
-the copy restarts as the single voter of the next epoch without the
-command. It is a re-form of one: the same compare-and-swap on the epoch,
-its own last log id as the base, and the offset floor. What is lost is
-what the restore lost. If a move was under way, a second broker is placed,
+check) and that broker is the only one the control plane placed for the
+shard in the epoch, the copy restarts as the single voter of the next
+epoch without the command. It is a re-form of one: the same
+compare-and-swap on the epoch, its own last log id as the base, and the
+offset floor. What is lost is what the restore lost. If the shard was
+moved in this epoch, or a move is under way, a second broker was placed,
 and the shard waits for the command like any other group. An RF 1 shard
 whose copy is gone or empty is re-formed empty by the command. See
 Questions, 10.
@@ -534,6 +564,123 @@ The engine runs each proposal in a task it owns, not in the caller's
 future. A publisher that goes away cannot leave a batch half proposed, and
 the batch behind it keeps its place. The outcome is unknown to that
 publisher, as today.
+
+**`propose` as built** (`raft::RaftEngine::propose`, in
+`crates/server/felix-replication/src/raft/propose.rs`). It is on the Raft
+engine only, like `await_commit`, `read_bound` and `confirm_read`. The
+`Engine` trait gains `propose` in the pull request that routes a shard to
+the Raft engine: until then the trait's cache, counter and peer-message
+methods have no Raft answer.
+
+A batch is a list of records and where its acknowledgement waits: `Written`
+or `Flushed`. `AckAt::for_fsync` picks `Flushed` for a stream that fsyncs
+on commit and `Written` for any other.
+
+Each shard has a queue, and the queue is the shard's commit order. Under
+Raft a record has no offset until openraft gives it one, so there is no
+offset to order by before the write. The order is the order of the calls:
+
+1. `propose` puts the batch on the queue before it returns its future.
+   Dropping the future takes nothing back.
+2. One task per shard takes everything queued and makes one
+   `client_write_many` call for all of it, one entry per record. Batches
+   that arrive while an append runs go down together in the next call. The
+   task starts with the shard's first publish, so a shard that takes none
+   has no task. It runs on the runtime the group was opened on, not on the
+   first publisher's, so it lasts as long as the group.
+3. The task does not wait for a call to commit before it makes the next.
+   openraft takes calls in the order they are made, so offsets follow the
+   queue.
+
+A call takes no batch that would bring it past 4 MiB of payload or 4096
+records, so batches with empty payloads are bounded too. A batch past
+either limit on its own goes down alone, and the batch behind it starts the
+next call. One call is one append, and the group handles no heartbeat or
+vote while an append runs. The queue itself has no limit yet. The publish
+path bounds what is in flight when it is wired to `propose`.
+
+**openraft's write lease.** At the pinned commit openraft refuses a write
+when no majority has answered the leader for its lease, which is the
+longest election timeout (2 s). It does not wait for commit. An idle group
+heartbeats about that far apart, so its first write after a pause could be
+refused. Before a call, the task checks how old the majority's last answer
+is. If it is older than half the lease, the task asks for a heartbeat,
+again every heartbeat interval, and waits up to one lease for a majority
+to answer. The batches behind
+wait in the queue, so nothing is proposed twice and nothing changes
+place. A leader that is the only voter needs no answer and is not held. If
+no majority answers, the write is sent and openraft refuses it, with
+nothing appended. A refused batch is not proposed again by the task:
+later batches may already be on their way, and it would land behind them.
+While the task waits on the lease for the next call, it still hands on
+openraft's answers to the calls it already made, so a refused publisher
+hears within one lease, not two.
+
+The publisher's future then waits. It puts a fresh token on the first and
+on the last record of its batch, and reads the batch's place from both. It
+does not work the first offset out from the last, and it does not accept
+two tokens that are not one run of the batch's length in one term.
+
+| The publisher waits for | It ends on |
+| --- | --- |
+| `Written`: both tokens | The tokens, or openraft's answer |
+| `Flushed`: both tokens, then the flushed position at or past the last record in the same term | The flush, or openraft's answer |
+
+openraft answers a write when it is applied, which is after it committed.
+A committed record is fsynced on a majority, which is more than either
+acknowledgement asks of the leader's own disk, so an answer ends either
+wait.
+
+A token has no time limit of its own, so every wait also ends when:
+
+- openraft refuses the write. A member that does not lead, and a leader
+  no majority has answered for its lease, append nothing. openraft gives
+  this refusal only before an append: an appended entry is answered when
+  it is applied, or as discarded when it is cut, never on a step-down.
+- This member stops leading, or leads at another term than the one that
+  wrote the batch. The group's role watcher says so ("When it closes"). A
+  member standing for election says the batch may still be written,
+  because if it wins it appends what it was sent.
+- The group's core stops, as it does on a storage error. The publisher is
+  told the group stopped.
+- The flushed position shows a later term. Another leader wrote there, and
+  whether the batch is still under it is not known.
+- The group is closed or the runtime shuts down.
+
+Each of those is an unknown outcome, never "not written": the batch may be
+in the log and may commit. `propose` makes one attempt and never proposes a
+batch again, because a second attempt could land beside the first. A
+failed flush stops the group in openraft, which reaches the publisher as
+openraft's answer.
+
+`admit_local_ack` always refuses on a Raft shard, so a `Leader` write
+waits for commit after `propose` returns.
+
+> `crates/server/felix-replication/src/raft/tests/propose.rs`,
+> `batches_queued_together_go_to_openraft_in_one_call`,
+> `a_publisher_that_goes_away_keeps_its_place`,
+> `a_member_that_does_not_lead_refuses_and_appends_nothing`,
+> `a_deposed_leaders_propose_returns_leadership_lost_and_appends_nothing`,
+> `a_drain_stops_at_its_bounds`,
+> `the_publish_task_outlives_the_first_publishers_runtime`,
+> `an_answer_is_not_held_behind_the_next_calls_lease`,
+> `a_candidates_publisher_is_told_the_batch_may_still_be_written`,
+> `a_publisher_is_told_when_the_groups_core_stops`,
+> `an_ack_follows_the_policy_and_not_the_commit`,
+> `a_write_after_a_silence_renews_the_lease_first`,
+> `a_leader_no_majority_answers_refuses_and_appends_nothing`,
+> `a_call_cut_short_answers_every_batch_as_stopped`,
+> `a_written_ack_does_not_wait_for_the_flush`,
+> `a_flushed_ack_waits_for_the_fsync`,
+> `a_deposed_leaders_publisher_stops_waiting`,
+> `a_stopped_groups_publisher_stops_waiting` and
+> `a_batch_not_reported_whole_is_an_unknown_outcome`.
+
+**A token never leaves the broker.** The codec does not encode it, and the
+router clears it from every append it sends. A transport inside one
+process hands a message over as it is. A token that went with it would be
+resolved by the follower's append, and the publisher would read that as
+the leader's write.
 
 The cost is on the hot path: each batch crosses into the Raft task before
 it reaches the disk, and the payload moves into an entry on the way. The
@@ -647,7 +794,9 @@ Nothing is negotiated. Each side acts only on what it has seen:
 - A leader goes on heartbeating at the short interval, naming the idle gap,
   until every follower has answered a message that named it. Only then
   does it slow down. Sending an entry voids those answers and makes the
-  next heartbeat due within 200 ms.
+  next heartbeat due within 200 ms. A publish does the same when it hands
+  its batch to the group, before anything is sent. So a group with one
+  member, or with no follower in reach, is fast again on its first write.
 - A follower that restarts has forgotten the gap and may stand as soon as
   openraft lets it. So a message a follower does not take, because it was
   lost, refused or rejected, voids that follower's answer too. The leader
@@ -739,8 +888,14 @@ open:
   entries to the log and `flushed` once they are fsynced, and a truncation
   moves both back. The publish path that waits on them is #2233.
 - A command may carry a `WrittenToken`. The leader's `append` resolves it
-  with the record's index and term once the record is written. Nothing
-  sets one yet: `propose` is the next pull request of #2233.
+  with the record's index and term once the record is written.
+  `RaftEngine::propose` sets them ("Writing through openraft").
+- `report_to(serving, fence)` names who is told when a shard opens and
+  closes here ("When a leader opens"). It is called once, before the first
+  `open`.
+- `status(shard)` also counts `client_writes`: the calls made to openraft
+  for publishes. Each carries every batch that was queued when it was
+  made, so under load the count is well below the number of batches.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
@@ -802,13 +957,9 @@ Two things are left for the pull request that puts stream shards on Raft
 Memory per member is measured by a test
 (`crates/server/felix-replication/tests/raft_memory.rs`): 120 idle members
 in one process, a third of them leaders, counting live heap bytes added on
-top of the open logs. It fails above 256 KB per member, and it fails
-today: see "The groups-per-broker gate" for the number and where it goes.
-Until the openraft pin carries databendlabs/openraft#2313 (issue #2312),
-the test is ignored in pull request CI and runs nightly instead, in the
-`raft-memory` job of `.github/workflows/nightly.yml`, which prints the
-number. Run it by hand with
-`cargo test -p felix-replication --features raft --test raft_memory -- --ignored`.
+top of the open logs. It fails above 256 KB per member and runs in pull
+request CI with the rest of the `raft` feature's tests. Run it by hand with
+`cargo test -p felix-replication --features raft --test raft_memory -- --nocapture`.
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 
@@ -882,6 +1033,43 @@ The engine calls `deposed` and the write fence closes on any of:
 A failed lease check is not on this list. A leader whose lease has lapsed
 is still the leader until Raft says otherwise.
 
+**As built.** Each member has one small task, the role watcher
+(`crates/server/felix-replication/src/raft/lead.rs`). It watches openraft's
+server metrics, which change only with the role, the vote and the
+membership, so a heartbeat answer does not wake it. While a term waits to
+open it also watches the commit table ("Reads"). It calls
+`opened(shard, term)` when this member leads `term` and the last applied
+entry has that term. The blank entry is the first entry of a term, so by
+then it is committed. It calls `deposed(shard, term)`, once, for a term it
+opened, when openraft no longer names this member the leader of that term,
+or when the group has stopped. A storage error stops the group.
+
+`RaftEngine::transfer_starting(shard)` is what the transfer code calls
+before it asks openraft for a transfer (issue #2249 adds that single entry
+point). It asks the group's core which term this member leads, not the
+metrics, which can trail an election. The shard is closed when the call
+returns, and that term never opens again, whether or not the transfer goes
+through. The shard opens again in a later term. The call returns the term
+it closed, or nothing when this member leads no term, and then the
+transfer must not be asked for.
+
+Nothing else calls `deposed`. A write openraft refuses because its lease
+lapsed, a refused `admit_local_ack` and a read-index round no majority
+answers all leave the shard open.
+
+A publisher's wait and a commit wait end when the watcher says the term is
+lost. The watcher hears of an election a moment after openraft does, so
+neither wait takes "not leading" on the watcher's word alone: openraft's
+own role is read as well.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_leader_opens_only_once_its_blank_entry_commits`,
+> `a_write_whose_index_commits_under_another_term_is_refused`,
+> `a_transfer_about_to_start_closes_the_shard`,
+> `a_term_closed_before_it_opened_is_not_waited_on`,
+> `a_group_that_stops_on_a_storage_error_closes_the_shard` and
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard`.
+
 openraft reports role changes through its metrics channel, which is
 asynchronous, so the fence can close a moment late. That is safe. A write
 proposed in the gap is refused by openraft, or appended as an uncommitted
@@ -897,6 +1085,30 @@ it ("Two signals from one append"). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
+
+**`await_commit` as built** (`RaftEngine::await_commit`, in
+`crates/server/felix-replication/src/raft/commit.rs`). It takes the
+`Written` that `propose` returned and waits on the commit table ("Reads")
+until the record's offset is applied. Then it checks the term of the entry
+at that offset:
+
+| The entry at the offset | The waiter gets |
+| --- | --- |
+| Has the term the record was written at | Committed |
+| Has another term: a later leader's entry took the offset | Leadership lost |
+| Is older than the terms this member remembers | Leadership lost |
+
+The table keeps the first applied index of each of the last eight terms.
+Terms never go down along a log, so that is enough to name the term at any
+index since. The wait also ends, as leadership lost, when this member stops
+leading the term it wrote in, and with a timeout when the caller's budget
+runs out. Each is an unknown outcome. A commit that is already visible
+wins over all of them.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_write_waits_for_its_commit`,
+> `a_write_whose_index_commits_under_another_term_is_refused` and
+> `the_commit_table_knows_the_term_at_every_applied_index`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
 passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
@@ -949,8 +1161,35 @@ consistency level. Subscriber fanout, cursor replay, Kafka fetch and cache
 watch all take it. The engine publishes each commit index advance into the
 table the commit hold already waits on.
 
-`confirm_read` is a read-index round (`Raft::get_read_linearizer` with the
-read-index policy).
+**As built.** Each group's state machine keeps what it has applied: the
+last entry, and where each recent term starts. It publishes that once per
+run of applied entries, into a watch channel the group holds. This is the
+commit table. Nothing reads openraft's metrics for it: they change on every
+heartbeat answer, and every waiter would wake. An entry is applied only
+after it is committed, so `RaftEngine::read_bound`, the last applied index
+plus one, can trail the commit index and never passes it. A follower has a
+bound too, from what it has applied.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `the_read_bound_never_passes_the_commit_index`.
+
+`confirm_read` is a read-index round (`Raft::get_read_log_id` with
+`ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
+first, then its value, then calls `RaftEngine::confirm_read` with that
+term. The read is confirmed only if the shard is still open in that term
+and the round's answer is for it. The term open at confirm time is not
+enough. A broker that was deposed and elected again after the read is open
+in a later term, and the value it read can miss a record the leader in
+between committed. A member that does not lead is refused as leadership lost. A majority that does not
+answer within the longest election timeout is a timeout, not a lost
+leadership. If openraft reports a lapsed lease, the engine asks for a
+heartbeat, waits for a majority to answer and asks again within the same
+bound.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
+> `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").
@@ -959,6 +1198,105 @@ A broker that restarts answers reads again once its member has caught up
 and a leader is known. It needs the restore check once per start ("Group
 and member identity"), and nothing per shard: no assignment has to be
 confirmed, which is what kept shards unreadable in issue #1914.
+
+### Delivering committed records
+
+A subscriber of a Raft shard gets a record only once it is committed. On
+the leader the record it gets is the publisher's own batch, held in memory.
+Nothing is read back from the log or decoded in apply for it.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker stream
+    participant R as Raft group
+    participant S as Subscribers
+    P->>B: publish(batch)
+    B->>R: propose, in the stream's hand-over order
+    R-->>B: written at [first, end)
+    R-->>B: committed under the term that wrote it
+    B->>B: wait for the batch handed over before it
+    B->>S: one shared envelope of the publisher's bytes
+```
+
+**As built.** `RaftEngine::publish` hands a batch to
+`Broker::propose_publish`. The broker takes the batch's place in the
+stream's hand-over order and calls `propose` while it holds that place, so
+the order of hand-overs is the order openraft gives out indexes. The
+batch then waits for `await_commit`, which checks the term of the entry at
+its offset, and for the batch handed over before it. Only then does it
+join the stream's commit hold. The hold appends it to the replay ring and
+fans it out as one shared envelope, encoded once per frame shape, the same
+way a held `Quorum` batch is released on the hybrid.
+
+- A batch that times out keeps its place. The publisher is answered with
+  the timeout, but delivery keeps waiting for the commit, so the batches
+  behind it still go out after it.
+- A batch whose `await_commit` fails because this broker stopped leading,
+  or the group stopped, is never delivered: a deposed leader's record may
+  have been replaced. It may also have committed, so in its place in the
+  order the replay ring is emptied. The next batch starts the ring again,
+  and a reader resuming below that batch is served from the log, which has
+  the record if it committed. A live subscriber sees the batch's offsets as
+  a drop.
+- A publisher that goes away does not leave a gap. The rest of its publish
+  runs on a task of its own and keeps its place, so the batches behind it
+  wait for it.
+- Blank and membership entries take an offset and hold no record. The
+  state machine remembers each run of them, and a batch right after one
+  tells its subscribers how many offsets it skipped (`skipped_before`), so
+  the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
+  its twin `FelixRaftSkipsNotCounted` must fail.
+- Every reader of the stream is bounded by `read_bound`, at every
+  consistency level (`StreamHandle::bound_every_level`, answered by
+  `RaftReads`). On a follower that bound is what the follower has applied,
+  so its readers stop there. A failed flush that poisons the local log
+  bounds them too, and until `RaftReads` is installed they see nothing.
+- `RaftEngine::follow_commits` kicks the stream each time the commit index
+  moves here. Held batches the bound now covers are released, and readers
+  waiting at the bound for the log look again.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_record_a_later_leader_replaced_reaches_no_subscriber`,
+> `a_record_is_delivered_only_once_a_majority_holds_it`,
+> `a_followers_readers_stop_at_what_it_applied`,
+> `a_batch_committed_after_its_timeout_goes_out_before_the_next` and
+> `entries_holding_no_record_reach_subscribers_as_skipped`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `batches_go_out_in_hand_over_order_whoever_hears_first`,
+> `only_what_the_engine_committed_is_delivered`,
+> `every_subscriber_shares_one_envelope_of_the_publishers_bytes`,
+> `a_leader_stream_bounded_at_every_level_waits_for_the_bound`,
+> `a_batch_that_commits_after_its_publisher_timed_out_goes_out_first`,
+> `a_batch_given_up_on_restarts_the_ring_above_it`,
+> `offsets_holding_no_record_are_reported_skipped` and
+> `a_shard_bounded_at_every_level_with_no_bounds_shows_nothing`.
+
+Not built yet: the stream's handle and the Raft member do not share one
+log, because nothing routes a shard to the engine, so a follower's history
+reads are bounded but not yet served from the member's log. The routing
+change has to:
+
+- send every publish and trim of a Raft stream through the engine. The
+  ordinary claim path takes offsets from the broker's own log, and a trim
+  waits at the bound only on a `Quorum` stream;
+- keep the commit hold of a Raft stream on deposition. Everything in it
+  already passed `await_commit`, and the hybrid's "discard what is held"
+  would drop committed records from live delivery;
+- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
+  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
+  refuses any shard it holds no group for;
+- bound the batches waiting for commit. A leader cut off from its majority
+  is not deposed, so each publish leaves a task waiting until the partition
+  heals (#2428);
+- move the ring's start past a gap batch, so a reader resuming while the
+  ring is empty reads that batch from the log instead of missing it (#2428).
+
+The records a Raft stream stores carry no publisher or headers, so its
+subscribers are told neither. The state machine remembers the last 64 runs
+of entries that hold no record; a batch committed after more runs than
+that, or on a member that resumed from a snapshot above its run, reports
+none skipped.
 
 ### Membership
 
@@ -1317,9 +1655,9 @@ off and stays registered as an expected violation.
 | --- | --- | --- | --- |
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
-| #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
+| #2311 | The control plane records the target first and keeps every broker placed in the epoch, removed ones included. The command lists all of them and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership config with two lost disks and no client write passes `AckedSurvive` when the target is reached. The same with a move and the move back has not finished a run yet (no violation in the states explored so far). The same with a client write has not finished a run, so nothing is claimed for it yet. Must still fail: the same with the target left off the list, and the two moves with removed brokers left off (`PlacedForgotten`) |
 
 **Placement and lost disks.** `FelixRaftPlacement.tla` puts the control
 plane in front of the membership model: it moves a seat, removes one, and
@@ -1434,37 +1772,28 @@ joined by the real peer transport on loopback (`RAFT_IDLE_PEERS=transport`),
 so the figure includes framing, QUIC and the listener. Until idle groups
 sleep, both report what ticking every group costs; nothing waits on them.
 
-Memory is the tight one, and it does not fit yet. The design assumed
-180 KB per leader member and 145 KB per follower. The runtime's memory test
-(Linux, release build, 120 idle members, a third leading) measures 436 KB
-of live heap per member, plus 1.4 MB per member that openraft reserves in
-two large buffers and does not touch while idle (#2335). At 436 KB, 5,000
-members are about 2.1 GB, twice the limit.
+Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
+The design assumed 180 KB per leader member and 145 KB per follower. The
+runtime's memory test (Linux, release build, 120 idle members, a third
+leading) measures 142 KB of live heap per member, plus 535 KB per member
+that openraft reserves in a large buffer and does not touch while idle
+(#2415). The same three-runtime run, 1,500 members per broker, holds
+222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
+217 MB ten minutes earlier. That is about 137 KB per member,
+and 5,000 members at 142 KB are about 0.7 GB. The loaded run, with publishers
+writing, is not measured yet (#2415).
 
-The two numbers are not the same measure. The design's figures were
-resident memory, and the test counts allocated bytes. A channel block
-becomes resident as its slots are used, which takes about 32 messages, so
-on a broker that has run for a minute the allocated figure is the one to
-plan with. The same three-runtime run shows it: 1,500 members per broker
-are 245 MB resident per broker a minute after forming and 481 MB after
-17 idle minutes, still rising by about 15 MB a minute, against 16 MB for
-the same logs with no Raft member on them. Resident memory on real brokers, against the hybrid, is still to
-be measured (#2314).
+The earlier pin measured 414 KB of live heap per member and 1.4 MB
+reserved, and the same run grew from 233 MB to 313 MB resident in ten
+minutes. The engine's command and response queues were preallocated for
+4,096 commands and walked as a ring, so an idle member slowly made every
+page of them resident (openraft#2312, Felix #2335). openraft#2313 resets a
+drained queue to its start, and openraft#2314 starts the queues at 64
+slots and grows them on demand.
 
-Almost none of it is Felix's: the runtime's own state is under 1 KB per
-member. Where the 436 KB goes:
-
-| Per member | What |
-| --- | --- |
-| 344 KB | The first block of three tokio channels openraft opens per member. A block is 32 slots and openraft's messages are 3.5 KB each |
-| 34 KB | 17 histograms openraft allocates whether or not its `runtime-stats` feature is on |
-| about 58 KB | Tasks, smaller channels, and the rest |
-
-The runtime already sets `log_stage_capacity` to 1, which removed another
-156 KB of statistics buffers per member (580 KB before). The three channel
-blocks need a change in openraft: smaller messages, or the large variants
-boxed. That is part of the upstream ask in #2335, and the gate cannot pass
-before it.
+The two kinds of number are not the same measure. The design's figures were
+resident memory, and the test counts allocated bytes. Resident memory on
+real brokers, against the hybrid, is still to be measured (#2314).
 
 So the memory row is measured twice: idle with three brokers, and with one
 broker killed while publishers write. The 1 GB limit applies to the second.
@@ -1982,11 +2311,12 @@ ones settled by the decisions of issue #2167 say so.
     triggers it. This reverses the earlier recommendation. A group that
     lost a majority of its voters stays unavailable until the command is
     run. It is one bulk command for a broker or the cluster, with a dry
-    run. It lists every placed broker with what it holds, refuses while a
-    placed broker is unreachable and not declared dead, leaves a group
+    run. It lists every broker placed in the epoch, removed ones included,
+    with what it holds, refuses while one of them is unreachable and not
+    declared dead, leaves a group
     with a leader alone, and stops the reachable copies durably
     ("Re-forming a group"). The one exception is a restored RF 1 copy
-    that the control plane still places alone, which restarts as its
+    that is the only broker placed in the epoch, which restarts as its
     single voter.
 
 11. **Is the per-shard log mark exact, or a floor that trails?** A shard
