@@ -1129,15 +1129,14 @@ bound too, from what it has applied.
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `the_read_bound_never_passes_the_commit_index`.
 
-`confirm_read` is a read-index round (`Raft::get_read_linearizer` with the
-read-index policy). As built, a reader takes `RaftEngine::open_term`
+`confirm_read` is a read-index round (`Raft::get_read_log_id` with
+`ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
 first, then its value, then calls `RaftEngine::confirm_read` with that
 term. The read is confirmed only if the shard is still open in that term
 and the round's answer is for it. The term open at confirm time is not
 enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
-between committed. A member that
-does not lead is refused as leadership lost. A majority that does not
+between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
 leadership. If openraft reports a lapsed lease, the engine asks for a
 heartbeat, waits for a majority to answer and asks again within the same
@@ -1146,7 +1145,6 @@ bound.
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
-
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
