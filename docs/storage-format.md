@@ -76,6 +76,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
+    engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
@@ -1044,6 +1045,31 @@ The one thing that lowers the commit offset is a restore to a backup point
 (`DiskLog::restore_to`), run offline against a copy: it writes the lowered
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
+
+## `engine`: which engine writes the directory
+
+A stream shard runs on one of two engines, the hybrid or a Raft group, and
+the two must never open each other's directory. A Raft log holds entries
+above its commit index that no majority agreed on, and the hybrid would read
+them as its own records. The segments do not say which engine wrote them, so
+a Raft shard's directory holds an `engine` file with the one line `raft`.
+
+- `engine_marker::claim_for_raft` writes it before the shard's log is opened
+  for the first time: a temporary file, fsynced, renamed, then the directory
+  fsynced. No entry is written to an unmarked directory. It refuses a
+  directory that holds segments and no marker, because the hybrid wrote those.
+- Every open without `LogConfig::raft_log` refuses a directory that holds the
+  marker.
+- Any other content is refused by both: a newer build wrote it.
+
+The hybrid writes no marker, so a directory from before the file existed
+opens as it always did. A metadata store's log is a Raft log with no marker:
+nothing else ever opens its directory.
+
+> `crates/server/felix-storage/src/disk_log/engine_marker/tests.rs`,
+> `a_raft_directory_is_refused_by_the_hybrid`,
+> `a_hybrid_directory_is_refused_by_raft` and
+> `an_unknown_engine_is_refused_by_both`.
 
 ## `raft-purged`: a Raft log's last purged id
 

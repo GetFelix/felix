@@ -45,6 +45,7 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod engine_marker;
 pub mod inspect;
 pub mod layout;
 
@@ -1048,6 +1049,11 @@ impl DiskLog {
         #[cfg_attr(not(feature = "raft"), allow(unused_variables))] other_commit: OtherCommit,
     ) -> Result<Self> {
         config.validate()?;
+        // Before anything is created or repaired in a directory that is not
+        // this engine's.
+        if !config.raft_log {
+            engine_marker::refuse_raft_directory(&dir, &label)?;
+        }
 
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
             recovery::place_empty_shard(&dir, &label, &config, base_offset)?;
