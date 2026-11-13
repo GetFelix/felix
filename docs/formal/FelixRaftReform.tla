@@ -1,30 +1,45 @@
 --------------------------- MODULE FelixRaftReform ---------------------------
 (***************************************************************************)
-(* Re-forming a Raft group through the control plane, as                   *)
+(* Re-forming a Raft group by the operator's command, as                   *)
 (* docs/per-shard-raft.md decides it ("Re-forming a group", "Shards with   *)
-(* one replica", Questions 1 and 10).                                      *)
+(* one replica", Questions 10 and 13).                                     *)
 (*                                                                         *)
 (* A group id carries a group epoch that starts at 0. A member id is a     *)
-(* broker and a copy id. A copy that rotates has a new id that never       *)
-(* voted, and keeps what is left of its log as plain records. When too     *)
-(* many voters have rotated, or nobody can elect, the control plane        *)
-(* re-forms the group in five steps:                                       *)
+(* broker and a copy id. A copy whose disk was lost or restored rotates:   *)
+(* it has a new id that never voted, and keeps what is left of its log as  *)
+(* plain records. A group that lost a majority of its voters that way      *)
+(* cannot elect. Nothing repairs it automatically. An operator runs one    *)
+(* command, and the model has it as these steps:                           *)
 (*                                                                         *)
-(*   1. FirstReport -- a leaderless copy tells the control plane its       *)
-(*                     member id and the newest membership in its log.     *)
-(*                     It promises nothing.                                *)
-(*   2. AskRetire   -- the control plane asks only when every voter's      *)
-(*                     broker reported the group leaderless, or a          *)
-(*                     majority of some voter set has rotated.             *)
-(*   3. Retire      -- an asked copy stops its member behind a durable     *)
-(*                     marker, then reports its log and membership.        *)
-(*   4. Reform      -- when every voter of every membership any report     *)
-(*                     names has retired and reported, the control plane   *)
-(*                     writes the next epoch by compare-and-swap: the base *)
-(*                     is the highest reported last log id, the voters are *)
-(*                     the copies whose reports hold it.                   *)
-(*   5. StartEpoch  -- members start at the new epoch from the base.       *)
-(*                     Messages carry the epoch.                           *)
+(*   Plan       -- the dry run. It lists every broker the control plane    *)
+(*                 has placed for the group and reads each copy that is    *)
+(*                 not declared dead: copy id, last log id, newest         *)
+(*                 membership. It refuses while a listed copy leads, or    *)
+(*                 while a copy's records name a voter that is neither     *)
+(*                 listed nor declared dead. It changes nothing.           *)
+(*   Stop       -- apply. A listed copy stops its member behind a durable  *)
+(*                 marker.                                                 *)
+(*   Reform     -- apply. Every listed copy that is not dead is stopped    *)
+(*                 and is read again, and what it holds now must be what   *)
+(*                 the plan showed. Then the control plane writes the next *)
+(*                 epoch by compare-and-swap: the base is the highest last *)
+(*                 log id read, padded with a gap up to the offset floor,  *)
+(*                 and the voters are the copies that hold the base.       *)
+(*   StartEpoch -- members start at the new epoch from the base. Messages  *)
+(*                 carry the epoch.                                        *)
+(*                                                                         *)
+(* No answer of a copy is stored between runs. A plan holds what the       *)
+(* operator saw, and Reform uses only what it reads after the stop.        *)
+(*                                                                         *)
+(* The control plane places a broker before the leader sends it anything,  *)
+(* and a move's target before the leader proposes the change (Place). A    *)
+(* broker stays placed until the leader reports the change that removes it *)
+(* as committed (Unplace). The leader reports its commit offset, and the   *)
+(* control plane keeps the highest as the floor (ReportFloor).             *)
+(*                                                                         *)
+(* A restored copy of a shard with one replica starts by itself            *)
+(* (SelfStart): it is the only placed broker, so no other disk can hold a  *)
+(* newer record.                                                           *)
 (*                                                                         *)
 (* Membership inside an epoch changes through a joint configuration, and a *)
 (* member uses the newest membership in its log, committed or not.         *)
@@ -34,97 +49,70 @@
 (*   AckedSurvive       -- an acknowledged record is in the base of every  *)
 (*                         later epoch and in the log of every later       *)
 (*                         leader, unless it is a documented loss: at the  *)
-(*                         re-form no disk held it, a voter's or not.      *)
+(*                         re-form no disk held it but those of brokers    *)
+(*                         declared dead.                                  *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
 (*   OneLeaderPerTerm   -- no term of an epoch elects two brokers.         *)
-(*   NothingLost        -- no documented loss at all. Holds when no copy   *)
-(*                         rotates, which is fsync on commit.              *)
-(*   OffsetNeverReused  -- StateMachineSafety without the exception. It    *)
-(*                         holds when nothing is lost. After a relaxed     *)
-(*                         fsync loss the lost offsets are given out again *)
-(*                         (FelixRaftReformTwoRotatedOffsets.cfg).         *)
-(*   SlowGroupLeftAlone -- with no copy rotated and a voter that has not   *)
-(*                         reported, nothing is retired.                   *)
+(*   NothingLost        -- no documented loss at all. Holds when no disk   *)
+(*                         is lost and no broker is declared dead.         *)
+(*   OffsetNeverReused  -- StateMachineSafety without the exception: no    *)
+(*                         offset is given out with two records. A gap is  *)
+(*                         not a record.                                   *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
-(*   ReformBeforeAll    -- the control plane re-forms from the reports it  *)
-(*                         has.                                            *)
+(*   ReformBeforeAll    -- the command goes on while a placed broker has   *)
+(*                         not answered and is not declared dead.          *)
 (*   EpochNotChecked    -- a member takes an append from another epoch.    *)
-(*   ReportNotPromise   -- a copy reports without retiring.                *)
-(*   OwnMembershipOnly  -- the control plane waits only for the voters in  *)
-(*                         its own record of the membership.               *)
-(*   RetireNotDurable   -- a restart forgets the retired marker.           *)
-(*   BaseNotHighest     -- the base is any report's log.                   *)
-(*   NoCas              -- the next epoch is written without comparing the *)
-(*                         epoch it was computed from.                     *)
-(*   RotatedNotWaited   -- a voter known to have rotated counts as done    *)
-(*                         before it has reported its records.             *)
-(*   JoinKeepsReport    -- a copy that rotates after it reported joins as  *)
-(*                         a learner while the control plane still holds   *)
-(*                         the old report. With the knob off the new copy  *)
-(*                         announces itself first and the control plane    *)
-(*                         drops the report.                               *)
+(*   ReportNotPromise   -- copies are read without being stopped.          *)
+(*   PlanNotRechecked   -- apply uses the list and the answers of the      *)
+(*                         plan, and does not read the copies again.       *)
+(*   RotatedNotWaited   -- a rotated copy is not read.                     *)
+(*   NamedNotChecked    -- the command goes on although a copy's records   *)
+(*                         name a voter that is not listed.                *)
+(*   RetireNotDurable   -- a restart forgets the stop marker.              *)
+(*   BaseNotHighest     -- the base is any copy's log.                     *)
+(*   NoCas              -- the command does not compare the epoch.         *)
+(*   SoloPlacedTwo      -- a restored copy starts by itself although a     *)
+(*                         second broker is placed.                        *)
 (*                                                                         *)
-(* The design page does not have the rules the last two knobs remove.     *)
-(* Step 4 as written is RotatedNotWaited, and nothing drops an old report, *)
-(* which is JoinKeepsReport (issue 2304). A configuration that passes with *)
-(* a rotation or a rejoin passes on those two rules and says so.           *)
+(* Three constants are not knobs:                                          *)
 (*                                                                         *)
-(* Two constants are not knobs:                                            *)
+(*   WaitPlaced -- TRUE: the command lists the placed brokers. FALSE: it   *)
+(*                 lists the voters in the control plane's own record of   *)
+(*                 the membership, which leaves out a move's target and a  *)
+(*                 learner (issue 2311).                                   *)
+(*   Floor      -- "trailing" is the design: the floor is the last commit  *)
+(*                 offset a leader reported. "exact" has every commit      *)
+(*                 reported at once, which the design does not do.         *)
+(*                 "none" has no floor (issue 2305).                       *)
+(*   DeadRuns   -- FALSE: a broker declared dead is gone. TRUE: the        *)
+(*                 declaration is wrong and the broker keeps running in    *)
+(*                 the old epoch.                                          *)
 (*                                                                         *)
-(*   DirLost     -- what a rotation leaves. FALSE is a relaxed fsync run   *)
-(*                  that lost power: the tail may be gone, but membership  *)
-(*                  entries are synced in every fsync mode, so the log     *)
-(*                  keeps everything up to its newest membership entry.    *)
-(*                  TRUE is a directory that was lost or restored from an  *)
-(*                  older copy: any prefix is left. It covers FALSE. With  *)
-(*                  no membership change the two are the same.             *)
-(*   WaitPlaced  -- the rule issue 2311 proposes. The control plane        *)
-(*                  places a broker, and records the target of a           *)
-(*                  membership change, before the leader sends or proposes *)
-(*                  anything, and step 4 waits for a retire report from    *)
-(*                  every broker placed in the epoch, voter or not. FALSE  *)
-(*                  is the design as written.                              *)
-(*                                                                         *)
-(* Abstracted: storage is a log and a rotation that cuts it to a prefix    *)
-(* (FelixRaft.tla has the fsync rules). A membership entry is synced when  *)
-(* it is appended. An election is one step                                 *)
-(* over a quorum. An append is one step between two brokers, plus a        *)
-(* bounded set of in-flight appends that can arrive late and more than     *)
-(* once. A report carries the whole log where the design sends its last    *)
-(* log id. A leader commits only entries of its own term. A leader does    *)
-(* not propose its own removal. A leader replicates to any broker of the   *)
-(* model: one that no membership names is a learner.                       *)
-(*                                                                         *)
-(* What 0.8 ships. Decided (issue 2167): in 0.8 a re-form starts only from *)
-(* an operator's command, one bulk command with a dry run, and nothing     *)
-(* starts one automatically. Steps 1 and 2 are the automatic trigger, so   *)
-(* they describe a design that is not shipping, and so do                  *)
-(* SlowGroupLeftAlone and the configurations about when AskRetire fires    *)
-(* (FelixRaftReformSlow). Steps 3 to 5 are what the command still has to   *)
-(* do. It stands where AskRetire does, and it must list every placed       *)
-(* broker, a move's target included, which is WaitPlaced (issue 2311).     *)
-(*                                                                         *)
-(* The design page now has rules for the command that close issues 2304,   *)
-(* 2305 and 2311 ("Rules the model found"). They are not the two rules of  *)
-(* issue 2304 used here: the command stores no report. This module is not  *)
-(* moved to them yet, so "the design as written" here and in the           *)
-(* configurations means the automatic design.                              *)
-(*                                                                         *)
-(* Not modelled: the command itself. Here step 2 fires only under the      *)
-(* automatic conditions, so a command given to a group that can still      *)
-(* elect is not covered. Neither is its refusal while a placed broker is   *)
-(* unreachable and not declared dead, nor a re-form that goes on without a *)
-(* dead broker.                                                            *)
+(* Abstracted: storage is a log and a rotation that cuts it to any prefix  *)
+(* (FelixRaft.tla has the fsync rules; a power cut does not rotate). An    *)
+(* election is one step over a quorum. An append is one step between two   *)
+(* brokers, plus a bounded set of in-flight appends that can arrive late   *)
+(* and more than once. A leader commits only entries of its own term, can  *)
+(* step down at any step, and does not propose its own removal. It sends   *)
+(* to the brokers its newest membership names and to placed brokers no     *)
+(* membership of the epoch has named, which are learners. The command      *)
+(* reads whole logs where the design reads last log ids. The read after    *)
+(* the stop and the write of the base are one step, so a disk lost between *)
+(* the two is not modelled. A removed copy keeps its directory: its        *)
+(* deletion is in FelixRaftPlacement.tla. How a copy stopped by an apply   *)
+(* that did not finish comes back is not decided (issue 2403); here it     *)
+(* rotates. An unreachable broker is one that takes no step, and the scope *)
+(* of the command is one group.                                            *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Brokers,
-    InitBrokers,        \* brokers of the first voter set
+    InitBrokers,        \* brokers of the first voter set, all placed
     None,
     MaxEpoch,
     MaxTerm,
@@ -132,21 +120,26 @@ CONSTANTS
     MaxChangeSteps,     \* 0, or 2 for one joint change
     ChangeOut,          \* broker the change removes
     ChangeIn,           \* broker the change adds
+    MaxPlace,           \* brokers the control plane places after the start
     MaxRotations,
-    DirLost,
     MaxRejoins,
     MaxRestarts,
     MaxMsgs,
+    MaxPlans,
+    MaxDead,
+    DeadRuns,
+    WaitPlaced,
+    Floor,
     ReformBeforeAll,
     EpochNotChecked,
     ReportNotPromise,
-    OwnMembershipOnly,
+    PlanNotRechecked,
+    RotatedNotWaited,
+    NamedNotChecked,
     RetireNotDurable,
     BaseNotHighest,
     NoCas,
-    RotatedNotWaited,
-    JoinKeepsReport,
-    WaitPlaced
+    SoloPlacedTwo
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -156,28 +149,30 @@ VARIABLES
     log,
     commit,     \* a leader's commit index
     match,      \* a leader's record of what each voter acknowledged
-    retired,    \* the retired marker for the member's epoch
+    retired,    \* the stop marker for the member's epoch
     boot,       \* membership the member started its epoch with
     msgs,       \* appends in flight
     cpEpoch,
     cpMem,      \* the control plane's own record of the membership
-    firstRep,
-    asked,      \* epochs whose copies were asked to retire
-    rep,        \* retire reports
+    placed,     \* brokers the control plane has placed for the group
+    dead,       \* brokers declared dead
+    cpFloor,    \* highest commit offset the control plane has stored
+    plans,      \* dry runs: epoch, and what each copy read held
     forms,      \* epochs written: epoch, base, voters
     acked,      \* history: entries committed, by epoch, term and index
-    lost,       \* history: acknowledged entries no disk held at a re-form
+    lost,       \* history: acknowledged entries only dead disks held at a re-form
     elected,    \* history: epoch, term, broker
-    writes, steps, rotations, rejoins, restarts
+    writes, steps, places, rotations, rejoins, restarts
 
 vars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
-          cpEpoch, cpMem, firstRep, asked, rep, forms, acked, lost, elected,
-          writes, steps, rotations, rejoins, restarts>>
+          cpEpoch, cpMem, placed, dead, cpFloor, plans, forms, acked, lost,
+          elected, writes, steps, places, rotations, rejoins, restarts>>
 
 Mid(b) == <<b, cid[b]>>
 Simple(V) == [o |-> V, n |-> V]
 Sets(c) == {c.o, c.n}
 Voters(c) == c.o \cup c.n
+Named(c) == {m[1] : m \in Voters(c)}
 InitConfig == Simple({<<b, 0>> : b \in InitBrokers})
 
 \* First voters the membership change does not single out are interchangeable.
@@ -199,30 +194,35 @@ Has(l, x) == x.i <= Len(l) /\ l[x.i] = x.ent
 LastKey(l) == IF Len(l) = 0 THEN <<0, 0>> ELSE <<l[Len(l)].e, l[Len(l)].t>>
 KeyLess(k1, k2) == k1[1] < k2[1] \/ (k1[1] = k2[1] /\ k1[2] < k2[2])
 
-\* Raft's election restriction, on the last log id. The control plane uses
-\* the same order to pick the base.
+\* Raft's election restriction, on the last log id.
 UpToDate(a, b) ==
     \/ KeyLess(LastKey(b), LastKey(a))
     \/ LastKey(a) = LastKey(b) /\ Len(a) >= Len(b)
 
 \* The newest membership entry of this epoch in the log, committed or not.
 \* Entries of an earlier epoch are plain records.
+CfgIdx(l, e) == {j \in 1..Len(l) : l[j].k = "cfg" /\ l[j].e = e}
+
 ConfigIn(l, e, start) ==
-    LET idx == {j \in 1..Len(l) : l[j].k = "cfg" /\ l[j].e = e}
+    LET idx == CfgIdx(l, e)
     IN IF idx = {} THEN start
        ELSE l[CHOOSE j \in idx : \A h \in idx : h <= j].v
 
 Config(b) == ConfigIn(log[b], ep[b], boot[b])
 
 LastCfgIndex(b) ==
-    LET idx == {j \in 1..Len(log[b]) : log[b][j].k = "cfg" /\ log[b][j].e = ep[b]}
+    LET idx == CfgIdx(log[b], ep[b])
     IN IF idx = {} THEN 0 ELSE CHOOSE j \in idx : \A h \in idx : h <= j
 
-\* How much of a log a relaxed fsync run cannot lose: a membership entry is
-\* synced in every fsync mode, and a sync covers everything before it.
-SyncedLen(l) ==
-    LET idx == {j \in 1..Len(l) : l[j].k = "cfg"}
-    IN IF idx = {} THEN 0 ELSE CHOOSE j \in idx : \A h \in idx : h <= j
+\* Brokers some membership of the member's epoch has named.
+EverNamed(b) ==
+    Named(boot[b]) \cup UNION {Named(log[b][j].v) : j \in CfgIdx(log[b], ep[b])}
+
+\* Who a leader sends appends to: the brokers its newest membership names,
+\* and learners. A removed voter gets nothing more.
+SendsTo(l, f) ==
+    /\ f \in placed
+    /\ f \in Named(Config(l)) \/ f \notin EverNamed(l)
 
 \* Q is a set of brokers whose current copies answered.
 Quorum(c, Q) ==
@@ -236,11 +236,8 @@ AckQuorum(c, l, Q) ==
         2 * Cardinality({m \in S : m[1] \in Q /\ (m[1] = l => m = Mid(l))})
             > Cardinality(S)
 
-\* Under the announce rule a copy that rotated after reporting takes no
-\* append until the control plane has dropped that report.
-StaleReport(b) ==
-    rep[b] # None /\ rep[b].e = ep[b] /\ rep[b].cid < cid[b]
-MayJoin(b) == JoinKeepsReport \/ ~StaleReport(b)
+\* A broker declared dead takes no step, unless the declaration is wrong.
+Alive(b) == DeadRuns \/ b \notin dead
 
 Init ==
     /\ ep = [b \in Brokers |-> 0]
@@ -255,17 +252,19 @@ Init ==
     /\ msgs = {}
     /\ cpEpoch = 0
     /\ cpMem = InitConfig
-    /\ firstRep = [b \in Brokers |-> None]
-    /\ asked = {}
-    /\ rep = [b \in Brokers |-> None]
+    /\ placed = InitBrokers
+    /\ dead = {}
+    /\ cpFloor = 0
+    /\ plans = {}
     /\ forms = {}
     /\ acked = {}
     /\ lost = {}
     /\ elected = {}
-    /\ writes = 0 /\ steps = 0 /\ rotations = 0 /\ rejoins = 0 /\ restarts = 0
+    /\ writes = 0 /\ steps = 0 /\ places = 0
+    /\ rotations = 0 /\ rejoins = 0 /\ restarts = 0
 
-cpVars == <<cpEpoch, cpMem, firstRep, asked, rep, forms, lost>>
-counters == <<writes, steps, rotations, rejoins, restarts>>
+cpVars == <<cpEpoch, cpMem, placed, dead, cpFloor, plans, forms, lost>>
+counters == <<writes, steps, places, rotations, rejoins, restarts>>
 
 --------------------------------------------------------------------------------
 \* Raft inside one epoch.
@@ -276,6 +275,7 @@ Elect(b, Q) ==
     /\ Mid(b) \in Voters(Config(b))
     /\ Quorum(Config(b), Q)
     /\ \A q \in Q :
+        /\ Alive(q)
         /\ ep[q] = ep[b]
         /\ ~retired[q]
         /\ term[q] <= term[b]
@@ -288,7 +288,7 @@ Elect(b, Q) ==
     /\ UNCHANGED <<ep, cid, log, commit, retired, boot, msgs, acked>>
     /\ UNCHANGED <<cpVars, counters>>
 
-Leads(l) == role[l] = "leader" /\ ~retired[l]
+Leads(l) == role[l] = "leader" /\ ~retired[l] /\ Alive(l)
 
 ClientWrite(l) ==
     /\ Leads(l)
@@ -297,10 +297,11 @@ ClientWrite(l) ==
     /\ log' = [log EXCEPT ![l] =
                 Append(@, [e |-> ep[l], t |-> term[l], k |-> "rec", v |-> writes + 1])]
     /\ UNCHANGED <<ep, cid, term, role, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, steps, rotations, rejoins, restarts>>
+    /\ UNCHANGED <<cpVars, steps, places, rotations, rejoins, restarts>>
 
 \* One joint change: old set, then old and new, then new. The next step
-\* waits for the previous membership entry to commit.
+\* waits for the previous membership entry to commit. The control plane has
+\* recorded the target before the leader proposes.
 ProposeChange(l) ==
     /\ Leads(l)
     /\ steps < MaxChangeSteps
@@ -311,12 +312,13 @@ ProposeChange(l) ==
                    THEN [o |-> c.o,
                          n |-> {m \in c.o : m[1] # ChangeOut} \cup {Mid(ChangeIn)}]
                    ELSE Simple(c.n)
-       IN /\ c.o = c.n => (ep[ChangeIn] = ep[l] /\ Mid(ChangeIn) \notin c.o)
+       IN /\ c.o = c.n =>
+                (ChangeIn \in placed /\ ep[ChangeIn] = ep[l] /\ Mid(ChangeIn) \notin c.o)
           /\ log' = [log EXCEPT ![l] =
                         Append(@, [e |-> ep[l], t |-> term[l], k |-> "cfg", v |-> next])]
     /\ steps' = steps + 1
     /\ UNCHANGED <<ep, cid, term, role, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, writes, rotations, rejoins, restarts>>
+    /\ UNCHANGED <<cpVars, writes, places, rotations, rejoins, restarts>>
 
 \* What a follower's log is after an append carrying the sender's log. It
 \* never cuts entries that agree with the sender.
@@ -325,10 +327,11 @@ Adopt(mine, theirs) == IF IsPrefix(theirs, mine) THEN mine ELSE theirs
 Replicate(l, f) ==
     /\ l # f
     /\ Leads(l)
+    /\ SendsTo(l, f)
+    /\ Alive(f)
     /\ ~retired[f]
     /\ ep[f] = ep[l]
     /\ term[f] <= term[l]
-    /\ MayJoin(f)
     /\ LET new == Adopt(log[f], log[l])
        IN /\ new # log[f] \/ term[f] # term[l] \/ role[f] # "follower"
              \/ match[l][f] # Len(log[l])
@@ -344,17 +347,19 @@ Send(l) ==
     /\ Leads(l)
     /\ Cardinality(msgs) < MaxMsgs
     /\ log[l] # <<>>
-    /\ msgs' = msgs \cup {[e |-> ep[l], t |-> term[l], log |-> log[l]]}
+    /\ msgs' = msgs \cup {[e |-> ep[l], t |-> term[l], log |-> log[l],
+                           to |-> {f \in Brokers \ {l} : SendsTo(l, f)}]}
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
 
 \* A late append. The sender may be gone, so nothing is acknowledged. The
 \* message stays and can arrive again.
 Receive(f, m) ==
+    /\ f \in m.to
+    /\ Alive(f)
     /\ ~retired[f]
     /\ EpochNotChecked \/ m.e = ep[f]
     /\ m.t > term[f] \/ (m.t = term[f] /\ role[f] # "leader")
-    /\ MayJoin(f)
     /\ Adopt(log[f], m.log) # log[f]
     /\ log' = [log EXCEPT ![f] = Adopt(@, m.log)]
     /\ term' = [term EXCEPT ![f] = m.t]
@@ -373,20 +378,29 @@ Commit(l, i) ==
     /\ acked' = acked \cup
             {[e |-> ep[l], t |-> term[l], i |-> j, ent |-> log[l][j]] :
                 j \in (commit[l] + 1)..i}
+    /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor THEN i ELSE cpFloor
     /\ UNCHANGED <<ep, cid, term, role, log, match, retired, boot, msgs, elected>>
+    /\ UNCHANGED <<cpEpoch, cpMem, placed, dead, plans, forms, lost, counters>>
+
+\* A leader that no longer hears a quorum steps down.
+StepDown(l) ==
+    /\ Leads(l)
+    /\ role' = [role EXCEPT ![l] = "follower"]
+    /\ UNCHANGED <<ep, cid, term, log, commit, match, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
 
 --------------------------------------------------------------------------------
 \* Faults.
 
-\* A restart keeps the log, the term and the retired marker.
+\* A restart keeps the log, the term and the stop marker.
 Restart(b) ==
+    /\ Alive(b)
     /\ restarts < MaxRestarts
     /\ restarts' = restarts + 1
     /\ role' = [role EXCEPT ![b] = "follower"]
     /\ retired' = [retired EXCEPT ![b] = IF RetireNotDurable THEN FALSE ELSE @]
     /\ UNCHANGED <<ep, cid, term, log, commit, match, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, writes, steps, rotations, rejoins>>
+    /\ UNCHANGED <<cpVars, writes, steps, places, rotations, rejoins>>
 
 NewCopy(b, kept) ==
     /\ cid' = [cid EXCEPT ![b] = @ + 1]
@@ -397,138 +411,200 @@ NewCopy(b, kept) ==
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
-\* The copy id rotates. A relaxed fsync run that lost power keeps its synced
-\* membership entries. A directory that was lost, or that failed the restore
-\* check, keeps any prefix.
+\* The shard directory is lost, or restored from an older copy: the copy id
+\* rotates and any prefix of the log is left. The stop marker goes with it.
 Rotate(b, n) ==
+    /\ Alive(b)
     /\ rotations < MaxRotations
     /\ rotations' = rotations + 1
     /\ n \in 0..Len(log[b])
-    /\ DirLost \/ n >= SyncedLen(log[b])
     /\ NewCopy(b, SubSeq(log[b], 1, n))
-    /\ UNCHANGED <<cpVars, writes, steps, rejoins, restarts>>
+    /\ UNCHANGED <<cpVars, writes, steps, places, rejoins, restarts>>
 
-\* A retired copy whose group went on without a re-form cannot take its
-\* promise back. It rotates and comes back as a learner.
+\* A copy stopped by an apply that did not finish, in a group that then
+\* elected without it, stays stopped in that epoch. It comes back only
+\* under a new copy id, as a learner.
 RetiredRejoins(b) ==
+    /\ Alive(b)
     /\ retired[b]
     /\ rejoins < MaxRejoins
     /\ \E l \in Brokers : Leads(l) /\ ep[l] = ep[b]
     /\ rejoins' = rejoins + 1
     /\ NewCopy(b, log[b])
-    /\ UNCHANGED <<cpVars, writes, steps, rotations, restarts>>
+    /\ UNCHANGED <<cpVars, writes, steps, places, rotations, restarts>>
 
 --------------------------------------------------------------------------------
-\* The control plane and the five steps.
+\* The control plane's records.
 
-At(r, e) == r # None /\ r.e = e
+brokerVars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs, acked, elected>>
 
-FirstReport(b) ==
-    /\ role[b] # "leader"
-    /\ ep[b] = cpEpoch
-    /\ ep[b] \notin asked
-    /\ LET r == [e |-> ep[b], cid |-> cid[b], mem |-> Config(b)]
-       IN /\ firstRep[b] # r
-          /\ firstRep' = [firstRep EXCEPT ![b] = r]
-    /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<cpEpoch, cpMem, asked, rep, forms, acked, lost, elected, counters>>
+\* A learner, or the target of a move, is recorded before the leader sends
+\* it anything.
+Place(b) ==
+    /\ b \notin placed
+    /\ places < MaxPlace
+    /\ places' = places + 1
+    /\ placed' = placed \cup {b}
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, dead, cpFloor, plans, forms, lost>>
+    /\ UNCHANGED <<writes, steps, rotations, rejoins, restarts>>
 
-\* The control plane's record follows broker reports and can be stale.
+\* A broker stays placed until the leader reports the membership that
+\* removes it as committed.
+Unplace(l) ==
+    /\ Leads(l)
+    /\ ep[l] = cpEpoch
+    /\ LastCfgIndex(l) > 0
+    /\ LastCfgIndex(l) <= commit[l]
+    /\ Config(l).o = Config(l).n
+    /\ LET gone == (placed \cap EverNamed(l)) \ Named(Config(l))
+       IN /\ gone # {}
+          /\ placed' = placed \ gone
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, dead, cpFloor, plans, forms, lost, counters>>
+
+\* The control plane's own record of the voters follows broker reports and
+\* can be stale. Only the list that leaves placed brokers out reads it.
 CpObserve(b) ==
+    /\ ~WaitPlaced
     /\ ep[b] = cpEpoch
     /\ cpMem # Config(b)
     /\ cpMem' = Config(b)
-    /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<cpEpoch, firstRep, asked, rep, forms, acked, lost, elected, counters>>
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, placed, dead, cpFloor, plans, forms, lost, counters>>
 
-KnownConfigs(e) == {cpMem} \cup {firstRep[b].mem : b \in {x \in Brokers : At(firstRep[x], e)}}
+\* The leader's report carries its commit offset.
+ReportFloor(l) ==
+    /\ Floor = "trailing"
+    /\ Leads(l)
+    /\ ep[l] = cpEpoch
+    /\ commit[l] > cpFloor
+    /\ cpFloor' = commit[l]
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, placed, dead, plans, forms, lost, counters>>
 
-AskRetire ==
-    LET e == cpEpoch
-        known == KnownConfigs(e)
-        all == UNION {Voters(c) : c \in known}
-        rotated(m) == At(firstRep[m[1]], e) /\ firstRep[m[1]].cid > m[2]
-    IN /\ e < MaxEpoch
-       /\ e \notin asked
-       /\ \/ \A m \in all : At(firstRep[m[1]], e)
-          \/ \E c \in known : \E S \in Sets(c) :
-                2 * Cardinality({m \in S : rotated(m)}) > Cardinality(S)
-       /\ asked' = asked \cup {e}
-       /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<cpEpoch, cpMem, firstRep, rep, forms, acked, lost, elected, counters>>
+\* An operator's separate, recorded act. It can be wrong.
+DeclareDead(b) ==
+    /\ b \notin dead
+    /\ Cardinality(dead) < MaxDead
+    /\ dead' = dead \cup {b}
+    /\ role' = [role EXCEPT ![b] = IF DeadRuns THEN @ ELSE "follower"]
+    /\ UNCHANGED <<ep, cid, term, log, commit, match, retired, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<cpEpoch, cpMem, placed, cpFloor, plans, forms, lost, counters>>
 
-\* Retire first, then report. The report is the log as it will stay.
-Retire(b) ==
-    /\ ep[b] \in asked
-    /\ LET r == [e |-> ep[b], cid |-> cid[b], log |-> log[b], mem |-> Config(b)]
-       IN /\ rep[b] # r \/ (~ReportNotPromise /\ ~retired[b])
-          /\ rep' = [rep EXCEPT ![b] = r]
-    /\ IF ReportNotPromise
-       THEN UNCHANGED <<retired, role>>
-       ELSE /\ retired' = [retired EXCEPT ![b] = TRUE]
-            /\ role' = [role EXCEPT ![b] = "follower"]
-    /\ UNCHANGED <<ep, cid, term, log, commit, match, boot, msgs>>
-    /\ UNCHANGED <<cpEpoch, cpMem, firstRep, asked, forms, acked, lost, elected, counters>>
+--------------------------------------------------------------------------------
+\* The command.
 
-\* A new copy tells the control plane its id before it joins, and the
-\* control plane drops the report of the copy it replaces.
-Announce(b) ==
-    /\ ~JoinKeepsReport
-    /\ StaleReport(b)
-    /\ ep[b] = cpEpoch
-    /\ rep' = [rep EXCEPT ![b] = None]
-    /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<cpEpoch, cpMem, firstRep, asked, forms, acked, lost, elected, counters>>
+List == IF WaitPlaced THEN placed ELSE Named(cpMem)
 
-\* Brokers placed in the epoch: every broker of the model. A broker that no
-\* membership names holds its copy as a learner, and the control plane
-\* placed it before the leader sent it anything.
-Placed == Brokers
+\* What the command reads from one copy.
+Fact(b) ==
+    [cid |-> cid[b], key |-> LastKey(log[b]), len |-> Len(log[b]), mem |-> Config(b)]
 
-Reform(e, pick) ==
-    LET R == {b \in Brokers : At(rep[b], e)}
-        named == Voters(cpMem) \cup
-                 (IF OwnMembershipOnly THEN {}
-                  ELSE UNION {Voters(rep[b].mem) : b \in R} \cup
-                       UNION {Voters(firstRep[b].mem) :
-                                b \in {x \in Brokers : At(firstRep[x], e)}})
-        done(m) ==
-            \/ m[1] \in R /\ rep[m[1]].cid >= m[2]
-            \/ RotatedNotWaited /\ At(firstRep[m[1]], e) /\ firstRep[m[1]].cid > m[2]
-        base == rep[pick].log
-        voters == {<<b, rep[b].cid>> : b \in {x \in R : IsPrefix(base, rep[x].log)}}
-    IN /\ e < MaxEpoch
-       /\ e \in asked
-       /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
-       /\ pick \in R
-       /\ ReformBeforeAll \/ \A m \in named : done(m)
-       /\ ReformBeforeAll \/ ~WaitPlaced \/ Placed \subseteq R
-       /\ BaseNotHighest \/ \A b \in R : UpToDate(base, rep[b].log)
-       /\ [e |-> e + 1, base |-> base, voters |-> voters] \notin forms
-       /\ forms' = forms \cup {[e |-> e + 1, base |-> base, voters |-> voters]}
+Higher(f, g) == KeyLess(g.key, f.key) \/ (f.key = g.key /\ f.len >= g.len)
+
+\* The member id some membership has for the broker is an earlier copy's.
+Rotated(b) ==
+    \E m \in Voters(Config(b)) \cup Voters(cpMem) : m[1] = b /\ m[2] < cid[b]
+
+\* The copies the command has to read.
+Asked ==
+    LET live == List \ dead
+    IN IF RotatedNotWaited THEN {b \in live : ~Rotated(b)} ELSE live
+
+Plan(e, S) ==
+    /\ e < MaxEpoch
+    /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
+    /\ Cardinality(plans) < MaxPlans
+    /\ S # {}
+    /\ IF ReformBeforeAll THEN S \subseteq Asked ELSE S = Asked
+    /\ \A b \in S : ep[b] = e /\ ~Leads(b)
+    /\ NamedNotChecked \/ \A b \in S : Named(Config(b)) \subseteq List \cup dead
+    /\ [e |-> e, facts |-> [b \in S |-> Fact(b)]] \notin plans
+    /\ plans' = plans \cup {[e |-> e, facts |-> [b \in S |-> Fact(b)]]}
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, placed, dead, cpFloor, forms, lost, counters>>
+
+\* The stop is durable before the copy is read again.
+Stop(b) ==
+    /\ ~ReportNotPromise
+    /\ Alive(b)
+    /\ ~retired[b]
+    /\ \E p \in plans : p.e = ep[b] /\ b \in DOMAIN p.facts
+    /\ retired' = [retired EXCEPT ![b] = TRUE]
+    /\ role' = [role EXCEPT ![b] = "follower"]
+    /\ UNCHANGED <<ep, cid, term, log, commit, match, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<cpVars, counters>>
+
+Gap(e) == [e |-> e, t |-> 0, k |-> "gap", v |-> 0]
+
+\* Offsets up to the floor are not given out again.
+Pad(base, e) ==
+    IF Floor = "none" \/ cpFloor <= Len(base) THEN base
+    ELSE base \o [j \in 1..(cpFloor - Len(base)) |-> Gap(e)]
+
+\* The compare-and-swap is the caller's guard on e.
+WriteEpoch(e, base, voters) ==
+    LET f == [e |-> e + 1, base |-> Pad(base, e + 1), voters |-> voters]
+    IN /\ f \notin forms
+       /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
        /\ cpMem' = Simple(voters)
        \* Everything at or below the base is served as committed from here.
        /\ acked' = acked \cup
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
        /\ lost' = lost \cup
-            {x \in acked : x.e <= e /\ \A b \in Brokers : ~Has(log[b], x)}
-       /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<firstRep, asked, rep, elected, counters>>
+            {x \in acked : x.e <= e /\ \A b \in Brokers \ dead : ~Has(log[b], x)}
 
-\* A voter's report holds the base, so its log is the base. Anyone else
-\* keeps what agrees with the base and is a learner.
+Reform(p, pick) ==
+    LET e == p.e
+        S == DOMAIN p.facts
+        F == IF PlanNotRechecked THEN p.facts ELSE [b \in S |-> Fact(b)]
+        base == SubSeq(log[pick], 1, F[pick].len)
+        voters == {<<b, F[b].cid>> : b \in {x \in S : IsPrefix(base, log[x])}}
+    IN /\ e < MaxEpoch
+       /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
+       /\ pick \in S
+       /\ PlanNotRechecked \/
+            /\ ReformBeforeAll \/ S = Asked
+            /\ \A b \in S : ep[b] = e /\ Fact(b) = p.facts[b]
+       /\ ReportNotPromise \/ \A b \in S : retired[b] /\ ep[b] = e
+       /\ Len(log[pick]) >= F[pick].len
+       /\ BaseNotHighest \/ \A b \in S : Higher(F[pick], F[b])
+       /\ WriteEpoch(e, base, voters)
+       /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
+       /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
+
+\* A shard with one replica whose copy rotated and kept records: it is a
+\* re-form of one, without the command.
+SelfStart(b) ==
+    /\ SoloPlacedTwo \/ placed = {b}
+    /\ b \notin dead
+    /\ ep[b] = cpEpoch
+    /\ cpEpoch < MaxEpoch
+    /\ \E m \in Voters(Config(b)) :
+        Voters(Config(b)) = {m} /\ m[1] = b /\ m[2] < cid[b]
+    /\ Len(log[b]) > 0
+    /\ WriteEpoch(cpEpoch, log[b], {Mid(b)})
+    /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
+    /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
+
+\* A voter held the base, so its log is the base and the gap. Anyone else
+\* keeps what agrees with the base and is a learner. A broker declared dead
+\* is refused.
 StartEpoch(b, f) ==
     /\ f \in forms
     /\ f.e = cpEpoch
     /\ f.e > ep[b]
+    /\ b \notin dead
+    /\ LET new == IF Mid(b) \in f.voters THEN f.base ELSE CommonPrefix(log[b], f.base)
+       IN /\ log' = [log EXCEPT ![b] = new]
+          /\ commit' = [commit EXCEPT ![b] = Len(new)]
     /\ ep' = [ep EXCEPT ![b] = f.e]
     /\ term' = [term EXCEPT ![b] = 0]
     /\ role' = [role EXCEPT ![b] = "follower"]
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ boot' = [boot EXCEPT ![b] = Simple(f.voters)]
-    /\ log' = [log EXCEPT ![b] = CommonPrefix(@, f.base)]
-    /\ commit' = [commit EXCEPT ![b] = Len(CommonPrefix(log[b], f.base))]
     /\ UNCHANGED <<cid, match, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
 
@@ -538,11 +614,12 @@ Next ==
     \/ \E l, f \in Brokers : Replicate(l, f)
     \/ \E f \in Brokers : \E m \in msgs : Receive(f, m)
     \/ \E l \in Brokers : \E i \in 1..Len(log[l]) : Commit(l, i)
-    \/ \E b \in Brokers : Restart(b) \/ RetiredRejoins(b)
+    \/ \E b \in Brokers : StepDown(b) \/ Restart(b) \/ RetiredRejoins(b)
     \/ \E b \in Brokers : \E n \in 0..Len(log[b]) : Rotate(b, n)
-    \/ \E b \in Brokers : FirstReport(b) \/ CpObserve(b) \/ Retire(b) \/ Announce(b)
-    \/ AskRetire
-    \/ \E e \in 0..cpEpoch : \E pick \in Brokers : Reform(e, pick)
+    \/ \E b \in Brokers : Place(b) \/ Unplace(b) \/ CpObserve(b) \/ ReportFloor(b)
+    \/ \E b \in Brokers : DeclareDead(b) \/ Stop(b) \/ SelfStart(b)
+    \/ \E e \in 0..cpEpoch : \E S \in SUBSET Brokers : Plan(e, S)
+    \/ \E p \in plans : \E pick \in Brokers : Reform(p, pick)
     \/ \E b \in Brokers : \E f \in forms : StartEpoch(b, f)
 
 Spec == Init /\ [][Next]_vars
@@ -557,7 +634,10 @@ TypeOK ==
     /\ role \in [Brokers -> {"follower", "leader"}]
     /\ retired \in [Brokers -> BOOLEAN]
     /\ cpEpoch \in 0..MaxEpoch
-    /\ asked \subseteq 0..MaxEpoch
+    /\ placed \subseteq Brokers
+    /\ dead \subseteq Brokers
+    /\ cpFloor \in Nat
+    /\ \A p \in plans : p.e \in 0..MaxEpoch /\ DOMAIN p.facts \subseteq Brokers
     /\ \A b \in Brokers : commit[b] <= Len(log[b])
     /\ lost \subseteq acked
 
@@ -565,7 +645,7 @@ OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
 
 \* An acknowledged record outlives its epoch. The only loss allowed is the
-\* one the design documents: no surviving disk held the record any more.
+\* one the design documents: only disks of brokers declared dead held it.
 AckedSurvive ==
     \A x \in acked \ lost :
         /\ \A f \in forms : f.e > x.e => Has(f.base, x)
@@ -573,35 +653,24 @@ AckedSurvive ==
             (role[b] = "leader" /\ KeyLess(<<x.e, x.t>>, <<ep[b], term[b]>>))
                 => Has(log[b], x)
 
+IsRecord(x) == x.ent.k # "gap"
+
 StateMachineSafety ==
     \A x, y \in acked :
-        (x.i = y.i /\ x.ent # y.ent) => (x \in lost \/ y \in lost)
+        (x.i = y.i /\ x.ent # y.ent /\ IsRecord(x) /\ IsRecord(y))
+            => (x \in lost \/ y \in lost)
 
 OffsetNeverReused ==
-    \A x, y \in acked : x.i = y.i => x.ent = y.ent
+    \A x, y \in acked : (x.i = y.i /\ IsRecord(x) /\ IsRecord(y)) => x.ent = y.ent
 
 NothingLost == lost = {}
-
-\* Step 2: a group that is only slow is not retired.
-SlowGroupLeftAlone ==
-    (/\ \A b \in Brokers : cid[b] = 0
-     /\ \E m \in Voters(cpMem) : ~At(firstRep[m[1]], cpEpoch))
-        => \A b \in Brokers : ~(retired[b] /\ ep[b] = cpEpoch)
 
 \* Witnesses: each is an invariant that must fail.
 
 \* A re-form completes and the new epoch commits a record of its own.
 NeverCommitsAfterReform == \A x \in acked : x.e = 0 \/ x.t = 0
 
-\* Two voters reported the group leaderless, the third never did, nothing
-\* was asked or retired, and the group elected and committed by itself.
-NeverSlowGroupElects ==
-    ~(/\ asked = {}
-      /\ \A b \in Brokers : ~retired[b] /\ cid[b] = 0
-      /\ Cardinality({b \in InitBrokers : firstRep[b] # None}) = Cardinality(InitBrokers) - 1
-      /\ \E x \in acked : x.ent.k = "rec")
-
-\* A retired copy rotates and takes an append as a learner.
+\* A copy stopped by an apply rotates and takes an append as a learner.
 NeverRetiredRejoins ==
     ~(/\ rejoins > 0
       /\ \E b \in Brokers : \E l \in Brokers \ {b} :
@@ -617,4 +686,21 @@ NeverReformsAfterChange ==
 NeverOneVoterCommits ==
     ~(/\ \E f \in forms : Cardinality(f.voters) = 1
       /\ \E x \in acked : x.e > 0 /\ x.t > 0)
+
+\* A restored single copy starts by itself and commits.
+NeverSelfStarts ==
+    ~(/\ plans = {}
+      /\ \E x \in acked : x.e > 0 /\ x.t > 0)
+
+\* A group re-forms without a broker declared dead and commits.
+NeverReformsWithoutDead ==
+    ~(/\ dead # {}
+      /\ \E x \in acked : x.e > 0 /\ x.t > 0)
+
+\* A base ends below the floor and is padded.
+NeverPads == \A f \in forms : \A j \in 1..Len(f.base) : f.base[j].k # "gap"
+
+\* A learner that no membership names holds a record.
+NeverLearnerHolds ==
+    \A b \in Brokers \ InitBrokers : \A j \in 1..Len(log[b]) : log[b][j].k # "rec"
 ================================================================================

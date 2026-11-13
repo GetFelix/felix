@@ -401,7 +401,9 @@ D is unreachable the group is blocked until D answers or is declared dead,
 and then the plan says that D's records are not counted.
 
 An `apply` that stops copies and then fails before step 4 leaves them
-stopped. Running it again finishes the group.
+stopped. Running it again finishes the group. If the group elects without
+the stopped copies in between, the next `plan` leaves it alone, and how
+those copies come back is not decided yet (#2403).
 
 **Offsets are not reused.** The leader's report to the control plane
 ("Membership") carries the shard's commit offset, and the control plane
@@ -422,6 +424,13 @@ control plane makes one metadata write per broker per interval, not one
 per shard. The new epoch's log starts above the base with an index gap up
 to the floor, and how the adapter represents that gap is settled in the
 pull request that builds re-forming. See Questions, 13.
+
+**Known gap (#2402).** The floor covers offsets above the end of the base,
+not offsets inside it. The base can end in an entry of an older term that
+never committed, held by the one copy whose disk survived, at an offset
+that a later leader acknowledged with another record. The new epoch then
+serves the old entry under that offset
+(`FelixRaftReformTwoRotatedOffsetsTerms.cfg`, pinned).
 
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
@@ -1280,7 +1289,7 @@ off and stays registered as an expected violation.
 | --- | --- | --- | --- |
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore (`DirLost`), since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
 | #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
 
