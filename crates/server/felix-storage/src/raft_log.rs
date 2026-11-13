@@ -44,6 +44,7 @@ mod tail_cache;
 pub(crate) mod tests;
 pub mod transfer;
 mod writer;
+mod written;
 
 pub use codec::EntryCodec;
 /// The leader id in a log id: for this log, the term. Named in the bounds
@@ -53,6 +54,7 @@ pub use reader::LogReader;
 pub use snapshot::{
     SnapshotData, SnapshotId, SnapshotStore, StagedSnapshot, StoredReader, StoredSnapshot,
 };
+pub use written::{WrittenAt, WrittenToken};
 
 use std::io;
 use std::ops::Deref;

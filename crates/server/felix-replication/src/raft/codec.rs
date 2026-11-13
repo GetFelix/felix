@@ -5,7 +5,7 @@ use std::io;
 
 use bytes::Bytes;
 use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
-use felix_storage::raft_log::EntryCodec;
+use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use serde::{Deserialize, Serialize};
 
 use super::types::{Command, MemberId, Membership, ShardTypes};
@@ -69,7 +69,12 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         Ok(Command {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
+            written: None,
         })
+    }
+
+    fn written_token(&self, data: &Command) -> Option<WrittenToken> {
+        data.written.clone()
     }
 
     fn encode_membership(&self, membership: &Membership) -> io::Result<Bytes> {

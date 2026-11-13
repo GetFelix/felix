@@ -14,6 +14,7 @@ mod suite;
 mod tail;
 mod transfer;
 pub(crate) mod writes;
+mod written;
 
 use std::io;
 

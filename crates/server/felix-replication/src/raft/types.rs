@@ -5,6 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use felix_storage::raft_log::WrittenToken;
 use serde::{Deserialize, Serialize};
 
 use crate::ShardKey;
@@ -79,11 +80,26 @@ impl fmt::Display for MemberId {
 }
 
 /// One record of a shard, as an entry.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Command {
     pub(crate) timestamp_micros: u64,
     pub(crate) payload: Bytes,
+    /// Set by a proposer that waits to hear where the record was written.
+    /// It rides on the entry from `client_write` to the leader's own append
+    /// and nowhere else: it is not in the record and not in a message, so a
+    /// follower's command, and one read back from the log, has none.
+    #[serde(skip)]
+    pub(crate) written: Option<WrittenToken>,
 }
+
+/// The same record, whoever waits on it.
+impl PartialEq for Command {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp_micros == other.timestamp_micros && self.payload == other.payload
+    }
+}
+
+impl Eq for Command {}
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
