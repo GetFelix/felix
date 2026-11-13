@@ -143,6 +143,12 @@ impl Span {
             generation: last.term,
         })
     }
+
+    /// One past the furthest record reported written, whether or not the
+    /// span is one run.
+    fn end(self) -> u64 {
+        self.first.index.max(self.last.index) + 1
+    }
 }
 
 /// A batch on its way to the group.
@@ -554,7 +560,8 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     let committed = |answered: Result<Result<Span, Unacknowledged>, oneshot::error::RecvError>|
      -> Result<Written, Unacknowledged> {
         let span = answered.unwrap_or_else(|_| Err(stopped().into()))?;
-        Ok(span.written(records)?)
+        span.written(records)
+            .map_err(|err| Unacknowledged::from(err).reaching(span.end()))
     };
     let written = async {
         let last = last.await?;
@@ -581,7 +588,21 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
             () = stop.cancelled() => Err(stopped().into()),
         };
     };
-    let written = span.written(records)?;
+    let written = match span.written(records) {
+        Ok(written) => written,
+        // Tokens exist only for the first and last record, so a lease cut
+        // that refuses a record between them looks like this. openraft's
+        // answer says how far the batch was written.
+        Err(_) => {
+            let told = tokio::select! {
+                biased;
+                answered = &mut answer => committed(answered),
+                why = leading.lost(None) => Err(unled(why, false).into()),
+                () = stop.cancelled() => Err(stopped().into()),
+            };
+            return told.map_err(|err| err.reaching(span.end()));
+        }
+    };
     if ack == AckAt::Written {
         return Ok(written);
     }

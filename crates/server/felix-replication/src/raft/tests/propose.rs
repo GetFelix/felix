@@ -1000,8 +1000,8 @@ async fn a_stopped_groups_publisher_stops_waiting() {
 }
 
 /// A token that resolves as not written, and tokens that do not name one
-/// run of the batch's length, are an unknown outcome. Nothing is guessed
-/// from the one index that is known.
+/// run of the batch's length, wait for openraft's answer. Nothing is
+/// guessed from the one index that is known, beyond that it was written.
 #[tokio::test]
 async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
     // Not reported written: openraft's answer says why.
@@ -1030,7 +1030,46 @@ async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
     ] {
         let mut signals = waiting(AckAt::Written);
         signals.written(first, last);
-        let told = signals.now().expect("told");
-        assert_eq!(lost(&told), "the entry was not reported written");
+        assert_eq!(signals.now(), None, "{first:?} {last:?}");
+        let answer = signals.answer.take().expect("once");
+        let _ = answer.send(Err(refusal.clone().into()));
+        let told = signals.reached().expect("told");
+        let told = told.expect_err("not acknowledged");
+        assert_eq!(told.error, refusal, "{first:?} {last:?}");
+        assert_eq!(told.written_end, Some(8), "{first:?} {last:?}");
     }
+}
+
+/// A lapsed lease can refuse a record between two it keeps. The tokens
+/// then name two adjacent records of a three-record batch, and the
+/// publisher must hear openraft's answer of how far the batch was
+/// written, not that nothing was (#2453).
+#[tokio::test]
+async fn a_batch_cut_in_the_middle_is_told_how_far_it_was_written() {
+    let in_part = |end| Unacknowledged {
+        error: CommitError::LeadershipLost {
+            what: "write",
+            detail: "only some of the batch's records were written",
+        },
+        written_end: Some(end),
+    };
+    for ack in [AckAt::Written, AckAt::Flushed] {
+        let mut signals = waiting(ack);
+        signals.written(at(TERM, 5), at(TERM, 6));
+        assert_eq!(signals.reached(), None, "{ack:?}");
+        let answer = signals.answer.take().expect("once");
+        let _ = answer.send(Err(in_part(7)));
+        let told = signals.reached().expect("told");
+        assert_eq!(told, Err(in_part(7)), "{ack:?}");
+    }
+
+    // First refused, last written: the first token never resolves.
+    let mut signals = waiting(AckAt::Written);
+    signals.first.take();
+    let last = signals.last.take().expect("once");
+    last.send(at(TERM, 5)).expect("sent");
+    assert_eq!(signals.reached(), None);
+    let answer = signals.answer.take().expect("once");
+    let _ = answer.send(Err(in_part(6)));
+    assert_eq!(signals.reached(), Some(Err(in_part(6))));
 }

@@ -178,7 +178,11 @@ A few things to know:
   subset of its records, not a prefix. Use a [commit](/features/atomic-commits/)
   when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
-  write. Read the shard at the expected offset to see whether it landed.
+  write. Read the shard at the expected offset to see whether it landed. On the
+  Raft engine a cut batch can leave a later record of it at that offset, so
+  compare the payload you read with the one you sent, not just the offset. To
+  retry without checking at all, publish through an
+  [idempotent producer](/clients/python/#idempotent-producers) instead.
 - The broker leading the shard answers it; it is never forwarded. On a
   `Leader` stream the fence is only as strong as the leader's lease.
 - It needs a durable stream. Negotiated as `FEATURE_PUBLISH_CONDITIONAL`.

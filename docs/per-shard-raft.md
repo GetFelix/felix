@@ -723,8 +723,10 @@ message could not be. openraft checks each record on its own, so:
 Neither writes a record at another term. The publisher is told only some
 of the batch was written, which is an unknown outcome like any other, and a
 retry can redeliver records out of order after a lease cut: the
-written records may commit, and the publisher is told where the last of
-them ends. The batch is not delivered live on the leader, whose
+written records may commit. Only the broker core learns where the last of
+them ends: `RaftEngine::publish` hands it to the broker to move the stream's
+offsets, and the publisher gets the bare error, as a `RaftEngine::propose`
+caller does. The batch is not delivered live on the leader, whose
 subscribers see its offsets as a drop. The stream's offsets move past the
 written records, so a reader resuming at one of them is sent to the log
 for it instead of joining live above it. A follower's subscribers read
