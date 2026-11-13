@@ -322,7 +322,10 @@ PreCampaign(c) ==
 \* A pre-vote request. It wakes a sleeping member. openraft grants once the
 \* member's window has lapsed, which it has for any sleeper, a sleeping
 \* leader included. The hold drops it first; the network then answers Err,
-\* unless DroppedPreVoteGrants, where the drop reads as a grant.
+\* unless DroppedPreVoteGrants, where the drop reads as a grant. A refusal
+\* that carries a higher vote is adopted, uncommitted, and ends the round
+\* (openraft's handle_pre_vote_resp): without it a member with the longer
+\* log and one with the higher term refuse each other forever.
 PreVoteReq(s, c) ==
     LET wakes == ~awake[s]
         held == VoteHold /\ (wakes \/ hold[s] # "none")
@@ -332,17 +335,25 @@ PreVoteReq(s, c) ==
                   /\ ~(awake[s] /\ role[s] = "leader")
                   /\ wakes \/ ~HearsLeader(s)
         grant == IF held THEN DroppedPreVoteGrants ELSE engine
+        adopt == /\ ~held /\ ~grant
+                 /\ VoteGE(vote[s], vote[c]) /\ vote[s] # vote[c]
     IN /\ PreVote
        /\ s # c
        /\ s \in up /\ c \in up
        /\ pre[c] # {}
        /\ s \notin pre[c]
-       /\ wakes \/ grant
-       /\ pre' = IF grant THEN [pre EXCEPT ![c] = @ \cup {s}] ELSE pre
+       /\ wakes \/ grant \/ adopt
+       /\ pre' = IF grant THEN [pre EXCEPT ![c] = @ \cup {s}]
+                 ELSE IF adopt THEN [pre EXCEPT ![c] = {}] ELSE pre
+       /\ vote' = IF adopt THEN [vote EXCEPT ![c] = [vote[s] EXCEPT !.committed = FALSE]]
+                  ELSE vote
+       /\ role' = IF adopt THEN [role EXCEPT ![c] = "follower"] ELSE role
+       /\ granted' = IF adopt THEN [granted EXCEPT ![c] = {}] ELSE granted
        /\ awake' = [awake EXCEPT ![s] = TRUE]
        /\ hold' = IF VoteHold /\ wakes /\ role[s] # "leader"
                   THEN [hold EXCEPT ![s] = "ask"] ELSE hold
-       /\ UNCHANGED <<raft, prop, reqs, liveness, used, hist, heard, sleptWith, ttlDue>>
+       /\ UNCHANGED <<elected, log, match, commit, committed, acked,
+                      prop, reqs, liveness, used, hist, heard, sleptWith, ttlDue>>
 
 \* A vote request that wakes a sleeper is dropped, and the member is held.
 VoteWakesHeld(s, c) ==
