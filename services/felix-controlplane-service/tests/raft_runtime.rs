@@ -251,6 +251,7 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
     let import = encode_command(&MetaCommand::ImportState {
         state: Box::new(exported),
         overwrite: false,
+        mark_unplaced: false,
     });
     let (status, _) = http(
         addr,
