@@ -183,13 +183,16 @@ async fn a_kept_copy_is_reclaimed_once_the_new_copy_commits_past_it() {
     let mut cluster = Cluster::new(true);
     let roots = Roots::new();
     let dir = roots.shard_dir("a");
-    let open = |cluster: &Cluster| {
-        cluster
-            .runtime("a")
-            .open_copy(group(0), &dir, log_config(), &roots.roots["a"])
+    let open = |runtime: GroupRuntime| {
+        let (dir, roots) = (dir.clone(), &roots);
+        async move {
+            runtime
+                .open_copy(group(0), &dir, log_config(), &roots.roots["a"])
+                .await
+        }
     };
 
-    let first = open(&cluster).await.expect("open copy");
+    let first = open(cluster.runtime("a")).await.expect("open copy");
     let set = BTreeSet::from([first.member.clone()]);
     cluster
         .runtime("a")
@@ -203,19 +206,12 @@ async fn a_kept_copy_is_reclaimed_once_the_new_copy_commits_past_it() {
     assert!(cluster.runtime("a").close(&shard(0)).await);
     first.log.close().await.expect("close");
 
-    // Marks for another copy: the next open rotates, keeping these records.
-    roots.roots["a"]
-        .mark_log()
-        .fresh(
-            std::sync::Arc::from(super::super::runtime::mark_name(&shard(0))),
-            0xdead,
-        )
-        .await
-        .expect("marks");
-    let second = open(&cluster).await.expect("reopen");
+    // Without its copy file the directory rotates, keeping these records.
+    std::fs::remove_file(dir.join("raft-copy")).expect("copy file");
+    let second = open(cluster.runtime("a")).await.expect("reopen");
     assert_eq!(
         second.rotation.as_ref().map(|rotation| rotation.reason),
-        Some(RotateReason::OtherCopy)
+        Some(RotateReason::NoCopyFile)
     );
     assert_eq!(second.kept.reclaimed, Vec::<std::path::PathBuf>::new());
     assert_eq!(second.kept.held.len(), 1, "{:?}", second.kept);
