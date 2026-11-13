@@ -64,6 +64,10 @@ const KEY_FORMING: &str = "forming";
 /// The ids of the members that asked this one to record that they set out
 /// to form the group. Neither key counts as consensus state.
 const KEY_FORMED: &str = "formed";
+/// Set once the member may vote from this store. Kept in step with the
+/// segment store's formation file; here the log is in the same file, so a
+/// blank log beside it cannot happen.
+const KEY_REACHED: &str = "reached";
 /// Where a `--cfg felix_segment_store` build keeps its state
 /// (`felix_storage::metadata_store::STORE_DIR`, not a dependency of this
 /// build).
@@ -90,6 +94,10 @@ pub(super) async fn open_member(
     std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
     let db = open(&settings.data_dir.join("raft.redb"))?;
     claim_cluster_id(&db, &settings.security.cluster_id)?;
+    if holds_state(&db)? && !vote_withheld(&db)? {
+        write_meta(&db, KEY_REACHED, &true)
+            .map_err(|err| anyhow::anyhow!("write the reached flag: {err}"))?;
+    }
     Ok(Opened {
         log_store: LogStore::new(Arc::clone(&db)),
         state_machine: StateMachineStore::open(Arc::clone(&db), app).await?,
@@ -145,6 +153,21 @@ impl MemberState {
         })
         .await
         .context("write the forming mark")
+    }
+
+    /// Whether this store records that the member has voted from it.
+    pub(super) async fn reached(&self) -> Result<bool> {
+        Ok(read_meta::<bool>(&*self.db()?, KEY_REACHED)
+            .context("read the reached flag")?
+            .unwrap_or(false))
+    }
+
+    /// Record that the member may vote from this store. Durable before it
+    /// returns.
+    pub(super) async fn mark_reached(&self) -> Result<()> {
+        blocking_write(&self.db()?, |db| write_meta(db, KEY_REACHED, &true))
+            .await
+            .context("write the reached flag")
     }
 
     /// The members this one recorded as having set out to form the group.

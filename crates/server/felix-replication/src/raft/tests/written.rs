@@ -44,7 +44,12 @@ fn a_majority_is_the_leader_and_the_voters_that_said_so() {
     let past = heard(&[("c", at(3, 12))]);
     assert!(majority_wrote(&voters, &member("a"), &past, record));
     assert!(!majority_wrote(&[], &member("a"), &one, record));
-    assert!(!majority_wrote(&[BTreeSet::new()], &member("a"), &one, record));
+    assert!(!majority_wrote(
+        &[BTreeSet::new()],
+        &member("a"),
+        &one,
+        record
+    ));
 }
 
 /// A learner holds the record and says so. It is not a voter, so the count
@@ -127,11 +132,16 @@ impl Led {
     }
 
     fn status(&self, broker: &str) -> GroupStatus {
-        self.cluster.runtime(broker).status(&shard(0)).expect("status")
+        self.cluster
+            .runtime(broker)
+            .status(&shard(0))
+            .expect("status")
     }
 
     fn others(&self) -> Vec<&'static str> {
-        let others = BROKERS.iter().filter(|broker| **broker != &*self.leader.broker);
+        let others = BROKERS
+            .iter()
+            .filter(|broker| **broker != &*self.leader.broker);
         others.copied().collect()
     }
 
@@ -150,7 +160,8 @@ impl Led {
     }
 
     fn acked(&self, written: Written, ack: AckAt) -> impl Future<Output = Result<(), CommitError>> {
-        self.engine.await_quorum_ack(&shard(0), written, ack, PATIENCE)
+        self.engine
+            .await_quorum_ack(&shard(0), written, ack, PATIENCE)
     }
 
     /// A `Quorum` write that waits on the written count, which makes the
@@ -194,7 +205,11 @@ impl Led {
                 at,
             },
         };
-        let answer = self.cluster.runtime(&self.leader.broker).handle(request).await;
+        let answer = self
+            .cluster
+            .runtime(&self.leader.broker)
+            .handle(request)
+            .await;
         assert!(answer.is_ok(), "the report was refused");
     }
 }
@@ -272,11 +287,17 @@ async fn a_quorum_write_is_acknowledged_once_a_majority_has_written_it() {
     assert_eq!(led.engine.read_bound(&shard(0)), Ok(before.end));
     for broker in &others {
         let flushed = led.status(broker).flushed;
-        assert!(flushed.is_none_or(|at| at.index < index), "{broker} fsynced");
+        assert!(
+            flushed.is_none_or(|at| at.index < index),
+            "{broker} fsynced"
+        );
     }
     // A stream that fsyncs on commit still waits for the commit.
     let strict = tokio::time::timeout(SETTLE, led.acked(written, AckAt::Flushed)).await;
-    assert!(strict.is_err(), "acknowledged before the commit: {strict:?}");
+    assert!(
+        strict.is_err(),
+        "acknowledged before the commit: {strict:?}"
+    );
 
     drop(held);
     let committed = led.engine.await_commit(&shard(0), written, PATIENCE).await;
@@ -338,7 +359,10 @@ async fn a_majority_of_one_half_of_a_joint_membership_is_not_enough() {
     let acked = led.acked(written, AckAt::Written).await;
     acked.expect("acknowledged");
     let changed = tokio::time::timeout(PATIENCE, change).await;
-    changed.expect("in time").expect("ran").expect("the change committed");
+    changed
+        .expect("in time")
+        .expect("ran")
+        .expect("the change committed");
     led.cluster.stop().await;
 }
 
@@ -352,7 +376,11 @@ async fn a_report_from_another_term_does_not_make_a_majority() {
     let others = led.others();
     // The leader reaches no follower, so the only reports are the ones
     // handed to it here.
-    led.cluster.net.cut.lock().extend(others.iter().map(|broker| broker.to_string()));
+    led.cluster
+        .net
+        .cut
+        .lock()
+        .extend(others.iter().map(|broker| broker.to_string()));
     let written = led.propose().await;
     let (term, index) = (written.generation, written.end - 1);
     led.not_acked(written).await;
@@ -380,8 +408,16 @@ async fn a_deposed_leader_acknowledges_nothing_on_reports() {
     let mut led = led().await;
     led.prime().await;
     let others = led.others();
-    led.cluster.net.cut.lock().insert(led.leader.broker.to_string());
-    led.cluster.net.muted.lock().insert(led.leader.broker.to_string());
+    led.cluster
+        .net
+        .cut
+        .lock()
+        .insert(led.leader.broker.to_string());
+    led.cluster
+        .net
+        .muted
+        .lock()
+        .insert(led.leader.broker.to_string());
     let written = led.propose().await;
     let (term, index) = (written.generation, written.end - 1);
     // The others elect, and the old leader hears of it once it is reachable.

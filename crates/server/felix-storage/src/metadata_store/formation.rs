@@ -1,10 +1,12 @@
 //! The formation file, `formation`: what a metadata store knows about who
 //! set out to form its group.
 //!
-//! It holds this member's own mark and the ids of the other members that
-//! asked it to record theirs. A member that a peer has recorded, and that
-//! holds no mark, lost its volume after it may have voted. The rule is in
-//! `docs/metadata-raft-design.md`, "Forming the group".
+//! It holds this member's own mark, whether the member has voted from this
+//! store, and the ids of the other members that asked it to record theirs.
+//! A member that a peer has recorded, and that holds no mark, lost its
+//! volume after it may have voted. One that has voted and finds its log
+//! blank lost its log. The rules are in `docs/metadata-raft-design.md`,
+//! "Forming the group".
 //!
 //! The file is written like the member file, through
 //! [`super::MemberFile`], and is absent until the first mark or record. A
@@ -25,6 +27,8 @@ const HEADER_LEN: usize = 14;
 pub(super) const FILE_NAME: &str = "formation";
 
 const FORMING: u16 = 1 << 0;
+const REACHED: u16 = 1 << 1;
+const KNOWN_FLAGS: u16 = FORMING | REACHED;
 
 /// What the formation file holds. A store without the file holds the
 /// default: no mark and no records.
@@ -32,6 +36,10 @@ const FORMING: u16 = 1 << 0;
 pub struct Formation {
     /// This member set out to form the group from this store.
     pub forming: bool,
+    /// This member has voted, or may have, from this store. The log keeps
+    /// the vote in its own directory, so this is what tells a log that was
+    /// emptied from one that never held anything.
+    pub reached: bool,
     /// The members that asked this one to record that they set out to
     /// form the group.
     pub formed: BTreeSet<u64>,
@@ -57,7 +65,13 @@ pub(super) fn encode(formation: &Formation) -> io::Result<Vec<u8>> {
             "over 65535 members recorded as forming",
         )
     })?;
-    let flags = if formation.forming { FORMING } else { 0 };
+    let mut flags = 0;
+    if formation.forming {
+        flags |= FORMING;
+    }
+    if formation.reached {
+        flags |= REACHED;
+    }
     let ids: Vec<u8> = formation
         .formed
         .iter()
@@ -101,7 +115,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Formation, String> {
     {
         return Err(damaged());
     }
-    if flags & !FORMING != 0 {
+    if flags & !KNOWN_FLAGS != 0 {
         return Err(format!(
             "the formation file sets flags this build does not know ({flags:#06x})"
         ));
@@ -114,6 +128,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Formation, String> {
     let formed = ids.iter().map(|id| u64::from_be_bytes(*id)).collect();
     Ok(Formation {
         forming: flags & FORMING != 0,
+        reached: flags & REACHED != 0,
         formed,
     })
 }

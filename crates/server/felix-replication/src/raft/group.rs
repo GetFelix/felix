@@ -424,12 +424,45 @@ impl Group {
     /// `beat` is the gap a leader's append named. Taking the append or
     /// granting a vote restarts this member's election timer. `report` is
     /// the leader asking to be told once the append's entries are written.
+    ///
+    /// The timer restarts even if the caller stops waiting: openraft
+    /// persists the append or vote either way, and a follower that keeps
+    /// answering past the sender's deadline would otherwise stand for
+    /// election while it still hears its leader.
     pub(crate) async fn handle(
-        &self,
+        self: &Arc<Self>,
         body: Request,
         beat: u64,
         report: bool,
     ) -> Result<Reply, Refused> {
+        let group = Arc::clone(self);
+        let handled = tokio::spawn(async move {
+            let reply = group.answer(body, report).await?;
+            match &reply {
+                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
+                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                _ => {}
+            }
+            Ok(reply)
+        });
+        match handled.await {
+            Ok(reply) => reply,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(Refused::Stopped(
+                Box::new(Addressee {
+                    group: self.id.clone(),
+                    to: self.member.clone(),
+                }),
+                err.to_string(),
+            )),
+        }
+    }
+
+    /// Answer `body`. When it is an append whose leader asked for a report,
+    /// the report goes out as soon as the entries are written, while
+    /// openraft's answer waits for their fsync. An answer that is ready
+    /// first says more, and the report is dropped.
+    async fn answer(&self, body: Request, report: bool) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
         let asked = match &body {
@@ -443,31 +476,20 @@ impl Group {
             }),
             _ => None,
         };
-        let reply = match asked {
-            // openraft answers an append once it is fsynced. The report
-            // goes out as soon as it is written, while that answer waits,
-            // and is dropped if the answer is ready first.
-            Some((leader, last)) => {
-                let answer = self.dispatch(body);
-                let tell = self.tell_written(leader, last);
-                tokio::pin!(answer, tell);
-                let mut told = false;
-                loop {
-                    tokio::select! {
-                        biased;
-                        reply = &mut answer => break reply,
-                        () = &mut tell, if !told => told = true,
-                    }
-                }
+        let Some((leader, last)) = asked else {
+            return self.dispatch(body).await;
+        };
+        let answer = self.dispatch(body);
+        let tell = self.tell_written(leader, last);
+        tokio::pin!(answer, tell);
+        let mut told = false;
+        loop {
+            tokio::select! {
+                biased;
+                reply = &mut answer => return reply,
+                () = &mut tell, if !told => told = true,
             }
-            None => self.dispatch(body).await,
-        }?;
-        match &reply {
-            Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
-            Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
-            _ => {}
         }
-        Ok(reply)
     }
 
     /// Tell `leader` this member's written position once it holds the
@@ -479,7 +501,12 @@ impl Group {
             let written = at.written;
             written.is_some_and(|at| at.term == last.term && at.index >= last.index)
         };
-        let Some(at) = positions.wait_for(holds).await.ok().and_then(|at| at.written) else {
+        let Some(at) = positions
+            .wait_for(holds)
+            .await
+            .ok()
+            .and_then(|at| at.written)
+        else {
             return;
         };
         let deadline = Duration::from_millis(self.pace.timers.heartbeat);

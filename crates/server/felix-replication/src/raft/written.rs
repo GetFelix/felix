@@ -75,7 +75,12 @@ impl Reports {
     /// as far as this leader was told. It never returns otherwise: the
     /// caller races it with the commit, which also says when this member
     /// stops leading.
-    pub(crate) async fn majority(&self, raft: &Raft<ShardTypes, Machine>, me: &MemberId, at: LogPoint) {
+    pub(crate) async fn majority(
+        &self,
+        raft: &Raft<ShardTypes, Machine>,
+        me: &MemberId,
+        at: LogPoint,
+    ) {
         use openraft::async_runtime::watch::WatchReceiver;
         self.wanted.store(true, Ordering::Relaxed);
         let mut heard = self.heard.subscribe();

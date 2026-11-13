@@ -1416,6 +1416,44 @@ async fn a_message_for_another_member_is_refused() {
     cluster.stop().await;
 }
 
+/// A vote the sender stopped waiting for is still granted once the member
+/// takes it, and granting it pushes the member's election back (#2405).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let runtime = cluster.runtime("a");
+    let member = runtime.group(&shard(0)).expect("group");
+    assert_eq!(member.due_at(), 0);
+
+    // Park the core so the vote cannot be answered before the deadline.
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    member
+        .raft()
+        .external_request(move |_| {
+            let _ = parked.recv();
+        })
+        .await
+        .expect("park");
+    let candidate = LeaderIdOf::<ShardTypes>::new(5, MemberId::new("b", 1));
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
+    let request = RaftRequest {
+        group: group(0),
+        to: MemberId::new("a", 1),
+        beat: 0,
+        deadline: Duration::from_millis(50),
+        body: Request::Vote(VoteRequest::new(vote, None)),
+    };
+    let answered = tokio::time::timeout(Duration::from_millis(50), runtime.handle(request)).await;
+    assert!(answered.is_err(), "the parked member answered");
+
+    release.send(()).expect("release");
+    eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
+    let election_min = cluster.timers.election_min.as_millis() as u64;
+    eventually(|| (member.due_at() >= election_min).then_some(())).await;
+    cluster.stop().await;
+}
+
 #[test]
 fn the_timers_must_make_sense() {
     assert!(RuntimeConfig::default().raft().is_ok());
