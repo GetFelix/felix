@@ -752,9 +752,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
 | `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
 | `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
-| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so the whole group can restart, and a broker inside its hold granting the candidate its stored vote names while that vote is for its current term | pass the same (15.4M distinct states) |
+| `FelixRaftLeaseRestoreNamed.cfg` | `FelixRaftLeaseRestoreLed.cfg` with two restarts, so two of the three brokers (a quorum) can be inside their hold at once, and a broker inside its hold granting the candidate its stored vote names: the leader of its current term | pass the same (@@RN) |
 | `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
-| `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the hold exempting any candidate | violate `LeaseExclusive` |
+| `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the stored vote exempting any candidate, not only the leader it names (`HoldExemptsAny`) | violate `LeaseExclusive` |
+| `FelixRaftLeaseRestoreTransferStepDown.cfg` | `FelixRaftLeaseTransferStepDown.cfg` with both restart fast paths, one restart and one write: a leader that authorized a transfer or voided a term restarts with its own vote stored and its void and transfer wiped | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (@@RTS) |
 | `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
 | `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
 | `FelixRaftLeaseStepDownNoVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with no void | violate `LeaseExclusive` (issue #2249) |
@@ -3177,16 +3178,19 @@ given to another broker, fails: a follower that answered the leader just
 before it stopped campaigns at once and a voter outside the leader's window
 elects it.
 
-When the whole group restarts, the holds also drop the old leader's vote
+When a quorum restarts together, the holds also drop the old leader's vote
 request. A broker inside its hold may grant the candidate its stored vote
 names (`HoldExemptsNamed`), since it promised that candidate already.
-The stored vote names the candidate only while it is for the broker's
-current term: a later leader's append replaces it. Without that condition
-the model fails `NoAckBehindNewLeader`. `FelixRaftLeaseRestoreNamed.cfg`
-passes with the rule and two restarts, and
-`FelixRaftLeaseReachHeldGrant.cfg` shows a held broker granting.
-`FelixRaftLeaseRestoreNamedAny.cfg`, where the hold exempts any candidate,
-fails.
+openraft stores one vote, and every append the broker accepts replaces it,
+so the stored vote names the leader of the broker's current term, not
+whichever candidate it voted for. The rule is exactly that: grant inside the
+hold only to the leader of the broker's current term.
+`FelixRaftLeaseRestoreNamed.cfg` passes with the rule and two restarts (two
+of the three brokers), and `FelixRaftLeaseReachHeldGrant.cfg` shows a held
+broker granting. `FelixRaftLeaseRestoreNamedAny.cfg`, where the stored vote
+exempts any candidate, fails. `FelixRaftLeaseRestoreTransferStepDown.cfg`
+runs both fast paths with a transfer, a step-down and a write: a leader that
+authorized a transfer restarts with its own vote and campaigns at once.
 
 **Late metrics, step-down, transfer and suspend (issue #2249).** Felix reads
 openraft's role and `last_quorum_acked` from metrics, which arrive late

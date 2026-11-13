@@ -706,6 +706,8 @@ expectations=(
   "FelixRaftLeaseTransferThreeTerms pass"
   "FelixRaftLeaseTransferWrite pass"
   "FelixRaftLeaseTransferStepDown pass"
+  "FelixRaftLeaseRestoreTransferStepDown pass"
+  "FelixRaftLeaseRestoreTransferStepDownT2 pass"
   "FelixRaftLeaseSuspend pass"
   "FelixRaftLeaseStepDownWrite pass"
   "FelixRaftLeaseSuspendRoleLate pass"

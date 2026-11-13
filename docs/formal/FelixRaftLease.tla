@@ -195,6 +195,8 @@
 (*                             also one given to another broker.           *)
 (*   HoldExemptsNamed       -- a restarted broker inside its hold grants   *)
 (*                             the candidate its stored vote names.        *)
+(*   HoldExemptsAny         -- the stored vote exempts any candidate, not  *)
+(*                             only the leader it names.                   *)
 (*   DeliverUncommitted     -- the subscriber reads the leader's whole     *)
 (*                             log.                                        *)
 (*   VoidOnHigherTerm = FALSE -- a leader that steps down on a higher term *)
@@ -242,7 +244,7 @@ CONSTANTS
     ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, VoidOnHigherTerm,
     VoidEquality, MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends,
     SuspendCheck, WakeCheckLate, RestoreOwnLead, RestoreAnyVote,
-    HoldExemptsNamed
+    HoldExemptsNamed, HoldExemptsAny
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -408,6 +410,11 @@ SupportStands(v) ==
     /\ sup[v][l].epoch = fortEpoch[v]
     /\ sup[v][l].left # None
 
+\* openraft stores one vote, replaced by every append it accepts, so the vote
+\* a restarted broker has names the leader of its current term, not whom it
+\* voted for.
+StoredLeader(v) == IF term[v] = 0 THEN {} ELSE elected[term[v]]
+
 \* openraft grants inside the window to the leader the voter follows, and to
 \* a transfer that leader authorized. The node layer's hold drops both.
 MayGrant(v, c) ==
@@ -418,9 +425,8 @@ MayGrant(v, c) ==
                \/ LeaderBypass /\ leaderOf[v] = c
                \/ auth[c] # NoAuth /\ auth[c] = <<leaderOf[v], term[v]>>
             /\ \/ RestartForgetsWindow \/ ~JustStarted(v)
-               \* The stored vote names c only while it is for v's current term:
-               \* a later leader's append replaces it in openraft.
-               \/ HoldExemptsNamed /\ votedFor[v] = c /\ c \in elected[term[v]]
+               \/ HoldExemptsNamed /\ c \in StoredLeader(v)
+               \/ HoldExemptsAny /\ StoredLeader(v) # {}
 
 \* The epoch a voter records for the leader it elects: the one it supports
 \* now, or none.
