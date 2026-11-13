@@ -139,7 +139,9 @@ impl StreamEngine {
             use felix_replication::raft::AckAt;
             let raft = self.raft(shard)?;
             // A term is served only once its stream is at the committed
-            // tail, and only the term the write was routed at.
+            // tail, and only the term the write was routed at. The group
+            // can move on between this check and the proposal, so the term
+            // goes with the batch and one written at another is given up.
             if self.raft_term(shard) != Some(term) {
                 return Some(Err(RaftRefusal::NotLeading { term }));
             }
@@ -153,7 +155,7 @@ impl StreamEngine {
             // `await_quorum_ack`. Until then it waits for the commit, which
             // is never weaker.
             Some(
-                raft.publish(broker, handle, shard, payloads, ack, timeout)
+                raft.publish(broker, handle, shard, Some(term), payloads, ack, timeout)
                     .map(|proposed| RaftPublish(Some(proposed)))
                     .map_err(RaftRefusal::Broker),
             )

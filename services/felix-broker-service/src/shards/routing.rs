@@ -827,8 +827,9 @@ pub trait EngineShards: Send + Sync {
 
     /// Where a request for `key` goes, when this engine runs the shard on
     /// this broker: here once it leads and may take writes, to the leader
-    /// it follows (addressed through `nodes`) otherwise. `None` for a shard
-    /// it holds no member of.
+    /// it follows (addressed through `nodes`) otherwise. With no member
+    /// here, to the broker the shard's placement names as leader. `None`
+    /// for a shard this engine does not run.
     fn dispatch(
         &self,
         key: &ShardKey,

@@ -36,6 +36,9 @@ pub(crate) struct RaftShards {
     engine: RaftEngine,
     local: String,
     leading: Arc<Leading>,
+    /// Every Raft shard in the feed and the broker its placement names as
+    /// leader: where a request goes while no member is open here.
+    placed: parking_lot::Mutex<HashMap<ShardKey, String>>,
     /// Held across a whole pass and a whole close, so a stream's delete
     /// never runs between a member's claim of its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
@@ -66,6 +69,7 @@ impl RaftShards {
             runtime,
             local,
             leading,
+            placed: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
         });
         shards
@@ -177,6 +181,31 @@ impl RaftShards {
         }
     }
 
+    /// The route for a Raft shard with no member open here. Its placement's
+    /// leader holds a member, and answers with the group's leader when that
+    /// is another broker. `None` for a shard the feed has not placed on Raft.
+    fn dispatch_without_member(
+        &self,
+        key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch> {
+        let leader = self.placed.lock().get(key).cloned()?;
+        // Placed here: the member is still opening, or its open failed and
+        // the next feed pass tries again.
+        if leader.is_empty() || leader == self.local {
+            return Some(Dispatch::Unavailable(Reason::NotReady));
+        }
+        Some(match nodes(&leader) {
+            Some(advertise_addr) => Dispatch::Forward {
+                node_id: leader,
+                advertise_addr,
+                generation: 0,
+                incarnation: 0,
+            },
+            None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader)),
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn stall_leading(&self, stalled: bool) {
         self.leading.stall.send_replace(stalled);
@@ -213,6 +242,7 @@ impl EngineShards for RaftShards {
                 .cloned()
                 .collect();
             let mut held = HashMap::default();
+            let mut placed = HashMap::default();
             for key in streams {
                 let metadata = self
                     .broker
@@ -234,10 +264,12 @@ impl EngineShards for RaftShards {
                 let Some(assignment) = assignments.remove(&key) else {
                     continue;
                 };
+                placed.insert(key.clone(), assignment.leader.clone());
                 if assignment.leader == self.local || assignment.replicas.contains(&self.local) {
                     held.insert(key, assignment);
                 }
             }
+            *self.placed.lock() = placed;
             let gone: Vec<ShardKey> = open
                 .iter()
                 .filter(|(key, member)| {
@@ -288,7 +320,9 @@ impl EngineShards for RaftShards {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch> {
-        let status = self.runtime.status(key)?;
+        let Some(status) = self.runtime.status(key) else {
+            return self.dispatch_without_member(key, nodes);
+        };
         // Led is not enough: the term is served once `Leading` opened it.
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
@@ -315,6 +349,7 @@ impl EngineShards for RaftShards {
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
         Box::pin(async move {
             let mut open = self.open.lock().await;
+            self.placed.lock().clear();
             for (key, member) in open.drain() {
                 self.close_member(&key, member).await;
             }
@@ -449,4 +484,4 @@ impl WriteFence for Leading {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

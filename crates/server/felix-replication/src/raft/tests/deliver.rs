@@ -66,6 +66,7 @@ fn publish_within(
         broker,
         handle,
         &shard(0),
+        None,
         vec![payload],
         AckAt::Flushed,
         timeout,
@@ -259,4 +260,44 @@ async fn entries_holding_no_record_reach_subscribers_as_skipped() {
     assert_eq!(envelope.skipped_before(), first);
     published.await.expect("joined").expect("committed");
     cluster.stop().await;
+}
+
+/// **A batch written at another term than its caller was admitted at is
+/// given up, not delivered.** A broker deposed and elected again between
+/// the caller's look and the proposal writes it in a term whose stream may
+/// not be at the committed tail yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_written_at_another_term_is_given_up() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let term = led.status().term;
+    let at = |term: u64, payload: &'static [u8]| {
+        let payloads = vec![Bytes::from_static(payload)];
+        let proposed = led.engine.publish(
+            &broker,
+            &handle,
+            &shard(0),
+            Some(term),
+            payloads,
+            AckAt::Flushed,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+
+    let outcome = at(term - 1, b"stale").await.expect("joined");
+    assert!(
+        matches!(outcome, Err(CommitError::LeadershipLost { .. })),
+        "{outcome:?}"
+    );
+    nothing(&mut receiver).await;
+
+    let outcome = at(term, b"current").await.expect("joined");
+    let offset = led.committed + 2;
+    assert_eq!(outcome.expect("committed").offsets, Some((offset, offset)));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(offset));
+    assert_eq!(envelope.payloads(), [Bytes::from_static(b"current")]);
+    led.cluster.stop().await;
 }

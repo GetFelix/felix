@@ -1,13 +1,15 @@
 use std::path::Path;
 
 use felix_broker::StreamMetadata;
-use felix_replication::raft::{AgreeingPeers, Role, RuntimeConfig};
+use felix_replication::raft::{
+    AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+};
 
 use super::*;
 
-const INCARNATION: u64 = 3;
+pub(crate) const INCARNATION: u64 = 3;
 
-fn key(stream: &str, shard: u32) -> ShardKey {
+pub(crate) fn key(stream: &str, shard: u32) -> ShardKey {
     ShardKey {
         tenant_id: "t1".to_string(),
         namespace: "ns".to_string(),
@@ -17,7 +19,7 @@ fn key(stream: &str, shard: u32) -> ShardKey {
     }
 }
 
-fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
+pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
     ShardAssignment {
         key,
         leader: "broker-a".to_string(),
@@ -35,7 +37,7 @@ fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
     }
 }
 
-fn assignments(
+pub(crate) fn assignments(
     all: impl IntoIterator<Item = ShardAssignment>,
 ) -> HashMap<ShardKey, ShardAssignment> {
     let mut map = HashMap::default();
@@ -47,7 +49,7 @@ fn assignments(
 
 /// A broker that leaves durable streams to their engines, with the durable
 /// stream `orders` at [`INCARNATION`] and the in-memory stream `scratch`.
-async fn broker(root: &Path) -> Arc<Broker> {
+pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -88,20 +90,23 @@ async fn broker(root: &Path) -> Arc<Broker> {
     Arc::new(broker)
 }
 
-fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
-    let timers = RuntimeConfig {
+pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+    let runtime =
+        GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
+    RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
+}
+
+fn timers() -> RuntimeConfig {
+    RuntimeConfig {
         election_min: Duration::from_millis(150),
         election_max: Duration::from_millis(300),
         heartbeat: Duration::from_millis(50),
         tick: Duration::from_millis(10),
         ..RuntimeConfig::default()
-    };
-    let runtime =
-        GroupRuntime::start("broker-a", timers, Arc::new(AgreeingPeers)).expect("runtime");
-    RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
+    }
 }
 
-async fn until(what: &str, mut check: impl FnMut() -> bool) {
+pub(crate) async fn until(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while !check() {
         assert!(tokio::time::Instant::now() < deadline, "timed out: {what}");
@@ -412,4 +417,303 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
     assert_eq!(shards.runtime.status(&orders), None);
     assert_eq!(shards.leading(&orders), None);
     assert_eq!(route(&shards, &orders), None);
+}
+
+/// Carries Raft messages between the runtimes of one process. A broker
+/// taken out of it is unreachable.
+#[derive(Default)]
+struct Loopback {
+    runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
+}
+
+#[async_trait::async_trait]
+impl RaftTransport for Loopback {
+    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        let to = request.to().broker.to_string();
+        let runtime = self.runtimes.lock().get(&to).cloned();
+        match runtime {
+            Some(runtime) => runtime.handle(request).await,
+            None => Err(Refused::Unreachable(format!("broker {to} is down"))),
+        }
+    }
+}
+
+const BROKERS: [&str; 3] = ["broker-a", "broker-b", "broker-c"];
+
+struct Member {
+    name: &'static str,
+    broker: Arc<Broker>,
+    shards: Arc<RaftShards>,
+    engine: Arc<crate::shards::routing::StreamEngine>,
+    _root: tempfile::TempDir,
+}
+
+impl Member {
+    /// A broker on `net` whose readers are bound the way startup binds them.
+    async fn start(net: &Arc<Loopback>, name: &'static str) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = broker(root.path()).await;
+        let runtime =
+            GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
+                .expect("runtime");
+        net.runtimes
+            .lock()
+            .insert(name.to_string(), runtime.clone());
+        let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string());
+        let engine = Arc::new(engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        Self {
+            name,
+            broker,
+            shards,
+            engine,
+            _root: root,
+        }
+    }
+
+    async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
+        use crate::serving::direct_publish::publish_direct;
+        let orders = key("orders", 0);
+        let handle = self
+            .broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await
+            .expect("handle");
+        publish_direct(
+            &self.broker,
+            None,
+            &self.engine,
+            target(handle, &orders, term),
+            &[bytes::Bytes::from_static(payload)],
+            None,
+            Duration::from_secs(10),
+        )
+        .await
+        .expect("published")
+        .expect("an offset")
+    }
+}
+
+/// `orders` on three brokers, placed with `broker-a` as leader.
+fn replicated() -> ShardAssignment {
+    let mut assignment = assigned(key("orders", 0), INCARNATION);
+    assignment.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    assignment
+}
+
+/// Three brokers holding a member each, and the one whose term is served.
+async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
+    let net = Arc::new(Loopback::default());
+    let mut members = Vec::new();
+    for name in BROKERS {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    let leader = served(&members).await;
+    (net, members, leader)
+}
+
+async fn served(members: &[Member]) -> usize {
+    let orders = key("orders", 0);
+    let mut leader = None;
+    until("a member serves its term", || {
+        leader = members
+            .iter()
+            .position(|member| member.shards.leading(&orders).is_some());
+        leader.is_some()
+    })
+    .await;
+    leader.expect("a leader")
+}
+
+async fn stop(members: &[Member]) {
+    for member in members {
+        EngineShards::shutdown(&*member.shards).await;
+    }
+}
+
+fn addr_of(name: &str) -> Option<SocketAddr> {
+    let at = BROKERS.iter().position(|broker| *broker == name)?;
+    Some(SocketAddr::from(([10, 0, 0, at as u8 + 1], 7001)))
+}
+
+/// **A follower sends a request to the leader its group elected, and a
+/// broker with no member sends it to the placement's leader.** Neither
+/// reads the hybrid's routes, which never saw the shard.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_request_off_the_leader_is_routed_to_it() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let follower = &members[(leader + 1) % 3];
+    let to_leader = Dispatch::Forward {
+        node_id: members[leader].name.to_string(),
+        advertise_addr: addr_of(members[leader].name).expect("addr"),
+        generation: term,
+        incarnation: 0,
+    };
+    until("the follower knows its leader", || {
+        EngineShards::dispatch(&*follower.shards, &orders, &addr_of) == Some(to_leader.clone())
+    })
+    .await;
+    assert_eq!(
+        route(&follower.shards, &orders),
+        Some(Dispatch::Unavailable(Reason::OwnerUnavailable(
+            members[leader].name.to_string()
+        )))
+    );
+
+    let outside = Member::start(&net, "broker-d").await;
+    assert_eq!(route(&outside.shards, &orders), None);
+    let mut all = assignments([replicated()]);
+    outside.shards.take(&mut all).await;
+    assert!(
+        all.is_empty(),
+        "a Raft shard held elsewhere went to the hybrid"
+    );
+    assert!(outside.shards.engine_for(&orders).is_none());
+    assert_eq!(
+        EngineShards::dispatch(&*outside.shards, &orders, &addr_of),
+        Some(Dispatch::Forward {
+            node_id: "broker-a".to_string(),
+            advertise_addr: addr_of("broker-a").expect("addr"),
+            generation: 0,
+            incarnation: 0,
+        })
+    );
+    assert_eq!(
+        route(&outside.shards, &orders),
+        Some(Dispatch::Unavailable(Reason::OwnerUnavailable(
+            "broker-a".to_string()
+        )))
+    );
+    stop(&members).await;
+    EngineShards::shutdown(&*outside.shards).await;
+}
+
+/// **A placed member that is not open yet answers not ready**, and never
+/// falls through to the hybrid's routes.
+#[tokio::test]
+async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .placed
+        .lock()
+        .insert(orders.clone(), "broker-a".to_string());
+
+    assert_eq!(
+        route(&shards, &orders),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
+async fn delivered(receiver: &mut felix_broker::SubscriptionReceiver) -> (u64, bytes::Bytes) {
+    let got = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
+    let envelope = got.expect("delivered in time").expect("subscription open");
+    (
+        envelope.base_offset().expect("an offset"),
+        envelope.payloads()[0].clone(),
+    )
+}
+
+/// **A Raft shard's subscribers on its leader get each record once it is
+/// committed, at the offset the group gave it, and a follower's readers
+/// are bound by its own member's commit index.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn readers_of_a_raft_shard_get_what_committed() {
+    use felix_replication::engine::Engine;
+
+    let (_net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let follower = &members[(leader + 1) % 3];
+    let (mut receiver, _guard) = {
+        let subscription = members[leader].broker.subscribe("t1", "ns", "orders", 0);
+        subscription.await.expect("subscribe").into_parts()
+    };
+
+    let first = members[leader].publish(term, b"one").await;
+    let second = members[leader].publish(term, b"two").await;
+
+    assert_eq!(second, first + 1);
+    let one = (first, bytes::Bytes::from_static(b"one"));
+    assert_eq!(delivered(&mut receiver).await, one);
+    let two = (second, bytes::Bytes::from_static(b"two"));
+    assert_eq!(delivered(&mut receiver).await, two);
+    // What the follower's broker hands its readers, as startup wires it.
+    let handle = follower
+        .broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    let committed = felix_broker::ReadBound::Committed(second + 1);
+    until("the follower applies both", || {
+        handle.read_bound() == committed
+    })
+    .await;
+    assert_eq!(follower.engine.committed_bound(&orders), committed);
+    assert_eq!(
+        follower.engine.read_bound(None, &orders).ok(),
+        Some(Some(second + 1))
+    );
+    stop(&members).await;
+}
+
+/// **When the leader stops, another member leads and takes publishes, and
+/// nothing acknowledged before is lost**: the new leader's log holds every
+/// acknowledged offset, so its first record lands above them all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
+    use felix_replication::engine::Engine;
+
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let mut acked = Vec::new();
+    for payload in [b"a1", b"a2", b"a3"] {
+        acked.push(members[leader].publish(term, payload).await);
+    }
+    let last = *acked.last().expect("acked");
+    assert_eq!(acked, [last - 2, last - 1, last]);
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+
+    let next = served(&members).await;
+    let next_term = members[next].shards.leading(&orders).expect("term");
+    assert!(next_term > term);
+    assert_eq!(
+        route(&members[next].shards, &orders),
+        Some(Dispatch::Local {
+            generation: next_term
+        })
+    );
+    let (mut receiver, _guard) = {
+        let subscription = members[next]
+            .broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await;
+        subscription.expect("subscribe").into_parts()
+    };
+    let after = members[next].publish(next_term, b"b1").await;
+    assert!(after > last, "offset {after} reused an acknowledged one");
+    assert_eq!(
+        delivered(&mut receiver).await,
+        (after, bytes::Bytes::from_static(b"b1"))
+    );
+    // The other survivor holds the acknowledged records and the new one.
+    let other = &members[1 - next];
+    until("the follower applies the new record", || {
+        other.engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(after + 1)
+    })
+    .await;
+    stop(&members).await;
 }

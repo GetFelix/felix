@@ -20,6 +20,8 @@ use super::propose::{AckAt, Batch, Record};
 use crate::engine::CommitError;
 use crate::{ShardKey, ShardKind};
 
+const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
+
 impl RaftEngine {
     /// Publish `payloads` to `shard` through `broker`'s stream handle
     /// `stream`. The batch is proposed in the stream's delivery order and
@@ -36,11 +38,18 @@ impl RaftEngine {
     ///
     /// [`BrokerError::ProposalsStalled`], with nothing proposed, while the
     /// oldest batch still waiting for its commit has waited past `timeout`.
+    ///
+    /// `term` is the term the caller was admitted at. A batch the group
+    /// wrote at another term gives its place up: this broker was deposed
+    /// and elected again after the caller looked, and the stream may not be
+    /// at the new term's committed tail yet. `None` takes any term.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish(
         &self,
         broker: &Broker,
         stream: &StreamHandle,
         shard: &ShardKey,
+        term: Option<u64>,
         payloads: Vec<Bytes>,
         ack: AckAt,
         timeout: Duration,
@@ -63,6 +72,10 @@ impl RaftEngine {
             let shard = shard.clone();
             async move {
                 let written = written.await.map_err(ProposalFailed::unwritten)?;
+                if term.is_some_and(|term| term != written.generation) {
+                    let moved = super::propose::lost(OTHER_TERM);
+                    return Err(ProposalFailed::written(moved, written.end));
+                }
                 // The publisher's own wait is bounded by `answer_within`.
                 // Delivery is not: a batch skipped here and committed later
                 // would reach no live subscriber, while the one behind it
