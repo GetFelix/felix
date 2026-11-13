@@ -67,8 +67,9 @@ A Raft log now writes the committed index at most once a second
 cell read 2.4 ms at p99 and 10390 entries a second, against redb's 8.9 ms
 and 5471 on that runner session (run 43486950653), and `replica_report
 p99_ms` read 2.7 against 13.9 ms. The cost is that after a crash the saved
-index may be up to a second behind, so a restarted member's replay floor is
-lower by that much ([metadata-raft-design.md](metadata-raft-design.md)).
+index may be up to a second behind. A restarted member then waits for a
+leader to commit its log tail before it serves reads
+([metadata-raft-design.md](metadata-raft-design.md), "Start").
 
 ## Snapshot build with a writer running
 
@@ -79,7 +80,14 @@ nothing else running the two are equal (`build_idle_ms` 6.8 against 6.6 ms,
 32 MiB 272 against 279 ms), and so is the snapshot (`snapshot_bytes`). The
 gap is the writer: on the segment store it keeps applying while the build
 runs, where on redb it sits in a commit (`longest_write_ms` 28 against
-161 ms). At 32 MiB the build is not slower (267 against 281 ms).
+161 ms). At 32 MiB the same holds, and its `build_ms` has read up to 29%
+higher in one run, against a 10% band, while `longest_write_ms` fell from
+10 s to about 0.2 s.
+
+That one cell metric, `snapshot_build/32MiB build_ms`, is waived in the
+workflow's Compare step (`--waive`): it is still shown, marked "waived", and
+does not fail the run. The cost is inherent to not stalling the writer.
+Every other cell, `build_idle_ms` at 32 MiB included, still gates.
 
 ## The redb baseline
 

@@ -42,10 +42,14 @@ pub(super) struct Opened {
     pub(super) log_store: LogStore,
     pub(super) state_machine: StateMachineStore,
     pub(super) may_vote: bool,
-    /// What this node had committed before it stopped: the floor its state
-    /// machine must be replayed back to before anything serves from it.
+    /// The committed index this node last saved: the floor its state
+    /// machine is replayed back to before the node is handed out. Saved at
+    /// most once a second, so the node may have applied, and served, more.
     /// Read before the node starts, because the node moves it.
     pub(super) committed_floor: Option<u64>,
+    /// The last index in the log at open. Everything this node applied
+    /// before it stopped is at or below it.
+    pub(super) log_tail: Option<u64>,
     pub(super) member: MemberState,
 }
 
@@ -69,11 +73,12 @@ pub(super) async fn open_member(
     .await
     .context("open the metadata store")?;
     match start(&store, &settings.data_dir, app, settings.snapshot_max_bytes).await {
-        Ok((state_machine, committed_floor)) => Ok(Opened {
+        Ok((state_machine, committed_floor, log_tail)) => Ok(Opened {
             log_store: store.log(),
             state_machine,
             may_vote: !store.member_file().member().vote_withheld,
             committed_floor,
+            log_tail,
             member: MemberState {
                 raft_state: store.has_raft_state(),
                 store: Arc::new(Mutex::new(Some(store))),
@@ -114,7 +119,7 @@ async fn start(
     data_dir: &std::path::Path,
     app: Arc<dyn AppStateMachine>,
     snapshot_max_bytes: u64,
-) -> Result<(StateMachineStore, Option<u64>)> {
+) -> Result<(StateMachineStore, Option<u64>, Option<u64>)> {
     let started = store.mark_started().await.context("set the started mark")?;
     // The mark of this store, not of some other one.
     started.check(&data_dir.join(STORE_DIR))?;
@@ -132,14 +137,21 @@ async fn start(
         .read_committed()
         .await
         .context("read the committed index")?;
+    let tail = store
+        .log()
+        .get_log_state()
+        .await
+        .context("read the log state")?
+        .last_log_id
+        .map(|id| id.index);
     // A clone of the store's own: the log measures its purges against it.
     let state_machine =
         StateMachineStore::open(store.snapshots().clone(), app, snapshot_max_bytes).await?;
-    Ok((state_machine, committed.map(|id| id.index)))
+    Ok((state_machine, committed.map(|id| id.index), tail))
 }
 
 /// Leave a store in `dir` as a member that held `vote` and `entries` would
-/// have, with its vote withheld or not.
+/// have, with its vote withheld or not and `committed` saved.
 #[cfg(test)]
 pub(super) async fn seed(
     dir: &std::path::Path,
@@ -147,6 +159,7 @@ pub(super) async fn seed(
     vote: super::types::Vote,
     entries: Vec<super::types::Entry>,
     vote_withheld: bool,
+    committed: Option<LogId>,
 ) {
     use openraft::storage::IOFlushed;
 
@@ -156,6 +169,7 @@ pub(super) async fn seed(
     let mut log = store.log();
     log.save_vote(&vote).await.expect("save vote");
     log.append(entries, IOFlushed::Noop).await.expect("append");
+    log.save_committed(committed).await.expect("save committed");
     store
         .member_file()
         .set_vote_withheld(vote_withheld)

@@ -137,7 +137,7 @@ async fn a_member_holding_state_gives_no_standing_before_its_node() {
         payload: EntryPayload::Membership(membership),
     };
     let vote = Vote::new_committed(5, 2);
-    store::seed(dir.path(), "test-cluster", vote, vec![entry], false).await;
+    store::seed(dir.path(), "test-cluster", vote, vec![entry], false, None).await;
 
     let member = RaftMember::open(settings(dir.path()), Arc::new(NullApp))
         .await

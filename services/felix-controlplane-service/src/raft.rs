@@ -51,6 +51,7 @@ mod waiver;
 mod wire;
 
 pub use handle::RaftHandle;
+pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use member::RaftMember;
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
@@ -255,6 +256,10 @@ pub struct RaftStatus {
 /// state is current enough to decide from — a deposed leader that has not
 /// heard the news yet fails the check rather than sweeping from stale state.
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the handle is larger in test builds; made once per process"
+)]
 pub enum LeadershipGate {
     Always,
     Leader(RaftHandle),

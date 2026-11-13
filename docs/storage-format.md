@@ -1000,7 +1000,10 @@ restart too, whatever the routing view says by then.
 The commit offset is written behind the advance that raised it, so no batch or
 replication pass waits on this file. Under `FsyncMode::OnCommit` the write
 starts at once, and one write in flight carries every advance made while it
-runs, so a busy shard writes it far less often than once per batch. Under
+runs, so a busy shard writes it far less often than once per batch. A Raft
+log is the exception: its commit index moves on almost every entry, so it is
+written at most once a second whatever the mode, and after a crash it can read
+back up to about a second older than what the log had committed. Under
 `Periodic` and `None` it is written at most once a second, as its records are
 written behind too. In every mode it is written with a raised generation and at
 shutdown, and a write that fails is retried once a second until it lands,

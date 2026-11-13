@@ -182,7 +182,11 @@ never costs a consensus round trip): the member knows a leader, its applied
 state trails its own log by no more than a bound, and, when it *is* the
 leader, a quorum has acknowledged it within the last 5s. That last check
 takes a partitioned, quorumless leader out of rotation before it serves
-stale reads, and a test covers it. `/v1/system/live` stays
+stale reads, and a test covers it. A member restarted after a crash also
+stays out of rotation, and answers reads with 503, until a leader has
+committed the entries at the end of its log: it saves its committed index at
+most once a second, so it may have applied and served past what it saved,
+and it never serves an older state than it showed. `/v1/system/live` stays
 process-local, exactly as before: losing quorum is not fixed by a restart.
 The probe settings on [Control-plane HA](/deployment/control-plane-ha/)
 (intervals, thresholds) carry over unchanged.

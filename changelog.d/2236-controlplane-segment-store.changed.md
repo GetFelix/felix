@@ -12,3 +12,7 @@
   `/internal/raft/v2`, so 0.7 and 0.8 members never form one group, and snapshots go
   to a peer as one streamed request. See the docs-site upgrades page, "Control plane
   metadata in 0.8".
+- A control-plane member saves its committed Raft index at most once a second,
+  which brings the 3-member p99 for small writes under redb's. After a crash it
+  answers reads with 503 and stays unready until a leader has committed the end of
+  its log, so it never serves an older state than it showed before (#2236).
