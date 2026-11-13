@@ -3,8 +3,8 @@
 use super::{
     Fence, FenceOk, ForwardCacheError, ForwardCacheOk, ForwardCacheOp, ForwardPublish,
     ForwardPublishError, ForwardPublishOk, Hello, HelloOk, Kind, LeaseForwardCacheOk, NotLeader,
-    PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, ReplicateBootstrap, ReplicateError,
-    ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
+    PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, RaftAnswer, RaftCall, ReplicateBootstrap,
+    ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
 
 /// A decoded internal message.
@@ -68,6 +68,8 @@ pub enum InternalMessage {
     /// is `ForwardCacheOp`'s, always with a condition.
     LeaseForwardCacheOp(ForwardCacheOp),
     LeaseForwardCacheOk(LeaseForwardCacheOk),
+    Raft(RaftCall),
+    RaftAnswer(RaftAnswer),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -169,6 +171,8 @@ impl InternalMessage {
             Self::PreVoteAnswer(_) => Kind::PreVoteAnswer,
             Self::LeaseForwardCacheOp(_) => Kind::LeaseForwardCacheOp,
             Self::LeaseForwardCacheOk(_) => Kind::LeaseForwardCacheOk,
+            Self::Raft(_) => Kind::Raft,
+            Self::RaftAnswer(_) => Kind::RaftAnswer,
         }
     }
 
@@ -181,6 +185,7 @@ impl InternalMessage {
             }
             Self::Fence(m) if m.election.is_some() => Some(PeerCapabilities::ELECTION),
             Self::PreVote(_) | Self::PreVoteAnswer(_) => Some(PeerCapabilities::ELECTION),
+            Self::Raft(_) | Self::RaftAnswer(_) => Some(PeerCapabilities::RAFT),
             _ if self.set_generation().is_some() => Some(PeerCapabilities::ELECTION),
             _ => None,
         };
@@ -319,6 +324,8 @@ impl InternalMessage {
             Self::PreVoteAnswer(m) => m.correlation_id,
             Self::LeaseForwardCacheOp(m) => m.correlation_id,
             Self::LeaseForwardCacheOk(m) => m.correlation_id,
+            Self::Raft(m) => m.correlation_id,
+            Self::RaftAnswer(m) => m.correlation_id,
         }
     }
 }

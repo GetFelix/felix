@@ -1334,7 +1334,7 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      # Fourteen targets; keep the whole job inside a few minutes.
+      # Seventeen targets; keep the whole job inside a few minutes.
       FUZZ_SECONDS: "30"
     steps:
       - name: Checkout
@@ -1361,6 +1361,7 @@ jobs:
             crates/server/felix-mqtt/fuzz
             crates/server/felix-storage/fuzz
             crates/server/felix-kafka/fuzz
+            crates/server/felix-replication/fuzz
 
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --locked
@@ -1389,6 +1390,7 @@ jobs:
             crates/server/felix-mqtt/fuzz/artifacts/
             crates/server/felix-storage/fuzz/artifacts/
             crates/server/felix-kafka/fuzz/artifacts/
+            crates/server/felix-replication/fuzz/artifacts/
           if-no-files-found: ignore
 
   # The required check: fails if any job failed or was cancelled, passes when
