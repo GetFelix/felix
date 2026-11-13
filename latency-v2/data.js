@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794609882990,
+  "lastUpdate": 1794610407576,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69960,6 +69960,72 @@ window.BENCHMARK_DATA = {
             "range": "946.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 609.00\nmean: 1034.80\nstdev: 946.91\ncv: 91.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "569240cd16e23d2d7355bf4392f45aab44364324",
+          "message": "fix(replication): a Raft member's status reads its log positions in one borrow (#2447) (#2474)\n\n* test(replication): read-bound tests compare with the core's commit index, not the metrics watch (#2447)\n\nBoth tests read the read bound, then the commit index from openraft's\nmetrics. The core publishes metrics once per loop iteration, after it has\nhanded committed entries to the state machine, so the state machine can\napply them and move the bound before the metrics show them committed. The\ntests now ask the core for its commit index with with_raft_state, which\nis never behind what it handed out to apply.\n\nSpec-Unaffected: test-only; the read bound and apply rule are unchanged.\n\n* fix(replication): a Raft member's status reads its log positions in one borrow (#2447)\n\nGroup::status borrowed the positions watch twice in one expression, so the\nfirst read guard was still held when the second was taken. An append that\npublished its position in between queued as a writer: the second read then\nwaited behind the writer and the writer behind the first read. The caller\nand every later write of that member stopped for good. Two of 320 runs of\nthe Raft suite under load hung this way, in two different tests.\n\nThe read-bound failures in the same issue were the tests: they compared the\nbound with the commit index from openraft's metrics watch, which the core\npublishes after it has handed the entries on to be applied. The tests ask\nthe core (previous commit), and that question is now bounded. The status\nfield and docs/per-shard-raft.md say what the metrics value is.\n\nSpec-Unaffected: status is a read-only report; the read bound, apply and commit rules are unchanged.",
+          "timestamp": "2026-11-13T14:42:46-08:00",
+          "tree_id": "e61b75b20ec583444e3f6d85296a68ba57ebbdea",
+          "url": "https://github.com/GetFelix/felix/commit/569240cd16e23d2d7355bf4392f45aab44364324"
+        },
+        "date": 1794610397541,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.20\nstdev: 1.64\ncv: 1.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 204.00\nstdev: 1.87\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 257,
+            "range": "23.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 257.00\nmean: 265.60\nstdev: 23.90\ncv: 9.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 198.40\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "3.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 390.60\nstdev: 3.44\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 548,
+            "range": "31.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 548.00\nmean: 535.40\nstdev: 31.39\ncv: 5.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
