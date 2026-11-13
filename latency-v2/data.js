@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794555261792,
+  "lastUpdate": 1794555992665,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68838,6 +68838,72 @@ window.BENCHMARK_DATA = {
             "range": "956.23",
             "unit": "us",
             "extra": "trials: 5\nmedian: 473.00\nmean: 963.60\nstdev: 956.23\ncv: 99.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f293907ceb38b6d2011c83ebd10a1c6231a321d6",
+          "message": "fix(controlplane): a member that has voted never forms again after its log is emptied (#2420)\n\nA member writes a durable reached flag (segment store formation-file bit 1, redb meta key) before it ever votes; decide answers Lost for a reached member with a blank log, so a member whose log directory alone was emptied catches up instead of forming again and voting twice in a term. FelixRaftPlacement adds LogWipes and FormReached (FormLogWipe, FormLogWipeFirstBoot pass; FormLogWipeUnreached violates AckedHeldSurvive). Closes #2407.",
+          "timestamp": "2026-11-13T07:41:22Z",
+          "tree_id": "2708fa4b088594b2cf877f4d7d07d19b46a30b0c",
+          "url": "https://github.com/GetFelix/felix/commit/f293907ceb38b6d2011c83ebd10a1c6231a321d6"
+        },
+        "date": 1794555983501,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.45\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 137,
+            "range": "59.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 137.00\nmean: 163.40\nstdev: 59.37\ncv: 36.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 516,
+            "range": "1185.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 516.00\nmean: 933.20\nstdev: 1185.71\ncv: 127.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "9.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 137.20\nstdev: 9.96\ncv: 7.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 267,
+            "range": "295.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 267.00\nmean: 399.60\nstdev: 295.00\ncv: 73.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 506,
+            "range": "818.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 506.00\nmean: 862.40\nstdev: 818.54\ncv: 94.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
