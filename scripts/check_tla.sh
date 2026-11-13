@@ -110,6 +110,7 @@ module_of() {
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
+    FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -546,6 +547,16 @@ expectations=(
   "FelixRaftMembershipReachMove violates NeverMoves"
   "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
   "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftWritten pass"
+  "FelixRaftWrittenCrash pass"
+  "FelixRaftWrittenLearnerCounts violates AckedHeld"
+  "FelixRaftWrittenOtherTermCounts violates AckedHeld"
+  "FelixRaftWrittenJointOneHalf violates AckedHeld"
+  "FelixRaftWrittenCommits violates CommittedHeld"
+  "FelixRaftWrittenPowerCut violates AckedNeverLost"
+  "FelixRaftWrittenReachEarly violates NeverAcksEarly"
+  "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
+  "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
@@ -900,6 +911,12 @@ fi
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves
 # and FelixRaftLeaseAckWide are not registered: each is registered once a
 # dispatch run gives its declared outcome.
+# FelixRaftWrittenFailover passes in 46 minutes with 8 workers on a 32-core
+# machine and runs nightly (tla-walk.yml). FelixRaftWrittenJoint passes in
+# 2 h 10 min there, too long for a hosted runner's six hours, so only that
+# box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
+# did not finish in two hours there (docs/formal/README.md has how far each
+# got).
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1127,6 +1144,8 @@ weights=(
   "FelixRaftReformTwoRotatedOffsetsTerms 12"
   "FelixRaftSwitchGenZeroFull 37"
   "FelixRaftMembershipTerms 109"
+  "FelixRaftWritten 40"
+  "FelixRaftWrittenCrash 5"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"

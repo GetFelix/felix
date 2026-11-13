@@ -19,8 +19,11 @@ use openraft::raft::{
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
+use felix_storage::raft_log::LogPoint;
+
 use super::group::Pace;
 use super::types::{GroupId, MemberId, ShardTypes};
+use super::written::Reports;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -30,6 +33,9 @@ pub struct RaftRequest {
     /// On a leader's append: the longest the leader may now stay silent,
     /// in milliseconds. Zero on every other message.
     pub(crate) beat: u64,
+    /// On a leader's append that carries entries: the leader wants to be
+    /// told once they are written, before their fsync.
+    pub(crate) report: bool,
     /// How long the sender waits for the answer. The receiver drops an
     /// answer it cannot give in time, so a stuck member holds nothing.
     pub(crate) deadline: Duration,
@@ -46,6 +52,12 @@ pub(crate) enum Request {
         meta: SnapshotMetaOf<ShardTypes>,
     },
     TransferLeader(TransferLeaderRequest<ShardTypes>),
+    /// A follower's written position: the last entry `from` has written,
+    /// fsynced or not. Evidence for that member and that log id only.
+    Written {
+        from: MemberId,
+        at: LogPoint,
+    },
 }
 
 impl RaftRequest {
@@ -67,6 +79,7 @@ impl fmt::Debug for RaftRequest {
             Request::PreVote(_) => "pre-vote",
             Request::Snapshot { .. } => "snapshot",
             Request::TransferLeader(_) => "transfer-leader",
+            Request::Written { .. } => "written",
         };
         write!(f, "{kind} for {} of {}", self.to, self.group)
     }
@@ -80,6 +93,8 @@ pub(crate) enum Reply {
     Vote(VoteResponse<ShardTypes>),
     Snapshot(SnapshotResponse<ShardTypes>),
     TransferLeader(TransferLeaderResponse<ShardTypes>),
+    /// A written position was taken. It says nothing back.
+    Written,
 }
 
 /// Why a message got no answer. Raft treats each the same way: the member
@@ -154,6 +169,7 @@ impl RaftTransport for AgreeingPeers {
             Request::TransferLeader(_) => {
                 return Err(Refused::Unreachable("no peer to lead".into()));
             }
+            Request::Written { .. } => Reply::Written,
         }))
     }
 }
@@ -164,6 +180,7 @@ impl RaftTransport for AgreeingPeers {
 pub(crate) struct Router {
     transport: Arc<dyn RaftTransport>,
     pace: Arc<Pace>,
+    reports: Arc<Reports>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -171,8 +188,16 @@ pub(crate) struct Router {
 struct WrongReply;
 
 impl Router {
-    pub(crate) fn new(transport: Arc<dyn RaftTransport>, pace: Arc<Pace>) -> Self {
-        Self { transport, pace }
+    pub(crate) fn new(
+        transport: Arc<dyn RaftTransport>,
+        pace: Arc<Pace>,
+        reports: Arc<Reports>,
+    ) -> Self {
+        Self {
+            transport,
+            pace,
+            reports,
+        }
     }
 
     async fn call(
@@ -200,6 +225,8 @@ impl Router {
             group,
             to: to.clone(),
             beat: sent.as_ref().map_or(0, |sent| sent.gap),
+            report: matches!(&body, Request::Append(rpc) if !rpc.entries.is_empty())
+                && self.reports.wanted(),
             deadline: option.hard_ttl(),
             body,
         };

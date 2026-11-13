@@ -595,6 +595,20 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachMove.cfg` | witness: a whole move commits and an old voter is out | violate `NeverMoves` |
 | `FelixRaftMembershipReachStepDown.cfg` | witness: a leader moved out of the voter set steps down | violate `NeverRemovedLeaderStepsDown` |
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
+| `FelixRaftWritten.cfg` | `FelixRaftWritten.tla`: three voters, one term, two writes, one process crash, one power cut, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld` (4.3M distinct states) |
+| `FelixRaftWrittenCrash.cfg` | two process crashes and no power cut | pass the same and `AckedNeverLost` (0.6M distinct states) |
+| `FelixRaftWrittenFailover.cfg` | two terms, one write, one power cut | pass the same as `FelixRaftWritten.cfg` (56.0M distinct states, 46 minutes with 8 workers on a 32-core machine); not registered for pull requests, runs nightly (`tla-walk.yml`) |
+| `FelixRaftWrittenTerms.cfg` | two terms, two writes and no crash: a deposed leader's tail at or past the new leader's record | pass the same and `AckedNeverLost`; not registered: no violation in 206M distinct states and 2 hours 13 minutes with 8 workers on a 32-core machine, unfinished |
+| `FelixRaftWrittenJoint.cfg` | three voters and a learner, one swap through a joint configuration, one write | pass the same and `AckedNeverLost` (111.2M distinct states, 2 hours 10 minutes with 8 workers on a 32-core machine); not registered: too long for a hosted runner, so only that run checks it. `FelixRaftWrittenJointOneHalf.cfg` and `FelixRaftWrittenLearnerCounts.cfg` violate within seconds on the same model |
+| `FelixRaftWrittenJointFailover.cfg` | the same across a change of leader | pass the same and `AckedNeverLost`; not registered: no violation in 217M distinct states and 2 hours 13 minutes with 8 workers on a 32-core machine, unfinished |
+| `FelixRaftWrittenLearnerCounts.cfg` | a learner's written report counts | violate `AckedHeld` |
+| `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
+| `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
+| `FelixRaftWrittenCommits.cfg` | the commit index counts written reports | violate `CommittedHeld` |
+| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut: the loss the early acknowledgement leaves open | violate `AckedNeverLost` |
+| `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
+| `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
+| `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
@@ -2567,6 +2581,93 @@ Abstracted: storage (an entry in a log is durable; `FelixRaft.tla` covers the
 adapter's fsync rules), crashes, snapshots, the subscriber and the lease. A
 message is one atomic step between two brokers. A deposed leader's claims are
 dropped, which stands for the adapter's term gate.
+
+### Acknowledging a `Quorum` write on a written majority
+
+`FelixRaftWritten.tla` models the early acknowledgement of a `Quorum` write on
+a `Periodic` stream, as [per-shard Raft](../per-shard-raft.md) decides it
+("Two signals from one append"). A follower tells the leader how far its log is
+written before its fsync, and the leader acknowledges a record once a majority
+of the voters has written it, or at its commit, whichever is first.
+
+What is modelled:
+
+- A broker's log is what it has written. `synced` is how far that is on disk.
+  A process crash keeps the whole log, because the kernel has it. A power cut
+  keeps a prefix no shorter than `synced`.
+- A written report is the id (term and index) of the sender's last entry. The
+  leader keeps the latest one from each member and can act on it after the
+  member's log has changed. Nothing ties a report to the sender's vote, and
+  nothing clears reports at an election: the term on the log id is the whole
+  defence.
+- The leader counts a member for a record of its own term when the report's
+  log id carries the leader's term and is at or past the record. It counts
+  itself. Only voters of the latest configuration in its log count, a majority
+  of each half while it is joint, and never a learner.
+- The count releases the acknowledgement and nothing else. The commit index
+  counts fsynced copies, as in `FelixRaft.tla`.
+- A voter compares the candidate's log with its own, unsynced entries
+  included, as openraft does. Comparing fsynced positions instead would let
+  a candidate without an acknowledged record win a follower that has
+  written it, and cut it there, with no crash.
+- One membership change: three voters and a learner, and a swap of one voter
+  for the learner through a joint configuration.
+
+What the acknowledgement promises:
+
+- `AckedHeld`: no broker that could still win an election lacks an
+  acknowledged record, unless a power cut took that record from a copy before
+  its fsync and the record was never committed. "Could still win" is the same
+  test as `AckedSurvive` in `FelixRaftMembership.tla`.
+- `AckedNeverLost`: the same with no exception. It is checked wherever no
+  broker loses power.
+- `CommittedHeld`: no broker that could still win an election lacks a
+  committed entry, power cuts included.
+
+What has run to the end: one term with two writes, a process crash and a
+power cut (`FelixRaftWritten.cfg`), and the same with two crashes and no power
+cut, where `AckedNeverLost` passes too (`FelixRaftWrittenCrash.cfg`), a
+change of leader with a power cut (`FelixRaftWrittenFailover.cfg`), and the
+membership change (`FelixRaftWrittenJoint.cfg`). Two terms with two writes
+(`FelixRaftWrittenTerms.cfg`) and the membership change across a change of
+leader (`FelixRaftWrittenJointFailover.cfg`) found no violation but did not
+finish; the table above has how far each got. Every twin below, the joint and second-term ones included, fails
+within seconds.
+
+So the loss this acknowledgement leaves open is exactly one: a copy that held
+the record loses power before its fsync, and a majority then elects without a
+copy that still holds it. `FelixRaftWrittenPowerCut.cfg` pins it as an expected
+violation of `AckedNeverLost` with every rule on and one power cut. At three
+voters the leader and one follower hold the record, one of the two loses power,
+and it and the third voter can elect while the last copy is not heard. The
+copy that loses power can be the leader's own. The hybrid does not lose the
+record there: a follower back from a machine crash has a new storage identity
+and is not counted, so the shard waits (issue #2423).
+
+A failed flush counts as a power cut for that copy. A Raft log whose flush
+failed is cut back to its last sync when it restarts, so it comes back without
+the record just as if it had lost power, and the model's power cut covers it.
+Such a copy must not vote with the cut log once the acknowledgement is wired
+(issue #2469).
+
+Each knob drops one rule, and each twin fails with no power cut at all:
+
+- `LearnerCounts`: a learner's report counts. The leader and the learner hold
+  the record, and the other two voters elect without it.
+- `OtherTermCounts`: a report counts by its index, whatever term its log id
+  carries. A deposed leader's unreplicated tail reaches past the new leader's
+  record, the new leader counts it, and the deposed leader can be elected
+  again without the record.
+- `JointOneHalf`: a majority of either half of a joint configuration is
+  enough. A record after an uncommitted joint entry is acknowledged on a
+  majority of the new half, and the old voters, which never saw the joint
+  entry, elect without it.
+- `WrittenCommits`: the commit index counts written reports too. An entry
+  commits on copies that are not on disk, and one power cut takes it.
+
+Abstracted: votes are durable and followers do not learn the commit index
+(`FelixRaft.tla` has the adapter's rules and what followers apply), snapshots,
+the subscriber and the lease. A message is one atomic step between two brokers.
 
 ### Copy identity under Raft
 
