@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794530695746,
+  "lastUpdate": 1794531062710,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -67980,6 +67980,72 @@ window.BENCHMARK_DATA = {
             "range": "31.38",
             "unit": "us",
             "extra": "trials: 5\nmedian: 397.00\nmean: 404.20\nstdev: 31.38\ncv: 7.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efda6e86d109d0404038f361f51688624011d795",
+          "message": "fix(controlplane): a redb build refuses a segment-store data dir (#2363)\n\nA data dir written by a --cfg felix_segment_store build holds store/ and no raft.redb. The default build created an empty raft.redb there and started as a new member, so restarting every member that way formed a new group without the metadata. open_member and form-without now refuse any store/ before writing, and the error names the switch and the rollback/restore path. Docs in metadata-raft-design.md separate a fresh segment store (no way back to redb) from a converted one.",
+          "timestamp": "2026-11-13T00:45:47Z",
+          "tree_id": "ba57c05a669ef73fa0ba38ed6b45b956c8d0f4dc",
+          "url": "https://github.com/GetFelix/felix/commit/efda6e86d109d0404038f361f51688624011d795"
+        },
+        "date": 1794531052867,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 152.60\nstdev: 0.89\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "8.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 208.60\nstdev: 8.05\ncv: 3.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 298,
+            "range": "934.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 845.80\nstdev: 934.49\ncv: 110.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.60\nstdev: 2.07\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "15.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 395.40\nstdev: 15.76\ncv: 3.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 563,
+            "range": "728.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 563.00\nmean: 865.60\nstdev: 728.14\ncv: 84.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
