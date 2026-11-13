@@ -42,7 +42,13 @@ struct TokenCodec;
 
 impl EntryCodec<TokenTypes> for TokenCodec {
     fn encode_data(&self, data: &Proposed) -> io::Result<AppendRecord> {
-        Ok(record(RecordMark::None, data.body.as_bytes()))
+        let mut record = record(RecordMark::None, data.body.as_bytes());
+        if data.body == UNWRITABLE {
+            // One byte more than a record's publisher may be.
+            let publisher = vec![b'p'; crate::segment::format::MAX_PUBLISHER_BYTES + 1];
+            record.publisher = Some(publisher.into());
+        }
+        Ok(record)
     }
 
     fn decode_data(&self, record: LogRecord) -> io::Result<Proposed> {
@@ -72,6 +78,9 @@ impl EntryCodec<TokenTypes> for TokenCodec {
         Codec.decode_node_id(leader)
     }
 }
+
+/// A body the log refuses to write.
+const UNWRITABLE: &str = "unwritable";
 
 fn token_log(log: DiskLog) -> TokenLog {
     RaftLog::new(log, TokenCodec).expect("a Raft log")
@@ -215,6 +224,36 @@ async fn a_failed_append_resolves_no_token_as_written() {
         "an append on a poisoned log"
     );
     assert_eq!(refused_at.await, None);
+}
+
+/// An append larger than a segment whose last batch the log refuses. The
+/// batches before it are written by then, and still no token resolves as
+/// written and the written position does not move: an append reports all
+/// of its entries or none.
+#[tokio::test]
+async fn a_failure_on_a_later_batch_resolves_no_token() {
+    let dir = tempdir().expect("dir");
+    let mut raft = token_log(DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open"));
+    let positions = raft.positions();
+    append_flushed(&mut raft, vec![TokenEntry::new_blank(id(1, 0))]).await;
+    let before = *positions.borrow();
+    let tail = raft.disk_log().tail_now();
+
+    let body = "x".repeat(60);
+    let (early, early_at) = proposed(1, 1, &body);
+    let mut entries = vec![early];
+    entries.extend((2..9).map(|index| plain(1, index, &body)));
+    let (refused, refused_at) = proposed(1, 9, UNWRITABLE);
+    entries.push(refused);
+
+    assert!(append(&mut raft, entries).await.is_err(), "the last batch");
+    assert!(
+        raft.disk_log().tail_now() > tail,
+        "an earlier batch must have been written"
+    );
+    assert_eq!(early_at.await, None);
+    assert_eq!(refused_at.await, None);
+    assert_eq!(*positions.borrow(), before);
 }
 
 /// The token is the proposer's alone: it is not in the record, and an entry

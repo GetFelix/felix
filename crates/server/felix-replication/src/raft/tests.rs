@@ -22,6 +22,8 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod propose;
+
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 

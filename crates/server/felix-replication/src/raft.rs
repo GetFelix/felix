@@ -9,6 +9,8 @@
 //! [`RaftTransport`], and [`GroupRuntime::handle`] takes the ones that
 //! arrive.
 //!
+//! A publish goes in through [`RaftEngine::propose`].
+//!
 //! Nothing in the broker calls this yet. No shard runs on it, and the
 //! `raft` feature that compiles it is in no release. The design is in
 //! `docs/per-shard-raft.md`, "Group runtime".
@@ -16,16 +18,20 @@
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
 mod codec;
+mod engine;
 mod group;
 mod machine;
 mod network;
+mod propose;
 mod runtime;
 #[cfg(test)]
 mod tests;
 mod ticker;
 mod types;
 
+pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
+pub use propose::{AckAt, Batch, Record};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, Role, RuntimeConfig,
 };
