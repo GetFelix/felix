@@ -152,8 +152,10 @@ later share a group without changing a caller.
 ### Group and member identity
 
 A group id is the `ShardKey` plus a group epoch, which starts at 0 and rises
-only when the group is re-formed (below). A member id is the pair of broker
-id and copy id.
+only when the group is re-formed (below). A stream shard's group under
+`FELIX_SHARD_ENGINE=raft` uses the stream's incarnation as its epoch, so
+members of a deleted stream never hear the group of the stream recreated
+under its name. A member id is the pair of broker id and copy id.
 
 The copy id is minted in the shard's own directory when the member is first
 created there, and is fsynced with the directory. It is per shard on
@@ -1511,7 +1513,10 @@ Membership changes are not built yet
   pre-vote, which changes nothing on the member asked. It forms the group
   only when each one answers that it holds no vote and no entry. A member
   that does not answer, or that holds either, stops it, and it asks again
-  on the next routing pass. The other members never form a group. They
+  on the next routing pass. The question names the stream's incarnation,
+  so a member still on an older incarnation of the stream (its broker has
+  not seen the stream recreated yet) does not answer it, and that also
+  stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart. A broker that
@@ -1531,14 +1536,20 @@ Two cases this does not cover. If placement changes a full set while it is
 forming, two brokers can each be the lowest of their own set and form two
 groups that share members. And if placement replaces every member of a
 formed group, the new set finds no member the group reached and forms a
-second one. Both need a placement change the list above already rules out.
+second one. Nothing stops either, so operators must not make these
+changes. At replication factor 1 the set is one broker, so any
+re-placement replaces every member.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,
 > `a_group_forms_only_when_every_member_answers_the_lowest`,
 > `a_broker_placed_on_a_formed_group_does_not_form_it_again`,
 > `a_member_placement_drops_keeps_serving`,
-> `a_dropped_member_reopens_after_a_restart`;
+> `a_dropped_member_reopens_after_a_restart`,
+> `a_dropped_member_reopens_after_a_failed_read`,
+> `a_member_of_an_earlier_incarnation_does_not_answer_for_a_later_one`;
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_vote_or_an_entry_alone_is_not_blank`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `a_short_placement_acknowledges_nothing`.
 
@@ -1773,6 +1784,33 @@ checkpoint. Whether a key is live is judged from the log at `N`, by the
 time the record at `N` carries, and never from a copy's own clock, so two
 copies with skewed clocks compute the same digest. A voter's base snapshot is that state, and the log below `N` is
 never compared.
+
+**Fsync on commit, on every copy.** The switch needs every copy of the
+shard on `OnCommit`, not only the seal leader. A copy that is not neither
+answers the seal's fence nor acknowledges `N`. Otherwise a `Periodic`
+follower could acknowledge `N`, be recorded as a voter, and then never
+start, because a Raft log refuses to open unless it fsyncs on commit
+(`crates/server/felix-storage/src/raft_log.rs`). Today there is no per-stream fsync policy: the mode is
+one broker-wide setting read at start (`FELIX_DURABLE_FSYNC_MODE`), and the
+default is `Periodic` at 250 ms. Neither the control plane's shard record
+nor `felix-replication` holds it. So each copy reports its fsync mode as a
+new field, the mode cannot change during a switch without a restart, and a
+cluster on the default must restart every broker on `on_commit` before any
+shard switches. That is one of the `shard_raft` prerequisites.
+
+**Only the sealing copy leads.** A follower takes catch-up records for the
+seal only from the copy that sealed. Catch-up batches carry the leader's
+copy id, and the sealed promise stores it beside the follower's own. A seal
+leader that was wiped comes back under a new copy id, so no follower takes
+records from it or cuts its tail to it. This is the same storage identity
+rule the hybrid already follows for a leader that lost records: it "leads
+nothing from the copy it led" (`replication-design.md`, "Failure model").
+
+**What a sealed leader still serves.** The seal leader keeps serving
+catch-up and rebuilds below `N` while sealed. A copy that holds the sealed
+promise refuses hybrid batches, rebuild writes and ballots for the shard;
+a copy without it, such as a wiped follower back under a new id, can still
+catch up from the seal leader and acknowledge `N` under its new id.
 
 The shard is closed from the seal until the Raft leader opens: one hybrid
 promotion plus one Raft election. Shards switch a few at a time, paced like
@@ -2096,7 +2134,7 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |

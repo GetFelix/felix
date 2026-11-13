@@ -10,14 +10,14 @@ use arc_swap::ArcSwap;
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::impls::leader_id_std::LeaderId;
-use openraft::raft::VoteRequest;
+use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::ticker;
-use super::types::{GroupId, MemberId};
+use super::types::{GroupId, MemberId, ShardTypes};
 use crate::ShardKey;
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
@@ -472,7 +472,7 @@ impl GroupRuntime {
                     let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
                     match tokio::time::timeout(within, transport.send(request)).await {
                         Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
-                            if answer.vote.leader_id.term == 0 && answer.last_log_id.is_none() {
+                            if blank(&answer) {
                                 Ok(())
                             } else {
                                 Err(NotBlank::Formed(member.clone()))
@@ -617,4 +617,10 @@ impl GroupRuntime {
             .trip_ticker
             .store(true, Ordering::Relaxed);
     }
+}
+
+/// Whether a pre-vote answer comes from a member no group has reached: it
+/// holds no vote and no entry. Either one alone means a group got there.
+pub(super) fn blank(answer: &VoteResponse<ShardTypes>) -> bool {
+    answer.vote.leader_id.term == 0 && answer.last_log_id.is_none()
 }

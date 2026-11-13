@@ -163,12 +163,15 @@ impl DiskLogProvider {
 
     /// Whether [`Self::claim_for_raft`] has marked `shard`'s directory at
     /// `incarnation`, on this run or an earlier one. Marks nothing.
-    pub fn claimed_for_raft(&self, shard: &ShardKey, incarnation: u64) -> Result<bool> {
+    ///
+    /// `None` when `incarnation` is not the one set for the stream: nothing
+    /// is read, so the answer may differ once the stream catches up.
+    pub fn claimed_for_raft(&self, shard: &ShardKey, incarnation: u64) -> Result<Option<bool>> {
         if self.incarnation_of(shard) != Some(incarnation) {
-            return Ok(false);
+            return Ok(None);
         }
         let dir = layout::incarnation_dir(&self.root, shard, incarnation);
-        engine_marker::claimed_for_raft(&dir, &layout::shard_label(shard))
+        engine_marker::claimed_for_raft(&dir, &layout::shard_label(shard)).map(Some)
     }
 
     /// What [`Self::open_incarnation`] would return, when the log is open

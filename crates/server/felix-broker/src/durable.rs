@@ -266,7 +266,8 @@ impl DurableStorage {
     }
 
     /// Whether [`Self::claim_for_raft`] has marked this shard's directory,
-    /// on this run or an earlier one. Marks nothing.
+    /// on this run or an earlier one. Marks nothing. `None` when
+    /// `incarnation` is not the stream's current one, without reading.
     pub fn claimed_for_raft(
         &self,
         tenant: &str,
@@ -274,7 +275,7 @@ impl DurableStorage {
         stream: &str,
         shard: u32,
         incarnation: u64,
-    ) -> Result<bool> {
+    ) -> Result<Option<bool>> {
         let key = ShardKey {
             tenant: tenant.to_string(),
             namespace: namespace.to_string(),
