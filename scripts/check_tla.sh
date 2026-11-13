@@ -811,6 +811,7 @@ expectations=(
   "FelixRaftCacheTrimSnapshotDropsFloor violates MembersAgree"
   "FelixRaftCacheTrimRetireLocal violates MembersAgree"
   "FelixRaftCacheTrimFloorPastUnanswered violates ForgetsOnlyDone"
+  "FelixRaftCacheTrimNoFloorClamp violates ForgetsOnlyDone"
   "FelixRaftCacheTrimReachForgotten violates NeverForgotten"
   "FelixRaftCacheTrimReachRetryAboveFloor violates NeverRetryAboveFloor"
   "FelixRaftCacheTrimReachRetryAfterRetire violates NeverRetryAfterRetire"

@@ -157,6 +157,12 @@
 (*                         entry.                                          *)
 (*   FloorPastUnanswered -- the producer sends its own sequence as the     *)
 (*                         floor, past requests it has no answer for.      *)
+(*   NoFloorClamp       -- apply raises the floor to the entry's floor     *)
+(*                         even past the entry's own sequence. Only        *)
+(*                         FloorPastOwn sends such a floor.                *)
+(*                                                                         *)
+(* FloorPastOwn is not a dropped rule: it is a producer that sends its     *)
+(* sequence plus one as the floor, which apply must clamp.                 *)
 (*                                                                         *)
 (* SnapshotDropsExpired is not a dropped rule. It picks which of two       *)
 (* allowed snapshots a member builds: with it, the snapshot holds live     *)
@@ -194,7 +200,9 @@ CONSTANTS
     SnapshotDropsFloor,
     RetireDropsFloor,
     RetireLocal,
-    FloorPastUnanswered
+    FloorPastUnanswered,
+    FloorPastOwn,
+    NoFloorClamp
 
 VARIABLES
     clog,       \* the committed entries
@@ -292,7 +300,8 @@ Step(s, e, i, t) ==
             ELSE IF e.op \notin NotDeduped /\ s.ans[e.rid] # NoAns THEN s1
             ELSE IF Forgot(s, e) THEN s1
             \* Never past the request itself, whose answer was just kept.
-            ELSE Raise(Write(s1, e, i, t), Min2(e.floor, e.rid))
+            ELSE Raise(Write(s1, e, i, t),
+                       IF NoFloorClamp THEN e.floor ELSE Min2(e.floor, e.rid))
 
 \* The fold of the committed log, always at the entries' own times.
 RECURSIVE FoldTo(_)
@@ -343,9 +352,11 @@ SnapFloor ==
 Given(r) == \E g \in given : g.rid = r
 
 \* The floor the producer sends with a request: the lowest sequence it has
-\* no answer for. With FloorPastUnanswered, the request's own sequence.
+\* no answer for. With FloorPastUnanswered, the request's own sequence;
+\* with FloorPastOwn, one past it.
 ClientFloor(r) ==
     IF ~Trim THEN 0
+    ELSE IF FloorPastOwn THEN r + 1
     ELSE IF FloorPastUnanswered THEN r
     ELSE SetMin({q \in Requests : ~Given(q)} \cup {r})
 

@@ -860,6 +860,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCacheTrimSnapshotDropsFloor.cfg` | the snapshot keeps the answers and leaves out the floor | violate `MembersAgree`: in six steps a member restores a snapshot holding floor 0 while the others hold floor 1. The check compares state, so this is the difference itself; the trace does not go on to a retry that the two members answer differently |
 | `FelixRaftCacheTrimRetireLocal.cfg` | the leader forgets a retired producer itself, with no entry | violate `MembersAgree` |
 | `FelixRaftCacheTrimFloorPastUnanswered.cfg` | the producer sends its own sequence as the floor, past a request it has no answer for | violate `ForgetsOnlyDone`: that request commits later and is answered "forgotten", never applied |
+| `FelixRaftCacheTrimNoFloorClamp.cfg` | the producer sends its sequence plus one as the floor and apply does not clamp it to the entry's sequence | violate `ForgetsOnlyDone`: the first copy drops its own answer, and a retry that commits before the answer reaches the producer is answered "forgotten" |
 | `FelixRaftCacheTrimReachForgotten.cfg` | witness: a late copy below the floor answers "forgotten" | violate `NeverForgotten` |
 | `FelixRaftCacheTrimReachRetryAboveFloor.cfg` | witness: a retry commits after the floor passed the other request and keeps its answer | violate `NeverRetryAboveFloor` |
 | `FelixRaftCacheTrimReachRetryAfterRetire.cfg` | witness: a late copy commits after the retire entry | violate `NeverRetryAfterRetire` |
