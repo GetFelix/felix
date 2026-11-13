@@ -144,9 +144,8 @@ const GROUPS: u32 = 40;
 /// The design measured 180 KB for a leader and 145 KB for a follower, so
 /// about 157 KB a member with a third of them leading. The bound leaves room
 /// for a debug build. A member that costs more than this breaks the
-/// 5,000-member gate, and the design has to hear about it.
-/// It costs more today, in openraft's channels and statistics (#2335):
-/// see "The groups-per-broker gate" in the design.
+/// 5,000-member gate, and the design has to hear about it. See "The
+/// groups-per-broker gate" in the design.
 const MEMBER_BUDGET: usize = 256 * 1024;
 
 #[derive(Default)]

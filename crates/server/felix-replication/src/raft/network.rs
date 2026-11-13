@@ -5,8 +5,10 @@
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use async_trait::async_trait;
+use openraft::EntryPayload;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{RPCOption, RaftNetworkFactory};
@@ -28,6 +30,9 @@ pub struct RaftRequest {
     /// On a leader's append: the longest the leader may now stay silent,
     /// in milliseconds. Zero on every other message.
     pub(crate) beat: u64,
+    /// How long the sender waits for the answer. The receiver drops an
+    /// answer it cannot give in time, so a stuck member holds nothing.
+    pub(crate) deadline: Duration,
     pub(crate) body: Request,
 }
 
@@ -174,9 +179,19 @@ impl Router {
         &self,
         to: MemberId,
         group: GroupId,
-        body: Request,
+        mut body: Request,
         option: &RPCOption,
     ) -> Result<Reply, Unreachable<ShardTypes>> {
+        // A transport inside one process hands the message over as it is.
+        // A token that went with it would be resolved by the follower's
+        // append and tell the publisher the leader had written.
+        if let Request::Append(rpc) = &mut body {
+            for entry in &mut rpc.entries {
+                if let EntryPayload::Normal(command) = &mut entry.payload {
+                    command.written = None;
+                }
+            }
+        }
         let sent = match &body {
             Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
             _ => None,
@@ -185,6 +200,7 @@ impl Router {
             group,
             to: to.clone(),
             beat: sent.as_ref().map_or(0, |sent| sent.gap),
+            deadline: option.hard_ttl(),
             body,
         };
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;

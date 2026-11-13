@@ -87,7 +87,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
 /// Reading it means touching the group, and with thousands of groups that
 /// is most of what an interval costs. Anything other than a timer check
 /// that moves a group's due time moves it at least a heartbeat ahead of the
-/// moment it runs (`Pace::sending`, `Pace::followed`), so a group read now
+/// moment it runs (`Pace::wrote`, `Pace::followed`), so a group read now
 /// and found not due cannot become due sooner than that.
 #[derive(Default)]
 struct Looks {
