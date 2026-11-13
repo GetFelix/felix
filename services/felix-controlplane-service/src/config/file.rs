@@ -26,6 +26,7 @@ pub(super) struct ControlPlaneConfigOverride {
     metrics_bind: Option<String>,
     region_id: Option<String>,
     storage: Option<StorageOverride>,
+    shard_engine: Option<String>,
     changes_limit: Option<u64>,
     change_retention_max_rows: Option<i64>,
     oidc_allowed_algorithms: Option<Vec<String>>,
@@ -88,6 +89,9 @@ impl ControlPlaneConfig {
         }
         if let Some(value) = override_cfg.region_id {
             config.region_id = value;
+        }
+        if let Some(value) = override_cfg.shard_engine {
+            config.shard_engine = value.parse()?;
         }
         if let Some(value) = override_cfg.changes_limit {
             config.changes_limit = value;

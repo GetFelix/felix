@@ -1413,14 +1413,21 @@ impl DiskLog {
     }
 }
 
+/// A stalled device, for tests here and in other crates. Not in a plain
+/// release build, like [`crate::fault`].
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Hold every flush of this log until the guard is dropped. Writes
+    /// still land.
+    #[doc(hidden)]
+    pub async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.durability.lock_flushes().await
+    }
+}
+
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Hold every flush until the guard is dropped.
-    pub(crate) async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.inner.durability.lock_flushes().await
-    }
-
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {

@@ -107,6 +107,7 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
         group: group(0),
         to: old.clone(),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: {
             let candidate = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("b", 1));

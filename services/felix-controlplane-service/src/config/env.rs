@@ -6,6 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use super::api_tls::api_tls_from_env;
 use super::api_ui::{api_ui_from_env, api_ui_path_from_env};
 use super::bootstrap::bootstrap_tls_from_env;
+use super::shard_engine::shard_engine_from_env;
 use super::storage::{POSTGRES_REMOVED, raft_from_env};
 use super::{
     BootstrapConfig, ControlPlaneConfig, DEFAULT_BOOTSTRAP_BIND_ADDR,
@@ -99,6 +100,7 @@ impl ControlPlaneConfig {
             region_id,
             storage,
             raft,
+            shard_engine: shard_engine_from_env()?,
             changes_limit,
             change_retention_max_rows,
             oidc_allowed_algorithms: std::env::var("FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS")

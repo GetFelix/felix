@@ -39,6 +39,11 @@ check() {
     expected="$(grep -vx '# total: ? minutes' <<<"$expected")"
     got="$(grep -v '^# total: ' <<<"$got")"
   fi
+  # `# shards: ?` likewise, for lists whose size follows the registered set.
+  if grep -qx '# shards: ?' <<<"$expected"; then
+    expected="$(grep -vx '# shards: ?' <<<"$expected")"
+    got="$(grep -v '^# shards: ' <<<"$got")"
+  fi
   if [ "$got" != "$expected" ]; then
     echo "FAIL $name"
     diff <(echo "$expected") <(echo "$got") | head -20 || true
@@ -99,8 +104,9 @@ rm "$work/scripts/check_tla.sh.bak"
 check "pr_minutes line" "FelixRaftSwitchLag
 $(footer 4 1)"
 
-# A new module's `module_of` line is that module's configurations, not all.
-sed -i.bak 's/^    FelixRaft\*) echo FelixRaft ;;$/    FelixRaftWritten*) echo FelixRaftWritten ;;\
+# A new module's `module_of` line is that module's configurations, not all
+# (none here: no registered configuration starts with FelixRaftUnused).
+sed -i.bak 's/^    FelixRaft\*) echo FelixRaft ;;$/    FelixRaftUnused*) echo FelixRaftUnused ;;\
 &/' "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
 check "module_of line added" "$(footer 0 0)"
@@ -111,7 +117,7 @@ sed -i.bak 's/^    FelixRaftSleep\*) echo FelixRaftSleep ;;$/    FelixRaftSleepy
   "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
 check "module_of mapping changed" "$(registered 'FelixRaftSleep[A-Za-z]*')
-$(footer ? 1)"
+$(footer ? ?)"
 
 # The default branch is not a mapping of one pattern: it is all of them.
 sed -i.bak 's/^    \*) echo FelixShard ;;$/    *) echo FelixRaft ;;/' "$work/scripts/check_tla.sh"

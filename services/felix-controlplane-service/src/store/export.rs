@@ -98,6 +98,16 @@ pub struct ExportedState {
     /// As `deleted_stream_names`, for caches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) deleted_cache_names: Vec<crate::model::CacheKey>,
+    /// The group's identity, recorded once at formation. Absent from older
+    /// snapshots and while none is recorded, as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cluster_identity: Option<crate::store::identity::ClusterIdentity>,
+    /// Every stream and cache an import restored, at its incarnation. Their
+    /// shards never start a record of the brokers placed in the epoch: see
+    /// [`Self::forget_placed`]. Absent from older snapshots and left out
+    /// while empty, as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub(super) unplaced: std::collections::BTreeSet<crate::model::ShardOwner>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -105,6 +115,49 @@ fn is_zero(value: &u64) -> bool {
 }
 
 impl ExportedState {
+    /// Drops every shard's record of brokers placed in its epoch
+    /// ([`ShardAssignment::placed`]), in the assignments and in the change
+    /// log, and with `mark` marks every stream and cache restored so none of
+    /// its shards starts one. An export is older than the epoch it is restored into: a
+    /// broker placed and moved away since is missing from it, including on
+    /// a shard the export has unassigned. A re-form trusting such a record
+    /// would skip that disk; without one it blocks the group instead.
+    pub(crate) fn forget_placed(&mut self, mark: bool) {
+        for (_, assignment) in &mut self.shards {
+            assignment.placed = None;
+        }
+        for change in &mut self.shard_changes.items {
+            if let Some(assignment) = &mut change.assignment {
+                assignment.placed = None;
+            }
+        }
+        if !mark {
+            return;
+        }
+        let streams = self.streams.iter().map(|(key, stream)| {
+            ShardKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                stream: key.stream.clone(),
+                shard: 0,
+                kind: crate::model::ShardKind::Stream,
+            }
+            .owner(stream.incarnation)
+        });
+        let caches = self.caches.iter().map(|(key, cache)| {
+            ShardKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                stream: key.cache.clone(),
+                shard: 0,
+                kind: crate::model::ShardKind::Cache,
+            }
+            .owner(cache.incarnation)
+        });
+        let owners: Vec<_> = streams.chain(caches).collect();
+        self.unplaced.extend(owners);
+    }
+
     /// What the operator is about to move, for the tool's own output —
     /// the cheap sanity check before and after a cutover.
     pub fn summary(&self) -> String {
@@ -317,6 +370,12 @@ pub async fn export_state_from(
         cache_tombstones: store.cache_tombstones().await?,
         deleted_stream_names: store.deleted_stream_names().await?,
         deleted_cache_names: store.deleted_cache_names().await?,
+        cluster_identity: match store.group_identity().await? {
+            crate::store::identity::GroupIdentity::Recorded(identity) => Some(identity),
+            _ => None,
+        },
+        // An import marks every stream and cache it restores anyway.
+        unplaced: Default::default(),
     })
 }
 

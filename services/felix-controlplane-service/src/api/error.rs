@@ -65,6 +65,8 @@ pub fn api_conflict(code: &str, message: &str) -> ApiError {
 /// Except a Raft write that ran out its budget, because the group is electing
 /// or has lost quorum, which is 503 `unavailable`. It may still have
 /// committed, so a retried create can answer 409 and a retried delete 404.
+/// And a create refused until the group records its identity, which is 503
+/// `not_ready`.
 pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
     if let StoreError::Unexpected(inner) = err
         && inner
@@ -76,6 +78,15 @@ pub fn api_internal(message: &str, err: &StoreError) -> ApiError {
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
             "no raft leader or quorum committed the write in time; it may still have committed, so read before retrying",
+        );
+    }
+    if let StoreError::Unexpected(inner) = err
+        && inner.is::<crate::store::identity::IdentityPending>()
+    {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_ready",
+            &inner.to_string(),
         );
     }
     tracing::error!(error = ?err, "controlplane storage error");
