@@ -289,6 +289,22 @@ async fn slot_frees(store: &SnapshotStore) -> StagedSnapshot {
     }
 }
 
+/// A second receive while another's file I/O is held at the gate. It must
+/// be refused at once: with the slot wrongly free it would block behind
+/// that I/O, so the wait is bounded to fail instead of hang.
+async fn refused_beside(store: &SnapshotStore, what: &str) -> io::Error {
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.begin_receive(None, Bytes::new(), 4),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("a second receive waited behind a {what}"));
+    match second {
+        Ok(_) => panic!("a second receive ran beside a {what}"),
+        Err(err) => err,
+    }
+}
+
 /// A begin whose caller goes away while the file is being created keeps
 /// the slot until the create is done, so the next receive cannot have its
 /// file truncated under it.
@@ -307,10 +323,7 @@ async fn a_dropped_begin_holds_the_slot_until_its_create_ends() {
         .expect("the create was not reached");
     begin.abort();
     let _ = begin.await;
-    let err = store
-        .begin_receive(None, Bytes::new(), 4)
-        .await
-        .expect_err("a second receive ran beside a create");
+    let err = refused_beside(&store, "create").await;
     assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
     release.send(()).expect("release");
     drop(slot_frees(&store).await);
@@ -340,10 +353,7 @@ async fn a_dropped_commit_holds_the_slot_until_its_rename_ends() {
         .expect("the rename was not reached");
     commit.abort();
     let _ = commit.await;
-    let err = store
-        .begin_receive(None, Bytes::new(), 4)
-        .await
-        .expect_err("a second receive ran beside a rename");
+    let err = refused_beside(&store, "rename").await;
     assert_eq!(err.kind(), io::ErrorKind::WouldBlock, "{err}");
     release.send(()).expect("release");
     drop(slot_frees(&store).await);
