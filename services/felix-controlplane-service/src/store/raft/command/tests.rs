@@ -259,6 +259,17 @@ fn restamping_preserves_the_request_id() {
     assert_eq!(request_id_of(&restamped).as_deref(), Some("rid-9"));
 }
 
+/// The identity record needs every member to know the command.
+#[test]
+fn recording_the_cluster_identity_needs_level_32() {
+    let record = MetaCommand::RecordClusterIdentity {
+        group_id: "g".to_string(),
+        shard_engine: "hybrid".to_string(),
+    };
+    assert_eq!(record.version(), 32);
+    assert_eq!(METADATA_VERSION, 32);
+}
+
 /// **`joint_fence` is finalized only where a refusal report is kept.** A
 /// leader whose fence cannot learn the set it leaves is renamed on its
 /// refusal, which members before level 25 drop, so a group below it would

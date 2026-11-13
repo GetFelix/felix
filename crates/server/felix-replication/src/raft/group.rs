@@ -811,14 +811,18 @@ impl Group {
                 ServerState::Shutdown => Role::Stopped,
             }
         };
+        // Borrowed once. A second borrow while the first is held waits behind
+        // an append that publishes in between, and that append behind the
+        // first: the caller and the member's log would both stop for good.
+        let positions = *self.positions.borrow();
         GroupStatus {
             member: self.member.clone(),
             role,
             term: metrics.current_term,
             leader: metrics.current_leader,
             last_index: metrics.last_log_index,
-            written: self.positions.borrow().written,
-            flushed: self.positions.borrow().flushed,
+            written: positions.written,
+            flushed: positions.flushed,
             committed: metrics.local_committed.map(|id| id.index),
             ticks: self.ticks.load(Ordering::Relaxed),
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),

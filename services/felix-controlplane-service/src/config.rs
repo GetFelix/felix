@@ -8,12 +8,14 @@ mod bootstrap;
 mod env;
 mod file;
 mod liveness;
+mod shard_engine;
 mod storage;
 
 pub use api_tls::ApiTlsConfig;
 pub use api_ui::{ApiUi, DEFAULT_API_UI_PATH};
 pub use bootstrap::{BootstrapConfig, BootstrapTlsConfig};
 pub use liveness::NodeLivenessConfig;
+pub use shard_engine::ShardEngine;
 pub use storage::{RaftBackendConfig, StorageBackend};
 
 use std::fs;
@@ -75,6 +77,8 @@ pub struct ControlPlaneConfig {
     pub region_id: String,
     pub storage: StorageBackend,
     pub raft: Option<RaftBackendConfig>,
+    /// The engine recorded in a new group's identity; see `store::identity`.
+    pub shard_engine: ShardEngine,
     pub changes_limit: u64,
     pub change_retention_max_rows: Option<i64>,
     pub oidc_allowed_algorithms: Vec<Algorithm>,

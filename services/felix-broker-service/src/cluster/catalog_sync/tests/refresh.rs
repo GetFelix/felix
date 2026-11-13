@@ -41,6 +41,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -53,6 +54,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -60,6 +62,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
             "/v1/caches/snapshot",
             get(|| async {
                 Json(CacheSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -70,6 +73,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
             "/v1/streams/snapshot",
             get(|| async {
                 Json(StreamSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -82,6 +86,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -91,6 +96,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -100,6 +106,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(CacheChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -126,6 +133,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                             vec![]
                         },
                         next_seq: if created { 2 } else { 1 },
+                        group_id: None,
                     })
                 }
             }),
@@ -214,6 +222,7 @@ async fn a_refused_replication_polls_the_catalog_at_once() -> Result<()> {
         Some(seeded_tx),
         None,
         Provisional::default(),
+        None,
     ));
     seeded_rx.await.expect("seeded");
 
@@ -281,6 +290,7 @@ async fn asked_for_polls_back_off_while_they_bring_nothing() -> Result<()> {
         Some(seeded_tx),
         None,
         Provisional::default(),
+        None,
     ));
     seeded_rx.await.expect("seeded");
     let seeded_at = polls.load(Ordering::SeqCst);

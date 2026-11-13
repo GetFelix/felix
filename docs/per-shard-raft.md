@@ -1101,7 +1101,10 @@ open:
   Neither writes anything: what a member acknowledged is already on disk.
 - `status(shard)` reports the member's role, term, leader, last index,
   committed index, the last entry written and the last entry flushed, and
-  the ticks it was sent and the ticks dropped.
+  the ticks it was sent and the ticks dropped. The committed index is the
+  last one openraft published and can trail the read bound for a moment
+  (see "Reads"). The written and flushed positions are read together, in
+  one look at the log's positions.
 - `log_positions(shard)` gives the written and flushed positions as they
   change, to wait on. These are the two signals of "Two signals from one
   append". The adapter moves `written` as soon as an append has handed its
@@ -1395,6 +1398,14 @@ bound too, from what it has applied.
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `the_read_bound_never_passes_the_commit_index`.
 
+The commit index to compare the bound with is the one the Raft core holds.
+`status(shard).committed` is not: it comes from openraft's metrics, which
+the core publishes once per turn of its loop, after it has told its
+followers about the commit and handed the entries on to be applied. So a
+status read just after a bound can show a lower commit index, on the leader
+as well as on a follower. That is a late report, not a bound past the
+commit index.
+
 `confirm_read` is a read-index round (`Raft::get_read_log_id` with
 `ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
 first, then its value, then calls `RaftEngine::confirm_read` with that
@@ -1599,8 +1610,8 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **The snapshot** is the applied state as of one log id: the cache records
   that are unexpired at the log's time, with their values, versions and
   expiries, the counter sums, the
-  log's time (the stamp of the last stamped entry applied) and the table of
-  applied request ids with their answers.
+  log's time (the stamp of the last stamped entry applied) and, per
+  producer, its floor and the answers it still keeps.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
   than the last stamped entry in its log (the uncommitted tail it inherited
   included, blank and membership entries skipped), or the snapshot's time
@@ -1623,6 +1634,15 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **Every write carries a request id** and is applied once. A retry gets the
   answer the first commit gave. The id must name the client across
   connections and leaders (a producer id and a sequence).
+- **The answers are trimmed by the log.** Each write also carries its
+  producer's floor: the lowest sequence the producer has no answer for yet.
+  Applying it drops that producer's answers below the floor. A retry below
+  the floor answers "forgotten" and is not applied; the producer already had
+  its answer. A producer that is done sends a retire entry, which drops its
+  answers but keeps its floor, raised past its last sequence. A retry still
+  in a queue or on the network can commit after the retire, and without the
+  floor it would be applied a second time. The snapshot holds each
+  producer's floor and kept answers.
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").

@@ -116,6 +116,10 @@ pub fn build_router(state: AppState) -> Router {
                 .delete(api::streams::delete_stream),
         )
         .route(
+            "/v1/cluster/identity",
+            axum::routing::get(api::identity::cluster_identity),
+        )
+        .route(
             "/v1/streams/snapshot",
             axum::routing::get(api::streams::stream_snapshot),
         )
