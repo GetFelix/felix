@@ -41,6 +41,9 @@ pub(crate) struct Leadership {
     /// them in order from the watcher and from a transfer.
     changing: parking_lot::Mutex<()>,
     lead: watch::Sender<Lead>,
+    /// Looks the watcher has taken.
+    #[cfg(test)]
+    pub(crate) looks: std::sync::atomic::AtomicU64,
 }
 
 /// The term this member leads, as openraft says now.
@@ -63,6 +66,8 @@ impl Leadership {
             host,
             changing: parking_lot::Mutex::new(()),
             lead: watch::Sender::default(),
+            #[cfg(test)]
+            looks: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -115,18 +120,19 @@ impl Leadership {
     }
 
     /// A transfer of leadership away from this member is about to start in
-    /// term `leads`. The shard closes before this returns and stays closed
-    /// for the rest of that term, whether or not the transfer goes through.
-    pub(crate) fn transfer_starting(&self, raft: &Raft<ShardTypes, Machine>) {
-        let leads = leading_term(&raft.server_metrics());
-        let Some(term) = leads else {
-            return;
-        };
+    /// term `leads`, as the group's core says, not its metrics: those can
+    /// trail an election, and the term would open mid-transfer. The shard
+    /// closes before this returns and stays closed for the rest of that
+    /// term, whether or not the transfer goes through. Returns the term
+    /// closed.
+    pub(crate) fn transfer_starting(&self, leads: Option<u64>) -> Option<u64> {
+        let term = leads?;
         {
             let _changing = self.changing.lock();
             self.lead.send_modify(|lead| lead.void = Some(term));
         }
         self.observe(leads, None);
+        Some(term)
     }
 }
 
@@ -144,12 +150,18 @@ pub(crate) async fn run(
         if stopped(&raft) {
             break;
         }
+        #[cfg(test)]
+        leadership
+            .looks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let leads = leading_term(&server);
         let committed = commits.borrow_and_update().applied().map(|at| at.term);
         leadership.observe(leads, committed);
         // The commit table moves with every write. It is watched only
         // while a term waits to open.
-        let opens = leads.filter(|_| !leadership.lead().open);
+        // A term a transfer started in never opens, so it is not waited on.
+        let lead = leadership.lead();
+        let opens = lead.term.filter(|_| !lead.open);
         let committed = async {
             match opens {
                 Some(term) => commits

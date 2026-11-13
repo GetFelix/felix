@@ -94,31 +94,38 @@ impl RaftEngine {
         Ok(group.read_bound())
     }
 
-    /// Confirm, after a read of `shard`'s state took its value, that this
-    /// broker still leads the term it had the shard open in, by one
-    /// read-index round: a majority answers a heartbeat sent after the
-    /// call. The value must have been taken with the shard open.
+    /// Confirm that this broker still leads `term`, by one read-index
+    /// round: a majority answers a heartbeat sent after the call. A reader
+    /// of `shard`'s state takes [`Self::open_term`] first, then its value,
+    /// then calls this with that term. A broker deposed and elected again
+    /// in between is refused: its value can miss what the leader in
+    /// between committed.
     ///
     /// No answer from a majority is a timeout, not a lost leadership, and
     /// does not close the shard.
-    pub async fn confirm_read(&self, shard: &ShardKey) -> Result<(), CommitError> {
+    pub async fn confirm_read(&self, shard: &ShardKey, term: u64) -> Result<(), CommitError> {
         let Some(group) = self.runtime.group(shard) else {
             return Err(CommitError::LeadershipLost {
                 what: "read",
                 detail: NO_GROUP,
             });
         };
-        group.confirm_read().await
+        group.confirm_read(term).await
     }
 
     /// A transfer of `shard`'s leadership away from this broker is about
     /// to be asked for. The shard closes (`deposed`) before this returns
     /// and opens again only in a later term, so call it before the request
-    /// is sent. False if this broker holds no group for the shard.
-    pub fn transfer_starting(&self, shard: &ShardKey) -> bool {
-        self.runtime
-            .group(shard)
-            .map(|group| group.transfer_starting())
-            .is_some()
+    /// is sent. Returns the term that was closed, read from the group's
+    /// core. `None` means this broker leads no term of the shard, and the
+    /// caller must not ask for the transfer.
+    pub async fn transfer_starting(&self, shard: &ShardKey) -> Option<u64> {
+        self.runtime.group(shard)?.transfer_starting().await
+    }
+
+    /// The term this broker has `shard` open in, for a reader to take
+    /// before it reads state and hand to [`Self::confirm_read`].
+    pub fn open_term(&self, shard: &ShardKey) -> Option<u64> {
+        self.runtime.group(shard)?.open_term()
     }
 }

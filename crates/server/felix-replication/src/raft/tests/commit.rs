@@ -342,13 +342,25 @@ async fn a_transfer_about_to_start_closes_the_shard() {
     let waiting = tokio::spawn(waiting);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    assert!(led.engine.transfer_starting(&shard(0)));
+    assert_eq!(
+        led.engine.transfer_starting(&shard(0)).await,
+        Some(led.term)
+    );
     assert_eq!(led.told(), [("opened", led.term), ("deposed", led.term)]);
     assert_eq!(
         lost(&waiting.await.expect("the wait")),
         "this broker stopped leading the shard"
     );
-    assert!(!led.engine.transfer_starting(&shard(7)));
+    assert_eq!(led.engine.transfer_starting(&shard(7)).await, None);
+    assert_eq!(led.engine.open_term(&shard(0)), None);
+
+    // The watcher has nothing to wait for in a term that cannot open.
+    let member = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let member = member.expect("group");
+    let before = member.watcher_looks();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let looks = member.watcher_looks() - before;
+    assert!(looks < 20, "the watcher took {looks} looks in 300 ms");
 
     led.heal();
     led.cluster.committed_everywhere(0, written.end - 1).await;
@@ -384,11 +396,12 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     let mut led = led().await;
-    assert_eq!(led.engine.confirm_read(&shard(0)).await, Ok(()));
+    assert_eq!(led.engine.open_term(&shard(0)), Some(led.term));
+    assert_eq!(led.engine.confirm_read(&shard(0), led.term).await, Ok(()));
     let follower = led.followers().next().expect("a follower");
     let follower = RaftEngine::new(led.cluster.runtime(&follower));
     assert_eq!(
-        lost(&follower.confirm_read(&shard(0)).await),
+        lost(&follower.confirm_read(&shard(0), led.term).await),
         "this broker does not have the shard open"
     );
 
@@ -404,7 +417,7 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     let refused = led.engine.propose(&shard(0), batch).await;
     assert!(refused.is_err(), "written with no majority: {refused:?}");
     assert!(led.engine.admit_local_ack(&shard(0), led.term).is_err());
-    let unconfirmed = led.engine.confirm_read(&shard(0)).await;
+    let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
     assert!(
         matches!(unconfirmed, Err(CommitError::TimedOut { what: "read", .. })),
         "{unconfirmed:?}"
@@ -413,5 +426,47 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     assert_eq!(led.told(), [("opened", led.term)]);
 
     led.heal();
+    led.cluster.stop().await;
+}
+
+/// A reader takes the open term, then its value. The broker is deposed,
+/// another leader commits a record the value does not have, and the broker
+/// is elected and opens again. The read must not be confirmed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_from_before_the_shard_was_opened_again_is_not_confirmed() {
+    let mut led = led().await;
+    let read_in = led.engine.open_term(&shard(0)).expect("open");
+
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old.clone()]);
+    let missed = led.cluster.write(0, b"missed by the read").await;
+    led.heal();
+    eventually(|| (led.engine.read_bound(&shard(0)).ok()? > missed).then_some(())).await;
+
+    // Stand until this broker has the shard open again, in a later term.
+    let member = led.cluster.runtime(&old).group(&shard(0)).expect("group");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let again = loop {
+        match led.engine.open_term(&shard(0)) {
+            Some(term) if term > read_in => break term,
+            _ => assert!(tokio::time::Instant::now() < deadline, "never led again"),
+        }
+        member.raft().trigger().elect(false).await.expect("elect");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+
+    assert_eq!(
+        lost(&led.engine.confirm_read(&shard(0), read_in).await),
+        "the shard was opened again after the read began"
+    );
+    // A read that begins now is confirmed, unless the term moved again.
+    if led.engine.open_term(&shard(0)) == Some(again) {
+        let confirmed = led.engine.confirm_read(&shard(0), again).await;
+        assert!(
+            confirmed.is_ok() || led.engine.open_term(&shard(0)) != Some(again),
+            "{confirmed:?}"
+        );
+    }
     led.cluster.stop().await;
 }

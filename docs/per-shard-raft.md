@@ -985,9 +985,12 @@ or when the group has stopped. A storage error stops the group.
 
 `RaftEngine::transfer_starting(shard)` is what the transfer code calls
 before it asks openraft for a transfer (issue #2249 adds that single entry
-point). The shard is closed when the call returns, and that term never
-opens again, whether or not the transfer goes through. The shard opens
-again in a later term.
+point). It asks the group's core which term this member leads, not the
+metrics, which can trail an election. The shard is closed when the call
+returns, and that term never opens again, whether or not the transfer goes
+through. The shard opens again in a later term. The call returns the term
+it closed, or nothing when this member leads no term, and then the
+transfer must not be asked for.
 
 Nothing else calls `deposed`. A write openraft refuses because its lease
 lapsed, a refused `admit_local_ack` and a read-index round no majority
@@ -1109,10 +1112,13 @@ bound too, from what it has applied.
 > `the_read_bound_never_passes_the_commit_index`.
 
 `confirm_read` is a read-index round (`Raft::get_read_linearizer` with the
-read-index policy). As built, `RaftEngine::confirm_read` first requires
-the shard to be open here, then asks openraft for the round, and accepts
-the answer only if it is for the term that was open when the call began.
-The caller must have taken its value with the shard open. A member that
+read-index policy). As built, a reader takes `RaftEngine::open_term`
+first, then its value, then calls `RaftEngine::confirm_read` with that
+term. The read is confirmed only if the shard is still open in that term
+and the round's answer is for it. The term open at confirm time is not
+enough. A broker that was deposed and elected again after the read is open
+in a later term, and the value it read can miss a record the leader in
+between committed. A member that
 does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
 leadership. If openraft reports a lapsed lease, the engine asks for a
@@ -1120,7 +1126,8 @@ heartbeat, waits for a majority to answer and asks again within the same
 bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
-> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard`.
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
+> `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
 
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They

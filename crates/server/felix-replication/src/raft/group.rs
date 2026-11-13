@@ -510,21 +510,25 @@ impl Group {
         )
     }
 
-    /// Confirm by a read-index round that this member still leads the term
-    /// it had open when the call was made.
+    /// Confirm by a read-index round that this member still leads `term`,
+    /// the term it had open before the reader took its value. The term
+    /// open now is not enough: a member deposed and elected again since
+    /// the read is open in a later term, and its value can miss what the
+    /// leader in between committed.
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
     /// shard.
-    pub(crate) async fn confirm_read(&self) -> Result<(), CommitError> {
+    pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
             detail,
         };
-        let lead = self.leadership.lead();
-        let Some(term) = lead.term.filter(|_| lead.open) else {
-            return Err(lost("this broker does not have the shard open"));
-        };
+        match self.open_term() {
+            Some(open) if open == term => {}
+            Some(_) => return Err(lost("the shard was opened again after the read began")),
+            None => return Err(lost("this broker does not have the shard open")),
+        }
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
         let unanswered = CommitError::TimedOut {
@@ -569,9 +573,28 @@ impl Group {
     }
 
     /// A transfer of leadership away from this member is about to start.
-    /// Closes the shard for the rest of this term, before it returns.
-    pub(crate) fn transfer_starting(&self) {
-        self.leadership.transfer_starting(&self.raft);
+    /// Closes the shard for the rest of the term this member leads, before
+    /// it returns that term. `None` if it leads none.
+    pub(crate) async fn transfer_starting(&self) -> Option<u64> {
+        use openraft::vote::RaftLeaderId;
+        // Asked of the core, in the queue a transfer request goes through.
+        let leads = self.raft.with_raft_state(|state| {
+            let leads = state.server_state == ServerState::Leader;
+            leads.then(|| state.vote_ref().leader_id().term())
+        });
+        self.leadership
+            .transfer_starting(leads.await.ok().flatten())
+    }
+
+    /// The term this member has the shard open in.
+    pub(crate) fn open_term(&self) -> Option<u64> {
+        let lead = self.leadership.lead();
+        lead.term.filter(|_| lead.open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watcher_looks(&self) -> u64 {
+        self.leadership.looks.load(Ordering::Relaxed)
     }
 
     fn proposer(&self) -> &mpsc::UnboundedSender<Proposal> {
