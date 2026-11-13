@@ -1014,20 +1014,40 @@ operator command ("Re-forming a group"). See Questions, 1.
 
 ## Cache and counters
 
-A cache shard's group has one log holding puts, deletes, counter deltas and
-counter checkpoints (engine page, Decisions, 4). For track 4 that means:
+A cache shard's group has one log holding puts, deletes and counter deltas
+(engine page, Decisions, 4). For track 4 that means:
 
 - **One wait.** A cache or counter write waits on `await_commit` at its
   position in the one log.
 - **The state machine is the projection.** The cache index and the counter
   sums are rebuilt from a snapshot plus the log, as the cache index is
   today.
-- **Compaction is proposed by the leader.** Copies of live records and the
-  counter checkpoint are entries. Followers apply them and do not compact on
-  their own. Dropping old segments is Raft's purge, done only behind a
-  durable snapshot.
-- **The snapshot** is the live cache records and one counter checkpoint, as
-  of one log id.
+- **Compaction is each member's own snapshot.** The leader proposes no
+  compaction entries: no copies of live records and no counter checkpoints.
+  A member snapshots the state it has applied and purges its log up to that
+  snapshot. The snapshot is a function of the applied entries alone, so two
+  members that snapshot at the same index hold the same state. It writes
+  nothing to the log, so offsets never differ between members.
+- **The snapshot** is the applied state as of one log id: the live cache
+  records with their values, versions and expiries, the counter sums, the
+  log's time (the stamp of the last stamped entry applied) and the table of
+  applied request ids with their answers.
+- **Apply never reads a clock.** The leader stamps each entry, no earlier
+  than the last stamped entry in its log (the uncommitted tail it inherited
+  included, blank and membership entries skipped), or the snapshot's time
+  when its log holds none. Expiry in apply is judged by the entry's stamp.
+- **Expiry is a conditional delete.** The leader proposes a delete that names
+  the version it saw expire. A key written again meanwhile keeps its value.
+- **A read never serves an expired key.** A read evaluates expiry at the
+  leader's read time, the later of its clock and the log's time. If that
+  finds a key expired that the log's time does not, the leader commits the
+  conditional delete first and answers after applying it.
+- **Every write carries a request id** and is applied once. A retry gets the
+  answer the first commit gave. The id must name the client across
+  connections and leaders (a producer id and a sequence).
+
+`FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
+cache state machine").
 
 ## Moving a shard from the hybrid to Raft
 
@@ -1471,7 +1491,7 @@ and the hybrid is what ships.
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
-| 6 (#2238) | Cache and counters in one group: state machine, proposed compaction, snapshot | 4 | Behind the feature |
+| 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |
 | 9 (#2242) | The switch from the hybrid: seal with digest, base and voters by compare-and-swap, `shard_raft` fleet feature, and the switch in the simulator with power loss | 4, 5, 6, 12 | Gated by a fleet feature nobody finalizes before the gate passes. Needs the model's switch config and the simulator runs first |

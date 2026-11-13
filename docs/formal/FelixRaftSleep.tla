@@ -128,7 +128,11 @@
 (*                        a message sent after the wake. The write waits  *)
 (*                        for that heartbeat round.                       *)
 (*   MaxTtlWakes       -- a cache leader's expiry timer fires while it    *)
-(*                        sleeps; it wakes and proposes the delete.       *)
+(*                        sleeps; it wakes and proposes the delete. The   *)
+(*                        delete is FelixRaftCache.tla's: it names the    *)
+(*                        version the timer saw, and removes only that.   *)
+(*                        A write can reach the leader between the timer  *)
+(*                        and the delete (ExpiryKeepsNewer).              *)
 (*                                                                         *)
 (* And their twins, each dropping one rule:                               *)
 (*                                                                         *)
@@ -137,6 +141,8 @@
 (*   WriteBeforeRound  -- the first write after a wake is proposed at     *)
 (*                        once, and openraft refuses it (LeaseExpired).   *)
 (*   NoTtlWake         -- the expiry timer does not wake the leader.      *)
+(*   ExpiryUnconditional -- the expiry delete removes whatever value the  *)
+(*                        key holds when it applies.                      *)
 (*   MaxAuditsLost     -- not a rule but a fault: a sleeping leader's     *)
 (*                        audit heartbeat to a follower is lost, so the   *)
 (*                        follower's audit fires under a healthy leader.  *)
@@ -195,7 +201,8 @@ CONSTANTS
     LeaseLapses,
     WriteBeforeRound,
     MaxTtlWakes,
-    NoTtlWake
+    NoTtlWake,
+    ExpiryUnconditional
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -219,7 +226,7 @@ VARIABLES
     heard,      \* heard[l]: who took a message from leader l since it last woke or won
     pre,        \* pre[c]: pre-votes a pre-candidate holds, itself included; {} when none
     sleptWith,  \* sleptWith[l]: the members l counted when it last slept
-    ttlDue      \* a cache expiry delete is due and not yet proposed
+    ttlDue      \* the version a due expiry delete names, NoDel when none is due
 
 raft == <<role, vote, granted, elected, log, match, commit, committed, acked>>
 sleep == <<awake, hold, prop, reqs>>
@@ -233,7 +240,18 @@ Min(a, b) == IF a <= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
 Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
-Blank(t) == [term |-> t, val |-> 0]
+\* An entry's `del` is the version an expiry delete names.
+NoDel == 0 - 1
+Blank(t) == [term |-> t, val |-> 0, del |-> NoDel]
+
+\* The value the one cache key holds after the first n entries of lg. A
+\* write's value is its version, and 0 is the key as it was at the start.
+RECURSIVE Held(_, _)
+Held(lg, n) ==
+    IF n = 0 THEN 0
+    ELSE IF lg[n].val # 0 THEN lg[n].val
+    ELSE IF lg[n].del # NoDel /\ (ExpiryUnconditional \/ Held(lg, n - 1) = lg[n].del) THEN 0
+    ELSE Held(lg, n - 1)
 NoProp == [asked |-> {}, answered |-> {}]
 
 \* openraft's order on votes with one leader per term, as in FelixRaft.tla.
@@ -286,7 +304,7 @@ Init ==
         /\ heard = [s \in Servers |-> IF s = l THEN Servers ELSE {}]
         /\ pre = [s \in Servers |-> {}]
         /\ sleptWith = [s \in Servers |-> {}]
-        /\ ttlDue = FALSE
+        /\ ttlDue = NoDel
 
 ----------------------------------------------------------------------------
 \* Raft. Only Campaign and the heartbeats need a tick.
@@ -502,7 +520,7 @@ AppendRecord(l) ==
     /\ Leads(l)
     /\ used.writes < MaxWrites
     /\ IF ~LeaseLapses \/ Fresh(l)
-       THEN /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> used.writes + 1])]
+       THEN /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> used.writes + 1, del |-> NoDel])]
             /\ awake' = [awake EXCEPT ![l] = TRUE]
             /\ prop' = [prop EXCEPT ![l] = NoProp]
             /\ used' = [used EXCEPT !.writes = @ + 1]
@@ -524,20 +542,20 @@ AppendRecord(l) ==
 \* A cache leader's expiry timer fires while it sleeps.
 TtlFires(l) ==
     /\ Leads(l) /\ ~awake[l]
-    /\ ~ttlDue
+    /\ ttlDue = NoDel
     /\ used.ttls < MaxTtlWakes
-    /\ ttlDue' = TRUE
+    /\ ttlDue' = Held(log[l], commit[l])
     /\ awake' = IF NoTtlWake THEN awake ELSE [awake EXCEPT ![l] = TRUE]
     /\ used' = [used EXCEPT !.ttls = @ + 1]
     /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist, heard, pre, sleptWith>>
 
-\* The expiry delete, a write like any other.
+\* The expiry delete, a write like any other, of the version the timer saw.
 ExpiryDelete(l) ==
     /\ Leads(l) /\ awake[l]
-    /\ ttlDue
+    /\ ttlDue # NoDel
     /\ ~LeaseLapses \/ Fresh(l)
-    /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> 0])]
-    /\ ttlDue' = FALSE
+    /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> 0, del |-> ttlDue])]
+    /\ ttlDue' = NoDel
     /\ prop' = [prop EXCEPT ![l] = NoProp]
     /\ UNCHANGED <<role, vote, granted, elected, match, commit, committed, acked, awake, hold, reqs,
                    liveness, used, hist, heard, pre, sleptWith>>
@@ -552,7 +570,7 @@ ProposeSleep(l) ==
     /\ Leads(l) /\ awake[l]
     /\ used.sleeps < MaxSleeps
     /\ prop[l] = NoProp
-    /\ ~ttlDue
+    /\ ttlDue = NoDel
     /\ commit[l] = Len(log[l])
     /\ \E i \in 1..commit[l] : log[l][i].term = vote[l].term
     /\ Quorum(Live(l) \cup {l})
@@ -848,7 +866,17 @@ QuiescentLevel ==
         /\ \A s \in up : log[s] = log[l] /\ commit[s] = commit[l]
 
 \* A due expiry delete is proposed.
-QuiescentTtl == Settled => ~ttlDue
+QuiescentTtl == Settled => ttlDue = NoDel
+
+Entries == [n \in 1..Len(committed) |-> committed[n].e]
+
+\* An expiry delete that removed a value removed the version it named: a
+\* write is never removed by the expiry of an older version.
+ExpiryKeepsNewer ==
+    \A n \in 1..Len(committed) :
+        (/\ Entries[n].val = 0 /\ Entries[n].del # NoDel
+         /\ Held(Entries, n - 1) # 0 /\ Held(Entries, n) = 0)
+        => Held(Entries, n - 1) = Entries[n].del
 
 \* Every behaviour ends, which is what lets the two checks above stand for
 \* "eventually". Checked with FairSpec.
@@ -869,5 +897,12 @@ NeverElectsAfterDyingAsleep ==
 
 \* A leader is elected while a sleep proposal or request is still out.
 NeverElectedMidHandshake == ~hist.midHandshake
+
+\* An expiry delete commits after a write the timer did not see.
+NeverExpirySkipsNewer ==
+    ~ \E n \in 1..Len(committed) :
+        /\ Entries[n].val = 0 /\ Entries[n].del # NoDel
+        /\ Held(Entries, n - 1) # 0
+        /\ Held(Entries, n - 1) # Entries[n].del
 
 =============================================================================

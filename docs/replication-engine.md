@@ -1148,19 +1148,19 @@ store becomes a projection of the group log, rebuilt from a snapshot plus the
 log the way the cache index already is (`crates/server/felix-storage/src/cache/log_cache.rs`).
 It does not rise as a second durable log. Cache compaction already copies
 live records forward to the tail (`docs/cache-on-log.md`, "Compaction"). Under
-Raft those copies are entries the leader proposes, and dropping the old
-segments is Raft's purge. A follower no longer compacts on its own. The
-copies cost what they cost today. The gate adds a cache cell with mixed puts
+Raft there are no copies: each member snapshots the state it has applied and
+purges its log behind the snapshot (`docs/per-shard-raft.md`, "Cache and
+counters"). The snapshot rewrites the live state once per snapshot, which is
+what the copies cost today. The gate adds a cache cell with mixed puts
 and counter adds, to measure the fsync count.
 
 Counters need more than a move. A counter record is a signed delta, and
 the counter log compacts deltas into a checkpoint of running sums
 (`crates/server/felix-storage/src/counter_log.rs:1-13`), not into the newest
 record per key as the cache does. Folding them into the cache shard's log
-needs two record kinds in version 9, a counter delta and a counter
-checkpoint, and a compaction rule per kind: the newest record per key for
-cache entries, and one checkpoint holding each key's sum for counters, which
-the leader proposes like any other compaction copy. The counter log was kept
+needs a counter delta record kind in version 9. The sums live in the
+member's snapshot beside the cache records, so the group log needs no
+checkpoint entry. The counter log was kept
 apart so that a build without counters could still read the cache's logs
 (`counter_log.rs:9-13`). Version 9's fleet gate and rollback rule now cover
 that.
