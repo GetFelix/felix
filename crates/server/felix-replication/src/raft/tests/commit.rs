@@ -354,14 +354,6 @@ async fn a_transfer_about_to_start_closes_the_shard() {
     assert_eq!(led.engine.transfer_starting(&shard(7)).await, None);
     assert_eq!(led.engine.open_term(&shard(0)), None);
 
-    // The watcher has nothing to wait for in a term that cannot open.
-    let member = led.cluster.runtime(&led.leader.broker).group(&shard(0));
-    let member = member.expect("group");
-    let before = member.watcher_looks();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let looks = member.watcher_looks() - before;
-    assert!(looks < 20, "the watcher took {looks} looks in 300 ms");
-
     led.heal();
     led.cluster.committed_everywhere(0, written.end - 1).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -469,4 +461,51 @@ async fn a_read_from_before_the_shard_was_opened_again_is_not_confirmed() {
         );
     }
     led.cluster.stop().await;
+}
+
+/// A transfer that starts before the term opened closes it for good: the
+/// term's commits open nothing, and the watcher does not wait on them. It
+/// was waiting on the commit table when the transfer started, and a wait
+/// for a term that cannot open is answered at once, every time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_closed_before_it_opened_is_not_waited_on() {
+    let (mut cluster, hosts) = hosted();
+    cluster.open(0).await;
+    cluster.net.lose_appends.store(true, Relaxed);
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members())
+            .await
+            .expect("initialize");
+    }
+    let leads = |cluster: &Cluster| {
+        let statuses = cluster.statuses(0);
+        let mut leaders = statuses
+            .into_iter()
+            .filter(|status| status.role == Role::Leader);
+        leaders.next()
+    };
+    let elected = eventually(|| leads(&cluster)).await;
+    let runtime = cluster.runtime(&elected.member.broker);
+    let engine = RaftEngine::new(runtime.clone());
+    let closed = engine.transfer_starting(&shard(0)).await;
+    assert_eq!(closed, Some(elected.term));
+
+    cluster.net.lose_appends.store(false, Relaxed);
+    let applied = |term: u64| {
+        let status = runtime.status(&shard(0))?;
+        let bound = engine.read_bound(&shard(0)).ok()?;
+        (bound > 1 && status.term == term).then_some(status)
+    };
+    eventually(|| applied(elected.term)).await;
+    let member = runtime.group(&shard(0)).expect("group");
+    let before = member.watcher_looks();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let looks = member.watcher_looks() - before;
+    assert!(looks < 20, "the watcher took {looks} looks in 300 ms");
+    let status = runtime.status(&shard(0)).expect("status");
+    assert_eq!((status.role, status.term), (Role::Leader, elected.term));
+    assert_eq!(hosts[&*elected.member.broker].all(), []);
+    assert_eq!(engine.open_term(&shard(0)), None);
+    cluster.stop().await;
 }

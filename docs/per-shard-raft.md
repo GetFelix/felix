@@ -1005,6 +1005,7 @@ own role is read as well.
 > `a_leader_opens_only_once_its_blank_entry_commits`,
 > `a_write_whose_index_commits_under_another_term_is_refused`,
 > `a_transfer_about_to_start_closes_the_shard`,
+> `a_term_closed_before_it_opened_is_not_waited_on`,
 > `a_group_that_stops_on_a_storage_error_closes_the_shard` and
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard`.
 
