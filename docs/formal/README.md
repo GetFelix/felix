@@ -721,6 +721,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchFailoverWipeVotes.cfg` | a wiped copy answers the failover's fence (`WipedVotesInFailover`) | violate `HybridAcksInBase`: the fence's furthest copy lacks a record a majority acknowledged |
 | `FelixRaftSwitchPowerLoss.cfg` | the seal leader has an unsynced tail and loses it; a failover follows | pass `HybridAcksInBase` and the above (1.5M distinct states) |
 | `FelixRaftSwitchPowerLossLag.cfg` | the same with c lagging | pass the same (1.5M distinct states) |
+| `FelixRaftSwitchPowerLossLagAll.cfg` | the same where any copy, not only the seal leader, may lose its tail | pass the same (1.89M distinct states) |
 | `FelixRaftSwitchPowerLossPeriodic.cfg` | the same on a `Periodic` log (`SealPeriodic`) | violate `HybridAcksInBase`: the seal leader loses a record only it and b held on disk, and the failover seals without it |
 | `FelixRaftSwitchPowerLossSameGen.cfg` | the seal leader appends `N` again after losing its tail (`ResealSameGen`) | violate `HybridAcksInBase` |
 | `FelixRaftSwitchPowerLossFollowers.cfg` | every copy may lose its tail once, before it starts: a follower after acknowledging, the leader after reporting, a broker between its vote floor and its mark | pass the above (0.19M distinct states) |
@@ -2946,7 +2947,10 @@ around it, each off unless a configuration turns it on:
   the leader's lease holds; as a `Quorum` write, once a majority holds it,
   and then it is checked like any record the hybrid acknowledged, across a
   failover too. The record at `N` waits until it is answered or failed.
-- Followers catching up to the seal leader during the seal (`Catchup`).
+- Followers catching up to the seal leader during the seal (`Catchup`),
+  only from the copy id that sealed. The seal leader serves any copy that
+  does not hold the sealed promise, so a wiped follower can catch up under
+  its new id and acknowledge `N`.
 - The control plane giving up a seal once the leader's lease has lapsed and
   sealing again with the copy furthest ahead in a majority (`Failover`). A
   wiped copy does not answer that fence: as
@@ -2956,9 +2960,10 @@ around it, each off unless a configuration turns it on:
   can lose it to a power cut, once per behaviour, at any point before it
   starts its member: a follower after it acknowledged `N`, the seal leader
   after it reported, a broker between its vote floor and its member mark.
-  A seal leader that loses power before it reports gives up the seal. The
-  logs are fsync on commit, which the switch requires, so a record the
-  hybrid acknowledged is on disk on a majority. A follower writes `N` to
+  A seal leader that loses power before it reports gives up the seal.
+  Every copy's log is fsync on commit, which the switch requires of every
+  copy and not only the seal leader, so a record the hybrid acknowledged
+  is on disk on a majority. A follower writes `N` to
   disk before it acknowledges and the leader before it reports.
 - A Raft member moving its purged id past `N` (`MaxPurges`).
 - A follower's record differing only in its producer tag (`MayDifferTag`),
@@ -2986,7 +2991,9 @@ fence), `SealPeriodic` (the switch seals a `Periodic` log) and
 before `N` is on disk).
 
 Liveness: `SwitchEnds` says a switch that started ends with the control
-plane's record and every copy's member started. `FairSpec` gives weak
+plane's record and every copy's member started. Its configuration sets
+`MaxCampaigns = 0`, so it says nothing about electing a leader or a learner
+catching up afterwards. `FairSpec` gives weak
 fairness to the switch's own steps and none to faults, failovers, reseals
 or Raft, so it holds only where no fault needs the control plane to step
 in (`FelixRaftSwitchEnds.cfg`). These states stay stuck in the model, and
