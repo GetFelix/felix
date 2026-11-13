@@ -586,6 +586,53 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
     }
 }
 
+/// Records that name a term are refused one by one. A batch with a record
+/// written and a record refused is told so, not that nothing was written,
+/// and the batch behind it gets its own answer.
+#[tokio::test]
+async fn a_batch_written_in_part_is_told_so() {
+    use futures::StreamExt;
+    use openraft::error::{ClientWriteError, ForwardToLeader};
+    use openraft::raft::ClientWriteResponse;
+    let applied = |index| {
+        let applied = ClientWriteResponse::<ShardTypes> {
+            log_id: LogIdOf::<ShardTypes>::new(3.into(), index),
+            data: super::super::types::Applied,
+            membership: None,
+        };
+        Ok(Ok(applied.into()))
+    };
+    let refused = || {
+        Ok(Err(ClientWriteError::ForwardToLeader(
+            ForwardToLeader::empty(),
+        )))
+    };
+    let results = futures::stream::iter([applied(7), refused(), refused(), applied(8)]);
+    let (first, first_told) = oneshot::channel();
+    let (second, second_told) = oneshot::channel();
+    let (third, third_told) = oneshot::channel();
+    let answers = vec![(2, first), (1, second), (1, third)];
+    super::super::propose::answer(results.boxed(), answers, true).await;
+    let detail = |told: Result<Span, CommitError>| match told {
+        Err(CommitError::LeadershipLost { detail, .. }) => detail,
+        other => panic!("not an unknown outcome: {other:?}"),
+    };
+    assert_eq!(
+        detail(first_told.await.expect("told")),
+        "only some of the batch's records were written"
+    );
+    assert_eq!(
+        detail(second_told.await.expect("told")),
+        "this broker does not lead the term the batch was admitted at, so nothing was written"
+    );
+    let at = LogPoint { term: 3, index: 8 };
+    let whole = Span {
+        first: at,
+        last: at,
+    };
+    assert_eq!(third_told.await.expect("told"), Ok(whole));
+}
+
 /// One call names one term, so a batch admitted at another starts the next
 /// call. It keeps its place.
 #[test]
@@ -641,7 +688,7 @@ async fn a_batch_admitted_at_an_earlier_term_is_not_written() {
     let stale = engine.propose(&shard(0), admitted(earlier, &[b"stale 0", b"stale 1"]));
     assert_eq!(
         lost(&stale.await),
-        "this broker does not lead the term the batch was admitted at, so the record was not written"
+        "this broker does not lead the term the batch was admitted at, so nothing was written"
     );
 
     // A batch admitted now is written, unless the term moves again.

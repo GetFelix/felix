@@ -67,15 +67,16 @@ pub struct Batch {
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
-/// or this many records. One drain is one append, and the group handles
-/// nothing else while it runs. A batch past either on its own is drained
-/// alone.
+/// or this many records. openraft appends as much of a drain as it finds
+/// waiting in one go, and the group handles nothing else meanwhile. A batch
+/// past either on its own is drained alone.
 pub(super) const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const DRAIN_RECORDS: usize = 4096;
 
 const NOT_LEADING: &str = "this broker does not lead the shard";
 const OTHER_TERM: &str =
-    "this broker does not lead the term the batch was admitted at, so the record was not written";
+    "this broker does not lead the term the batch was admitted at, so nothing was written";
+const IN_PART: &str = "only some of the batch's records were written";
 const ELECTING: &str = "this broker is standing for election, so the batch may still be written";
 const LEASE_LAPSED: &str = "no majority has answered this leader lately, so nothing was written";
 const DISCARDED: &str = "a newer leader discarded the entry";
@@ -230,9 +231,9 @@ pub(super) fn drain(
 /// Hand a shard's queued batches to its group, in the order they were
 /// queued, until `stop` or until the queue's sender is gone.
 ///
-/// Everything queued when the task looks goes down in one call, up to the
-/// drain bounds, so batches that arrive while an append runs share the
-/// next one. The task does not wait for a
+/// Everything queued when the task looks goes down in one call, up to
+/// the drain bounds, so batches that arrive while an append runs share
+/// the next one. The task does not wait for a
 /// call's entries to commit before it makes the next: openraft takes calls
 /// in the order they are made.
 pub(crate) async fn run(
@@ -416,6 +417,7 @@ pub(super) async fn answer(
     let mut results = results.fuse();
     for (records, to) in answers {
         let mut span: Result<Option<Span>, CommitError> = Ok(None);
+        let mut written = false;
         for _ in 0..records {
             let applied = match results.next().await {
                 Some(Ok(Ok(applied))) => Ok(LogPoint {
@@ -436,6 +438,7 @@ pub(super) async fn answer(
                 Some(Ok(Err(_))) => Err(lost(DISCARDED)),
                 Some(Err(_)) | None => Err(stopped()),
             };
+            written |= applied.is_ok();
             span = match (span, applied) {
                 (Err(err), _) | (Ok(_), Err(err)) => Err(err),
                 (Ok(None), Ok(at)) => Ok(Some(Span {
@@ -448,6 +451,13 @@ pub(super) async fn answer(
                 })),
             };
         }
+        // Records that name a term are refused one by one, so some of a
+        // batch can be in the log when the rest is not. No refusal's
+        // "nothing was written" holds for it.
+        let span = match span {
+            Err(_) if written => Err(lost(IN_PART)),
+            span => span,
+        };
         // The publisher may have stopped waiting.
         let _ = to.send(span.and_then(|span| span.ok_or_else(|| lost(EMPTY))));
     }

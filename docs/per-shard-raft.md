@@ -667,8 +667,8 @@ A call takes no batch that would bring it past 4 MiB of payload or 4096
 records, so batches with empty payloads are bounded too. A batch past
 either limit on its own goes down alone, and the batch behind it starts the
 next call. So does a batch admitted at another term than the one before
-it. One call is one append, and the group handles no heartbeat or
-vote while an append runs. The queue itself has no limit yet. The publish
+it. openraft appends as much of a call as it finds waiting in one go,
+and the group handles no heartbeat or vote while an append runs. The queue itself has no limit yet. The publish
 path bounds what is in flight when it is wired to `propose`.
 
 **A batch is written only at the term it was admitted at.** The broker
@@ -698,28 +698,38 @@ sequenceDiagram
     Note over R: deposed, elected again: leads term 6
     Q->>R: write each record, only if term 4 is led
     R-->>Q: refused, nothing appended
-    Q-->>P: leadership lost
+    Q-->>B: leadership lost, nothing written
+    B-->>P: leadership lost
 ```
 
 A term-bound record is its own message to openraft, where an unbound call
 is one message for all its records. openraft folds messages that wait
 together and name the same term back into one append, so a busy shard
-still shares appends. Two things follow for a batch of several records:
+still shares appends.
 
-- Leadership can be lost between two of its records. The first ones are
-  then in the log at the admitted term and the rest are refused.
-- A membership entry can land between two of its records.
+A batch of several records can therefore be cut part way, which one
+message could not be. openraft checks each record on its own, so:
 
-In both cases the publisher is told the outcome is unknown, the same
-answer as for any write that may or may not commit, and subscribers are
-never handed part of a batch. Neither writes a record at another term.
+- Leadership can be lost between two records. The first ones are in the
+  log at the admitted term, and the rest are refused.
+- The write lease can lapse between two records ("openraft's write
+  lease"). The records before the lapse are in the log and the rest are
+  refused.
+
+Neither writes a record at another term. The publisher is told only some
+of the batch was written, which is an unknown outcome like any other: the
+written records may commit. The batch is not delivered live on the
+leader, whose subscribers see its offsets as a drop. Records of it that
+commit are in the log, where a follower's subscribers and a reader
+resuming below the batch read them.
 
 A caller that names no term (`None`) gets the unbound call. The broker
 always names one.
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
-> `a_batch_admitted_at_an_earlier_term_is_not_written` and
-> `a_drain_takes_batches_admitted_at_one_term`.
+> `a_batch_admitted_at_an_earlier_term_is_not_written`,
+> `a_drain_takes_batches_admitted_at_one_term` and
+> `a_batch_written_in_part_is_told_so`.
 
 **openraft's write lease.** At the pinned commit openraft refuses a write
 when no majority has answered the leader for its lease, which is the
@@ -732,7 +742,7 @@ to answer. The batches behind
 wait in the queue, so nothing is proposed twice and nothing changes
 place. A leader that is the only voter needs no answer and is not held. If
 no majority answers, the write is sent and openraft refuses it, with
-nothing appended. A refused batch is not proposed again by the task:
+nothing appended for the records it refuses. A refused batch is not proposed again by the task:
 later batches may already be on their way, and it would land behind them.
 While the task waits on the lease for the next call, it still hands on
 openraft's answers to the calls it already made, so a refused publisher
@@ -1015,9 +1025,10 @@ open:
 - `report_to(serving, fence)` names who is told when a shard opens and
   closes here ("When a leader opens"). It is called once, before the first
   `open`.
-- `status(shard)` also counts `client_writes`: the calls made to openraft
-  for publishes. Each carries every batch that was queued when it was
-  made, so under load the count is well below the number of batches.
+- `status(shard)` also counts `client_writes`: the times the publish task
+  handed queued batches to openraft. Each carries every batch that was
+  queued at one term when it was made, so under load the count is well
+  below the number of batches.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
