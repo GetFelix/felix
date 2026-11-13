@@ -92,13 +92,20 @@ impl CommitHold {
         let _ = self.source.set(source);
     }
 
-    /// The bound as the service states it now, `Unbounded` when nobody does.
+    /// The bound as the service states it now. When nobody states one it is
+    /// `Unbounded`, except on a shard bounded at every level, which shows
+    /// nothing until its engine says what is committed.
     pub(crate) fn bound(&self) -> ReadBound {
+        let unstated = if self.bounds_every_level() {
+            ReadBound::Refused
+        } else {
+            ReadBound::Unbounded
+        };
         let Some(source) = self.source.get() else {
-            return ReadBound::Unbounded;
+            return unstated;
         };
         let Some(bounds) = source.bounds.get() else {
-            return ReadBound::Unbounded;
+            return unstated;
         };
         bounds.stream_bound(
             &source.tenant_id,
@@ -282,9 +289,33 @@ pub(crate) struct HeldBatch {
     pub(crate) trim: Option<u64>,
     /// Told once the trim's floor reaches the ring.
     pub(crate) trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Offsets just below the batch that hold no record, which subscribers
+    /// are told were skipped.
+    pub(crate) skipped_before: u64,
+    /// Holds no records: it stands where a batch with an unknown outcome
+    /// would have been, and the replay ring restarts there.
+    pub(crate) gap: bool,
 }
 
 impl HeldBatch {
+    /// Stands in the order for a batch whose outcome is unknown. Its
+    /// records may have committed, so the replay ring restarts above it and
+    /// a reader resuming below it is served from the log.
+    pub(crate) fn gap() -> Self {
+        Self {
+            payloads: Vec::new(),
+            publisher: None,
+            record_headers: None,
+            timestamp_micros: None,
+            first_offset: 0,
+            commit: None,
+            trim: None,
+            trim_applied: None,
+            skipped_before: 0,
+            gap: true,
+        }
+    }
+
     /// One past the batch's last offset.
     pub(crate) fn end(&self) -> u64 {
         self.first_offset + self.payloads.len() as u64

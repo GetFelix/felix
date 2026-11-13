@@ -200,10 +200,19 @@ impl StreamState {
     /// How far readers of this shard may see. Only a `Quorum` stream, or a
     /// shard bounded at every level, asks the service; everything else is
     /// bounded by local durability alone, which matters once a failed flush
-    /// poisons the log with a failed batch at its tail.
+    /// poisons the log with a failed batch at its tail. A shard bounded at
+    /// every level is held to both.
     pub(crate) fn read_bound(&self) -> ReadBound {
-        if self.consistency() != ConsistencyLevel::Quorum && !self.held.bounds_every_level() {
-            return match self.durable.as_ref().and_then(StreamLog::poisoned_read_end) {
+        let poisoned = || self.durable.as_ref().and_then(StreamLog::poisoned_read_end);
+        if self.held.bounds_every_level() {
+            return match (self.held.bound(), poisoned()) {
+                (ReadBound::Unbounded, Some(end)) => ReadBound::Committed(end),
+                (ReadBound::Committed(mark), Some(end)) => ReadBound::Committed(mark.min(end)),
+                (bound, _) => bound,
+            };
+        }
+        if self.consistency() != ConsistencyLevel::Quorum {
+            return match poisoned() {
                 Some(end) => ReadBound::Committed(end),
                 None => ReadBound::Unbounded,
             };
@@ -223,6 +232,13 @@ impl StreamState {
             state.log.clear();
         }
         dropped
+    }
+
+    /// Empty the replay ring, keeping `next_seq`, so the next batch
+    /// appended starts it and a reader below that is served from the log.
+    /// For a batch whose outcome is unknown, in its place in the order.
+    pub(crate) fn restart_ring(&self) {
+        self.log_state.lock().log.clear();
     }
 
     pub(crate) fn deactivate(&self) {

@@ -1185,30 +1185,48 @@ join the stream's commit hold. The hold appends it to the replay ring and
 fans it out as one shared envelope, encoded once per frame shape, the same
 way a held `Quorum` batch is released on the hybrid.
 
-- A batch whose `await_commit` fails is never delivered: a deposed leader's
-  record may have been replaced. If it did commit, readers find it in the
-  log. A live subscriber that negotiated event offsets sees the jump; it is
-  not counted as a drop.
+- A batch that times out keeps its place. The publisher is answered with
+  the timeout, but delivery keeps waiting for the commit, so the batches
+  behind it still go out after it.
+- A batch whose `await_commit` fails because this broker stopped leading,
+  or the group stopped, is never delivered: a deposed leader's record may
+  have been replaced. It may also have committed, so in its place in the
+  order the replay ring is emptied. The next batch starts the ring again,
+  and a reader resuming below that batch is served from the log, which has
+  the record if it committed. A live subscriber sees the batch's offsets as
+  a drop.
 - A publisher that goes away does not leave a gap. The rest of its publish
   runs on a task of its own and keeps its place, so the batches behind it
   wait for it.
+- Blank and membership entries take an offset and hold no record. The
+  state machine remembers each run of them, and a batch right after one
+  tells its subscribers how many offsets it skipped (`skipped_before`), so
+  the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
+  its twin `FelixRaftSkipsNotCounted` must fail.
 - Every reader of the stream is bounded by `read_bound`, at every
   consistency level (`StreamHandle::bound_every_level`, answered by
   `RaftReads`). On a follower that bound is what the follower has applied,
-  so its readers stop there.
+  so its readers stop there. A failed flush that poisons the local log
+  bounds them too, and until `RaftReads` is installed they see nothing.
 - `RaftEngine::follow_commits` kicks the stream each time the commit index
   moves here. Held batches the bound now covers are released, and readers
   waiting at the bound for the log look again.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
-> `a_record_is_delivered_only_once_a_majority_holds_it` and
-> `a_followers_readers_stop_at_what_it_applied`;
+> `a_record_is_delivered_only_once_a_majority_holds_it`,
+> `a_followers_readers_stop_at_what_it_applied`,
+> `a_batch_committed_after_its_timeout_goes_out_before_the_next` and
+> `entries_holding_no_record_reach_subscribers_as_skipped`;
 > `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
 > `batches_go_out_in_hand_over_order_whoever_hears_first`,
 > `only_what_the_engine_committed_is_delivered`,
-> `every_subscriber_shares_one_envelope_of_the_publishers_bytes` and
-> `a_leader_stream_bounded_at_every_level_waits_for_the_bound`.
+> `every_subscriber_shares_one_envelope_of_the_publishers_bytes`,
+> `a_leader_stream_bounded_at_every_level_waits_for_the_bound`,
+> `a_batch_that_commits_after_its_publisher_timed_out_goes_out_first`,
+> `a_batch_given_up_on_restarts_the_ring_above_it`,
+> `offsets_holding_no_record_are_reported_skipped` and
+> `a_shard_bounded_at_every_level_with_no_bounds_shows_nothing`.
 
 Not built yet: the stream's handle and the Raft member do not share one
 log, because nothing routes a shard to the engine, so a follower's history
@@ -1226,8 +1244,10 @@ change has to:
   refuses any shard it holds no group for.
 
 The records a Raft stream stores carry no publisher or headers, so its
-subscribers are told neither. A blank or membership entry takes an offset
-and holds no event, and a live subscriber sees that offset skipped.
+subscribers are told neither. The state machine remembers the last 64 runs
+of entries that hold no record; a batch committed after more runs than
+that, or on a member that resumed from a snapshot above its run, reports
+none skipped.
 
 ### Membership
 

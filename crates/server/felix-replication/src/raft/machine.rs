@@ -175,11 +175,15 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     break;
                 }
             };
+            let record = matches!(entry.payload, EntryPayload::Normal(_));
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
             self.commits.advance(point(&entry.log_id));
+            if !record {
+                self.commits.holds_no_record(entry.log_id.index);
+            }
             self.state.last_applied = Some(entry.log_id);
             if let Some(responder) = responder {
                 responder.send(Applied);

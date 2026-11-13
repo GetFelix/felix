@@ -49,19 +49,26 @@ async fn next(receiver: &mut SubscriptionReceiver) -> DeliveryEnvelope {
     got.expect("delivered in time").expect("subscription open")
 }
 
-fn publish(
-    led: &Led,
+type Publishing = tokio::task::JoinHandle<Result<felix_broker::PublishOutcome, CommitError>>;
+
+fn publish(led: &Led, broker: &Broker, handle: &StreamHandle, payload: Bytes) -> Publishing {
+    publish_within(&led.engine, broker, handle, payload, PATIENCE)
+}
+
+fn publish_within(
+    engine: &RaftEngine,
     broker: &Broker,
     handle: &StreamHandle,
     payload: Bytes,
-) -> tokio::task::JoinHandle<Result<felix_broker::PublishOutcome, CommitError>> {
-    let proposed = led.engine.publish(
+    timeout: Duration,
+) -> Publishing {
+    let proposed = engine.publish(
         broker,
         handle,
         &shard(0),
         vec![payload],
         AckAt::Flushed,
-        PATIENCE,
+        timeout,
     );
     tokio::spawn(proposed.expect("proposed").complete())
 }
@@ -188,4 +195,68 @@ async fn a_followers_readers_stop_at_what_it_applied() {
         .await
         .expect("a reader waiting at the bound is woken");
     led.cluster.stop().await;
+}
+
+/// **A batch whose commit outlasted its publisher's timeout is still
+/// delivered once it commits, before the batch proposed after it.** Dropped
+/// at the timeout, the later batch would go out at the higher offset and
+/// live subscribers would never get the earlier, committed one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_committed_after_its_timeout_goes_out_before_the_next() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+
+    led.cut_followers();
+    let slow = Bytes::from_static(b"slow");
+    let timeout = Duration::from_millis(200);
+    let slow_published = publish_within(&led.engine, &broker, &handle, slow.clone(), timeout);
+    let next_published = publish(&led, &broker, &handle, Bytes::from_static(b"next"));
+    let outcome = slow_published.await.expect("joined");
+    assert!(
+        matches!(outcome, Err(CommitError::TimedOut { .. })),
+        "{outcome:?}"
+    );
+    nothing(&mut receiver).await;
+
+    led.heal();
+    let first = next(&mut receiver).await;
+    assert_eq!(first.base_offset(), Some(led.committed + 1));
+    assert_eq!(first.payloads(), [slow]);
+    let second = next(&mut receiver).await;
+    assert_eq!(second.base_offset(), Some(led.committed + 2));
+    let outcome = next_published.await.expect("joined").expect("committed");
+    assert_eq!(
+        outcome.offsets,
+        Some((led.committed + 2, led.committed + 2))
+    );
+    led.cluster.stop().await;
+}
+
+/// **Offsets the log used for entries holding no record reach subscribers
+/// as skipped.** A new group's first entries are its membership and the
+/// leader's blank entry; reported as nothing, the first record would arrive
+/// after a jump a subscriber reads as a drop.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn entries_holding_no_record_reach_subscribers_as_skipped() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+
+    let published = publish_within(
+        &engine,
+        &broker,
+        &handle,
+        Bytes::from_static(b"a"),
+        PATIENCE,
+    );
+    let envelope = next(&mut receiver).await;
+    let first = envelope.base_offset().expect("an offset");
+    assert!(first > 0, "nothing came before the first record");
+    assert_eq!(envelope.skipped_before(), first);
+    published.await.expect("joined").expect("committed");
+    cluster.stop().await;
 }

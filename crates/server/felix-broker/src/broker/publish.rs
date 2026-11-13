@@ -12,7 +12,7 @@ mod proposed;
 pub(crate) use completion::spawn_release;
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
-pub use proposed::ProposedPublish;
+pub use proposed::{ProposalCommitted, ProposedPublish};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

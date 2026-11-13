@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use crate::{
-    Broker, ConsistencyLevel, DeliveryEnvelope, ReadBound, ReadBounds, StreamHandle,
-    StreamMetadata, SubscriptionReceiver,
+    Broker, ConsistencyLevel, DeliveryEnvelope, ProposalCommitted, ReadBound, ReadBounds,
+    StreamHandle, StreamMetadata, SubscriptionReceiver,
 };
 
 /// An engine that gives offsets in hand-over order and commits a batch when
@@ -27,17 +27,31 @@ impl Engine {
     fn propose(
         &self,
         records: u64,
-    ) -> impl std::future::Future<Output = Result<u64, &'static str>> + Send + use<> {
+    ) -> impl std::future::Future<Output = Result<ProposalCommitted, &'static str>> + Send + use<>
+    {
+        self.propose_after(0, records)
+    }
+
+    /// Propose `records` behind `skipped` entries that hold none.
+    fn propose_after(
+        &self,
+        skipped: u64,
+        records: u64,
+    ) -> impl std::future::Future<Output = Result<ProposalCommitted, &'static str>> + Send + use<>
+    {
         let end = {
             let mut next = self.next.lock();
-            *next += records;
+            *next += skipped + records;
             *next
         };
         let (commit, committed) = oneshot::channel();
         self.pending.lock().push(commit);
         async move {
             committed.await.map_err(|_| "dropped")??;
-            Ok(end)
+            Ok(ProposalCommitted {
+                end,
+                skipped_before: skipped,
+            })
         }
     }
 
@@ -186,7 +200,8 @@ async fn only_what_the_engine_committed_is_delivered() {
 
 /// **The publisher's bytes are what every subscriber gets, encoded once.**
 /// One envelope is shared, its records are the very `Bytes` handed in, and
-/// one frame shape is encoded once however many subscribers ask for it.
+/// each frame shape (with and without event offsets) is encoded once however
+/// many subscribers ask for it.
 #[tokio::test]
 async fn every_subscriber_shares_one_envelope_of_the_publishers_bytes() {
     let (broker, handle, _) = broker(ReadBound::Unbounded).await;
@@ -216,13 +231,19 @@ async fn every_subscriber_shares_one_envelope_of_the_publishers_bytes() {
     let frame = envelopes[0]
         .shared_event_frame_with_offsets()
         .expect("encoded");
+    let plain = envelopes[1].shared_event_frame().expect("encoded");
+    assert_ne!(plain, frame, "the two shapes are different frames");
     for envelope in &envelopes {
         assert!(envelope.same_batch(&envelopes[0]));
         assert_eq!(envelope.payloads()[0].as_ptr(), payload.as_ptr());
         let again = envelope.shared_event_frame_with_offsets().expect("encoded");
         assert_eq!(again.as_ptr(), frame.as_ptr());
+        let again = envelope.shared_event_frame().expect("encoded");
+        assert_eq!(again.as_ptr(), plain.as_ptr());
     }
-    assert_eq!(envelopes[0].encodes(), 1);
+    // One frame with event offsets, one without, however many subscribers
+    // of each.
+    assert_eq!(envelopes[0].encodes(), 2);
 }
 
 /// **On a shard bounded at every level a `Leader` stream's readers stop at
@@ -249,4 +270,112 @@ async fn a_leader_stream_bounded_at_every_level_waits_for_the_bound() {
     *bound.0.lock() = ReadBound::Committed(1);
     handle.release_committed();
     assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+}
+
+/// **A batch whose publisher was answered with a timeout still goes out if
+/// it commits, before the batch handed over after it.** Given up at the
+/// timeout, the later batch would reach subscribers and the earlier one,
+/// committed at a lower offset, never would.
+#[tokio::test]
+async fn a_batch_that_commits_after_its_publisher_timed_out_goes_out_first() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let publish = |payload: &'static [u8]| {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(&handle, vec![Bytes::from_static(payload)], move |_| {
+                engine.propose(1)
+            })
+            .expect("handed over")
+    };
+    let slow = publish(b"slow").answer_within(Duration::from_millis(50), || "timed out");
+    let slow = tokio::spawn(slow.complete());
+    let next_one = tokio::spawn(publish(b"next").complete());
+    engine.commit(1, Ok(()));
+    assert!(matches!(slow.await.expect("joined"), Err("timed out")));
+    nothing(&mut receiver).await;
+
+    engine.commit(0, Ok(()));
+    for (offset, payload) in [(0, b"slow".as_slice()), (1, b"next")] {
+        let envelope = next(&mut receiver).await;
+        assert_eq!(envelope.base_offset(), Some(offset));
+        assert_eq!(envelope.payloads(), [Bytes::copy_from_slice(payload)]);
+    }
+    let next_one = next_one.await.expect("joined").expect("committed");
+    assert_eq!(next_one.offsets, Some((1, 1)));
+}
+
+/// **A batch the engine gave up on restarts the replay ring in its place.**
+/// Its records may have committed after all; a ring that went on past them
+/// would serve a resuming reader the records around the hole and never the
+/// ones in it, where the log has them.
+#[tokio::test]
+async fn a_batch_given_up_on_restarts_the_ring_above_it() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    for payload in [b"a".as_slice(), b"lost", b"b"] {
+        let engine = Arc::clone(&engine);
+        let proposed = broker
+            .propose_publish(&handle, vec![Bytes::copy_from_slice(payload)], move |_| {
+                engine.propose(1)
+            })
+            .expect("handed over");
+        drop(proposed);
+    }
+    engine.commit(0, Ok(()));
+    engine.commit(1, Err("this broker stopped leading the shard"));
+    engine.commit(2, Ok(()));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(2));
+    assert_eq!(handle.state.oldest_seq(), 2);
+}
+
+/// **Offsets an engine used for entries holding no record reach subscribers
+/// as skipped.** A Raft leader's first entry of a term is blank; reported
+/// as nothing, the jump past it reads as a dropped record.
+#[tokio::test]
+async fn offsets_holding_no_record_are_reported_skipped() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let proposed = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(&handle, vec![Bytes::from_static(b"a")], move |_| {
+                engine.propose_after(2, 1)
+            })
+            .expect("handed over")
+    };
+    let publish = tokio::spawn(proposed.complete());
+    engine.commit(0, Ok(()));
+    publish.await.expect("joined").expect("committed");
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(2));
+    assert_eq!(envelope.skipped_before(), 2);
+}
+
+/// **A shard bounded at every level shows nothing until its engine states a
+/// bound.** Read as unbounded, a stream routed before the engine's bounds
+/// were installed would serve what no majority holds.
+#[tokio::test]
+async fn a_shard_bounded_at_every_level_with_no_bounds_shows_nothing() {
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream("t1", "ns", "raft", StreamMetadata::default())
+        .await
+        .expect("stream");
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "raft", 0)
+        .await
+        .expect("handle");
+    assert_eq!(handle.read_bound(), ReadBound::Unbounded);
+    handle.bound_every_level();
+    assert_eq!(handle.read_bound(), ReadBound::Refused);
 }

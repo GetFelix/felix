@@ -9,7 +9,9 @@
 use std::time::Duration;
 
 use bytes::Bytes;
-use felix_broker::{Broker, BrokerError, ProposedPublish, ReadBound, StreamHandle};
+use felix_broker::{
+    Broker, BrokerError, ProposalCommitted, ProposedPublish, ReadBound, StreamHandle,
+};
 use tokio::task::JoinHandle;
 
 use super::engine::RaftEngine;
@@ -23,9 +25,13 @@ impl RaftEngine {
     /// reaches its subscribers once it is committed under the term that
     /// wrote it, after every batch proposed before it.
     ///
-    /// [`ProposedPublish::complete`] returns at that point, or with the
-    /// engine's error, which delivers nothing: a deposed leader's batch may
-    /// still commit, and readers then find it in the log.
+    /// [`ProposedPublish::complete`] returns at that point, with the
+    /// engine's error, or with [`CommitError::TimedOut`] after `timeout`.
+    /// A timeout leaves the batch in its place: it is still delivered if it
+    /// commits, and the batches behind it wait for it. Only a lost
+    /// leadership or a stopped group gives the place up. Such a batch may
+    /// still have committed; live subscribers then see its offsets as a
+    /// drop, and a reader resuming below it is served from the log.
     pub fn publish(
         &self,
         broker: &Broker,
@@ -36,7 +42,8 @@ impl RaftEngine {
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
-        broker.propose_publish(stream, payloads, |timestamp_micros| {
+        let proposed = broker.propose_publish(stream, payloads, |timestamp_micros| {
+            let count = records.len() as u64;
             let records = records
                 .into_iter()
                 .map(|payload| Record {
@@ -49,10 +56,34 @@ impl RaftEngine {
             let shard = shard.clone();
             async move {
                 let written = written.await?;
-                engine.await_commit(&shard, written, timeout).await?;
-                Ok(written.end)
+                // The publisher's own wait is bounded by `answer_within`.
+                // Delivery is not: a batch skipped here and committed later
+                // would reach no live subscriber, while the one behind it
+                // did.
+                loop {
+                    match engine.await_commit(&shard, written, timeout).await {
+                        Err(CommitError::TimedOut { .. }) => continue,
+                        outcome => break outcome?,
+                    }
+                }
+                // Everything below the batch is applied, so its run of
+                // entries holding no record is known.
+                let first = written.end.saturating_sub(count);
+                let skipped_before = engine
+                    .commits(&shard)
+                    .map_or(0, |commits| commits.borrow().skipped_before(first));
+                Ok(ProposalCommitted {
+                    end: written.end,
+                    skipped_before,
+                })
             }
-        })
+        })?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "batch",
+                timeout,
+            }),
+        )
     }
 
     /// Kick `stream`'s readers each time `shard`'s commit index moves here:

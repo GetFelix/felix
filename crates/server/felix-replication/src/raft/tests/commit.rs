@@ -136,6 +136,25 @@ fn at(term: u64, index: u64) -> LogPoint {
     LogPoint { term, index }
 }
 
+/// **The run of entries holding no record just below a record is counted,
+/// and only that run.** A leader's blank entry and a membership change in a
+/// row are one run of two; one further down does not count.
+#[test]
+fn the_commit_table_counts_the_entries_just_below_a_record_that_hold_none() {
+    let mut commits = Commits::default();
+    for (index, record) in [(0, false), (1, false), (2, true), (3, false), (4, false)] {
+        commits.advance(at(1, index));
+        if !record {
+            commits.holds_no_record(index);
+        }
+    }
+    commits.advance(at(1, 5));
+    assert_eq!(commits.skipped_before(2), 2);
+    assert_eq!(commits.skipped_before(5), 2);
+    assert_eq!(commits.skipped_before(3), 0);
+    assert_eq!(commits.skipped_before(6), 0);
+}
+
 #[test]
 fn the_commit_table_knows_the_term_at_every_applied_index() {
     let mut commits = Commits::default();
