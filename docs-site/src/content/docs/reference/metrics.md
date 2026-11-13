@@ -195,6 +195,7 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_peer_requests_shed_total` | counter | - | Requests refused before sending because the peer was at its in-flight limit. Nothing was attempted. |
 | `felix_broker_peer_request_seconds` | histogram | `outcome` | Round-trip latency of a request to a peer. |
 | `felix_broker_peer_served_total` | counter | `outcome` | Requests this broker served for a peer. |
+| `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication

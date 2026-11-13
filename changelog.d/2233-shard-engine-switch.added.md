@@ -2,8 +2,11 @@
   a broker's durable stream shards (#2233). With `raft`, each durable stream
   shard is one Raft group: publishes commit through the group, subscribers are
   served on its leader (a follower answers with a redirect to it), and a
-  stopped leader is replaced by election. It is for fresh clusters only, every
-  broker must say the same, and it needs a build with the `raft` cargo
+  stopped leader is replaced by election. It is for fresh clusters only, and
+  every broker must say the same: a broker that shares a durable stream shard
+  with a broker on the other engine closes the shard, refuses requests for it
+  with "the shard's brokers run different shard engines" and counts it in
+  `felix_broker_shard_engine_refused_total`. It needs a build with the `raft` cargo
   feature, a cluster identity, the broker-internal listener and durable
   storage; a broker missing one refuses to start and says which. A stream on
   Raft takes plain publishes only: idempotent and conditional publishes,

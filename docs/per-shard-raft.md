@@ -1428,9 +1428,58 @@ A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
 every broker: a shard that already holds data cannot change engines yet.
 Publishes, routes, subscribes and a leader stopping are tested across three
-brokers in one process, and the failover test reads every acknowledged
-payload back from the new leader. A cluster of separate broker processes on
-Raft is not tested yet.
+brokers in one process and across three broker processes. Both failover
+tests read every acknowledged payload back from the new leader, and the one
+across processes stops the leader while the control plane is down: the
+group elects without it.
+
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `a_publish_through_any_broker_reaches_a_subscriber`,
+> `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged`.
+
+**Every broker that holds a shard must run it on the same engine.** A
+hybrid broker placed in a Raft shard would keep a log of its own that no
+quorum covers, and a Raft group would run short of a member that never
+votes. So each broker asks the peers it shares a durable stream shard with
+which engine they run, and refuses the shard when one answers with the
+other engine, whichever side it is on:
+
+- It closes the shard and stops serving it. Nothing is acknowledged.
+- Every request for it is refused with "the shard's brokers run different
+  shard engines", both engines and the name of the odd broker.
+- It logs the refusal once at error level and counts it in
+  `felix_broker_shard_engine_refused_total{engine}`, where `engine` is the
+  refusing broker's own.
+
+The fix is to set `FELIX_SHARD_ENGINE` the same on every broker and restart
+the odd one. The refusal ends on its own once the peers agree. Streams in
+memory, caches and counters are not checked: they run on the hybrid engine
+everywhere.
+
+A broker asks without waiting for the answer, and asks again on every
+routing pass. A peer that has not answered yet refuses nothing, because a
+peer that is down says nothing about its engine and waiting for it would
+keep a shard closed through an ordinary outage. When an answer arrives
+that differs, the shard closes at once.
+
+Until then, a stream acknowledged by a quorum is still safe: a Raft group
+commits on a majority of members, and a hybrid leader's acknowledgement
+needs followers that the Raft brokers never give it. A stream acknowledged
+by its leader alone is not covered in that window. A hybrid broker the
+control plane names as its leader can acknowledge into its own log until a
+Raft peer answers.
+
+A broker restarted on the other engine over its old data does not get this
+far. The shard directory shows which engine wrote it, and the broker
+refuses to open it under the other one.
+
+> `services/felix-broker-service/src/shards/engine_match/tests.rs`,
+> `a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker`,
+> `a_raft_broker_refuses_a_shard_shared_with_a_hybrid_broker`,
+> `a_peer_reached_late_closes_the_shard_it_shares`,
+> `a_refusal_ends_once_the_engines_match`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `brokers_on_different_engines_refuse_their_shared_shard`.
 
 A forwarded publish that reaches a member that does not lead is answered
 with the leader, and the requester sends it there.
