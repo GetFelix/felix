@@ -1020,7 +1020,7 @@ async fn a_batch_not_reported_whole_is_an_unknown_outcome() {
     };
     let answer = dropped.answer.take().expect("once");
     let _ = answer.send(Err(refusal.clone().into()));
-    assert_eq!(dropped.now(), Some(Err(refusal)));
+    assert_eq!(dropped.now(), Some(Err(refusal.clone())));
 
     for (first, last) in [
         (at(TERM, 4), at(TERM, 7)),

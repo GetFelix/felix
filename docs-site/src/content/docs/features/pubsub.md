@@ -181,8 +181,10 @@ A few things to know:
   write. Read the shard at the expected offset to see whether it landed. On the
   Raft engine a cut batch can leave a later record of it at that offset, so
   compare the payload you read with the one you sent, not just the offset. To
-  retry without checking at all, publish through an
-  [idempotent producer](/clients/python/#idempotent-producers) instead.
+  retry a batch that landed whole without checking, publish through an
+  [idempotent producer](/clients/python/#idempotent-producers) instead. It
+  recognises a batch only once all of it is held, so a re-send after a cut can
+  write the records that did land a second time.
 - The broker leading the shard answers it; it is never forwarded. On a
   `Leader` stream the fence is only as strong as the leader's lease.
 - It needs a durable stream. Negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
