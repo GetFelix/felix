@@ -303,7 +303,8 @@ each shard directory and the marks at the data root, in one append-only
 file whose writes are group-committed, so many groups voting at once share
 one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
 directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
-re-form reads, and a new directory gets a new copy id. A `CopyRoot` opens
+re-form reads, and a new directory gets a new copy id. A directory holding
+only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
 only with the value the gate (`raft_copy::check`) returns, so no member
 opens on a root that was not checked. `GroupRuntime::open_copy` opens a
 member that way. The log mark is exact by default (`LogMarkMode::Exact`,

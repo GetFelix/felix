@@ -10,6 +10,7 @@ use super::marks::{CopyMarks, MarkLog};
 use super::{VoteMark, log_below};
 use crate::disk_log::crash_point;
 use crate::log::LogConfig;
+use crate::raft_log::state_file;
 use crate::{DiskLog, StorageId};
 
 /// Longer shard names do not fit a mark.
@@ -41,7 +42,7 @@ pub struct Rotation {
     pub reason: RotateReason,
     /// The copy id the directory held, if it had one.
     pub replaced: Option<u64>,
-    /// Where the old directory was moved, if it held anything.
+    /// Where the old directory was moved, if it held more than a copy file.
     pub kept: Option<PathBuf>,
 }
 
@@ -105,7 +106,7 @@ impl CopyRoot {
     ///
     /// A rotated copy has a new copy id that never voted and an empty log,
     /// with fresh marks synced before this returns. The old directory, if it
-    /// held anything, is moved beside `dir` (see [`kept_copies`]). A crash
+    /// held more than a copy file, is moved beside `dir` (see [`kept_copies`]). A crash
     /// part way leaves the old directory, or one this rotates again.
     pub async fn open_copy(
         &self,
@@ -206,7 +207,7 @@ impl CopyRoot {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
         step()?;
-        let kept = if is_empty(dir)? {
+        let kept = if holds_no_records(dir)? {
             None
         } else {
             let kept = kept_path(dir, replaced)?;
@@ -297,6 +298,25 @@ async fn judge_log(
 fn open_log(dir: &Path, label: &str, config: LogConfig) -> io::Result<DiskLog> {
     crate::fs::create_dir_all(dir)?;
     DiskLog::open(dir, label.to_string(), config).map_err(io::Error::other)
+}
+
+/// Missing, or holding at most a copy file: what a crash before a new
+/// copy's marks leaves. There is nothing in it to keep, and the new copy
+/// file replaces the old.
+fn holds_no_records(dir: &Path) -> io::Result<bool> {
+    let entries = match crate::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    };
+    let temporary = state_file::temporary(dir, copy_file::FILE_NAME);
+    for entry in entries {
+        let path = entry?.path();
+        if path != dir.join(copy_file::FILE_NAME) && path != temporary {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Missing, or holding nothing.

@@ -149,3 +149,29 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
         log.close().await.ok();
     }
 }
+
+/// The marks' name is on disk: it stays the same across builds, and a `/`
+/// in a user's name cannot make two shards share one.
+#[test]
+fn the_mark_name_is_stable_and_unambiguous() {
+    use super::super::runtime::mark_name;
+    let key = |tenant: &str, namespace: &str, stream: &str, kind| ShardKey {
+        tenant_id: tenant.to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        shard: 3,
+        kind,
+    };
+    assert_eq!(
+        mark_name(&key("t", "ns", "orders", ShardKind::Stream)),
+        "1:t/2:ns/6:orders/3/stream"
+    );
+    assert_eq!(
+        mark_name(&key("t", "ns", "orders", ShardKind::Cache)),
+        "1:t/2:ns/6:orders/3/cache"
+    );
+    assert_ne!(
+        mark_name(&key("a/b", "c", "d", ShardKind::Stream)),
+        mark_name(&key("a", "b/c", "d", ShardKind::Stream))
+    );
+}

@@ -47,6 +47,6 @@ pub(crate) fn remove_temporary(dir: &Path, name: &str) -> io::Result<()> {
     }
 }
 
-fn temporary(dir: &Path, name: &str) -> std::path::PathBuf {
+pub(crate) fn temporary(dir: &Path, name: &str) -> std::path::PathBuf {
     dir.join(format!("{name}.tmp"))
 }

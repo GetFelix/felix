@@ -26,7 +26,7 @@ pub enum Gate {
 /// one, and a [`super::CopyRoot`] opens only from one, so no member opens on
 /// a root the gate did not judge.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0451
 /// fn forge(marks: felix_storage::raft_copy::MarkLog) -> felix_storage::raft_copy::GatePassed {
 ///     felix_storage::raft_copy::GatePassed { marks }
 /// }

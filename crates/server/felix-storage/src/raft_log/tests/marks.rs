@@ -94,7 +94,21 @@ async fn the_exact_log_mark_is_synced_before_the_callback() {
         None,
         "marked before the flush"
     );
+    // The flush lands, and the mark write after it is held: the callback
+    // waits for the mark.
+    let marking = copies.mark_log().hold_writer().await;
     drop(held);
+    while copies.mark_log().queued() == 0 {
+        tokio::task::yield_now().await;
+    }
+    for _ in 0..50 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        flushed.as_mut().now_or_never().is_none(),
+        "fired before the mark was synced"
+    );
+    drop(marking);
     flushed.await.expect("flush");
     assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 1)));
 }

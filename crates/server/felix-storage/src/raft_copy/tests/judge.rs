@@ -301,6 +301,17 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             Some(reopened.copy),
             "stop {stop}"
         );
+        // Only the old copy is kept: a directory a crash left holding just
+        // a new copy file is not.
+        assert_eq!(
+            kept_copies(&dir)
+                .expect("kept")
+                .iter()
+                .map(|kept| kept.copy)
+                .collect::<Vec<_>>(),
+            vec![Some(old)],
+            "stop {stop}"
+        );
         close(reopened).await;
         if finished {
             assert!(stop >= steps, "stop {stop} of {steps}");
@@ -312,4 +323,21 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
         stop >= 4,
         "the rotation has fewer steps than expected: {stop}"
     );
+}
+
+/// A copy file's temporary is all a crash in its first write leaves, and
+/// nothing to keep.
+#[tokio::test]
+async fn a_directory_with_only_a_copy_file_temporary_is_not_kept() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join("raft-copy.tmp"), b"torn").expect("temporary");
+    let copies = root.open();
+    let opened = open_copy(&copies, &dir).await;
+    let rotation = opened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::NoCopyFile);
+    assert_eq!(rotation.kept, None);
+    assert_eq!(kept_copies(&dir).expect("kept"), Vec::new());
+    close(opened).await;
 }

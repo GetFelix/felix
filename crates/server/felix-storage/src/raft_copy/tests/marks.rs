@@ -90,6 +90,44 @@ async fn concurrent_writes_share_one_sync() {
     }
 }
 
+/// A lowering waits for a write that has left the queue but not yet landed:
+/// that write may raise the mark above the cut, and a crash after the cut
+/// would then leave a mark above the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lowering_waits_for_a_write_in_flight() {
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 1).await.expect("fresh");
+    let marks = log.for_copy(Arc::from(SHARD), 1);
+    marks.log(Some(point(1, 5))).await.expect("log");
+
+    let stalled = log.stall_writes().await;
+    let taken = log.writes_taken();
+    let raise = {
+        let marks = marks.clone();
+        tokio::spawn(async move { marks.log(Some(point(1, 10))).await })
+    };
+    while log.writes_taken() == taken {
+        tokio::task::yield_now().await;
+    }
+    let lower = {
+        let marks = marks.clone();
+        tokio::spawn(async move { marks.lower_log(Some(point(1, 7))).await })
+    };
+    while log.queued() == 0 && !lower.is_finished() {
+        tokio::task::yield_now().await;
+    }
+    drop(stalled);
+    raise.await.expect("task").expect("raise");
+    lower.await.expect("task").expect("lower");
+    assert_eq!(log.marks(SHARD).expect("marks").log, Some(point(1, 7)));
+    drop(log);
+    assert_eq!(
+        open(&root).marks(SHARD).expect("marks").log,
+        Some(point(1, 7))
+    );
+}
+
 #[tokio::test]
 async fn each_synced_write_reaches_the_witness() {
     let root = Root::new();

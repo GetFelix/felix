@@ -68,6 +68,8 @@ struct Inner {
     batched: parking_lot::Mutex<HashMap<Arc<str>, Source>>,
     batcher: AtomicBool,
     compact_floor: AtomicU64,
+    #[cfg(test)]
+    stall: tokio::sync::RwLock<()>,
 }
 
 #[derive(Default)]
@@ -171,6 +173,8 @@ impl MarkLog {
                 batched: parking_lot::Mutex::default(),
                 batcher: AtomicBool::new(false),
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
+                #[cfg(test)]
+                stall: tokio::sync::RwLock::default(),
             }),
         })
     }
@@ -292,6 +296,19 @@ impl MarkLog {
         self.inner.writer.lock().await
     }
 
+    /// Stop the next writes after they leave the queue, before they reach
+    /// the file, until the guard drops.
+    #[cfg(test)]
+    pub(crate) async fn stall_writes(&self) -> impl Drop + '_ {
+        self.inner.stall.write().await
+    }
+
+    /// How many writes have left the queue.
+    #[cfg(test)]
+    pub(crate) fn writes_taken(&self) -> u64 {
+        self.inner.queue.lock().next
+    }
+
     /// Changes queued for the next write.
     #[cfg(test)]
     pub(crate) fn queued(&self) -> usize {
@@ -316,10 +333,14 @@ impl MarkLog {
         let mut queue = self.inner.queue.lock();
         {
             let live = self.inner.live.read();
-            if updates
-                .iter()
-                .all(|queued| !queue.named.contains(&queued.shard) && is_noop(&live, queued))
-            {
+            // A lowering always waits its turn at the writer: a write in
+            // flight has left the queue but not yet reached `live`, and may
+            // raise the mark above the cut this lowering is for.
+            if updates.iter().all(|queued| {
+                !queue.named.contains(&queued.shard)
+                    && !matches!(queued.update, Update::LowerLog(_))
+                    && is_noop(&live, queued)
+            }) {
                 return Ok(None);
             }
             for queued in &updates {
@@ -375,6 +396,8 @@ impl MarkLog {
             std::mem::take(&mut queue.updates)
         };
         writer.taken = ticket + 1;
+        #[cfg(test)]
+        drop(inner.stall.read().await);
         let written = self.write(&mut writer, batch).await;
         if written.is_err() {
             writer.failed_from = Some(ticket);

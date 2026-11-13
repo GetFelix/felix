@@ -20,10 +20,10 @@ use super::group::{Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::ticker;
 use super::types::{GroupId, MemberId};
-use crate::ShardKey;
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
+use crate::{ShardKey, ShardKind};
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,8 +148,10 @@ pub struct OpenedMember {
     pub rotation: Option<Rotation>,
 }
 
-/// The name a shard's marks go by at the data root.
-fn mark_name(shard: &ShardKey) -> String {
+/// The name a shard's marks go by at the data root. It is on disk, so it
+/// must not change: names come from users and may hold any character, so
+/// each is length-prefixed, and the kind is a fixed tag.
+pub(super) fn mark_name(shard: &ShardKey) -> String {
     let ShardKey {
         tenant_id,
         namespace,
@@ -157,7 +159,16 @@ fn mark_name(shard: &ShardKey) -> String {
         shard,
         kind,
     } = shard;
-    format!("{tenant_id}/{namespace}/{stream}/{shard}/{kind:?}")
+    let kind = match kind {
+        ShardKind::Stream => "stream",
+        ShardKind::Cache => "cache",
+    };
+    format!(
+        "{}:{tenant_id}/{}:{namespace}/{}:{stream}/{shard}/{kind}",
+        tenant_id.len(),
+        namespace.len(),
+        stream.len()
+    )
 }
 
 /// What a member is doing in its group.
