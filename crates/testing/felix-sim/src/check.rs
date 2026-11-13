@@ -62,6 +62,7 @@ use std::time::Duration;
 use felix_broker_service::sim::{ShardKey, ShardStand};
 use felix_cluster::history::model::History;
 
+use crate::client::Recorder;
 use crate::cluster::{SimCluster, describe};
 use crate::nemesis::Plan;
 
@@ -101,6 +102,9 @@ pub struct CheckContext {
     /// What the clients recorded: complete at [`Point::End`], what had been
     /// recorded by the heal at [`Point::Healed`], so far at [`Point::Quiet`].
     pub history: History,
+    /// The recorder behind `history`, for what lands after the snapshot (an
+    /// operator abandoning a log while a checker is still polling).
+    pub recorder: Arc<Recorder>,
     /// The faults the nemesis was given, empty for a run without faults. Some
     /// may have been skipped (a crash that would take down a majority).
     pub plan: Plan,

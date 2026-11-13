@@ -131,6 +131,13 @@ pub(crate) struct Faults {
     pub(crate) fail_after_node_start: bool,
     /// The node's stop reports an error.
     pub(crate) fail_node_stop: bool,
+    /// The stop after a failed start never finishes, as one behind a stuck
+    /// apply would not.
+    pub(crate) stall_failed_start_stop: bool,
+    /// Building the forwarding client fails.
+    pub(crate) fail_forward_client: bool,
+    /// Counts the stops a failed start asks for.
+    pub(crate) stop_probe: Option<&'static std::sync::atomic::AtomicUsize>,
     /// A member forming the group stops short of `initialize`, as a crash
     /// there would.
     pub(crate) stop_before_initialize: bool,

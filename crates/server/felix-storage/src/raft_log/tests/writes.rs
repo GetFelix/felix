@@ -106,6 +106,30 @@ async fn the_callback_waits_for_the_flush_and_readers_do_not() {
     assert_eq!(raft.disk_log().durable_offset(), 12);
 }
 
+/// Under any other mode the callback fires before the fsync, so a follower
+/// would acknowledge an entry a power cut can still take.
+#[tokio::test]
+async fn a_log_that_does_not_fsync_on_commit_is_refused() {
+    let relaxed = [
+        FsyncMode::None,
+        FsyncMode::Periodic {
+            interval: std::time::Duration::from_millis(5),
+        },
+    ];
+    for fsync_mode in relaxed {
+        let dir = tempdir().expect("dir");
+        let config = LogConfig {
+            fsync_mode,
+            ..config()
+        };
+        let log = DiskLog::open(dir.path(), "t/ns/raft/0", config).expect("open");
+        let err = RaftLog::<Types, Codec>::new(log, Codec)
+            .err()
+            .unwrap_or_else(|| panic!("{fsync_mode:?} was taken as a Raft log"));
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
+    }
+}
+
 /// A flush that fails reaches the callback as an error, once.
 #[tokio::test]
 async fn a_failed_flush_fails_the_callback() {
@@ -313,6 +337,9 @@ async fn a_vote_only_moves_forward() {
     raft.save_vote(&vote(2, 1, true))
         .await
         .expect_err("a lower term");
+    raft.save_vote(&vote(3, 1, false))
+        .await
+        .expect_err("a second vote in the term");
 
     raft.disk_log().close().await.expect("close");
     drop(raft);
@@ -320,6 +347,34 @@ async fn a_vote_only_moves_forward() {
     let found = raft.reader().read_vote().await.expect("read");
     assert_eq!(found, Some(vote(3, 2, false)));
     assert!(!found.expect("a vote").is_committed());
+}
+
+/// A member that voted for a candidate that lost follows the leader the
+/// majority elected in that term. After that it takes no other vote there.
+#[tokio::test]
+async fn a_losing_vote_gives_way_to_the_terms_leader() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let mut reader = raft.reader();
+
+    raft.save_vote(&vote(2, 3, false)).await.expect("save");
+    raft.save_vote(&vote(2, 1, true)).await.expect("the winner");
+    assert_eq!(
+        reader.read_vote().await.expect("read"),
+        Some(vote(2, 1, true))
+    );
+    for second in [vote(2, 3, false), vote(2, 3, true), vote(2, 2, true)] {
+        let err = raft.save_vote(&second).await.expect_err("a second leader");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{second}: {err}");
+    }
+
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    let raft = open(&dir);
+    assert_eq!(
+        raft.reader().read_vote().await.expect("read"),
+        Some(vote(2, 1, true))
+    );
 }
 
 /// The committed id is saved, read back and kept across a reopen, and a

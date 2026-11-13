@@ -65,3 +65,7 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# openraft, pinned to one commit until 0.10.1 is released. Only the `raft`
+# features build it, and no release enables them. See
+# docs/replication-engine.md, "openraft version".
+allow-git = ["https://github.com/databendlabs/openraft"]

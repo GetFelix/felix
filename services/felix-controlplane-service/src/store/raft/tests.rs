@@ -35,10 +35,11 @@ pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
         .await
         .expect("initialize single-member group");
     // A single member elects itself; writes block until then, so wait here
-    // rather than in every contract step.
+    // rather than in every contract step. The leader's blank entry must also
+    // be applied: membership changes are refused until it commits.
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while handle.status().leader.is_none() {
-        assert!(std::time::Instant::now() < deadline, "no leader");
+    while handle.status().leader.is_none() || handle.status().last_applied_index.is_none() {
+        assert!(std::time::Instant::now() < deadline, "no committed leader");
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
     Arc::new(RaftStore::new(handle, machine))

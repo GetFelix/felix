@@ -22,6 +22,7 @@ fn context(cluster: &Arc<SimCluster>) -> CheckContext {
         point: Point::Healed,
         healed_at: cluster.elapsed(),
         history: History::default(),
+        recorder: Recorder::new(4),
         plan: Plan::default(),
     }
 }
