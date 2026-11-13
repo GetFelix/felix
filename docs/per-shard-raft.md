@@ -298,6 +298,20 @@ initializes only when its own member id is in the set. A copy wiped after
 that has a new id that the set does not name, so it can never initialize a
 second time on an empty log.
 
+**Where it is built.** `felix_storage::raft_copy` keeps the copy file in
+each shard directory and the marks at the data root, in one append-only
+file whose writes are group-committed, so many groups voting at once share
+one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
+directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
+re-form reads, and a new directory gets a new copy id. A `CopyRoot` opens
+only with the value the gate (`raft_copy::check`) returns, so no member
+opens on a root that was not checked. `GroupRuntime::open_copy` opens a
+member that way. The log mark is exact by default (`LogMarkMode::Exact`,
+synced before the flush is reported to Raft) and can be batched
+(`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
+Not built yet: the control plane's copy of the root sequence, and the
+broker opening its Raft groups through all this.
+
 ### Re-forming a group
 
 Rotating ids keeps one failure safe. It also means that several at once can
@@ -1798,7 +1812,7 @@ and the hybrid is what ships.
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
-| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
+| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), except the control plane's copy of the root sequence and the broker opening its groups through them. Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
 | 6 (#2238) | Cache and counters in one group: state machine, proposed compaction, snapshot | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
