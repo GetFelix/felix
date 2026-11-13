@@ -353,10 +353,19 @@ What `plan` works out for one group, and `apply` then does:
    shown as missing. If a copy's records name a voter that is not on the
    list, the group is blocked. Declaring the broker of a since-removed
    voter dead unblocks a lagging copy whose newest membership names it.
+   A copy that holds no membership of the epoch, such as one whose disk
+   was lost, is taken to name the epoch's first voters. The command reads
+   those from the control plane, which wrote them when it created the
+   group, switched it from the hybrid, or last re-formed it. Without this
+   rule a group whose listed copies are all empty re-forms from nothing
+   while a removed voter's disk still holds an acknowledged record
+   (`FelixRaftReformStartNotNamed.cfg`).
 2. **Refuse.** A group is left alone if any reachable copy reports a
    leader for the epoch, and blocked if a placed broker is unreachable and
    not declared dead.
-3. **Stop the old epoch** (`apply` only). Each reachable copy stops its
+3. **Stop the old epoch** (`apply` only). Before it stops a copy, `apply`
+   asks the listed copies for a leader again, and leaves the group alone
+   if one answers. Each reachable copy stops its
    member of the current epoch and fsyncs a marker in the shard directory
    that says so. A stopped member never votes, acknowledges or appends in
    that epoch again, also after a restart. Only then does it report its
@@ -1291,7 +1300,7 @@ off and stays registered as an expected violation.
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
 | #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
-| #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership configs with two lost disks pass `AckedSurvive` when the target is reached, with and without a client write. Must still fail: the same with the target left off the list |
+| #2311 | The control plane records the target first, and the command lists every placed broker, a move's target included, and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership config with two lost disks and no client write passes `AckedSurvive` when the target is reached. The same with a client write has not finished a run, so nothing is claimed for it yet. Must still fail: the same with the target left off the list, and the config where an empty copy names nobody (`StartNotNamed`) |
 
 **Placement and lost disks.** `FelixRaftPlacement.tla` puts the control
 plane in front of the membership model: it moves a seat, removes one, and

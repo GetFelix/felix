@@ -14,11 +14,13 @@
 (*   Plan       -- the dry run. It lists every broker the control plane    *)
 (*                 has placed for the group and reads each copy that is    *)
 (*                 not declared dead: copy id, last log id, newest         *)
-(*                 membership. It refuses while a listed copy leads, or    *)
-(*                 while a copy's records name a voter that is neither     *)
-(*                 listed nor declared dead. It changes nothing.           *)
+(*                 membership. A copy that holds no membership of the      *)
+(*                 epoch is taken to name the epoch's first voters, which  *)
+(*                 the control plane recorded. It refuses while a listed   *)
+(*                 copy leads, or while a copy names a voter that is       *)
+(*                 neither listed nor declared dead. It changes nothing.   *)
 (*   Stop       -- apply. A listed copy stops its member behind a durable  *)
-(*                 marker.                                                 *)
+(*                 marker, unless a listed copy leads by now.              *)
 (*   Reform     -- apply. Every listed copy that is not dead is stopped    *)
 (*                 and is read again, and what it holds now must be what   *)
 (*                 the plan showed. Then the control plane writes the next *)
@@ -61,6 +63,11 @@
 (*   OffsetNeverReused  -- StateMachineSafety without the exception: no    *)
 (*                         offset is given out with two records. A gap is  *)
 (*                         not a record.                                   *)
+(*   ElectedGroupLeftAlone -- no copy is stopped while a broker leads its  *)
+(*                         epoch: apply skips a group that elected after   *)
+(*                         the plan.                                       *)
+(*   BootIsRecorded     -- the first voters a member has for its epoch are *)
+(*                         the ones the control plane recorded for it.     *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -78,6 +85,10 @@
 (*   NoCas              -- the command does not compare the epoch.         *)
 (*   SoloPlacedTwo      -- a restored copy starts by itself although a     *)
 (*                         second broker is placed.                        *)
+(*   StartNotNamed      -- a copy that holds no membership of the epoch    *)
+(*                         names nobody.                                   *)
+(*   StopNotRechecked   -- apply stops a copy although a listed copy       *)
+(*                         leads.                                          *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -140,7 +151,9 @@ CONSTANTS
     RetireNotDurable,
     BaseNotHighest,
     NoCas,
-    SoloPlacedTwo
+    SoloPlacedTwo,
+    StartNotNamed,
+    StopNotRechecked
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -151,7 +164,7 @@ VARIABLES
     commit,     \* a leader's commit index
     match,      \* a leader's record of what each voter acknowledged
     retired,    \* the stop marker for the member's epoch
-    boot,       \* membership the member started its epoch with
+    boot,       \* first voters of the member's epoch, as the control plane recorded them
     msgs,       \* appends in flight
     cpEpoch,
     cpMem,      \* the control plane's own record of the membership
@@ -405,6 +418,8 @@ Restart(b) ==
     /\ UNCHANGED <<ep, cid, term, log, commit, match, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, writes, steps, places, rotations, rejoins>>
 
+\* boot stays: it is not on the disk. The command reads it from the control
+\* plane's record of the epoch (BootIsRecorded).
 NewCopy(b, kept) ==
     /\ cid' = [cid EXCEPT ![b] = @ + 1]
     /\ log' = [log EXCEPT ![b] = kept]
@@ -510,6 +525,11 @@ Higher(f, g) == KeyLess(g.key, f.key) \/ (f.key = g.key /\ f.len >= g.len)
 Rotated(b) ==
     \E m \in Voters(Config(b)) \cup Voters(cpMem) : m[1] = b /\ m[2] < cid[b]
 
+\* The voters a copy names. One with no membership of the epoch names the
+\* epoch's first voters.
+Names(b) ==
+    IF StartNotNamed /\ CfgIdx(log[b], ep[b]) = {} THEN {} ELSE Named(Config(b))
+
 \* The copies the command has to read.
 Asked ==
     LET live == List \ dead
@@ -522,18 +542,20 @@ Plan(e, S) ==
     /\ S # {}
     /\ IF ReformBeforeAll THEN S \subseteq Asked ELSE S = Asked
     /\ \A b \in S : ep[b] = e /\ ~Leads(b)
-    /\ NamedNotChecked \/ \A b \in S : Named(Config(b)) \subseteq List \cup dead
+    /\ NamedNotChecked \/ \A b \in S : Names(b) \subseteq List \cup dead
     /\ [e |-> e, facts |-> [b \in S |-> Fact(b)]] \notin plans
     /\ plans' = plans \cup {[e |-> e, facts |-> [b \in S |-> Fact(b)]]}
     /\ UNCHANGED brokerVars
     /\ UNCHANGED <<cpEpoch, cpMem, placed, dead, cpFloor, forms, lost, counters>>
 
-\* The stop is durable before the copy is read again.
+\* The stop is durable before the copy is read again. Apply asks the listed
+\* copies for a leader again first, and leaves a group that has one alone.
 Stop(b) ==
     /\ ~ReportNotPromise
     /\ Alive(b)
     /\ ~retired[b]
     /\ \E p \in plans : p.e = ep[b] /\ b \in DOMAIN p.facts
+    /\ StopNotRechecked \/ \A x \in List \ dead : ~(Leads(x) /\ ep[x] = ep[b])
     /\ retired' = [retired EXCEPT ![b] = TRUE]
     /\ role' = [role EXCEPT ![b] = "follower"]
     /\ UNCHANGED <<ep, cid, term, log, commit, match, boot, msgs, acked, elected>>
@@ -668,6 +690,15 @@ OffsetNeverReused ==
     \A x, y \in acked : (x.i = y.i /\ IsRecord(x) /\ IsRecord(y)) => x.ent = y.ent
 
 NothingLost == lost = {}
+
+ElectedGroupLeftAlone ==
+    [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>
+            \A l \in Brokers : ~(Leads(l) /\ ep[l] = ep[b])]_vars
+
+BootIsRecorded ==
+    \A b \in Brokers :
+        \/ ep[b] = 0 /\ boot[b] = InitConfig
+        \/ \E f \in forms : f.e = ep[b] /\ boot[b] = Simple(f.voters)
 
 \* Witnesses: each is an invariant that must fail.
 
