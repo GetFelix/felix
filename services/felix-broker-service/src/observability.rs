@@ -187,6 +187,7 @@ fn health_router(
             axum::routing::get(move || async move {
                 ready_status(
                     &felix_storage::disk_log::poisoned_logs(),
+                    &felix_storage::run_state::failed_records(),
                     readiness.is_ready(),
                 )
             }),
@@ -204,7 +205,8 @@ fn health_router(
 /// What `/ready` answers. A poisoned log refuses writes until it is
 /// reopened, so the body names each one's tenant and what stopped it. One
 /// poisoned log fails the whole broker's probe for now: see "A failed fsync
-/// poisons the log" in `docs/durable-storage.md`.
+/// poisons the log" in `docs/durable-storage.md`. A node record whose sync
+/// failed stops the node's records, and the body names it.
 ///
 /// This listener has no authentication and `/metrics` on it exposes tenant
 /// labels only, so the namespace and stream stay out of the body; the
@@ -212,9 +214,10 @@ fn health_router(
 /// `/live` stays ok, so the body tells the operator what to do.
 fn ready_status(
     poisoned: &[felix_storage::disk_log::PoisonedLog],
+    failed_records: &[felix_storage::run_state::FailedRecord],
     ready: bool,
 ) -> (axum::http::StatusCode, String) {
-    if !poisoned.is_empty() {
+    if !poisoned.is_empty() || !failed_records.is_empty() {
         let mut lines: Vec<String> = poisoned
             .iter()
             .map(|log| {
@@ -222,6 +225,12 @@ fn ready_status(
                 let reason = log.reason.replace(&log.shard, "<shard>");
                 format!("a log of tenant {tenant} is poisoned: {reason}")
             })
+            .chain(failed_records.iter().map(|failed| {
+                format!(
+                    "a sync of the node record {} failed: {}",
+                    failed.record, failed.reason
+                )
+            }))
             .collect();
         lines.push(
             "reboot the host before restarting the broker; the broker log names each shard"

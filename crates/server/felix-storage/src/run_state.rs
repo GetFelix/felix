@@ -724,7 +724,53 @@ fn write(root: &Path, record: &[u8], durable: bool) -> Result<()> {
 
 /// A crash leaves the old record or the new one, never a mix. With `durable`
 /// the record and the rename are synced.
+///
+/// A failed sync stops every durable write under `root` for the rest of the
+/// process, and is a [`StorageError::SyncFailed`]. After a failed directory
+/// sync the kernel may have dropped the directory's dirty pages, and a later
+/// sync could then succeed without making any rename durable. See
+/// [`failed_records`].
 pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
+    if durable && let Some(first) = stopped_by(root) {
+        return Err(refused(name, &first));
+    }
+    let written = replace_file(root, name, bytes, durable);
+    if let Err(err) = &written
+        && err.is_sync_failure()
+    {
+        stop_records(root, name, err);
+    }
+    written
+}
+
+/// Remove the record `name` under `root` durably, under the same stop as
+/// [`write_atomically`].
+pub(crate) fn remove_record(root: &Path, name: &str) -> Result<()> {
+    if let Some(first) = stopped_by(root) {
+        return Err(refused(name, &first));
+    }
+    match crate::fs::remove_file(root.join(name)) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    let synced = sync_dir(root).map_err(StorageError::from);
+    if let Err(err) = &synced {
+        stop_records(root, name, err);
+    }
+    synced
+}
+
+fn refused(name: &str, first: &FailedRecord) -> StorageError {
+    StorageError::SyncFailed(format!(
+        "{name} was not changed: a sync of {} in this directory failed earlier",
+        first.record
+    ))
+}
+
+/// [`write_atomically`] without the stop: for a log's own state files, which
+/// the log's poison marker covers instead.
+pub(crate) fn replace_file(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
     use std::io::Write;
 
     let path = root.join(name);
@@ -733,14 +779,72 @@ pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: b
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
         file.write_all(bytes).map_err(StorageError::Io)?;
         if durable {
-            crate::io::sync_all(&file).map_err(StorageError::Io)?;
+            crate::io::sync_all(&file)?;
         }
     }
     crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
     if durable {
-        sync_dir(root).map_err(StorageError::Io)?;
+        sync_dir(root)?;
     }
     Ok(())
+}
+
+/// A node record whose sync failed, for a readiness probe to report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedRecord {
+    /// The file's name under the durable root.
+    pub record: String,
+    pub reason: String,
+}
+
+/// Each directory a failed sync stopped, with its first failure. Never
+/// cleared: only a restart after a reboot is known to read back just what
+/// reached the disk.
+static STOPPED_DIRS: Mutex<Vec<(PathBuf, FailedRecord)>> = Mutex::new(Vec::new());
+
+/// The node records whose sync failed in this process, the first per
+/// directory. Each stopped every later durable write in its directory.
+pub fn failed_records() -> Vec<FailedRecord> {
+    STOPPED_DIRS
+        .lock()
+        .iter()
+        .map(|(_, record)| record.clone())
+        .collect()
+}
+
+pub(crate) fn stopped_by(root: &Path) -> Option<FailedRecord> {
+    STOPPED_DIRS
+        .lock()
+        .iter()
+        .find(|(dir, _)| dir == root)
+        .map(|(_, record)| record.clone())
+}
+
+fn stop_records(root: &Path, name: &str, err: &StorageError) {
+    {
+        let mut stopped = STOPPED_DIRS.lock();
+        if stopped.iter().any(|(dir, _)| dir == root) {
+            return;
+        }
+        tracing::error!(
+            root = %root.display(),
+            record = name,
+            error = %err,
+            "a sync of a node record failed; no durable record is written in this directory \
+             until the broker restarts, after a reboot"
+        );
+        stopped.push((
+            root.to_path_buf(),
+            FailedRecord {
+                record: name.to_string(),
+                reason: err.to_string(),
+            },
+        ));
+    }
+    // What this broker vouched for may now be lost like a poisoned log's
+    // acknowledged records, so it is treated as one.
+    crate::disk_log::note_lost_durability();
+    forget_watched();
 }
 
 fn path_in(root: &Path) -> PathBuf {

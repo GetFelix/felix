@@ -616,3 +616,42 @@ async fn a_power_loss_at_any_offload_step_loses_nothing() {
     }
     log.shutdown().await.expect("shutdown");
 }
+
+/// A failed sync of an upload stops offloading to that archive: a retry
+/// would sync directories it does not change again, and could then record a
+/// copy that never reached the disk and let retention delete the segment.
+#[tokio::test]
+async fn a_failed_upload_sync_stops_offloading_to_the_archive() {
+    let dir = tempdir().expect("dir");
+    let config = offload_config(dir.path(), tight_retention());
+    let log = filled_log(dir.path(), &config).await;
+    offloader(&log).faults.fail_next_sync();
+
+    for pass in 0..2 {
+        let err = log.enforce_retention_now().await.expect_err("pass");
+        assert!(err.is_sync_failure(), "pass {pass}: {err}");
+        assert!(log.inner.manifest.lock().entries().is_empty());
+        assert_eq!(log.base_offset(), 0, "pass {pass} deleted a segment");
+    }
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A failed directory sync after removing a retired shard's copy stops the
+/// archive too: the retry finds the file gone and would sync nothing.
+#[tokio::test]
+async fn a_failed_removal_sync_is_not_retried() {
+    let dir = tempdir().expect("dir");
+    let config = offload_config(dir.path(), None);
+    let log = filled_log(dir.path(), &config).await;
+    log.enforce_retention_now().await.expect("pass");
+    assert!(!log.inner.manifest.lock().entries().is_empty());
+    log.shutdown().await.expect("shutdown");
+
+    let target = config.offload.clone().expect("offload");
+    let shard_dir = dir.path().join("log");
+    crate::disk_log::offload::test_hooks::fail_next_removal_sync();
+    let first = crate::disk_log::offload::remove_copies(&target, &shard_dir);
+    assert!(first.expect_err("removal").is_sync_failure());
+    let again = crate::disk_log::offload::remove_copies(&target, &shard_dir);
+    assert!(again.expect_err("retry").is_sync_failure());
+}

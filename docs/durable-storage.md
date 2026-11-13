@@ -603,7 +603,8 @@ Four properties:
      point, as a power loss would have left it: the segments after the marked
      one go, and the marked one is cut to its synced length. Nothing past that
      point was acknowledged, so nothing acknowledged is lost. The durable mark
-     is then set to the cut point;
+     is then set to the cut point, even when a crash part way left nothing
+     more to cut;
    - if it used a relaxed mode, those records were acknowledged, so they
      stay. The open reads every byte past the marked point back and writes it
      again before syncing, so the sync really reaches the disk;
@@ -659,6 +660,46 @@ Four properties:
    > real filesystem, where the failed flush's bytes stay readable: the cut,
    > the rewrite under a relaxed mode, a mode change across the restart, a
    > crash part way through the cut, and an unreadable marker.
+
+   The flush thread poisons the log itself, before it replies. A caller
+   that stopped waiting on the flush (a dropped future, a runtime shutting
+   down) cannot leave a failed sync unrecorded.
+
+   **The same rule beside the logs.** Three kinds of file outside a log's
+   segments are synced too, and each follows the fsyncgate rule its own way:
+
+   - *Node records* under the durable root: the storage id, the
+     registration, `head-trimmed`, `record-headers`, `record-generations`,
+     `replaced-storage`, `lost-copy`, `rotated-ids`, `copy-trust`,
+     `run-token`, and `controlplane.view` (written or removed). There is no
+     log to poison, so a
+     failed sync of one stops every later durable record in that directory
+     for the rest of the process. The write that failed returns
+     `StorageError::SyncFailed`, and so does any later one, the same record
+     included. The broker counts it as a poisoned log: it attests no trusted
+     copy, the run record stops vouching for the boot, and a stop is not
+     clean. `/ready` answers 503 with a line such as `a sync of the node
+     record copy-trust failed: (...)`. The control-plane view writer stops
+     writing instead of trying again every tick.
+   - *Offloaded copies* (see "Tiered storage: offload"). A failed sync of an
+     uploaded object or of a directory above it, or of the directory a
+     retired shard's copy was removed from, stops offloading to that archive
+     for the rest of the process. A retry would sync directories it does not
+     change again, and could then record a copy that never reached the disk
+     and let retention delete the only one. Retention keeps every segment
+     without a recorded copy, as it does while passes fail.
+   - *The cache's key index snapshot.* It is tried again by the next
+     compaction. Each try writes a new file, and a snapshot that a crash lost
+     or left stale costs a full replay on the next open, never a wrong read.
+
+   > `a_failed_flush_poisons_the_log_after_its_caller_gives_up` (in
+   > `disk_log/tests/durability.rs`) drops a flush during a failing sync.
+   > `a_failed_node_record_sync_is_not_retried` (in
+   > `disk_log/tests/flush_failures.rs`) fails the file sync and then the
+   > directory sync of each node record. The offload cases are
+   > `a_failed_upload_sync_stops_offloading_to_the_archive` and
+   > `a_failed_removal_sync_is_not_retried`, and the snapshot case is
+   > `a_failed_snapshot_sync_is_retried_and_a_crash_reads_right`.
 
    Readers stop at the durable bound once the log is poisoned. The batch whose
    flush failed is still written past it, and its publish was refused, so a
@@ -2185,6 +2226,8 @@ directory; the first pass creates and opens it. So a missing mount, a
 read-only one or a full one never stops a stream log from opening or taking
 publishes. A pass that cannot open the directory or write a copy fails, adds
 to `felix_storage_offload_failures_total` and is tried again on the next tick.
+A failed sync is the exception: it stops offloading to that archive until the
+broker restarts (see "A failed fsync poisons the log").
 The broker logs `offload pass failed` at the first failure and then at most
 every 30 seconds, backing off to every 15 minutes, with the shard, the
 directory and the number of failed passes. When a pass succeeds again it logs
