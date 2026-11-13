@@ -549,8 +549,6 @@ expectations=(
   "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
   "FelixRaftWritten pass"
   "FelixRaftWrittenCrash pass"
-  "FelixRaftWrittenFailover pass"
-  "FelixRaftWrittenJoint pass"
   "FelixRaftWrittenLearnerCounts violates AckedHeld"
   "FelixRaftWrittenOtherTermCounts violates AckedHeld"
   "FelixRaftWrittenJointOneHalf violates AckedHeld"
@@ -913,9 +911,12 @@ fi
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves
 # and FelixRaftLeaseAckWide are not registered: each is registered once a
 # dispatch run gives its declared outcome.
-# FelixRaftWrittenTerms and FelixRaftWrittenJointFailover are not
-# registered: neither finished in two hours on a 32-core machine
-# (docs/formal/README.md has how far each got).
+# FelixRaftWrittenFailover passes in 46 minutes with 8 workers on a 32-core
+# machine and runs nightly (tla-walk.yml). FelixRaftWrittenJoint passes in
+# 2 h 10 min there, too long for a hosted runner's six hours, so only that
+# box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
+# did not finish in two hours there (docs/formal/README.md has how far each
+# got).
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1145,8 +1146,6 @@ weights=(
   "FelixRaftMembershipTerms 109"
   "FelixRaftWritten 40"
   "FelixRaftWrittenCrash 5"
-  "FelixRaftWrittenFailover 100"
-  "FelixRaftWrittenJoint 290"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
