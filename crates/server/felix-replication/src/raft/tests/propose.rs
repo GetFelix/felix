@@ -308,7 +308,7 @@ fn a_drain_stops_at_its_bounds() {
         let mut waiting = Vec::new();
         for batch in batches {
             let (proposal, wait) = split(batch).expect("split");
-            queue.send(proposal).ok().expect("queued");
+            assert!(queue.send(proposal).is_ok(), "not queued");
             waiting.push(wait);
         }
         let (mut held, mut drains) = (None, Vec::new());
