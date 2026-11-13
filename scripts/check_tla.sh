@@ -1355,8 +1355,11 @@ fi
 # - A changed .tla is every configuration of that module and of each module
 #   that EXTENDS or INSTANCEs it, transitively.
 # - In this script, a changed line of a registration table (`expectations`,
-#   `walks`, `weights`, `pr_minutes`) is the configuration it names. Any other
-#   changed line, unless a comment or blank, is all of them.
+#   `walks`, `weights`, `pr_minutes`) is the configuration it names. A changed
+#   `Pattern) echo Module ;;` line of `module_of`, old or new, is the
+#   configurations the pattern matches plus those of the module and its
+#   dependents, as for a .tla. Any other changed line, unless a comment or
+#   blank, is all of them.
 # - In ci.yml, a changed line before `jobs:` or in the `changes`, `formal*`
 #   or `ci-ok` jobs is all of them, unless a comment or blank.
 # - Anything else, docs/formal/README.md included, is nothing.
@@ -1412,19 +1415,28 @@ workflow_ranges() {
     END { if (injobs) { NR++; close_job() } else printf "1-%d ", NR }'
 }
 
-# Prints the `old`/`new` changed lines that fall in the given ranges.
+# Lines of this script inside the body of `module_of`, as a `first-last` range.
+module_of_range() {
+  awk '/^module_of\(\) \{$/ { s = NR + 1 }
+    s && /^\}$/ { printf "%d-%d ", s, NR - 1; s = 0 }'
+}
+
+# Prints the `old`/`new` changed lines, each marked `in` when it falls in the
+# given old/new ranges, else `map` when in the optional second pair, else `out`.
 in_ranges() {
-  awk -v old="$1" -v new="$2" '
+  awk -v old="$1" -v new="$2" -v old2="${3:-}" -v new2="${4:-}" '
     function within(l, r,   k, i, parts, ab) {
       k = split(r, parts, " ")
       for (i = 1; i <= k; i++) { split(parts[i], ab, "-"); if (l >= ab[1] && l <= ab[2]) return 1 }
       return 0 }
-    { r = ($1 == "old") ? old : new; print (within($2 + 0, r) ? "in" : "out"), $0 }'
+    { l = $2 + 0; o = ($1 == "old")
+      print (within(l, o ? old : new) ? "in" : within(l, o ? old2 : new2) ? "map" : "out"), $0 }'
 }
 
 # The configuration names a diff affects, one per line, or `*` for all.
 affected_names() {
-  local base files f name modules=" " grew deps dep
+  local base files f name modules=" " grew deps dep lines kind pat mod
+  local patterns=()
   # Errors return, so the caller fails: an empty list would quietly leave a
   # changed configuration unchecked.
   base="$(git merge-base "$1" HEAD)" || return 1
@@ -1440,12 +1452,26 @@ affected_names() {
         modules="$modules${name%.tla} "
         ;;
       scripts/check_tla.sh)
-        changed_lines "$base" HEAD "$f" \
+        lines="$(changed_lines "$base" HEAD "$f" \
           | in_ranges "$(git show "$base:$f" | table_ranges)" "$(table_ranges <"$f")" \
+            "$(git show "$base:$f" | module_of_range)" "$(module_of_range <"$f")" \
           | awk '$1 == "out" { print "*"; next }
               match($0, /^in (old|new) [0-9]+ [[:space:]]*"[A-Za-z0-9_]+/) {
                 n = substr($0, RSTART, RLENGTH); sub(/.*"/, "", n); print n; next }
-              { print "*" }' || return 1
+              $1 == "map" && NF == 7 && $4 ~ /^[A-Za-z0-9_]+\*?\)$/ && $5 == "echo" \
+                && $6 ~ /^[A-Za-z0-9_]+$/ && $7 == ";;" {
+                sub(/\)$/, "", $4); print "map", $4, $6; next }
+              { print "*" }')" || return 1
+        # A `module_of` mapping, old or new, is the configurations its pattern
+        # matches and every configuration of its module and dependents.
+        while read -r kind pat mod; do
+          if [ "$kind" = map ]; then
+            patterns+=("$pat")
+            [[ "$modules" == *" $mod "* ]] || modules="$modules$mod "
+          elif [ -n "$kind" ]; then
+            echo "$kind"
+          fi
+        done <<<"$lines"
         ;;
       .github/workflows/ci.yml)
         changed_lines "$base" HEAD "$f" \
@@ -1454,7 +1480,7 @@ affected_names() {
         ;;
     esac
   done <<<"$files"
-  [ "$modules" != " " ] || return 0
+  [ "$modules" != " " ] || [ "${#patterns[@]}" -gt 0 ] || return 0
   # Modules built on a changed one, until no more join.
   grew=1
   while [ -n "$grew" ]; do
@@ -1476,7 +1502,11 @@ affected_names() {
   done
   for f in "${registered[@]}"; do
     name="${f%% *}"
-    if [[ "$modules" == *" $(module_of "$name") "* ]]; then echo "$name"; fi
+    if [[ "$modules" == *" $(module_of "$name") "* ]]; then echo "$name"; continue; fi
+    for pat in ${patterns[@]+"${patterns[@]}"}; do
+      # shellcheck disable=SC2053 # $pat is a case glob from module_of.
+      if [[ "$name" == $pat ]]; then echo "$name"; break; fi
+    done
   done
 }
 
