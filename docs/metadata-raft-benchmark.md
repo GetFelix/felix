@@ -1,14 +1,14 @@
 # The metadata Raft benchmark
 
 This page says how to measure the control plane's Raft group, and records the
-numbers for today's store (redb, openraft 0.10). The store change in
+numbers for the redb store (openraft 0.10) that 0.8 replaced. The store change in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store) is held to
 "no cell worse than these".
 
 ## What it measures
 
 The benchmark runs real control-plane members in one process. Each has its own
-redb directory and peer listener, and is driven through the store traits the
+data directory and peer listener, and is driven through the store traits the
 HTTP API uses. A write sent to a follower is forwarded to the leader, as it is
 behind a load balancer. The code is
 `services/felix-controlplane-service/tests/metadata_bench.rs`.

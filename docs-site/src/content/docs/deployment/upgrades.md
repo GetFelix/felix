@@ -125,7 +125,9 @@ the older release in between is not detected.
 before any of them votes
 ([forming the group](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group)),
 over a new peer route, `POST /internal/raft/v2/forming`. A group that already
-runs never uses it, so upgrading one needs nothing. A group that has not
+runs never uses it, so upgrading one within a release line needs nothing
+(from 0.7 to 0.8 the group starts over: see
+[Control plane metadata in 0.8](#control-plane-metadata-in-08)). A group that has not
 formed yet needs every control-plane member on a release with the route: a
 member on an older release answers 404, and the others wait and log
 `it runs a build without the forming route`. Start a new cluster with every

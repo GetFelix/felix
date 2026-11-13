@@ -59,7 +59,7 @@ async fn store_of_a_former_leader(dir: &std::path::Path, peer: &str, vote_withhe
         .collect();
     let membership = Membership::new(vec![BTreeSet::from([1, 2, 3])], nodes).expect("membership");
     let entry = Entry {
-        log_id: test_log_id(5, 1, 0),
+        log_id: test_log_id(5, 0),
         payload: EntryPayload::Membership(membership),
     };
     let vote = Vote::new_committed(5, 1);

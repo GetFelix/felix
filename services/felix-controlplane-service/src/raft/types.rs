@@ -47,10 +47,8 @@ pub(crate) type StoredMembership = openraft::StoredMembership<CommittedLeaderId,
 pub(crate) type SnapshotMeta = openraft::storage::SnapshotMeta<CommittedLeaderId, Membership>;
 pub(crate) type Snapshot = openraft::storage::Snapshot<CommittedLeaderId, Membership, SnapshotData>;
 
-/// The log id of `term` at `index`. `node`, the leader, is not part of it:
-/// one leader per term.
+/// The log id of `term` at `index`.
 #[cfg(test)]
-pub(crate) fn test_log_id(term: u64, node: u64, index: u64) -> LogId {
-    let _ = node;
+pub(crate) fn test_log_id(term: u64, index: u64) -> LogId {
     LogId::new(term.into(), index)
 }

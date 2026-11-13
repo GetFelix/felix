@@ -239,9 +239,9 @@ has already been purged up to the newer one, so on restart the member would
 need entries it no longer has, and it would refuse to start.
 
 So a snapshot is written only if its last log index is past the stored one's.
-The check and the write are one redb transaction, and redb runs one write at a
-time, so nothing can land in between. A snapshot's metadata and data are
-written in that one transaction, so a crash never leaves half of one. A
+The check and the write happen under one lock in the snapshot store, so
+nothing can land in between. A snapshot's metadata and data are one file,
+renamed into place, so a crash never leaves half of one. A
 received snapshot also never moves the applied state backwards. If one ever
 arrived behind what the member has applied, the member stops with an error
 rather than apply the entries in between a second time.
@@ -1020,11 +1020,13 @@ covers what the control plane adds on top of it.
 
 Four things must hold through the move:
 
-1. No committed metadata is lost, including across the upgrade of an
-   existing cluster.
+1. No committed metadata is lost silently. With the conversion tool below,
+   none is lost across the upgrade of an existing cluster. Without it, as
+   shipped, a member refuses a redb directory and the operator starts the
+   group over by hand.
 2. Members never diverge. Where a rule cannot be kept, a member stops.
-3. Brokers and clients see no change. Everything stays behind the store
-   traits.
+3. Brokers and clients see no change in a running group. Everything stays
+   behind the store traits. (Starting a group over is a change they see.)
 4. No benchmark cell gets worse than redb.
 
 ### What is stored, and where
@@ -1155,6 +1157,11 @@ until it has applied everything it had committed before it stopped, as
 today.
 
 ### openraft 0.9 to 0.10
+
+This step ran on redb and is history since the move: the redb store, the
+0.9 forms, their fixtures and the chunked snapshots are gone, and a 0.8
+member neither reads a 0.9 member's store nor talks to it. What follows is
+how that step was made safe.
 
 The workspace pins openraft 0.10 exactly, and the control plane runs that
 pin: today one commit just past 0.10.0, and `=0.10.1` once that is released
@@ -1691,7 +1698,9 @@ That choice changed in 0.8:
 `felix-storage`'s `DiskLog`, through one Raft log adapter shared with the
 shard replication engine, and redb is gone.
 
-Every fsync of the store runs on tokio's blocking pool. Run inline, a slow disk held an async worker for the whole flush, and
+No fsync of the store runs on an async worker: the log flushes on its own
+thread, and the snapshot and member files are written on tokio's blocking
+pool. Run inline, a slow disk held an async worker for the whole flush, and
 other tasks queued on that worker waited with it: RPC handlers, timers, and
 on a one-worker runtime everything else. Under disk load that cost an
 election in a single-threaded test (#1705), and a control plane limited to

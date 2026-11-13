@@ -93,14 +93,11 @@ pub(super) async fn stopped_member_holds_state(
     data_dir: &std::path::Path,
     cluster_id: &str,
 ) -> Result<bool> {
-    use felix_storage::metadata_store::REDB_FILE;
+    use felix_storage::metadata_store::{Start, decide_start};
 
-    if !data_dir.join(STORE_DIR).exists() {
-        // An older release's store may hold a group this build cannot read.
-        anyhow::ensure!(
-            !data_dir.join(REDB_FILE).exists(),
-            "the data directory holds {REDB_FILE} from an older release; this is not a first start"
-        );
+    // The service's own start rule, so a `raft.redb` from an older release
+    // is refused here too, before anything is written.
+    if decide_start(data_dir)? == Start::New {
         return Ok(false);
     }
     // Fails while the member runs: its process holds the store's lock.

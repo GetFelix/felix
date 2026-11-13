@@ -1391,15 +1391,12 @@ and does not pass or fail on them. See the gate below.
 ### 7. The control plane starts fresh and refuses an old redb directory
 
 **Decision.** No migration. A control plane that finds a redb store in its
-data directory refuses to start. The message names the file and says to move
-it aside, or to start from a snapshot export.
+data directory refuses to start. The message names the file, says nothing
+was changed, and says to keep the group on 0.7 or start it over.
 
 **Safety.** The check runs before anything writes to the directory: before
-`DiskLog` opens there, because opening creates files. Today the store is opened
-with redb's `Database::create`
-(`services/felix-controlplane-service/src/raft/store.rs:120`), which creates
-the file if it is missing. The new open path tests for that file first and
-returns the error with the directory untouched. A test checks that the
+`DiskLog` opens there, because opening creates files. The open path tests
+for the file first and returns the error with the directory untouched. A test checks that the
 directory's listing is identical before and after the refusal. redb also holds
 the control plane's cluster id claim and its vote-withheld flag
 (`store.rs:83`, `:103`). Both move to small rename-into-place files with the

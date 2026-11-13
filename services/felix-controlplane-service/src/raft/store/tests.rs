@@ -58,7 +58,7 @@ const MAX: u64 = crate::raft::DEFAULT_SNAPSHOT_MAX_BYTES;
 
 fn meta(index: u64) -> SnapshotMeta {
     SnapshotMeta {
-        last_log_id: Some(test_log_id(1, 1, index)),
+        last_log_id: Some(test_log_id(1, index)),
         last_membership: StoredMembership::default(),
     }
 }
@@ -381,7 +381,7 @@ async fn a_snapshot_behind_the_applied_state_is_refused_and_not_stored() {
     let entries = (0..=5).map(|index| {
         Ok((
             Entry {
-                log_id: test_log_id(1, 1, index),
+                log_id: test_log_id(1, index),
                 payload: EntryPayload::Blank,
             },
             None,
@@ -402,7 +402,7 @@ async fn a_snapshot_behind_the_applied_state_is_refused_and_not_stored() {
     assert_eq!(store.snapshots().current().await.expect("read"), None);
     assert!(app.0.lock().expect("state").is_empty(), "restored");
     let (applied, _) = machine.applied_state().await.expect("applied");
-    assert_eq!(applied, Some(test_log_id(1, 1, 5)));
+    assert_eq!(applied, Some(test_log_id(1, 5)));
     store.shutdown().await.expect("shutdown");
 }
 

@@ -73,8 +73,9 @@ flowchart LR
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
 exact version (0.10.0), wrapped behind a seam so its pre-1.0 API churn stays
 contained. What members send each other and store is Felix's own format,
-unchanged from the releases that ran openraft 0.9, so a group is upgraded
-one member at a time and a member can be rolled back.
+not the library's, so an openraft upgrade does not change it. 0.8 changed
+it once, with the move off redb: a 0.7 group does not upgrade member by
+member ([Upgrades](/deployment/upgrades/#control-plane-metadata-in-08)).
 
 ## Configuring it
 

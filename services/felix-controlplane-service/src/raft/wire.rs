@@ -171,8 +171,8 @@ pub(super) struct InstallSnapshotResponse {
     pub(super) vote: Vote,
 }
 
-/// A peer's answer: 0.9 sent its whole `Result`. The error half differs
-/// between library versions, so it is read as text and treated like an
+/// A peer's answer, the whole `Result`. The error half is the library's
+/// shape, which can change, so it is read as text and treated like an
 /// unreachable member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Reply<T> {

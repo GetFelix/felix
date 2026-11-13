@@ -29,7 +29,9 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
     Router::new()
         .route(&peer_route("append-entries"), post(append_entries))
         .route(&peer_route("vote"), post(vote))
-        .route(&peer_route("install-snapshot"), install_snapshot_route())
+        // The body is read as a stream, which the router's body limit does not
+        // cover; the transfer's own cap does, from the length in the head.
+        .route(&peer_route("install-snapshot"), post(install_snapshot))
         .route(&peer_route("propose"), post(propose))
         .route(
             &peer_route(super::leader::LEADER_ROUTE),
@@ -171,12 +173,6 @@ async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
         Some(target) => Json(target).into_response(),
         None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
-}
-
-/// The body is read as a stream, which the router's body limit does not
-/// cover; the transfer's own cap does, from the length in the head.
-fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
-    post(install_snapshot)
 }
 
 /// A snapshot streamed in one request (`felix_storage::raft_log::transfer`).

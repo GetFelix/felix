@@ -115,7 +115,7 @@ fn network(addr: &str, hold: Arc<Hold>) -> HttpNetwork {
 }
 
 fn log_id(index: u64) -> crate::raft::types::LogId {
-    crate::raft::types::test_log_id(1, 1, index)
+    crate::raft::types::test_log_id(1, index)
 }
 
 /// An append after `prev`, carrying entries up to `last`, with the leader's
