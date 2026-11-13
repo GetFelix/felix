@@ -250,3 +250,64 @@ async fn a_cut_during_a_first_start_leaves_no_store_or_a_prefix_of_its_writes() 
     // Three in the store's build, four in each of the two writes.
     assert_eq!(stopped, 11);
 }
+
+/// The formation file: a mark or a record that returned survives a power
+/// cut, and a cut part-way leaves the file as it was or with the change,
+/// never damaged. A peer votes on the strength of a record that returned.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_formation_mark_or_record_that_returned_survives_a_cut() {
+    use crate::metadata_store::Formation;
+
+    for mark in [true, false] {
+        let mut stopped = 0;
+        for step in 0..MOST_STEPS {
+            let mut finished = false;
+            for seed in 0..SEEDS {
+                let sim = Sim::empty(&format!("formation-{mark}-{step}"), seed);
+                let file = MemberFile::open(sim.store(), CLUSTER).expect("open");
+                file.record_formed(2).await.expect("record");
+                let before = file.formation();
+                let after = match mark {
+                    true => Formation {
+                        forming: true,
+                        ..before.clone()
+                    },
+                    false => Formation {
+                        formed: [2, 3].into(),
+                        ..before.clone()
+                    },
+                };
+
+                crash_point::watch(&sim.store(), Some(step));
+                let changed = match mark {
+                    true => file.mark_forming().await,
+                    false => file.record_formed(3).await,
+                };
+                crash_point::unwatch(&sim.store());
+                sim_fs::crash(&sim.0, seed).expect("crash");
+                drop(file);
+
+                let at = format!("mark {mark}: step {step}, seed {seed}");
+                let reopened = MemberFile::open(sim.store(), CLUSTER)
+                    .unwrap_or_else(|err| panic!("{at}: {err}"));
+                let found = reopened.formation();
+                assert!(found == before || found == after, "{at}: {found:?}");
+                if changed.is_ok() {
+                    assert_eq!(found, after, "{at}: came undone");
+                }
+                // The store still takes a record.
+                reopened
+                    .record_formed(4)
+                    .await
+                    .unwrap_or_else(|err| panic!("{at}: {err}"));
+                finished = changed.is_ok();
+            }
+            if finished {
+                break;
+            }
+            stopped += 1;
+            assert!(step + 1 < MOST_STEPS, "never ran out of steps");
+        }
+        assert_eq!(stopped, 4);
+    }
+}
