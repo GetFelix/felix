@@ -98,12 +98,7 @@ impl Led {
     /// the core publishes its metrics once per loop, so the state machine
     /// can apply entries, and move the bound, before they show as committed.
     pub(super) async fn committed_on(&self, broker: &str) -> u64 {
-        let group = self.cluster.runtime(broker).group(&shard(0));
-        let core = group.expect("group").raft().clone();
-        let committed = core.with_raft_state(|state| state.local_committed().map(|id| id.index));
-        let committed = tokio::time::timeout(PATIENCE, committed).await;
-        let committed = committed.expect("in time").expect("the core answers");
-        committed.map_or(0, |index| index + 1)
+        core_committed(&self.cluster, broker).await
     }
 
     pub(super) fn followers(&self) -> impl Iterator<Item = String> + '_ {
@@ -314,6 +309,15 @@ async fn the_read_bound_never_passes_the_commit_index() {
     led.cluster.stop().await;
 }
 
+async fn core_committed(cluster: &Cluster, broker: &str) -> u64 {
+    let group = cluster.runtime(broker).group(&shard(0));
+    let core = group.expect("group").raft().clone();
+    let committed = core.with_raft_state(|state| state.local_committed().map(|id| id.index));
+    let committed = tokio::time::timeout(PATIENCE, committed).await;
+    let committed = committed.expect("in time").expect("the core answers");
+    committed.map_or(0, |index| index + 1)
+}
+
 /// A member that wins an election has not opened: it opens when the blank
 /// entry of its term is committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -345,7 +349,8 @@ async fn a_leader_opens_only_once_its_blank_entry_commits() {
     let status = cluster.runtime(&leader.broker).status(&shard(0));
     let status = status.expect("status");
     assert_eq!((what, term), ("opened", status.term));
-    assert!(status.committed.is_some(), "opened with nothing committed");
+    let committed = core_committed(&cluster, &leader.broker).await;
+    assert!(committed > 0, "opened with nothing committed");
     if leader == elected.member {
         assert_eq!(term, elected.term);
     }
