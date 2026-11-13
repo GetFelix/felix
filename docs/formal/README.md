@@ -696,7 +696,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 37 min in CI) |
 | `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 11 min in CI) |
 | `FelixRaftSwitchDiffers.cfg` | a follower may hold a different record below `N`; it fails its digest and starts as a learner | pass the same (1.4M distinct states) |
-| `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.1M distinct states, 2.5 min) |
+| `FelixRaftSwitchReseal.cfg` | the hybrid opens again and is sealed a second time with the first report in flight; one wipe | pass the same (7.3M distinct states, 13 min in CI) |
 | `FelixRaftSwitchAllVoters.cfg` | the whole set recorded as voters, b lagging and c wiped | violate `LeaderCompleteness`: b and the new c elect b without a record a and the old c acknowledged |
 | `FelixRaftSwitchTermsBelowBase.cfg` | the hybrid log kept as the Raft log; b differs below `N` under the same generation | violate `LeaderCompleteness`: log matching takes b as level, it is promoted and leads |
 | `FelixRaftSwitchTermsBelowBaseCuts.cfg` | a witness for the same rule in the generation 0 case | violate `NeverCutsHeldRecord`: a generation 0 learner cuts records it holds and takes the same content back |
