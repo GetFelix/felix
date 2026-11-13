@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794531340501,
+  "lastUpdate": 1794532083313,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53664,6 +53664,58 @@ window.BENCHMARK_DATA = {
             "range": "55020.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1539988.21\nmean: 1530672.72\nstdev: 55020.63\ncv: 3.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cb965198254a555ac9991c099342621b62602087",
+          "message": "fix(sim): acked-held-by-leader applies abandons that land after the heal snapshot (#2377) (#2393)",
+          "timestamp": "2026-11-13T00:52:06Z",
+          "tree_id": "948e298f05fca6aa4a630469732bf48b8d20907f",
+          "url": "https://github.com/GetFelix/felix/commit/cb965198254a555ac9991c099342621b62602087"
+        },
+        "date": 1794532082866,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 512013.48,
+            "range": "29180.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 512013.48\nmean: 513849.52\nstdev: 29180.60\ncv: 5.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 512013.48,
+            "range": "29180.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 512013.48\nmean: 513849.52\nstdev: 29180.60\ncv: 5.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120642.99,
+            "range": "7427.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120642.99\nmean: 118061.19\nstdev: 7427.67\ncv: 6.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1206429.87,
+            "range": "74276.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1206429.87\nmean: 1180611.88\nstdev: 74276.73\ncv: 6.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
