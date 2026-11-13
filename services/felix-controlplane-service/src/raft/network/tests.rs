@@ -72,6 +72,46 @@ async fn a_refused_connection_is_unreachable() {
     assert!(matches!(err, RPCError::Unreachable(_)), "{err:?}");
 }
 
+/// Every Raft RPC says which member it is for, so whoever is at the address
+/// can refuse one that is not for it.
+#[tokio::test]
+async fn every_rpc_names_the_member_it_is_for() {
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = {
+        let seen = std::sync::Arc::clone(&seen);
+        move |headers: axum::http::HeaderMap| {
+            let target = headers.get(crate::raft::TARGET_HEADER);
+            let target = target.map(|value| value.to_str().expect("text").to_string());
+            seen.lock().expect("seen").push(target);
+            async { StatusCode::SERVICE_UNAVAILABLE }
+        }
+    };
+    let app = axum::Router::new()
+        .route(
+            &crate::raft::peer_route("vote"),
+            axum::routing::post(record.clone()),
+        )
+        .route(
+            &crate::raft::peer_route("append-entries"),
+            axum::routing::post(record.clone()),
+        )
+        .route(
+            &crate::raft::peer_route("install-snapshot"),
+            axum::routing::post(record),
+        );
+    let addr = serve(app).await;
+    let hold = crate::raft::hold::tests::hold_at(Default::default());
+    let network = HttpNetwork::for_tests_as(9, &addr, hold);
+
+    let _: Reply = network.send("vote", &serde_json::json!({})).await;
+    let _: Reply = network.send("append-entries", &serde_json::json!({})).await;
+    #[cfg(felix_segment_store)]
+    let _ = network.send_snapshot(Vec::new()).await;
+    let seen = seen.lock().expect("seen");
+    let rpcs = if cfg!(felix_segment_store) { 3 } else { 2 };
+    assert_eq!(*seen, vec![Some("9".to_string()); rpcs]);
+}
+
 /// A 2xx that is not a raft reply is a fault in the peer, not an outage.
 #[tokio::test]
 async fn an_unparseable_success_is_a_network_error() {

@@ -723,8 +723,8 @@ async fn three_empty_members_form_one_group() {
         None,
     )
     .await;
-    let (second, second_stub) = standing_stub(200, "{}").await;
-    let (third, third_stub) = standing_stub(200, "{}").await;
+    let (second, second_stub) = standing_stub(200, r#"{"member":2}"#).await;
+    let (third, third_stub) = standing_stub(200, r#"{"member":3}"#).await;
     let members = BTreeMap::from([
         (1, first.addr.to_string()),
         (2, second.to_string()),
@@ -1176,7 +1176,7 @@ async fn a_late_first_boot_member_forms_against_formed_leaderless_peers() {
         .collect();
     // Until member 3 starts, something at its address answers empty and
     // records, and gives no vote.
-    let (third, third_stub) = standing_stub(200, "{}").await;
+    let (third, third_stub) = standing_stub(200, r#"{"member":3}"#).await;
     let mut nodes = Vec::new();
     let mut gates = Vec::new();
     for (i, dir) in dirs[..2].iter().enumerate() {
@@ -1335,6 +1335,42 @@ async fn a_403_or_undecodable_answer_blocks_formation() {
             node.stop().await;
         }
         stub.abort();
+    }
+}
+
+/// Two addresses in the peer list reach the same member: here member 3's
+/// is member 2's. Members 1 and 2 are empty and answer, and member 3 has
+/// not been asked, so nothing forms. Counted by address, the two would form
+/// a group without the member that may hold it.
+#[tokio::test]
+async fn two_addresses_for_one_member_do_not_form() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let dir: PathBuf = dir.path().into();
+        nodes.push(start_node(dir.clone(), settings(i as NodeId + 1, dir), None).await);
+    }
+    let members = BTreeMap::from([
+        (1, nodes[0].addr.to_string()),
+        (2, nodes[1].addr.to_string()),
+        (3, nodes[1].addr.to_string()),
+    ]);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    assert_no_group_forms(&nodes, "member 3's address reaches member 2").await;
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
     }
 }
 

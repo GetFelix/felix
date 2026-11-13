@@ -373,7 +373,9 @@ impl RaftHandle {
         versions.stale.clear();
         versions.checked = None;
     }
+}
 
+impl super::RaftMember {
     /// Remember the level a probing member said it is at.
     pub(super) fn note_asker(&self, asker: Asker) {
         let (Some(from), Some(version)) = (asker.from, asker.version) else {

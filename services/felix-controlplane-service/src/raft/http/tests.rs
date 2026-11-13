@@ -89,3 +89,49 @@ async fn every_peer_route_is_served_under_this_stores_prefix_only() {
     }
     handle.shutdown().await.expect("shutdown");
 }
+
+/// The member's router refuses a request meant for another member before
+/// any route sees it, and serves one that names it or names nobody.
+#[tokio::test]
+async fn a_request_for_another_member_reaches_no_route() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let security = PeerSecurity {
+        cluster_id: "test-cluster".to_string(),
+        token: Some(TOKEN.to_string()),
+        tls: None,
+    };
+    let handle = RaftHandle::start(
+        RaftSettings::new(1, dir.path().into(), security),
+        Arc::new(NullApp),
+    )
+    .await
+    .expect("start");
+    let router = handle.rpc_router();
+    let ask = async |target: Option<&str>| {
+        let mut request = Request::get(format!("{PEER_PREFIX}/standing"))
+            .header(CLUSTER_ID_HEADER, "test-cluster")
+            .header("authorization", format!("Bearer {TOKEN}"));
+        if let Some(target) = target {
+            request = request.header(crate::raft::TARGET_HEADER, target);
+        }
+        let request = request.body(Body::empty()).expect("request");
+        router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response")
+            .status()
+    };
+    assert_eq!(ask(Some("1")).await, StatusCode::OK);
+    assert_eq!(ask(None).await, StatusCode::OK);
+    assert_eq!(ask(Some("2")).await, StatusCode::SERVICE_UNAVAILABLE);
+
+    // Without peer credentials nobody learns which member this is.
+    let request = Request::get(format!("{PEER_PREFIX}/standing"))
+        .header(crate::raft::TARGET_HEADER, "2")
+        .body(Body::empty())
+        .expect("request");
+    let response = router.clone().oneshot(request).await.expect("response");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    handle.shutdown().await.expect("shutdown");
+}

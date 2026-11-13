@@ -206,6 +206,8 @@ impl HttpNetwork {
     where
         Resp: serde::de::DeserializeOwned,
     {
+        // Whoever is at the address answers only if it is this member.
+        let request = request.header(super::TARGET_HEADER, self.target.to_string());
         let response = request.send().await.map_err(|err| {
             if err.is_connect() || err.is_timeout() {
                 RPCError::Unreachable(Unreachable::new(&err))

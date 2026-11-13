@@ -50,8 +50,15 @@ where
     // drain — that is how an operator watches the drain happen.
     let readiness = Readiness::ready();
     let api_shutdown = CancellationToken::new();
-    let (state, raft_handle) =
-        build_state(config.clone(), readiness.clone(), &api_shutdown).await?;
+    // Under Raft the peer listener is already serving: it is bound before
+    // the member's node starts, so a bad address fails startup here.
+    let (state, raft) = build_state(config.clone(), readiness.clone(), &api_shutdown).await?;
+    // The listener stops after the Raft node does, on its own token, so a
+    // draining member keeps answering its peers until it has left.
+    let (raft_handle, raft_peer_task, peer_shutdown) = match raft {
+        Some(raft) => (Some(raft.handle), Some(raft.peer_task), raft.peer_shutdown),
+        None => (None, None, CancellationToken::new()),
+    };
     let _backend_name = state.store.backend_name();
     // Under Raft, singleton background work runs only on the (freshly
     // confirmed) leader; the memory backend has one instance, so it always runs.
@@ -104,38 +111,6 @@ where
     if let Some(ui) = api_ui_router(config.api_ui, &config.api_ui_path) {
         app = app.merge(ui);
     }
-
-    // The Raft RPCs get a listener of their own, authenticated as peers:
-    // `propose` can replace the whole store, so it must never share the
-    // public API port. Bound before the API so a bad address fails startup.
-    // It stops after the Raft node does, on its own token, so a draining
-    // member keeps answering its peers until it has left.
-    let peer_shutdown = CancellationToken::new();
-    let raft_peer_task = match (&raft_handle, &config.raft) {
-        (Some(handle), Some(raft_cfg)) => {
-            let listener = tokio::net::TcpListener::bind(raft_cfg.peer_bind_addr).await?;
-            tracing::info!(
-                addr = %listener.local_addr().unwrap_or(raft_cfg.peer_bind_addr),
-                mtls = raft_cfg.security.tls.is_some(),
-                authenticated = raft_cfg.security.token.is_some(),
-                "raft peer listener listening"
-            );
-            if raft_cfg.security.token.is_none() {
-                tracing::warn!(
-                    "FELIX_RAFT_INSECURE_PEERS is set: anyone who reaches the raft peer \
-                     listener can replace the metadata store"
-                );
-            }
-            let handle = handle.clone();
-            let shutdown = peer_shutdown.clone();
-            Some(tokio::spawn(async move {
-                if let Err(err) = handle.serve_peers(listener, shutdown).await {
-                    tracing::error!(error = %err, "raft peer listener failed");
-                }
-            }))
-        }
-        _ => None,
-    };
 
     let bootstrap_task = if config.bootstrap.enabled {
         let bootstrap_addr = config.bootstrap.bind_addr;
