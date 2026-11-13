@@ -117,6 +117,19 @@ impl StreamEngine {
         }
     }
 
+    /// Refuse `what` on a shard a Raft group runs here. Its log takes plain
+    /// publishes only, and the hybrid's fence never opens for it.
+    pub fn refuse_on_raft(
+        &self,
+        shard: &ShardKey,
+        what: &'static str,
+    ) -> Result<(), felix_broker::BrokerError> {
+        if self.on_raft(shard) {
+            return Err(felix_broker::BrokerError::NotOnEngineStream { what });
+        }
+        Ok(())
+    }
+
     /// Propose a plain publish to `shard`'s Raft group, at the `term`
     /// routing answered. `None` when the hybrid runs the shard.
     ///

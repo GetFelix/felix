@@ -476,10 +476,23 @@ impl WriteFence for Leading {
     }
 
     fn deposed(&self, key: &ShardKey, term: u64) {
-        let mut terms = self.terms.lock();
-        if terms.get(key).is_some_and(|lead| lead.term <= term) {
+        {
+            let mut terms = self.terms.lock();
+            if !terms.get(key).is_some_and(|lead| lead.term <= term) {
+                return;
+            }
             terms.remove(key);
         }
+        // Live fanout comes from the leader's publishes, so a subscriber
+        // left here would wait on a broker that gets none. Ended after the
+        // term is gone: a reader registering from now on sees no local
+        // route and is refused.
+        let (broker, key) = (Arc::clone(&self.broker), key.clone());
+        tokio::spawn(async move {
+            broker
+                .end_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
+                .await;
+        });
     }
 }
 

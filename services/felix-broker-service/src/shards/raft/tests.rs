@@ -254,10 +254,42 @@ async fn a_shard_no_longer_assigned_is_closed_and_reopens() {
     shards.runtime.shutdown().await;
 }
 
-fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::StreamEngine {
+pub(crate) fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::StreamEngine {
     let engine = crate::shards::routing::StreamEngine::default();
     engine.set_raft(Arc::clone(shards));
     engine
+}
+
+/// Routes that ask `shards` first and know every broker's address, with a
+/// broker lease that was never granted: a Raft shard must not need it.
+pub(crate) fn ingress(shards: &Arc<RaftShards>) -> Arc<crate::shards::routing::IngressRouter> {
+    use felix_router::{NodeRef, RegionRouter, RoutingTable, ShardRouter};
+    let router = Arc::new(ShardRouter::new(
+        shards.local.clone(),
+        "us-west-2",
+        RegionRouter::new("us-west-2".to_string()),
+    ));
+    let nodes: HashMap<String, NodeRef> = BROKERS
+        .iter()
+        .map(|name| {
+            let node = NodeRef {
+                node_id: name.to_string(),
+                advertise_addr: addr_of(name).expect("addr"),
+                region: "us-west-2".to_string(),
+                live: true,
+            };
+            (name.to_string(), node)
+        })
+        .collect();
+    router.publish(RoutingTable::default(), &nodes);
+    let ingress = crate::shards::routing::IngressRouter::new(router, Arc::default());
+    ingress
+        .fence()
+        .bind_lease(Arc::new(crate::cluster::lease::LeaseState::new(
+            Duration::from_secs(10),
+        )));
+    ingress.set_engine_shards(Arc::clone(shards) as Arc<dyn EngineShards>);
+    Arc::new(ingress)
 }
 
 fn route(shards: &RaftShards, key: &ShardKey) -> Option<Dispatch> {
@@ -422,7 +454,7 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
 /// Carries Raft messages between the runtimes of one process. A broker
 /// taken out of it is unreachable.
 #[derive(Default)]
-struct Loopback {
+pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
 }
 
@@ -438,13 +470,13 @@ impl RaftTransport for Loopback {
     }
 }
 
-const BROKERS: [&str; 3] = ["broker-a", "broker-b", "broker-c"];
+pub(crate) const BROKERS: [&str; 3] = ["broker-a", "broker-b", "broker-c"];
 
-struct Member {
-    name: &'static str,
-    broker: Arc<Broker>,
-    shards: Arc<RaftShards>,
-    engine: Arc<crate::shards::routing::StreamEngine>,
+pub(crate) struct Member {
+    pub(crate) name: &'static str,
+    pub(crate) broker: Arc<Broker>,
+    pub(crate) shards: Arc<RaftShards>,
+    pub(crate) engine: Arc<crate::shards::routing::StreamEngine>,
     _root: tempfile::TempDir,
 }
 
@@ -473,7 +505,7 @@ impl Member {
         }
     }
 
-    async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
+    pub(crate) async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
         use crate::serving::direct_publish::publish_direct;
         let orders = key("orders", 0);
         let handle = self
@@ -504,7 +536,7 @@ fn replicated() -> ShardAssignment {
 }
 
 /// Three brokers holding a member each, and the one whose term is served.
-async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
+pub(crate) async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
     for name in BROKERS {
@@ -529,13 +561,13 @@ async fn served(members: &[Member]) -> usize {
     leader.expect("a leader")
 }
 
-async fn stop(members: &[Member]) {
+pub(crate) async fn stop(members: &[Member]) {
     for member in members {
         EngineShards::shutdown(&*member.shards).await;
     }
 }
 
-fn addr_of(name: &str) -> Option<SocketAddr> {
+pub(crate) fn addr_of(name: &str) -> Option<SocketAddr> {
     let at = BROKERS.iter().position(|broker| *broker == name)?;
     Some(SocketAddr::from(([10, 0, 0, at as u8 + 1], 7001)))
 }
@@ -614,7 +646,9 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     EngineShards::shutdown(&*shards).await;
 }
 
-async fn delivered(receiver: &mut felix_broker::SubscriptionReceiver) -> (u64, bytes::Bytes) {
+pub(crate) async fn delivered(
+    receiver: &mut felix_broker::SubscriptionReceiver,
+) -> (u64, bytes::Bytes) {
     let got = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
     let envelope = got.expect("delivered in time").expect("subscription open");
     (
@@ -716,4 +750,42 @@ async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
     })
     .await;
     stop(&members).await;
+}
+
+/// **A leader that is deposed lets its subscribers go, and takes none
+/// after.** Fanout comes from the leader's publishes, so a subscriber left
+/// on a deposed broker would wait there and get nothing.
+#[tokio::test]
+async fn a_deposed_leader_lets_its_subscribers_go() {
+    use crate::serving::quic::handlers::redirect::stopped_serving;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let ingress = ingress(&shards);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let (mut receiver, _guard) = {
+        let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+        subscription.expect("subscribe").into_parts()
+    };
+    // Served on the term alone: the broker's lease was never granted.
+    assert!(stopped_serving(Some(&ingress), &orders).is_none());
+
+    shards.leading.deposed(&orders, term);
+
+    let ended = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
+    assert!(
+        ended.expect("ended in time").is_none(),
+        "a record reached a deposed leader's subscriber"
+    );
+    assert!(
+        stopped_serving(Some(&ingress), &orders).is_some(),
+        "a subscriber registered after the deposal was kept"
+    );
+    EngineShards::shutdown(&*shards).await;
 }

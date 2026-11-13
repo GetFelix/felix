@@ -1250,3 +1250,38 @@ async fn a_group_read_bound_comes_from_the_mark_at_the_served_generation() {
     let bound = committed_bound(&leader.broker, &publish_ctx, &owned).await;
     assert_eq!(bound.expect("readable"), Some(5));
 }
+
+/// **A consumer-group operation on a Raft shard is refused by name.** Group
+/// state is written to the stream's log, which on Raft takes plain publishes
+/// only.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_group_operation_on_a_raft_shard_is_refused_by_name() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+
+    let described = describe(&broker, &publish_ctx, "t1", "ns", "orders", 0, GROUP).await;
+
+    let err = described.err().expect("a group on a Raft shard was served");
+    assert_eq!(
+        err.message(),
+        "a stream on Raft does not take consumer groups"
+    );
+    EngineShards::shutdown(&*shards).await;
+}
