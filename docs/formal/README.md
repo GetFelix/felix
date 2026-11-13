@@ -3469,7 +3469,8 @@ that never heard the leader. Two rules close it, and the model checks each
 alone:
 
 - The node layer's vote hold (issue #2307): a restarted broker refuses votes
-  for one election timeout from its start, whatever vote it stored.
+  for one election timeout from its start, whatever vote it stored (the
+  code holds no member without a stored vote: it has taken no message).
   `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule,
   and `Group::open` and `Group::dispatch` (`raft/group.rs`) build it, with
   the two exemptions the `FelixRaftLeaseRestore*` configurations check.

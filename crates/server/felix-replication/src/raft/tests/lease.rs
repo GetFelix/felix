@@ -537,6 +537,9 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     cluster.committed_everywhere(0, last).await;
     let term = cluster.statuses(0)[0].term;
     let leader = cluster.elected(0).await;
+    // `open` opens the brokers in order: the old leader is first, so it
+    // stands before a follower is there to grant it.
+    assert_eq!(&*leader.broker, BROKERS[0]);
     cluster.stop().await;
     cluster.start(false);
     cluster.open(0).await;
@@ -908,6 +911,7 @@ async fn a_restarted_member_is_not_ticked_while_it_holds_its_vote() {
     let last = cluster.write(0, b"record").await;
     cluster.committed_everywhere(0, last).await;
     let leader = cluster.elected(0).await;
+    assert_eq!(&*leader.broker, BROKERS[0]);
     cluster.stop().await;
     cluster.start(true);
     cluster.open(0).await;
