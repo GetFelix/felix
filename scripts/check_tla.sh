@@ -1097,6 +1097,7 @@ pr_minutes=(
   "FelixRaftLeaseRestart 12"
   "FelixRaftLeaseRestartRenews 8"
   "FelixRaftLeaseStore 3"
+  "FelixRaftLeaseStoreKept 15"
   "FelixRaftMembership 6"
   "FelixRaftMembershipFailover 20"
   "FelixRaftOffsetsFailover 17"
