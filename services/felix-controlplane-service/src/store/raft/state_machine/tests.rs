@@ -141,6 +141,7 @@ fn shard_assignment(
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 

@@ -261,13 +261,13 @@ fn restamping_preserves_the_request_id() {
 
 /// The identity record needs every member to know the command.
 #[test]
-fn recording_the_cluster_identity_needs_level_31() {
+fn recording_the_cluster_identity_needs_level_32() {
     let record = MetaCommand::RecordClusterIdentity {
         group_id: "g".to_string(),
         shard_engine: "hybrid".to_string(),
     };
-    assert_eq!(record.version(), 31);
-    assert_eq!(METADATA_VERSION, 31);
+    assert_eq!(record.version(), 32);
+    assert_eq!(METADATA_VERSION, 32);
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A

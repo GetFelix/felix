@@ -355,8 +355,9 @@ impl MetadataStateMachine {
             MetaCommand::PutShardAssignment {
                 assignment,
                 seq_generation,
+                start_placed,
             } => store
-                .apply_put_shard_assignment(assignment, seq_generation)
+                .apply_put_shard_assignment(assignment, seq_generation, start_placed)
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
@@ -376,6 +377,7 @@ impl MetadataStateMachine {
                 seq_generation,
                 at_least,
                 record_previous,
+                start_placed,
             } => store
                 .apply_put_shard_assignment_if(
                     assignment,
@@ -384,6 +386,7 @@ impl MetadataStateMachine {
                     seq_generation,
                     at_least,
                     record_previous,
+                    start_placed,
                 )
                 .await
                 .map(assignment_written)
@@ -628,7 +631,9 @@ impl MetadataStateMachine {
                 // before one was recorded, or from a memory store) keeps the
                 // identity the group already has.
                 let kept = store.recorded_identity().await;
-                store.import_state(*state).await?;
+                let mut state = *state;
+                state.forget_placed();
+                store.import_state(state).await?;
                 if let Some(identity) = kept {
                     store.apply_record_identity(identity).await;
                 }

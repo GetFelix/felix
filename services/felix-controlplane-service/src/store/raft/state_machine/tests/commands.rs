@@ -315,6 +315,56 @@ async fn a_field_this_build_does_not_know_is_refused_not_dropped() {
 
 /// A tenant `t1` with namespace `ns`, a stream and a cache both named
 /// `orders`, and an assignment and report for each one's shard.
+/// An export is older than the epoch it is restored into, so a broker placed
+/// and moved away since would be missing from its record of brokers placed.
+/// The import drops every record, and a re-form blocks those groups instead
+/// of skipping that broker's disk.
+#[tokio::test]
+async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
+    let source = machine_with_reported_shards().await;
+    let assignment = shard_assignment("t1", "ns", "orders", "broker-0");
+    source
+        .dispatch(MetaCommand::DeleteShardAssignment {
+            key: assignment.key.clone(),
+        })
+        .await
+        .expect("unassign");
+    source
+        .dispatch(MetaCommand::PutShardAssignment {
+            seq_generation: false,
+            assignment,
+            start_placed: true,
+        })
+        .await
+        .expect("assign");
+    let exported = source.store().export_state().await;
+    let placed = |state: &crate::store::export::ExportedState| {
+        serde_json::to_value(state).expect("json")["shards"]
+            .as_array()
+            .expect("shards")
+            .iter()
+            .filter(|entry| entry[1].get("placed").is_some())
+            .count()
+    };
+    assert_eq!(placed(&exported), 1, "the export carries the record");
+
+    let restored = machine();
+    restored
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(exported),
+            overwrite: false,
+        })
+        .await
+        .expect("import");
+    let assignments = restored
+        .store()
+        .list_shard_assignments()
+        .await
+        .expect("list");
+    assert!(!assignments.is_empty());
+    assert!(assignments.iter().all(|a| a.placed.is_none()));
+}
+
 async fn machine_with_reported_shards() -> MetadataStateMachine {
     let machine = machine();
     let setup = [
@@ -353,6 +403,7 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             .dispatch(MetaCommand::PutShardAssignment {
                 seq_generation: false,
                 assignment,
+                start_placed: false,
             })
             .await
             .expect("assign");

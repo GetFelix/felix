@@ -196,6 +196,10 @@ fn assignment() -> ShardAssignment {
             generation: 1,
             offset: 1,
         }],
+        placed: Some(crate::model::PlacedInEpoch {
+            epoch: 1,
+            brokers: BTreeSet::from([s("b")]),
+        }),
     }
 }
 
@@ -483,6 +487,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::PutShardAssignment {
             seq_generation: true,
             assignment: assignment(),
+            start_placed: true,
         },
         MetaCommand::PutShardAssignmentIf {
             seq_generation: true,
@@ -496,6 +501,7 @@ fn commands() -> Vec<MetaCommand> {
             fence: 1,
             at_least: 3,
             record_previous: true,
+            start_placed: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),

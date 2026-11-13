@@ -123,6 +123,10 @@ const PREVIOUS_GENERATION_LEVEL: u16 = 29;
 /// (`ShardAssignment::readmitted`).
 const READMITTED_LEVEL: u16 = 30;
 
+/// The metadata level whose members keep the record of every broker placed
+/// in a shard's epoch (`ShardAssignment::placed`).
+const PLACED_LEVEL: u16 = 31;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -213,6 +217,7 @@ impl RaftStore {
         // assignment being replaced would only raise the entry's level.
         assignment.previous_generation = None;
         assignment.readmitted.clear();
+        assignment.placed = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -909,6 +914,7 @@ impl ControlPlaneStore for RaftStore {
                 MetaCommand::PutShardAssignment {
                     assignment,
                     seq_generation: level >= SHARD_RENEWAL_LEVEL,
+                    start_placed: level >= PLACED_LEVEL,
                 },
             )
             .await?
@@ -944,6 +950,10 @@ impl ControlPlaneStore for RaftStore {
                     // Only a floor can skip generations; other writes keep
                     // the level they had.
                     record_previous: at_least > 0 && level >= PREVIOUS_GENERATION_LEVEL,
+                    // Only a write that can be a first assignment starts the
+                    // record; every later write grows it whatever its level,
+                    // since only a member that applied the start holds one.
+                    start_placed: expected_generation.is_none() && level >= PLACED_LEVEL,
                 },
             )
             .await?

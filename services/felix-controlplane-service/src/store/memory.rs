@@ -665,7 +665,7 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         assignment: ShardAssignment,
     ) -> StoreResult<ShardAssignment> {
-        shards::put_shard_assignment(self, assignment, true).await
+        shards::put_shard_assignment(self, assignment, true, true).await
     }
 
     async fn put_shard_assignment_at_least(
@@ -682,6 +682,7 @@ impl ControlPlaneStore for InMemoryStore {
             Some(fence),
             true,
             at_least,
+            true,
             true,
         )
         .await

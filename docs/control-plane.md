@@ -972,7 +972,7 @@ and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
 instance that proposes it. The first record applied wins, and nothing changes
 it afterwards, so racing proposers on a new group are settled by log order. A
 background task on each instance proposes it while the group has none, and
-retries until every member is at metadata level 31 and a leader exists.
+retries until every member is at metadata level 32 and a leader exists.
 
 `GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
 "hybrid"}`, and the stream and cache snapshots carry `group_id`. Under Raft the
@@ -1029,6 +1029,34 @@ broker that watched that assignment takes its set as the one the new
 generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
 sets it; a caller's value is ignored. The Raft store writes it
 only at metadata level 29.
+
+An assignment also carries `placed`: every broker the control plane has
+placed for the shard's group in its group epoch, as
+`{"epoch": 0, "brokers": [...]}`. It is the list the re-form command reads
+(`docs/per-shard-raft.md`, "Re-forming a group"). The store sets it; a
+caller's value is ignored.
+
+- The shard's first assignment starts it with the brokers that write names.
+- Every later write adds the brokers it names in any role: leader,
+  replicas, a move's successor or joining copy, a pending set's members,
+  learners. The broker is on the record in the same write that first names
+  it, so before any leader acts on the set.
+- Nothing takes a broker off. A broker moved away stays, because its disk
+  can hold acknowledged records the brokers placed now lack.
+- It is carried in snapshots and the change feed like the rest of the
+  assignment, and goes with the assignment when the stream or cache is
+  deleted.
+- Restoring an export (the import ceremony) drops every record. The export
+  is older than the epoch it is restored into, so a broker placed and moved
+  away since would be missing, and a re-form trusting the record would skip
+  its disk. Without a record the re-form blocks the group.
+
+The record grows with every move for as long as the epoch lasts. No pruning
+rule exists yet, and any rule must be modelled first. Under Raft it is
+started only at metadata level 31. A shard first assigned below that level
+has no record and never gets one in its current epoch: the brokers it placed
+and removed before are unknown, and a record without them would let a
+re-form skip their disks.
 
 A snapshot item also carries `previous`, the set of the assignment the change
 log holds right before it (the generation below, or the one

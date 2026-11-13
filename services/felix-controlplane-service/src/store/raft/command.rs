@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 31;
+pub const METADATA_VERSION: u16 = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -216,6 +216,10 @@ pub enum MetaCommand {
         /// generation at any incarnation (`model::first_generation`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         seq_generation: bool,
+        /// Level 31: a first assignment starts the record of brokers placed
+        /// in the epoch (`ShardAssignment::placed`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -253,6 +257,9 @@ pub enum MetaCommand {
         /// replaced (`ShardAssignment::previous_generation`, #2024).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         record_previous: bool,
+        /// Level 31: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
@@ -465,7 +472,7 @@ pub enum MetaCommand {
     },
     /// Record the group's identity, once. The first one applied stays and
     /// every later one is answered with it, so racing proposers are settled
-    /// by log order. Level 31.
+    /// by log order. Level 32.
     RecordClusterIdentity {
         group_id: String,
         shard_engine: String,
@@ -544,9 +551,9 @@ impl MetaCommand {
             Self::CreateResources { .. } => 5,
             Self::RevokePrincipals { .. } => 7,
             Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,
-            // A member before level 31 would refuse the command and keep no
+            // A member before level 32 would refuse the command and keep no
             // identity.
-            Self::RecordClusterIdentity { .. } => 31,
+            Self::RecordClusterIdentity { .. } => 32,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
