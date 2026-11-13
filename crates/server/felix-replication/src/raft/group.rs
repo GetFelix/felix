@@ -544,7 +544,8 @@ impl Group {
                         // bad sender) is refused here and the member keeps
                         // running behind.
                         let snapshot = Bytes::from(snapshot);
-                        if let Err(err) = CacheState::restore(&snapshot) {
+                        if let Err(err) = CacheState::restore(&snapshot, meta.last_log_id.is_some())
+                        {
                             tracing::warn!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, error = %err, "refused a snapshot this member cannot read");
                             return Err(Refused::Unreachable(format!(
                                 "a snapshot this member cannot read: {err}"
@@ -802,9 +803,15 @@ impl Group {
     /// applied, so a retry gets the first answer. A put with a `ttl`
     /// (microseconds, zero for none) expires that long after its stamp.
     ///
-    /// The answer is read after the commit, so a later entry of the same
-    /// producer may already have dropped it (a higher floor, a retire).
-    /// That answers [`Answer::Forgotten`]: the write was applied.
+    /// [`Answer::Forgotten`] means the request is below its producer's
+    /// floor and its answer is gone: it was applied by an earlier entry, or
+    /// a later entry of the same producer (a higher floor, a retire) dropped
+    /// the answer before this read. Either way it was applied once, provided
+    /// the caller follows the floor rule: a request's `floor` is the lowest
+    /// sequence the producer has no answer for, never higher, and a retire's
+    /// is one past the producer's last sequence once every request has its
+    /// answer. A floor past an unanswered request turns that request into
+    /// Forgotten without applying it.
     pub(crate) async fn cache_write(
         &self,
         command: CacheCommand,

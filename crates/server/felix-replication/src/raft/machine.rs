@@ -70,6 +70,7 @@ impl Machine {
                 let data = stored.map(|stored| stored.data).unwrap_or_default();
                 Some(Arc::new(parking_lot::RwLock::new(CacheState::restore(
                     &data,
+                    state.last_applied.is_some(),
                 )?)))
             }
         };
@@ -275,7 +276,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Read before it is stored: a snapshot that does not parse must not
         // become the one this member restarts from.
         let restored = match &self.cache {
-            Some(_) => Some(CacheState::restore(&data)?),
+            Some(_) => Some(CacheState::restore(&data, meta.last_log_id.is_some())?),
             None => None,
         };
         store(&self.snapshots, meta, data).await?;

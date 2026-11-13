@@ -157,7 +157,7 @@ fn a_snapshot_keeps_the_answer_table() {
     let mut state = CacheState::default();
     let bump = add("n", 1, request(1, 1));
     state.apply(1, 10, &bump);
-    let mut restored = CacheState::restore(&state.snapshot()).unwrap();
+    let mut restored = CacheState::restore(&state.snapshot(), true).unwrap();
     assert_eq!(restored.apply(2, 11, &bump), Some(Answer::Sum(1)));
     assert_eq!(restored.sum("n"), Some(1));
 }
@@ -167,7 +167,7 @@ fn a_snapshot_keeps_the_answer_table() {
 fn a_leader_that_installed_a_snapshot_stamps_from_it() {
     let mut state = CacheState::default();
     state.apply(1, 100, &put("k", "v", request(1, 1)));
-    let restored = CacheState::restore(&state.snapshot()).unwrap();
+    let restored = CacheState::restore(&state.snapshot(), true).unwrap();
     assert_eq!(restored.time(), 100);
     // Its log holds only the blank entry of its own term, and its clock is
     // behind the leader that stamped 100.
@@ -337,7 +337,7 @@ fn a_member_restored_from_a_snapshot_answers_like_one_that_replayed() {
         &put_with("k", "v", 10, Condition::None, request(1, 1)),
     );
     replayed.apply(2, 10, &add("n", 1, request(1, 2)));
-    let mut restored = CacheState::restore(&replayed.snapshot()).unwrap();
+    let mut restored = CacheState::restore(&replayed.snapshot(), true).unwrap();
     // The snapshot left the expired record out; the other member holds it.
     assert!(replayed.entries.contains_key("k"));
     assert!(!restored.entries.contains_key("k"));
@@ -376,7 +376,7 @@ fn random_command(seed: &mut u64, index: u64, stamp: u64) -> CacheCommand {
         floor: sequence.saturating_sub(4),
     };
     let version = next(seed) % index.max(1);
-    match next(seed) % 8 {
+    match next(seed) % 9 {
         0 => put(key, "v", request),
         1 => put_with(
             key,
@@ -390,6 +390,10 @@ fn random_command(seed: &mut u64, index: u64, stamp: u64) -> CacheCommand {
         4 => delete(key, None, request),
         5 => delete(key, Some(version), request),
         6 => expire(key, version),
+        7 => CacheCommand::Retire {
+            producer: request.producer,
+            floor: sequence + 1,
+        },
         _ => add(key, 1, request),
     }
 }
@@ -424,7 +428,7 @@ fn members_agree_at_every_index() {
                 );
             }
             if index == cut {
-                restored = Some(CacheState::restore(&replayed.snapshot()).unwrap());
+                restored = Some(CacheState::restore(&replayed.snapshot(), true).unwrap());
             }
         }
     }
@@ -463,7 +467,7 @@ fn an_answer_below_the_floor_is_forgotten_not_applied_again() {
     state.apply(4, 0, &eager);
     assert_eq!(state.apply(5, 0, &eager), Some(Answer::Sum(3)));
     // The floor is in the snapshot.
-    let mut restored = CacheState::restore(&state.snapshot()).unwrap();
+    let mut restored = CacheState::restore(&state.snapshot(), true).unwrap();
     assert_eq!(restored.apply(6, 0, &first), Some(Answer::Forgotten));
     // Another producer's table is its own.
     assert_eq!(
@@ -471,9 +475,49 @@ fn an_answer_below_the_floor_is_forgotten_not_applied_again() {
         Some(Answer::Sum(4))
     );
 
-    restored.apply(8, 0, &CacheCommand::Retire { producer: 1 });
+    restored.apply(
+        8,
+        0,
+        &CacheCommand::Retire {
+            producer: 1,
+            floor: 11,
+        },
+    );
     assert_eq!(restored.answer(1, 10), None);
     assert_eq!(restored.answer(2, 1), Some(Answer::Sum(4)));
+}
+
+/// RetireDropsFloor: a retire keeps the producer's floor as a tombstone. A
+/// copy of an answered request, held in a queue or on the network, can
+/// commit after the retire; it answers forgotten and is not applied again,
+/// on a member that replayed and on one that restored a snapshot.
+#[test]
+fn a_copy_that_commits_after_a_retire_is_not_applied_again() {
+    let mut state = CacheState::default();
+    let first = CacheCommand::Add {
+        key: "n".into(),
+        delta: 1,
+        request: Request {
+            producer: 7,
+            sequence: 3,
+            floor: 3,
+        },
+    };
+    assert_eq!(state.apply(1, 0, &first), Some(Answer::Sum(1)));
+    let retire = CacheCommand::Retire {
+        producer: 7,
+        floor: 4,
+    };
+    let decoded = CacheCommand::decode(&retire.encode()).unwrap();
+    assert_eq!(decoded, retire);
+    state.apply(2, 0, &decoded);
+    assert_eq!(state.answer(7, 3), None);
+    let mut restored = CacheState::restore(&state.snapshot(), true).unwrap();
+    for member in [&mut state, &mut restored] {
+        assert_eq!(member.apply(3, 0, &first), Some(Answer::Forgotten));
+        assert_eq!(member.apply(4, 0, &first), Some(Answer::Forgotten));
+        assert_eq!(member.sum("n"), Some(1));
+    }
 }
 
 #[test]
@@ -493,15 +537,32 @@ fn bytes_this_build_cannot_read_are_refused() {
     let mut state = CacheState::default();
     state.apply(1, 3, &put("k", "v", request(1, 1)));
     let snapshot = state.snapshot();
-    assert_eq!(CacheState::restore(&snapshot).unwrap().snapshot(), snapshot);
-    assert!(CacheState::restore(&snapshot.slice(..snapshot.len() - 1)).is_err());
+    assert_eq!(
+        CacheState::restore(&snapshot, true).unwrap().snapshot(),
+        snapshot
+    );
+    assert!(CacheState::restore(&snapshot.slice(..snapshot.len() - 1), true).is_err());
     let mut long = snapshot.to_vec();
     long.push(0);
-    assert!(CacheState::restore(&long.into()).is_err());
+    assert!(CacheState::restore(&long.into(), true).is_err());
     assert_eq!(
-        CacheState::restore(&Bytes::new()).unwrap(),
+        CacheState::restore(&Bytes::new(), false).unwrap(),
         CacheState::default()
     );
+    // A snapshot as of an entry always has data: none is a bad one.
+    assert!(CacheState::restore(&Bytes::new(), true).is_err());
+}
+
+/// A restored value does not hold on to the snapshot it came from.
+#[test]
+fn a_restored_value_is_its_own_copy() {
+    let mut state = CacheState::default();
+    state.apply(1, 3, &put("k", "v", request(1, 1)));
+    let snapshot = state.snapshot();
+    let restored = CacheState::restore(&snapshot, true).unwrap();
+    let value = &restored.entries["k"].value;
+    let within = snapshot.as_ptr_range();
+    assert!(!within.contains(&value.as_ptr()));
 }
 
 /// ApplyLocalClock: apply, the snapshot and the record have no clock to read.

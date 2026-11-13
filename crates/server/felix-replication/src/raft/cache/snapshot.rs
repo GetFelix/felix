@@ -92,12 +92,18 @@ impl CacheState {
         buf.freeze()
     }
 
-    /// The state a snapshot holds. No data is a group that has applied
-    /// nothing.
-    pub(crate) fn restore(data: &Bytes) -> io::Result<Self> {
+    /// The state a snapshot holds. `applied` says whether the snapshot is
+    /// as of some entry. Only one that is not may have no data: every
+    /// snapshot a cache group builds has some.
+    pub(crate) fn restore(data: &Bytes, applied: bool) -> io::Result<Self> {
         let mut state = Self::default();
         if data.is_empty() {
-            return Ok(state);
+            return match applied {
+                false => Ok(state),
+                true => Err(invalid(
+                    "a cache snapshot as of an entry has no data".to_string(),
+                )),
+            };
         }
         let mut rest = data.clone();
         let mut fields = Fields {
@@ -114,7 +120,9 @@ impl CacheState {
             let entry = Entry {
                 version: fields.u64()?,
                 expires_at: fields.u64()?,
-                value: fields.bytes()?,
+                // A copy: a slice would pin the whole snapshot buffer for
+                // as long as one value from it lives.
+                value: Bytes::copy_from_slice(&fields.bytes()?),
             };
             if entry.expires_at != 0 {
                 state.expiring.insert((entry.expires_at, key.clone()));

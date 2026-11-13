@@ -35,8 +35,10 @@ pub(crate) enum Answer {
     Refused { version: Option<u64> },
     /// A counter's sum after the add.
     Sum(i64),
-    /// A retry from below its producer's floor: the answer is gone and the
-    /// write was not applied again.
+    /// The request is below its producer's floor and its answer is gone.
+    /// The write was not applied by this entry. If the producer follows
+    /// the floor rule (an entry's floor is the lowest sequence it has no
+    /// answer for), a request below the floor was applied earlier.
     Forgotten,
 }
 
@@ -46,6 +48,16 @@ pub(super) struct Producer {
     /// Answers below this sequence were dropped.
     pub(super) floor: u64,
     pub(super) answers: BTreeMap<u64, Answer>,
+}
+
+impl Producer {
+    /// Raise the floor to `floor`, dropping the answers below it.
+    fn raise(&mut self, floor: u64) {
+        if floor > self.floor {
+            self.floor = floor;
+            self.answers = self.answers.split_off(&floor);
+        }
+    }
 }
 
 /// What a read finds.
@@ -120,8 +132,11 @@ impl CacheState {
                 }
                 return None;
             }
-            CacheCommand::Retire { producer } => {
-                self.producers.remove(producer);
+            CacheCommand::Retire { producer, floor } => {
+                // The floor stays behind as a tombstone: a copy of an
+                // answered request can commit after the retire, and must
+                // answer forgotten rather than apply again.
+                self.producers.entry(*producer).or_default().raise(*floor);
                 return None;
             }
             CacheCommand::Put { request, .. }
@@ -145,11 +160,7 @@ impl CacheState {
         let known = self.producers.entry(producer).or_default();
         known.answers.insert(sequence, answer);
         // Never past the request itself, whose answer was just kept.
-        let floor = floor.min(sequence);
-        if floor > known.floor {
-            known.floor = floor;
-            known.answers = known.answers.split_off(&floor);
-        }
+        known.raise(floor.min(sequence));
         Some(answer)
     }
 

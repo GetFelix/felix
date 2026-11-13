@@ -57,8 +57,10 @@ pub(crate) enum CacheCommand {
         delta: i64,
         request: Request,
     },
-    /// Forget `producer`'s answers. It sends nothing more.
-    Retire { producer: u64 },
+    /// `producer` sends nothing below `floor` again, usually one past its
+    /// last sequence. Its answers go; the floor stays, so a copy of an
+    /// answered request still in flight is not applied again.
+    Retire { producer: u64, floor: u64 },
 }
 
 fn put_request(buf: &mut BytesMut, request: &Request) {
@@ -143,9 +145,10 @@ impl CacheCommand {
                 buf.put_i64_le(*delta);
                 put_key(&mut buf, key);
             }
-            Self::Retire { producer } => {
+            Self::Retire { producer, floor } => {
                 buf.put_u8(RETIRE);
                 buf.put_u64_le(*producer);
+                buf.put_u64_le(*floor);
             }
         }
         buf.freeze()
@@ -210,6 +213,7 @@ impl CacheCommand {
             }
             RETIRE => Self::Retire {
                 producer: fields.u64()?,
+                floor: fields.u64()?,
             },
             found => return Err(invalid(format!("a cache entry has kind {found}"))),
         };
