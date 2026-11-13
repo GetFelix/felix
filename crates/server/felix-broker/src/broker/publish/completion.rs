@@ -199,8 +199,8 @@ impl Completion {
         let state = &self.handle.state;
         let first_offset = claimed.pending.first_offset();
         let end = first_offset + self.payloads.len() as u64;
-        // A `Leader` stream with nothing held never asks for a bound, so it
-        // costs one atomic load here.
+        // A `Leader` stream with nothing held never asks for a bound unless
+        // its shard is bounded at every level, so it costs an atomic load here.
         if !state.held.is_busy() && state.read_bound().covers(end) {
             return Ok(None);
         }

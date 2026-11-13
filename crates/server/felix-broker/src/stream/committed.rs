@@ -59,8 +59,8 @@ impl ReadBound {
 
 /// The service's answer to "how far may readers see", per stream shard.
 ///
-/// Asked only for streams whose consistency is `Quorum`, on the publish path
-/// among others, so it must be cheap and must not block.
+/// Asked for `Quorum` streams and for shards bounded at every level, on the
+/// publish path among others, so it must be cheap and must not block.
 pub trait ReadBounds: Send + Sync + std::fmt::Debug {
     fn stream_bound(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32)
     -> ReadBound;

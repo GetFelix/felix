@@ -1187,14 +1187,15 @@ way a held `Quorum` batch is released on the hybrid.
 
 - A batch whose `await_commit` fails is never delivered: a deposed leader's
   record may have been replaced. If it did commit, readers find it in the
-  log, and the jump in offsets tells a live subscriber it missed one.
+  log. A live subscriber that negotiated event offsets sees the jump; it is
+  not counted as a drop.
 - A publisher that goes away does not leave a gap. The rest of its publish
   runs on a task of its own and keeps its place, so the batches behind it
   wait for it.
 - Every reader of the stream is bounded by `read_bound`, at every
   consistency level (`StreamHandle::bound_every_level`, answered by
-  `RaftReads`). A follower's readers read the log up to what the follower
-  has applied.
+  `RaftReads`). On a follower that bound is what the follower has applied,
+  so its readers stop there.
 - `RaftEngine::follow_commits` kicks the stream each time the commit index
   moves here. Held batches the bound now covers are released, and readers
   waiting at the bound for the log look again.
@@ -1204,14 +1205,29 @@ way a held `Quorum` batch is released on the hybrid.
 > `a_record_is_delivered_only_once_a_majority_holds_it` and
 > `a_followers_readers_stop_at_what_it_applied`;
 > `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
-> `batches_go_out_in_hand_over_order_whoever_hears_first` and
-> `every_subscriber_shares_one_envelope_of_the_publishers_bytes`.
+> `batches_go_out_in_hand_over_order_whoever_hears_first`,
+> `only_what_the_engine_committed_is_delivered`,
+> `every_subscriber_shares_one_envelope_of_the_publishers_bytes` and
+> `a_leader_stream_bounded_at_every_level_waits_for_the_bound`.
 
 Not built yet: the stream's handle and the Raft member do not share one
-log, because nothing routes a shard to the engine. The records a Raft
-stream stores carry no publisher or headers, so its subscribers are told
-neither. A blank or membership entry takes an offset and holds no event,
-and a live subscriber sees that offset skipped.
+log, because nothing routes a shard to the engine, so a follower's history
+reads are bounded but not yet served from the member's log. The routing
+change has to:
+
+- send every publish and trim of a Raft stream through the engine. The
+  ordinary claim path takes offsets from the broker's own log, and a trim
+  waits at the bound only on a `Quorum` stream;
+- keep the commit hold of a Raft stream on deposition. Everything in it
+  already passed `await_commit`, and the hybrid's "discard what is held"
+  would drop committed records from live delivery;
+- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
+  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
+  refuses any shard it holds no group for.
+
+The records a Raft stream stores carry no publisher or headers, so its
+subscribers are told neither. A blank or membership entry takes an offset
+and holds no event, and a live subscriber sees that offset skipped.
 
 ### Membership
 
