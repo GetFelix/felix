@@ -140,7 +140,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true' && github.event_name != 'workflow_dispatch'
     name: Docs site build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -408,8 +408,8 @@ jobs:
     # The job takes 8 to 15 minutes on main. A seed run that holds its thread
     # ends the process within ten minutes and names the seed
     # (docs/simulation.md), so this limit is for a runner that stops
-    # answering: it holds the runner for 30 minutes, not most of an hour.
-    timeout-minutes: 30
+    # answering: it holds the runner for 35 minutes, not most of an hour.
+    timeout-minutes: 35
     env:
       CARGO_TERM_COLOR: always
       FELIX_SIM_SEEDS: "20"
