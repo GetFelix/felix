@@ -1205,8 +1205,10 @@ may be up to a second behind what the member had applied and served. When
 the log holds entries past it, the member answers reads with 503 and stays
 out of rotation until it has applied up to its log tail, or to the end of a
 log a leader cut back. Those entries are applied only once a leader commits
-them, and committed entries are never cut, so the member never serves an
-older state than it showed before the crash.
+them, and committed entries are never cut, so its reads never show an
+older state than it showed before the crash. A member removed from the group
+while it was down gets no leader to commit its tail, so it stays unready
+until it is added back or its data directory is wiped.
 
 ### openraft 0.9 to 0.10
 

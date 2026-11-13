@@ -184,9 +184,11 @@ leader, a quorum has acknowledged it within the last 5s. That last check
 takes a partitioned, quorumless leader out of rotation before it serves
 stale reads, and a test covers it. A member restarted after a crash also
 stays out of rotation, and answers reads with 503, until a leader has
-committed the entries at the end of its log: it saves its committed index at
-most once a second, so it may have applied and served past what it saved,
-and it never serves an older state than it showed. `/v1/system/live` stays
+committed the entries at the end of its log. It saves its committed index at
+most once a second, so it may have applied and served past what it saved.
+Waiting means its reads never show an older state than before the crash.
+A member removed from the group while it was down never gets that commit,
+so it stays unready until it is added back or wiped. `/v1/system/live` stays
 process-local, exactly as before: losing quorum is not fixed by a restart.
 The probe settings on [Control-plane HA](/deployment/control-plane-ha/)
 (intervals, thresholds) carry over unchanged.

@@ -408,14 +408,23 @@ async fn a_raft_log_writes_its_commit_index_once_per_interval() {
     on_disk(&dir, 1).await;
     let writes = || log.inner.replica_writes.load(Ordering::Relaxed);
     let before = writes();
+    let started = std::time::Instant::now();
     // Each move waits long enough for a write started by the last to land.
     for index in 1..10 {
         log.save_committed(index, 1).await.expect("save");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert_eq!(writes() - before, 0, "a write within the interval");
+    // A starved runner can take longer than the interval over the loop.
+    let intervals = started.elapsed().as_millis() / COMMIT_PERSIST_INTERVAL.as_millis();
+    if intervals == 0 {
+        assert_eq!(writes() - before, 0, "a write within the interval");
+    }
     on_disk(&dir, 10).await;
-    assert_eq!(writes() - before, 1, "one write carries every move");
+    let made = writes() - before;
+    assert!(
+        made >= 1 && made as u128 <= intervals + 1,
+        "{made} writes over {intervals} whole intervals"
+    );
 }
 
 /// **An advance made as the writer finishes is not left behind.** The writer

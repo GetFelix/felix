@@ -15,4 +15,4 @@
 - A control-plane member saves its committed Raft index at most once a second,
   which brings the 3-member p99 for small writes under redb's. After a crash it
   answers reads with 503 and stays unready until a leader has committed the end of
-  its log, so it never serves an older state than it showed before (#2236).
+  its log, so its reads never show an older state than before the crash (#2236).

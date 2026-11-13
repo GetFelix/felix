@@ -84,22 +84,14 @@ impl RaftHandle {
     /// a cut log still holds all it applied. Unavailable beats stale.
     pub fn caught_up(&self) -> Result<(), String> {
         let gate = &self.replay_gate;
-        let Some(tail) = gate.tail else {
-            return Ok(());
-        };
-        if gate.open.load(std::sync::atomic::Ordering::Acquire) {
+        if gate.tail.is_none() || gate.open.load(std::sync::atomic::Ordering::Acquire) {
             return Ok(());
         }
         let metrics = self.raft.metrics().borrow_watched().clone();
-        let target = tail.min(metrics.last_log_index.unwrap_or(0));
-        let applied = metrics.last_applied.map(|id| id.index).unwrap_or(0);
-        if applied < target {
-            return Err(format!(
-                "restarted: applied {applied} of a log tail at {target}; waiting for a leader to commit it"
-            ));
-        }
-        gate.open.store(true, std::sync::atomic::Ordering::Release);
-        Ok(())
+        gate.check(
+            metrics.last_log_index,
+            metrics.last_applied.map(|id| id.index),
+        )
     }
 
     /// Publish this member's consensus position as gauges, once a second,
@@ -175,6 +167,25 @@ impl ReplayGate {
             tail,
             open: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Opens the gate once `applied` reaches the tail, or the end of a log
+    /// a leader cut back below it.
+    pub(super) fn check(&self, last_log: Option<u64>, applied: Option<u64>) -> Result<(), String> {
+        let Some(tail) = self.tail else {
+            return Ok(());
+        };
+        // No log index yet means openraft has not reported its first
+        // metrics; reading that as an empty log would open the gate at 0.
+        let target = last_log.map_or(tail, |last| tail.min(last));
+        let applied = applied.unwrap_or(0);
+        if applied < target {
+            return Err(format!(
+                "restarted: applied {applied} of a log tail at {target}; waiting for a leader to commit it"
+            ));
+        }
+        self.open.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
     }
 }
 
