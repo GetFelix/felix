@@ -3,12 +3,17 @@
 (* The Raft leader lease for one shard group, as docs/per-shard-raft.md    *)
 (* ("Acknowledging a write") and docs/replication-engine.md (Decisions, 5) *)
 (* decide it. These configs gate the pull request that turns on            *)
-(* `admit_local_ack`, but their passing does not open the gate yet. The    *)
-(* passing configs either have no restart or pass on a rule that is not    *)
-(* built and that openraft 0.10.0 lacks: a restarted member refuses votes  *)
-(* for one election timeout (issue 2307). With the engine as it is,        *)
-(* FelixRaftLeaseRestartForgets.cfg violates LeaseExclusive. The gate      *)
-(* opens when that rule is built.                                          *)
+(* `admit_local_ack`, but their passing does not open the gate yet. A      *)
+(* restarted member must not grant a vote inside the window it promised    *)
+(* before it stopped, and two rules give that. The design's is the node    *)
+(* layer's: a restarted member refuses votes for one election timeout from *)
+(* its start, whatever vote it stored (issue 2307). It is not built.       *)
+(* openraft 0.10.0 has one of its own: at a start it renews the window when*)
+(* the stored vote is a leader's whose message the member took. Each alone *)
+(* holds LeaseExclusive here (FelixRaftLeaseRestart.cfg,                   *)
+(* FelixRaftLeaseRestartRenews.cfg) and with neither it fails              *)
+(* (FelixRaftLeaseRestartForgets.cfg). The design does not rest the lease  *)
+(* on the engine's rule, so the gate opens when the node layer's is built. *)
 (*                                                                         *)
 (* Part 1 is the first version's lease. Part 2 (`StoreLeases = TRUE`, the  *)
 (* `FelixRaftLeaseStore*` configs) is the later design, "Leases that       *)
@@ -44,8 +49,8 @@
 (*                                                                         *)
 (*   The window is kept in memory. A restarted broker is held from         *)
 (*   campaigning ("Restarted members"; the model holds it for one election *)
-(*   timeout, the shortest the design allows) and, by a rule this model    *)
-(*   adds, refuses votes for one election timeout from its start.          *)
+(*   timeout, the shortest the design allows) and refuses votes for one    *)
+(*   election timeout from its start.                                      *)
 (*                                                                         *)
 (*   A write is acknowledged on local durability when                      *)
 (*   `now < last_quorum_acked + Lease`. Otherwise it waits for commit,     *)
@@ -121,12 +126,18 @@
 (*                             back instead of the hand-off time.          *)
 (*   VoteInWindow           -- a follower grants a vote inside its refusal *)
 (*                             window.                                     *)
-(*   RestartForgetsWindow   -- a restarted follower may vote at once. This *)
-(*                             is openraft 0.10.0 (`storage/helper.rs`     *)
-(*                             builds the vote with a zero lease). With it *)
-(*                             off, a restarted broker refuses votes for   *)
-(*                             one election timeout from its start. It is  *)
-(*                             held from campaigning either way.           *)
+(*   RestartForgetsWindow   -- the node layer's hold is off: a restarted   *)
+(*                             broker may grant a vote at once, unless the *)
+(*                             engine's rule below stops it. It is held from*)
+(*                             campaigning either way.                     *)
+(*   RestartRenewsFollowed  -- not a dropped rule but the engine's own:    *)
+(*                             openraft 0.10.0 (`Engine::startup`) renews  *)
+(*                             the window for one election timeout at a    *)
+(*                             start when the stored vote is committed and *)
+(*                             another broker's, which is a follower that  *)
+(*                             took its leader's message. A vote given to a*)
+(*                             candidate gets no window, and a restarted   *)
+(*                             leader's own vote is demoted with none.     *)
 (*   DeliverUncommitted     -- the subscriber reads the leader's whole     *)
 (*                             log.                                        *)
 (*   SupportNotDurable      -- (Part 2) support and the recorded epoch are *)
@@ -153,7 +164,7 @@ CONSTANTS
     Lease, ElectionTimeout,
     Consumer,
     LeaseTooLong, DriftBeyondBound, LeaseFromAck, VoteInWindow,
-    RestartForgetsWindow, DeliverUncommitted,
+    RestartForgetsWindow, RestartRenewsFollowed, DeliverUncommitted,
     StoreLeases, SupportTime, MaxEpoch, MaxBeats, MaxStalls,
     SupportNotDurable, VoteWhileSupported, LeaseKeptAcrossRestart,
     ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking
@@ -168,6 +179,7 @@ ASSUME 1 <= RateLo /\ RateLo <= RateHi
 
 VARIABLES
     term, votedFor, role, log, commit,
+    followed,     \* on disk: the stored vote is a leader's whose message it took
     heardAge,     \* how long ago a leader's message was last taken
     startAge,     \* how long ago the broker started
     ackAge,       \* leader: per follower, age of the newest hand-off answered
@@ -188,7 +200,7 @@ VARIABLES
     beats,        \* liveness heartbeats sent so far, to bound the run
     stalledAge    \* how long a broker's disk has been stalled, or None
 
-groupVars == <<term, votedFor, role, log, commit, heardAge, startAge, ackAge,
+groupVars == <<term, votedFor, followed, role, log, commit, heardAge, startAge, ackAge,
               match>>
 storeVars == <<epoch, sup, fortEpoch, supAge, fortAck, beatMsgs, beats, stalledAge>>
 histVars  == <<delivered, acked, staleAck, elected, nextId>>
@@ -281,6 +293,7 @@ Fort(v, c) == IF sup[v][c].left > 0 THEN sup[v][c].epoch ELSE 0
 Init ==
     /\ term = [b \in Servers |-> 0]
     /\ votedFor = [b \in Servers |-> Nobody]
+    /\ followed = [b \in Servers |-> FALSE]
     /\ role = [b \in Servers |-> "follower"]
     /\ log = [b \in Servers |-> <<>>]
     /\ commit = [b \in Servers |-> 0]
@@ -322,7 +335,7 @@ Tick ==
         /\ stalledAge' = [b \in Servers |->
                             IF stalledAge[b] = None THEN None
                             ELSE GrowS(stalledAge[b], d[b])]
-        /\ UNCHANGED <<term, votedFor, role, log, commit, match, restarts,
+        /\ UNCHANGED <<term, votedFor, followed, role, log, commit, match, restarts,
                        histVars, epoch, fortEpoch, fortAck, beats>>
 
 Elect(c, Q, nt) ==
@@ -335,6 +348,9 @@ Elect(c, Q, nt) ==
     /\ \A v \in Q \ {c} : LogOk(c, v) /\ MayGrant(v, c)
     /\ term' = [b \in Servers |-> IF b \in Q THEN nt ELSE term[b]]
     /\ votedFor' = [b \in Servers |-> IF b \in Q THEN c ELSE votedFor[b]]
+    \* A vote for a candidate is not committed, and the leader's own does
+    \* not count: openraft demotes it at a restart.
+    /\ followed' = [b \in Servers |-> b \notin Q /\ followed[b]]
     /\ role' = [b \in Servers |->
                   IF b = c THEN "leader"
                   ELSE IF b \in Q THEN "follower" ELSE role[b]]
@@ -388,6 +404,7 @@ RecvApp(m) ==
                                   term |-> m.term, age |-> m.age,
                                   log |-> <<>>, n |-> Len(m.log)]},
                         term', role')
+    /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
     /\ UNCHANGED <<votedFor, startAge, restarts, histVars, storeVars>>
 
 RecvAck(m) ==
@@ -410,7 +427,7 @@ RecvAck(m) ==
                       /\ \E k \in 1..newCommit : log[l][k] = <<term[l], i>>
                    THEN "commit" ELSE acked[i]]
     /\ msgs' = msgs \ {m}
-    /\ UNCHANGED <<term, votedFor, role, log, heardAge, startAge, restarts,
+    /\ UNCHANGED <<term, votedFor, followed, role, log, heardAge, startAge, restarts,
                    delivered, staleAck, elected, nextId, storeVars>>
 
 ClientWrite(l) ==
@@ -423,7 +440,7 @@ ClientWrite(l) ==
                      (LeaseValid(l) /\ \E t \in 1..MaxTerm :
                           t > term[l] /\ elected[t] # {}))
     /\ nextId' = nextId + 1
-    /\ UNCHANGED <<term, votedFor, role, commit, heardAge, startAge, ackAge,
+    /\ UNCHANGED <<term, votedFor, followed, role, commit, heardAge, startAge, ackAge,
                    match, msgs, restarts, delivered, elected, storeVars>>
 
 Deliver(b) ==
@@ -455,11 +472,11 @@ Restart(b) ==
             /\ beatMsgs' = LiveBeats(beatMsgs, epoch')
             /\ UNCHANGED <<heardAge, startAge>>
        ELSE /\ role' = [role EXCEPT ![b] = "follower"]
-            /\ heardAge' = [heardAge EXCEPT ![b] = Old]
+            /\ heardAge' = [heardAge EXCEPT ![b] = IF followed[b] THEN 0 ELSE Old]
             /\ startAge' = [startAge EXCEPT ![b] = 0]
             /\ UNCHANGED <<epoch, supAge, fortAck, sup, fortEpoch, beatMsgs>>
     /\ msgs' = LiveMsgs(msgs, term, role')
-    /\ UNCHANGED <<term, votedFor, log, commit, histVars, beats, stalledAge>>
+    /\ UNCHANGED <<term, votedFor, followed, log, commit, histVars, beats, stalledAge>>
 
 (***************************************************************************)
 (* Part 2: liveness heartbeats between stores.                             *)
@@ -547,6 +564,7 @@ Entry == (0..MaxTerm) \X (1..MaxWrites)
 TypeOK ==
     /\ term \in [Servers -> 0..MaxTerm]
     /\ votedFor \in [Servers -> Servers \cup {Nobody}]
+    /\ followed \in [Servers -> BOOLEAN]
     /\ role \in [Servers -> {"follower", "leader"}]
     /\ \A b \in Servers : \A i \in 1..Len(log[b]) : log[b][i] \in Entry
     /\ \A b \in Servers : commit[b] \in 0..Len(log[b])

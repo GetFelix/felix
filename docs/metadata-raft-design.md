@@ -312,10 +312,16 @@ A first boot acts on answers, never on silence:
   every member answers empty, so the members of a first boot never wait on
   each other.
 
+The model checks the rule (`docs/formal/FelixRaftPlacementForm.cfg`,
+`FelixRaftPlacementFormAfterWipes.cfg`), and shows the majority rule it
+replaced losing an acknowledged write (`FelixRaftPlacementFormMajority.cfg`).
+
 One case is not covered: a volume lost after the group formed and before its
 first leader wrote an entry. Every log is still empty then, so under `new` the
 member forms again and has forgotten any vote it gave
-([#2374](https://github.com/GetFelix/felix/issues/2374)).
+([#2374](https://github.com/GetFelix/felix/issues/2374)). The model pins it:
+in `FelixRaftPlacementFormEarlyWipe.cfg` the member's second vote elects a
+leader of an older term, which acknowledges a write the newer leader lacks.
 
 #### Forming without a lost machine
 

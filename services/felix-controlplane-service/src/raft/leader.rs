@@ -150,7 +150,7 @@ impl RaftHandle {
         !self.is_stopped() && self.raft.metrics().borrow_watched().current_leader == Some(self.id)
     }
 
-    pub(super) fn is_stopped(&self) -> bool {
+    pub(crate) fn is_stopped(&self) -> bool {
         self.stopped.load(std::sync::atomic::Ordering::SeqCst)
     }
 
