@@ -1,5 +1,6 @@
-//! The Raft engine as the publish and read paths see it. Nothing routes a
-//! shard here yet. See `docs/per-shard-raft.md`, "Writing through openraft"
+//! The Raft engine as the publish and read paths see it. The broker's
+//! `StreamEngine` (`felix-broker-service`, `shards/engine.rs`) sends a
+//! shard's writes and reads here when this broker holds a member. See `docs/per-shard-raft.md`, "Writing through openraft"
 //! and "Write fence, leases and read bound under Raft".
 
 use std::future::Future;

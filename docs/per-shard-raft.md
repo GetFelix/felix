@@ -335,7 +335,9 @@ member that way. The log mark is exact by default (`LogMarkMode::Exact`,
 synced before the flush is reported to Raft) and can be batched
 (`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
 Not built yet (issue #2441): the control plane's copy of the root
-sequence, and the broker opening its Raft groups through all this. Until
+sequence, and the broker opening its Raft groups through all this. Raft
+directories the broker creates before #2441 have no copy file, and #2441
+decides whether they carry over. Until
 the first lands, a root with marks passes only on a witness record, so a
 rebooted host holds.
 
@@ -791,10 +793,10 @@ publisher, as today.
 
 **`propose` as built** (`raft::RaftEngine::propose`, in
 `crates/server/felix-replication/src/raft/propose.rs`). It is on the Raft
-engine only, like `await_commit`, `read_bound` and `confirm_read`. The
-`Engine` trait gains `propose` in the pull request that routes a shard to
-the Raft engine: until then the trait's cache, counter and peer-message
-methods have no Raft answer.
+engine only, like `await_commit`, `read_bound` and `confirm_read`. There is
+no `impl Engine for RaftEngine`. The broker's `StreamEngine` dispatches by
+shard: a shard this broker holds a Raft member of goes to the Raft engine,
+and every other `Engine` call goes to the hybrid.
 
 A batch is a list of records, where its acknowledgement waits (`Written`
 or `Flushed`), and the term its caller was admitted at, if it names one.
