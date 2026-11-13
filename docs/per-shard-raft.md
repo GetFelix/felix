@@ -1151,6 +1151,105 @@ and a leader is known. It needs the restore check once per start ("Group
 and member identity"), and nothing per shard: no assignment has to be
 confirmed, which is what kept shards unreadable in issue #1914.
 
+### Delivering committed records
+
+A subscriber of a Raft shard gets a record only once it is committed. On
+the leader the record it gets is the publisher's own batch, held in memory.
+Nothing is read back from the log or decoded in apply for it.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker stream
+    participant R as Raft group
+    participant S as Subscribers
+    P->>B: publish(batch)
+    B->>R: propose, in the stream's hand-over order
+    R-->>B: written at [first, end)
+    R-->>B: committed under the term that wrote it
+    B->>B: wait for the batch handed over before it
+    B->>S: one shared envelope of the publisher's bytes
+```
+
+**As built.** `RaftEngine::publish` hands a batch to
+`Broker::propose_publish`. The broker takes the batch's place in the
+stream's hand-over order and calls `propose` while it holds that place, so
+the order of hand-overs is the order openraft gives out indexes. The
+batch then waits for `await_commit`, which checks the term of the entry at
+its offset, and for the batch handed over before it. Only then does it
+join the stream's commit hold. The hold appends it to the replay ring and
+fans it out as one shared envelope, encoded once per frame shape, the same
+way a held `Quorum` batch is released on the hybrid.
+
+- A batch that times out keeps its place. The publisher is answered with
+  the timeout, but delivery keeps waiting for the commit, so the batches
+  behind it still go out after it.
+- A batch whose `await_commit` fails because this broker stopped leading,
+  or the group stopped, is never delivered: a deposed leader's record may
+  have been replaced. It may also have committed, so in its place in the
+  order the replay ring is emptied. The next batch starts the ring again,
+  and a reader resuming below that batch is served from the log, which has
+  the record if it committed. A live subscriber sees the batch's offsets as
+  a drop.
+- A publisher that goes away does not leave a gap. The rest of its publish
+  runs on a task of its own and keeps its place, so the batches behind it
+  wait for it.
+- Blank and membership entries take an offset and hold no record. The
+  state machine remembers each run of them, and a batch right after one
+  tells its subscribers how many offsets it skipped (`skipped_before`), so
+  the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
+  its twin `FelixRaftSkipsNotCounted` must fail.
+- Every reader of the stream is bounded by `read_bound`, at every
+  consistency level (`StreamHandle::bound_every_level`, answered by
+  `RaftReads`). On a follower that bound is what the follower has applied,
+  so its readers stop there. A failed flush that poisons the local log
+  bounds them too, and until `RaftReads` is installed they see nothing.
+- `RaftEngine::follow_commits` kicks the stream each time the commit index
+  moves here. Held batches the bound now covers are released, and readers
+  waiting at the bound for the log look again.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_record_a_later_leader_replaced_reaches_no_subscriber`,
+> `a_record_is_delivered_only_once_a_majority_holds_it`,
+> `a_followers_readers_stop_at_what_it_applied`,
+> `a_batch_committed_after_its_timeout_goes_out_before_the_next` and
+> `entries_holding_no_record_reach_subscribers_as_skipped`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `batches_go_out_in_hand_over_order_whoever_hears_first`,
+> `only_what_the_engine_committed_is_delivered`,
+> `every_subscriber_shares_one_envelope_of_the_publishers_bytes`,
+> `a_leader_stream_bounded_at_every_level_waits_for_the_bound`,
+> `a_batch_that_commits_after_its_publisher_timed_out_goes_out_first`,
+> `a_batch_given_up_on_restarts_the_ring_above_it`,
+> `offsets_holding_no_record_are_reported_skipped` and
+> `a_shard_bounded_at_every_level_with_no_bounds_shows_nothing`.
+
+Not built yet: the stream's handle and the Raft member do not share one
+log, because nothing routes a shard to the engine, so a follower's history
+reads are bounded but not yet served from the member's log. The routing
+change has to:
+
+- send every publish and trim of a Raft stream through the engine. The
+  ordinary claim path takes offsets from the broker's own log, and a trim
+  waits at the bound only on a `Quorum` stream;
+- keep the commit hold of a Raft stream on deposition. Everything in it
+  already passed `await_commit`, and the hybrid's "discard what is held"
+  would drop committed records from live delivery;
+- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
+  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
+  refuses any shard it holds no group for;
+- bound the batches waiting for commit. A leader cut off from its majority
+  is not deposed, so each publish leaves a task waiting until the partition
+  heals (#2428);
+- move the ring's start past a gap batch, so a reader resuming while the
+  ring is empty reads that batch from the log instead of missing it (#2428).
+
+The records a Raft stream stores carry no publisher or headers, so its
+subscribers are told neither. The state machine remembers the last 64 runs
+of entries that hold no record; a batch committed after more runs than
+that, or on a member that resumed from a snapshot above its run, reports
+none skipped.
+
 ### Membership
 
 The control plane still chooses the replica set and paces moves. It records

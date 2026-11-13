@@ -21,6 +21,11 @@ use crate::engine::{CommitError, Written};
 /// it, and that wait is answered as an unknown outcome.
 const TERMS_KEPT: usize = 8;
 
+/// Runs of entries that hold no record remembered. One is written per term
+/// and per membership change; a batch committed past more than this many
+/// runs back reports none skipped, which a subscriber reads as a drop.
+const QUIET_KEPT: usize = 64;
+
 const NOT_LEADING: &str = "this broker stopped leading the shard";
 const DISCARDED: &str = "another leader's entry committed at the offset";
 const FORGOTTEN: &str = "the term committed at the offset is no longer known here";
@@ -34,6 +39,9 @@ pub(crate) struct Commits {
     /// down along a log, so the entry at an index has the term of the last
     /// start at or below it.
     starts: VecDeque<LogPoint>,
+    /// Runs of applied entries that hold no record (a leader's blank entry,
+    /// a membership change), as `start..end`, oldest first.
+    quiet: VecDeque<std::ops::Range<u64>>,
 }
 
 /// The term of the committed entry at an index.
@@ -52,6 +60,7 @@ impl Commits {
         Self {
             applied,
             starts: applied.into_iter().collect(),
+            quiet: VecDeque::new(),
         }
     }
 
@@ -79,6 +88,31 @@ impl Commits {
             self.starts.push_back(at);
         }
         self.applied = Some(at);
+    }
+
+    /// The entry at `index`, just applied, holds no record.
+    pub(crate) fn holds_no_record(&mut self, index: u64) {
+        match self.quiet.back_mut() {
+            Some(run) if run.end == index => run.end = index + 1,
+            Some(run) if run.end > index => {}
+            _ => {
+                if self.quiet.len() == QUIET_KEPT {
+                    self.quiet.pop_front();
+                }
+                self.quiet.push_back(index..index + 1);
+            }
+        }
+    }
+
+    /// How many offsets just below `first` hold no record, so a subscriber
+    /// whose next record is at `first` is told they were skipped, not
+    /// dropped. Asked once everything below `first` is applied.
+    pub(crate) fn skipped_before(&self, first: u64) -> u64 {
+        self.quiet
+            .iter()
+            .rev()
+            .find(|run| run.end == first)
+            .map_or(0, |run| run.end - run.start)
     }
 
     pub(crate) fn term_at(&self, index: u64) -> TermAt {

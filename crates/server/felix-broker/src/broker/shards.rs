@@ -505,6 +505,14 @@ impl StreamHandle {
         self.state.read_bound()
     }
 
+    /// Bound this shard's readers at every consistency level, not only
+    /// `Quorum`: for a shard whose engine acknowledges and delivers nothing
+    /// before it is committed (Raft). Fanout, cursor replay and history
+    /// reads then stop at the service's [`crate::ReadBounds`] answer.
+    pub fn bound_every_level(&self) {
+        self.state.held.bound_every_level();
+    }
+
     /// Look at the committed mark again and release the held batches it now
     /// covers. For whoever moves the mark; cheap when nothing is held.
     pub fn release_committed(&self) {
