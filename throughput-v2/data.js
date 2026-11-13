@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794541059229,
+  "lastUpdate": 1794544555516,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54028,6 +54028,58 @@ window.BENCHMARK_DATA = {
             "range": "17495.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1197145.68\nmean: 1196431.54\nstdev: 17495.19\ncv: 1.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ba7a33a73a41ceec5b743eb162d4aee3d80e2281",
+          "message": "feat(replication): Raft peer messages on the broker transport, behind the RAFT capability (#2397)\n\nCloses #2314. Raft calls travel as internal kinds 57/58 behind capability bit 23, offered only by brokers running a group runtime; other peers see byte-identical frames. Raft calls get their own per-peer budget (appends with entries apart from heartbeats and votes), appends are cut to fit the call's deadline, and the listener answers under the sender's deadline. Decoded commands never carry a written token. Fuzz targets for both new bodies. Follow-ups: #2404, #2405.\n\nSpec-Unaffected: transport only; what a Raft member stores, votes and commits is unchanged.",
+          "timestamp": "2026-11-12T20:30:48-08:00",
+          "tree_id": "baa45d895cced0e674622061a9fabe452a3a882d",
+          "url": "https://github.com/GetFelix/felix/commit/ba7a33a73a41ceec5b743eb162d4aee3d80e2281"
+        },
+        "date": 1794544554789,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 407194.43,
+            "range": "17555.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 407194.43\nmean: 414135.57\nstdev: 17555.22\ncv: 4.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 407194.43,
+            "range": "17555.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 407194.43\nmean: 414135.57\nstdev: 17555.22\ncv: 4.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 98363.17,
+            "range": "1260.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 98363.17\nmean: 98402.45\nstdev: 1260.44\ncv: 1.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 983631.72,
+            "range": "12604.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 983631.72\nmean: 984024.57\nstdev: 12604.35\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
