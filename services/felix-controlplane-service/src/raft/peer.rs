@@ -7,6 +7,9 @@
 //! it; brokers and API clients never do. Optional mTLS on top means a
 //! connection that cannot present a certificate from the cluster CA never
 //! reaches the router at all.
+//!
+//! A Raft RPC also names the member it is meant for, and a member answers
+//! only its own ([`require_target`]).
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -17,6 +20,9 @@ use axum::response::{IntoResponse, Response};
 
 /// Carries the sender's cluster id on every peer request.
 pub const CLUSTER_ID_HEADER: &str = "x-felix-raft-cluster-id";
+
+/// Carries the id of the member a Raft RPC is meant for.
+pub const TARGET_HEADER: &str = "x-felix-raft-target";
 
 /// How this member authenticates Raft traffic, both directions.
 #[derive(Clone)]
@@ -146,6 +152,43 @@ pub(super) async fn require_peer(
                 .increment(1);
             tracing::warn!("raft peer request with a missing or wrong peer token refused");
             return (StatusCode::UNAUTHORIZED, "raft peer token required").into_response();
+        }
+    }
+    next.run(request).await
+}
+
+/// Refuse a request meant for another member, as a member that is not
+/// there would: every sender reads the 503 as unreachable.
+///
+/// An address can reach the wrong member: two configured addresses that
+/// resolve to one machine, or a slot whose member has since changed. Its
+/// vote or its append must not count as the member the sender asked.
+///
+/// A request without the header is served. A sender on a build without the
+/// header means the configured id, which is the only id a member has had.
+pub(super) async fn require_target(
+    State(id): State<super::NodeId>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Some(value) = request.headers().get(TARGET_HEADER) {
+        let target = value
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<super::NodeId>().ok());
+        if target != Some(id) {
+            metrics::counter!("felix_meta_raft_peer_rejected_total", "reason" => "target")
+                .increment(1);
+            tracing::warn!(
+                target = value.to_str().unwrap_or("<not text>"),
+                member = id,
+                "raft peer request meant for another member refused"
+            );
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("this is raft member {id}, not the member the request is for"),
+            )
+                .into_response();
         }
     }
     next.run(request).await

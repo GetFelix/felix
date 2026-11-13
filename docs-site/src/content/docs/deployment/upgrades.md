@@ -131,6 +131,12 @@ member on an older release answers 404, and the others wait and log
 `it runs a build without the forming route`. Start a new cluster with every
 member on the same release.
 
+Members also say which member they are when they answer, and a first start
+counts an empty answer only for the member that gave it. A member on a
+release that predates this is not counted, and the others log
+`its answer does not say which member it is`. A group that already runs is
+not affected here either.
+
 ### Fleet features: on only when an operator finalizes them
 
 A change to how brokers treat each other, such as how a key maps to a shard,
