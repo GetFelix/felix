@@ -310,6 +310,7 @@ fn root_sequence() -> crate::model::RootSequence {
     crate::model::RootSequence {
         storage_id: s("0123456789abcdef0123456789abcdef"),
         sequence: 1,
+        incarnation: 1,
     }
 }
 

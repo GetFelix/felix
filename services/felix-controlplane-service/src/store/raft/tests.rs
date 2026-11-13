@@ -4423,6 +4423,7 @@ async fn a_root_sequence_is_kept_only_at_level_33() {
     let heard = crate::model::RootSequence {
         storage_id: "a".repeat(32),
         sequence: 4,
+        incarnation: 1,
     };
     assert!(
         !store

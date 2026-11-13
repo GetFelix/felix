@@ -1282,12 +1282,15 @@
 32 snapshot.state.cluster_identity.shard_engine
 33 record_root_sequence
 33 record_root_sequence.heard
+33 record_root_sequence.heard.incarnation
 33 record_root_sequence.heard.sequence
 33 record_root_sequence.heard.storage_id
 33 record_root_sequence.node_id
 33 import_state.state.root_sequences
+33 import_state.state.root_sequences[][].incarnation
 33 import_state.state.root_sequences[][].sequence
 33 import_state.state.root_sequences[][].storage_id
 33 snapshot.state.root_sequences
+33 snapshot.state.root_sequences[][].incarnation
 33 snapshot.state.root_sequences[][].sequence
 33 snapshot.state.root_sequences[][].storage_id

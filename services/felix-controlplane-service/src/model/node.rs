@@ -255,22 +255,31 @@ pub struct NodeStatus {
 ///
 /// The per-shard Raft gate compares a root against it at start: a root whose
 /// sequence is below it was put back from a copy. One per node; a report
-/// under another storage id replaces it, because a rotation starts the
-/// root's comparison over. See `docs/per-shard-raft.md`, "The root
-/// sequence".
+/// under another storage id from a later incarnation replaces it, because a
+/// rotation starts the root's comparison over. See
+/// `docs/per-shard-raft.md`, "The root sequence".
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct RootSequence {
     /// The data root's storage id, as 32 lowercase hex digits.
     pub storage_id: String,
     pub sequence: u64,
+    /// The incarnation of the heartbeat that carried it. A process reports
+    /// one storage id, so only a later process can have rotated it.
+    pub incarnation: u64,
 }
 
 impl RootSequence {
     /// Whether `heard` changes what is held: a higher sequence under the same
-    /// storage id, or any sequence under another.
+    /// storage id, or another storage id from a later incarnation. A late
+    /// beat of an earlier process never replaces its successor's id, or the
+    /// copy would go back to a sequence the old root has since passed.
     pub fn moved_by(held: Option<&RootSequence>, heard: &RootSequence) -> bool {
         held.is_none_or(|held| {
-            held.storage_id != heard.storage_id || held.sequence < heard.sequence
+            if held.storage_id == heard.storage_id {
+                held.sequence < heard.sequence
+            } else {
+                held.incarnation < heard.incarnation
+            }
         })
     }
 }

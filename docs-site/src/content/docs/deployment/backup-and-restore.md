@@ -215,12 +215,12 @@ felix-broker rotate-storage-id --dir /var/lib/felix
 /var/lib/felix: storage id 3f2a6c0e9b1d4e7a8c5f2b0d6e1ac901 -> 8b17d2e4a6c84f0b9e3d5a7c1f2b04de
 ```
 
-Without `--dir` it uses `FELIX_DURABLE_STORAGE_DIR`. For Raft shards this is
-the supported way to restore a snapshot taken while the broker ran. A broker
-compares its Raft data root with the last root sequence the control plane
-heard from it, but a snapshot newer than that value, as one taken while the
-control plane was down can be, passes the comparison and could vote twice in
-one term.
+Without `--dir` it uses `FELIX_DURABLE_STORAGE_DIR`. Deleting `storage-id`
+has the same effect. Per-shard Raft is not released yet; when it is, this is
+the supported way to restore a snapshot taken while the broker ran. The
+check on a Raft data root compares it with the last root sequence the
+control plane heard from the broker, and a snapshot newer than that value,
+as one taken while the control plane was down can be, passes that check.
 
 With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
 control plane is down runs from the control-plane view in its data directory

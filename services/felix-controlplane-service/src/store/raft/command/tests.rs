@@ -267,7 +267,21 @@ fn recording_the_cluster_identity_needs_level_32() {
         shard_engine: "hybrid".to_string(),
     };
     assert_eq!(record.version(), 32);
-    assert_eq!(METADATA_VERSION, 32);
+}
+
+/// A broker's root sequence needs every member to know the command.
+#[test]
+fn recording_a_root_sequence_needs_level_33() {
+    let record = MetaCommand::RecordRootSequence {
+        node_id: "b".to_string(),
+        heard: crate::model::RootSequence {
+            storage_id: "a".repeat(32),
+            sequence: 1,
+            incarnation: 1,
+        },
+    };
+    assert_eq!(record.version(), 33);
+    assert_eq!(METADATA_VERSION, 33);
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A

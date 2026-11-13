@@ -140,8 +140,13 @@ broker costs none. `GET /v1/nodes/{node_id}` returns what it holds as
 against at start (`docs/per-shard-raft.md`, "The root sequence"). Keeping
 it needs every member at metadata level 33; below that nothing is stored and
 `root_sequence` stays absent. A value that cannot be stored is logged and
-does not fail the heartbeat either. It is part of the Raft snapshot and of
-an export.
+does not fail the heartbeat either. A report under another storage id
+replaces the record only from a later incarnation, so a late beat of a
+process from before a rotation is ignored. It is part of the Raft snapshot
+and of an export. An import replaces every record with the export's: an
+older export lowers them, and one from before level 33 removes them, so a
+broker that reboots before its next heartbeat holds its Raft groups until
+an operator runs `felix-broker rotate-storage-id` on it.
 
 Four rules, each of which exists for a reason:
 

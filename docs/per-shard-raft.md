@@ -245,7 +245,12 @@ hold a copy of it:
   control-plane member at metadata level 33. Below that nothing is stored,
   so a rebooted broker holds its root as it would with no copy. The
   broker reads the value back from its node's detail
-  (`GET /v1/nodes/{node_id}`, `root_sequence`).
+  (`GET /v1/nodes/{node_id}`, `root_sequence`), which a control-plane
+  member answers from what it has applied, so a lagging member widens the
+  window below by its apply lag. A report under another storage id
+  replaces the record only from a later incarnation: one process reports
+  one id, so a late beat of the process before a rotation cannot bring the
+  old id back at a sequence its root has since passed.
 
 The gate fails a root whose sequence is below either copy, and its copy
 ids rotate. A root that is ahead of a copy crashed between the two writes
@@ -276,8 +281,10 @@ broker stopped, and the operations docs say so. See Questions, 12.
 
 **A rotation starts the mark log over.** Every rotation of the storage id,
 by the gate or any other path (a restore, a crash under relaxed fsync, the
-operator command), removes the root's mark log before it writes the new
-id. Every shard directory minted under the old id rotates when it opens,
+operator command, a deleted `storage-id` file), removes the root's mark log
+before it writes the new id. `open_root` is called only after the start's
+restore check has answered, so no rotation removes a mark log that is
+open. Every shard directory minted under the old id rotates when it opens,
 so the old marks protect nothing. Kept, they would carry a sequence that
 no copy outside the root names under the new id, and the root would be
 held after the next reboot. A crash between the removal and the new id

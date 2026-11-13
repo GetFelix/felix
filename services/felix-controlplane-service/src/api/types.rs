@@ -346,7 +346,16 @@ pub struct NodeHeartbeatRequest {
     /// per-shard Raft restore gate. Absent from a broker that runs no Raft
     /// groups, or predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root: Option<crate::model::RootSequence>,
+    pub root: Option<RootReport>,
+}
+
+/// A data root's storage id and last synced root sequence, as a heartbeat
+/// carries them.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct RootReport {
+    /// 32 lowercase hex digits.
+    pub storage_id: String,
+    pub sequence: u64,
 }
 
 /// What the control plane tells a broker in return.

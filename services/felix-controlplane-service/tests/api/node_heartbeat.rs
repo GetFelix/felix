@@ -1089,6 +1089,6 @@ async fn a_heartbeat_keeps_the_highest_root_sequence_and_the_detail_serves_it() 
     let detail = send("GET", "/v1/nodes/broker-a", serde_json::Value::Null).await;
     assert_eq!(
         detail["root_sequence"],
-        serde_json::json!({ "storage_id": id, "sequence": 7 })
+        serde_json::json!({ "storage_id": id, "sequence": 7, "incarnation": 0 })
     );
 }

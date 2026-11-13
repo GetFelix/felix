@@ -48,6 +48,10 @@ impl RootReport {
 /// copy, whether it holds none or did not answer. A root behind a copy is
 /// given a new storage id first. A root nothing vouches for is checked
 /// again every `retry`; `Ok(None)` if `stop` fires first.
+///
+/// Call it only once the start's restore check has answered: `restored`
+/// must be its verdict, and a rotation that check makes removes the mark
+/// log, which must not be open by then.
 pub async fn open_root<F, Fut>(
     root: &Path,
     witness_dir: Option<&Path>,

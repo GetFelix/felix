@@ -429,7 +429,7 @@ pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
 pub(crate) const RAFT_MARKS: &str = "raft-marks";
 
 /// Remove the root's Raft mark log, durably, if it has one.
-fn forget_raft_marks(root: &Path) -> Result<()> {
+pub(crate) fn forget_raft_marks(root: &Path) -> Result<()> {
     match crate::fs::remove_file(root.join(RAFT_MARKS)) {
         Ok(()) => crate::io::sync_dir(root).map_err(StorageError::from),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
