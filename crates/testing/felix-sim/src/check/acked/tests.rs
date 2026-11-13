@@ -164,3 +164,54 @@ fn after_the_heal_a_lone_deposed_server_is_waited_for_then_held_to_everything() 
     let found = missing_by_server(&told, &alone, newest);
     assert_eq!(found[0].1, vec![acked(Some(1), 11)]);
 }
+
+fn sim_config() -> crate::cluster::SimConfig {
+    crate::cluster::SimConfig {
+        brokers: 3,
+        shards: 2,
+        cache_shards: 1,
+        settle_within: Duration::from_secs(10),
+        ..crate::cluster::SimConfig::for_seed(3)
+    }
+}
+
+/// A healed cluster, and a history that acknowledged value 7 at offset 0 of
+/// shard 0, which no broker holds.
+async fn healed_with_a_lost_ack() -> CheckContext {
+    let cluster = SimCluster::start(3, sim_config()).await.unwrap();
+    let recorder = crate::client::Recorder::new(2);
+    let mut history = recorder.history();
+    history.ops.push(append(
+        &list_name(0),
+        7,
+        AppendOutcome::Ok { offset: Some(0) },
+    ));
+    CheckContext {
+        healed_at: cluster.elapsed(),
+        cluster,
+        point: crate::check::Point::Healed,
+        history,
+        recorder,
+        plan: crate::nemesis::Plan::default(),
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_acknowledged_append_the_leader_lacks_is_reported() {
+    let ctx = healed_with_a_lost_ack().await;
+    let found = AckedHeldByLeader::default().check(&ctx).await;
+    assert!(
+        found.iter().any(|f| f.summary.contains("value 7")),
+        "{found:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_abandon_after_the_snapshot_releases_the_shard() {
+    let ctx = healed_with_a_lost_ack().await;
+    // The op completed at time zero; the operator gives the log up later.
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    ctx.recorder.abandoned(0);
+    let found = AckedHeldByLeader::default().check(&ctx).await;
+    assert!(found.is_empty(), "{found:?}");
+}
