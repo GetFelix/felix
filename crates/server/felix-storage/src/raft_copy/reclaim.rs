@@ -1,15 +1,20 @@
 //! Deleting the shard directories rotations moved aside, once the group has
 //! them covered.
 //!
-//! A kept directory may go once the copy now in the shard directory has a
-//! committed index at or above the kept log's last index and holds, in its own
-//! log, every index the kept directory holds. Every entry the kept directory
-//! holds is at or below an index the group has committed, so a committed one
-//! is in the group's log, and an uncommitted one was never acknowledged. A
-//! snapshot carries no records, so a copy that caught up by snapshot, or
-//! purged its log, has committed past the kept directory without holding what
-//! is in it. A directory that cannot be read is held, never reclaimed on a
-//! guess. See `docs/per-shard-raft.md`, "Reclaiming kept copies".
+//! A kept directory holding records may go once the copy now in the shard
+//! directory has all three: a flushed last index at or above the kept log's
+//! last index, a first index at or below where the kept log's lowest record
+//! is, and a committed index at or above the kept log's last index. Every
+//! entry the kept directory holds is at or below an index the group has
+//! committed, so a committed one is in the group's log, and an uncommitted
+//! one was never acknowledged. The first two make that enough: a commit index
+//! can be saved before its entry is flushed, and a snapshot carries no
+//! records, so a copy that caught up by snapshot, or purged its log, has
+//! committed past the kept directory without holding what is in it. The
+//! current copy must hold the records itself, on disk. A directory with no
+//! records is covered by the committed index alone. A directory that cannot
+//! be read is held, never reclaimed on a guess. See
+//! `docs/per-shard-raft.md`, "Reclaiming kept copies".
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,8 +22,8 @@ use std::path::{Path, PathBuf};
 use super::judge::{KeptCopy, kept_copies, parent_of};
 use crate::disk_log::layout::KEPT_DIR;
 use crate::log::LogConfig;
+use crate::metrics_names;
 use crate::raft_log::held;
-use crate::{DiskLog, metrics_names};
 
 /// What one [`reclaim_kept`] pass did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -45,10 +50,10 @@ pub struct HeldCopy {
 /// Why a kept directory was left in place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeldReason {
-    /// The copy has not committed up to its last index yet.
-    NotCommitted,
-    /// The copy's own log starts above where the kept one does, so it does
-    /// not hold what the kept one holds, whatever it has committed.
+    /// The copy has not yet committed and flushed up to its last index.
+    Behind,
+    /// The copy's own log starts above its lowest record, so it does not
+    /// hold what the kept one holds, whatever it has committed.
     NotHeld,
     /// Its segments could not be read.
     Unreadable,
@@ -63,23 +68,34 @@ impl KeptReport {
     pub fn wait_for(&self) -> Option<u64> {
         self.held
             .iter()
-            .filter(|held| held.reason == HeldReason::NotCommitted)
+            .filter(|held| held.reason == HeldReason::Behind)
             .filter_map(|held| held.last_index)
             .max()
     }
 }
 
-/// Delete the directories rotations moved aside from `dir` that the copy in
-/// `current` has committed past. `config` opens the kept logs to read their
-/// last index.
+/// The copy in a shard directory, as its group's log reports it live. The
+/// caller reads these from the running member: the first index counts a
+/// purge that is only in memory, and the flushed index is what Raft is told.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CurrentCopy {
+    /// The first index its log holds or will hold.
+    pub first: u64,
+    /// The last index flushed to disk. None for an empty log.
+    pub flushed_last: Option<u64>,
+    /// The committed index. None before any commit.
+    pub committed: Option<u64>,
+}
+
+/// Delete the directories rotations moved aside from `dir` that `current`
+/// covers. `config` sets how the kept logs' segments are scanned.
 pub async fn reclaim_kept(
     dir: &Path,
-    current: &DiskLog,
+    current: CurrentCopy,
     config: LogConfig,
 ) -> io::Result<KeptReport> {
     let parent = parent_of(dir)?;
-    let committed = current.committed().0.checked_sub(1);
-    let current_first = held::first_index(current)?;
+    let committed = current.committed;
     let mut report = KeptReport::default();
     for KeptCopy { path, copy } in kept_copies(dir)? {
         let read = {
@@ -107,14 +123,17 @@ pub async fn reclaim_kept(
                 continue;
             }
         };
-        let reason = if kept.entries && current_first > kept.first {
-            Some(HeldReason::NotHeld)
-        } else {
-            match (kept.last, committed) {
-                (None, _) => None,
-                (Some(last), Some(committed)) if committed >= last => None,
-                _ => Some(HeldReason::NotCommitted),
+        let reason = match (kept.lowest, kept.last) {
+            (Some(lowest), _) if current.first > lowest => Some(HeldReason::NotHeld),
+            (Some(_), Some(last)) => (!(committed.is_some_and(|at| at >= last)
+                && current.flushed_last.is_some_and(|at| at >= last)))
+            .then_some(HeldReason::Behind),
+            // No records at all: nothing to lose beyond a purged id.
+            (None, Some(last)) => {
+                (!committed.is_some_and(|at| at >= last)).then_some(HeldReason::Behind)
             }
+            (None, None) => None,
+            (Some(_), None) => Some(HeldReason::Unreadable),
         };
         if let Some(reason) = reason {
             report.held.push(HeldCopy {

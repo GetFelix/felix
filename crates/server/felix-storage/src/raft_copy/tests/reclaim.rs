@@ -12,6 +12,11 @@ type Log = RaftLog<Types, Codec>;
 /// another copy. Returns the root that opens it, the old copy id and the new
 /// copy, opened.
 async fn rotated(root: &Root, last: u64) -> (CopyRoot, u64, OpenedCopy) {
+    rotated_purged(root, last, None).await
+}
+
+/// [`rotated`], with the old log purged through `purge` first.
+async fn rotated_purged(root: &Root, last: u64, purge: Option<u64>) -> (CopyRoot, u64, OpenedCopy) {
     let copies = root.open();
     let opened = copies
         .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
@@ -21,6 +26,9 @@ async fn rotated(root: &Root, last: u64) -> (CopyRoot, u64, OpenedCopy) {
     let entries: Vec<_> = (0..=last).map(|index| normal(1, index, "x")).collect();
     let flushed = append(&mut log, &entries).await.expect("append");
     flushed.await.expect("flush");
+    if let Some(purge) = purge {
+        log.purge(log_id(1, purge)).await.expect("purge");
+    }
     drop(log);
     opened.log.close().await.expect("close");
     let old = opened.copy;
@@ -37,6 +45,14 @@ async fn rotated(root: &Root, last: u64) -> (CopyRoot, u64, OpenedCopy) {
         .expect("rotate");
     assert!(new.rotation.is_some());
     (copies, old, new)
+}
+
+fn current(first: u64, flushed_last: Option<u64>, committed: Option<u64>) -> CurrentCopy {
+    CurrentCopy {
+        first,
+        flushed_last,
+        committed,
+    }
 }
 
 fn kept_dir(root: &Root) -> PathBuf {
@@ -67,36 +83,57 @@ async fn a_rotation_moves_the_old_directory_under_dot_kept() {
 #[tokio::test]
 async fn a_kept_copy_is_held_until_the_current_copy_commits_past_it() {
     let root = Root::new();
-    let (_copies, old, new) = rotated(&root, 2).await;
+    let (_copies, old, _new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
     let held = |last_index| HeldCopy {
         path: kept.clone(),
         copy: Some(old),
         last_index,
-        reason: HeldReason::NotCommitted,
+        reason: HeldReason::Behind,
     };
 
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
-        .await
-        .expect("reclaim");
+    let dir = root.shard_dir();
+    let pass = |current| reclaim_kept(&dir, current, config());
+
+    let report = pass(current(0, Some(1000), None)).await.expect("reclaim");
     assert_eq!(report.held, vec![held(Some(2))]);
     assert_eq!(report.wait_for(), Some(2));
 
-    new.log.save_committed(1, 1).await.expect("commit");
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
+    let report = pass(current(0, Some(1000), Some(1)))
         .await
         .expect("reclaim");
     assert_eq!(report.held, vec![held(Some(2))], "one short of it");
     assert!(kept.is_dir());
 
-    new.log.save_committed(2, 1).await.expect("commit");
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
+    let report = pass(current(0, Some(1000), Some(2)))
         .await
         .expect("reclaim");
     assert_eq!(report.reclaimed, vec![kept.clone()]);
     assert!(report.held.is_empty());
     assert!(!kept.exists());
     assert_eq!(kept_copies(&root.shard_dir()).expect("kept"), Vec::new());
+}
+
+/// A commit index can be saved before its entry is flushed, and a snapshot
+/// install publishes it before the log is rebased: committed past the kept
+/// copy is not enough without the records flushed.
+#[tokio::test]
+async fn a_kept_copy_is_held_until_the_current_log_has_flushed_it() {
+    let root = Root::new();
+    let (_copies, old, _new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    for flushed in [None, Some(1)] {
+        let report = reclaim_kept(&root.shard_dir(), current(0, flushed, Some(10)), config())
+            .await
+            .expect("reclaim");
+        assert_eq!(report.held.len(), 1, "flushed {flushed:?}");
+        assert_eq!(report.held[0].reason, HeldReason::Behind);
+        assert!(kept.is_dir());
+    }
+    let report = reclaim_kept(&root.shard_dir(), current(0, Some(2), Some(10)), config())
+        .await
+        .expect("reclaim");
+    assert_eq!(report.reclaimed, vec![kept]);
 }
 
 #[tokio::test]
@@ -114,11 +151,14 @@ async fn a_kept_copy_that_cannot_be_read_is_held() {
     bytes[at] ^= 0xff;
     std::fs::write(&segment, bytes).expect("write");
 
-    // Committed past anything it could hold.
-    new.log.save_committed(1000, 1).await.expect("commit");
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
-        .await
-        .expect("reclaim");
+    let _ = &new;
+    let report = reclaim_kept(
+        &root.shard_dir(),
+        current(0, Some(1000), Some(1000)),
+        config(),
+    )
+    .await
+    .expect("reclaim");
     assert_eq!(
         report.held,
         vec![HeldCopy {
@@ -132,18 +172,14 @@ async fn a_kept_copy_that_cannot_be_read_is_held() {
     assert!(kept.is_dir());
 }
 
-/// A copy that purged its log, as a snapshot install does, has committed
-/// past the kept directory without holding its records.
+/// A copy whose log starts above the kept copy's lowest record, as after a
+/// snapshot install or a purge, has committed past it without holding it.
 #[tokio::test]
 async fn a_kept_copy_is_held_when_the_current_log_starts_above_it() {
     let root = Root::new();
-    let (_copies, old, new) = rotated(&root, 2).await;
+    let (_copies, old, _new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
-    let mut log = Log::new(new.log.clone(), Codec).expect("a Raft log");
-    log.purge(log_id(1, 10)).await.expect("purge");
-    new.log.save_committed(20, 1).await.expect("commit");
-
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
+    let report = reclaim_kept(&root.shard_dir(), current(11, Some(20), Some(20)), config())
         .await
         .expect("reclaim");
     assert_eq!(
@@ -157,6 +193,26 @@ async fn a_kept_copy_is_held_when_the_current_log_starts_above_it() {
     );
     assert_eq!(report.wait_for(), None);
     assert!(kept.is_dir());
+}
+
+/// A purge drops whole segments, so the kept copy's segment still holds
+/// records below its purged id. The current log must reach down to them.
+#[tokio::test]
+async fn a_kept_copy_purged_mid_segment_is_compared_by_its_segment_base() {
+    let root = Root::new();
+    let (_copies, old, _new) = rotated_purged(&root, 5, Some(3)).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    // Past the purged id, but inside the segment that still holds 0 to 3.
+    let report = reclaim_kept(&root.shard_dir(), current(2, Some(20), Some(20)), config())
+        .await
+        .expect("reclaim");
+    assert_eq!(report.held.len(), 1, "{report:?}");
+    assert_eq!(report.held[0].reason, HeldReason::NotHeld);
+    assert!(kept.is_dir());
+    let report = reclaim_kept(&root.shard_dir(), current(0, Some(20), Some(20)), config())
+        .await
+        .expect("reclaim");
+    assert_eq!(report.reclaimed, vec![kept]);
 }
 
 /// Looking at a kept copy that is held changes none of its files.
@@ -189,15 +245,17 @@ async fn a_held_pass_leaves_the_kept_directory_byte_for_byte() {
         .append(true)
         .open(&segment)
         .expect("open");
-    std::io::Write::write_all(&mut file, &[7; 13]).expect("tail");
+    std::io::Write::write_all(&mut file, &[0xab; 64]).expect("tail");
     drop(file);
     let (mut before, mut after) = (Vec::new(), Vec::new());
     snapshot(&kept, &mut before);
 
-    let report = reclaim_kept(&root.shard_dir(), &new.log, config())
+    let _ = &new;
+    let report = reclaim_kept(&root.shard_dir(), current(0, None, None), config())
         .await
         .expect("reclaim");
     assert_eq!(report.held.len(), 1, "{report:?}");
+    assert_eq!(report.held[0].reason, HeldReason::Behind, "{report:?}");
     snapshot(&kept, &mut after);
     assert_eq!(before, after);
 }

@@ -32,7 +32,7 @@ pub use copy_file::CopyFile;
 pub use gate::{Behind, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, kept_copies};
 pub use marks::{CopyMarks, MarkLog};
-pub use reclaim::{HeldCopy, HeldReason, KeptReport, reclaim_kept};
+pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
 
 use std::sync::Arc;
 use std::time::Duration;

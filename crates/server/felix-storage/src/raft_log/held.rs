@@ -8,36 +8,32 @@ use std::io;
 use std::path::Path;
 
 use super::purged;
-use crate::DiskLog;
+use crate::disk_log::durable_mark;
 use crate::log::Offset;
 use crate::segment::parse_segment_file_name;
-use crate::segment::scan::{ScanStart, TailRepair, read_segment_header, scan_segment_with};
+use crate::segment::scan::{ScanStart, TailRepair, scan_segment_with};
 
-/// The entries a directory holds, as a Raft log reads them.
+/// The records a directory holds, whether or not Raft still reads them as
+/// entries: a purge drops whole segments, so the segment that holds the purged
+/// id can keep records below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Held {
-    /// The index of the first entry the log holds or will hold: one past the
-    /// purged id, or where the oldest segment starts.
-    pub(crate) first: Offset,
-    /// The last entry it holds, or the purged id when it holds none above.
-    /// None for a directory with neither.
+    /// Where the lowest segment that holds a record starts, which is the
+    /// lowest record the directory physically has. None when no segment holds
+    /// a record.
+    pub(crate) lowest: Option<Offset>,
+    /// The last record it holds, or the purged id if that is higher. None for
+    /// a directory with neither.
     pub(crate) last: Option<Offset>,
-    /// Whether it holds any entry, as opposed to only a purged id.
-    pub(crate) entries: bool,
-}
-
-/// The first index an open log holds or will hold.
-pub(crate) fn first_index(log: &DiskLog) -> io::Result<Offset> {
-    Ok(match purged::load(log.dir())? {
-        Some(purged) => log.base_offset().max(purged.index + 1),
-        None => log.base_offset(),
-    })
 }
 
 /// What the directory `dir` holds, read off its segments and its purged id.
-/// Damage inside a segment, or a purged id that does not decode, is an error.
+/// A segment is scanned up to the durable mark as an open would, so an
+/// unsynced tail reads as the torn tail it is. Damage elsewhere, or a purged
+/// id that does not decode, is an error. Nothing is written.
 pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Result<Held> {
     let purged = purged::load(dir)?;
+    let mark = durable_mark::load(dir);
     let mut segments = Vec::new();
     for entry in crate::fs::read_dir(dir)? {
         let entry = entry?;
@@ -46,41 +42,38 @@ pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Res
         }
     }
     segments.sort();
-    let base = match segments.first() {
-        Some((id, path)) => {
-            read_segment_header(path, *id, label)
-                .map_err(io::Error::other)?
-                .base_offset
-        }
-        None => 0,
-    };
-    let first = purged.map_or(base, |purged| base.max(purged.index + 1));
-    let mut last = None;
-    for (id, path) in segments.iter().rev() {
-        let scanned = scan_segment_with(
+    let scan = |id: u64, path: &Path| {
+        scan_segment_with(
             path,
-            *id,
+            id,
             label,
             index_spacing_bytes,
             ScanStart::Full,
-            TailRepair::default(),
+            TailRepair {
+                checksum_tail: false,
+                unsynced_from: durable_mark::DurableMark::unsynced_from(mark, id),
+            },
         )
-        .map_err(io::Error::other)?;
-        if let Some(offset) = scanned.last_offset() {
+        .map_err(io::Error::other)
+    };
+    let mut lowest = None;
+    for (id, path) in &segments {
+        let scanned = scan(*id, path)?;
+        if scanned.last_offset().is_some() {
+            lowest = Some(scanned.header.base_offset);
+            break;
+        }
+    }
+    let mut last = None;
+    for (id, path) in segments.iter().rev() {
+        if let Some(offset) = scan(*id, path)?.last_offset() {
             last = Some(offset);
             break;
         }
     }
-    Ok(match last.filter(|last| *last >= first) {
-        Some(last) => Held {
-            first,
-            last: Some(last),
-            entries: true,
-        },
-        None => Held {
-            first,
-            last: purged.map(|purged| purged.index),
-            entries: false,
-        },
+    let purged = purged.map(|purged| purged.index);
+    Ok(Held {
+        lowest,
+        last: last.max(purged),
     })
 }

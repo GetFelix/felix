@@ -18,7 +18,6 @@ use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
-use super::commit::Commits;
 use super::group::{Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::ticker;
@@ -442,7 +441,7 @@ impl GroupRuntime {
             let _ = log.close().await;
             return Err(err);
         }
-        let kept = self.reclaim_kept(&shard, dir, &log, kept_config).await;
+        let kept = self.reclaim_kept(&shard, dir, kept_config).await;
         Ok(OpenedMember {
             member,
             log,
@@ -451,47 +450,47 @@ impl GroupRuntime {
         })
     }
 
-    /// Delete the kept copies the shard's committed index already covers.
-    /// For the ones it does not, a task waits for the group to apply that
-    /// far and tries again. Failures are logged: a kept copy left on disk is
-    /// never worse than one deleted early.
-    async fn reclaim_kept(
-        &self,
-        shard: &ShardKey,
-        dir: &Path,
-        log: &DiskLog,
-        config: LogConfig,
-    ) -> KeptReport {
-        let report = match reclaim_kept(dir, log, config.clone()).await {
+    /// Delete the kept copies the running member already covers. For the
+    /// ones it is behind, a task waits for its applied and flushed indexes to
+    /// reach them and tries again. It ends when the group or the runtime
+    /// stops and never starts a pass after that. Failures are logged: a kept
+    /// copy left on disk is never worse than one deleted early.
+    async fn reclaim_kept(&self, shard: &ShardKey, dir: &Path, config: LogConfig) -> KeptReport {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return KeptReport::default();
+        };
+        let report = match reclaim_kept(dir, group.current_copy(), config.clone()).await {
             Ok(report) => report,
             Err(err) => {
                 tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
                 return KeptReport::default();
             }
         };
-        let (Some(mut wait), Some(group)) = (report.wait_for(), self.inner.registry.get(shard))
-        else {
+        let Some(mut wait) = report.wait_for() else {
             return report;
         };
-        let (dir, log) = (dir.to_path_buf(), log.clone());
+        let dir = dir.to_path_buf();
         let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
-        let mut commits = group.commits();
+        let (mut commits, mut positions) = (group.commits(), group.positions());
+        let covers = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed.is_some_and(|at| at >= wait)
+                && at.flushed_last.is_some_and(|at| at >= wait)
+        };
         tokio::spawn(async move {
             loop {
-                let applied = |commits: &tokio::sync::watch::Receiver<Commits>| {
-                    commits.borrow().applied().map(|point| point.index)
-                };
-                while applied(&commits).is_none_or(|applied| applied < wait) {
+                while !covers(&group, wait) {
                     tokio::select! {
                         () = stop.cancelled() => return,
                         () = stopped.cancelled() => return,
                         changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
                     }
                 }
                 if stop.is_cancelled() || stopped.is_cancelled() {
                     return;
                 }
-                let report = match reclaim_kept(&dir, &log, config.clone()).await {
+                let report = match reclaim_kept(&dir, group.current_copy(), config.clone()).await {
                     Ok(report) => report,
                     Err(err) => {
                         tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
@@ -501,13 +500,14 @@ impl GroupRuntime {
                 let Some(next) = report.wait_for() else {
                     return;
                 };
-                // Applied reached the mark but the log's commit index has
-                // not: wait for the next advance.
-                if applied(&commits).is_some_and(|applied| applied >= next) {
+                // Covered, yet still held: the pass saw an older state. Wait
+                // for the next change instead of spinning.
+                if covers(&group, next) {
                     tokio::select! {
                         () = stop.cancelled() => return,
                         () = stopped.cancelled() => return,
                         changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
                     }
                 }
                 wait = next;

@@ -34,6 +34,8 @@ pub(crate) struct Group {
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
     commits: tokio::sync::watch::Receiver<Commits>,
+    /// The log's first index, read live: a purge held only in memory counts.
+    first_index: Arc<dyn Fn() -> u64 + Send + Sync>,
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
     /// Timer checks the group was sent.
@@ -312,6 +314,7 @@ impl Group {
             log.mark_with(marks, mode)?;
         }
         let positions = log.positions();
+        let first_index = log.first_index_reader();
         let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let network = Network {
@@ -337,6 +340,7 @@ impl Group {
             pace,
             positions,
             commits,
+            first_index,
             leadership,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
@@ -525,6 +529,17 @@ impl Group {
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
         async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+    }
+
+    /// What the member's copy holds now, for deciding whether a kept copy of
+    /// an earlier rotation is still needed. Committed is what the state
+    /// machine applied, which is never ahead of what is committed.
+    pub(crate) fn current_copy(&self) -> felix_storage::raft_copy::CurrentCopy {
+        felix_storage::raft_copy::CurrentCopy {
+            first: (self.first_index)(),
+            flushed_last: self.positions.borrow().flushed.map(|point| point.index),
+            committed: self.commits.borrow().applied().map(|point| point.index),
+        }
     }
 
     /// Cancelled when the member is shut down.

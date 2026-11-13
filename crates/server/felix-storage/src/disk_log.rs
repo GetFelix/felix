@@ -51,7 +51,7 @@ pub mod layout;
 mod append;
 mod ballot;
 pub(crate) mod crash_point;
-mod durable_mark;
+pub(crate) mod durable_mark;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
