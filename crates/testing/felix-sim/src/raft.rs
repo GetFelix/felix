@@ -145,7 +145,7 @@ impl RaftOutcome {
     pub fn trace_hash(&self) -> u64 {
         let mut hash = 0xcbf2_9ce4_8422_2325u64;
         for line in self.trace() {
-            for byte in line.bytes().chain([b'\n']) {
+            for byte in line.bytes().chain(*b"\n") {
                 hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3);
             }
         }
