@@ -2,8 +2,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 use std::io;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
@@ -17,6 +17,9 @@ use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
 use super::ticker;
 use super::types::{GroupId, MemberId};
 use crate::ShardKey;
+use crate::driver::WriteFence;
+use crate::engine::{EngineHost, Host};
+use crate::quorum::ShardServing;
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -249,6 +252,8 @@ struct Inner {
     raft: Arc<Config>,
     transport: Arc<dyn RaftTransport>,
     registry: Arc<Registry>,
+    /// Who is told when a shard opens and closes here.
+    host: OnceLock<Arc<dyn EngineHost>>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -293,10 +298,30 @@ impl GroupRuntime {
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
+                host: OnceLock::new(),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
             }),
         })
+    }
+
+    /// Tell `fence` when a shard opens for writes here and when it closes:
+    /// `opened(shard, term)` once the blank entry of a term this broker
+    /// leads is committed, `deposed(shard, term)` when it stops leading
+    /// that term. See `docs/per-shard-raft.md`, "When a leader opens".
+    ///
+    /// Call it before the first [`Self::open`]: a group opened earlier
+    /// reports to nobody. Only the first call counts.
+    pub fn report_to<S, F>(&self, serving: Arc<S>, fence: Arc<F>)
+    where
+        S: ShardServing + ?Sized + 'static,
+        F: WriteFence + ?Sized + 'static,
+    {
+        self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    pub(crate) fn set_host(&self, host: Arc<dyn EngineHost>) {
+        let _ = self.inner.host.set(host);
     }
 
     pub(crate) fn start_ticker(&self) {
@@ -346,6 +371,7 @@ impl GroupRuntime {
             Arc::clone(&inner.raft),
             Arc::clone(&inner.transport),
             inner.timers,
+            inner.host.get().cloned(),
         )
         .await?;
         let group = Arc::new(group);

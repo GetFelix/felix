@@ -22,6 +22,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod commit;
 mod propose;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -80,6 +81,21 @@ struct Net {
     /// The only broker they are lost on the way to, if one is named.
     lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
+    /// Brokers nothing is heard from: what they send is lost.
+    muted: parking_lot::Mutex<HashSet<String>>,
+    /// While set, every append is lost. Votes still go through.
+    lose_appends: std::sync::atomic::AtomicBool,
+}
+
+/// The broker that sent `request`, when it is a leader's or a candidate's.
+fn sender(request: &Request) -> Option<&str> {
+    let vote = match request {
+        Request::Append(rpc) => &rpc.vote,
+        Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
+        Request::Snapshot { vote, .. } => vote,
+        Request::TransferLeader(_) => return None,
+    };
+    Some(&vote.leader_id().node_id().broker)
 }
 
 #[async_trait]
@@ -96,6 +112,11 @@ impl RaftTransport for Net {
                 .is_ok()
         {
             self.lost_idle.fetch_add(1, Relaxed);
+            return Err(Refused::Unreachable("lost".into()));
+        }
+        if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
+            || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
+        {
             return Err(Refused::Unreachable("lost".into()));
         }
         let runtime = match self.cut.lock().contains(broker) {
