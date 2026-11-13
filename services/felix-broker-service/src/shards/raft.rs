@@ -66,8 +66,9 @@ pub(crate) struct RaftShards {
     /// Shards not placed here whose directory was found unmarked, by
     /// incarnation: only this module marks one, so it is read once.
     unclaimed: parking_lot::Mutex<HashMap<ShardKey, u64>>,
-    /// Counts the directories claimed, so a pass knows whether a marker it
-    /// read before taking `open` may have been written since.
+    /// Counts the attempts to claim a directory, failed ones too, so a pass
+    /// knows whether a marker it read before taking `open` may have been
+    /// written since.
     claims: AtomicU64,
     /// Shards already reported as off their placement, so each is logged
     /// once per time it happens.
@@ -77,6 +78,8 @@ pub(crate) struct RaftShards {
     stall_reads: tokio::sync::watch::Sender<bool>,
     #[cfg(test)]
     reads_under_lock: AtomicU64,
+    #[cfg(test)]
+    marker_reads: AtomicU64,
     /// Held across a whole pass, after its marker reads, and a whole
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
@@ -123,6 +126,8 @@ impl RaftShards {
             stall_reads: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
             reads_under_lock: AtomicU64::new(0),
+            #[cfg(test)]
+            marker_reads: AtomicU64::new(0),
             open: tokio::sync::Mutex::default(),
         });
         shards
@@ -171,7 +176,8 @@ impl RaftShards {
         })
         .await;
         // Counted once the marker may be on disk, so a read that started
-        // before this saw the old count.
+        // before this saw the old count. A pass dropped mid-claim would skip
+        // it; the only caller awaits `take` to the end.
         self.claims.fetch_add(1, Ordering::AcqRel);
         let log = log.context("open task")??;
         let mut member = Member {
@@ -235,7 +241,7 @@ impl RaftShards {
             .iter()
             .map(|(key, member)| (key.clone(), member.incarnation))
             .collect();
-        let wanted: Vec<(ShardKey, u64)> = {
+        let candidates: Vec<(ShardKey, u64)> = {
             let unclaimed = self.unclaimed.lock();
             assignments
                 .iter()
@@ -248,10 +254,24 @@ impl RaftShards {
                 .map(|(key, assignment)| (key.clone(), assignment.incarnation))
                 .collect()
         };
+        // Only a durable registered stream reaches `claimed`: any other read
+        // would be thrown away, and made again on every pass.
+        let mut wanted = Vec::with_capacity(candidates.len());
+        for (key, incarnation) in candidates {
+            let metadata = self
+                .broker
+                .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+                .await;
+            if metadata.is_some_and(|metadata| metadata.durable) {
+                wanted.push((key, incarnation));
+            }
+        }
         let read = futures::stream::iter(wanted)
             .map(|(key, incarnation)| async move {
+                #[cfg(test)]
+                self.marker_reads.fetch_add(1, Ordering::Relaxed);
                 let read = self.read_marker(&key, incarnation).await;
-                (key, (incarnation, read))
+                (key, read)
             })
             .buffer_unordered(MARKER_READS)
             .collect()
@@ -297,7 +317,7 @@ impl RaftShards {
         if self.unclaimed.lock().get(key) == Some(&incarnation) {
             return false;
         }
-        let read = match reads.take(key, incarnation) {
+        let read = match reads.take(key) {
             Some(read) => read,
             // Not read before the lock, or another pass claimed a directory
             // while the reads ran: an "unmarked" from before that may be
@@ -460,7 +480,7 @@ impl RaftShards {
 struct Reads {
     /// [`RaftShards::claims`] before the first read started.
     claims: u64,
-    read: HashMap<ShardKey, (u64, anyhow::Result<Option<bool>>)>,
+    read: HashMap<ShardKey, anyhow::Result<Option<bool>>>,
 }
 
 impl Reads {
@@ -474,12 +494,9 @@ impl Reads {
         }
     }
 
-    /// `key`'s read at `incarnation`.
-    fn take(&mut self, key: &ShardKey, incarnation: u64) -> Option<anyhow::Result<Option<bool>>> {
-        self.read
-            .remove(key)
-            .filter(|(read_at, _)| *read_at == incarnation)
-            .map(|(_, read)| read)
+    /// `key`'s read, made at the incarnation the same feed names.
+    fn take(&mut self, key: &ShardKey) -> Option<anyhow::Result<Option<bool>>> {
+        self.read.remove(key)
     }
 }
 

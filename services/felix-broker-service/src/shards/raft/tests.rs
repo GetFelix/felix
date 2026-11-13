@@ -467,6 +467,46 @@ async fn a_pass_that_opens_members_reads_no_marker_under_the_lock() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **Only a durable registered stream's marker is read.** No other shard
+/// reaches the check, so its read would be made again on every pass.
+#[tokio::test]
+async fn no_marker_is_read_for_a_stream_that_cannot_be_a_member() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "memory",
+            StreamMetadata {
+                durable: false,
+                incarnation: INCARNATION,
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("memory");
+    let shards = shards(&broker);
+    let elsewhere = |stream: &str| {
+        let mut assignment = assigned(key(stream, 0), INCARNATION);
+        assignment.leader = "broker-b".to_string();
+        assignment.replicas = vec!["broker-b".to_string()];
+        assignment
+    };
+
+    for _ in 0..2 {
+        shards
+            .take(&mut assignments([
+                elsewhere("memory"),
+                elsewhere("unknown"),
+            ]))
+            .await;
+    }
+    assert_eq!(shards.marker_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// **A marker read as unmarked before a claim is not trusted after it.**
 /// Remembered, it would keep the claimed member closed for good once its
 /// placement dropped this broker.
