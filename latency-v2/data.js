@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794534846293,
+  "lastUpdate": 1794535322725,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68376,6 +68376,72 @@ window.BENCHMARK_DATA = {
             "range": "632.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 726.00\nmean: 922.40\nstdev: 632.94\ncv: 68.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6dd006c505b0c578e986f93b8c82864eb7983fc",
+          "message": "feat(storage): the Raft log tells a proposer where its entry was written (#2398)\n\nPart 4b of #2233. A Command carries a WrittenToken (never encoded) that the Raft log resolves with the entry's index and term after the write, before the flush. An unresolved token means unknown outcome.\n\nSpec-Unaffected: an in-memory signal for the publisher's acknowledgement; votes, the flush callback, the commit index and what is stored are unchanged.",
+          "timestamp": "2026-11-13T01:56:41Z",
+          "tree_id": "28b92060b39a288cfe181b9e2482ca735c00d5e1",
+          "url": "https://github.com/GetFelix/felix/commit/d6dd006c505b0c578e986f93b8c82864eb7983fc"
+        },
+        "date": 1794535312894,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "8.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 209.00\nstdev: 8.92\ncv: 4.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 390,
+            "range": "856.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 782.60\nstdev: 856.49\ncv: 109.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "11.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 202.20\nstdev: 11.08\ncv: 5.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 391,
+            "range": "249.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 503.20\nstdev: 249.32\ncv: 49.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 568,
+            "range": "842.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 568.00\nmean: 1006.00\nstdev: 842.42\ncv: 83.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
