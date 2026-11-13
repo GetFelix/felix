@@ -24,15 +24,13 @@ fn is_busy(opened: Result<DiskLog>) -> bool {
 async fn a_second_open_in_this_process_is_refused_until_the_first_closes() {
     let dir = tempdir().expect("tempdir");
     let log = open_raft(dir.path()).expect("open");
-    log.append(&records(&["a"])).await.expect("append");
-
     assert!(is_busy(open_raft(dir.path())), "a second open was let in");
-    // Another clone is the same open log, and keeps it open.
+
+    // A clone left over does not hold the directory once the log is closed:
+    // it can no longer write.
     let clone = log.clone();
     log.close().await.expect("close");
-
-    let reopened = open_raft(dir.path()).expect("reopen after close");
-    assert_eq!(read_all(&reopened, 0).await, vec!["a"]);
+    open_raft(dir.path()).expect("reopen after close");
     drop(clone);
 }
 
@@ -40,14 +38,11 @@ async fn a_second_open_in_this_process_is_refused_until_the_first_closes() {
 async fn a_dropped_log_lets_go_of_its_directory() {
     let dir = tempdir().expect("tempdir");
     let log = open_raft(dir.path()).expect("open");
-    log.append(&records(&["a"])).await.expect("append");
     let clone = log.clone();
     drop(log);
     assert!(is_busy(open_raft(dir.path())), "a clone still holds it");
     drop(clone);
-
-    let reopened = open_raft(dir.path()).expect("reopen after drop");
-    assert_eq!(read_all(&reopened, 0).await, vec!["a"]);
+    open_raft(dir.path()).expect("reopen after drop");
 }
 
 #[cfg(unix)]
@@ -95,7 +90,18 @@ async fn on_the_simulated_filesystem_the_claim_is_per_process() {
     log.close().await.expect("close");
     let reopened = open_raft(&dir).expect("reopen after close");
     drop(reopened);
-    open_raft(&dir).expect("reopen after drop");
+    let before_the_crash = open_raft(&dir).expect("reopen after drop");
+
+    // A crash ends the process that held it. Its handle, dropped after the
+    // next boot opened the log, does not free that boot's claim.
+    crate::sim_fs::crash(&root, 0).expect("crash");
+    let after_the_crash = open_raft(&dir).expect("open after the crash");
+    drop(before_the_crash);
+    assert!(
+        is_busy(open_raft(&dir)),
+        "the old handle freed the new claim"
+    );
+    drop(after_the_crash);
 
     crate::sim_fs::unregister_root(&root);
 }

@@ -52,7 +52,7 @@ mod append;
 mod ballot;
 pub(crate) mod crash_point;
 #[cfg(feature = "raft")]
-mod dir_lock;
+pub(crate) mod dir_lock;
 mod durable_mark;
 mod epochs;
 mod flush;

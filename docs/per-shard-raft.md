@@ -1047,7 +1047,10 @@ open:
 - `open(group, copy, log)` starts a member on a shard's log. The log must
   be a Raft log that fsyncs on commit. The member reads its vote, entries
   and membership back from the log, so opening after a restart needs
-  nothing else.
+  nothing else. A Raft log locks its directory while it is open, so another
+  process, a restore tool, or a second open in this one cannot open the
+  shard's log under a running member (`docs/storage-format.md`, "Records
+  as Raft entries").
 - `initialize(shard, members)` forms a new group from its first member
   set. A member refuses a set that does not name it. Once a member has
   voted or holds an entry the call does nothing.
@@ -1058,7 +1061,10 @@ open:
 - `close(shard)` stops one member and leaves its log to the caller. The
   shard stays taken until the member has stopped, even if the caller stops
   waiting: an `open` before that is refused as `Closing`, so two members
-  never run on one log. `shutdown()` stops the ticker and every member.
+  never run on one log. A caller that gave up on a close and calls it
+  again waits for the same stop and is told `true`. Told "no group" while
+  the member could still write, it might close the log under it.
+  `shutdown()` stops the ticker and every member.
   Neither writes anything: what a member acknowledged is already on disk.
 - `status(shard)` reports the member's role, term, leader, last index,
   committed index, the last entry written and the last entry flushed, and
