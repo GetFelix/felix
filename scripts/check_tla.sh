@@ -1231,7 +1231,7 @@ changed_cfgs=" "
 if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # Captured first so a base that does not resolve fails the run: an empty
   # list would quietly leave a changed configuration unchecked.
-  changed_files="$(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")"
+  changed_files="$(git diff --no-renames --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")"
   while read -r f; do
     [ -n "$f" ] || continue
     f="${f##*/}"
@@ -1342,7 +1342,7 @@ affected_names() {
   # Errors return, so the caller fails: an empty list would quietly leave a
   # changed configuration unchecked.
   base="$(git merge-base "$1" HEAD)" || return 1
-  files="$(git diff --name-only "$base" HEAD)" || return 1
+  files="$(git diff --no-renames --name-only "$base" HEAD)" || return 1
   while read -r f; do
     case "$f" in
       "$SPEC_DIR"/*.cfg)

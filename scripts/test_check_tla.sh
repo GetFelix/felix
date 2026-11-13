@@ -61,6 +61,12 @@ echo 'CONSTANTS N = 4' >"$work/docs/formal/FelixRaftSwitchLag.cfg"
 check "cfg only" "FelixRaftSwitchLag
 $(footer 3 1)"
 
+# A rename must list the old path too, or the registered name it leaves
+# behind is never checked.
+git_ mv docs/formal/FelixRaftSwitchLag.cfg docs/formal/FelixRaftSwitchLagRenamed.cfg
+check "renamed cfg" "FelixRaftSwitchLag
+$(footer 3 1)"
+
 echo 'CONSTANTS N = 2' >"$work/docs/formal/FelixShardMadeUp.cfg"
 check "unregistered cfg" "$(footer 0 0)"
 
