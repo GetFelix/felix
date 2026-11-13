@@ -30,7 +30,8 @@
 //! record and finds its log blank lost its log, and catches up too.
 //!
 //! Peers answer only requests carrying this cluster's id and peer token, so
-//! a member of some other group is never counted either way.
+//! a member of some other group is never counted either way. An empty
+//! answer also says which member gave it, and counts only for that member.
 //!
 //! The withheld vote is persisted, so a crash part-way through catching up
 //! does not turn a half-filled log into a voter. The argument is in
@@ -56,6 +57,21 @@ pub(super) struct Standing {
     /// The members this one recorded as having set out to form the group.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) formed: Vec<NodeId>,
+    /// Whether the member has a Raft node. Absent from a build that
+    /// predates it, where a member that answers always has one.
+    #[serde(default = "has_node")]
+    pub(super) raft: bool,
+    /// The id that node runs under.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) node_id: Option<NodeId>,
+    /// The configured id of the member that answered, which need not be
+    /// the member the address was configured for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) member: Option<NodeId>,
+}
+
+fn has_node() -> bool {
+    true
 }
 
 /// What a member that set out to form the group asks every peer to record,
@@ -99,7 +115,8 @@ pub(super) enum Answer {
     Unreachable(String),
     /// Something is there and its answer cannot be used: a refusal, such as
     /// the 403 another cluster's member gives or a failed TLS handshake, or
-    /// a body that is not a [`Standing`]. Neither empty nor a group.
+    /// a body that is not a [`Standing`], or an empty answer from some
+    /// member other than the one asked. Neither empty nor a group.
     Unreadable(String),
 }
 
@@ -180,7 +197,8 @@ pub(super) fn decide(
     }
 }
 
-async fn probe(client: &reqwest::Client, me: NodeId, base: Option<&str>) -> Answer {
+/// Ask the member configured as `asked` where it stands.
+async fn probe(client: &reqwest::Client, me: NodeId, asked: NodeId, base: Option<&str>) -> Answer {
     let Some(base) = base else {
         return Answer::Unreachable("no address configured".to_string());
     };
@@ -207,17 +225,40 @@ async fn probe(client: &reqwest::Client, me: NodeId, base: Option<&str>) -> Answ
             last_log_index: Some(index),
             ..
         }) if index >= 1 => Answer::Exists,
+        // An empty answer speaks for one member only. Two addresses that
+        // reach the same member would otherwise count it twice and leave a
+        // member unasked, which may be the one that holds the group.
+        Ok(Standing { member: None, .. }) => Answer::Unreadable(
+            "its answer does not say which member it is: it runs a build that predates that, \
+             and a first start needs every member on a build that says it"
+                .to_string(),
+        ),
+        Ok(Standing {
+            member: Some(member),
+            ..
+        }) if member != asked => Answer::Unreadable(format!(
+            "its address is answered by member {member}; every address in FELIX_RAFT_PEERS \
+             must reach its own member"
+        )),
         Ok(standing) if standing.formed.contains(&me) => Answer::NamesMe,
         Ok(_) => Answer::Empty,
         Err(err) => Answer::Unreadable(format!("its answer did not decode: {err}")),
     }
 }
 
-/// Ask the member at `base` to record `forming`. Anything but a 2xx is no
-/// record.
-async fn announce(client: &reqwest::Client, base: &str, forming: &Forming) -> Result<(), String> {
+/// Ask member `target` at `base` to record `forming`. Anything but a 2xx
+/// is no record.
+async fn announce(
+    client: &reqwest::Client,
+    target: NodeId,
+    base: &str,
+    forming: &Forming,
+) -> Result<(), String> {
+    // The record counts for `target` only, so another member that answers
+    // at its address must refuse rather than record.
     let response = client
         .post(format!("{base}{}", super::peer_route("forming")))
+        .header(super::TARGET_HEADER, target.to_string())
         .json(forming)
         .send()
         .await
@@ -287,8 +328,10 @@ impl RaftHandle {
             if holds_state {
                 return Ok(());
             }
-            self.member.set_vote_withheld(true).await?;
+            // Before the write: it awaits, and a vote served meanwhile
+            // would be granted from an empty log.
             self.may_vote.store(false, Ordering::SeqCst);
+            self.member.set_vote_withheld(true).await?;
             self.raft.runtime_config().elect(false);
         }
         let handle = self.clone();
@@ -371,7 +414,8 @@ impl RaftHandle {
             loop {
                 let mut answers = BTreeMap::new();
                 for (id, base) in &others {
-                    answers.insert(*id, probe(&client, self.id, base.as_deref()).await);
+                    let answer = probe(&client, self.id, *id, base.as_deref()).await;
+                    answers.insert(*id, answer);
                 }
                 let due = last_waiting_log.is_none_or(|at| at.elapsed() >= WAITING_LOG_INTERVAL);
                 match decide(&answers, &waived, peers.len(), mark) {
@@ -403,7 +447,7 @@ impl RaftHandle {
                         for (id, base) in &others {
                             // A waived slot that did not answer is not asked.
                             if let (true, Some(base)) = (answered.contains(id), base)
-                                && let Err(why) = announce(&client, base, &forming).await
+                                && let Err(why) = announce(&client, *id, base, &forming).await
                             {
                                 waiting.push(format!("member {id} {why}"));
                             }
@@ -584,15 +628,10 @@ impl RaftHandle {
         }
     }
 
-    /// Fails when the store cannot be read: an answer without the record
-    /// would read as "nobody set out to form".
+    /// What this member's peers are told ([`super::RaftMember::standing`]).
+    #[cfg(test)]
     pub(super) async fn standing(&self) -> anyhow::Result<Standing> {
-        let formed = self.member.formed().await?;
-        Ok(Standing {
-            last_log_index: self.raft.metrics().borrow_watched().last_log_index,
-            version: self.app.version(),
-            formed: formed.into_iter().collect(),
-        })
+        self.peer().standing().await
     }
 
     /// A peer's side of forming: record that `forming.member` set out to
@@ -610,7 +649,14 @@ impl RaftHandle {
                 "member {member} is not another member of the group {members:?}"
             )));
         }
-        if let Some(configured) = self.configured.get().filter(|mine| *mine != members) {
+        // Before this member knows its own group it cannot tell another
+        // group's member from its own, so it records nobody.
+        let Some(configured) = self.configured.get() else {
+            return Err(NotRecorded::Failed(anyhow::anyhow!(
+                "this member has not entered the group yet"
+            )));
+        };
+        if configured != members {
             return Err(NotRecorded::Refused(format!(
                 "member {member} would form the group {members:?}, and this member is \
                  configured with {configured:?}; FELIX_RAFT_PEERS must name the same members \
