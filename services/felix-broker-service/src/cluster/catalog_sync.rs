@@ -37,6 +37,7 @@ use std::time::Duration;
 use anyhow::Result;
 use felix_broker::Broker;
 
+use crate::cluster::controlplane_group::{Guard, Mismatch};
 use crate::cluster::credential::NodeCredential;
 use crate::cluster::feed_cursor::BehindCursor;
 use pass::sync_into;
@@ -64,6 +65,7 @@ pub async fn start_sync(
         None,
         credential,
         Provisional::default(),
+        None,
     )
     .await
 }
@@ -102,6 +104,9 @@ const MIN_ASKED_GAP: Duration = Duration::from_millis(100);
 ///
 /// `provisional` names the entries registered before the first snapshot from
 /// somewhere other than the control plane; see [`Provisional`].
+///
+/// With a `group`, a snapshot from another control-plane metadata group is
+/// never applied: the sync ends with an error and cancels `group.refused`.
 pub(crate) async fn start_sync_with_signal(
     broker: Arc<Broker>,
     base_url: String,
@@ -109,6 +114,7 @@ pub(crate) async fn start_sync_with_signal(
     seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
     provisional: Provisional,
+    group: Option<Guard>,
 ) -> Result<()> {
     let client = crate::cluster::controlplane_client::build()?;
     sync_loop(
@@ -118,6 +124,7 @@ pub(crate) async fn start_sync_with_signal(
         seeded,
         credential,
         provisional,
+        group,
     )
     .await
 }
@@ -131,10 +138,12 @@ pub(crate) async fn sync_loop(
     mut seeded: Option<tokio::sync::oneshot::Sender<()>>,
     credential: Option<NodeCredential>,
     provisional: Provisional,
+    group: Option<Guard>,
 ) -> Result<()> {
     // Sequence cursors for each change feed; 0 means "not yet seeded".
     let mut state = SyncState::new();
     state.provisional = provisional;
+    state.group = group;
     let mut asked_gap = MIN_ASKED_GAP;
     let mut asked = false;
     loop {
@@ -163,6 +172,8 @@ pub(crate) async fn sync_loop(
                     let _ = signal.send(());
                 }
             }
+            // Retrying cannot make another group's catalog this directory's.
+            Err(err) if err.is::<Mismatch>() => return Err(err),
             Err(err) => {
                 tracing::warn!(error = %err, "control plane sync iteration failed; retrying")
             }
@@ -229,6 +240,8 @@ struct SyncState {
     behind: BehindFeeds,
     /// Entries the first snapshot must confirm or unregister.
     provisional: Provisional,
+    /// The metadata group snapshots must come from, when the directory has one.
+    group: Option<Guard>,
 }
 
 impl SyncState {
@@ -263,6 +276,7 @@ impl SyncState {
             seeded: SeededSnapshots::default(),
             behind: BehindFeeds::default(),
             provisional: Provisional::default(),
+            group: None,
         }
     }
 }

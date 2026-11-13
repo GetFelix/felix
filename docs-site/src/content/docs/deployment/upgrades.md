@@ -742,6 +742,78 @@ of their own: a cluster moves to the newer one once
 single broker from the start, after which an older build cannot read that
 shard's groups.
 
+### A recreated control plane
+
+A Raft control plane picks a random **group id** when its metadata group first
+forms, and keeps it for the life of the group. A broker with durable storage
+writes the group id it first served under into its data directory, in a file
+named `controlplane_group`, and checks it against the control plane every time
+it starts.
+
+A broker refuses to start when:
+
+- its data directory names a different group id. The control plane was
+  recreated (new volumes, or a release whose control plane starts from empty
+  data directories), and the streams this broker holds belong to a catalog
+  that no longer exists. Serving them under the new catalog would mix old
+  records into new streams that happen to reuse a name.
+- its data directory already holds data but names no group id, and the
+  control plane recorded its group id on an empty catalog. That control plane
+  was created fresh, so nothing says which catalog the data belongs to.
+
+If the control plane lost its volumes, first restore its metadata from its
+latest export with `import` (see [backup and restore](/deployment/backup-and-restore/#restoring)).
+An export carries the old group id, so the brokers accept it and keep their
+data. An export taken before group ids existed has none: the control plane
+keeps its new id and adopts brokers that have no group record yet. A broker
+that already names a group needs an export carrying that group's id, so take
+an export after the upgrade records the identity. Otherwise stop the broker,
+wipe its whole data directory, and start it again. It joins as a new, empty broker and takes its
+shards from the others.
+
+A broker that is already running when the control plane is recreated refuses
+the new catalog's snapshots and change-feed pages and stops, with the same
+message, rather than serving its old data under the new catalog. An answer
+that names no group at all, from a control-plane member that has not applied
+the record yet, is skipped and asked for again.
+
+An empty data directory adopts the control plane's group id on its first
+start. A control plane on the in-memory backend has no group, so its brokers
+skip this check.
+
+#### Upgrading an existing cluster to the release that adds the check
+
+Existing broker data directories name no group id, and they keep their data:
+
+1. Upgrade every control-plane member first. The group records its id once
+   all members run the new release (metadata level 32) and a leader exists.
+   Because it already holds streams, it records that the id was taken over an
+   existing catalog. `GET /v1/cluster/identity` then answers with
+   `"adopts_existing": true`. Until every member has reported its version
+   once, stream and cache creates answer `503`.
+2. Then roll the brokers as usual. Each one finds data and no group id, sees
+   `adopts_existing`, records the group id and starts. Nothing is wiped.
+
+A broker started before the record exists waits for it, logging that it is
+retrying. A control plane that is still on the older release answers 404 and
+the broker logs that it must be upgraded first; a node token without
+`node.view:cluster:*` gets 403 and an error naming that permission. The broker
+keeps retrying in each case and never starts without the check.
+
+### The cluster's shard engine
+
+The same record holds the cluster's **shard engine**, the engine that
+replicates durable stream shards: `hybrid` (the default) or `raft`. The
+control plane takes it from its own `FELIX_SHARD_ENGINE` when the group
+forms and never changes it. Changing `FELIX_SHARD_ENGINE` on the control
+plane later only logs a warning.
+
+A broker running a different engine from the record refuses to start and
+names both. Set the broker's engine to the recorded one. A cluster that should
+run the other engine is created afresh: a new control-plane store and empty
+broker data directories, with `FELIX_SHARD_ENGINE` set on the control plane
+from its first start.
+
 ## Upgrade order
 
 For a release that changes none of the versions above (the ordinary case):

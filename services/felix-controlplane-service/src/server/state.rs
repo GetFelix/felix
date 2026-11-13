@@ -97,7 +97,12 @@ async fn open_store(
         change_retention_max_rows: config.change_retention_max_rows,
     };
     match config.storage {
-        StorageBackend::Memory => Ok((Arc::new(InMemoryStore::new(store_config)), None)),
+        StorageBackend::Memory => Ok((
+            Arc::new(
+                InMemoryStore::new(store_config).with_shard_engine(config.shard_engine.as_str()),
+            ),
+            None,
+        )),
         StorageBackend::Raft => {
             let raft_cfg = config.raft.as_ref().context("raft configuration missing")?;
             let inner = Arc::new(InMemoryStore::new(store_config));
@@ -124,6 +129,10 @@ async fn open_store(
                 }
             };
             let store = Arc::new(RaftStore::new(handle.clone(), machine));
+            drop(store.spawn_identity_recorder(
+                config.shard_engine.as_str().to_string(),
+                api_shutdown.child_token(),
+            ));
             let parts = RaftParts {
                 handle,
                 peer_task,
