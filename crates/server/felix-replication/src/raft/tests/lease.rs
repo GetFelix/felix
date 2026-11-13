@@ -638,8 +638,12 @@ async fn a_restarted_sole_voter_is_not_held() {
         .handle(to("a", Request::Append(heartbeat)))
         .await;
     assert!(taken.is_ok());
-    let status = cluster.runtime("a").status(&shard(0)).expect("status");
-    assert_eq!(status.leader, Some(MemberId::new("x", 1)));
+    // The status is read from openraft's metrics, which trail the append.
+    soon("a follows x", || {
+        let status = cluster.runtime("a").status(&shard(0)).expect("status");
+        status.leader == Some(MemberId::new("x", 1))
+    })
+    .await;
     restart(&mut cluster, "a").await;
     for request in [vote_request, pre_vote_request] {
         let answer = cluster
