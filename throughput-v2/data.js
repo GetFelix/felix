@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794558919765,
+  "lastUpdate": 1794563182015,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54392,6 +54392,58 @@ window.BENCHMARK_DATA = {
             "range": "10336.68",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1280711.87\nmean: 1279402.82\nstdev: 10336.68\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "39e95f0762e25f7a534d1a5725594c3d7d8b55cf",
+          "message": "feat(replication): a Raft shard delivers committed records only, from the publisher's batch (#2426)\n\nA publish on a Raft shard goes through Broker::propose_publish and reaches subscribers from the publisher's own bytes (one shared envelope, encoded once per frame shape) only after await_commit passes its term check, in offset order, also when a publisher is cancelled. Readers are bounded by the commit index at every consistency level (RaftReads) and woken as it moves. Offsets taken by blank and membership entries are reported as skipped. A commit wait that times out keeps waiting on a detached task; a definite loss leaves a gap marker and restarts the replay ring. Behind the raft feature; no shard is routed to the engine yet. Routing preconditions are listed in docs/per-shard-raft.md; residuals in #2428. Refs #2233.\n\nSpec-Unaffected: FelixRaft already bounds Deliver by applied (DeliverUncommitted twin), checks DeliveredInOrder and counts skips (SkippedBefore, twin SkipsNotCounted); the code now follows those rules.",
+          "timestamp": "2026-11-13T09:38:52Z",
+          "tree_id": "4306d30f2d4447cf181fd3860f5f677692d5cb89",
+          "url": "https://github.com/GetFelix/felix/commit/39e95f0762e25f7a534d1a5725594c3d7d8b55cf"
+        },
+        "date": 1794563181374,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 411299.79,
+            "range": "24024.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 411299.79\nmean: 412870.44\nstdev: 24024.62\ncv: 5.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 411299.79,
+            "range": "24024.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 411299.79\nmean: 412870.44\nstdev: 24024.62\ncv: 5.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97764.92,
+            "range": "2630.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97764.92\nmean: 96929.28\nstdev: 2630.02\ncv: 2.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 977649.25,
+            "range": "26300.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 977649.25\nmean: 969292.79\nstdev: 26300.22\ncv: 2.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
