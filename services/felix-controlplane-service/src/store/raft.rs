@@ -19,6 +19,7 @@
 //! two vocabularies that must not drift: the store traits on one side, the
 //! versioned command set on the other.
 pub mod command;
+mod identity;
 mod soft_state;
 pub mod state_machine;
 
@@ -126,6 +127,10 @@ const READMITTED_LEVEL: u16 = 30;
 /// in a shard's epoch (`ShardAssignment::placed`).
 const PLACED_LEVEL: u16 = 31;
 
+/// The metadata level whose members record the group's identity, and refuse
+/// stream and cache creates until it is recorded.
+const IDENTITY_LEVEL: u16 = 32;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -175,6 +180,29 @@ impl RaftStore {
         self.handle
             .cluster_version_with_unknown_at(self.machine.join_floor())
             .await
+    }
+
+    /// Whether a create at `level` must carry the identity mark, so the
+    /// apply refuses it if it reaches the log before the record. Refused
+    /// here while the record is missing, unless every member has answered
+    /// and one is below [`IDENTITY_LEVEL`]: a member that has not answered
+    /// may be new, and `level` counts it at the join floor.
+    async fn needs_identity(&self, level: u16) -> StoreResult<bool> {
+        if self.local().recorded_identity().await.is_some() {
+            return Ok(level >= IDENTITY_LEVEL);
+        }
+        let older = level < IDENTITY_LEVEL
+            && self
+                .handle
+                .cluster_version_if_known()
+                .await
+                .is_some_and(|known| known < IDENTITY_LEVEL);
+        if older {
+            return Ok(false);
+        }
+        Err(StoreError::Unexpected(
+            crate::store::identity::IdentityPending.into(),
+        ))
     }
 
     /// A mount is refused below [`MOUNT_LEVEL`] rather than dropped: a member
@@ -447,6 +475,7 @@ impl ControlPlaneStore for RaftStore {
     async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
         let level = self.group_level().await;
         Self::require_mount_level(level, stream.mount.is_some())?;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::decides_at(level);
         if incarnations && stream.incarnation == 0 {
             stream.incarnation = crate::model::proposed_incarnation();
@@ -458,6 +487,7 @@ impl ControlPlaneStore for RaftStore {
                     stream,
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -542,6 +572,7 @@ impl ControlPlaneStore for RaftStore {
 
     async fn create_cache(&self, mut cache: Cache) -> StoreResult<Cache> {
         let level = self.group_level().await;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, std::slice::from_ref(&cache));
         if incarnations && cache.incarnation == 0 {
             cache.incarnation = crate::model::proposed_incarnation();
@@ -553,6 +584,7 @@ impl ControlPlaneStore for RaftStore {
                     cache,
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -618,6 +650,7 @@ impl ControlPlaneStore for RaftStore {
     ) -> StoreResult<(Vec<Stream>, Vec<Cache>)> {
         let level = self.group_level().await;
         Self::require_mount_level(level, streams.iter().any(|s| s.mount.is_some()))?;
+        let needs_identity = self.needs_identity(level).await?;
         let incarnations = Self::caches_decide_at(level, &caches);
         let (mut streams, mut caches) = (streams, caches);
         if incarnations {
@@ -647,6 +680,7 @@ impl ControlPlaneStore for RaftStore {
                     caches: caches.clone(),
                     incarnations,
                     names: level >= DELETED_NAMES_LEVEL,
+                    needs_identity,
                 },
             )
             .await?
@@ -687,6 +721,7 @@ impl ControlPlaneStore for RaftStore {
             caches: Vec::new(),
             incarnations: false,
             names: false,
+            needs_identity: false,
         }
         .version();
         self.group_level().await >= needs
@@ -1268,6 +1303,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
         Ok(self.soft.suspicions())
+    }
+
+    async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
+        Ok(self.identity().await)
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

@@ -11,6 +11,11 @@ configuration) becomes a Raft-replicated state machine, persisted as a log
 and snapshots on each instance's own volume. No external database is needed.
 [Control-plane HA](/deployment/control-plane-ha/) covers running it.
 
+The group also records its own identity once, when it forms: a random group
+id and the shard engine (`FELIX_SHARD_ENGINE`, `hybrid` by default). The first
+record wins and it never changes, so a broker that kept data from one group can
+tell when it reaches another. `GET /v1/cluster/identity` returns it.
+
 The failure handling is covered by tests. Three instances under continuous
 broker traffic come through rolling restarts, a leader killed with SIGKILL, a
 leader frozen past several elections and then thawed, and a member whose

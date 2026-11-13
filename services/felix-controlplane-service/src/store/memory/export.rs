@@ -128,6 +128,7 @@ impl InMemoryStore {
             cache_tombstones: super::caches::cache_tombstones(self).await,
             deleted_stream_names: super::streams::deleted_stream_names(self).await,
             deleted_cache_names: super::caches::deleted_cache_names(self).await,
+            cluster_identity: self.identity.read().await.clone(),
             unplaced,
         }
     }
@@ -207,6 +208,7 @@ impl InMemoryStore {
         *self.rbac_groupings.write().await = state.rbac_groupings.into_iter().collect();
         *self.auth_bootstrapped.write().await = state.auth_bootstrapped.into_iter().collect();
         *self.moves_paused.write().await = state.moves_paused;
+        *self.identity.write().await = state.cluster_identity;
         *self.replica_reports.write().await = state
             .replica_reports
             .into_iter()

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 31;
+pub const METADATA_VERSION: u16 = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -115,6 +115,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     PatchStream {
         key: StreamKey,
@@ -152,6 +156,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     PatchCache {
         key: CacheKey,
@@ -461,6 +469,10 @@ pub enum MetaCommand {
         /// again before the finalize (`store::memory::Decide::Named`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         names: bool,
+        /// Level 32: refused unless the group has recorded its identity
+        /// ([`MetaError::IdentityPending`]).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        needs_identity: bool,
     },
     /// Revoke principals' broker tokens issued at or before `revoked_at`,
     /// which the proposer decided. Level 7.
@@ -475,6 +487,13 @@ pub enum MetaCommand {
         tenant_id: String,
         change: crate::store::AuthChange,
         revocation: crate::store::Revocation,
+    },
+    /// Record the group's identity, once. The first one applied stays and
+    /// every later one is answered with it, so racing proposers are settled
+    /// by log order. Level 32.
+    RecordClusterIdentity {
+        group_id: String,
+        shard_engine: String,
     },
     /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
     /// `next`, in one entry. Level 9.
@@ -550,6 +569,9 @@ impl MetaCommand {
             Self::CreateResources { .. } => 5,
             Self::RevokePrincipals { .. } => 7,
             Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,
+            // A member before level 32 would refuse the command and keep no
+            // identity.
+            Self::RecordClusterIdentity { .. } => 32,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -707,6 +729,10 @@ pub enum MetaResponse {
     RefreshToken {
         token: Option<RefreshToken>,
     },
+    /// `RecordClusterIdentity`'s answer: the identity the group holds after it.
+    ClusterIdentity {
+        identity: crate::store::identity::ClusterIdentity,
+    },
 }
 
 /// `StoreError`, flattened into something that serializes and compares.
@@ -726,6 +752,9 @@ pub enum MetaError {
     /// does not know. Fatal to serve from, never silently skipped.
     #[error("unsupported command: {0}")]
     Unsupported(String),
+    /// A create refused because the group has not recorded its identity.
+    #[error("{0}")]
+    IdentityPending(String),
 }
 
 impl From<StoreError> for MetaError {
@@ -745,6 +774,9 @@ impl From<MetaError> for StoreError {
             MetaError::Conflict(what) => StoreError::Conflict(what),
             MetaError::Internal(msg) | MetaError::Unsupported(msg) => {
                 StoreError::Unexpected(anyhow::anyhow!(msg))
+            }
+            MetaError::IdentityPending(_) => {
+                StoreError::Unexpected(crate::store::identity::IdentityPending.into())
             }
         }
     }
@@ -862,23 +894,35 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// applied command would answer. An operator import arrives as raw JSON, so
 /// one that left the field out would otherwise mark nothing. Below the level
 /// an old member cannot read the mark, and an import without it would let a
-/// later first assignment start a record that looks complete.
+/// later first assignment start a record that looks complete. An import
+/// whose state needs a higher level, such as an export carrying an identity
+/// (level 32), is refused below that level too: an older member would refuse
+/// it at apply while newer ones took it.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     if !depends_on_level(command) {
         return Ok(None);
     }
-    if level < super::PLACED_LEVEL {
-        return Err(encode_result(&Err(MetaError::Conflict(format!(
-            "an import needs every control-plane member at metadata version {}, \
+    let refuse = |needs: u16| {
+        encode_result(&Err(MetaError::Conflict(format!(
+            "an import needs every control-plane member at metadata version {needs}, \
              but the group is at {level}; {}",
-            super::PLACED_LEVEL,
             crate::store::UPGRADE_HINT
-        )))));
+        ))))
+    };
+    if level < super::PLACED_LEVEL {
+        return Err(refuse(super::PLACED_LEVEL));
     }
-    Ok(edit_command_json(command, |object| {
+    let settled = edit_command_json(command, |object| {
         object.insert("mark_unplaced".to_string(), true.into());
         true
-    }))
+    });
+    // One this build cannot decode is left for the apply to answer.
+    if let Ok((_, needs)) = decode_command_with_level(settled.as_deref().unwrap_or(command))
+        && needs > level
+    {
+        return Err(refuse(needs));
+    }
+    Ok(settled)
 }
 
 /// Whether `command` is an import, read without decoding the state it

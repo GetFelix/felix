@@ -167,6 +167,11 @@ pub struct InMemoryStore {
     moves_paused: Arc<RwLock<bool>>,
     /// Principal revocations; see `AuthStore::revoke_principals`.
     revocations: Arc<RwLock<revocations::Revocations>>,
+    /// The group's recorded identity; see `store::identity`.
+    identity: Arc<RwLock<Option<crate::store::identity::ClusterIdentity>>>,
+    /// The engine this instance is configured for, reported where no group
+    /// records one.
+    shard_engine: String,
 }
 
 impl InMemoryStore {
@@ -298,12 +303,44 @@ impl InMemoryStore {
         nodes::register_node(self, node, rule).await
     }
 
+    /// `RecordClusterIdentity`: the first identity recorded stays, and every
+    /// later one is answered with it.
+    pub(crate) async fn apply_record_identity(
+        &self,
+        proposed: crate::store::identity::ClusterIdentity,
+    ) -> crate::store::identity::ClusterIdentity {
+        self.identity.write().await.get_or_insert(proposed).clone()
+    }
+
+    /// Whether the store holds, or has held, a stream or a cache: what a
+    /// broker could have data for.
+    pub(crate) async fn held_data_catalog(&self) -> bool {
+        !self.streams.read().await.is_empty()
+            || !self.caches.read().await.is_empty()
+            || self.stream_changes.read().await.next_seq > 0
+            || self.cache_changes.read().await.next_seq > 0
+    }
+
+    /// The identity recorded so far, if any.
+    pub(crate) async fn recorded_identity(
+        &self,
+    ) -> Option<crate::store::identity::ClusterIdentity> {
+        self.identity.read().await.clone()
+    }
+
     /// Forget every deleted name, so a test can replace a fixture's stream
     /// under the same name before the finalize.
     #[cfg(test)]
     pub(crate) async fn forget_deleted_names(&self) {
         self.deleted_stream_names.write().await.clear();
         self.deleted_cache_names.write().await.clear();
+    }
+
+    /// The engine this instance reports as the cluster's, which a store with
+    /// no group has no record to say otherwise.
+    pub fn with_shard_engine(mut self, shard_engine: &str) -> Self {
+        self.shard_engine = shard_engine.to_string();
+        self
     }
 
     pub fn new(config: StoreConfig) -> Self {
@@ -348,6 +385,8 @@ impl InMemoryStore {
             refresh_tokens: Arc::new(RwLock::new(HashMap::default())),
             moves_paused: Arc::new(RwLock::new(false)),
             revocations: Arc::new(RwLock::new(Default::default())),
+            identity: Default::default(),
+            shard_engine: "hybrid".to_string(),
         }
     }
 
@@ -775,6 +814,12 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
         Ok(self.suspicions.read().await.values().cloned().collect())
+    }
+
+    async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
+        Ok(crate::store::identity::GroupIdentity::NoGroup {
+            shard_engine: self.shard_engine.clone(),
+        })
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

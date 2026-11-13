@@ -168,6 +168,9 @@ pub struct GroupStatus {
     /// The last entry on disk. Votes, a follower's answer and the commit
     /// index count this one.
     pub flushed: Option<LogPoint>,
+    /// The commit index as openraft last published it. It is published
+    /// after the entries are handed on to be applied, so for a moment it
+    /// can be below the read bound. Never read it as a limit on the bound.
     pub committed: Option<u64>,
     /// Timer checks the ticker sent this member.
     pub ticks: u64,
