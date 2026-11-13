@@ -812,9 +812,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSleepTtlWrite.cfg` | `FelixRaftSleepTtl.cfg` with two writes: one can reach the leader between the expiry timer and its delete, which names the version the timer saw | pass `ExpiryKeepsNewer` |
 | `FelixRaftSleepTtlWriteUnconditional.cfg` | the same with a delete that removes whatever the key holds | violate `ExpiryKeepsNewer` |
 | `FelixRaftSleepTtlWriteReachRace.cfg` | Witness for `FelixRaftSleepTtlWrite.cfg` | violate `NeverExpirySkipsNewer`: the delete commits after a write its timer did not see |
-| `FelixRaftCache.cfg` | `FelixRaftCache.tla`: the cache shard's state machine (issue #2238), two members, an add, an expiring put and a put-if-absent, three proposals with retries, one leader change, one crash, two snapshots, one read, no clock | pass |
-| `FelixRaftCacheClock.cfg` | expiry, with clocks 0..2 that differ by member, one expiry delete; no snapshot | pass |
-| `FelixRaftCacheDedup.cfg` | retries of two puts, a put-if-absent and a delete; four proposals, one crash, one snapshot | pass `AppliedOnce`, `AnswersKept` |
+| `FelixRaftCache.cfg` | `FelixRaftCache.tla`: the cache shard's state machine (issue #2238), two members, an add and a put-if-absent, three proposals with retries, one leader change, one crash, two snapshots, one read, no clock | pass |
+| `FelixRaftCacheClock.cfg` | expiry, with clocks 0..2 that differ by member, an expiring put, a put-if-absent and one expiry delete; no snapshot | pass |
+| `FelixRaftCacheDedup.cfg` | retries of a put, a put-if-absent and a delete; three proposals, one crash, one snapshot | pass `AppliedOnce`, `AnswersKept` |
 | `FelixRaftCacheExpiry.cfg` | the expiry delete against a put that refreshes the key; clocks 0..1 | pass `ExpiryRemovesItsVersion` |
 | `FelixRaftCacheClockSnapshot.cfg` | expiry with a snapshot, an install and a crash; clocks 0..2 | pass `StampsMonotone` |
 | `FelixRaftCacheNoRequestId.cfg` | adds are applied again on a retry | violate `SumExact`: a retry counts twice |
@@ -3321,7 +3321,7 @@ The rules and their checks:
 - Apply is deterministic and never reads a clock (`MembersAgree`, `ProjectionIsFold`).
 - The projection holds the log's time, the stamp of the last stamped entry applied, and the
   snapshot carries it. The leader stamps no earlier than the last stamped entry in its log,
-  the inherited tail included and blank entries skipped, or the projection's time when its
+  the inherited tail included and blank entries skipped, or its snapshot's time when its
   log holds none (`StampsMonotone`). A leader that installed a snapshot therefore stamps
   from the snapshot, not from its clock.
 - Every write carries a request id, and the projection keeps each applied id with its

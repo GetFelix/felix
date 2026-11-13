@@ -26,8 +26,8 @@
 (*     that time, and a member that installed it knows the log's time      *)
 (*     with none of the log below it.                                      *)
 (*   - The leader stamps an entry no earlier than the last stamped entry   *)
-(*     in its log, the uncommitted tail it inherited included, or the      *)
-(*     projection's time when its log holds none. Blank and membership     *)
+(*     in its log, the uncommitted tail it inherited included, or its      *)
+(*     snapshot's time when its log holds none. Blank and membership       *)
 (*     entries carry no stamp and are skipped.                             *)
 (*   - Every client write carries a request id. The projection keeps each  *)
 (*     applied id with the answer it gave, so a retry after an unknown     *)
@@ -204,11 +204,11 @@ FoldTo(n) == IF n = 0 THEN Empty ELSE Step(FoldTo(n - 1), clog[n], n, clog[n].t)
 
 All == clog \o pend
 
-\* The last stamp in the leader's log at or below k. Everything above what
-\* it applied is in its log; below that the projection has the time.
+\* The last stamp in the leader's log at or below k. Its log starts above
+\* its purge point; with no stamped entry there, its snapshot has the time.
 RECURSIVE LastStamp(_)
 LastStamp(k) ==
-    IF k <= applied[ldr] THEN st[ldr].t
+    IF k <= purged[ldr] THEN snap[ldr].st.t
     ELSE IF All[k].op # "blank" \/ FloorCountsBlank THEN All[k].t
     ELSE LastStamp(k - 1)
 
@@ -239,8 +239,8 @@ Init ==
 \* the snapshot's time is ahead of its clock.
 SnapFloor ==
     /\ ldr \in hist.installed
-    /\ \A k \in (applied[ldr] + 1)..Len(All) : All[k].op = "blank"
-    /\ st[ldr].t > clock[ldr]
+    /\ \A k \in (purged[ldr] + 1)..Len(All) : All[k].op = "blank"
+    /\ snap[ldr].st.t > clock[ldr]
 
 \* A client request, or a retry of one whose answer has not come.
 Propose(r) ==

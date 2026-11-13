@@ -1132,6 +1132,11 @@ weights=(
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
+  "FelixRaftLeaseSleep 93"
+  "FelixRaftCache 4"
+  "FelixRaftCacheClock 9"
+  "FelixRaftCacheClockSnapshot 18"
+  "FelixRaftCacheExpiry 2"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
 )
@@ -1253,6 +1258,9 @@ pr_minutes=(
   "FelixShardUnifiedLearnerVariantDropped 2"
   "FelixShardUnifiedSets 7"
   "FelixShardWipeFull 5"
+  "FelixRaftCache 6"
+  "FelixRaftCacheClock 13"
+  "FelixRaftCacheClockSnapshot 26"
 )
 
 weight_of() {
