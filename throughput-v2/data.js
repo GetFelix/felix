@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794597897116,
+  "lastUpdate": 1794598936942,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54808,6 +54808,58 @@ window.BENCHMARK_DATA = {
             "range": "21975.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812547.24\nmean: 807529.02\nstdev: 21975.60\ncv: 2.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6013a9383ab494b40b7b5267d96bf9b9e698ae9",
+          "message": "spec(reform): the offset floor is a log id, and a base no copy holds the floor for is cut to what a copy can vouch for (#2431)\n\nFelixRaftReform's offset floor is now a log id (epoch, term, index), and a re-form whose copies do not hold the floor's entry cuts its base only as far as needed.\n\n- A copy whose last log id has the floor's epoch and term, at or below the floor's index, keeps its whole log: log matching proves it committed. Any other copy is cut to its saved commit index. The base is the longest such log, padded with gaps.\n- Each copy saves its commit index durably, so a cut never goes below what it acknowledged as committed.\n- AckedSurvive allows a loss only when no live disk held the record, or every live disk that held it had it above what that disk vouches for. A new action property, LossNeedsLostDisk, checks the one-term case with no exception at all.\n- New configs: the CutToCommit twin (the old cut) violates AckedSurvive; TermsUnvouched pins the two-term residual; all 46 registered Reform configs reach their declared outcome.\n- EpochNotChecked passes because a new epoch starts with its commit at the base end and voters refuse an append below it; this rests on the re-form saving the base end before any append (#2419).\n- docs/per-shard-raft.md and docs/formal/README.md state the rule and the documented losses.\n\nCloses #2402.",
+          "timestamp": "2026-11-13T19:18:34Z",
+          "tree_id": "be26355ccf51493d971cdc324dce3c000a714705",
+          "url": "https://github.com/GetFelix/felix/commit/d6013a9383ab494b40b7b5267d96bf9b9e698ae9"
+        },
+        "date": 1794598936021,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356042.68,
+            "range": "16777.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356042.68\nmean: 355258.67\nstdev: 16777.50\ncv: 4.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356042.68,
+            "range": "16777.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356042.68\nmean: 355258.67\nstdev: 16777.50\ncv: 4.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81785.03,
+            "range": "549.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81785.03\nmean: 81700.51\nstdev: 549.04\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817850.32,
+            "range": "5490.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817850.32\nmean: 817005.07\nstdev: 5490.41\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
