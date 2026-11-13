@@ -401,9 +401,9 @@ impl RaftRequest {
         };
         request(Request::Append(AppendEntriesRequest {
             vote: rpc.vote.clone(),
-            prev_log_id: rpc.prev_log_id.clone(),
+            prev_log_id: rpc.prev_log_id,
             entries: rpc.entries[..n].to_vec(),
-            leader_commit: rpc.leader_commit.clone(),
+            leader_commit: rpc.leader_commit,
         }))
     }
 }
