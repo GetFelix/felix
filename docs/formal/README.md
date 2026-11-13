@@ -688,10 +688,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformNoCas.cfg` | one voter and one learner; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
 | `FelixRaftReformRotatedNotWaited.cfg` | the design as written: a voter known to have rotated is not waited for, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
 | `FelixRaftReformJoinKeepsReport.cfg` | the design as written: a retired copy rejoins as a learner and its old report stands | violate `AckedSurvive` (issue #2304) |
-| `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
+| `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
-| `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.0M distinct states) |
-| `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (56 distinct states) |
+| `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.1M distinct states) |
+| `FelixRaftSwitchWiped.cfg` | b lags and c is wiped before the control plane's write | pass the same and `NeverElects`: unavailable, not wrong (98 distinct states) |
 | `FelixRaftSwitchGenZero.cfg` | any copy may carry generation 0 on a prefix of its records | pass the same (10.6M distinct states, 4 min) |
 | `FelixRaftSwitchGenZeroFull.cfg` | the same with b lagging and promoted | pass the same (19.2M distinct states, 37 min in CI) |
 | `FelixRaftSwitchStarts.cfg` | any copy may start at offset 2; the seal names `S`; b may lag and be promoted | pass the same (8.1M distinct states, 11 min in CI) |
@@ -713,6 +713,37 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSwitchReachGenZero.cfg` | `FelixRaftSwitchDigestCoversGeneration.cfg`'s copies with the rule on | violate `NeverElects`: the switch completes and a leader is elected |
 | `FelixRaftSwitchReachWipedSwitch.cfg` | a witness for `FelixRaftSwitchWiped.cfg` | violate `NeverSwitches`: the control plane records the switch with c wiped |
 | `FelixRaftSwitchReachReseal.cfg` | a witness for `FelixRaftSwitchReseal.cfg` | violate `NeverSwitchesAfterReseal`: the switch completes from the second seal |
+| `FelixRaftSwitchInFlight.cfg` | the seal leader has a write in flight at the seal; followers catch up; every rule on | pass the above and `HybridAcksInBase`, `LeaderAcksInBase`, `NoAckAfterHandOver` (0.38M distinct states) |
+| `FelixRaftSwitchInFlightClaimFirst.cfg` | the record at `N` before the write is answered (`ClaimBeforeQuiesce`) | violate `LeaderAcksInBase`: the write is acknowledged above `N` |
+| `FelixRaftSwitchInFlightFailover.cfg` | `InFlight` with a failover after the lease lapses; the write may be a `Quorum` one | pass the same (3.3M distinct states, 6 min on 10 workers) |
+| `FelixRaftSwitchInFlightFailoverLeaseAtEntry.cfg` | a `Leader` write acknowledged whatever the lease (`LeaseAtEntryOnly`) | violate `NoAckAfterHandOver` |
+| `FelixRaftSwitchFailoverWipe.cfg` | `InFlightFailover` with c lagging and one wipe of any copy | pass the same (14.6M distinct states, 16 min on 10 workers) |
+| `FelixRaftSwitchFailoverWipeVotes.cfg` | a wiped copy answers the failover's fence (`WipedVotesInFailover`) | violate `HybridAcksInBase`: the fence's furthest copy lacks a record a majority acknowledged |
+| `FelixRaftSwitchPowerLoss.cfg` | the seal leader has an unsynced tail and loses it; a failover follows | pass `HybridAcksInBase` and the above (1.5M distinct states) |
+| `FelixRaftSwitchPowerLossLag.cfg` | the same with c lagging | pass the same (1.5M distinct states) |
+| `FelixRaftSwitchPowerLossPeriodic.cfg` | the same on a `Periodic` log (`SealPeriodic`) | violate `HybridAcksInBase`: the seal leader loses a record only it and b held on disk, and the failover seals without it |
+| `FelixRaftSwitchPowerLossSameGen.cfg` | the seal leader appends `N` again after losing its tail (`ResealSameGen`) | violate `HybridAcksInBase` |
+| `FelixRaftSwitchPowerLossFollowers.cfg` | every copy may lose its tail once, before it starts: a follower after acknowledging, the leader after reporting, a broker between its vote floor and its mark | pass the above (0.19M distinct states) |
+| `FelixRaftSwitchPowerLossAckBeforeSync.cfg` | `N` acknowledged and reported before it is on disk (`AckBeforeSync`) | violate `BaseAgree`: a recorded voter loses `N` and starts with a shorter log |
+| `FelixRaftSwitchReachStartCrash.cfg` | a witness for `FelixRaftSwitchPowerLossFollowers.cfg` | violate `NeverRestartsBeforeMark`: a broker crashes between its vote floor and its mark |
+| `FelixRaftSwitchCopySource.cfg` | a learner copies the records below the base from the leader, with purges past `N` | pass the above (3.3M distinct states, 8 min on 10 workers) |
+| `FelixRaftSwitchCopySourceAny.cfg` | a learner copies from any member, uncommitted tail included (`CopyFromAny`) | violate `StateMachineSafety` |
+| `FelixRaftSwitchDigestTag.cfg` | a follower differs only in a producer tag | pass the above (0.45M distinct states) |
+| `FelixRaftSwitchDigestTagSkipped.cfg` | the digest leaves the tag out (`DigestSkipsTag`) | violate `LeaderCompleteness` |
+| `FelixRaftSwitchDigestSide.cfg` | a follower's dead-letter and group-cursor logs lack the leader's state | pass the above and `SideComplete` (0.45M distinct states) |
+| `FelixRaftSwitchDigestSideSkipped.cfg` | the digest leaves the side logs out (`DigestSkipsSide`) | violate `SideComplete` |
+| `FelixRaftSwitchVoteFloor.cfg` | members start with the vote floor; two campaigns, one Raft write | pass the above (0.45M distinct states) |
+| `FelixRaftSwitchVoteFloorOff.cfg` | no floor (`NoVoteFloor`) | violate `LeaderCompleteness` |
+| `FelixRaftSwitchSealHolds.cfg` | a sealed shard does not open without the control plane | pass the above (0.45M distinct states) |
+| `FelixRaftSwitchSealHoldsReopen.cfg` | the sealed leader reopens on a timeout (`ReopenOnTimeout`) | violate `HybridAcksInBase` |
+| `FelixRaftSwitchSealHoldsBallot.cfg` | sealed copies elect a hybrid leader (`BallotIgnoresSeal`) | violate `HybridAcksInBase` |
+| `FelixRaftSwitchStartOrder.cfg` | a voter purges before it writes its mark | pass the above and `NeverReadsBelowBase` (0.45M distinct states) |
+| `FelixRaftSwitchStartOrderMarkFirst.cfg` | the mark before the purge (`MarkFirst`) | violate `NeverReadsBelowBase` |
+| `FelixRaftSwitchReachInFlightAck.cfg` | a witness for `FelixRaftSwitchInFlight.cfg` | violate `NeverSwitchesAfterLeaderAck` |
+| `FelixRaftSwitchReachFailover.cfg` | a witness for `FelixRaftSwitchInFlightFailover.cfg` | violate `NeverSwitchesAfterFailover` |
+| `FelixRaftSwitchReachPowerLoss.cfg` | a witness for `FelixRaftSwitchPowerLoss.cfg` | violate `NeverSwitchesAfterFailover` |
+| `FelixRaftSwitchEnds.cfg` | liveness under `FairSpec`: a write in flight, c lagging, one follower wiped, one follower's power cut | pass `SwitchEnds` (21K distinct states) |
+| `FelixRaftSwitchEndsLeaderWiped.cfg` | the same with the seal leader wipeable | violate liveness: a seal leader wiped before it reports needs a failover, which the model leaves unfair |
 | `FelixRaftLease.cfg` | `FelixRaftLease.tla`: the first version's lease, three brokers, two terms, clocks gaining 1 or 2 units a tick, lease 2 against an election timeout of 4, no write, no restart, no bound on time | pass `LeaseExclusive`, `OneLeaderPerTerm` (0.57M distinct states). With no restart it does not yet gate the lease pull request (issue #2307) |
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
@@ -2910,40 +2941,81 @@ majority ever acknowledges and the switch never happens
 The implementation design on issue #2242 adds the parts the seal has
 around it, each off unless a configuration turns it on:
 
-- A `Leader` write already inside the seal leader's fence (`InFlight`).
-  It takes an offset, and is acknowledged on the leader's disk while the
-  leader's lease holds. The record at `N` waits until it is answered or
-  failed.
+- A write already inside the seal leader's fence (`InFlight`). It takes an
+  offset. As a `Leader` write it is acknowledged on the leader's disk while
+  the leader's lease holds; as a `Quorum` write, once a majority holds it,
+  and then it is checked like any record the hybrid acknowledged, across a
+  failover too. The record at `N` waits until it is answered or failed.
 - Followers catching up to the seal leader during the seal (`Catchup`).
 - The control plane giving up a seal once the leader's lease has lapsed and
-  sealing again with the copy furthest ahead in a majority (`Failover`).
-- A seal leader that loses its unsynced tail to a power cut
-  (`MayUnsynced`). It gives up the seal.
+  sealing again with the copy furthest ahead in a majority (`Failover`). A
+  wiped copy does not answer that fence: as
+  [the replication design](../replication-design.md) has it for elections,
+  it does not vote until it is re-admitted, which the model never does.
+- Copies whose log has a tail not yet on disk (`MayUnsynced`). Any of them
+  can lose it to a power cut, once per behaviour, at any point before it
+  starts its member: a follower after it acknowledged `N`, the seal leader
+  after it reported, a broker between its vote floor and its member mark.
+  A seal leader that loses power before it reports gives up the seal. The
+  logs are fsync on commit, which the switch requires, so a record the
+  hybrid acknowledged is on disk on a majority. A follower writes `N` to
+  disk before it acknowledges and the leader before it reports.
 - A Raft member moving its purged id past `N` (`MaxPurges`).
 - A follower's record differing only in its producer tag (`MayDifferTag`),
   and its dead-letter and group-cursor logs lacking the leader's state
   (`MayDifferSide`).
 
+A broker starts its member in two steps: the log, purged id and vote
+floor, then the member mark. A crash between them is reachable, and the
+broker starts again from the record.
+
 New checks: `HybridAcksInBase` (once the switch is recorded, every record
-the hybrid acknowledged from `S` up is in the base, by content, below `N`),
+the hybrid acknowledged from `S` up is in the base, by content, below `N`;
+on a log that is fsync on commit, which is why the switch refuses a
+`Periodic` one),
 `LeaderAcksInBase` (the same for `Leader` acknowledgements while the writer
 is the seal leader), `NoAckAfterHandOver` (no `Leader` acknowledgement once
 the shard is handed to another copy or to Raft), `SideComplete` (a Raft
 leader holds the side logs) and `NeverReadsBelowBase` (a recorded voter's
 purged id is at `N`). One knob each drops a rule: `ClaimBeforeQuiesce`,
 `LeaseAtEntryOnly`, `ResealSameGen`, `CopyFromAny`, `DigestSkipsTag`,
-`DigestSkipsSide`, `NoVoteFloor`, `ReopenOnTimeout`, `BallotIgnoresSeal`
-and `MarkFirst`.
+`DigestSkipsSide`, `NoVoteFloor`, `ReopenOnTimeout`, `BallotIgnoresSeal`,
+`MarkFirst`, `WipedVotesInFailover` (a wiped copy answers the failover's
+fence), `SealPeriodic` (the switch seals a `Periodic` log) and
+`AckBeforeSync` (a follower acknowledges `N`, and the leader reports,
+before `N` is on disk).
+
+Liveness: `SwitchEnds` says a switch that started ends with the control
+plane's record and every copy's member started. `FairSpec` gives weak
+fairness to the switch's own steps and none to faults, failovers, reseals
+or Raft, so it holds only where no fault needs the control plane to step
+in (`FelixRaftSwitchEnds.cfg`). These states stay stuck in the model, and
+the design accepts them:
+
+- The seal leader wiped, or out of power, before it reports. Its seal
+  never reports, and only a control-plane failover, which waits for its
+  lease, ends it (`FelixRaftSwitchEndsLeaderWiped.cfg`).
+- No majority passes the digest. The design reopens the shard and
+  rebuilds the copies that differ; the model's reseal does not rebuild.
+- A recorded voter wiped after it acknowledged. The switch ends, but the
+  voters left may be too few to elect, and the group needs a re-form
+  (`FelixRaftSwitchWiped.cfg`).
 
 The model's term is the record's generation field. In the code a Raft term
 is one less (`raft_log`: generation = term + 1), so the base's term `G`
 here is Raft term `G - 1`, and the vote `Start` stores at `G` is the vote
 at Raft term `G - 1` that the design calls the floor.
 
-Abstracted: storage is durable at once except the seal leader's tail under
-`MayUnsynced` (`FelixRaft.tla` covers the adapter's fsync rules), a
-message is one atomic step, and the hybrid before the seal is the initial
-choice. Reseal and failover are one step each. The promotion adds one
+Abstracted: storage is durable at once except the tails under
+`MayUnsynced` (`FelixRaft.tla` covers the adapter's fsync rules once a
+member has started), a message is one atomic step, and the hybrid before
+the seal is the initial choice. Reseal and failover are one step each, and
+one write is in flight at the seal. The digest and `S` travel beside the
+seal; in the code they are in the record at `N`, which a follower appends
+as the leader sent it. That record names its generation in its payload,
+so two seals' records never compare equal. The control plane's copy of
+the records below `N` is history for the checks; it records only the base
+and the voters. The promotion adds one
 voter in one step. Records below `S` are outside the check, as the design
 says. Cache shards, whose digest is over live state, are not modelled yet.
 

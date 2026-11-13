@@ -1059,6 +1059,7 @@ weights=(
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
+  "FelixRaftSwitchFailoverWipe 60"
   "FelixRaftReform 7"
   "FelixRaftReformTwoRotated 6"
   "FelixRaftReformOneReplica 2"

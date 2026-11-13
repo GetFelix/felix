@@ -562,6 +562,7 @@ SealClaim ==
     /\ ~seal.void
     /\ cp.engine = "hybrid"
     /\ st[seal.l] = "hybrid"
+    /\ Me(seal.l) \in seal.acks
     /\ ClaimBeforeQuiesce \/ fly.st \notin {"admitted", "claimed"}
     /\ log' = [log EXCEPT ![seal.l] = Append(@, StartRec(seal.gen))]
     /\ seal' = [seal EXCEPT !.claimed = TRUE, !.n = LastIdx(seal.l) + 1,
@@ -569,12 +570,14 @@ SealClaim ==
     /\ UNCHANGED <<raft, copy, first, base, member, cp, reports, acked, decided, cutHeld, used, extra>>
 
 \* A hybrid follower takes the seal leader's next record below N, or cuts a
-\* longer tail back to N - 1.
+\* longer tail back to N - 1. The leader must be the copy that sealed: a
+\* wiped leader comes back with no generation and leads nothing.
 FollowerCatchUp(s) ==
     /\ Catchup
     /\ s # seal.l
     /\ st[s] = "hybrid"
     /\ st[seal.l] = "hybrid"
+    /\ Me(seal.l) \in seal.acks
     /\ cp.engine = "hybrid"
     /\ ~seal.void
     /\ Me(s) \notin seal.acks
