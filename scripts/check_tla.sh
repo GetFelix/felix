@@ -853,6 +853,16 @@ expectations=(
   "FelixRaftCacheDeleteSnapshotReachDropped violates NeverDroppedAndKept"
   "FelixRaftCacheCondReachApplied violates NeverCondApplied"
   "FelixRaftCacheCondReachStale violates NeverCondStale"
+  "FelixRaftCacheTrim pass"
+  "FelixRaftCacheTrimRetireDropsFloor violates AppliedOnce"
+  "FelixRaftCacheTrimSnapshotDropsFloor violates MembersAgree"
+  "FelixRaftCacheTrimRetireLocal violates MembersAgree"
+  "FelixRaftCacheTrimFloorPastUnanswered violates ForgetsOnlyDone"
+  "FelixRaftCacheTrimNoFloorClamp violates ForgetsOnlyDone"
+  "FelixRaftCacheTrimReachForgotten violates NeverForgotten"
+  "FelixRaftCacheTrimReachRetryAboveFloor violates NeverRetryAboveFloor"
+  "FelixRaftCacheTrimReachRetryAfterRetire violates NeverRetryAfterRetire"
+  "FelixRaftCacheTrimReachInstalledFloor violates NeverInstalledFloor"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -1229,6 +1239,7 @@ weights=(
   "FelixRaftCacheDeleteSnapshot 50"
   "FelixRaftCachePutAbsentSnapshot 45"
   "FelixRaftCacheCondSnapshot 33"
+  "FelixRaftCacheTrim 105"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
   "FelixRaftSleepMidHandshake 87"
