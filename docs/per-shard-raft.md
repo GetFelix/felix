@@ -346,13 +346,13 @@ What `plan` works out for one group, and `apply` then does:
    removed. The control plane records a broker as placed in the epoch
    before the leader sends it anything, and for a move's target before the
    leader proposes the change ("Membership"). Nothing takes a broker off
-   that record until the next epoch starts (#2419). So the target of a move that
+   that record until the next epoch starts. So the target of a move that
    was under way is listed, and so is a voter that was moved away. The
    command asks each listed broker for its copy when it runs. It keeps no
    earlier answer. For each one it shows the copy id, whether the copy
-   rotated, the last log id of the records on its disk, and the newest
-   membership in those records. A broker declared dead is shown as
-   missing. The cost: the list grows with every move for the life of the
+   rotated, the last log id of the records on its disk, the commit index
+   the copy saved, and the newest membership in those records. A broker
+   declared dead is shown as missing. The cost: the list grows with every move for the life of the
    epoch, every broker the group ever sat on in it must answer or be
    declared dead, and the re-form places the removed ones again as
    learners.
@@ -370,6 +370,19 @@ What `plan` works out for one group, and `apply` then does:
    If a copy's records name a voter that is not on the list, the group is
    blocked. With every placed broker recorded this cannot happen, so it
    only fires when the record is wrong.
+
+   The record is the shard assignment's `placed` field
+   (`docs/control-plane.md`, "Shard ownership"): the group epoch and the
+   brokers. The store adds a broker in the same write that first names it
+   and never removes one. The shard's first assignment starts it, and so
+   must the switch from the hybrid and each re-form, for the epoch they
+   begin. A group whose shard has no record (first assigned below metadata
+   level 31, or of a stream or cache restored from an export, even one first
+   assigned after the import) is blocked: no list of its brokers can be
+   trusted. In code,
+   `PlacedInEpoch::unaccounted` gives the brokers that block a group,
+   `off_record` the voters a copy names off the record, `only` the RF 1
+   test below, and `next_epoch` the record a re-form writes.
 2. **Refuse.** A group is left alone if any reachable copy reports a
    leader for the epoch, and blocked if a listed broker is unreachable and
    not declared dead.
@@ -382,16 +395,21 @@ What `plan` works out for one group, and `apply` then does:
    last log id. A rotated copy reports the records it kept. They are
    evidence, not votes.
 4. **Record the base.** The control plane writes, by compare-and-swap on
-   the group epoch: the next epoch, the base (the highest last log id
-   reported), and the voter set, which is exactly the copies whose reports
-   hold the base. Every other listed copy is a learner. The listed brokers
-   start the record of brokers placed in the new epoch.
+   the group epoch: the next epoch, the base, and the voter set, which is
+   exactly the copies whose reports hold the base. The base is the highest
+   last log id reported, if some copy holds the entry the offset floor
+   names. If none does, the base is the longest log a copy can vouch for
+   (see "Offsets are not reused" below). Every other listed copy is a
+   learner. The record of brokers placed in the new epoch starts with the
+   brokers placed now and every listed broker, voter or learner.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 
 **What it keeps and what it loses.** Every record held by a copy the
 command reached is at or below the base, or is cut as uncommitted. What is
-lost is a record that only brokers declared dead held. `plan` marks every
+lost is a record that only brokers declared dead held, and, when no copy
+holds the floor's entry, a record that no copy holding it can vouch for
+(see "Offsets are not reused" below). `plan` marks every
 group where a dead broker was a voter, since those are the groups that may
 have lost something. A crash or a power cut does not rotate ids and never
 needs a re-form.
@@ -426,31 +444,92 @@ the stopped copies in between, the next `plan` leaves it alone, and how
 those copies come back is not decided yet (#2403).
 
 **Offsets are not reused.** The leader's report to the control plane
-("Membership") carries the shard's commit offset, and the control plane
-keeps the highest it has seen. Every re-form starts the new epoch at an
-offset not below that floor. Offsets between the end of the base and the
-floor are never given out again, and a reader sees them as a gap, which is
-how a lost record already shows. The floor is still needed with an
-operator-only re-form, because the one case left, a majority of disks lost
-at once, is exactly the case where the base can end below what was
-acknowledged. The case the model first found, a majority power loss on
-relaxed fsync (issue #2305), cannot happen now that Raft logs are fsync on
-commit. The floor is the last value the control plane stored, so offsets
-acknowledged after it and then lost with a majority of the disks can be
-given out again. That is one report interval while the control plane is
-reachable and the whole outage while it is not, since writes go on without
-it. Brokers batch the floors of their shards into one report, so the
-control plane makes one metadata write per broker per interval, not one
-per shard. The new epoch's log starts above the base with an index gap up
-to the floor, and how the adapter represents that gap is settled in the
-pull request that builds re-forming. See Questions, 13.
+("Membership") carries the log id of its commit: the index, and the epoch
+and term of the entry there. The control plane keeps the highest it has
+seen as the offset floor. Every re-form starts the new epoch at an offset
+not below that floor. Offsets between the end of the base and the floor
+are never given out again, and a reader sees them as a gap, which is how a
+lost record already shows. The floor is still needed with an operator-only
+re-form, because the one case left, a majority of disks lost at once, is
+exactly the case where the base can end below what was acknowledged. The
+case the model first found, a majority power loss on relaxed fsync (issue
+#2305), cannot happen now that Raft logs are fsync on commit. The floor is
+the last value the control plane stored, so offsets acknowledged after it
+and then lost with a majority of the disks can be given out again. That is
+one report interval while the control plane is reachable and the whole
+outage while it is not, since writes go on without it. Brokers batch the
+floors of their shards into one report, so the control plane makes one
+metadata write per broker per interval, not one per shard. The new epoch's
+log starts above the base with an index gap up to the floor, and how the
+adapter represents that gap is settled in the pull request that builds
+re-forming. See Questions, 13.
 
-**Known gap (#2402).** The floor covers offsets above the end of the base,
-not offsets inside it. The base can end in an entry of an older term that
-never committed, held by the one copy whose disk survived, at an offset
-that a later leader acknowledged with another record. The new epoch then
-serves the old entry under that offset
-(`FelixRaftReformTwoRotatedOffsetsTerms.cfg`, pinned).
+**Why the floor is a log id, not an offset (#2402).** An offset alone
+covers offsets above the end of the base, not offsets inside it. Take
+{A, B, C}. A leads term 1 and appends a record that reaches nobody. B
+leads term 2 with C and acknowledges another record at the same offset.
+Then B and C lose their disks. A's log reaches the floor's offset, so
+nothing is padded, and the new epoch would serve A's record under an
+offset that was acknowledged with B's. With the term in the floor, the
+command sees that A does not hold the floor's entry.
+
+If any copy the command reads holds the floor's entry, the highest copy
+does too, and Raft's log matching means its log agrees with every
+committed entry up to the floor. The base is that copy's log, as before.
+If no copy holds it, even the highest log can hold an uncommitted entry at
+an acknowledged offset. So the command keeps, from each copy, only what
+that copy can vouch for as committed:
+
+- **Its whole log, if its last log id has the floor's epoch and term** and
+  its index is not above the floor's. One leader wrote that entry and the
+  floor's entry into one log, so by log matching the copy's log is the
+  start of the log the floor's entry committed in. This is the common
+  case: a follower that was a little behind when the other disks were
+  lost. Its saved commit index can lag what it holds, and the command
+  does not need it.
+- **Its log up to its saved commit index, otherwise.** The log ends in
+  another term, and the command cannot tell a committed entry above the
+  saved index from one that never committed.
+
+The base is the longest log kept that way, padded up to the floor. A
+record is lost only if every copy that holds it has it above its saved
+commit index, in a log that ends in a term other than the floor's.
+
+The model checks each part. With one term every copy can vouch for all it
+holds, and no record a disk holds is lost
+(`FelixRaftReformTwoRotatedOffsets.cfg` passes `LossNeedsLostDisk`).
+Cutting every log to its saved commit index instead loses a record no disk
+lost (`FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg`). With two terms
+no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
+`FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
+floor, does not), and the loss above can happen
+(`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
+
+What the implementation stores for this:
+
+- **Each copy keeps its commit index on disk.** It is the log id openraft
+  passes to `save_committed`, kept in the shard's Raft log next to the
+  records (the segment store's commit offset, with the term of the entry
+  there). It is written behind the call and is not fsynced before the
+  commit or the client's acknowledgement: after a crash it can read back
+  older, never newer, and a stale one only cuts a base shorter. It never
+  names an entry the log does not hold: an open lowers a saved id whose
+  entry a crash took and refuses one whose index holds another term's
+  entry, and the log refuses a cut below it (`BelowCommit`). A rotated
+  copy keeps it with what is left of its records. A member starting a new
+  epoch saves the end of the base (or of its common prefix with the base,
+  for a learner) as its commit index before it takes an append (#2419), so
+  a late append of the old epoch cannot cut the base either. The model's
+  `FelixRaftReformEpochNotChecked.cfg` drops the epoch check on appends
+  and still passes, and it passes only because of this save.
+- **The control plane records the floor as a log id**: index, epoch and
+  term. A report replaces it only with a higher index. A re-form does
+  not change it: a copy whose entry at the floor's index is a gap that a
+  later re-form padded counts as holding the floor's entry, since its
+  log up to there is that epoch's base.
+- **The command reads, from each copy,** its last log id, the epoch and
+  term of the entry at the floor's index, if it holds one, and its saved
+  commit index.
 
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
@@ -547,7 +626,109 @@ already documents. Nothing else changes with the policy: the log is still
 fsynced under group commit, the commit index counts fsynced copies only,
 and subscribers are still fed up to `read_bound`.
 
-**`Quorum` on a `Periodic` stream.** Decided (issue #2167): the acknowledgement waits until a majority has written the record, or until it is committed, whichever is first. Each follower's node layer sends the leader its written position (last log id) after the adapter's `append` has handed the records to the kernel. The leader counts a member when that log id carries the leader's own term and is at or past the record, and counts itself at its own written position. The majority is of the voters of the effective membership, both halves of a joint one, never learners. This count releases the publisher's acknowledgement and nothing else. The commit index, votes, `read_bound`, apply, the offset floor and the root's log marks use fsynced positions only, so no member can come to hold a different record at a committed offset. With no power cut, an acknowledged record is in every later leader's log. It can be lost only if a copy that held it loses power before its fsync and a majority then elects without a copy that still holds it. At RF 3 that is one follower's power cut and then the leader failing before it re-replicates. The window is one group-commit fsync. The offset is then given to another record, which no subscriber saw. On a stream with fsync on commit, `Quorum` waits for the commit index.
+**`Quorum` on a `Periodic` stream.** Decided (issue #2167): the
+acknowledgement waits until a majority has written the record, or until it
+is committed, whichever is first. This count releases the publisher's
+acknowledgement and nothing else. The commit index, `read_bound`, apply,
+the offset floor and the root's log marks use fsynced positions only, so
+no member can come to hold a different record at a committed offset. On a
+stream with fsync on commit, `Quorum` waits for the commit index.
+
+Votes are the exception, and must be. A voter compares the candidate's
+last log id with the last entry its own log has accepted, written or not
+(openraft's `handle_vote_req`). Were it to compare fsynced positions, a
+follower that had written an acknowledged record but not yet fsynced it
+would vote for a candidate without the record, and that candidate's first
+append would cut the record from the follower: an acknowledged record lost
+with no crash at all.
+
+A follower's answer to an append comes after its fsync, so its written
+position travels in a message of its own (`raft::RaftEngine::await_quorum_ack`,
+`crates/server/felix-replication/src/raft/written.rs`):
+
+1. A leader's append that carries entries asks the follower for a report.
+   It asks only once a publisher on the shard has waited on the written
+   count, so a shard whose writes never do costs its followers no message.
+   The first such wait finds no report and ends at the commit.
+2. The follower hands the append to openraft and watches its log's written
+   position while openraft's answer waits for the fsync. Once the log holds
+   the append's last entry, the follower sends the leader its member id and
+   the id (term and index) of the last entry it has written. If the fsync
+   is done first, the append's answer already says more, and no report is
+   sent.
+3. The leader keeps the furthest position each member has named.
+
+The leader counts a member as having written a record when all of these
+hold:
+
+- **Its own word.** The report names the member. Nothing is inferred for a
+  member that has said nothing, and a lost report only means the write
+  waits for the commit.
+- **The leader's term.** The log id in the report carries the term the
+  record was written in, and its index is at or past the record. An entry
+  of a term comes from that term's one leader, so such a log matches the
+  leader's up to there. A log id of another term, older or newer, says
+  nothing about what the log holds below it, however high its index.
+- **A voter.** Only voters of the leader's effective membership count,
+  read from a state of the leader's log that already holds the record. A
+  joint membership needs a majority of both halves. openraft goes through
+  one only when a majority of the old voters could miss every majority of
+  the new ones; otherwise the log holds one voter set and that set is
+  counted. A learner never counts, and a leader that is not a voter does
+  not count itself.
+
+The leader counts itself, since `propose` returned once its own copy was
+written. A deposed leader that has not heard of the new term yet can
+still acknowledge this way. That is safe: the written majority it counted
+overlaps every majority that can elect a later leader, and a voter refuses
+a candidate whose log is behind its own, unsynced entries included.
+
+What the acknowledgement promises, and what it does not
+(`docs/formal/FelixRaftWritten.tla`):
+
+- With no power cut, an acknowledged record is in every later leader's
+  log: a killed broker keeps what it wrote. The model has checked this to
+  the end for one term with process crashes (`FelixRaftWrittenCrash.cfg`),
+  across a change of leader with a power cut (`FelixRaftWrittenFailover.cfg`)
+  and across a membership change (`FelixRaftWrittenJoint.cfg`). Two terms
+  with two writes (`FelixRaftWrittenTerms.cfg`) and the membership change
+  across a change of leader (`FelixRaftWrittenJointFailover.cfg`) found no
+  violation but have not finished.
+- A failed flush counts as a power cut for that copy. A Raft log is fsync
+  on commit, and a log whose flush failed is cut back to its last sync when
+  it restarts, on the grounds that nothing past it was acknowledged. A
+  written-majority acknowledgement makes that untrue, so the copy comes
+  back without the record exactly as if it had lost power. Before routing
+  calls `await_quorum_ack`, such a copy must not vote with the cut log
+  (issue #2469).
+- It can be lost only if a copy that held it loses power, or fails a
+  flush, before its fsync and a majority then elects without a copy that
+  still holds it. At RF 3 one power cut is enough. The leader and one follower hold the record. One
+  of the two loses power and comes back without it, and it and the third
+  broker elect a leader while the last copy is unreachable. The copy that
+  loses power can be the leader's own. The window is one group-commit
+  fsync. The offset is then given to another record, which no subscriber
+  saw, because subscribers are fed committed records only.
+- 0.7 does not lose the record in that case. Its follower comes back from
+  a machine crash under a new storage identity and is not counted, so the
+  shard stays closed until the copy that holds the record returns
+  ([Replication design](replication-design.md), "Storage identities").
+  Under Raft a power cut rotates nothing, and the group elects. Whether
+  to close that gap before a shard is routed to Raft is issue #2423.
+
+> `crates/server/felix-replication/src/raft/tests/written.rs`,
+> `a_quorum_write_is_acknowledged_once_a_majority_has_written_it`,
+> `a_learner_that_has_written_does_not_make_a_majority`,
+> `a_majority_of_one_half_of_a_joint_membership_is_not_enough`,
+> `a_report_from_another_term_does_not_make_a_majority`,
+> `a_deposed_leader_acknowledges_nothing_on_reports`,
+> `a_follower_that_has_written_a_record_refuses_a_candidate_without_it`,
+> `a_majority_is_the_leader_and_the_voters_that_said_so`,
+> `a_learners_report_is_not_counted`,
+> `a_leader_outside_the_voters_does_not_count_itself`,
+> `a_joint_membership_needs_both_halves`,
+> `a_report_at_another_term_is_not_counted` and
+> `the_furthest_report_of_each_sender_is_kept`.
 
 Only openraft writes to a Raft shard's log. The blank entry, membership
 entries and publishes all get their index from openraft, so they cannot
@@ -1081,7 +1262,9 @@ the log except through openraft ("Writing through openraft").
 A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
-it ("Two signals from one append"). If
+it: `await_quorum_ack` is `await_commit` raced with the written count
+("Two signals from one append"). The publish path does not call it yet
+and answers every publisher at the commit. If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
@@ -1290,7 +1473,15 @@ change has to:
   is not deposed, so each publish leaves a task waiting until the partition
   heals (#2428);
 - move the ring's start past a gap batch, so a reader resuming while the
-  ring is empty reads that batch from the log instead of missing it (#2428).
+  ring is empty reads that batch from the log instead of missing it (#2428);
+- answer a `Quorum` publisher on a stream that does not fsync on commit
+  from `await_quorum_ack`. `propose_publish` answers at the commit today,
+  and live delivery stays at the commit either way. The answer has to wait
+  for the batch's turn in `ProposalOrder`, because written-count wakeups
+  arrive in no particular order;
+- keep a Raft copy whose flush failed from voting with its cut log, by
+  restarting it as a rotated copy or refusing to open it, before
+  `await_quorum_ack` is wired (#2469).
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
@@ -1352,20 +1543,50 @@ operator command ("Re-forming a group"). See Questions, 1.
 
 ## Cache and counters
 
-A cache shard's group has one log holding puts, deletes, counter deltas and
-counter checkpoints (engine page, Decisions, 4). For track 4 that means:
+A cache shard's group has one log holding puts, deletes and counter deltas
+(engine page, Decisions, 4). For track 4 that means:
 
 - **One wait.** A cache or counter write waits on `await_commit` at its
   position in the one log.
 - **The state machine is the projection.** The cache index and the counter
   sums are rebuilt from a snapshot plus the log, as the cache index is
   today.
-- **Compaction is proposed by the leader.** Copies of live records and the
-  counter checkpoint are entries. Followers apply them and do not compact on
-  their own. Dropping old segments is Raft's purge, done only behind a
-  durable snapshot.
-- **The snapshot** is the live cache records and one counter checkpoint, as
-  of one log id.
+- **Compaction is each member's own snapshot.** The leader proposes no
+  compaction entries: no copies of live records and no counter checkpoints.
+  A member snapshots the state it has applied and purges its log up to that
+  snapshot. The snapshot is a function of the applied entries alone, so two
+  members that snapshot at the same index hold the same state. It writes
+  nothing to the log, so offsets never differ between members.
+- **The snapshot** is the applied state as of one log id: the cache records
+  that are unexpired at the log's time, with their values, versions and
+  expiries, the counter sums, the
+  log's time (the stamp of the last stamped entry applied) and the table of
+  applied request ids with their answers.
+- **Apply never reads a clock.** The leader stamps each entry, no earlier
+  than the last stamped entry in its log (the uncommitted tail it inherited
+  included, blank and membership entries skipped), or the snapshot's time
+  when its log holds none. Expiry in apply is judged by the entry's stamp.
+- **Expiry is a conditional delete.** The leader proposes a delete that names
+  the version it saw expire. A key written again meanwhile keeps its value.
+- **A read never serves an expired key.** A read evaluates expiry at the
+  leader's read time, the later of its clock and the log's time. If that
+  finds a key expired that the log's time does not, the leader commits the
+  conditional delete first and answers after applying it.
+- **An expired record is absent to every write.** A put-if-absent takes the
+  key, a delete answers "absent", and a put or delete that names a version
+  finds none. Each judges expiry at its own entry's stamp. A snapshot leaves
+  out records that had expired at the log's time, so a member that restored
+  one may lack a record that a member replaying the log still holds. Because
+  no write treats an expired record as present, both give the same answers.
+- **A put or a delete can name a version.** It applies only if the key holds
+  that version, unexpired, at the entry's stamp. Otherwise it is refused
+  with the current version, or none.
+- **Every write carries a request id** and is applied once. A retry gets the
+  answer the first commit gave. The id must name the client across
+  connections and leaders (a producer id and a sequence).
+
+`FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
+cache state machine").
 
 ## Moving a shard from the hybrid to Raft
 
@@ -1473,6 +1694,33 @@ checkpoint. Whether a key is live is judged from the log at `N`, by the
 time the record at `N` carries, and never from a copy's own clock, so two
 copies with skewed clocks compute the same digest. A voter's base snapshot is that state, and the log below `N` is
 never compared.
+
+**Fsync on commit, on every copy.** The switch needs every copy of the
+shard on `OnCommit`, not only the seal leader. A copy that is not neither
+answers the seal's fence nor acknowledges `N`. Otherwise a `Periodic`
+follower could acknowledge `N`, be recorded as a voter, and then never
+start, because a Raft log refuses to open unless it fsyncs on commit
+(`crates/server/felix-storage/src/raft_log.rs`). Today there is no per-stream fsync policy: the mode is
+one broker-wide setting read at start (`FELIX_DURABLE_FSYNC_MODE`), and the
+default is `Periodic` at 250 ms. Neither the control plane's shard record
+nor `felix-replication` holds it. So each copy reports its fsync mode as a
+new field, the mode cannot change during a switch without a restart, and a
+cluster on the default must restart every broker on `on_commit` before any
+shard switches. That is one of the `shard_raft` prerequisites.
+
+**Only the sealing copy leads.** A follower takes catch-up records for the
+seal only from the copy that sealed. Catch-up batches carry the leader's
+copy id, and the sealed promise stores it beside the follower's own. A seal
+leader that was wiped comes back under a new copy id, so no follower takes
+records from it or cuts its tail to it. This is the same storage identity
+rule the hybrid already follows for a leader that lost records: it "leads
+nothing from the copy it led" (`replication-design.md`, "Failure model").
+
+**What a sealed leader still serves.** The seal leader keeps serving
+catch-up and rebuilds below `N` while sealed. A copy that holds the sealed
+promise refuses hybrid batches, rebuild writes and ballots for the shard;
+a copy without it, such as a wiped follower back under a new id, can still
+catch up from the seal leader and acknowledge `N` under its new id.
 
 The shard is closed from the seal until the Raft leader opens: one hybrid
 promotion plus one Raft election. Shards switch a few at a time, paced like
@@ -1605,6 +1853,22 @@ live brokers are declared dead and commit in the old epoch before they
 learn of the new one. Add the restored RF 1 copy that starts by itself,
 with a twin where a second broker is placed and it must not.
 
+**Written-majority acknowledgements.** Modelled in `FelixRaftWritten.tla`:
+a follower's written report, the leader's count, process crashes, power
+cuts and one joint change. It checks that an acknowledged record is missing
+from no broker that could win an election unless a power cut took it from a
+copy before its fsync, and that with no power cut it is never missing.
+Twins that fail: a learner's report counted, a report counted whatever its
+term, one half of a joint configuration taken as enough, and the commit
+index counting written reports. One expected violation is pinned: every
+rule on and one power cut, which is the loss "Two signals from one append"
+states.
+The one-term configurations, the change of leader
+(`FelixRaftWrittenFailover.cfg`) and the joint change
+(`FelixRaftWrittenJoint.cfg`) run to the end. Two terms with two writes and
+the joint change across a change of leader have found no violation but have
+not finished (`docs/formal/README.md`).
+
 **Leader leases.** Add a clock per broker with bounded drift, the leader's
 lease from the send time of its last majority-acknowledged message, and the
 follower's vote refusal from its receive time. Add `Leader`
@@ -1635,7 +1899,7 @@ off and stays registered as an expected violation.
 | --- | --- | --- | --- |
 | #2303 | The root sequence, held by the run witness and the control plane. Marks name their copy id | #2250 | A new knob that drops the sequence. With the rule on, the same-run root restore passes every identity check while the witness exists. Must still fail: the same config with the knob set, and the marks without a copy id (`MarkForgetsCopy`). Two residuals are pinned as expected violations: with a witness, a restore younger than one mark interval; without one, a restore newer than the last sequence the control plane stored, with the control plane down while the broker votes |
 | #2304 | No report is stored. The command reads each reachable copy when it runs and again after the copy has stopped, and `apply` skips a group that changed since the plan | #2250 | The automatic path and its `JoinKeepsReport` twin are removed with the stored reports. Rotated copies are still read (`RotatedNotWaited` off). Must still fail: the twin where copies report without stopping |
-| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact and one term; with two terms it is pinned (#2402). A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
+| #2305 | Raft logs are fsync on commit. The offset floor for every re-form, which is still needed when re-forming is operator-only | #2248, #2250 | Rotation only by disk loss or restore, since a power cut no longer rotates. A new floor variable. The two-rotation config passes `OffsetNeverReused` with the floor exact, with one term and with two. The two-term case needs the floor to be a log id and a saved commit index per copy (#2402); a twin with an offset-only floor violates it. A twin whose floor is the last value the control plane stored, with commits after it, is pinned as the accepted residual |
 | #2307 | A restarted member grants no vote for `election_timeout_max` | #2249 | `RestartForgetsWindow` off: the restart lease config passes `LeaseExclusive`. Must still fail: the twin with no window after a restart (`FelixRaftLeaseRestartForgets.cfg`). Checked against openraft 0.10.0, which renews the window for a follower's committed stored vote: with the hold off and that renewal on the model passes too (`FelixRaftLeaseRestartRenews.cfg`), so no trace goes through a vote that is not committed. The hold stays, as the guard that does not rest on the engine |
 | #2311 | The control plane records the target first and keeps every broker placed in the epoch, removed ones included. The command lists all of them and refuses while one is unreachable and not declared dead | #2235, #2250 | `WaitPlaced` restated as the command's list: the stale-membership config with two lost disks and no client write passes `AckedSurvive` when the target is reached. The same with a move and the move back has not finished a run yet (no violation in the states explored so far). The same with a client write has not finished a run, so nothing is claimed for it yet. Must still fail: the same with the target left off the list, and the two moves with removed brokers left off (`PlacedForgotten`) |
 
@@ -1796,11 +2060,11 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
-| 6 (#2238) | Cache and counters in one group: state machine, proposed compaction, snapshot | 4 | Behind the feature |
+| 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |
 | 9 (#2242) | The switch from the hybrid: seal with digest, base and voters by compare-and-swap, `shard_raft` fleet feature, and the switch in the simulator with power loss | 4, 5, 6, 12 | Gated by a fleet feature nobody finalizes before the gate passes. Needs the model's switch config and the simulator runs first |
@@ -2014,9 +2278,11 @@ as well, though the leader does not wait for its answer. If the member
 matches, it sleeps like the others. If it is behind, its refusal wakes the
 leader, which catches it up before proposing again. If the request or the
 refusal is lost, the vote hold under "Waking" keeps the other members from
-electing it while the leader is healthy. A left-out member can still be
-asleep and behind for a while: it accepted an older request, and the newer
-one never reached it. The leader's next audit round finds that and
+electing it while the leader is healthy. The hold is the rule that keeps the
+leader: the model passes with the request to the left-out member, the waking
+refusal or the audit's ask turned off, which only cost a pre-vote round or a
+later catch-up. A left-out member can still be asleep and behind for a
+while: it accepted an older request, and the newer one never reached it. The leader's next audit round finds that and
 replicates. The level check for a sleeping group is therefore: every member
 the leader counted is level, and a member it left out is level within one
 audit period. See Questions, 14 (issue #2310).

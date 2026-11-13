@@ -107,6 +107,46 @@
 (*                                                                         *)
 (* The passing configurations run with both rules on (issue 2310).         *)
 (*                                                                         *)
+(* Rules of the second design on issue 2239, each with a knob that turns   *)
+(* it on (the older configurations keep them off):                        *)
+(*                                                                         *)
+(*   PreVote           -- a member runs a pre-vote round before it raises *)
+(*                        its term. A member grants once its own window   *)
+(*                        has lapsed; a sleeping leader's has lapsed too  *)
+(*                        (openraft's handle_pre_vote_req).               *)
+(*   VoteHold          -- a vote or pre-vote request that wakes a member  *)
+(*                        is dropped, and the member is held and asks the *)
+(*                        leader's broker first. A held member drops      *)
+(*                        every vote and pre-vote request.                *)
+(*   LeftOutAsked      -- the sleep request also goes to a member the     *)
+(*                        leader left out.                                *)
+(*   RefusalWakes      -- a refused sleep request wakes the leader.       *)
+(*   AuditAsks         -- a follower woken by its audit timer asks first, *)
+(*                        as a liveness wake does.                        *)
+(*   LeaseLapses       -- a leader's lease lapses while it sleeps, and    *)
+(*                        openraft refuses a write until a majority took  *)
+(*                        a message sent after the wake. The write waits  *)
+(*                        for that heartbeat round.                       *)
+(*   MaxTtlWakes       -- a cache leader's expiry timer fires while it    *)
+(*                        sleeps; it wakes and proposes the delete. The   *)
+(*                        delete is FelixRaftCache.tla's: it names the    *)
+(*                        version the timer saw, and removes only that.   *)
+(*                        A write can reach the leader between the timer  *)
+(*                        and the delete (ExpiryKeepsNewer).              *)
+(*                                                                         *)
+(* And their twins, each dropping one rule:                               *)
+(*                                                                         *)
+(*   DroppedPreVoteGrants -- a pre-vote the hold drops counts as granted, *)
+(*                        which openraft's default `pre_vote` does.       *)
+(*   WriteBeforeRound  -- the first write after a wake is proposed at     *)
+(*                        once, and openraft refuses it (LeaseExpired).   *)
+(*   NoTtlWake         -- the expiry timer does not wake the leader.      *)
+(*   ExpiryUnconditional -- the expiry delete removes whatever value the  *)
+(*                        key holds when it applies.                      *)
+(*   MaxAuditsLost     -- not a rule but a fault: a sleeping leader's     *)
+(*                        audit heartbeat to a follower is lost, so the   *)
+(*                        follower's audit fires under a healthy leader.  *)
+(*                                                                         *)
 (* One gap is left as the design has it: a leader leaves out a member      *)
 (* whose broker it does not support. After a false alarm that member is    *)
 (* alive, gets no heartbeat from the sleeping leader and campaigns, or     *)
@@ -115,14 +155,15 @@
 (* only about a leader's broker (AlarmsOnFollowers off).                   *)
 (*                                                                         *)
 (* Abstracted: storage (an append is durable, FelixRaft.tla covers the     *)
-(* adapter), snapshots, membership changes, read rounds, leases, ranked    *)
-(* starts and the per-tick election cap (they shape timing only), and      *)
-(* pre-vote. A message is one atomic step between two brokers, except the  *)
-(* sleep request. The leader knows a follower's commit index exactly. Only *)
-(* a leader's broker dies, and a dead broker stays dead. A disk stall is   *)
-(* a death here: the broker goes silent. Only sleep requests and answers   *)
-(* are lost. A leader replicates entries a follower lacks without ticks,   *)
-(* but a commit index reaches a follower only on a heartbeat.              *)
+(* adapter), snapshots, membership changes, read rounds, leases beyond     *)
+(* their lapse (LeaseLapses), ranked starts and the per-tick election cap  *)
+(* (they shape timing only). A message is one atomic step between two      *)
+(* brokers, except the sleep request. The leader knows a follower's commit *)
+(* index exactly. Only a leader's broker dies, and a dead broker stays     *)
+(* dead. A disk stall is a death here: the broker goes silent. Only sleep  *)
+(* requests and answers are lost. A leader replicates entries a follower   *)
+(* lacks without ticks, but a commit index reaches a follower only on a    *)
+(* heartbeat.                                                              *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -149,7 +190,19 @@ CONSTANTS
     RestartNoHold,
     HoldTooShort,
     HeartbeatKeepsProposal,
-    SleepUnsupported
+    SleepUnsupported,
+    PreVote,
+    VoteHold,
+    DroppedPreVoteGrants,
+    LeftOutAsked,
+    RefusalWakes,
+    AuditAsks,
+    MaxAuditsLost,
+    LeaseLapses,
+    WriteBeforeRound,
+    MaxTtlWakes,
+    NoTtlWake,
+    ExpiryUnconditional
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -169,12 +222,17 @@ VARIABLES
     sup,        \* sup[p][q]: p supports q
     unseen,     \* <<p, q>>: p has not noticed q's restart
     used,       \* budgets spent
-    hist        \* history flags for the checks and witnesses
+    hist,       \* history flags for the checks and witnesses
+    heard,      \* heard[l]: who took a message from leader l since it last woke or won
+    pre,        \* pre[c]: pre-votes a pre-candidate holds, itself included; {} when none
+    sleptWith,  \* sleptWith[l]: the members l counted when it last slept
+    ttlDue      \* the version a due expiry delete names, NoDel when none is due
 
 raft == <<role, vote, granted, elected, log, match, commit, committed, acked>>
 sleep == <<awake, hold, prop, reqs>>
 liveness == <<up, sup, unseen>>
-vars == <<raft, sleep, liveness, used, hist>>
+extra == <<heard, pre, sleptWith, ttlDue>>
+vars == <<raft, sleep, liveness, used, hist, extra>>
 
 Symm == Permutations(Servers)
 
@@ -182,7 +240,18 @@ Min(a, b) == IF a <= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
 Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
-Blank(t) == [term |-> t, val |-> 0]
+\* An entry's `del` is the version an expiry delete names.
+NoDel == 0 - 1
+Blank(t) == [term |-> t, val |-> 0, del |-> NoDel]
+
+\* The value the one cache key holds after the first n entries of lg. A
+\* write's value is its version, and 0 is the key as it was at the start.
+RECURSIVE Held(_, _)
+Held(lg, n) ==
+    IF n = 0 THEN 0
+    ELSE IF lg[n].val # 0 THEN lg[n].val
+    ELSE IF lg[n].del # NoDel /\ (ExpiryUnconditional \/ Held(lg, n - 1) = lg[n].del) THEN 0
+    ELSE Held(lg, n - 1)
 NoProp == [asked |-> {}, answered |-> {}]
 
 \* openraft's order on votes with one leader per term, as in FelixRaft.tla.
@@ -206,6 +275,9 @@ Leads(l) == l \in up /\ role[l] = "leader"
 HearsLeader(c) ==
     \E l \in Servers \ {c} : Leads(l) /\ awake[l] /\ VoteGE(vote[l], vote[c])
 
+\* A majority took a message from l since it last woke: openraft's lease.
+Fresh(l) == Quorum(heard[l] \cup {l})
+
 Init ==
     \E l \in Servers :
         /\ role = [s \in Servers |-> IF s = l THEN "leader" ELSE "follower"]
@@ -225,8 +297,14 @@ Init ==
         /\ sup = [p \in Servers |-> [q \in Servers |-> TRUE]]
         /\ unseen = {}
         /\ used = [writes |-> 0, sleeps |-> 0, audits |-> 0, deaths |-> 0,
-                   restarts |-> 0, alarms |-> 0, lost |-> 0, asks |-> 0, dozes |-> 0]
-        /\ hist = [excuse |-> FALSE, diedAsleep |-> FALSE, wroteAsleep |-> FALSE]
+                   restarts |-> 0, alarms |-> 0, lost |-> 0, asks |-> 0, dozes |-> 0,
+                   auditsLost |-> 0, ttls |-> 0]
+        /\ hist = [excuse |-> FALSE, diedAsleep |-> FALSE, wroteAsleep |-> FALSE,
+                   refused |-> FALSE, midHandshake |-> FALSE]
+        /\ heard = [s \in Servers |-> IF s = l THEN Servers ELSE {}]
+        /\ pre = [s \in Servers |-> {}]
+        /\ sleptWith = [s \in Servers |-> {}]
+        /\ ttlDue = NoDel
 
 ----------------------------------------------------------------------------
 \* Raft. Only Campaign and the heartbeats need a tick.
@@ -238,10 +316,73 @@ Campaign(c) ==
     /\ role[c] # "leader"
     /\ vote[c].term < MaxTerm
     /\ ~HearsLeader(c)
+    /\ PreVote => Quorum(pre[c])
     /\ vote' = [vote EXCEPT ![c] = [term |-> vote[c].term + 1, node |-> c, committed |-> FALSE]]
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {c}]
-    /\ UNCHANGED <<elected, log, match, commit, committed, acked, sleep, liveness, used, hist>>
+    /\ pre' = [pre EXCEPT ![c] = {}]
+    /\ UNCHANGED <<elected, log, match, commit, committed, acked, sleep, liveness, used, hist,
+                   heard, sleptWith, ttlDue>>
+
+\* The pre-vote round, before the term is raised.
+PreCampaign(c) ==
+    /\ PreVote
+    /\ c \in up
+    /\ awake[c]
+    /\ hold[c] = "none"
+    /\ role[c] # "leader"
+    /\ vote[c].term < MaxTerm
+    /\ ~HearsLeader(c)
+    /\ pre[c] = {}
+    /\ pre' = [pre EXCEPT ![c] = {c}]
+    /\ UNCHANGED <<raft, sleep, liveness, used, hist, heard, sleptWith, ttlDue>>
+
+\* A pre-vote request. It wakes a sleeping member. openraft grants once the
+\* member's window has lapsed, which it has for any sleeper, a sleeping
+\* leader included. The hold drops it first; the network then answers Err,
+\* unless DroppedPreVoteGrants, where the drop reads as a grant. A refusal
+\* that carries a higher vote is adopted, uncommitted, and ends the round
+\* (openraft's handle_pre_vote_resp): without it a member with the longer
+\* log and one with the higher term refuse each other forever.
+PreVoteReq(s, c) ==
+    LET wakes == ~awake[s]
+        held == VoteHold /\ (wakes \/ hold[s] # "none")
+        engine == /\ vote[c].term + 1 > vote[s].term
+                  /\ \/ Last(c).term > Last(s).term
+                     \/ Last(c).term = Last(s).term /\ Last(c).idx >= Last(s).idx
+                  /\ ~(awake[s] /\ role[s] = "leader")
+                  /\ wakes \/ ~HearsLeader(s)
+        grant == IF held THEN DroppedPreVoteGrants ELSE engine
+        adopt == /\ ~held /\ ~grant
+                 /\ VoteGE(vote[s], vote[c]) /\ vote[s] # vote[c]
+    IN /\ PreVote
+       /\ s # c
+       /\ s \in up /\ c \in up
+       /\ pre[c] # {}
+       /\ s \notin pre[c]
+       /\ wakes \/ grant \/ adopt
+       /\ pre' = IF grant THEN [pre EXCEPT ![c] = @ \cup {s}]
+                 ELSE IF adopt THEN [pre EXCEPT ![c] = {}] ELSE pre
+       /\ vote' = IF adopt THEN [vote EXCEPT ![c] = [vote[s] EXCEPT !.committed = FALSE]]
+                  ELSE vote
+       /\ role' = IF adopt THEN [role EXCEPT ![c] = "follower"] ELSE role
+       /\ granted' = IF adopt THEN [granted EXCEPT ![c] = {}] ELSE granted
+       /\ awake' = [awake EXCEPT ![s] = TRUE]
+       /\ hold' = IF VoteHold /\ wakes /\ role[s] # "leader"
+                  THEN [hold EXCEPT ![s] = "ask"] ELSE hold
+       /\ UNCHANGED <<elected, log, match, commit, committed, acked,
+                      prop, reqs, liveness, used, hist, heard, sleptWith, ttlDue>>
+
+\* A vote request that wakes a sleeper is dropped, and the member is held.
+VoteWakesHeld(s, c) ==
+    /\ VoteHold
+    /\ s # c
+    /\ s \in up /\ c \in up
+    /\ role[c] = "candidate"
+    /\ ~awake[s]
+    /\ awake' = [awake EXCEPT ![s] = TRUE]
+    /\ hold' = IF role[s] # "leader" THEN [hold EXCEPT ![s] = "ask"] ELSE hold
+    /\ UNCHANGED <<raft, prop, reqs, liveness, used, hist, extra>>
 
 \* The request wakes the voter and the answer wakes the candidate.
 GrantVote(s, c) ==
@@ -249,6 +390,7 @@ GrantVote(s, c) ==
     /\ s \in up /\ c \in up
     /\ role[c] = "candidate"
     /\ s \notin granted[c]
+    /\ VoteHold => awake[s] /\ hold[s] = "none"
     /\ VoteGE(vote[c], vote[s])
     /\ \/ Last(c).term > Last(s).term
        \/ Last(c).term = Last(s).term /\ Last(c).idx >= Last(s).idx
@@ -258,7 +400,8 @@ GrantVote(s, c) ==
           /\ granted' = [granted EXCEPT ![c] = @ \cup {s}, ![s] = IF rose THEN {} ELSE @]
           /\ prop' = [prop EXCEPT ![s] = IF rose THEN NoProp ELSE @]
     /\ awake' = [awake EXCEPT ![s] = TRUE, ![c] = TRUE]
-    /\ UNCHANGED <<elected, log, match, commit, committed, acked, hold, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<elected, log, match, commit, committed, acked, hold, reqs, liveness, used, hist,
+                   extra>>
 
 BecomeLeader(c) ==
     /\ c \in up
@@ -269,7 +412,11 @@ BecomeLeader(c) ==
     /\ elected' = elected \cup {<<vote[c].term, c>>}
     /\ log' = [log EXCEPT ![c] = Append(@, Blank(vote[c].term))]
     /\ match' = [match EXCEPT ![c] = [t \in Servers |-> 0]]
-    /\ UNCHANGED <<granted, commit, committed, acked, sleep, liveness, used, hist>>
+    /\ heard' = [heard EXCEPT ![c] = {}]
+    /\ hist' = [hist EXCEPT !.midHandshake =
+                   @ \/ reqs # {} \/ \E s \in Servers : prop[s].asked # {}]
+    /\ UNCHANGED <<granted, commit, committed, acked, sleep, liveness, used,
+                   pre, sleptWith, ttlDue>>
 
 \* What any message from a leader does to the member it reaches: the member
 \* wakes, takes the leader's vote and counts as having heard a leader.
@@ -279,6 +426,8 @@ Hears(l, f) ==
     /\ granted' = [granted EXCEPT ![f] = {}]
     /\ awake' = [awake EXCEPT ![f] = TRUE]
     /\ hold' = [hold EXCEPT ![f] = "none"]
+    /\ heard' = [heard EXCEPT ![l] = @ \cup {f}]
+    /\ pre' = [pre EXCEPT ![f] = {}]
 
 \* A heartbeat from an awake leader, where it changes something. One sent
 \* while a sleep proposal is open closes the proposal: a follower that
@@ -288,11 +437,13 @@ Heartbeat(l, f) ==
     /\ Leads(l) /\ awake[l]
     /\ f \in up
     /\ VoteGE(vote[l], vote[f])
-    /\ ~awake[f] \/ hold[f] # "none" \/ vote[f] # vote[l]
+    /\ \/ ~awake[f] \/ hold[f] # "none" \/ vote[f] # vote[l]
+       \/ LeaseLapses /\ f \notin heard[l]
     /\ Hears(l, f)
     /\ prop' = [prop EXCEPT ![f] = NoProp,
                             ![l] = IF HeartbeatKeepsProposal THEN @ ELSE NoProp]
-    /\ UNCHANGED <<elected, log, match, commit, committed, acked, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<elected, log, match, commit, committed, acked, reqs, liveness, used, hist,
+                   sleptWith, ttlDue>>
 
 \* AppendEntries with one entry, and the follower's answer. The leader's
 \* replication stream needs no tick, so a sleeping leader still sends what a
@@ -308,7 +459,8 @@ Replicate(l, f) ==
           /\ match' = [match EXCEPT ![l][f] = p + 1]
     /\ Hears(l, f)
     /\ prop' = [prop EXCEPT ![f] = NoProp]
-    /\ UNCHANGED <<elected, commit, committed, acked, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<elected, commit, committed, acked, reqs, liveness, used, hist,
+                   sleptWith, ttlDue>>
 
 Agree(l, k) == {l} \cup {j \in Servers : match[l][j] >= k}
 
@@ -325,7 +477,7 @@ AdvanceCommit(l) ==
                 ELSE committed \o [x \in 1..(k - Len(committed)) |->
                         [e |-> log[l][Len(committed) + x], by |-> vote[l].term]]
           /\ acked' = acked \cup {log[l][i].val : i \in {j \in (commit[l] + 1)..k : log[l][j].val # 0}}
-    /\ UNCHANGED <<role, vote, granted, elected, log, match, sleep, liveness, used, hist>>
+    /\ UNCHANGED <<role, vote, granted, elected, log, match, sleep, liveness, used, hist, extra>>
 
 \* The commit index rides on a heartbeat, so the leader must be awake.
 LearnCommit(l, f) ==
@@ -339,7 +491,10 @@ LearnCommit(l, f) ==
     /\ awake' = [awake EXCEPT ![f] = TRUE]
     /\ hold' = [hold EXCEPT ![f] = "none"]
     /\ prop' = [prop EXCEPT ![l] = IF HeartbeatKeepsProposal THEN @ ELSE NoProp]
-    /\ UNCHANGED <<role, vote, granted, elected, log, match, committed, acked, reqs, liveness, used, hist>>
+    /\ heard' = [heard EXCEPT ![l] = @ \cup {f}]
+    /\ pre' = [pre EXCEPT ![f] = {}]
+    /\ UNCHANGED <<role, vote, granted, elected, log, match, committed, acked, reqs, liveness, used, hist,
+                   sleptWith, ttlDue>>
 
 \* An awake leader or candidate reaches a member of a later term and
 \* becomes a follower in that term.
@@ -354,18 +509,56 @@ StepDown(i, j) ==
     /\ granted' = [granted EXCEPT ![i] = {}]
     /\ prop' = [prop EXCEPT ![i] = NoProp]
     /\ awake' = [awake EXCEPT ![j] = TRUE]
-    /\ UNCHANGED <<elected, log, match, commit, committed, acked, hold, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<elected, log, match, commit, committed, acked, hold, reqs, liveness, used, hist,
+                   extra>>
 
-\* A write wakes the leader and closes its sleep proposal.
+\* A write wakes the leader and closes its sleep proposal. With LeaseLapses
+\* openraft refuses it until a majority took a message sent since the wake,
+\* so the write waits for that heartbeat round, or with WriteBeforeRound is
+\* proposed at once and refused.
 AppendRecord(l) ==
     /\ Leads(l)
     /\ used.writes < MaxWrites
-    /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> used.writes + 1])]
-    /\ awake' = [awake EXCEPT ![l] = TRUE]
+    /\ IF ~LeaseLapses \/ Fresh(l)
+       THEN /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> used.writes + 1, del |-> NoDel])]
+            /\ awake' = [awake EXCEPT ![l] = TRUE]
+            /\ prop' = [prop EXCEPT ![l] = NoProp]
+            /\ used' = [used EXCEPT !.writes = @ + 1]
+            /\ hist' = [hist EXCEPT !.wroteAsleep = @ \/ ~awake[l]]
+            /\ UNCHANGED <<role, vote, granted, elected, match, commit, committed, acked, hold, reqs,
+                           liveness, extra>>
+       ELSE IF WriteBeforeRound
+       THEN /\ awake' = [awake EXCEPT ![l] = TRUE]
+            /\ prop' = [prop EXCEPT ![l] = NoProp]
+            /\ used' = [used EXCEPT !.writes = @ + 1]
+            /\ hist' = [hist EXCEPT !.refused = TRUE, !.wroteAsleep = @ \/ ~awake[l]]
+            /\ UNCHANGED <<raft, hold, reqs, liveness, extra>>
+       ELSE /\ ~awake[l]
+            /\ awake' = [awake EXCEPT ![l] = TRUE]
+            /\ prop' = [prop EXCEPT ![l] = NoProp]
+            /\ hist' = [hist EXCEPT !.wroteAsleep = TRUE]
+            /\ UNCHANGED <<raft, hold, reqs, liveness, used, extra>>
+
+\* A cache leader's expiry timer fires while it sleeps.
+TtlFires(l) ==
+    /\ Leads(l) /\ ~awake[l]
+    /\ ttlDue = NoDel
+    /\ used.ttls < MaxTtlWakes
+    /\ ttlDue' = Held(log[l], commit[l])
+    /\ awake' = IF NoTtlWake THEN awake ELSE [awake EXCEPT ![l] = TRUE]
+    /\ used' = [used EXCEPT !.ttls = @ + 1]
+    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist, heard, pre, sleptWith>>
+
+\* The expiry delete, a write like any other, of the version the timer saw.
+ExpiryDelete(l) ==
+    /\ Leads(l) /\ awake[l]
+    /\ ttlDue # NoDel
+    /\ ~LeaseLapses \/ Fresh(l)
+    /\ log' = [log EXCEPT ![l] = Append(@, [term |-> vote[l].term, val |-> 0, del |-> ttlDue])]
+    /\ ttlDue' = NoDel
     /\ prop' = [prop EXCEPT ![l] = NoProp]
-    /\ used' = [used EXCEPT !.writes = @ + 1]
-    /\ hist' = [hist EXCEPT !.wroteAsleep = @ \/ ~awake[l]]
-    /\ UNCHANGED <<role, vote, granted, elected, match, commit, committed, acked, hold, reqs, liveness>>
+    /\ UNCHANGED <<role, vote, granted, elected, match, commit, committed, acked, awake, hold, reqs,
+                   liveness, used, hist, heard, pre, sleptWith>>
 
 ----------------------------------------------------------------------------
 \* The handshake.
@@ -377,14 +570,16 @@ ProposeSleep(l) ==
     /\ Leads(l) /\ awake[l]
     /\ used.sleeps < MaxSleeps
     /\ prop[l] = NoProp
+    /\ ttlDue = NoDel
     /\ commit[l] = Len(log[l])
     /\ \E i \in 1..commit[l] : log[l][i].term = vote[l].term
     /\ Quorum(Live(l) \cup {l})
     /\ \A m \in Live(l) : match[l][m] = Len(log[l]) /\ commit[m] = commit[l]
     /\ prop' = [prop EXCEPT ![l] = [asked |-> Live(l), answered |-> {}]]
-    /\ reqs' = reqs \cup {[to |-> m, vote |-> vote[l], last |-> Last(l), commit |-> commit[l]] : m \in Live(l)}
+    /\ reqs' = reqs \cup {[to |-> m, vote |-> vote[l], last |-> Last(l), commit |-> commit[l]] :
+                            m \in IF LeftOutAsked THEN Servers \ {l} ELSE Live(l)}
     /\ used' = [used EXCEPT !.sleeps = @ + 1]
-    /\ UNCHANGED <<raft, awake, hold, liveness, hist>>
+    /\ UNCHANGED <<raft, awake, hold, liveness, hist, extra>>
 
 \* A request arrives. The member sleeps if its own position is the one the
 \* request names, and answers. The answer counts only for the proposal the
@@ -400,22 +595,26 @@ SleepRequest(m, lost) ==
                    /\ Leads(l)
                    /\ f \in prop[l].asked
                    /\ vote[l] = m.vote /\ Last(l) = m.last /\ commit[l] = m.commit
+        wakeLeader == /\ ~ok /\ RefusalWakes
+                      /\ Leads(l) /\ vote[l] = m.vote
     IN /\ m \in reqs
        /\ f \in up
        /\ lost => ok /\ used.lost < MaxLost
        /\ reqs' = reqs \ {m}
-       /\ awake' = IF ok THEN [awake EXCEPT ![f] = FALSE] ELSE awake
+       /\ awake' = IF ok THEN [awake EXCEPT ![f] = FALSE]
+                   ELSE IF wakeLeader THEN [awake EXCEPT ![l] = TRUE] ELSE awake
        /\ hold' = IF ok THEN [hold EXCEPT ![f] = "none"] ELSE hold
-       /\ prop' = IF counted THEN [prop EXCEPT ![l].answered = @ \cup {f}] ELSE prop
+       /\ prop' = IF counted THEN [prop EXCEPT ![l].answered = @ \cup {f}]
+                  ELSE IF wakeLeader THEN [prop EXCEPT ![l] = NoProp] ELSE prop
        /\ used' = IF lost THEN [used EXCEPT !.lost = @ + 1] ELSE used
-       /\ UNCHANGED <<raft, liveness, hist>>
+       /\ UNCHANGED <<raft, liveness, hist, extra>>
 
 DropRequest(m) ==
     /\ m \in reqs
     /\ used.lost < MaxLost
     /\ reqs' = reqs \ {m}
     /\ used' = [used EXCEPT !.lost = @ + 1]
-    /\ UNCHANGED <<raft, awake, hold, prop, liveness, hist>>
+    /\ UNCHANGED <<raft, awake, hold, prop, liveness, hist, extra>>
 
 \* Followers first, the leader last.
 LeaderSleep(l) ==
@@ -424,7 +623,9 @@ LeaderSleep(l) ==
     /\ LeaderSleepsFirst \/ prop[l].answered = prop[l].asked
     /\ awake' = [awake EXCEPT ![l] = FALSE]
     /\ prop' = [prop EXCEPT ![l] = NoProp]
-    /\ UNCHANGED <<raft, hold, reqs, liveness, used, hist>>
+    /\ heard' = [heard EXCEPT ![l] = {}]
+    /\ sleptWith' = [sleptWith EXCEPT ![l] = prop[l].asked]
+    /\ UNCHANGED <<raft, hold, reqs, liveness, used, hist, pre, ttlDue>>
 
 \* Falling asleep with no handshake, in any state.
 Doze(s) ==
@@ -433,7 +634,8 @@ Doze(s) ==
     /\ used.dozes < MaxDozes
     /\ awake' = [awake EXCEPT ![s] = FALSE]
     /\ used' = [used EXCEPT !.dozes = @ + 1]
-    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist>>
+    /\ heard' = IF role[s] = "leader" THEN [heard EXCEPT ![s] = {}] ELSE heard
+    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist, pre, sleptWith, ttlDue>>
 
 ----------------------------------------------------------------------------
 \* Waking.
@@ -445,17 +647,22 @@ LeaderAudit(l) ==
     /\ used.audits < MaxAudits
     /\ awake' = [awake EXCEPT ![l] = TRUE]
     /\ used' = [used EXCEPT !.audits = @ + 1]
-    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist>>
+    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, hist, extra>>
 
-\* A sleeping follower that heard nothing for two audit periods ticks.
+\* A sleeping follower that heard nothing for two audit periods ticks, or
+\* with AuditAsks asks the leader's broker first. Under a live leader this
+\* needs a lost audit heartbeat (MaxAuditsLost).
 FollowerAudit(f) ==
-    /\ ~NoAudit
-    /\ f \in up
-    /\ ~awake[f]
-    /\ role[f] # "leader"
-    /\ ~ \E l \in Servers \ {f} : Leads(l) /\ vote[l] = vote[f]
-    /\ awake' = [awake EXCEPT ![f] = TRUE]
-    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, used, hist>>
+    LET led == \E l \in Servers \ {f} : Leads(l) /\ vote[l] = vote[f]
+    IN /\ ~NoAudit
+       /\ f \in up
+       /\ ~awake[f]
+       /\ role[f] # "leader"
+       /\ ~led \/ used.auditsLost < MaxAuditsLost
+       /\ awake' = [awake EXCEPT ![f] = TRUE]
+       /\ hold' = IF AuditAsks THEN [hold EXCEPT ![f] = "ask"] ELSE hold
+       /\ used' = IF led THEN [used EXCEPT !.auditsLost = @ + 1] ELSE used
+       /\ UNCHANGED <<raft, prop, reqs, liveness, hist, extra>>
 
 \* A liveness change wakes a sleeping member. A leader heartbeats at once
 \* (it is awake, so Heartbeat is enabled). A follower asks first.
@@ -473,7 +680,7 @@ AskWakes(f, l) ==
     /\ Leads(l) /\ ~awake[l]
     /\ vote[l] = vote[f]
     /\ awake' = [awake EXCEPT ![l] = TRUE]
-    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<raft, hold, prop, reqs, liveness, used, hist, extra>>
 
 \* One election timeout after the ask, or the suspect time plus one after
 \* a restart, with nothing heard.
@@ -482,7 +689,7 @@ HoldExpires(f) ==
     /\ hold[f] # "none"
     /\ HoldTooShort \/ ~ \E l \in Servers \ {f} : Leads(l) /\ VoteGE(vote[l], vote[f])
     /\ hold' = [hold EXCEPT ![f] = "none"]
-    /\ UNCHANGED <<raft, awake, prop, reqs, liveness, used, hist>>
+    /\ UNCHANGED <<raft, awake, prop, reqs, liveness, used, hist, extra>>
 
 \* The ask is lost. The sleeping leader never hears it, the hold runs out
 \* with nothing heard, and ticks start.
@@ -493,7 +700,7 @@ AskLost(f) ==
     /\ \E l \in Servers \ {f} : Leads(l) /\ ~awake[l] /\ vote[l] = vote[f]
     /\ hold' = [hold EXCEPT ![f] = "none"]
     /\ used' = [used EXCEPT !.asks = @ + 1]
-    /\ UNCHANGED <<raft, awake, prop, reqs, liveness, hist>>
+    /\ UNCHANGED <<raft, awake, prop, reqs, liveness, hist, extra>>
 
 ----------------------------------------------------------------------------
 \* Store liveness.
@@ -505,7 +712,7 @@ Die(s) ==
     /\ used' = [used EXCEPT !.deaths = @ + 1]
     /\ hist' = [hist EXCEPT !.excuse = TRUE,
                             !.diedAsleep = @ \/ \A t \in up : ~awake[t]]
-    /\ UNCHANGED <<raft, awake, hold, prop, reqs, sup, unseen>>
+    /\ UNCHANGED <<raft, awake, hold, prop, reqs, sup, unseen, extra>>
 
 \* A dead broker is silent, and a peer withdraws support after the suspect
 \* time.
@@ -515,7 +722,7 @@ Withdraw(p, q) ==
     /\ sup[p][q]
     /\ sup' = [sup EXCEPT ![p][q] = FALSE]
     /\ LivenessWake(p)
-    /\ UNCHANGED <<raft, prop, reqs, up, unseen, used, hist>>
+    /\ UNCHANGED <<raft, prop, reqs, up, unseen, used, hist, extra>>
 
 \* A false alarm: support withdrawn for a healthy broker.
 Alarm(p, q) ==
@@ -527,14 +734,14 @@ Alarm(p, q) ==
     /\ sup' = [sup EXCEPT ![p][q] = FALSE]
     /\ LivenessWake(p)
     /\ used' = [used EXCEPT !.alarms = @ + 1]
-    /\ UNCHANGED <<raft, prop, reqs, up, unseen, hist>>
+    /\ UNCHANGED <<raft, prop, reqs, up, unseen, hist, extra>>
 
 \* The alarm ends. Support coming back wakes nobody.
 Regain(p, q) ==
     /\ p \in up /\ q \in up
     /\ ~sup[p][q]
     /\ sup' = [sup EXCEPT ![p][q] = TRUE]
-    /\ UNCHANGED <<raft, sleep, up, unseen, used, hist>>
+    /\ UNCHANGED <<raft, sleep, up, unseen, used, hist, extra>>
 
 \* A broker restart. Log, vote and commit index are on disk. The member
 \* starts awake and held, with a new store epoch.
@@ -550,7 +757,9 @@ Restart(s) ==
     /\ unseen' = unseen \cup {<<p, s>> : p \in Servers \ {s}}
     /\ used' = [used EXCEPT !.restarts = @ + 1]
     /\ hist' = [hist EXCEPT !.excuse = @ \/ role[s] = "leader"]
-    /\ UNCHANGED <<vote, elected, log, commit, committed, acked, reqs, up, sup>>
+    /\ heard' = [heard EXCEPT ![s] = {}]
+    /\ pre' = [pre EXCEPT ![s] = {}]
+    /\ UNCHANGED <<vote, elected, log, commit, committed, acked, reqs, up, sup, sleptWith, ttlDue>>
 
 \* A peer sees the new epoch.
 EpochSeen(p, s) ==
@@ -558,13 +767,14 @@ EpochSeen(p, s) ==
     /\ p \in up
     /\ unseen' = unseen \ {<<p, s>>}
     /\ LivenessWake(p)
-    /\ UNCHANGED <<raft, prop, reqs, up, sup, used, hist>>
+    /\ UNCHANGED <<raft, prop, reqs, up, sup, used, hist, extra>>
 
 ----------------------------------------------------------------------------
 
 Next ==
     \/ \E s \in Servers :
         \/ Campaign(s) \/ BecomeLeader(s) \/ AdvanceCommit(s) \/ AppendRecord(s)
+        \/ PreCampaign(s) \/ TtlFires(s) \/ ExpiryDelete(s)
         \/ ProposeSleep(s) \/ LeaderSleep(s) \/ Doze(s)
         \/ LeaderAudit(s) \/ FollowerAudit(s) \/ HoldExpires(s) \/ AskLost(s)
         \/ Die(s) \/ Restart(s)
@@ -572,6 +782,7 @@ Next ==
         \/ GrantVote(i, j) \/ Heartbeat(i, j) \/ Replicate(i, j)
         \/ LearnCommit(i, j) \/ StepDown(i, j) \/ AskWakes(i, j)
         \/ Withdraw(i, j) \/ Alarm(i, j) \/ Regain(i, j) \/ EpochSeen(i, j)
+        \/ PreVoteReq(i, j) \/ VoteWakesHeld(i, j)
     \/ \E m \in reqs :
         \/ DropRequest(m)
         \/ \E lost \in BOOLEAN : SleepRequest(m, lost)
@@ -617,6 +828,16 @@ AsleepIsLevel ==
     (up # {} /\ \A s \in up : ~awake[s]) =>
         \A s, t \in up : Last(s) = Last(t) /\ commit[s] = commit[t]
 
+\* The same, for the members the leader counted when it slept. A member it
+\* left out is caught up later, which QuiescentLevel checks.
+AsleepIsLevelCounted ==
+    (up # {} /\ \A s \in up : ~awake[s]) =>
+        \A l \in up : Leads(l) =>
+            \A s \in sleptWith[l] \cap up : Last(s) = Last(l) /\ commit[s] = commit[l]
+
+\* A write to a healthy leader is never refused.
+NoWriteRefused == ~hist.refused
+
 \* The first leader is deposed by an election another member wins, or by
 \* stepping down for a campaign that never wins.
 NoNeedlessDeposal ==
@@ -644,6 +865,19 @@ QuiescentLevel ==
         /\ commit[l] = Len(log[l])
         /\ \A s \in up : log[s] = log[l] /\ commit[s] = commit[l]
 
+\* A due expiry delete is proposed.
+QuiescentTtl == Settled => ttlDue = NoDel
+
+Entries == [n \in 1..Len(committed) |-> committed[n].e]
+
+\* An expiry delete that removed a value removed the version it named: a
+\* write is never removed by the expiry of an older version.
+ExpiryKeepsNewer ==
+    \A n \in 1..Len(committed) :
+        (/\ Entries[n].val = 0 /\ Entries[n].del # NoDel
+         /\ Held(Entries, n - 1) # 0 /\ Held(Entries, n) = 0)
+        => Held(Entries, n - 1) = Entries[n].del
+
 \* Every behaviour ends, which is what lets the two checks above stand for
 \* "eventually". Checked with FairSpec.
 Ends == <>(~ENABLED Next)
@@ -660,5 +894,15 @@ NeverWakesOnWrite ==
 \* leader. With LivenessMisses on, only the audit can have woken them.
 NeverElectsAfterDyingAsleep ==
     ~ (hist.diedAsleep /\ \E e \in elected : e[1] > 1)
+
+\* A leader is elected while a sleep proposal or request is still out.
+NeverElectedMidHandshake == ~hist.midHandshake
+
+\* An expiry delete commits after a write the timer did not see.
+NeverExpirySkipsNewer ==
+    ~ \E n \in 1..Len(committed) :
+        /\ Entries[n].val = 0 /\ Entries[n].del # NoDel
+        /\ Held(Entries, n - 1) # 0
+        /\ Held(Entries, n - 1) # Entries[n].del
 
 =============================================================================

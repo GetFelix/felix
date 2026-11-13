@@ -226,6 +226,18 @@
 (*                             expiry.                                     *)
 (*   StalledKeepsAsking     -- (Part 2) a broker with a stalled disk keeps *)
 (*                             sending liveness heartbeats.                *)
+(*                                                                         *)
+(* Sleep (issue 2239). A sleeping group sends nothing, which any run of    *)
+(* this model already allows, so the lease lapses on its own. Sleep adds a *)
+(* hold: a member woken by anything but its leader's message drops votes   *)
+(* for one election timeout (MaxWakes wakes). The hold may end early, and  *)
+(* that ends only the hold. Two knobs drop a rule:                         *)
+(*                                                                         *)
+(*   HoldEndClearsWindow    -- ending the hold early also clears           *)
+(*                             openraft's refusal window.                  *)
+(*   SleepAnswerRenews      -- an answer to a sleep request counts as an   *)
+(*                             answer to a leader's message, though the    *)
+(*                             follower's window did not restart.          *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
@@ -244,7 +256,8 @@ CONSTANTS
     ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, VoidOnHigherTerm,
     VoidEquality, MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends,
     SuspendCheck, WakeCheckLate, RestoreOwnLead, RestoreAnyVote,
-    HoldExemptsNamed, HoldExemptsAny
+    HoldExemptsNamed, HoldExemptsAny,
+    MaxWakes, HoldEndClearsWindow, SleepAnswerRenews
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -293,7 +306,10 @@ VARIABLES
     suspended,
     sinceWake,    \* how long ago this broker woke, as Felix measures it
     suspends,
-    woke          \* woken, and Felix has not yet seen the jump (WakeCheckLate)
+    woke,         \* woken, and Felix has not yet seen the jump (WakeCheckLate)
+    \* Sleep
+    holdAge,      \* how long ago a wake not caused by the leader started a hold
+    wakes         \* sleep steps taken, to bound the run
 
 groupVars == <<term, votedFor, followed, led, role, log, commit, heardAge, startAge,
               ackAge, match>>
@@ -301,7 +317,8 @@ storeVars == <<epoch, sup, fortEpoch, supAge, fortAck, beatMsgs, beats, stalledA
 histVars  == <<delivered, acked, staleAck, elected, nextId, heldGrant>>
 xVars     == <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
               xmsgs, transfers, suspended, sinceWake, suspends, woke>>
-vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars>>
+sleepVars == <<holdAge, wakes>>
+vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars, sleepVars>>
 
 None == -1
 Symm == Permutations(Servers)
@@ -410,6 +427,9 @@ SupportStands(v) ==
     /\ sup[v][l].epoch = fortEpoch[v]
     /\ sup[v][l].left # None
 
+\* Held after a wake not caused by the leader's message.
+Held(b) == holdAge[b] < ElectionTimeout
+
 \* The model exempts the leader of v's current term. openraft stores one vote,
 \* replaced by a grant, by adopting a higher vote and by an append, so it can
 \* name a candidate that never led (a leads t1, adopts c's t2 vote, restarts:
@@ -424,6 +444,7 @@ StoredLeader(v) == IF term[v] = 0 THEN {} ELSE elected[term[v]]
 \* a transfer that leader authorized. The node layer's hold drops both.
 MayGrant(v, c) ==
     /\ ~LeaderHolds(v) \/ auth[c] = <<v, term[v]>>
+    /\ ~Held(v)
     /\ IF StoreLeases
        THEN VoteWhileSupported \/ ~SupportStands(v) \/ votedFor[v] = c
        ELSE /\ \/ VoteInWindow \/ ~InWindow(v)
@@ -479,6 +500,8 @@ Init ==
     /\ sinceWake = NoAges
     /\ suspends = 0
     /\ woke = [b \in Servers |-> FALSE]
+    /\ holdAge = NoAges
+    /\ wakes = 0
 
 \* One tick of real time. Every age grows by the gain of the clock it is
 \* read on: a message's stamp is read on the leader's clock. A suspended
@@ -503,8 +526,9 @@ Tick ==
         /\ stalledAge' = [b \in Servers |->
                             IF stalledAge[b] = None THEN None
                             ELSE GrowS(stalledAge[b], d[b])]
+        /\ holdAge' = [b \in Servers |-> Grow(holdAge[b], d[b])]
         /\ UNCHANGED <<term, votedFor, followed, led, role, log, commit, match, restarts,
-                       histVars, epoch, fortEpoch, fortAck, beats>>
+                       histVars, epoch, fortEpoch, fortAck, beats, wakes>>
         /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, xfer, voidTerm, auth, xmsgs,
                        transfers, suspended, suspends, woke>>
 
@@ -885,17 +909,57 @@ SeeWake(b) ==
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
                    xmsgs, transfers, suspended, suspends>>
 
+(***************************************************************************)
+(* Sleep.                                                                  *)
+(***************************************************************************)
+
+\* A wake not caused by the leader's message: liveness, the audit, a vote
+\* or pre-vote request. The member holds.
+HoldWake(b) ==
+    /\ wakes < MaxWakes
+    /\ ~Held(b)
+    /\ holdAge' = [holdAge EXCEPT ![b] = 0]
+    /\ wakes' = wakes + 1
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED xVars
+
+\* The hold ends early, when the member withdraws support for the leader's
+\* broker. Only the hold ends.
+EndHold(b) ==
+    /\ Held(b)
+    /\ holdAge' = [holdAge EXCEPT ![b] = Old]
+    /\ heardAge' = IF HoldEndClearsWindow THEN [heardAge EXCEPT ![b] = Old] ELSE heardAge
+    /\ UNCHANGED <<term, votedFor, followed, led, role, log, commit, startAge, ackAge, match,
+                   msgs, restarts, histVars, storeVars, wakes>>
+    /\ UNCHANGED xVars
+
+\* A follower answers a sleep request. It is not a Raft message: it does not
+\* restart the follower's window, and it renews nothing, unless
+\* SleepAnswerRenews.
+SleepAnswer(l, f) ==
+    /\ SleepAnswerRenews
+    /\ wakes < MaxWakes
+    /\ role[l] = "leader" /\ f # l /\ term[f] = term[l]
+    /\ ackAge' = [ackAge EXCEPT ![l][f] = 0]
+    /\ wakes' = wakes + 1
+    /\ UNCHANGED <<term, votedFor, followed, led, role, log, commit, heardAge, startAge, match,
+                   msgs, restarts, histVars, storeVars, holdAge>>
+    /\ UNCHANGED xVars
+
 Next ==
     \/ Tick
-    \/ \E c \in Servers, Q \in SUBSET Servers, nt \in 1..MaxTerm : Elect(c, Q, nt)
-    \/ \E l, f \in Servers : Send(l, f) \/ Beat(l, f) \/ Withdraw(l, f)
-    \/ \E m \in msgs : Drop(m) \/ RecvApp(m) \/ RecvAck(m)
-    \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
-    \/ \E b \in Servers : ClientWrite(b) \/ Deliver(b) \/ Restart(b) \/ Stall(b)
-    \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b) \/ TransferExpire(b)
-                          \/ Suspend(b) \/ Wake(b) \/ SeeWake(b)
-    \/ \E l, t \in Servers : Transfer(l, t)
-    \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
+    \/ /\ \/ \E c \in Servers, Q \in SUBSET Servers, nt \in 1..MaxTerm : Elect(c, Q, nt)
+          \/ \E l, f \in Servers : Send(l, f) \/ Beat(l, f) \/ Withdraw(l, f)
+          \/ \E m \in msgs : Drop(m) \/ RecvApp(m) \/ RecvAck(m)
+          \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
+          \/ \E b \in Servers : ClientWrite(b) \/ Deliver(b) \/ Restart(b) \/ Stall(b)
+          \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b) \/ TransferExpire(b)
+                                \/ Suspend(b) \/ Wake(b) \/ SeeWake(b)
+          \/ \E l, t \in Servers : Transfer(l, t)
+          \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
+       /\ UNCHANGED sleepVars
+    \/ \E b \in Servers : HoldWake(b) \/ EndHold(b)
+    \/ \E l, f \in Servers : SleepAnswer(l, f)
 
 Spec == Init /\ [][Next]_vars
 
@@ -946,6 +1010,8 @@ TypeOK ==
     /\ sinceWake \in [Servers -> Ages]
     /\ suspends \in 0..MaxSuspends
     /\ woke \in [Servers -> BOOLEAN]
+    /\ holdAge \in [Servers -> Ages]
+    /\ wakes \in 0..MaxWakes
 
 LeaseExclusive ==
     \A a, b \in Servers : a # b => ~(LeaseValid(a) /\ LeaseValid(b))

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 30;
+pub const METADATA_VERSION: u16 = 31;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -216,6 +216,10 @@ pub enum MetaCommand {
         /// generation at any incarnation (`model::first_generation`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         seq_generation: bool,
+        /// Level 31: a first assignment starts the record of brokers placed
+        /// in the epoch (`ShardAssignment::placed`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -253,6 +257,9 @@ pub enum MetaCommand {
         /// replaced (`ShardAssignment::previous_generation`, #2024).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         record_previous: bool,
+        /// Level 31: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
@@ -379,6 +386,12 @@ pub enum MetaCommand {
         // command would otherwise pay its size.
         state: Box<crate::store::export::ExportedState>,
         overwrite: bool,
+        /// Level 31: mark every stream and cache restored so their shards
+        /// never start a record of the brokers placed in the epoch
+        /// (`ExportedState::forget_placed`). A field rather than the
+        /// applying member's own choice, so every member marks the same.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_unplaced: bool,
     },
     /// Refresh-token writes.
     ///
@@ -840,6 +853,44 @@ pub fn request_id_of(command: &[u8]) -> Option<String> {
 const HEARTBEAT_OP: &str = "record_node_heartbeat";
 /// The other command carrying a clock reading the leader replaces.
 const REPLICA_REPORT_OP: &str = "record_replica_report";
+
+/// The import command, whose restore mark depends on the group's level.
+const IMPORT_STATE_OP: &str = "import_state";
+
+/// Settle an import for the group's `level`: marked from level 31,
+/// whatever the proposer sent, and refused below it with the error an
+/// applied command would answer. An operator import arrives as raw JSON, so
+/// one that left the field out would otherwise mark nothing. Below the level
+/// an old member cannot read the mark, and an import without it would let a
+/// later first assignment start a record that looks complete.
+pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    if !depends_on_level(command) {
+        return Ok(None);
+    }
+    if level < super::PLACED_LEVEL {
+        return Err(encode_result(&Err(MetaError::Conflict(format!(
+            "an import needs every control-plane member at metadata version {}, \
+             but the group is at {level}; {}",
+            super::PLACED_LEVEL,
+            crate::store::UPGRADE_HINT
+        )))));
+    }
+    Ok(edit_command_json(command, |object| {
+        object.insert("mark_unplaced".to_string(), true.into());
+        true
+    }))
+}
+
+/// Whether `command` is an import, read without decoding the state it
+/// carries. The op is decoded owned, so an escaped spelling still counts.
+pub fn depends_on_level(command: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct OpPeek {
+        op: Option<String>,
+    }
+    serde_json::from_slice::<OpPeek>(command)
+        .is_ok_and(|peek| peek.op.as_deref() == Some(IMPORT_STATE_OP))
+}
 
 /// Replace the proposer's clock reading in `command` with `now_millis`.
 ///
