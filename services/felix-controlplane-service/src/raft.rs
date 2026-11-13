@@ -231,6 +231,25 @@ pub trait AppStateMachine: Send + Sync + 'static {
         None
     }
 
+    /// Settle any field of `command` that depends on the group's level
+    /// (`level`, as [`RaftHandle::cluster_version_with_unknown_at`] gives it
+    /// with [`Self::join_floor`]), or return `None` to leave it. Called on
+    /// the leader right before the entry enters the log, like
+    /// [`Self::restamp`], so the entry says explicitly what every member
+    /// applies, whoever proposed it. Asked only for a command
+    /// [`Self::depends_on_level`] names, so others skip the level lookup.
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Option<Vec<u8>> {
+        let _ = (command, level);
+        None
+    }
+
+    /// Whether `command` has a field [`Self::settle_for_level`] settles.
+    /// Cheap: it runs on every proposal the leader appends.
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        let _ = command;
+        false
+    }
+
     /// The newest command level this build can apply, reported to peers so
     /// the group knows what every member understands
     /// ([`RaftHandle::cluster_version`]). A member that reports nothing is

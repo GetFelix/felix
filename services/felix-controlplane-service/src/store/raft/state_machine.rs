@@ -774,6 +774,14 @@ impl AppStateMachine for MetadataStateMachine {
         crate::store::raft::command::restamp(command, now_millis)
     }
 
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Option<Vec<u8>> {
+        crate::store::raft::command::settle_for_level(command, level)
+    }
+
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        crate::store::raft::command::depends_on_level(command)
+    }
+
     fn version(&self) -> u16 {
         crate::store::raft::command::METADATA_VERSION
     }

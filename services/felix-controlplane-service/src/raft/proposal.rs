@@ -79,7 +79,7 @@ impl RaftHandle {
             // Bounded per attempt too: a leader that lost quorum queues
             // proposals forever, and that must become this instance's error,
             // not its hang.
-            let proposal = self.proposal_bytes(&command);
+            let proposal = self.proposal_bytes(&command).await;
             match tokio::time::timeout(attempt, self.raft.client_write(Command(proposal))).await {
                 Err(_) => {
                     last_refusal = Some(anyhow::anyhow!("proposal not committed in time"));
@@ -118,13 +118,26 @@ impl RaftHandle {
     /// `command` itself is left alone. If this instance turns out to be
     /// deposed between the check and the write, what gets forwarded carries
     /// no reading of ours and the real leader stamps its own.
-    fn proposal_bytes(&self, command: &[u8]) -> Vec<u8> {
-        if self.is_leader()
-            && let Some(stamped) = self.app.restamp(command, crate::clock::now_millis())
-        {
-            return stamped;
+    ///
+    /// Level-dependent fields are settled here too
+    /// ([`AppStateMachine::settle_for_level`]): a proposal can arrive as raw
+    /// bytes through the peer route, past every check the store makes.
+    async fn proposal_bytes(&self, command: &[u8]) -> Vec<u8> {
+        if !self.is_leader() {
+            return command.to_vec();
         }
-        command.to_vec()
+        let stamped = self.app.restamp(command, crate::clock::now_millis());
+        let command = stamped.as_deref().unwrap_or(command);
+        if !self.app.depends_on_level(command) {
+            return command.to_vec();
+        }
+        let level = self
+            .cluster_version_with_unknown_at(self.app.join_floor())
+            .await;
+        match self.app.settle_for_level(command, level) {
+            Some(settled) => settled,
+            None => command.to_vec(),
+        }
     }
 
     async fn forward_to(&self, base: &str, command: &[u8], budget: Duration) -> Result<Vec<u8>> {
