@@ -812,18 +812,25 @@ fn newly_named<'a>(
         .map(|assignment| (to_router_key(&assignment.key), assignment.incarnation))
 }
 
+/// The shards an engine took in one pass, each with its stream's key mapping.
+pub type Taken = Vec<(ShardKey, felix_wire::routing::ShardRouting)>;
+
 /// Shards an engine other than the hybrid runs on this broker.
 pub trait EngineShards: Send + Sync {
     /// Take this engine's shards out of `assignments` and bring its members
-    /// here in line with them. What is left is the hybrid's.
+    /// here in line with them. What is left is the hybrid's. Returns every
+    /// shard taken with its stream's key mapping, whether or not this
+    /// broker holds a member of it.
     ///
     /// The feed calls it first in every pass, so the hybrid lifecycle, its
     /// replica handler and the routes never see a shard taken here: one
-    /// shard is never opened by two engines.
+    /// shard is never opened by two engines. The routing table still learns
+    /// the taken streams' width and key mapping, which every broker answers
+    /// clients with and maps keys by.
     fn take<'a>(
         &'a self,
         assignments: &'a mut HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>>;
 
     /// Where a request for `key` goes, when this engine runs the shard on
     /// this broker: here once it leads and may take writes, to the leader
@@ -988,9 +995,10 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                     owned.checkpoint(),
                 )
             };
-            if let Some(engine_shards) = &engine_shards {
-                engine_shards.take(&mut assignments).await;
-            }
+            let taken = match &engine_shards {
+                Some(engine_shards) => engine_shards.take(&mut assignments).await,
+                None => Taken::new(),
+            };
             let assignments = match &elections {
                 Some(elections) => with_elected(assignments, elections),
                 None => assignments,
@@ -1037,8 +1045,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
             // owner of a shard it has not opened. Held through the publish: a
             // fence publishes under this lock too, and one finishing between
             // the read and the publish would be undone until the next pass.
-            let table =
-                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone());
+            let table = routing_table_from(&assignments, &catalog.nodes)
+                .with_priors(priors.clone())
+                .with_placed_elsewhere(
+                    taken
+                        .iter()
+                        .map(|(key, routing)| (to_router_key(key), *routing)),
+                );
             {
                 let owned = lifecycle.lock().await;
                 ingress.publish(table, &catalog.nodes, owned.servable());

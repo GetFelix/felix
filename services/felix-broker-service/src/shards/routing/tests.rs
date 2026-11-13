@@ -479,11 +479,14 @@ mod feed {
         fn take<'a>(
             &'a self,
             assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
-        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
             Box::pin(async move {
-                if let Some(assignment) = assignments.remove(&key(1)) {
-                    *self.taken.lock().expect("lock") = vec![assignment];
-                }
+                let Some(assignment) = assignments.remove(&key(1)) else {
+                    return Taken::new();
+                };
+                let taken = vec![(assignment.key.clone(), assignment.routing)];
+                *self.taken.lock().expect("lock") = vec![assignment];
+                taken
             })
         }
 
@@ -525,6 +528,43 @@ mod feed {
         assert!(lifecycle.generation(&key(0)).is_some());
         assert!(lifecycle.generation(&key(1)).is_none());
         drop(lifecycle);
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// **A stream another engine runs keeps its width and key mapping in
+    /// the routes, and gets no route.** Every broker answers a client's
+    /// width question and maps keys from the table, so a stream missing
+    /// from it has width 0 to clients and all its keys on shard 0.
+    #[tokio::test]
+    async fn a_stream_another_engine_runs_keeps_its_width_and_key_mapping() {
+        let (mut state, _router) =
+            state(&[assignment(0, "broker-a", 1), assignment(1, "broker-a", 1)]);
+        let engine = Arc::new(TakesShardOne::default());
+        state.engine_shards = Some(Arc::clone(&engine) as Arc<dyn EngineShards>);
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        until("the hybrid's shard to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
+        })
+        .await;
+
+        let stream = crate::shards::ShardKind::Stream;
+        let placement = ingress.placement_for(stream, "t1", "ns", "orders");
+        assert_eq!(placement.map(|placement| placement.shards), Some(2));
+        let mapped: std::collections::BTreeSet<u32> = (0..64u8)
+            .map(|k| ingress.shard_for_key(stream, "t1", "ns", "orders", Some(&[k])))
+            .collect();
+        assert_eq!(mapped, [0, 1].into());
+        assert!(ingress.route(&key(1)).is_none());
 
         shutdown.cancel();
         let _ = feed.await;

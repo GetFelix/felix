@@ -336,6 +336,15 @@ impl Cluster {
         // after fencing its replicas, has not reported yet, and a leader killed
         // before its first report leaves a shard placement will never promote.
         // The probe above only proves shard 0 serves.
+        // A Raft shard's group elects its own leader: nothing is reported
+        // for placement to promote from.
+        let raft = std::iter::once(&config.broker_env)
+            .chain(&config.node_env)
+            .flatten()
+            .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft");
+        if raft {
+            return Ok(());
+        }
         wait::until(
             READY_TIMEOUT,
             "every replicated shard's leader to report its replicas",
