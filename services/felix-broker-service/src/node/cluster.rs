@@ -163,13 +163,42 @@ pub(super) fn start_raft_shards(
         membership.node_id.clone(),
     );
     engine.set_raft(Arc::clone(&shards));
-    if let Some(ingress) = engine.serving() {
-        ingress.set_engine_shards(Arc::clone(&shards) as Arc<dyn shard_routing::EngineShards>);
-    }
     Ok(RaftShards {
         engine_shards: Some(shards),
         handler: Some(Arc::new(runtime)),
     })
+}
+
+/// Put the engine check in front of `shards` and route by the result: a
+/// durable stream shard placed with a peer on the other engine is refused
+/// here, whichever engine this broker runs. Call it before the routing feed
+/// starts. A broker outside a cluster has no peer to disagree with.
+pub(super) fn match_engines(
+    config: &BrokerConfig,
+    cluster: &Option<ShardState>,
+    peers: &Option<Arc<PeerPool>>,
+    broker: &Arc<Broker>,
+    engine: &Arc<shard_routing::StreamEngine>,
+    raft: bool,
+    mut shards: RaftShards,
+) -> RaftShards {
+    if let (Some(membership), Some(pool), Some((router, _, _, _))) =
+        (&config.membership, peers, cluster)
+    {
+        let router = Arc::clone(router);
+        shards.engine_shards = Some(crate::shards::engine_match::EngineMatch::new(
+            Arc::clone(broker),
+            Arc::clone(pool),
+            Arc::new(move |broker: &str| router.node_addr(broker)),
+            membership.node_id.clone(),
+            raft,
+            shards.engine_shards.take(),
+        ));
+    }
+    if let (Some(ingress), Some(engine_shards)) = (engine.serving(), &shards.engine_shards) {
+        ingress.set_engine_shards(Arc::clone(engine_shards));
+    }
+    shards
 }
 
 /// Bind and serve the broker-internal listener, when this broker is in a

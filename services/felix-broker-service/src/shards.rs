@@ -14,6 +14,7 @@
 
 mod confirmed;
 mod engine;
+pub(crate) mod engine_match;
 pub mod lifecycle;
 #[cfg(feature = "raft")]
 pub(crate) mod raft;

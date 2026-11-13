@@ -245,8 +245,9 @@ async fn a_consumer_group_on_a_raft_shard_is_refused() {
     }
 }
 
-/// Raft messages `node` was sent and refused, read from its own metrics.
-async fn raft_messages_refused_by(cluster: &Cluster, node: &str) -> f64 {
+/// The sum of `node`'s samples of the metric whose line starts with
+/// `series`, read from its own metrics.
+async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {
     let addr = cluster.node(node).expect("node").metrics_addr;
     let body = reqwest::get(format!("http://{addr}/metrics"))
         .await
@@ -255,74 +256,61 @@ async fn raft_messages_refused_by(cluster: &Cluster, node: &str) -> f64 {
         .await
         .expect("metrics body");
     body.lines()
-        .filter(|line| {
-            line.starts_with("felix_broker_peer_served_total{")
-                && line.contains("outcome=\"refused\"")
-        })
+        .filter(|line| line.starts_with(series))
         .filter_map(|line| line.rsplit(' ').next()?.parse::<f64>().ok())
         .sum()
 }
 
-/// **A Raft broker sends a hybrid broker no Raft message.** Two brokers run
-/// the shard under Raft and the third, in its replica set, runs the hybrid
-/// engine. The two form the group between them and acknowledge publishes;
-/// the third is never asked to vote or to append, so it cannot be counted
-/// into a majority for a log it does not keep.
+/// **Brokers on different engines refuse the shard they share, on both
+/// sides.** One of three Raft brokers comes back on the hybrid engine. The
+/// two Raft brokers stop serving the shard instead of running the group
+/// without it, and the hybrid broker never opens a log of its own to
+/// acknowledge into. Every broker says why, and counts the refusal.
 #[tokio::test]
 #[serial]
-async fn a_hybrid_broker_is_left_out_of_a_raft_group() {
+async fn brokers_on_different_engines_refuse_their_shared_shard() {
     if !opted_in() {
         return;
     }
     let hybrid = "broker-2".to_string();
-    let cluster = Cluster::start(ClusterConfig {
-        node_env: vec![Vec::new(), Vec::new(), vec![engine("hybrid")]],
-        ..raft_cluster()
-    })
-    .await
-    .expect("start cluster");
-    let raft: Vec<String> = cluster
-        .node_ids()
-        .into_iter()
-        .filter(|node| *node != hybrid)
-        .collect();
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    publish_acked(&cluster, &leader_among(&cluster, &nodes).await, b"agreed").await;
 
-    let leader = leader_among(&cluster, &raft).await;
-    let mut owed = Vec::new();
-    for i in 0..10 {
-        let payload = format!("without-the-hybrid-{i}").into_bytes();
-        publish_acked(&cluster, &leader, &payload).await;
-        owed.push(payload);
+    cluster
+        .set_node_env(&hybrid, "FELIX_SHARD_ENGINE", "hybrid")
+        .expect("set engine");
+    cluster.terminate_node(&hybrid).expect("stop");
+    cluster
+        .wait_for_exit(&hybrid, ELECTED_WITHIN)
+        .await
+        .expect("exit");
+    cluster.restart_node(&hybrid).await.expect("restart");
+
+    for node in &nodes {
+        let node = node.clone();
+        let cluster = &cluster;
+        felix_cluster::wait::until(
+            ELECTED_WITHIN,
+            &format!("{node} to refuse the shard"),
+            || {
+                let node = node.clone();
+                async move {
+                    metric(cluster, &node, "felix_broker_shard_engine_refused_total{").await >= 1.0
+                }
+            },
+        )
+        .await
+        .expect("refused");
     }
-    replay_holding(&cluster, &leader, &owed).await;
-
-    // Elections and appends ran for the whole test; one message to the
-    // hybrid broker would have been refused there and counted.
-    assert_eq!(
-        raft_messages_refused_by(&cluster, &hybrid).await,
-        0.0,
-        "{hybrid} was sent a Raft message"
-    );
-    // Raft marks a shard's directory before it opens its log there.
-    let storage = cluster.node(&hybrid).expect("node").storage_dir();
-    assert!(
-        !find(&storage, "engine"),
-        "{hybrid} holds a Raft log directory under {}",
-        storage.display()
-    );
-}
-
-/// Whether a file called `name` exists anywhere under `dir`.
-fn find(dir: &std::path::Path, name: &str) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        if path.is_dir() {
-            find(&path, name)
-        } else {
-            entry.file_name() == name
-        }
-    })
+    for node in &nodes {
+        let err = cluster
+            .publish_via_at(node, STREAM, b"disagreed".to_vec())
+            .await
+            .expect_err("a publish to a shard on two engines was acknowledged");
+        assert!(
+            format!("{err:#}").contains("different shard engines"),
+            "{node} does not say why: {err:#}"
+        );
+    }
 }
