@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554243007,
+  "lastUpdate": 1794554588088,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68706,6 +68706,72 @@ window.BENCHMARK_DATA = {
             "range": "524.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 809.00\nmean: 985.40\nstdev: 524.28\ncv: 53.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c05a67d9f28b6c022622c9d4c8be797a87ffe152",
+          "message": "feat(replication): the Raft engine says what is committed and when a shard opens (#2233) (#2410)\n\n* wip(replication): commit index from apply, await_commit, read_bound, confirm_read, opened and deposed (#2233)\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* feat(replication): the Raft engine says what is committed and when a shard opens (#2233)\n\nThe state machine publishes the commit index as it applies entries.\nawait_commit checks the term at the write's offset, read_bound is the\ncommit index plus one, confirm_read is a read-index round, and a role\nwatcher reports opened and deposed.\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* fix(replication): review fixes for the Raft commit plumbing (#2233)\n\nThe role watcher no longer spins in a term a transfer closed.\nconfirm_read takes the term the reader had open before its read.\ntransfer_starting asks the group's core which term it leads.\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* test(replication): a term closed before it opened is not waited on (#2233)\n\nSpec-Unaffected: test and docs only, behind the raft feature.\n\n* docs(replication): name the read-index call 4d makes\n\nSpec-Unaffected: docs wording only.",
+          "timestamp": "2026-11-12T23:13:11-08:00",
+          "tree_id": "35859c9138754dbe189dcc26b13d25d8ee1765cf",
+          "url": "https://github.com/GetFelix/felix/commit/c05a67d9f28b6c022622c9d4c8be797a87ffe152"
+        },
+        "date": 1794554576871,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 114,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 113.80\nstdev: 1.48\ncv: 1.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 157,
+            "range": "4.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 155.60\nstdev: 4.28\ncv: 2.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 218,
+            "range": "608.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 514.00\nstdev: 608.58\ncv: 118.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 146,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 146.40\nstdev: 0.55\ncv: 0.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 307,
+            "range": "7.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 307.00\nmean: 304.60\nstdev: 7.73\ncv: 2.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 461,
+            "range": "354.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 461.00\nmean: 657.80\nstdev: 354.54\ncv: 53.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
