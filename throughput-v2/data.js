@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794600726797,
+  "lastUpdate": 1794607606350,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54964,6 +54964,58 @@ window.BENCHMARK_DATA = {
             "range": "75866.88",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1226336.24\nmean: 1194115.58\nstdev: 75866.88\ncv: 6.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97a14372f5e9c0571624f63789879fc5704511fd",
+          "message": "fix(commit): a record of short-key deletes decodes (#2464)\n\nCommitRecord::decode bounded the operation count at one per 9 bytes, but a delete with a short key is 5 bytes, so a valid record of short-key deletes was refused as malformed and state rebuild failed on it. The bound is now one per 5 bytes. Test: a record of short deletes round-trips (fails with the old bound).",
+          "timestamp": "2026-11-13T21:49:33Z",
+          "tree_id": "850b5f7bdee89034009f56aab53011b20819f3d7",
+          "url": "https://github.com/GetFelix/felix/commit/97a14372f5e9c0571624f63789879fc5704511fd"
+        },
+        "date": 1794607605423,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 494186.21,
+            "range": "25314.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494186.21\nmean: 495318.96\nstdev: 25314.05\ncv: 5.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 494186.21,
+            "range": "25314.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494186.21\nmean: 495318.96\nstdev: 25314.05\ncv: 5.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120934.35,
+            "range": "928.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120934.35\nmean: 120896.36\nstdev: 928.48\ncv: 0.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1209343.52,
+            "range": "9284.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1209343.52\nmean: 1208963.59\nstdev: 9284.82\ncv: 0.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
