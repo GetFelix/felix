@@ -169,3 +169,50 @@ async fn a_failed_stop_still_releases_the_store() {
     handle.shutdown().await.expect("shutdown");
     drop(stopping);
 }
+
+/// A failed start asks the node to stop and still releases the store when
+/// that stop never finishes: the wait is bounded.
+#[tokio::test]
+async fn a_start_whose_stop_is_stuck_still_fails_and_releases_the_store() {
+    static STOPS: AtomicUsize = AtomicUsize::new(0);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut failing = settings(dir.path());
+    failing.faults.fail_after_node_start = true;
+    failing.faults.stall_failed_start_stop = true;
+    failing.faults.stop_probe = Some(&STOPS);
+    let failed = tokio::time::timeout(
+        Duration::from_secs(10),
+        RaftHandle::start(failing, Arc::new(NullApp)),
+    )
+    .await
+    .expect("the start does not hang on a stuck stop");
+    failed.err().expect("the start fails");
+    assert_eq!(STOPS.load(Ordering::SeqCst), 1);
+
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("restart after the stuck stop");
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// A forwarding client that cannot be built fails the start, stops the
+/// node it already started, and releases the store.
+#[tokio::test]
+async fn a_failed_forwarding_client_stops_the_node_and_releases_the_store() {
+    static STOPS: AtomicUsize = AtomicUsize::new(0);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut failing = settings(dir.path());
+    failing.faults.fail_forward_client = true;
+    failing.faults.stop_probe = Some(&STOPS);
+    let err = RaftHandle::start(failing, Arc::new(NullApp))
+        .await
+        .err()
+        .expect("the start fails");
+    assert!(format!("{err:#}").contains("forwarding client"), "{err:#}");
+    assert_eq!(STOPS.load(Ordering::SeqCst), 1, "the node was not stopped");
+
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("restart after the failed client");
+    handle.shutdown().await.expect("shutdown");
+}
