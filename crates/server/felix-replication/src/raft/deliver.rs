@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, ProposalCommitted, ProposalFailed, ProposedPublish, ReadBound,
-    StreamHandle,
+    Broker, BrokerError, LogDelivery, ProposalCommitted, ProposalFailed, ProposedPublish,
+    ReadBound, StreamHandle,
 };
 use tokio::task::JoinHandle;
 
@@ -19,6 +19,9 @@ use super::engine::RaftEngine;
 use super::propose::{AckAt, Batch, Record};
 use crate::engine::CommitError;
 use crate::{ShardKey, ShardKind};
+
+/// How soon a follower's delivery from the log that had to wait looks again.
+const LOG_RECHECK: Duration = Duration::from_millis(100);
 
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
 
@@ -109,18 +112,38 @@ impl RaftEngine {
         )
     }
 
-    /// Kick `stream`'s readers each time `shard`'s commit index moves here:
-    /// held batches the bound now covers are released, and readers waiting
-    /// at the bound for the log (a follower's subscribers, history reads)
-    /// look again. Ends when the group stops or the stream closes. `None`
-    /// when this broker holds no member of the shard.
+    /// Serve `stream`'s readers each time `shard`'s commit index moves here:
+    /// held batches the bound now covers are released, a broker that does
+    /// not lead the shard delivers the newly committed records to its
+    /// subscribers from the log, and readers waiting at the bound (history
+    /// reads) look again. Ends when the group stops or the stream closes.
+    /// `None` when this broker holds no member of the shard.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
         Some(tokio::spawn(async move {
             loop {
                 stream.release_committed();
                 stream.appended().notify_waiters();
-                if !stream.is_active() || commits.changed().await.is_err() {
+                let caught_up = match stream.deliver_from_log().await {
+                    Ok(delivery) => delivery == LogDelivery::CaughtUp,
+                    Err(err) => {
+                        tracing::warn!(error = %err, "could not deliver a shard's committed records from its log");
+                        false
+                    }
+                };
+                if !stream.is_active() {
+                    return;
+                }
+                // A pass that had to wait is not told when it may go on: a
+                // deposed term's batches settle without the commit index
+                // moving.
+                let moved = match caught_up {
+                    true => commits.changed().await,
+                    false => tokio::time::timeout(LOG_RECHECK, commits.changed())
+                        .await
+                        .unwrap_or(Ok(())),
+                };
+                if moved.is_err() {
                     return;
                 }
             }

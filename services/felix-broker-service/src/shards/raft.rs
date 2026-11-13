@@ -394,6 +394,27 @@ impl EngineShards for RaftShards {
         Box::pin(async move {
             let mut open = self.open.lock().await;
             let mut taken = Taken::new();
+            // A member that knows no leader may be cut off, and its commit
+            // index has stopped: subscribers served from its log would wait,
+            // told nothing. They are ended, and refused until it follows a
+            // leader again.
+            for key in open.keys() {
+                let leaderless = self
+                    .runtime
+                    .status(key)
+                    .is_some_and(|status| status.leader.is_none());
+                if leaderless {
+                    self.broker
+                        .end_subscriptions(
+                            &key.tenant_id,
+                            &key.namespace,
+                            &key.stream,
+                            key.shard,
+                            None,
+                        )
+                        .await;
+                }
+            }
             let streams: Vec<ShardKey> = assignments
                 .keys()
                 .filter(|key| key.kind == ShardKind::Stream)
@@ -540,6 +561,15 @@ impl EngineShards for RaftShards {
                 None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader.to_string())),
             },
         })
+    }
+
+    /// A member that follows a leader serves readers from its log. One that
+    /// knows no leader may be cut off, with a commit index that has stopped
+    /// moving, so it serves none.
+    fn serves_reads(&self, key: &ShardKey) -> bool {
+        self.runtime
+            .status(key)
+            .is_some_and(|status| status.leader.is_some())
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
@@ -693,10 +723,10 @@ impl WriteFence for Leading {
             // waits for this one's subscribers to be ended.
             *self.ending.lock().entry(key.clone()).or_default() += 1;
         }
-        // Live fanout comes from the leader's publishes, so a subscriber
-        // left here would wait on a broker that gets none. Ended after the
-        // term is gone: a reader registering from now on sees no local
-        // route and is refused.
+        // The deposed term's subscribers are ended: a batch it was handed
+        // may settle as a gap, which they would see as a drop. Ended after
+        // the term is gone. A reader registering from now on is served from
+        // the log as a follower's.
         let (broker, ending, key) = (
             Arc::clone(&self.broker),
             Arc::clone(&self.ending),
@@ -707,6 +737,9 @@ impl WriteFence for Leading {
         tokio::spawn(async move {
             #[cfg(test)]
             let _ = stall.wait_for(|stalled| !stalled).await;
+            broker
+                .follow_engine_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await;
             broker
                 .end_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
                 .await;

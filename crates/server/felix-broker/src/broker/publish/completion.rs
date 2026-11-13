@@ -593,6 +593,104 @@ async fn release(handle: StreamHandle) {
     }
 }
 
+/// What a pass over an engine's log found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogDelivery {
+    /// Every committed record has been delivered, or this broker leads the
+    /// shard and its publishers' batches deliver them.
+    CaughtUp,
+    /// Nothing could be read yet: the engine cannot say what is committed,
+    /// or batches from a term this broker led are still settling. Ask again.
+    Waiting,
+}
+
+/// How much of the log one read of a pass takes.
+const LOG_PAGE_BYTES: usize = 1 << 20;
+
+/// Append and fan out, in offset order, the records of an engine's log
+/// between the stream's sequence and what the engine says is committed.
+/// This is how a broker that does not lead the shard serves its subscribers.
+///
+/// Never past the read bound: entries above it may be cut by a later leader,
+/// and a record delivered cannot be taken back. Records a publish wrote
+/// together (contiguous, one append time) go out as one batch, with the
+/// offsets below it that hold no record reported as skipped, as the leader
+/// reports them.
+///
+/// The caller holds the stream's `log_pass`.
+pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDelivery> {
+    let state = &handle.state;
+    let Some(log) = state.durable.as_ref().filter(|_| state.engine_log) else {
+        return Ok(LogDelivery::CaughtUp);
+    };
+    if !state.active.load(Ordering::Acquire) || state.leads_engine_log.load(Ordering::Acquire) {
+        return Ok(LogDelivery::CaughtUp);
+    }
+    // Batches handed over while this broker led are released in their own
+    // order first. Reading under them would deliver their records twice.
+    if state.held.is_busy() || !state.proposals.is_idle() {
+        return Ok(LogDelivery::Waiting);
+    }
+    let crate::ReadBound::Committed(bound) = state.read_bound() else {
+        return Ok(LogDelivery::Waiting);
+    };
+    let bound = bound.min(log.tail_offset().await?);
+    let log_capacity = state.held.log_capacity().unwrap_or(1);
+    let mut next = state.tail_seq();
+    // The member was sent a snapshot: the records below the log's base are
+    // not here to deliver. Readers are ended and resume where they stood,
+    // on a broker that holds them.
+    let base = log.readable_base();
+    if next < base && base <= bound {
+        state.advance_to(base, || crate::broker::shard_logs::accepted_leader(state));
+        next = state.tail_seq();
+    }
+    // Far behind with nobody subscribed (a restart, a long catch-up): the
+    // ring is a cache of the tail, so the log is not read through it.
+    if bound.saturating_sub(next) > log_capacity as u64 && state.jump_unwatched(bound) {
+        return Ok(LogDelivery::CaughtUp);
+    }
+    while next < bound {
+        let mut records = log
+            .read_from(next, LOG_PAGE_BYTES)
+            .await?
+            .into_iter()
+            .take_while(|record| record.offset < bound)
+            .peekable();
+        if records.peek().is_none() {
+            break;
+        }
+        while let Some(first) = records.next() {
+            let timestamp_micros = first.timestamp_micros;
+            let mut batch = HeldBatch {
+                payloads: vec![first.payload],
+                publisher: first.publisher,
+                record_headers: None,
+                timestamp_micros: Some(timestamp_micros),
+                first_offset: first.offset,
+                commit: None,
+                trim: None,
+                trim_applied: None,
+                skipped_before: first.offset.saturating_sub(next),
+                gap: false,
+                gap_end: None,
+            };
+            next = first.offset + 1;
+            while let Some(more) = records
+                .next_if(|more| more.offset == next && more.timestamp_micros == timestamp_micros)
+            {
+                batch.payloads.push(more.payload);
+                next += 1;
+            }
+            let mut completion = Completion::released(handle.clone(), batch, log_capacity);
+            if completion.append().is_ok() {
+                let _ = completion.deliver().await;
+            }
+        }
+    }
+    Ok(LogDelivery::CaughtUp)
+}
+
 /// Holds a [`Completion`] while its caller drives it, and finishes it on a
 /// detached task if the caller is dropped first.
 pub(super) struct Finisher(Option<Completion>);

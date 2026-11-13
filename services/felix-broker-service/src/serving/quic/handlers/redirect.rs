@@ -16,9 +16,9 @@ use crate::serving::quic::client_error::ClientError;
 /// anyway: they only ever see its committed mark. A shard this broker learned
 /// has a newer leader is refused too.
 ///
-/// A Raft shard is served on its leader only, once the term is open there.
-/// A follower's broker holds the log but fans nothing out live, so it
-/// redirects to the leader its group elected.
+/// A Raft shard is served on its leader once the term is open there, and on
+/// a follower that knows its leader, from the log up to what it committed.
+/// A member that knows no leader redirects or refuses, as for a write.
 ///
 /// This is checked before a reader registers, so it cannot see an ending that
 /// lands between it and the registration. [`stopped_serving`] is the check
@@ -59,6 +59,10 @@ pub(crate) fn redirect_for(
         kind,
     };
 
+    // A member that follows its group's leader serves readers from its log.
+    if ingress.is_some_and(|ingress| ingress.engine_serves_reads(&key)) {
+        return None;
+    }
     let dispatched = dispatch(ingress, &key);
     // A shard another engine runs is held by that engine's term. This
     // broker's lease and the hybrid's fence say nothing about it.
@@ -70,6 +74,24 @@ pub(crate) fn redirect_for(
         return Some(refusal);
     }
     redirect_from(dispatched, client_endpoints, stream, peer_features)
+}
+
+/// The redirect to `key`'s leader, when this broker serves the shard's
+/// readers as a follower. For a reader this broker's log is too far behind
+/// to serve.
+pub(crate) fn to_leader_from_follower(
+    ingress: Option<&crate::shards::routing::IngressRouter>,
+    key: &crate::shards::ShardKey,
+    peer_features: u32,
+) -> Option<Message> {
+    let ingress = ingress?;
+    if !ingress.engine_serves_reads(key) {
+        return None;
+    }
+    match ingress.engine_dispatch(key)? {
+        crate::shards::routing::Dispatch::Local { .. } => None,
+        dispatched => redirect_from(dispatched, None, &key.stream, peer_features),
+    }
 }
 
 /// Whether a reader that has just registered on `key` must be let go, and the
@@ -93,6 +115,7 @@ pub(crate) fn stopped_serving(
     if let Some(dispatched) = ingress.engine_dispatch(key) {
         return match dispatched {
             crate::shards::routing::Dispatch::Local { .. } => None,
+            _ if ingress.engine_serves_reads(key) => None,
             _ => Some(moved_away(key)),
         };
     }

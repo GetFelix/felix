@@ -81,6 +81,13 @@ pub(crate) struct StreamState {
     /// The log belongs to the shard's engine, which gives records their
     /// offsets: nothing here appends to it, and what is held was committed.
     pub(crate) engine_log: bool,
+    /// This broker leads the shard on its engine's log: records reach the
+    /// ring from its publishers' batches. Otherwise they are read from the
+    /// log as the engine commits them.
+    pub(crate) leads_engine_log: AtomicBool,
+    /// Held across a pass that delivers from the engine's log, and across a
+    /// new leader's move to the committed tail, so the two never interleave.
+    pub(crate) log_pass: tokio::sync::Mutex<()>,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -197,6 +204,8 @@ impl StreamState {
             held: CommitHold::default(),
             proposals: ProposalOrder::default(),
             engine_log: false,
+            leads_engine_log: AtomicBool::new(false),
+            log_pass: tokio::sync::Mutex::new(()),
             commits: CommitScan::default(),
         }
     }
@@ -278,6 +287,20 @@ impl StreamState {
             state.state_view = None;
             state.next_seq = end;
         }
+    }
+
+    /// Start again at `to` with an empty ring, if nobody is registered to
+    /// miss what lies between. A reader below `to` is served from the log.
+    pub(crate) fn jump_unwatched(&self, to: u64) -> bool {
+        let mut state = self.log_state.lock();
+        if to <= state.next_seq || !self.subscribers.lock().senders.is_empty() {
+            return false;
+        }
+        state.log.clear();
+        state.state_view = None;
+        state.generation_start_run = None;
+        state.next_seq = to;
+        true
     }
 
     pub(crate) fn deactivate(&self) {
@@ -628,7 +651,11 @@ impl StreamState {
             return;
         }
         // Readers still registered were never offered the records it passes.
-        self.end_passed_over(&state, to);
+        // On an engine's log they were delivered up to `next_seq` from the
+        // log, so a pass over offsets that hold no record skips nothing.
+        if !self.engine_log || tail - state.next_seq > run {
+            self.end_passed_over(&state, to);
+        }
         state.forget_view_across(tail, run);
         // The ring would end below records a reader from it then never gets.
         state.log.clear();

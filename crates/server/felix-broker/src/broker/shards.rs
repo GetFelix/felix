@@ -173,16 +173,52 @@ impl Broker {
         {
             return Err(BrokerError::ReleaseInFlight);
         }
+        // On an engine's log, what the log delivered while this broker
+        // followed is finished first, so its subscribers stay. The pass is
+        // locked out until the stream is marked as led.
+        let _pass = match state.engine_log {
+            true => Some(state.log_pass.lock().await),
+            false => None,
+        };
+        if state.engine_log {
+            let handle = StreamHandle {
+                state: Arc::clone(&state),
+            };
+            super::publish::deliver_from_log(&handle).await?;
+        }
         let Some(tail) = visible_end(&state, log).await? else {
             return Ok(false);
         };
-        if tail <= state.tail_seq() {
-            return Ok(true);
+        if tail > state.tail_seq() {
+            let run = tail - log.event_end(0, tail).await?;
+            state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         }
-        let run = tail - log.event_end(0, tail).await?;
-        state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         // `lead_from` leaves a stream with held batches where it is.
-        Ok(state.tail_seq() >= tail)
+        let led = state.tail_seq() >= tail;
+        if led && state.engine_log {
+            state.leads_engine_log.store(true, Ordering::Release);
+        }
+        Ok(led)
+    }
+
+    /// This broker stopped leading a shard on its engine's log: its
+    /// subscribers are served from the log again, once the batches the
+    /// deposed term was handed have settled. A no-op for any other shard.
+    pub async fn follow_engine_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) {
+        if let Some(state) = self
+            .topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+        {
+            state.leads_engine_log.store(false, Ordering::Release);
+        }
     }
 
     pub(super) async fn get_stream_state(
@@ -665,6 +701,15 @@ impl StreamHandle {
     /// reads then stop at the service's [`crate::ReadBounds`] answer.
     pub fn bound_every_level(&self) {
         self.state.held.bound_every_level();
+    }
+
+    /// Deliver the records this shard's engine committed since the last
+    /// call, from its log, to the subscribers registered here. For a stream
+    /// on its engine's log whose broker does not lead the shard; a no-op
+    /// while it leads, and for any other stream. One pass runs at a time.
+    pub async fn deliver_from_log(&self) -> Result<super::publish::LogDelivery> {
+        let _pass = self.state.log_pass.lock().await;
+        super::publish::deliver_from_log(self).await
     }
 
     /// Look at the committed mark again and release the held batches it now
