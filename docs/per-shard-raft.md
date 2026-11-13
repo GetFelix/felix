@@ -191,16 +191,37 @@ disk, so a power cut cannot shorten what a peer counted.
 
 **The restore check.** A directory restored from a backup or a VM rollback
 keeps its copy id with an older log and an older vote. Raft cannot see
-that: the copy would vote under an id that already promised more. Today the
-control plane's incarnation check catches it (`restored` in `start_run`),
-and the run witness catches it when the broker starts from its saved view.
-Both stay, as a gate in front of Raft: a restarted broker starts no member
-until its data root has passed one of them. A root that fails rotates every
-copy id in it. A broker that can reach neither the control plane nor a
-witness starts no member until it can. Brokers that stayed up are not
-affected, so failover with the control plane down still works. What waits
-is the restarted broker's own vote. The check is once per broker start, not
-per shard.
+that: the copy would vote under an id that already promised more. A gate in
+front of Raft (`raft_copy::check`) judges the data root once per broker
+start, not per shard, from three pieces of evidence: the incarnation
+verdict (the control plane registered the node after the root last recorded
+a registration, `restored` in `start_run`), the run witness's copy of the
+root sequence, and the control plane's copy (both below). The gate has
+three outcomes:
+
+- **Behind** any of the three: the root gets a new storage id and every
+  copy id in it rotates.
+- **Unchecked:** the root holds marks but there is no copy of its sequence
+  to compare against, because the machine rebooted (the witness is gone)
+  and the control plane has none. No member opens until evidence arrives.
+  A hold acts on evidence, never on silence.
+- **Passed:** otherwise, including a root with no marks yet.
+
+The control plane's copy is not built yet (issue #2441). Until it lands, a
+broker whose machine rebooted holds once its root has marks, and so does
+every start on a host with no witness directory (anything but Linux with
+`/dev/shm`). Brokers that stayed up are not affected, so failover with the
+control plane down still works. What waits is the restarted broker's own
+vote.
+
+One more case holds until then. The witness keeps a root's sequence under
+its storage id. If the id changes anywhere but the gate's own rotation (a
+start after a crash or a restore, `felix-broker restore-point`, or a restore the
+cluster's registration reveals), or the broker crashes after the gate
+rotates the id but before it records the witness, the witness has nothing
+under the new id. A root with marks then reads as Unchecked on the next
+start and holds. That is safe, since a hold never lets a copy vote twice,
+but the broker waits for the control plane's copy like a rebooted one.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
@@ -299,6 +320,24 @@ that set calls `initialize` with it, which openraft allows. A member
 initializes only when its own member id is in the set. A copy wiped after
 that has a new id that the set does not name, so it can never initialize a
 second time on an empty log.
+
+**Where it is built.** `felix_storage::raft_copy` keeps the copy file in
+each shard directory and the marks at the data root, in one append-only
+file whose writes are group-committed, so many groups voting at once share
+one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
+directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
+re-form reads, and a new directory gets a new copy id. A directory holding
+only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
+only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
+root that passed, or `Behind::rotate` returns after giving the root a new
+storage id. An unchecked root yields none, so no member opens on it. `GroupRuntime::open_copy` opens a
+member that way. The log mark is exact by default (`LogMarkMode::Exact`,
+synced before the flush is reported to Raft) and can be batched
+(`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
+Not built yet (issue #2441): the control plane's copy of the root
+sequence, and the broker opening its Raft groups through all this. Until
+the first lands, a root with marks passes only on a witness record, so a
+rebooted host holds.
 
 ### Re-forming a group
 
@@ -2403,7 +2442,7 @@ and the hybrid is what ships.
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
-| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
+| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), except the control plane's copy of the root sequence and the broker opening its groups through them. Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
 | 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |

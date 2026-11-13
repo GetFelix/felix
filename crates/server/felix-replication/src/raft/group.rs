@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use felix_storage::DiskLog;
+use felix_storage::raft_copy::{CopyMarks, LogMarkMode};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::{Config, Raft, ReadPolicy, ServerState};
@@ -298,10 +299,12 @@ impl Drop for Dropped<'_> {
 impl Group {
     /// Start `member` on `log`. The log decides where the member resumes: an
     /// empty one is a member that has never voted.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         id: GroupId,
         member: MemberId,
         log: DiskLog,
+        marks: Option<(CopyMarks, LogMarkMode)>,
         config: Arc<Config>,
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
@@ -312,6 +315,9 @@ impl Group {
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        if let Some((marks, mode)) = marks {
+            log.mark_with(marks, mode)?;
+        }
         let positions = log.positions();
         let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));

@@ -54,7 +54,8 @@ impl fmt::Display for GroupId {
 ///
 /// The copy id is minted in the shard's directory when a member is first
 /// made there, so a copy that lost its directory comes back as a member Raft
-/// has never seen. Minting it is not this module's job; the caller passes it.
+/// has never seen. `felix_storage::raft_copy` mints it, and
+/// [`super::GroupRuntime::open_copy`] reads it from the directory.
 ///
 /// openraft clones member ids many times per heartbeat (its metrics hold
 /// several maps keyed by them), so the broker name is shared: a clone

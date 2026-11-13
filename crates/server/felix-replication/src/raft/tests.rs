@@ -24,6 +24,7 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod identity;
 mod propose;
 mod written;
 

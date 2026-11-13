@@ -8,9 +8,11 @@ use std::sync::Arc;
 
 use tokio::sync::{mpsc, watch};
 
+use super::LogPoint;
 use super::writer::io_error;
-use crate::DiskLog;
 use crate::disk_log::PendingAppend;
+use crate::raft_copy::CopyMarks;
+use crate::{DiskLog, StorageError};
 
 /// What an append's callback is given.
 pub(super) type Flushed = Box<dyn FnOnce(io::Result<()>) + Send>;
@@ -25,6 +27,9 @@ pub(super) struct FlushQueue {
 struct Waiting {
     pending: PendingAppend,
     flushed: Flushed,
+    /// The exact log mark to sync before `flushed` fires: the marks and the
+    /// append's last entry.
+    mark: Option<(CopyMarks, LogPoint)>,
 }
 
 impl Default for FlushQueue {
@@ -49,9 +54,15 @@ impl FlushQueue {
         let _ = waiting.wait_for(|waiting| *waiting == 0).await;
     }
 
-    /// Fire `flushed` once `log`'s fsync policy is met for `pending`, after
-    /// every callback queued before it.
-    pub(super) fn push(&self, log: &DiskLog, pending: PendingAppend, flushed: Flushed) {
+    /// Fire `flushed` once `log`'s fsync policy is met for `pending`, and
+    /// `mark` is synced, after every callback queued before it.
+    pub(super) fn push(
+        &self,
+        log: &DiskLog,
+        pending: PendingAppend,
+        flushed: Flushed,
+        mark: Option<(CopyMarks, LogPoint)>,
+    ) {
         self.waiting.send_modify(|waiting| *waiting += 1);
         let mut sender = self.sender.lock();
         // A task that stopped (a callback panicked, or its runtime shut
@@ -63,7 +74,11 @@ impl FlushQueue {
             Some(sender) if !sender.is_closed() => sender,
             slot => slot.insert(Task::spawn(log.clone(), Arc::clone(&self.waiting))),
         };
-        if let Err(mpsc::error::SendError(unsent)) = sender.send(Waiting { pending, flushed }) {
+        if let Err(mpsc::error::SendError(unsent)) = sender.send(Waiting {
+            pending,
+            flushed,
+            mark,
+        }) {
             settle(&self.waiting);
             (unsent.flushed)(Err(stopped()));
         }
@@ -103,8 +118,11 @@ impl Task {
             // Newest first, so the oldest is popped first.
             self.batch.reverse();
             let mut covered = Some(self.log.commit(&self.batch[0].pending).await);
+            // The highest entry marked this round. The newest's mark covers
+            // every append before it.
+            let mut marked: Option<LogPoint> = None;
             while let Some(waiting) = self.batch.pop() {
-                let flushed = if self.batch.is_empty() {
+                let mut flushed = if self.batch.is_empty() {
                     covered.take().expect("taken once, by the newest")
                 } else if matches!(covered, Some(Ok(()))) {
                     Ok(())
@@ -113,6 +131,22 @@ impl Task {
                     // covered this one.
                     self.log.commit(&waiting.pending).await
                 };
+                if flushed.is_ok()
+                    && let Some((marks, last)) = &waiting.mark
+                    && marked.is_none_or(|marked| marked.index < last.index)
+                {
+                    // Once the newest is on disk so is everything before
+                    // it, and one write covers the round.
+                    let newest = self.batch.first().and_then(|newest| newest.mark.as_ref());
+                    let point = match (&covered, newest) {
+                        (Some(Ok(())), Some((_, newest))) => *newest,
+                        _ => *last,
+                    };
+                    match marks.log(Some(point)).await {
+                        Ok(()) => marked = Some(point),
+                        Err(err) => flushed = Err(StorageError::Io(err)),
+                    }
+                }
                 // On drop, so a callback that panics is still counted.
                 let _settle = Settle(&self.waiting);
                 (waiting.flushed)(flushed.map_err(io_error));
