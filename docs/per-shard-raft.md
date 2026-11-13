@@ -665,22 +665,32 @@ hold:
   not count itself.
 
 The leader counts itself, since `propose` returned once its own copy was
-written. A member that no longer leads the record's term acknowledges
-nothing this way: the commit wait refuses it first.
+written. A deposed leader that has not heard of the new term yet can
+still acknowledge this way. That is safe: the written majority it counted
+overlaps every majority that can elect a later leader, and a voter refuses
+a candidate whose log is behind its own, unsynced entries included.
 
 What the acknowledgement promises, and what it does not
 (`docs/formal/FelixRaftWritten.tla`):
 
 - With no power cut, an acknowledged record is in every later leader's
   log: a killed broker keeps what it wrote. The model has checked this to
-  the end for one term with process crashes (`FelixRaftWrittenCrash.cfg`).
-  Changes of leader and a membership change are modelled
-  (`FelixRaftWrittenFailover.cfg`, `FelixRaftWrittenTerms.cfg`,
-  `FelixRaftWrittenJoint.cfg`, `FelixRaftWrittenJointFailover.cfg`), but
-  those runs have not finished, so this is not yet checked across them.
-- It can be lost only if a copy that held it loses power before its fsync
-  and a majority then elects without a copy that still holds it. At RF 3
-  one power cut is enough. The leader and one follower hold the record. One
+  the end for one term with process crashes (`FelixRaftWrittenCrash.cfg`),
+  across a change of leader with a power cut (`FelixRaftWrittenFailover.cfg`)
+  and across a membership change (`FelixRaftWrittenJoint.cfg`). Two terms
+  with two writes (`FelixRaftWrittenTerms.cfg`) and the membership change
+  across a change of leader (`FelixRaftWrittenJointFailover.cfg`) found no
+  violation but have not finished.
+- A failed flush counts as a power cut for that copy. A Raft log is fsync
+  on commit, and a log whose flush failed is cut back to its last sync when
+  it restarts, on the grounds that nothing past it was acknowledged. A
+  written-majority acknowledgement makes that untrue, so the copy comes
+  back without the record exactly as if it had lost power. Before routing
+  calls `await_quorum_ack`, such a copy must not vote with the cut log
+  (issue #2469).
+- It can be lost only if a copy that held it loses power, or fails a
+  flush, before its fsync and a majority then elects without a copy that
+  still holds it. At RF 3 one power cut is enough. The leader and one follower hold the record. One
   of the two loses power and comes back without it, and it and the third
   broker elect a leader while the last copy is unreachable. The copy that
   loses power can be the leader's own. The window is one group-commit
@@ -1453,7 +1463,12 @@ change has to:
   ring is empty reads that batch from the log instead of missing it (#2428);
 - answer a `Quorum` publisher on a stream that does not fsync on commit
   from `await_quorum_ack`. `propose_publish` answers at the commit today,
-  and live delivery stays at the commit either way.
+  and live delivery stays at the commit either way. The answer has to wait
+  for the batch's turn in `ProposalOrder`, because written-count wakeups
+  arrive in no particular order;
+- keep a Raft copy whose flush failed from voting with its cut log, by
+  restarting it as a rotated copy or refusing to open it, before
+  `await_quorum_ack` is wired (#2469).
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
@@ -1805,9 +1820,11 @@ term, one half of a joint configuration taken as enough, and the commit
 index counting written reports. One expected violation is pinned: every
 rule on and one power cut, which is the loss "Two signals from one append"
 states.
-The one-term configurations run to the end. The pass configurations with
-a second term or the joint change have found no violation but have not
-finished (`docs/formal/README.md`).
+The one-term configurations, the change of leader
+(`FelixRaftWrittenFailover.cfg`) and the joint change
+(`FelixRaftWrittenJoint.cfg`) run to the end. Two terms with two writes and
+the joint change across a change of leader have found no violation but have
+not finished (`docs/formal/README.md`).
 
 **Leader leases.** Add a clock per broker with bounded drift, the leader's
 lease from the send time of its last majority-acknowledged message, and the

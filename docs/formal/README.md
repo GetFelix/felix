@@ -597,10 +597,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftMembershipReachFailoverInJoint.cfg` | witness: a joint entry commits under one leader and the next term's leader leaves the joint configuration | violate `NeverFailoverInJoint` |
 | `FelixRaftWritten.cfg` | `FelixRaftWritten.tla`: three voters, one term, two writes, one process crash, one power cut, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld` (4.3M distinct states) |
 | `FelixRaftWrittenCrash.cfg` | two process crashes and no power cut | pass the same and `AckedNeverLost` (0.6M distinct states) |
-| `FelixRaftWrittenFailover.cfg` | two terms, one write, one power cut | pass the same as `FelixRaftWritten.cfg`; not registered: no violation in 20.4M distinct states and 12 minutes on a 32-core machine, unfinished |
-| `FelixRaftWrittenTerms.cfg` | two terms, two writes and no crash: a deposed leader's tail at or past the new leader's record | pass the same and `AckedNeverLost`; not registered: no violation in 21.2M distinct states and 10 minutes on a 32-core machine, unfinished |
-| `FelixRaftWrittenJoint.cfg` | three voters and a learner, one swap through a joint configuration, one write | pass the same and `AckedNeverLost`; not registered: no violation in 48.4M distinct states and 40 minutes on a 32-core machine, unfinished. `FelixRaftWrittenJointOneHalf.cfg` and `FelixRaftWrittenLearnerCounts.cfg` violate within seconds on the same model |
-| `FelixRaftWrittenJointFailover.cfg` | the same across a change of leader | pass the same and `AckedNeverLost`; not registered: larger than `FelixRaftWrittenJoint.cfg` and not run yet |
+| `FelixRaftWrittenFailover.cfg` | two terms, one write, one power cut | pass the same as `FelixRaftWritten.cfg` (56.0M distinct states, 46 minutes with 8 workers on a 32-core machine) |
+| `FelixRaftWrittenTerms.cfg` | two terms, two writes and no crash: a deposed leader's tail at or past the new leader's record | pass the same and `AckedNeverLost`; not registered: no violation in 206M distinct states and 2 hours 13 minutes with 8 workers on a 32-core machine, unfinished |
+| `FelixRaftWrittenJoint.cfg` | three voters and a learner, one swap through a joint configuration, one write | pass the same and `AckedNeverLost` (111.2M distinct states, 2 hours 10 minutes with 8 workers on a 32-core machine). `FelixRaftWrittenJointOneHalf.cfg` and `FelixRaftWrittenLearnerCounts.cfg` violate within seconds on the same model |
+| `FelixRaftWrittenJointFailover.cfg` | the same across a change of leader | pass the same and `AckedNeverLost`; not registered: no violation in 217M distinct states and 2 hours 13 minutes with 8 workers on a 32-core machine, unfinished |
 | `FelixRaftWrittenLearnerCounts.cfg` | a learner's written report counts | violate `AckedHeld` |
 | `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
@@ -2626,13 +2626,12 @@ What the acknowledgement promises:
 
 What has run to the end: one term with two writes, a process crash and a
 power cut (`FelixRaftWritten.cfg`), and the same with two crashes and no power
-cut, where `AckedNeverLost` passes too (`FelixRaftWrittenCrash.cfg`). The
-configurations with a second term or the membership change found no violation
-but did not finish in the time they were given; the table above has how far
-each got. `FelixRaftWrittenFailover.cfg`, `FelixRaftWrittenTerms.cfg` and
-`FelixRaftWrittenJoint.cfg` are running in Actions, and
-`FelixRaftWrittenJointFailover.cfg` has not run. Until they finish, the
-promise is checked for one term only. Every twin below, the joint and second-term ones included, fails
+cut, where `AckedNeverLost` passes too (`FelixRaftWrittenCrash.cfg`), a
+change of leader with a power cut (`FelixRaftWrittenFailover.cfg`), and the
+membership change (`FelixRaftWrittenJoint.cfg`). Two terms with two writes
+(`FelixRaftWrittenTerms.cfg`) and the membership change across a change of
+leader (`FelixRaftWrittenJointFailover.cfg`) found no violation but did not
+finish; the table above has how far each got. Every twin below, the joint and second-term ones included, fails
 within seconds.
 
 So the loss this acknowledgement leaves open is exactly one: a copy that held
@@ -2644,6 +2643,12 @@ and it and the third voter can elect while the last copy is not heard. The
 copy that loses power can be the leader's own. The hybrid does not lose the
 record there: a follower back from a machine crash has a new storage identity
 and is not counted, so the shard waits (issue #2423).
+
+A failed flush counts as a power cut for that copy. A Raft log whose flush
+failed is cut back to its last sync when it restarts, so it comes back without
+the record just as if it had lost power, and the model's power cut covers it.
+Such a copy must not vote with the cut log once the acknowledgement is wired
+(issue #2469).
 
 Each knob drops one rule, and each twin fails with no power cut at all:
 

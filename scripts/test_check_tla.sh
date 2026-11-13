@@ -99,8 +99,9 @@ rm "$work/scripts/check_tla.sh.bak"
 check "pr_minutes line" "FelixRaftSwitchLag
 $(footer 4 1)"
 
-# A new module's `module_of` line is that module's configurations, not all.
-sed -i.bak 's/^    FelixRaft\*) echo FelixRaft ;;$/    FelixRaftWritten*) echo FelixRaftWritten ;;\
+# A new module's `module_of` line is that module's configurations, not all
+# (none here: no registered configuration starts with FelixRaftUnused).
+sed -i.bak 's/^    FelixRaft\*) echo FelixRaft ;;$/    FelixRaftUnused*) echo FelixRaftUnused ;;\
 &/' "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
 check "module_of line added" "$(footer 0 0)"
