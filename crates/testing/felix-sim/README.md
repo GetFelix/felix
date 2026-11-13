@@ -95,6 +95,20 @@ A seed fails when any check reports a problem, except a warning.
 - A run that stops making progress ends with a `stalled` finding instead of
   hanging.
 
+## Raft groups
+
+`felix_sim::raft` (feature `raft`, on for this crate's tests) runs groups of the
+per-shard Raft engine without a broker service around them: three or five
+members, a fixed member set, simulated links, no control plane. It checks the
+client history, one leader per term, the read bound against what a majority
+has fsynced, and recovery after the heal. See "Raft groups" in
+`docs/simulation.md`.
+
+```bash
+FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+```
+
 ## Power loss
 
 A power cut lands inside an append to one of the broker's logs. That append

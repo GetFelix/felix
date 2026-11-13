@@ -559,6 +559,56 @@ Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
 on. Rerun the seeds rather than trusting this table.
 
+## Raft groups
+
+The per-shard Raft engine (`docs/per-shard-raft.md`) is not behind a broker
+yet: no broker service routes a shard to it. So the runs above cannot test
+it. `felix_sim::raft` tests the engine on its own, on the same paused clock.
+
+A run starts three or five members. Each member is what a broker will hold
+for a Raft shard: a group runtime, the engine, and a broker core whose stream
+is bounded by the engine's read bound. Each shard has one in-memory log per
+member. Links between members are simulated. There is no control plane in the
+run, so everything it shows holds with the control plane down.
+
+The member set is fixed and no member restarts. Restarts and power cuts on
+Raft shards come with the pull request that adds copy ids and the restore
+check.
+
+Faults, drawn from the seed and healed one at a time: a member isolated, a
+minority split off, one direction of one link cut (a request that never
+arrives, or one that is handled and whose answer is lost), and the leader of a
+shard isolated.
+
+Clients publish through the engine on the member they believe leads, and
+sometimes on another member, which must refuse. Readers read a member's log up
+to its read bound, on any member. Every publish error is recorded as unknown.
+
+What a seed checks:
+
+- The history checker, over what the clients saw and a final read taken from
+  the leader after the writers stop.
+- At most one member leads a term.
+- A member's read bound never goes back, and never passes what a majority of
+  members has fsynced.
+- Within 30 seconds of the heal every shard has a leader that acknowledges a
+  write, no member refuses a read, and every member serves the same records.
+
+`FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
+0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
+clock skew can do to it. Without the variable the timers agree.
+
+Two pinned seeds run with the workspace tests. The batch is ignored by default:
+
+```bash
+FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+```
+
+Not covered yet, because each needs a broker that serves a Raft shard: live
+subscribers across a failover, consumer groups, reads after a restart, and the
+whole-cluster history campaign in `history.yml`.
+
 ## The nightly sweep
 
 `.github/workflows/dst-nightly.yml` runs 2000 seeds every night at 01:13

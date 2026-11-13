@@ -529,6 +529,22 @@ jobs:
           FELIX_SIM_CLOCKS: bounded
         run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
+      # Groups of the per-shard Raft engine (docs/simulation.md, "Raft groups").
+      - name: Raft group seeds
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_SEED_START: "3"
+          FELIX_SIM_SEEDS: "4"
+        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+
+      - name: Raft group seeds with skewed timers
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_SEED_START: "7"
+          FELIX_SIM_SEEDS: "4"
+          FELIX_SIM_CLOCKS: bounded
+        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
