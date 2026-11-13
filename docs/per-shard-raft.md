@@ -1356,7 +1356,8 @@ deposed and elected again between the route and the proposal writes the
 batch at the newer term, where its stream may not be at the committed tail
 yet. That batch is given up: the publisher gets an unknown outcome, live
 subscribers see its offsets as a drop, and a reader resuming below it reads
-it from the log if it committed.
+it from the log if it committed. The batch is still written. Refusing it
+before the write needs a proposal conditional on the term (#2453).
 
 A broker that holds no member of the shard forwards to the broker the
 shard's placement names as leader. That broker holds a member, and answers
@@ -1376,11 +1377,41 @@ storage is flushed.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_batch_written_at_another_term_is_given_up`.
 
-`FELIX_SHARD_ENGINE=raft` is still refused at startup. Publishes, routes
-and a leader stopping are tested across three brokers in one process. Not
-yet tested: a subscribe through a client connection, and the Kafka, MQTT,
-commit and consumer-group paths, which still reach the hybrid's fence on a
-Raft shard.
+**Subscribing.** A subscribe to a Raft shard is served on the group's
+leader and nowhere else. The leader serves it on its term alone: the
+broker's lease and the hybrid's fence are not asked. A follower's broker
+holds the log but fans nothing out live, so it answers with a redirect to
+the leader its group elected, the same answer the hybrid gives for a shard
+owned elsewhere (`docs/subscribe-routing.md`). A leader that is deposed
+ends its subscribers, and a subscribe that registers after the deposal is
+refused, so no subscription waits on a broker that receives no publishes.
+Serving a follower's subscribers from its log up to `read_bound` is not
+built.
+
+> `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
+> `a_raft_shard_is_subscribed_to_on_its_leader`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_deposed_leader_lets_its_subscribers_go`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `a_queued_publish_to_a_raft_shard_commits_through_its_group`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/tests/ownership_gate.rs`,
+> `a_raft_shard_led_here_resolves_without_the_broker_lease`.
+
+Conditional publishes, atomic commits, head trims and consumer-group
+operations on a Raft shard are refused by name before they reach the
+hybrid's fence (#2446).
+
+> `services/felix-broker-service/src/serving/commit_ops/tests.rs`,
+> `conditional_writes_to_a_raft_shard_are_refused_by_name`;
+> `services/felix-broker-service/src/serving/group_ops/tests.rs`,
+> `a_group_operation_on_a_raft_shard_is_refused_by_name`.
+
+`FELIX_SHARD_ENGINE=raft` is still refused at startup. Publishes, routes,
+subscribes and a leader stopping are tested across three brokers in one
+process. Not yet done: the Kafka and MQTT write paths still reach the
+hybrid's fence on a Raft shard, where they are refused as not owned
+instead of by name, and the failover test does not read the acknowledged
+payloads back.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
