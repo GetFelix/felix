@@ -44,7 +44,7 @@
 (* highest as the floor (ReportFloor). The floor is a log id: the index    *)
 (* and the epoch and term of the entry there. Every copy keeps its commit  *)
 (* index on disk. It can lag the leader's, never pass it, and a restart    *)
-(* keeps it.                                                               *)
+(* keeps it. A copy refuses an append that would cut its log below it.     *)
 (*                                                                         *)
 (* Why the floor needs the term (issue 2402): the copy left after two      *)
 (* disks are lost can hold an entry of an older term that never committed, *)
@@ -374,10 +374,10 @@ ProposeChange(l) ==
 \* never cuts entries that agree with the sender.
 Adopt(mine, theirs) == IF IsPrefix(theirs, mine) THEN mine ELSE theirs
 
-\* A saved commit index never names an entry the log no longer holds: a cut
-\* below it lowers it.
-CommitKept(b, new) ==
-    IF new = log[b] THEN commit[b] ELSE Min(commit[b], Len(CommonPrefix(log[b], new)))
+\* The log refuses a cut below its saved commit index (BelowCommit), so a
+\* copy takes no append that would make that index name another entry.
+KeepsCommit(b, new) ==
+    new = log[b] \/ Len(CommonPrefix(log[b], new)) >= commit[b]
 
 Replicate(l, f) ==
     /\ l # f
@@ -390,9 +390,10 @@ Replicate(l, f) ==
     /\ LET new == Adopt(log[f], log[l])
        IN /\ new # log[f] \/ term[f] # term[l] \/ role[f] # "follower"
              \/ match[l][f] # Len(log[l]) \/ commit[f] < commit[l]
+          /\ KeepsCommit(f, new)
           /\ log' = [log EXCEPT ![f] = new]
           \* The new log agrees with the leader's up to the leader's commit.
-          /\ commit' = [commit EXCEPT ![f] = Max(CommitKept(f, new), commit[l])]
+          /\ commit' = [commit EXCEPT ![f] = Max(commit[f], commit[l])]
           /\ match' = [match EXCEPT ![l][f] =
                         IF Mid(f) \in Voters(Config(l)) THEN Len(log[l]) ELSE @]
     /\ term' = [term EXCEPT ![f] = term[l]]
@@ -418,11 +419,11 @@ Receive(f, m) ==
     /\ EpochNotChecked \/ m.e = ep[f]
     /\ m.t > term[f] \/ (m.t = term[f] /\ role[f] # "leader")
     /\ Adopt(log[f], m.log) # log[f]
+    /\ KeepsCommit(f, Adopt(log[f], m.log))
     /\ log' = [log EXCEPT ![f] = Adopt(@, m.log)]
-    /\ commit' = [commit EXCEPT ![f] = CommitKept(f, Adopt(log[f], m.log))]
     /\ term' = [term EXCEPT ![f] = m.t]
     /\ role' = [role EXCEPT ![f] = "follower"]
-    /\ UNCHANGED <<ep, cid, match, retired, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<ep, cid, commit, match, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
 
 Commit(l, i) ==
@@ -625,6 +626,11 @@ WriteEpoch(e, base, voters, cut) ==
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
        /\ cpMem' = Simple(voters)
+       \* A padded base has a gap at the floor's index: the floor names it, or
+       \* no copy of the new epoch could ever hold the floor's entry.
+       /\ cpFloor' = IF Floor # "none" /\ cpFloor.i > Len(base)
+                     THEN [i |-> cpFloor.i, e |-> e + 1, t |-> 0]
+                     ELSE cpFloor
        \* Everything at or below the base is served as committed from here.
        /\ acked' = acked \cup
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
@@ -665,7 +671,7 @@ Reform(p, pick) ==
        /\ placed' = placed \cup S
        /\ everPlaced' = placed \cup S
        /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<dead, cpFloor, plans, elected, counters>>
+       /\ UNCHANGED <<dead, plans, elected, counters>>
 
 \* A shard with one replica whose copy rotated and kept records: it is a
 \* re-form of one, without the command. No other broker was placed in the
@@ -682,7 +688,7 @@ SelfStart(b) ==
     /\ WriteEpoch(cpEpoch, log[b], {Mid(b)}, FALSE)
     /\ everPlaced' = placed
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
+    /\ UNCHANGED <<placed, dead, plans, elected, counters>>
 
 \* A voter held the base, so its log is the base and the gap. Anyone else
 \* keeps what agrees with the base and is a learner. A broker declared dead

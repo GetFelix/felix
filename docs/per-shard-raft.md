@@ -351,8 +351,8 @@ What `plan` works out for one group, and `apply` then does:
    command asks each listed broker for its copy when it runs. It keeps no
    earlier answer. For each one it shows the copy id, whether the copy
    rotated, the last log id of the records on its disk, the commit index
-   the copy saved, and the newest membership in those records. A broker declared dead is shown as
-   missing. The cost: the list grows with every move for the life of the
+   the copy saved, and the newest membership in those records. A broker
+   declared dead is shown as missing. The cost: the list grows with every move for the life of the
    epoch, every broker the group ever sat on in it must answer or be
    declared dead, and the re-form places the removed ones again as
    learners.
@@ -386,8 +386,9 @@ What `plan` works out for one group, and `apply` then does:
    exactly the copies whose reports hold the base. The base is the highest
    last log id reported, if some copy holds the entry the offset floor
    names. If none does, the base is the highest commit index a copy saved
-   (see "Offsets are not reused" below). Every other listed copy is a learner. The listed brokers
-   start the record of brokers placed in the new epoch.
+   (see "Offsets are not reused" below). Every other listed copy is a
+   learner. The listed brokers start the record of brokers placed in the
+   new epoch.
 5. **Start.** Members start at the new epoch from the base, as in the
    switch. Messages carry the epoch, so the two never mix.
 
@@ -479,17 +480,18 @@ What the implementation stores for this:
   records (the segment store's commit offset, with the term of the entry
   there). It is written behind the call and is not fsynced before the
   commit or the client's acknowledgement: after a crash it can read back
-  older, never newer, and a stale one only cuts a base shorter. It must
-  never name an entry the log does not hold: an open lowers or drops a
-  saved id whose entry is gone or has another term, and a cut of the log
-  below it lowers it. A rotated copy keeps it with what is left of its
-  records.
+  older, never newer, and a stale one only cuts a base shorter. It never
+  names an entry the log does not hold: an open lowers a saved id whose
+  entry a crash took and refuses one whose index holds another term's
+  entry, and the log refuses a cut below it (`BelowCommit`). A rotated
+  copy keeps it with what is left of its records.
 - **The control plane records the floor as a log id**: index, epoch and
-  term. A report replaces it only with a higher index. A re-form does
-  not change it.
-- **The command reads, from each copy,** its last log id, the term of
-  the entry at the floor's index, if it holds one, and its saved commit
-  index.
+  term. A report replaces it only with a higher index. A re-form that
+  pads keeps the index and names the gap there, so copies of the new
+  epoch hold the floor's entry.
+- **The command reads, from each copy,** its last log id, the epoch and
+  term of the entry at the floor's index, if it holds one, and its saved
+  commit index.
 
 **A restored RF 1 copy starts by itself.** An RF 1 shard has one copy, so
 no other disk can hold a newer record. If that copy rotated but still has
