@@ -555,8 +555,10 @@ cells need it, and modelled first").
 The publish path on a Raft shard:
 
 1. The broker hands the batch to `propose`, in its commit order.
-2. The engine calls `client_write_many` with one entry per record.
-   openraft assigns each the next index, which is the record's offset.
+2. The engine hands openraft one entry per record, and names the term
+   the publish was admitted at ("A batch is written only at the term it
+   was admitted at"). openraft assigns each the next index, which is the
+   record's offset.
 3. openraft calls the adapter's `append`. The adapter runs `begin_append`
    and `commit` on the `DiskLog`, under group commit.
 4. `propose` returns the `Written` position. A `Leader` write is then
@@ -640,9 +642,10 @@ engine only, like `await_commit`, `read_bound` and `confirm_read`. The
 the Raft engine: until then the trait's cache, counter and peer-message
 methods have no Raft answer.
 
-A batch is a list of records and where its acknowledgement waits: `Written`
-or `Flushed`. `AckAt::for_fsync` picks `Flushed` for a stream that fsyncs
-on commit and `Written` for any other.
+A batch is a list of records, where its acknowledgement waits (`Written`
+or `Flushed`), and the term its caller was admitted at, if it names one.
+`AckAt::for_fsync` picks `Flushed` for a stream that fsyncs on commit and
+`Written` for any other.
 
 Each shard has a queue, and the queue is the shard's commit order. Under
 Raft a record has no offset until openraft gives it one, so there is no
@@ -650,8 +653,8 @@ offset to order by before the write. The order is the order of the calls:
 
 1. `propose` puts the batch on the queue before it returns its future.
    Dropping the future takes nothing back.
-2. One task per shard takes everything queued and makes one
-   `client_write_many` call for all of it, one entry per record. Batches
+2. One task per shard takes everything queued that was admitted at one
+   term and hands it to openraft in one go, one entry per record. Batches
    that arrive while an append runs go down together in the next call. The
    task starts with the shard's first publish, so a shard that takes none
    has no task. It runs on the runtime the group was opened on, not on the
@@ -663,9 +666,60 @@ offset to order by before the write. The order is the order of the calls:
 A call takes no batch that would bring it past 4 MiB of payload or 4096
 records, so batches with empty payloads are bounded too. A batch past
 either limit on its own goes down alone, and the batch behind it starts the
-next call. One call is one append, and the group handles no heartbeat or
+next call. So does a batch admitted at another term than the one before
+it. One call is one append, and the group handles no heartbeat or
 vote while an append runs. The queue itself has no limit yet. The publish
 path bounds what is in flight when it is wired to `propose`.
+
+**A batch is written only at the term it was admitted at.** The broker
+admits a publish at the term it serves, and the proposal happens a moment
+later. In between, the broker can be deposed and elected again. Its stream
+may not be at the new term's committed tail yet, so a batch written then
+could not be delivered or acknowledged. It would still commit, and a
+publisher that retried its failed publish would write the records twice.
+
+So a batch carries its admitted term into the queue, and the task names
+that term on every record it hands over (openraft's `write` with
+`with_leader`). openraft compares the term with the one it leads inside
+its own loop, in the same step that appends the record. No election can
+fall between the check and the append. A record whose term is not the one
+led is refused before anything is appended, and its publisher is told the
+broker does not lead the term the batch was admitted at.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker
+    participant Q as Shard's publish task
+    participant R as openraft
+    P->>B: publish
+    B->>B: admitted at term 4
+    B->>Q: batch, term 4
+    Note over R: deposed, elected again: leads term 6
+    Q->>R: write each record, only if term 4 is led
+    R-->>Q: refused, nothing appended
+    Q-->>P: leadership lost
+```
+
+A term-bound record is its own message to openraft, where an unbound call
+is one message for all its records. openraft folds messages that wait
+together and name the same term back into one append, so a busy shard
+still shares appends. Two things follow for a batch of several records:
+
+- Leadership can be lost between two of its records. The first ones are
+  then in the log at the admitted term and the rest are refused.
+- A membership entry can land between two of its records.
+
+In both cases the publisher is told the outcome is unknown, the same
+answer as for any write that may or may not commit, and subscribers are
+never handed part of a batch. Neither writes a record at another term.
+
+A caller that names no term (`None`) gets the unbound call. The broker
+always names one.
+
+> `crates/server/felix-replication/src/raft/tests/propose.rs`,
+> `a_batch_admitted_at_an_earlier_term_is_not_written` and
+> `a_drain_takes_batches_admitted_at_one_term`.
 
 **openraft's write lease.** At the pinned commit openraft refuses a write
 when no majority has answered the leader for its lease, which is the
@@ -1408,12 +1462,11 @@ at every level are bound by the commit index. A forwarded publish is
 checked against the term the owner serves now, not the one the sender saw.
 
 The term a publish was routed at goes with it into the group. A broker
-deposed and elected again between the route and the proposal writes the
-batch at the newer term, where its stream may not be at the committed tail
-yet. That batch is given up: the publisher gets an unknown outcome, live
-subscribers see its offsets as a drop, and a reader resuming below it reads
-it from the log if it committed. The batch is still written. Refusing it
-before the write needs a proposal conditional on the term (#2453).
+deposed and elected again between the route and the proposal leads a newer
+term, where its stream may not be at the committed tail yet. That batch is
+not written: openraft appends it only while the broker leads the term it
+was routed at ("Writing through openraft"). The publisher is told
+leadership was lost and can retry.
 
 A broker that holds no member of the shard forwards to the broker the
 shard's placement names as leader. That broker holds a member, and answers
@@ -1431,7 +1484,7 @@ storage is flushed.
 > `a_stopped_leader_is_replaced_and_no_acked_record_is_lost` and
 > `shutdown_stops_the_members_and_closes_their_logs`.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
-> `a_batch_written_at_another_term_is_given_up`.
+> `a_batch_admitted_at_another_term_is_not_written`.
 
 **Subscribing.** A subscribe to a Raft shard is served on the group's
 leader and nowhere else. The leader serves it on its term alone: the

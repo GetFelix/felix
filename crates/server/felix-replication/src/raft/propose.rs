@@ -17,6 +17,7 @@ use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
+use openraft::impls::ProgressResponder;
 use openraft::raft::WriteResult;
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -60,6 +61,9 @@ impl AckAt {
 pub struct Batch {
     pub records: Vec<Record>,
     pub ack: AckAt,
+    /// The term the caller was admitted at. The batch is written only
+    /// while this member leads that term. `None` takes any term.
+    pub term: Option<u64>,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
@@ -70,6 +74,8 @@ pub(super) const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const DRAIN_RECORDS: usize = 4096;
 
 const NOT_LEADING: &str = "this broker does not lead the shard";
+const OTHER_TERM: &str =
+    "this broker does not lead the term the batch was admitted at, so the record was not written";
 const ELECTING: &str = "this broker is standing for election, so the batch may still be written";
 const LEASE_LAPSED: &str = "no majority has answered this leader lately, so nothing was written";
 const DISCARDED: &str = "a newer leader discarded the entry";
@@ -114,6 +120,8 @@ impl Span {
 /// A batch on its way to the group.
 pub(crate) struct Proposal {
     commands: Vec<Command>,
+    /// [`Batch::term`].
+    term: Option<u64>,
     bytes: usize,
     /// Where openraft applied the batch, or why it did not.
     answer: oneshot::Sender<Result<Span, CommitError>>,
@@ -136,7 +144,7 @@ pub(crate) struct Waiting<W = WrittenAt> {
 /// last record each carry one, because one record's index says nothing
 /// certain about another's.
 pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
-    let Batch { records, ack } = batch;
+    let Batch { records, ack, term } = batch;
     let count = records.len();
     if count == 0 {
         return Err(lost(EMPTY));
@@ -164,6 +172,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     Ok((
         Proposal {
             commands,
+            term,
             bytes,
             answer,
         },
@@ -180,23 +189,29 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
 /// The batches of one call, in queue order.
 pub(super) struct Drain {
     pub(super) commands: Vec<Command>,
+    /// The term every batch of the call was admitted at.
+    pub(super) term: Option<u64>,
     /// Each batch's record count and where its answer goes.
     pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
 }
 
 /// Take `first` and what is queued behind it, up to [`DRAIN_BYTES`] and
-/// [`DRAIN_RECORDS`]. A batch that would pass either is left in `held`, to
-/// start the next drain, so it keeps its place.
+/// [`DRAIN_RECORDS`]. A batch that would pass either, or that was admitted
+/// at another term than `first`, is left in `held`, to start the next
+/// drain, so it keeps its place.
 pub(super) fn drain(
     first: Proposal,
     queue: &mut mpsc::UnboundedReceiver<Proposal>,
     held: &mut Option<Proposal>,
 ) -> Drain {
+    let term = first.term;
     let mut bytes = first.bytes;
     let mut commands = first.commands;
     let mut answers = vec![(commands.len(), first.answer)];
     while let Ok(next) = queue.try_recv() {
-        if bytes + next.bytes > DRAIN_BYTES || commands.len() + next.commands.len() > DRAIN_RECORDS
+        if next.term != term
+            || bytes + next.bytes > DRAIN_BYTES
+            || commands.len() + next.commands.len() > DRAIN_RECORDS
         {
             *held = Some(next);
             break;
@@ -205,15 +220,19 @@ pub(super) fn drain(
         answers.push((next.commands.len(), next.answer));
         commands.extend(next.commands);
     }
-    Drain { commands, answers }
+    Drain {
+        commands,
+        term,
+        answers,
+    }
 }
 
 /// Hand a shard's queued batches to its group, in the order they were
 /// queued, until `stop` or until the queue's sender is gone.
 ///
-/// Everything queued when the task looks goes down as one
-/// `client_write_many`, up to the drain bounds, so batches that arrive
-/// while an append runs share the next one. The task does not wait for a
+/// Everything queued when the task looks goes down in one call, up to the
+/// drain bounds, so batches that arrive while an append runs share the
+/// next one. The task does not wait for a
 /// call's entries to commit before it makes the next: openraft takes calls
 /// in the order they are made.
 pub(crate) async fn run(
@@ -239,7 +258,11 @@ pub(crate) async fn run(
                 },
             },
         };
-        let Drain { commands, answers } = drain(first, &mut queue, &mut held);
+        let Drain {
+            commands,
+            term,
+            answers,
+        } = drain(first, &mut queue, &mut held);
         if leads(&raft) {
             pace.wrote();
         }
@@ -250,12 +273,12 @@ pub(crate) async fn run(
             return;
         }
         calls.fetch_add(1, Ordering::Relaxed);
-        let sent = alongside(raft.client_write_many(commands), &mut answering, &stop).await;
+        let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
         let Some(sent) = sent else {
             return;
         };
         match sent {
-            Ok(results) => answering.push(answer(results, answers)),
+            Ok(results) => answering.push(answer(results, answers, term.is_some())),
             Err(fatal) => {
                 tracing::warn!(error = %fatal, "a stopped Raft group took no write");
                 for (_, to) in answers {
@@ -264,6 +287,36 @@ pub(crate) async fn run(
             }
         }
     }
+}
+
+/// Hand `commands` to openraft, in order. With a term, each is appended
+/// only if this member still leads that term, which openraft checks as it
+/// appends: what was admitted at one term never lands in another.
+pub(super) async fn write(
+    raft: &Raft<ShardTypes, Machine>,
+    commands: Vec<Command>,
+    term: Option<u64>,
+) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
+{
+    let Some(term) = term else {
+        return raft.client_write_many(commands).await;
+    };
+    let mut answers = Vec::with_capacity(commands.len());
+    for command in commands {
+        let (responder, answered) = ProgressResponder::complete_only();
+        raft.write(command)
+            .with_leader(term)
+            .responder(responder)
+            .await?;
+        answers.push(answered);
+    }
+    let results = futures::stream::iter(answers).then(|answered| async move {
+        match answered.await {
+            Ok(result) => Ok(result.map(Into::into)),
+            Err(_) => Err(Fatal::Stopped),
+        }
+    });
+    Ok(results.boxed())
 }
 
 /// Run `work` until it ends or `stop`, and meanwhile hand on the answers of
@@ -351,10 +404,12 @@ fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
 }
 
 /// Tell each batch of one call how openraft answered its records. The
-/// answers come in the order the records went in.
+/// answers come in the order the records went in. `bound` says the call
+/// named a term.
 pub(super) async fn answer(
     results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
     answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+    bound: bool,
 ) {
     // A group that stops ends the stream early, and openraft's stream must
     // not be polled past its end. The records left are answered as stopped.
@@ -374,6 +429,7 @@ pub(super) async fn answer(
                 Some(Ok(Err(ClientWriteError::ForwardToLeader(forward)))) => {
                     Err(lost(match forward.reason {
                         ForwardReason::LeaseExpired => LEASE_LAPSED,
+                        _ if bound => OTHER_TERM,
                         _ => NOT_LEADING,
                     }))
                 }

@@ -39,10 +39,11 @@ impl RaftEngine {
     /// [`BrokerError::ProposalsStalled`], with nothing proposed, while the
     /// oldest batch still waiting for its commit has waited past `timeout`.
     ///
-    /// `term` is the term the caller was admitted at. A batch the group
-    /// wrote at another term gives its place up: this broker was deposed
-    /// and elected again after the caller looked, and the stream may not be
-    /// at the new term's committed tail yet. `None` takes any term.
+    /// `term` is the term the caller was admitted at, and the batch is
+    /// written only while this broker leads it. A broker deposed and
+    /// elected again after the caller looked writes nothing: the stream
+    /// may not be at the new term's committed tail yet. `None` takes any
+    /// term.
     #[allow(clippy::too_many_arguments)]
     pub fn publish(
         &self,
@@ -67,11 +68,14 @@ impl RaftEngine {
                     payload,
                 })
                 .collect();
-            let written = self.propose(shard, Batch { records, ack });
+            let batch = Batch { records, ack, term };
+            let written = self.propose(shard, batch);
             let engine = self.clone();
             let shard = shard.clone();
             async move {
                 let written = written.await.map_err(ProposalFailed::unwritten)?;
+                // openraft refuses the write at another term. Should one
+                // land all the same, it is not delivered.
                 if term.is_some_and(|term| term != written.generation) {
                     let moved = super::propose::lost(OTHER_TERM);
                     return Err(ProposalFailed::written(moved, written.end));

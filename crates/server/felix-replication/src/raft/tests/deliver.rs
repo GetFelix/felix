@@ -262,12 +262,12 @@ async fn entries_holding_no_record_reach_subscribers_as_skipped() {
     cluster.stop().await;
 }
 
-/// **A batch written at another term than its caller was admitted at is
-/// given up, not delivered.** A broker deposed and elected again between
-/// the caller's look and the proposal writes it in a term whose stream may
-/// not be at the committed tail yet.
+/// **A batch admitted at another term than the one this broker leads is
+/// not written and not delivered.** A broker deposed and elected again
+/// between the caller's look and the proposal leads a term whose stream
+/// may not be at the committed tail yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_batch_written_at_another_term_is_given_up() {
+async fn a_batch_admitted_at_another_term_is_not_written() {
     let mut led = led().await;
     let (broker, handle) = broker_on(&led.engine).await;
     let (mut receiver, _guard) = subscriber(&broker).await;
@@ -293,8 +293,9 @@ async fn a_batch_written_at_another_term_is_given_up() {
     );
     nothing(&mut receiver).await;
 
+    // The next batch takes the offset the stale one would have.
     let outcome = at(term, b"current").await.expect("joined");
-    let offset = led.committed + 2;
+    let offset = led.committed + 1;
     assert_eq!(outcome.expect("committed").offsets, Some((offset, offset)));
     let envelope = next(&mut receiver).await;
     assert_eq!(envelope.base_offset(), Some(offset));

@@ -31,6 +31,14 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
     Batch {
         records: records.collect(),
         ack,
+        term: None,
+    }
+}
+
+fn admitted(term: u64, payloads: &[&'static [u8]]) -> Batch {
+    Batch {
+        term: Some(term),
+        ..batch(payloads, AckAt::Flushed)
     }
 }
 
@@ -301,6 +309,7 @@ fn a_drain_stops_at_its_bounds() {
             })
             .collect(),
         ack: AckAt::Written,
+        term: None,
     };
     // The batches each drain takes.
     let drains = |batches: Vec<Batch>| {
@@ -567,7 +576,7 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
     });
     let (first, first_told) = oneshot::channel();
     let (second, second_told) = oneshot::channel();
-    super::super::propose::answer(results.boxed(), vec![(2, first), (3, second)]).await;
+    super::super::propose::answer(results.boxed(), vec![(2, first), (3, second)], false).await;
     for told in [first_told, second_told] {
         let told = told.await.expect("told");
         assert!(
@@ -575,6 +584,91 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
             "{told:?}"
         );
     }
+}
+
+/// One call names one term, so a batch admitted at another starts the next
+/// call. It keeps its place.
+#[test]
+fn a_drain_takes_batches_admitted_at_one_term() {
+    let (queue, mut queued) = mpsc::unbounded_channel();
+    let mut waiting = Vec::new();
+    for term in [Some(4), Some(4), Some(5), None, None] {
+        let one = Batch {
+            term,
+            ..batch(&[b"r"], AckAt::Written)
+        };
+        let (proposal, wait) = split(one).expect("split");
+        assert!(queue.send(proposal).is_ok(), "not queued");
+        waiting.push(wait);
+    }
+    let (mut held, mut drains) = (None, Vec::new());
+    while let Some(first) = held.take().or_else(|| queued.try_recv().ok()) {
+        let drain = drain(first, &mut queued, &mut held);
+        drains.push((drain.term, drain.answers.len()));
+    }
+    assert_eq!(drains, [(Some(4), 2), (Some(5), 1), (None, 2)]);
+}
+
+/// **A batch admitted at one term is not written in the next.** The broker
+/// is elected again between the caller's look and the proposal. Written at
+/// the new term, the batch would commit while its publisher is told it
+/// failed, and a retry would write it twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_admitted_at_an_earlier_term_is_not_written() {
+    let (mut cluster, leader, engine, committed) = led().await;
+    let open = || engine.open_term(&shard(0));
+    let earlier = eventually(open).await;
+
+    // Another member leads for a while and commits a record.
+    let old = leader.broker.to_string();
+    cluster.net.muted.lock().insert(old.clone());
+    cluster.net.cut.lock().insert(old);
+    let between = cluster.write(0, b"between").await;
+    cluster.net.muted.lock().clear();
+    cluster.net.cut.lock().clear();
+    eventually(|| (engine.read_bound(&shard(0)).ok()? > between).then_some(())).await;
+
+    // Stand until this broker has the shard open again, in a later term.
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let member = member.expect("group");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while open().is_none_or(|term| term <= earlier) {
+        assert!(tokio::time::Instant::now() < deadline, "never led again");
+        member.raft().trigger().elect(false).await.expect("elect");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    let stale = engine.propose(&shard(0), admitted(earlier, &[b"stale 0", b"stale 1"]));
+    assert_eq!(
+        lost(&stale.await),
+        "this broker does not lead the term the batch was admitted at, so the record was not written"
+    );
+
+    // A batch admitted now is written, unless the term moves again.
+    let written = loop {
+        assert!(tokio::time::Instant::now() < deadline, "never written");
+        let Some(term) = open() else {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        };
+        let current = admitted(term, &[b"current 0", b"current 1", b"current 2"]);
+        match engine.propose(&shard(0), current).await {
+            Ok(written) => {
+                assert_eq!(written.generation, term);
+                break written;
+            }
+            Err(_) => assert_ne!(open(), Some(term), "refused at its own term"),
+        }
+    };
+    cluster.committed_everywhere(0, written.end - 1).await;
+    for broker in BROKERS {
+        let held = payloads(&cluster, broker, committed + 1).await;
+        assert!(
+            !held.iter().any(|payload| payload.starts_with(b"stale")),
+            "{broker} holds the stale batch: {held:?}"
+        );
+    }
+    cluster.stop().await;
 }
 
 type Token = Pin<Box<dyn Future<Output = Option<LogPoint>> + Send>>;
