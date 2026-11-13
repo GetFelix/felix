@@ -1278,7 +1278,7 @@ async fn a_group_operation_on_a_raft_shard_is_refused_by_name() {
 
     let described = describe(&broker, &publish_ctx, "t1", "ns", "orders", 0, GROUP).await;
 
-    let err = described.err().expect("a group on a Raft shard was served");
+    let err = described.expect_err("a group on a Raft shard was served");
     assert_eq!(
         err.message(),
         "a stream on Raft does not take consumer groups"
