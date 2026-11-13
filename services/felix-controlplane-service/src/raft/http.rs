@@ -19,6 +19,11 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
+#[cfg(felix_segment_store)]
+use felix_storage::raft_log::SnapshotId;
+
+#[cfg(felix_segment_store)]
+use super::types;
 use super::types::{Snapshot, Vote};
 use super::{peer_route, wire};
 
@@ -171,45 +176,135 @@ async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
     }
 }
 
-#[cfg(not(felix_segment_store))]
+/// On the segment store the body is read as a stream, which the router's
+/// body limit does not cover; the transfer's own cap does, from the length
+/// in the head.
 fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
     post(install_snapshot)
 }
 
-/// A snapshot arrives whole, so this route lifts the router's body limit:
-/// the state is as large as it is, and only a peer with the cluster's
-/// credentials gets this far.
-#[cfg(felix_segment_store)]
-fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
-    post(install_snapshot).layer(axum::extract::DefaultBodyLimit::disable())
-}
-
-/// A whole snapshot in one request ([`wire::snapshot_body`]).
+/// A snapshot streamed in one request (`felix_storage::raft_log::transfer`).
+/// The head is read first, and a stale sender, a length over the cap or a
+/// busy slot is answered before any data is read. The data goes straight
+/// to the receive file, never into memory.
 #[cfg(felix_segment_store)]
 async fn install_snapshot(
     State(handle): State<super::RaftHandle>,
-    body: axum::body::Bytes,
+    body: axum::body::Body,
 ) -> Response {
-    let Some((head, data)) = wire::parse_snapshot_body(&body) else {
-        return (StatusCode::BAD_REQUEST, "not a snapshot request").into_response();
+    let mut incoming =
+        felix_storage::raft_log::transfer::Incoming::new(BodyPieces(body.into_data_stream()));
+    let head = match incoming.head(handle.snapshot_max_bytes).await {
+        Ok(head) => head,
+        Err(err) => return transfer_failed(&err, incoming.received()),
     };
-    let snapshot = Snapshot {
-        meta: head.meta.into(),
-        snapshot: std::io::Cursor::new(data.to_vec()),
+    let data_len = head.data_len;
+    let Some(head) = wire::SnapshotHead::decode(&head.head) else {
+        return (StatusCode::BAD_REQUEST, "not a snapshot head").into_response();
     };
-    // A sender that is no longer the leader this member follows learns so
-    // from the vote in the answer; the library refuses its snapshot.
-    match handle
-        .raft
-        .install_full_snapshot(Vote::from(head.vote), snapshot)
+    let sender = Vote::from(head.vote);
+    let mine = match handle.raft.with_raft_state(|state| *state.vote_ref()).await {
+        Ok(vote) => vote,
+        Err(err) => return stopped(err),
+    };
+    // Advisory: the library checks the vote again when it installs. This
+    // only spares a stale sender's data the trip.
+    if sender < mine {
+        return Json(wire::Reply::Ok(wire::InstallSnapshotResponse {
+            vote: (&mine).into(),
+        }))
+        .into_response();
+    }
+    let Ok(slot) = handle.install_slot.take(sender).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "another snapshot install is in progress",
+        )
+            .into_response();
+    };
+    let Some(snapshots) = handle.member.snapshots().await else {
+        return stopped("the store is closed");
+    };
+    let meta = types::SnapshotMeta::from(head.meta.clone());
+    let last = meta.last_log_id.map(|id| SnapshotId {
+        term: *id.leader_id,
+        index: id.index,
+    });
+    let meta_bytes = match serde_json::to_vec(&head.meta) {
+        Ok(bytes) => bytes,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let mut staged = match snapshots
+        .begin_receive(last, meta_bytes.into(), data_len)
         .await
     {
+        Ok(staged) => staged,
+        Err(err) => return stopped(err),
+    };
+    let cancelled = slot.cancelled();
+    let closing = staged.closing();
+    let stop = async {
+        tokio::select! {
+            () = cancelled => {}
+            () = closing => {}
+        }
+    };
+    if let Err(err) = incoming.data(data_len, &mut staged, stop).await {
+        return transfer_failed(&err, incoming.received());
+    }
+    if let Err(err) = staged.finish().await {
+        return stopped(err);
+    }
+    let snapshot = Snapshot {
+        meta,
+        snapshot: types::SnapshotData::Staged(staged),
+    };
+    let installed = handle.raft.install_full_snapshot(sender, snapshot).await;
+    drop(slot);
+    match installed {
         Ok(response) => Json(wire::Reply::Ok(wire::InstallSnapshotResponse {
             vote: (&response.vote).into(),
         }))
         .into_response(),
         Err(err) => stopped(err),
     }
+}
+
+/// A request body, as the snapshot receive reads it.
+#[cfg(felix_segment_store)]
+struct BodyPieces(axum::body::BodyDataStream);
+
+#[cfg(felix_segment_store)]
+impl felix_storage::raft_log::transfer::Pieces for BodyPieces {
+    async fn next_piece(&mut self) -> Option<std::io::Result<bytes::Bytes>> {
+        use futures_util::StreamExt;
+
+        let piece = self.0.next().await?;
+        Some(piece.map_err(std::io::Error::other))
+    }
+}
+
+/// A transfer that was refused or broke off, logged with how far it got
+/// so one that keeps failing shows up as such.
+#[cfg(felix_segment_store)]
+fn transfer_failed(
+    err: &felix_storage::raft_log::transfer::TransferError,
+    received: u64,
+) -> Response {
+    use felix_storage::raft_log::transfer::TransferError;
+
+    tracing::warn!(error = %err, received, "snapshot receive failed");
+    let status = match err {
+        TransferError::OverCap { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        TransferError::Stalled { .. } => StatusCode::REQUEST_TIMEOUT,
+        TransferError::Cancelled | TransferError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
+        TransferError::UnknownForm(_)
+        | TransferError::HeadTooLarge(_)
+        | TransferError::Short { .. }
+        | TransferError::Trailing
+        | TransferError::Crc => StatusCode::BAD_REQUEST,
+    };
+    (status, err.to_string()).into_response()
 }
 
 /// One chunk of a snapshot, as a 0.9 member sends it. The chunks are joined
