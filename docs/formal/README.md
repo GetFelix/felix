@@ -3249,23 +3249,48 @@ Not modelled: storage (an append is durable), snapshots, membership changes, rea
 leases, pre-vote, ranked starts and the per-tick election cap. Messages are atomic steps
 except the sleep request. Only a leader's broker dies, and a disk stall counts as a death.
 
-## Which configurations run where
+## How CI checks the models
 
-TLC reads only the spec, so the `formal` job in `.github/workflows/ci.yml`
-runs only when `docs/formal/`, `scripts/check_tla.sh` or that workflow
-changes. A pull request checks the registered configurations that take ten
-minutes or less (`TLA_QUICK=1`), plus `FelixShard.cfg`, the base
-configuration, whatever its time, and any whose own `.cfg` it changes. A
-changed configuration of 30 minutes or less runs in the thirty shards with the
-quick ones. A heavier one runs in a job of its own (`formal-heavy`): the
-`formal-heavy-plan` job lists them with `scripts/check_tla.sh --plan-heavy`. A push
-to main checks every registered configuration. The shards are thirty jobs, on a pull request and on main,
-filled by each configuration's measured time. Main's shards share a
-concurrency group per shard: one run proceeds and only the newest later push
-waits, so a burst of merges does not queue hours of runner time. A slow configuration that a
-change to the `.tla` alone breaks therefore shows up on main, not on the pull
-request; run it on the branch through the workflow's dispatch (`tla_configs`)
-when the change is risky.
+TLC reads only the spec, so the model-check jobs in `.github/workflows/ci.yml`
+run only when `docs/formal/`, `scripts/check_tla.sh` or that workflow changes.
+
+A pull request checks only the configurations its diff can affect. The
+`formal-plan` job lists them with `scripts/check_tla.sh --affected <base>`:
+
+| The pull request changes | It checks |
+| --- | --- |
+| a `.cfg` | that configuration |
+| a `.tla` | every configuration of that module and of each module that `EXTENDS` or `INSTANCE`s it, transitively |
+| a registration line in `check_tla.sh` (`expectations`, `walks`, `weights`, `pr_minutes`) | the configuration that line names |
+| any other code line in `check_tla.sh` | all of them |
+| `ci.yml` before `jobs:`, or in the `changes`, `formal*` or `ci-ok` jobs | all of them |
+| comments, blank lines, the README, anything else | nothing |
+
+Only registered configurations are listed. From those, a pull request checks
+the ones that take ten minutes or less, plus `FelixShard.cfg` whatever its
+time and any whose own `.cfg` it changes up to 30 minutes. A `FelixRaft*.tla`
+change counts as a change to each of its configurations. The list is split
+into one shard per 30 minutes of measured time (`pr_minutes`), at most thirty,
+and no shard runs when the list is empty; `CI ok` treats the skipped job as a
+pass. A changed configuration over 30 minutes runs in a job of its own
+(`formal-heavy`), planned with `scripts/check_tla.sh --plan-heavy`. The
+walk of the unprobed crash (`formal-walk`) runs when those configurations
+are affected.
+
+So a pull request that edits only `FelixRaftSwitch.tla` runs the
+`FelixRaftSwitch*` configurations in a few shards, not thirty, and one that
+edits `FelixShard.tla` still runs nearly everything, since most modules
+extend it. Run `scripts/check_tla.sh --affected origin/main` to see the list
+before you push.
+
+A push to main checks every registered configuration in thirty shards, filled
+by each configuration's measured time, and walks the unprobed crash. Main's
+shards share a concurrency group per shard: one run proceeds and only the
+newest later push waits, so a burst of merges does not queue hours of runner
+time. A slow configuration that a change to the `.tla` alone breaks therefore
+shows up on main, not on the pull request; run it on the branch through the
+workflow's dispatch (`tla_configs`) when the change is risky. A dispatch also
+uses thirty shards.
 
 Whether a code change still matches the spec is a separate, quick check on
 every pull request that touches code (`scripts/check_spec_pairing.py`).
