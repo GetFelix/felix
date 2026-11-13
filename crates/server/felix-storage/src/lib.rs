@@ -48,7 +48,9 @@
 //! - `raft_log`, behind the `raft` feature: a [`DiskLog`] as an openraft
 //!   log, one record per entry. `metadata_store`, behind the same feature:
 //!   the member file the control plane keeps beside that log, and whether a
-//!   member may start on a data directory.
+//!   member may start on a data directory. `raft_copy`, behind the same
+//!   feature: which copy of a shard a Raft member is, the marks the data root
+//!   keeps for it, and the gate a restored root fails.
 //! - [`tiered`] is an interface with no implementation yet.
 //! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
 //!   reach decoders this crate does not export.
@@ -74,6 +76,8 @@ pub mod log;
 #[cfg(feature = "raft")]
 pub mod metadata_store;
 pub mod metrics_names;
+#[cfg(feature = "raft")]
+pub mod raft_copy;
 #[cfg(feature = "raft")]
 pub mod raft_log;
 pub mod run_state;
