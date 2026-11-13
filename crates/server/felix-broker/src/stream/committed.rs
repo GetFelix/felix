@@ -13,14 +13,20 @@
 //!
 //! Whether a shard is bounded, and where, is the service's to say: it owns
 //! the marks and the routes. It answers through [`ReadBounds`], asked only for
-//! `Quorum` streams, so a `Leader` stream never pays for the question.
+//! `Quorum` streams, so a `Leader` stream never pays for the question. A shard
+//! whose engine commits every write (Raft) is bounded at every level instead.
 //! See "Readers stop at the committed mark" in `docs/replication-design.md`.
+//!
+//! On such a shard the engine, not the broker, gives a batch its offsets.
+//! [`ProposalOrder`] keeps the batches joining the hold in the order they
+//! were handed to the engine, which is their offset order.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bytes::Bytes;
+use felix_storage::{CommitSequencer, CommitTurn};
 use parking_lot::Mutex;
 
 /// How far a reader may see into a stream shard.
@@ -73,6 +79,9 @@ pub(crate) struct CommitHold {
     wake: tokio::sync::Notify,
     /// Wakes [`Self::settled`]: a release ended or a batch was held.
     settled: tokio::sync::Notify,
+    /// Readers at every consistency level stop at the bound, not only
+    /// `Quorum` ones.
+    every_level: AtomicBool,
 }
 
 impl CommitHold {
@@ -97,6 +106,17 @@ impl CommitHold {
             &source.stream,
             source.shard,
         )
+    }
+
+    /// Bound readers at every consistency level, for a shard whose engine
+    /// acknowledges no write before it commits.
+    pub(crate) fn bound_every_level(&self) {
+        self.every_level.store(true, Ordering::Release);
+    }
+
+    /// Whether [`Self::bound_every_level`] was called.
+    pub(crate) fn bounds_every_level(&self) -> bool {
+        self.every_level.load(Ordering::Acquire)
     }
 
     /// The stream and shard this hold is bound to, for naming them in an
@@ -268,6 +288,42 @@ impl HeldBatch {
     /// One past the batch's last offset.
     pub(crate) fn end(&self) -> u64 {
         self.first_offset + self.payloads.len() as u64
+    }
+}
+
+/// The order batches were handed to an engine that gives them their
+/// offsets, so they join the hold in offset order.
+///
+/// The engine queues a batch when it is handed one and writes its queue in
+/// order, so the order of hand-overs is the order of offsets. Publishers
+/// learn their offsets in any order; each waits for the turn of the one
+/// handed over before it. A turn is released however its publish ends, so
+/// a failed or cancelled one never holds up the rest.
+#[derive(Debug)]
+pub(crate) struct ProposalOrder {
+    /// The next hand-over's place. Locked across the hand-over itself.
+    next: Mutex<u64>,
+    turns: Arc<CommitSequencer>,
+}
+
+impl Default for ProposalOrder {
+    fn default() -> Self {
+        Self {
+            next: Mutex::new(0),
+            turns: Arc::new(CommitSequencer::new(0)),
+        }
+    }
+}
+
+impl ProposalOrder {
+    /// Call `hand_over` with the next place taken. It must queue its batch
+    /// with the engine before it returns.
+    pub(crate) fn hand_over<T>(&self, hand_over: impl FnOnce() -> T) -> (T, CommitTurn<'static>) {
+        let mut next = self.next.lock();
+        let place = *next;
+        *next += 1;
+        let turn = self.turns.reserve_owned(place, place + 1);
+        (hand_over(), turn)
     }
 }
 

@@ -12,7 +12,8 @@
 //!
 //! A publish goes in through [`RaftEngine::propose`] and waits for its
 //! commit on [`RaftEngine::await_commit`]. Readers are bounded by
-//! [`RaftEngine::read_bound`].
+//! [`RaftEngine::read_bound`]. [`RaftEngine::publish`] does both for a broker
+//! stream and hands the committed batch to its subscribers.
 //!
 //! Nothing in the broker calls this yet. No shard runs on it, and the
 //! `raft` feature that compiles it is in no release. The design is in
@@ -22,6 +23,7 @@
 
 mod codec;
 mod commit;
+mod deliver;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -39,6 +41,7 @@ mod ticker;
 mod types;
 mod wire;
 
+pub use deliver::RaftReads;
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};

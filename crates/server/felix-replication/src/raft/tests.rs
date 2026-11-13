@@ -23,6 +23,7 @@ use super::*;
 use crate::{ShardKey, ShardKind};
 
 mod commit;
+mod deliver;
 mod propose;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];

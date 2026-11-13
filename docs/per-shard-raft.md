@@ -1155,6 +1155,64 @@ and a leader is known. It needs the restore check once per start ("Group
 and member identity"), and nothing per shard: no assignment has to be
 confirmed, which is what kept shards unreadable in issue #1914.
 
+### Delivering committed records
+
+A subscriber of a Raft shard gets a record only once it is committed. On
+the leader the record it gets is the publisher's own batch, held in memory.
+Nothing is read back from the log or decoded in apply for it.
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant B as Broker stream
+    participant R as Raft group
+    participant S as Subscribers
+    P->>B: publish(batch)
+    B->>R: propose, in the stream's hand-over order
+    R-->>B: written at [first, end)
+    R-->>B: committed under the term that wrote it
+    B->>B: wait for the batch handed over before it
+    B->>S: one shared envelope of the publisher's bytes
+```
+
+**As built.** `RaftEngine::publish` hands a batch to
+`Broker::propose_publish`. The broker takes the batch's place in the
+stream's hand-over order and calls `propose` while it holds that place, so
+the order of hand-overs is the order openraft gives out indexes. The
+batch then waits for `await_commit`, which checks the term of the entry at
+its offset, and for the batch handed over before it. Only then does it
+join the stream's commit hold. The hold appends it to the replay ring and
+fans it out as one shared envelope, encoded once per frame shape, the same
+way a held `Quorum` batch is released on the hybrid.
+
+- A batch whose `await_commit` fails is never delivered: a deposed leader's
+  record may have been replaced. If it did commit, readers find it in the
+  log, and the jump in offsets tells a live subscriber it missed one.
+- A publisher that goes away does not leave a gap. The rest of its publish
+  runs on a task of its own and keeps its place, so the batches behind it
+  wait for it.
+- Every reader of the stream is bounded by `read_bound`, at every
+  consistency level (`StreamHandle::bound_every_level`, answered by
+  `RaftReads`). A follower's readers read the log up to what the follower
+  has applied.
+- `RaftEngine::follow_commits` kicks the stream each time the commit index
+  moves here. Held batches the bound now covers are released, and readers
+  waiting at the bound for the log look again.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_record_a_later_leader_replaced_reaches_no_subscriber`,
+> `a_record_is_delivered_only_once_a_majority_holds_it` and
+> `a_followers_readers_stop_at_what_it_applied`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `batches_go_out_in_hand_over_order_whoever_hears_first` and
+> `every_subscriber_shares_one_envelope_of_the_publishers_bytes`.
+
+Not built yet: the stream's handle and the Raft member do not share one
+log, because nothing routes a shard to the engine. The records a Raft
+stream stores carry no publisher or headers, so its subscribers are told
+neither. A blank or membership entry takes an offset and holds no event,
+and a live subscriber sees that offset skipped.
+
 ### Membership
 
 The control plane still chooses the replica set and paces moves. It records

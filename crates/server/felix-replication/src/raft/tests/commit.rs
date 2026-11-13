@@ -52,18 +52,18 @@ fn hosted() -> (Cluster, HashMap<&'static str, Arc<Told>>) {
     (cluster, hosts.into_iter().collect())
 }
 
-struct Led {
-    cluster: Cluster,
+pub(super) struct Led {
+    pub(super) cluster: Cluster,
     hosts: HashMap<&'static str, Arc<Told>>,
-    leader: MemberId,
-    engine: RaftEngine,
+    pub(super) leader: MemberId,
+    pub(super) engine: RaftEngine,
     /// The leader's term, and the last committed index.
-    term: u64,
-    committed: u64,
+    pub(super) term: u64,
+    pub(super) committed: u64,
 }
 
 /// A formed group with one committed record, and an engine on its leader.
-async fn led() -> Led {
+pub(super) async fn led() -> Led {
     let (mut cluster, hosts) = hosted();
     cluster.form(0).await;
     let committed = cluster.write(0, b"committed").await;
@@ -88,12 +88,12 @@ impl Led {
         self.hosts[&*self.leader.broker].all()
     }
 
-    fn status(&self) -> GroupStatus {
+    pub(super) fn status(&self) -> GroupStatus {
         let status = self.cluster.runtime(&self.leader.broker).status(&shard(0));
         status.expect("status")
     }
 
-    fn followers(&self) -> impl Iterator<Item = String> + '_ {
+    pub(super) fn followers(&self) -> impl Iterator<Item = String> + '_ {
         let others = BROKERS
             .iter()
             .filter(|broker| **broker != &*self.leader.broker);
@@ -101,17 +101,17 @@ impl Led {
     }
 
     /// The leader reaches no follower. The followers still reach it.
-    fn cut_followers(&self) {
+    pub(super) fn cut_followers(&self) {
         self.cluster.net.cut.lock().extend(self.followers());
     }
 
-    fn heal(&self) {
+    pub(super) fn heal(&self) {
         self.cluster.net.cut.lock().clear();
         self.cluster.net.muted.lock().clear();
     }
 
     /// Write `records` records on the leader and say where they landed.
-    async fn propose(&self, records: usize) -> Written {
+    pub(super) async fn propose(&self, records: usize) -> Written {
         let record = Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"proposed"),

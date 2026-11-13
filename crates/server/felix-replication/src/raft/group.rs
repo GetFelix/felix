@@ -493,6 +493,11 @@ impl Group {
         async move { propose::acknowledged(waiting?, positions, leading, stop).await }
     }
 
+    /// The commit table as the state machine publishes it.
+    pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
+        self.commits.clone()
+    }
+
     /// One past the last offset this member knows committed. It moves when
     /// the state machine applies an entry, so it never passes the commit
     /// index, on a leader or a follower.
