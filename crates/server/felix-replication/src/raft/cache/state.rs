@@ -54,11 +54,12 @@ impl Producer {
     fn raise(&mut self, floor: u64) {
         if floor > self.floor {
             self.floor = floor;
-            let (_, at, mut kept) = self.answers.split_lookup(&floor);
-            if let Some(answer) = at {
-                kept.insert(floor, answer);
+            // One removal at a time: imbl's split rebuilds the whole map.
+            while let Some(&(sequence, _)) = self.answers.get_min()
+                && sequence < floor
+            {
+                self.answers.remove(&sequence);
             }
-            self.answers = kept;
         }
     }
 }

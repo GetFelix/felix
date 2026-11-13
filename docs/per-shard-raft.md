@@ -946,8 +946,9 @@ entries above it, so its log is cut to the snapshot:
 - Building a snapshot does not hold apply. Between two entries the state
   machine takes a copy of the state, which costs nothing because the state
   is kept in persistent maps that share their nodes with the copy. The copy
-  is encoded and written on a blocking thread while apply goes on, and only
-  a node apply then changes is copied. The snapshot is exactly the state as
+  is encoded and written on a blocking thread while apply goes on. A node
+  that apply changes during the build is copied first, so a build costs
+  memory in proportion to what apply changes while it runs. The snapshot is exactly the state as
   of its last entry, never a mix of that and later writes.
 - The member then purges the entries the snapshot covers, except the newest
   `cache_log_keep` (1,024). A member a little behind still catches up from
