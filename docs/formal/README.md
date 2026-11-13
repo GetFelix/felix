@@ -819,6 +819,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseStoreStalledAsks.cfg` | a broker with a stalled disk keeps sending liveness heartbeats | violate `StalledLeaseLapses` |
 | `FelixRaftLeaseStoreReachLocalAck.cfg` | witness: the first write after sleep acknowledged locally with no group message | violate `NeverLocalAck` |
 | `FelixRaftLeaseStoreReachFailover.cfg` | witness: a failover after support was withdrawn, the new leader passing the check | violate `NeverFailoverAfterLease` |
+| `FelixRaftLeaseSleep.cfg` | `FelixRaftLease.cfg` with sleep (issue #2239): up to two wakes not caused by the leader start a vote hold that may end early; ending it ends only the hold, and a sleep answer renews nothing | pass `LeaseExclusive` |
+| `FelixRaftLeaseSleepHoldEndClearsWindow.cfg` | the hold's early end also clears openraft's refusal window | violate `LeaseExclusive` |
+| `FelixRaftLeaseSleepAnswerRenews.cfg` | a sleep answer renews the lease, though the follower's window did not restart | violate `LeaseExclusive` |
 | `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
 | `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
 | `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
@@ -840,6 +843,68 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftSleepAskLost.cfg` | Design as written: the ask after a false alarm is lost, the hold runs out and the follower deposes a healthy leader | violate `NoNeedlessDeposal` (issue #2320) |
 | `FelixRaftSleepReachWakeOnWrite.cfg` | Witness: a group sleeps, wakes on a write and sleeps again | violate `NeverWakesOnWrite` |
 | `FelixRaftSleepReachAuditElection.cfg` | Witness: an election through the audit alone | violate `NeverElectsAfterDyingAsleep` |
+| `FelixRaftSleepWake.cfg` | The second design on issue #2239, every rule on: pre-vote, the vote hold after a wake, the request to a left-out member, the waking refusal, the audit that asks first, a lease that lapses in sleep. One write, one sleep, one lost audit heartbeat, one false alarm, one restart | pass |
+| `FelixRaftSleepWakeWrite.cfg` | A write reaches a sleeping leader whose lease lapsed; it waits for a heartbeat round | pass `NoWriteRefused`, `QuiescentLevel` |
+| `FelixRaftSleepAuditLost.cfg` | A lost audit heartbeat fires a follower's audit under a healthy leader; it asks first | pass `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAsked.cfg` | `FelixRaftSleepFalseAlarmFollower.cfg` with the second design's rules | pass `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLost.cfg` | the same with one request or answer lost, so the left-out member stays awake under a sleeping leader | pass `NoNeedlessDeposal`: its pre-vote wakes the others, who hold |
+| `FelixRaftSleepFalseAlarmFollowerBehindAsked.cfg` | `FelixRaftSleepFalseAlarmFollowerBehind.cfg` with the second design's rules | pass `AsleepIsLevelCounted`, `QuiescentLevel` |
+| `FelixRaftSleepTtl.cfg` | A cache group's expiry timer wakes a sleeping leader, which proposes the delete; no audit | pass `QuiescentTtl` |
+| `FelixRaftSleepMidHandshake.cfg` | The leader's broker restarts or dies during the handshake, one request or answer lost | pass |
+| `FelixRaftSleepWriteBeforeRound.cfg` | `FelixRaftSleepWakeWrite.cfg` with the write proposed at once after the wake; openraft refuses it (LeaseExpired) | violate `NoWriteRefused` |
+| `FelixRaftSleepAuditCampaigns.cfg` | `FelixRaftSleepAuditLost.cfg` with a follower that ticks at once after its audit | pass: the vote hold drops its pre-vote. The ask saves a round; the hold keeps the leader |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostDroppedPreVoteGrants.cfg` | a pre-vote the hold drops counts as granted, as openraft's default `pre_vote` answers | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoVoteHold.cfg` | no vote hold: a sleeper woken by a pre-vote grants it | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoPreVote.cfg` | no pre-vote: the member raises its term | violate `NoNeedlessDeposal` |
+| `FelixRaftSleepFalseAlarmFollowerAskedLostNoLeftOutAsked.cfg` | no request to the left-out member | pass: the vote hold keeps the leader |
+| `FelixRaftSleepFalseAlarmFollowerBehindAskedNoRefusalWakes.cfg` | a refusal does not wake the leader | pass: the left-out member is caught up later |
+| `FelixRaftSleepNoTtlWake.cfg` | `FelixRaftSleepTtl.cfg` with a timer that does not wake the leader | violate `QuiescentTtl` |
+| `FelixRaftSleepReachMidHandshake.cfg` | Witness for `FelixRaftSleepMidHandshake.cfg` | violate `NeverElectedMidHandshake`: a leader is elected with the old one's request still out |
+| `FelixRaftSleepTtlWrite.cfg` | `FelixRaftSleepTtl.cfg` with two writes: one can reach the leader between the expiry timer and its delete, which names the version the timer saw | pass `ExpiryKeepsNewer` |
+| `FelixRaftSleepTtlWriteUnconditional.cfg` | the same with a delete that removes whatever the key holds | violate `ExpiryKeepsNewer` |
+| `FelixRaftSleepTtlWriteReachRace.cfg` | Witness for `FelixRaftSleepTtlWrite.cfg` | violate `NeverExpirySkipsNewer`: the delete commits after a write its timer did not see |
+| `FelixRaftCache.cfg` | `FelixRaftCache.tla`: the cache shard's state machine (issue #2238), two members, an add and a put-if-absent, three proposals with retries, one leader change, one crash, two snapshots, one read, no clock | pass |
+| `FelixRaftCacheClock.cfg` | expiry, with clocks 0..2 that differ by member, an expiring put, a put-if-absent and one expiry delete; no snapshot | pass |
+| `FelixRaftCacheDedup.cfg` | retries of a put, a put-if-absent and a delete; three proposals, one crash, one snapshot | pass `AppliedOnce`, `AnswersKept` |
+| `FelixRaftCacheExpiry.cfg` | the expiry delete against a put that refreshes the key; clocks 0..1 | pass `ExpiryRemovesItsVersion` |
+| `FelixRaftCacheClockSnapshot.cfg` | expiry with a snapshot, an install and a crash; clocks 0..2 | pass `StampsMonotone` |
+| `FelixRaftCacheNoRequestId.cfg` | adds are applied again on a retry | violate `SumExact`: a retry counts twice |
+| `FelixRaftCacheDedupPutNotDeduped.cfg` | puts are applied again on a retry | violate `AnswersKept`: the retry overwrites a later write and answers a new version |
+| `FelixRaftCacheDedupPutAbsentNotDeduped.cfg` | put-if-absents are applied again on a retry | violate `AppliedOnce`: the retry brings back a deleted key |
+| `FelixRaftCacheDedupDeleteNotDeduped.cfg` | deletes are applied again on a retry | violate `AppliedOnce`: the retry removes a later write |
+| `FelixRaftCacheSnapshotDropsDedup.cfg` | the snapshot leaves out the applied request ids | violate `SumExact` |
+| `FelixRaftCacheSnapshotIdAhead.cfg` | the snapshot's id is read after its state | violate `MembersAgree` |
+| `FelixRaftCachePurgePastSnapshot.cfg` | purge goes up to what the member applied | violate `LiveReadable` |
+| `FelixRaftCacheReadNoApplyWait.cfg` | a read is answered before the leader applied its commit index | violate `ReadsFresh` |
+| `FelixRaftCacheClockApplyLocalClock.cfg` | apply checks expiry on the member's clock | violate `MembersAgree` |
+| `FelixRaftCacheClockReadsLocalClock.cfg` | a read checks expiry on the leader's clock and answers without the delete | violate `OneClock` |
+| `FelixRaftCacheClockReadsLogTime.cfg` | a read checks expiry at the log's time only | violate `ReadsNotStale`: an idle group reads an expired key as present |
+| `FelixRaftCacheClockStampNotMonotone.cfg` | a leader stamps its own clock even when behind | violate `OneClock` |
+| `FelixRaftCacheClockFloorFromCommitted.cfg` | the stamp floor ignores the uncommitted tail a new leader inherited | violate `StampsMonotone` |
+| `FelixRaftCacheClockFloorCountsBlank.cfg` | the stamp floor reads a blank entry's time | violate `StampsMonotone` |
+| `FelixRaftCacheExpiryUnconditional.cfg` | the expiry delete removes whatever the key holds | violate `ExpiryRemovesItsVersion`: a put that committed before the delete is lost |
+| `FelixRaftCacheClockSnapshotDropsTime.cfg` | the snapshot leaves out the log's time | violate `StampsMonotone`: a leader that installed it stamps from its own clock |
+| `FelixRaftCacheReachInstallRead.cfg` | witness: a member installs the leader's snapshot, then leads and serves a read | violate `NeverReadAfterInstall` |
+| `FelixRaftCacheReachRetry.cfg` | witness: a retried add is committed twice and applied | violate `NeverRetryApplied` |
+| `FelixRaftCacheDedupReachRetryAnswer.cfg` | witness: a request is committed twice and then answered | violate `NeverRetryAnswered` |
+| `FelixRaftCacheClockReachExpiry.cfg` | witness: a read finds the key expired, then a put-if-absent takes it | violate `NeverExpiredThenTaken` |
+| `FelixRaftCacheExpiryReachRefresh.cfg` | witness: an expiry delete commits after a newer write and leaves it | violate `NeverExpirySkipsNewer` |
+| `FelixRaftCacheExpiryReachExpireRead.cfg` | witness: a read waits for the expiry delete and answers absent | violate `NeverReadAfterExpiry` |
+| `FelixRaftCacheClockSnapshotReachInstallStamp.cfg` | witness: a leader that installed a snapshot stamps from the snapshot's time, ahead of its clock | violate `NeverStampFromSnapshot` |
+| `FelixRaftCacheDelete.cfg` | a delete against expiry: an expiring put and a delete, three proposals (a retry moves the log's time), one expiry delete, clocks 0..2, one read | pass `OneClock` (6.3M distinct states) |
+| `FelixRaftCacheDeleteSnapshot.cfg` | a snapshot that holds live records only (`SnapshotDropsExpired`): an expiring put and a delete, three proposals, one expiry delete, clocks 0..1, one crash, one snapshot, one read | pass `AnswersKept`, `MembersAgree` (31.2M distinct states) |
+| `FelixRaftCachePutAbsentSnapshot.cfg` | the same with a put-if-absent in place of the delete | pass (28.4M distinct states) |
+| `FelixRaftCacheCond.cfg` | a put and a delete that name a version, against an expiring put; three proposals, one expiry delete, clocks 0..1, one read | pass `CondExact`, `OneClock` (1.3M distinct states) |
+| `FelixRaftCacheCondSnapshot.cfg` | `FelixRaftCacheDeleteSnapshot.cfg` with a conditional put in place of the delete: a refusal answers the same version on a member that restored the snapshot and on one that replayed the log | pass `AnswersKept`, `ProjectionIsFold` (19.5M distinct states) |
+| `FelixRaftCacheDeleteSeesExpired.cfg` | a delete treats an expired record as present | violate `OneClock`: a read answers absent, then the delete removes a version |
+| `FelixRaftCacheDeleteSnapshotSeesExpired.cfg` | the same with a snapshot that dropped the record | violate `AnswersKept`: a member that replayed the log removes a version, one that restored the snapshot answers absent |
+| `FelixRaftCachePutAbsentSnapshotSeesExpired.cfg` | a put-if-absent treats an expired record as present, with a snapshot that dropped it | violate `MembersAgree` |
+| `FelixRaftCacheCondSeesExpired.cfg` | a conditional write matches the version of an expired record | violate `OneClock` |
+| `FelixRaftCacheCondSnapshotSeesExpired.cfg` | the same with a snapshot that dropped the record | violate `AnswersKept`: a member that replayed the log applies the write, one that restored the snapshot refuses it |
+| `FelixRaftCacheDeleteReachExpired.cfg` | witness: a delete finds an expired record that no expiry delete removed and answers absent | violate `NeverDeleteOfExpired` |
+| `FelixRaftCacheDeleteSnapshotReachDropped.cfg` | witness: a member restores a snapshot that left out an expired record while another still holds it | violate `NeverDroppedAndKept` |
+| `FelixRaftCacheCondReachApplied.cfg` | witness: a conditional write applies | violate `NeverCondApplied` |
+| `FelixRaftCacheCondReachStale.cfg` | witness: a conditional write is refused because a newer write replaced the version it named | violate `NeverCondStale` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -3491,9 +3556,80 @@ that does not also need the third gap. `FelixRaftSleepLeaderSleepsFirst.cfg` rea
 needless deposal, not a member left behind for good. All the harms in this module are
 availability: the safety checks pass with members asleep in any state.
 
+The second design on issue #2239 closes the third gap with five rules, each a knob:
+`PreVote`, `VoteHold` (a vote or pre-vote that wakes a member is dropped and the member
+holds), `LeftOutAsked` (the request also goes to a left-out member), `RefusalWakes` (a
+refused request wakes the leader) and `AuditAsks` (a follower woken by its audit asks
+first). `LeaseLapses` makes the first write after a wake wait for a heartbeat round, and
+`MaxTtlWakes` lets a cache group's expiry timer wake its leader, which proposes the
+cache model's conditional delete of the version the timer saw (`ExpiryKeepsNewer`). The `FelixRaftSleepWake`
+family runs with all of them on. Dropping pre-vote or the hold, or counting a dropped
+pre-vote as granted, deposes a healthy leader. Dropping `LeftOutAsked`, `RefusalWakes` or
+`AuditAsks` does not: the hold alone keeps the leader, and those three only save a
+pre-vote round or catch a member up sooner. Their configurations are registered as
+passing to record that.
+
 Not modelled: storage (an append is durable), snapshots, membership changes, read rounds,
-leases, pre-vote, ranked starts and the per-tick election cap. Messages are atomic steps
-except the sleep request. Only a leader's broker dies, and a disk stall counts as a death.
+ranked starts and the per-tick election cap. Messages are atomic steps except the sleep
+request. Only a leader's broker dies, and a disk stall counts as a death.
+
+### Raft cache state machine
+
+`FelixRaftCache.tla` models a cache shard's Raft group as the second design on issue #2238
+has it: one log of cache writes, deletes and counter adds that every member applies to a
+projection, with each member snapshotting that projection on its own. That snapshot is the
+only compaction. The leader proposes no copy or checkpoint entries, so the first design's
+`CopyUnchecked` and `CheckpointUnchecked` twins and its `CompactionInvisible` check are
+retired: the entries they guarded do not exist. Raft itself is abstracted to one committed
+sequence, which `FelixRaft.tla` already checks, with a new leader that keeps a prefix of
+the old leader's uncommitted tail and appends a blank entry.
+
+The rules and their checks:
+
+- Apply is deterministic and never reads a clock (`MembersAgree`, `ProjectionIsFold`).
+- The projection holds the log's time, the stamp of the last stamped entry applied, and the
+  snapshot carries it. The leader stamps no earlier than the last stamped entry in its log,
+  the inherited tail included and blank entries skipped, or its snapshot's time when its
+  log holds none (`StampsMonotone`). A leader that installed a snapshot therefore stamps
+  from the snapshot, not from its clock.
+- Every write carries a request id, and the projection keeps each applied id with its
+  answer. A retry changes nothing (`AppliedOnce`, `SumExact`) and gets the first answer
+  (`AnswersKept`).
+- Expiry is a delete the leader proposes for the version it saw expire. It removes only
+  that version (`ExpiryRemovesItsVersion`), so a write is never removed by the expiry of an
+  older version.
+- A read waits until the leader applied its commit index (`ReadsFresh`) and evaluates
+  expiry at the leader's read time, the later of its clock and the log's time. When that
+  finds a key expired that the log's time does not, the leader commits the conditional
+  delete first and answers after applying it. So an idle group never reads an expired key
+  as present (`ReadsNotStale`), and an "absent" is always in the log, where a later leader
+  with a slower clock cannot contradict it (`OneClock`). The two simpler rules both fail:
+  answering from the leader's clock alone breaks `OneClock`, and answering at the log's
+  time alone breaks `ReadsNotStale`.
+- An expired record is absent to every write, judged at the entry's stamp: a put-if-absent
+  takes the key, a delete answers "absent", a write that names a version finds none. So
+  after a read answered "absent", no write finds the key present until something writes it
+  (`OneClock`). It also lets a snapshot hold live records only (`SnapshotDropsExpired`): a
+  member that restored one and a member that replayed the log hold different records and
+  give the same answers (`AnswersKept`, and `MembersAgree` over what a request can
+  observe). A delete that removes an expired record breaks both: `OneClock` on its own,
+  `AnswersKept` once a snapshot dropped the record.
+- A put or a delete may name a version. It applies only to that version, unexpired
+  (`CondExact`).
+- Purge goes up to the member's snapshot and no further (`LiveReadable`).
+
+Each twin drops one rule and breaks one check; the module header lists them.
+
+The bounds are small on purpose. Each configuration has one read (`MaxReads`) and at most
+one expiry delete (`MaxExpiries`), and two or three proposals. One read is enough for
+every read check, which compares a single read with the log before or after it; no check
+relates two reads. One expiry delete covers the delete racing a write and a read waiting
+for it. Two expiries of two versions of the key are not explored.
+
+Not modelled: trimming the table of applied request ids (it only grows here; a real trim
+must be a rule over the log, with its result in the snapshot), membership entries (they
+are stampless like the blank entry), more than one key, and the log side of install and
+purge (`FelixRaft.tla`'s snapshot configurations).
 
 ## How CI checks the models
 

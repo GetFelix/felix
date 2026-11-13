@@ -109,6 +109,7 @@ module_of() {
     FelixRaftReform*) echo FelixRaftReform ;;
     FelixRaftLease*) echo FelixRaftLease ;;
     FelixRaftSleep*) echo FelixRaftSleep ;;
+    FelixRaftCache*) echo FelixRaftCache ;;
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaft*) echo FelixRaft ;;
@@ -766,6 +767,9 @@ expectations=(
   "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
   "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
   "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseSleep pass"
+  "FelixRaftLeaseSleepHoldEndClearsWindow violates LeaseExclusive"
+  "FelixRaftLeaseSleepAnswerRenews violates LeaseExclusive"
   "FelixRaftSleep pass"
   "FelixRaftSleepWrite pass"
   "FelixRaftSleepLeaderDies pass"
@@ -787,6 +791,68 @@ expectations=(
   "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
   "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
   "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
+  "FelixRaftSleepWake pass"
+  "FelixRaftSleepWakeWrite pass"
+  "FelixRaftSleepAuditLost pass"
+  "FelixRaftSleepFalseAlarmFollowerAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLost pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAsked pass"
+  "FelixRaftSleepTtl pass"
+  "FelixRaftSleepMidHandshake pass"
+  "FelixRaftSleepWriteBeforeRound violates NoWriteRefused"
+  "FelixRaftSleepAuditCampaigns pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostDroppedPreVoteGrants violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoVoteHold violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoPreVote violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoLeftOutAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAskedNoRefusalWakes pass"
+  "FelixRaftSleepNoTtlWake violates QuiescentTtl"
+  "FelixRaftSleepReachMidHandshake violates NeverElectedMidHandshake"
+  "FelixRaftSleepTtlWrite pass"
+  "FelixRaftSleepTtlWriteUnconditional violates ExpiryKeepsNewer"
+  "FelixRaftSleepTtlWriteReachRace violates NeverExpirySkipsNewer"
+  "FelixRaftCache pass"
+  "FelixRaftCacheClock pass"
+  "FelixRaftCacheDedup pass"
+  "FelixRaftCacheExpiry pass"
+  "FelixRaftCacheClockSnapshot pass"
+  "FelixRaftCacheNoRequestId violates SumExact"
+  "FelixRaftCacheSnapshotDropsDedup violates SumExact"
+  "FelixRaftCacheSnapshotIdAhead violates MembersAgree"
+  "FelixRaftCacheReadNoApplyWait violates ReadsFresh"
+  "FelixRaftCachePurgePastSnapshot violates LiveReadable"
+  "FelixRaftCacheClockApplyLocalClock violates MembersAgree"
+  "FelixRaftCacheClockReadsLocalClock violates OneClock"
+  "FelixRaftCacheClockReadsLogTime violates ReadsNotStale"
+  "FelixRaftCacheClockStampNotMonotone violates OneClock"
+  "FelixRaftCacheClockFloorFromCommitted violates StampsMonotone"
+  "FelixRaftCacheClockFloorCountsBlank violates StampsMonotone"
+  "FelixRaftCacheDedupPutNotDeduped violates AnswersKept"
+  "FelixRaftCacheDedupPutAbsentNotDeduped violates AppliedOnce"
+  "FelixRaftCacheDedupDeleteNotDeduped violates AppliedOnce"
+  "FelixRaftCacheExpiryUnconditional violates ExpiryRemovesItsVersion"
+  "FelixRaftCacheClockSnapshotDropsTime violates StampsMonotone"
+  "FelixRaftCacheReachInstallRead violates NeverReadAfterInstall"
+  "FelixRaftCacheReachRetry violates NeverRetryApplied"
+  "FelixRaftCacheDedupReachRetryAnswer violates NeverRetryAnswered"
+  "FelixRaftCacheClockReachExpiry violates NeverExpiredThenTaken"
+  "FelixRaftCacheExpiryReachRefresh violates NeverExpirySkipsNewer"
+  "FelixRaftCacheExpiryReachExpireRead violates NeverReadAfterExpiry"
+  "FelixRaftCacheClockSnapshotReachInstallStamp violates NeverStampFromSnapshot"
+  "FelixRaftCacheDelete pass"
+  "FelixRaftCacheDeleteSnapshot pass"
+  "FelixRaftCacheCond pass"
+  "FelixRaftCachePutAbsentSnapshot pass"
+  "FelixRaftCacheCondSnapshot pass"
+  "FelixRaftCacheDeleteSeesExpired violates OneClock"
+  "FelixRaftCacheDeleteSnapshotSeesExpired violates AnswersKept"
+  "FelixRaftCachePutAbsentSnapshotSeesExpired violates MembersAgree"
+  "FelixRaftCacheCondSeesExpired violates OneClock"
+  "FelixRaftCacheCondSnapshotSeesExpired violates AnswersKept"
+  "FelixRaftCacheDeleteReachExpired violates NeverDeleteOfExpired"
+  "FelixRaftCacheDeleteSnapshotReachDropped violates NeverDroppedAndKept"
+  "FelixRaftCacheCondReachApplied violates NeverCondApplied"
+  "FelixRaftCacheCondReachStale violates NeverCondStale"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -1153,8 +1219,20 @@ weights=(
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
+  "FelixRaftLeaseSleep 93"
+  "FelixRaftCache 4"
+  "FelixRaftCacheClock 9"
+  "FelixRaftCacheClockSnapshot 18"
+  "FelixRaftCacheExpiry 2"
+  "FelixRaftCacheDelete 9"
+  "FelixRaftCacheCond 3"
+  "FelixRaftCacheDeleteSnapshot 50"
+  "FelixRaftCachePutAbsentSnapshot 45"
+  "FelixRaftCacheCondSnapshot 33"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
+  "FelixRaftSleepMidHandshake 87"
+  "FelixRaftSleepWake 9"
 )
 
 # Minutes a configuration took on a pull request's runner, from the `Finished
@@ -1275,6 +1353,13 @@ pr_minutes=(
   "FelixShardUnifiedLearnerVariantDropped 2"
   "FelixShardUnifiedSets 7"
   "FelixShardWipeFull 5"
+  "FelixRaftCache 6"
+  "FelixRaftCacheClock 13"
+  "FelixRaftCacheClockSnapshot 26"
+  "FelixRaftCacheDelete 13"
+  "FelixRaftCacheDeleteSnapshot 72"
+  "FelixRaftCachePutAbsentSnapshot 65"
+  "FelixRaftCacheCondSnapshot 47"
 )
 
 weight_of() {
@@ -1301,7 +1386,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"
