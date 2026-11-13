@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794609543084,
+  "lastUpdate": 1794609882990,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69894,6 +69894,72 @@ window.BENCHMARK_DATA = {
             "range": "540.59",
             "unit": "us",
             "extra": "trials: 5\nmedian: 637.00\nmean: 1000.80\nstdev: 540.59\ncv: 54.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "38b654f9273703bb9f77c48845c77ce5b7edeeec",
+          "message": "spec: track 4 PR 6 and PR 7 models, cache state machine v3 and sleep and wake v2 (#2418)\n\nTrack 4 PR 6 and PR 7 models: the cache and counters as one Raft state machine (FelixRaftCache, v3) and sleep and wake (FelixRaftSleep, v2).\n\n- Cache: compaction is a local Raft snapshot (no proposed entries); the expiry delete is conditional on the version the timer saw; every cache op is deduplicated with its original answer; the snapshot carries the log's time and holds live records only.\n- Delete, put-if-absent and the conditional put and delete judge whether a record is live at the entry's stamp, so an expired record answers as absent everywhere. A read evaluates expiry at the later of the leader's clock and the log's time, and commits the conditional delete before answering when only the clock says expired.\n- 42 Cache configs reach their registered outcome, including the snapshot-dropping pairs for delete, put-if-absent and conditional writes, each with a twin that violates.\n- Sleep: the expiry delete names the version the timer saw; all 41 Sleep configs reach their registered outcome, MidHandshake in Actions.\n- Second design note on #2238. Follow-ups: #2433 (durable request identity on the wire), #2434 (local clock reads in apply and compaction).",
+          "timestamp": "2026-11-13T14:24:34-08:00",
+          "tree_id": "6e640357ed2804bd6c132f0548e5a488925fed29",
+          "url": "https://github.com/GetFelix/felix/commit/38b654f9273703bb9f77c48845c77ce5b7edeeec"
+        },
+        "date": 1794609872895,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "4.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 154.40\nstdev: 4.62\ncv: 2.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "419.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 459.20\nstdev: 419.59\ncv: 91.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 454,
+            "range": "534.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 454.00\nmean: 697.60\nstdev: 534.35\ncv: 76.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "11.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 205.60\nstdev: 11.41\ncv: 5.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 401,
+            "range": "379.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 401.00\nmean: 569.60\nstdev: 379.81\ncv: 66.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 609,
+            "range": "946.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 609.00\nmean: 1034.80\nstdev: 946.91\ncv: 91.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
