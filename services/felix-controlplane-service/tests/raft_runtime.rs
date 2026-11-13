@@ -341,10 +341,6 @@ impl Member {
             .env("FELIX_RAFT_CLUSTER_ID", CLUSTER_ID)
             .env("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN)
             .env("FELIX_RAFT_INITIAL_CLUSTER_STATE", initial)
-            // A snapshot every 20 entries and nothing kept behind it, so a
-            // member that misses a few writes can only catch up by snapshot.
-            .env("FELIX_RAFT_SNAPSHOT_LOGS_SINCE_LAST", "20")
-            .env("FELIX_RAFT_LOGS_KEPT_BEHIND_SNAPSHOT", "0")
             .env("FELIX_SHUTDOWN_PREDRAIN_MS", "0")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -359,40 +355,6 @@ impl Member {
 
     fn stop(&mut self) {
         stop(&mut self.child.take().expect("running"));
-    }
-
-    fn lists(&self, bearer: &str, tenant: &str) -> bool {
-        matches!(
-            http(self.api, "GET", "/v1/tenants", Some(bearer), None),
-            Some((200, body)) if body.contains(&format!("\"{tenant}\""))
-        )
-    }
-}
-
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(90);
-    while !done() {
-        assert!(Instant::now() < deadline, "timed out waiting until {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-/// Create tenants `t<n>` for each `n` in `range` through `member`.
-fn create_tenants(member: &Member, bearer: &str, range: std::ops::Range<u32>) {
-    for n in range {
-        let body = format!(r#"{{"tenant_id": "t{n}", "display_name": "Tenant {n}"}}"#);
-        until(&format!("tenant t{n} is created"), || {
-            matches!(
-                http(
-                    member.api,
-                    "POST",
-                    "/v1/tenants",
-                    Some(bearer),
-                    Some(body.as_bytes())
-                ),
-                Some((201 | 409, _))
-            )
-        });
     }
 }
 
@@ -414,7 +376,7 @@ fn listing(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64, std::time::Sy
     found
 }
 
-/// A data directory a released control plane wrote holds its metadata in
+/// A data directory a released control plane wrote holds its Raft state in
 /// `raft.redb`, which this build cannot read. Started on it, this build must
 /// refuse before it writes anything: starting as a new member would drop
 /// the group's metadata without a word.
@@ -437,13 +399,10 @@ fn this_build_refuses_a_data_dir_a_released_binary_wrote() {
         child: None,
     };
     let peers = format!("1={}", member.peer);
+    // Ready means the group formed: the release's store holds its membership
+    // entries and vote.
     member.start(&released, &peers, "new");
     member.wait_ready();
-    let bearer = seed_operator(member.api, member.peer);
-    create_tenants(&member, &bearer, 0..3);
-    until("the released member holds its writes", || {
-        member.lists(&bearer, "t2")
-    });
     member.stop();
     let before = listing(member.dir.path());
     assert!(
