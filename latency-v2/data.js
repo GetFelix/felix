@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794527618852,
+  "lastUpdate": 1794530380475,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -67848,6 +67848,72 @@ window.BENCHMARK_DATA = {
             "range": "496.60",
             "unit": "us",
             "extra": "trials: 5\nmedian: 593.00\nmean: 907.80\nstdev: 496.60\ncv: 54.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5f16996fd56ea28faefb3b23af3fb31fc0e77e12",
+          "message": "test(controlplane): wait for the leader's first commit before add_learner (#2384) (#2387)\n\nA single member elects itself before its blank entry commits, and openraft\nrefuses membership changes until it does. The helper now waits for the entry\nto apply, so a test that adds a learner right away no longer races it.\nThe refusal is correct product behaviour; callers retry.",
+          "timestamp": "2026-11-13T00:32:02Z",
+          "tree_id": "2922a115c6eb650f24b6aef7d62017d0c2fce686",
+          "url": "https://github.com/GetFelix/felix/commit/5f16996fd56ea28faefb3b23af3fb31fc0e77e12"
+        },
+        "date": 1794530370697,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 125.00\nstdev: 0.71\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "5.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.80\nstdev: 5.89\ncv: 3.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 293,
+            "range": "229.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 293.00\nmean: 445.80\nstdev: 229.18\ncv: 51.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 174,
+            "range": "3.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 175.00\nstdev: 3.81\ncv: 2.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 349,
+            "range": "64.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 379.00\nstdev: 64.68\ncv: 17.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 511,
+            "range": "211.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 511.00\nmean: 605.60\nstdev: 211.54\ncv: 34.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
