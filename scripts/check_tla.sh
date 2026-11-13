@@ -687,6 +687,11 @@ expectations=(
   "FelixRaftLeaseTransfer pass"
   "FelixRaftLeaseTransferThreeTerms pass"
   "FelixRaftLeaseSuspend pass"
+  "FelixRaftLeaseStepDownWrite pass"
+  "FelixRaftLeaseSuspendRoleLate pass"
+  "FelixRaftLeaseStepDownDrift pass"
+  "FelixRaftLeaseTransferDrift pass"
+  "FelixRaftLeaseSuspendDrift pass"
   "FelixRaftLeaseStore pass"
   "FelixRaftLeaseStoreStall pass"
   "FelixRaftLeaseStoreWide pass"
@@ -698,6 +703,8 @@ expectations=(
   "FelixRaftLeaseSuspendLateCheck violates LeaseExclusive"
   "FelixRaftLeaseReachLeaseAfterVoid violates NeverLeaseAfterVoid"
   "FelixRaftLeaseSuspendUnchecked violates LeaseExclusive"
+  "FelixRaftLeaseTransferStepDownNoVoid violates LeaseExclusive"
+  "FelixRaftLeaseReachStepDownLocalAck violates NeverLocalAck"
   "FelixRaftLeaseLong violates LeaseExclusive"
   "FelixRaftLeaseDrift violates LeaseExclusive"
   "FelixRaftLeaseFromAck violates LeaseExclusive"
@@ -859,9 +866,9 @@ fi
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves,
-# FelixRaftLeaseAckWide and FelixRaftLease{StepDownWide,TransferWide} are not
-# registered: each is registered once a dispatch run gives its declared
-# outcome.
+# FelixRaftLeaseAckWide and FelixRaftLease{TransferWrite,TransferStepDown}
+# are not registered: each is registered once a dispatch run gives its
+# declared outcome.
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1093,12 +1100,21 @@ weights=(
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
-  "FelixRaftLeaseStepDown 180"
-  "FelixRaftLeaseStepDownSync 40"
-  "FelixRaftLeaseSuspend 180"
-  "FelixRaftLeaseTransfer 40"
-  "FelixRaftLeaseTransferThreeTerms 150"
-  "FelixRaftLeaseTransferVoidEquality 25"
+  "FelixRaftLeaseStepDown 8"
+  "FelixRaftLeaseStepDownDrift 5"
+  "FelixRaftLeaseStepDownNoVoid 2"
+  "FelixRaftLeaseStepDownWrite 8"
+  "FelixRaftLeaseSuspendLateCheck 2"
+  "FelixRaftLeaseSuspendDrift 22"
+  "FelixRaftLeaseSuspendRoleLate 28"
+  "FelixRaftLeaseSuspendUnchecked 2"
+  "FelixRaftLeaseTransfer 10"
+  "FelixRaftLeaseTransferDrift 35"
+  "FelixRaftLeaseTransferKeepsLease 2"
+  "FelixRaftLeaseTransferStepDownNoVoid 2"
+  "FelixRaftLeaseTransferThreeTerms 12"
+  "FelixRaftLeaseTransferVoidEquality 4"
+  "FelixRaftLeaseTransferVoidLate 2"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
 )
